@@ -3,17 +3,20 @@
 mod camera;
 mod renderer;
 mod sphere;
+mod wgpu_init;
 
 slint::include_modules!();
 
 fn main() {
-    // Ensure Slint uses the wgpu backend
+    let wgpu_context = wgpu_init::init();
+
     slint::BackendSelector::new()
-        .require_wgpu_28(slint::wgpu_28::WGPUConfiguration::default())
+        .require_wgpu_28(wgpu_context.config)
         .select()
         .expect("Failed to select wgpu backend");
 
     let window = MainWindow::new().expect("Failed to create window");
+    window.set_renderer_info(wgpu_context.adapter_info.into());
 
     // Request a redraw whenever sliders change
     let window_weak = window.as_weak();

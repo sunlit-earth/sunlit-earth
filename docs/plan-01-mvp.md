@@ -182,7 +182,7 @@ The render-to-texture approach already renders to an offscreen texture — the s
 1. ~~**Terminal window on Windows**~~ — Fixed: `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` hides the console in release builds while keeping it for debug.
 2. ~~**Latitude rotation is wonky**~~ — Fixed: triangle winding order in sphere mesh was clockwise from outside, causing front faces to be culled and the inside of the far hemisphere to be rendered instead. Swapped to CCW. Also clamped latitude slider to ±89° to avoid `look_at` gimbal lock at the poles.
 3. ~~**Zoom/perspective distortion**~~ — Fixed: reduced FOV from 45° to 20° (telephoto look) and moved the camera further out (distance 5–20, default 8). Minimizes perspective distortion and shows nearly a full hemisphere (~83° from center at default zoom).
-4. **Renderer info is inaccurate** — The renderer info line shows whatever GPU `enumerate_adapters` returns first, not necessarily the one Slint actually selected. Slint's `GraphicsAPI::WGPU28` exposes `device` and `queue` but not the adapter, so we can't directly query which GPU is in use.
+4. ~~**Renderer info is inaccurate**~~ — Fixed: switched from `WGPUConfiguration::Automatic` to `WGPUConfiguration::Manual`. We now create the wgpu instance, enumerate adapters, select the best one (preferring `DiscreteGpu` > `IntegratedGpu` > others, respecting `WGPU_ADAPTER_NAME` env var), and pass everything to Slint. The displayed adapter info is now definitively the one in use. Software rendering can be tested with `WGPU_ADAPTER_NAME="Microsoft Basic Render Driver"`.
 
 ## What comes next (not in this plan)
 

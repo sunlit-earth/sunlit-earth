@@ -63,8 +63,8 @@ export component MainWindow inherits Window {
                     min-width: 80px;
                 }
                 latitude-slider := Slider {
-                    minimum: -90;
-                    maximum: 90;
+                    minimum: -89;
+                    maximum: 89;
                     value: 30;
                     changed => { root.sliders-changed(); }
                 }
@@ -83,9 +83,9 @@ export component MainWindow inherits Window {
                     min-width: 80px;
                 }
                 zoom-slider := Slider {
-                    minimum: 2.0;
-                    maximum: 10.0;
-                    value: 3.5;
+                    minimum: 5.0;
+                    maximum: 20.0;
+                    value: 8.0;
                     changed => { root.sliders-changed(); }
                 }
                 Text {

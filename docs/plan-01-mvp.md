@@ -177,6 +177,13 @@ sunlit-earth/
 
 The render-to-texture approach already renders to an offscreen texture — the same path needed for wallpaper export. For wallpaper saving, we just add a CPU readback step (map the texture, save to PNG) using the same render code. No separate offscreen path needed.
 
+## Known issues
+
+1. ~~**Terminal window on Windows**~~ — Fixed: `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` hides the console in release builds while keeping it for debug.
+2. ~~**Latitude rotation is wonky**~~ — Fixed: triangle winding order in sphere mesh was clockwise from outside, causing front faces to be culled and the inside of the far hemisphere to be rendered instead. Swapped to CCW. Also clamped latitude slider to ±89° to avoid `look_at` gimbal lock at the poles.
+3. ~~**Zoom/perspective distortion**~~ — Fixed: reduced FOV from 45° to 20° (telephoto look) and moved the camera further out (distance 5–20, default 8). Minimizes perspective distortion and shows nearly a full hemisphere (~83° from center at default zoom).
+4. **Renderer info is inaccurate** — The renderer info line shows whatever GPU `enumerate_adapters` returns first, not necessarily the one Slint actually selected. Slint's `GraphicsAPI::WGPU28` exposes `device` and `queue` but not the adapter, so we can't directly query which GPU is in use.
+
 ## What comes next (not in this plan)
 
 - Real Earth textures (NASA Blue Marble)

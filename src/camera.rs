@@ -21,7 +21,7 @@ impl OrbitalCamera {
             longitude_deg,
             latitude_deg,
             distance,
-            fov_deg: 45.0,
+            fov_deg: 20.0,
         }
     }
 

@@ -85,15 +85,15 @@ pub fn generate_uv_sphere(stacks: u32, sectors: u32) -> SphereMesh {
             let first = i * (sectors + 1) + j;
             let second = first + sectors + 1;
 
-            // First triangle
+            // First triangle (CCW from outside)
             indices.push(first);
-            indices.push(second);
             indices.push(first + 1);
+            indices.push(second);
 
-            // Second triangle
+            // Second triangle (CCW from outside)
             indices.push(first + 1);
-            indices.push(second);
             indices.push(second + 1);
+            indices.push(second);
         }
     }
 

@@ -10,6 +10,7 @@ slint = { version = "~1.15", features = ["unstable-wgpu-28"] }
 wgpu = "28"
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 pollster = "0.4"
 
 [build-dependencies]

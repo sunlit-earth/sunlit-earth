@@ -5,10 +5,23 @@ mod renderer;
 mod sphere;
 mod wgpu_init;
 
+use clap::Parser;
+
 slint::include_modules!();
 
+/// Sunlit Earth: get a realistic 3D view of Earth as seen from space and set it as your wallpaper
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Force software rendering (CPU-based, no GPU required)
+    #[arg(long)]
+    software_rendering: bool,
+}
+
 fn main() {
-    let wgpu_context = wgpu_init::init();
+    let cli = Cli::parse();
+
+    let wgpu_context = wgpu_init::init(cli.software_rendering);
 
     slint::BackendSelector::new()
         .require_wgpu_28(wgpu_context.config)

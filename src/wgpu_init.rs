@@ -9,17 +9,17 @@ pub struct WgpuContext {
 /// Initialize wgpu manually: create instance, select adapter, request device.
 /// This gives us full control over adapter selection and accurate adapter info.
 ///
-/// Adapter selection priority:
+/// Adapter selection priority (when `force_software` is false):
 /// 1. `WGPU_ADAPTER_NAME` env var (substring match, case-insensitive)
 /// 2. Best available GPU (`DiscreteGpu` > `IntegratedGpu` > others)
 /// 3. CPU/software fallback as last resort
-pub fn init() -> WgpuContext {
+pub fn init(force_software: bool) -> WgpuContext {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
     assert!(!adapters.is_empty(), "No wgpu adapters found");
 
-    let adapter = select_adapter(&adapters);
+    let adapter = select_adapter(&adapters, force_software);
     let info = adapter.get_info();
     let adapter_info = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
 
@@ -43,7 +43,17 @@ pub fn init() -> WgpuContext {
     }
 }
 
-fn select_adapter(adapters: &[wgpu::Adapter]) -> &wgpu::Adapter {
+fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Adapter {
+    if force_software {
+        if let Some(adapter) = adapters
+            .iter()
+            .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
+        {
+            return adapter;
+        }
+        eprintln!("Warning: no software adapter found, using default selection");
+    }
+
     // Respect WGPU_ADAPTER_NAME env var
     if let Ok(name) = std::env::var("WGPU_ADAPTER_NAME") {
         let name_lower = name.to_lowercase();

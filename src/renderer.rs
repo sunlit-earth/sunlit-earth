@@ -48,15 +48,27 @@ fn rendering_callback(
 ) {
     match state {
         RenderingState::RenderingSetup => {
-            let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api else {
+            let GraphicsAPI::WGPU28 {
+                instance,
+                device,
+                queue,
+                ..
+            } = graphics_api
+            else {
                 eprintln!("Expected WGPU28 graphics API, got something else");
                 return;
             };
 
-            // Note: Slint's WGPU28 API exposes device/queue but not the adapter,
-            // so we can't directly query which GPU was selected.
+            // Display adapter info
+            let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+            let renderer_info = if let Some(adapter) = adapters.first() {
+                let info = adapter.get_info();
+                format!("{} ({:?}, {:?})", info.name, info.backend, info.device)
+            } else {
+                "Unknown GPU".to_string()
+            };
             if let Some(win) = window_weak.upgrade() {
-                win.set_renderer_info("wgpu renderer active".into());
+                win.set_renderer_info(renderer_info.into());
             }
 
             let resources = create_gpu_resources(device.clone(), queue.clone());

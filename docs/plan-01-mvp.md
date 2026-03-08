@@ -19,8 +19,8 @@ The rendered image updates live as you drag the sliders.
 │  Slint Window                       │
 │  ┌───────────────────────────────┐  │
 │  │                               │  │
-│  │   wgpu-rendered sphere        │  │
-│  │   (underlay, behind Slint)    │  │
+│  │   Image component             │  │
+│  │   (displays wgpu texture)     │  │
 │  │                               │  │
 │  └───────────────────────────────┘  │
 │  Longitude: [━━━━━━●━━━━━━━━━━━━]   │
@@ -29,7 +29,11 @@ The rendered image updates live as you drag the sliders.
 └─────────────────────────────────────┘
 ```
 
-**Rendering approach:** Render the sphere directly into Slint's render pass using `Window::set_rendering_notifier()`. Slint's wgpu backend (feature `unstable-wgpu-28`) provides a `BeforeRendering` callback with access to the wgpu `Device` and `Queue`. We render the sphere as an **underlay** — our 3D scene draws first, then Slint composites its UI (sliders, labels) on top with a transparent background over the viewport area. Everything stays on the GPU, no pixel readback, so slider interaction is smooth and immediate.
+**Rendering approach:** Render the sphere to an offscreen wgpu texture, then pass it to Slint as an `Image` via `Image::try_from(wgpu::Texture)`. Slint's wgpu backend (feature `unstable-wgpu-28`) provides rendering callbacks with access to the wgpu `Device` and `Queue`. In the `BeforeRendering` callback, we render the sphere to our own texture, convert it to a Slint `Image`, and set it on an `Image` component in the UI. The texture stays on the GPU — no CPU pixel readback — so slider interaction is smooth and immediate.
+
+### Why render-to-texture instead of underlay?
+
+Slint's wgpu integration (`GraphicsAPI::WGPU28`) exposes `device`, `queue`, and `instance`, but **not** the window surface or current `TextureView`. Without access to the surface, we cannot render directly to the window as an underlay (unlike Slint's OpenGL path, where the default framebuffer is implicitly available). The render-to-texture approach is the officially supported pattern — it's what Slint's own `wgpu_texture` example uses. Performance is equivalent since the texture stays on the GPU and Slint composites it without readback. As a bonus, this approach also means the wallpaper export path (rendering to a texture for PNG save) shares the same code — no separate offscreen path needed later.
 
 ## Steps
 
@@ -44,6 +48,8 @@ Add dependencies to `Cargo.toml`:
 | `glam` | Math (vectors, matrices) — lightweight, widely used with wgpu |
 | `bytemuck` | Safe casting for GPU buffer data |
 
+Pin Slint with a tilde requirement (`slint = { version = "~1.15", ... }`) because the `unstable-wgpu-28` feature is not covered by Slint's semver stability guarantees — it can change on any minor release when wgpu bumps its major version.
+
 Set up the Slint build script (`build.rs`) to compile `.slint` files.
 
 **Deliverable:** `cargo build` succeeds, empty Slint window opens.
@@ -51,23 +57,26 @@ Set up the Slint build script (`build.rs`) to compile `.slint` files.
 ### Step 2: Slint UI layout
 
 Create `ui/main.slint` with:
-- A transparent viewport area where the wgpu underlay is visible (the sphere renders behind this region)
+- An `Image` component that fills the viewport area (Rust code sets its source from the wgpu-rendered texture)
 - Three `Slider` controls: longitude (-180 to 180), latitude (-90 to 90), zoom (sensible range)
 - Labels for each slider showing the current value
 - A renderer info line showing GPU name, backend, and device type (e.g. "NVIDIA GeForce RTX 4070 (Dx12, DiscreteGpu)" or "Microsoft Basic Render Driver (Dx12, Cpu)")
-- Properties for slider values that Rust code can read, plus a string property for the renderer info
+- Properties for slider values that Rust code can read, an `image` property for the rendered texture, plus a string property for the renderer info
 
-The UI controls panel should have an opaque background so it draws over the underlay. The viewport area must be transparent so the wgpu-rendered sphere shows through.
-
-**Deliverable:** Window opens with working sliders and transparent viewport area.
+**Deliverable:** Window opens with working sliders and an Image component ready to receive the rendered texture.
 
 ### Step 3: wgpu initialization via Slint's rendering notifier
 
+First, ensure Slint uses the wgpu backend by calling `slint::BackendSelector::new().require_wgpu_28(WGPUConfiguration::Automatic(...)).select()` before creating the window. Without this, Slint may choose a different renderer (e.g. FemtoVG) and the wgpu integration won't activate.
+
 Register a `set_rendering_notifier()` callback on the Slint window. This callback fires at different rendering stages:
 
-- **`RenderingSetup`** — wgpu is initialized. We receive `GraphicsAPI::WGPU28 { device, queue, instance }`. Use this to create our GPU resources (buffers, pipeline, depth texture). Also read `AdapterInfo` here for the renderer info display (`name`, `backend`, `device_type` — `DeviceType::Cpu` means software rendering).
-- **`BeforeRendering`** — called every frame, before Slint draws its UI. We render the sphere here as an underlay.
+- **`RenderingSetup`** — wgpu is initialized. We receive `GraphicsAPI::WGPU28 { device, queue, instance }`. Use this to create our GPU resources (buffers, pipeline, depth texture, offscreen render texture). Read `AdapterInfo` via `device.adapter_info()` for the renderer info display (`name`, `backend`, `device_type` — `DeviceType::Cpu` means software rendering).
+- **`BeforeRendering`** — called every frame, before Slint draws its UI. We render the sphere to our offscreen texture, convert it to a Slint `Image` via `Image::try_from(texture)`, and set it on the UI's `Image` component.
+- **`AfterRendering`** — called after Slint draws its UI. Not used in the MVP, but the match arm must be present.
 - **`RenderingTeardown`** — clean up GPU resources.
+
+Note: `GraphicsAPI` and `RenderingState` are both `#[non_exhaustive]`, so match arms must include a wildcard `_ => {}` fallback.
 
 Since Slint owns the wgpu instance, we share its `Device` and `Queue` rather than creating our own. No separate adapter request needed — we use whatever Slint selected (including its fallback behavior).
 
@@ -119,8 +128,9 @@ Connect everything:
 1. The `BeforeRendering` callback reads current slider values from Slint properties
 2. Computes the MVP matrix from those values (camera module)
 3. Writes the MVP matrix to the uniform buffer
-4. Runs the render pass: clear to black, draw the sphere
-5. Slint then draws its UI on top (sliders, labels, renderer info)
+4. Runs the render pass targeting the offscreen texture: clear to black, draw the sphere
+5. Converts the texture to a Slint `Image` via `Image::try_from(texture)` and sets it on the UI's `Image` component
+6. Calls `window.request_redraw()` to ensure the next frame is scheduled
 
 When a slider value changes, call `window.request_redraw()` to trigger a new frame. This causes `BeforeRendering` to fire again with updated values. The result is smooth, live updates as you drag — the sphere re-renders every frame during interaction, same as a game.
 
@@ -157,15 +167,15 @@ sunlit-earth/
 
 ## What this MVP validates
 
-- **wgpu + Slint integration works** via the rendering notifier / underlay approach
-- **Direct GPU rendering** is smooth and responsive for interactive camera control
-- **The rendering pipeline** (geometry → shader → screen) is functional
+- **wgpu + Slint integration works** via the rendering notifier / render-to-texture approach
+- **GPU-accelerated rendering** is smooth and responsive for interactive camera control
+- **The rendering pipeline** (geometry → shader → texture → screen) is functional
 - **Camera math** is correct and responsive
-- **The architecture** (wgpu underlay + Slint overlay) is sound for future development
+- **The architecture** (wgpu render-to-texture + Slint Image display) is sound for future development
 
-## Note: wallpaper export will need a separate path
+## Note: wallpaper export reuses the same path
 
-The underlay approach renders directly to screen — great for the interactive preview. For wallpaper export (saving to a PNG), we'll later need a separate offscreen render-to-texture path with CPU readback. That's not in this MVP but is a natural addition: same sphere/camera/shader code, different render target.
+The render-to-texture approach already renders to an offscreen texture — the same path needed for wallpaper export. For wallpaper saving, we just add a CPU readback step (map the texture, save to PNG) using the same render code. No separate offscreen path needed.
 
 ## What comes next (not in this plan)
 

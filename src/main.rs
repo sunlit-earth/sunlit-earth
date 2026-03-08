@@ -1,3 +1,6 @@
+slint::include_modules!();
+
 fn main() {
-    println!("Hello, world!");
+    let window = MainWindow::new().expect("Failed to create window");
+    window.run().expect("Failed to run window");
 }

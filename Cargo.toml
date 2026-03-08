@@ -6,6 +6,13 @@ description = "A desktop application that renders a realistic 3D view of Earth a
 license = "GPL-3.0-or-later"
 
 [dependencies]
+slint = { version = "~1.15", features = ["unstable-wgpu-28"] }
+wgpu = "28"
+glam = "0.30"
+bytemuck = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+slint-build = "~1.15"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -17,7 +24,7 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [profile.dev.package."*"]
 # Optimize dependencies even in dev builds — important for GPU/math crates

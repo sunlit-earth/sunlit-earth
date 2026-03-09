@@ -38,12 +38,19 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = textureSample(sphere_texture, sphere_sampler, in.uv).rgb;
 
-    // Ambient + diffuse lighting in world space — light direction is fixed
+    // Directional light
     let light_dir = normalize(vec3<f32>(0.3, 0.5, 0.8));
     let diffuse = max(dot(normalize(in.world_normal), light_dir), 0.0);
-    let ambient = 0.25;
-    let light = ambient + (1.0 - ambient) * diffuse;
+    let ambient = 0.4;
+    let light = ambient + 2.5 * diffuse;
     color = color * light;
+
+    // Reinhard tone mapping: compresses highlights, lifts shadows
+    color = color / (color + vec3<f32>(1.0));
+    // Compensate for Reinhard darkening (it maps 1.0 → 0.5)
+    color = color * 1.8;
+    // Reduce over-saturation from linear-space boosting
+    color = pow(color, vec3<f32>(0.85));
 
     return vec4<f32>(color, 1.0);
 }

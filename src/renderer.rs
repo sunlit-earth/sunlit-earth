@@ -8,7 +8,9 @@ use crate::sphere::{self, Vertex};
 
 const DEFAULT_WIDTH: u32 = 800;
 const DEFAULT_HEIGHT: u32 = 600;
-const MIN_DIMENSION: u32 = 1;
+/// Render dimensions are rounded to this granularity to avoid
+/// creating new GPU textures on every pixel change during resize.
+const SIZE_GRANULARITY: u32 = 64;
 
 /// Build the `ComboBox` labels and find the default index (preferring 4x MSAA).
 pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32>, i32) {
@@ -104,7 +106,10 @@ fn rendering_callback(
         let w = (win.get_viewport_width() * win.window().scale_factor()) as u32;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let h = (win.get_viewport_height() * win.window().scale_factor()) as u32;
-        (w.max(MIN_DIMENSION), h.max(MIN_DIMENSION))
+        // Quantize to SIZE_GRANULARITY to reduce texture churn during resize
+        let w = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
+        let h = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
+        (w, h)
     };
 
     match state {
@@ -513,8 +518,19 @@ fn create_render_textures(
     (render_texture, depth_texture, msaa_color, msaa_depth)
 }
 
+/// Drop old size-dependent textures so wgpu can reclaim the memory
+/// before we allocate new ones.
+fn drop_render_textures(res: &mut GpuResources) {
+    res.msaa_texture_view = None;
+    res.msaa_depth_view = None;
+    // render_texture and depth_texture are replaced by assignment below,
+    // but the Slint Image may still hold an Arc to the old render_texture.
+    // We can't force that drop, but clearing MSAA textures frees the bulk.
+}
+
 /// Rebuild the pipeline and MSAA textures when sample count changes.
 fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
+    drop_render_textures(res);
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
         create_render_textures(
             &res.device,
@@ -532,6 +548,7 @@ fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
 
 /// Rebuild all size-dependent textures when viewport dimensions change.
 fn rebuild_render_textures(res: &mut GpuResources, width: u32, height: u32) {
+    drop_render_textures(res);
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
         create_render_textures(&res.device, width, height, res.sample_count);
     res.render_texture = render_texture;

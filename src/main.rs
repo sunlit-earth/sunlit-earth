@@ -31,7 +31,14 @@ fn main() {
     let window = MainWindow::new().expect("Failed to create window");
     window.set_renderer_info(wgpu_context.adapter_info.into());
 
-    // Request a redraw whenever sliders change
+    // Set up AA options from supported sample counts
+    let (aa_labels, aa_counts, aa_default) =
+        renderer::build_aa_options(&wgpu_context.supported_sample_counts);
+    let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
+    window.set_aa_options(slint::ModelRc::new(aa_model));
+    window.set_aa_default_index(aa_default);
+
+    // Request a redraw whenever sliders or AA setting change
     let window_weak = window.as_weak();
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
@@ -39,7 +46,14 @@ fn main() {
         }
     });
 
-    renderer::setup_rendering_notifier(&window);
+    let window_weak = window.as_weak();
+    window.on_msaa_changed(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.window().request_redraw();
+        }
+    });
+
+    renderer::setup_rendering_notifier(&window, aa_counts);
 
     window.run().expect("Failed to run window");
 }

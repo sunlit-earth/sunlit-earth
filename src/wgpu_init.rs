@@ -4,6 +4,8 @@ use slint::wgpu_28::WGPUConfiguration;
 pub struct WgpuContext {
     pub config: WGPUConfiguration,
     pub adapter_info: String,
+    /// Supported MSAA sample counts for the color format (always includes 1).
+    pub supported_sample_counts: Vec<u32>,
 }
 
 /// Initialize wgpu manually: create instance, select adapter, request device.
@@ -23,14 +25,28 @@ pub fn init(force_software: bool) -> WgpuContext {
     let info = adapter.get_info();
     let adapter_info = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
 
+    // Try to request adapter-specific format features for broader MSAA support.
+    // Fall back to no extra features if unsupported.
+    let desired_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    let features = if adapter.features().contains(desired_features) {
+        desired_features
+    } else {
+        wgpu::Features::empty()
+    };
+
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("sunlit-earth"),
-        required_features: wgpu::Features::empty(),
+        required_features: features,
         required_limits:
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
         ..Default::default()
     }))
     .expect("Failed to create wgpu device");
+
+    let supported_sample_counts = adapter
+        .get_texture_format_features(wgpu::TextureFormat::Rgba8UnormSrgb)
+        .flags
+        .supported_sample_counts();
 
     WgpuContext {
         config: WGPUConfiguration::Manual {
@@ -40,6 +56,7 @@ pub fn init(force_software: bool) -> WgpuContext {
             queue,
         },
         adapter_info,
+        supported_sample_counts,
     }
 }
 

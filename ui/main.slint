@@ -1,4 +1,4 @@
-import { Slider } from "std-widgets.slint";
+import { Slider, ComboBox } from "std-widgets.slint";
 
 export component MainWindow inherits Window {
     title: "Sunlit Earth — MVP";
@@ -7,12 +7,16 @@ export component MainWindow inherits Window {
 
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
+    in property <[string]> aa-options: ["None", "MSAA 4×"];
+    in property <int> aa-default-index: 1;
 
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
     out property <float> camera-zoom: zoom-slider.value;
+    out property <int> aa-index: aa-combo.current-index;
 
     callback sliders-changed();
+    callback msaa-changed();
 
     VerticalLayout {
         padding: 8px;
@@ -34,6 +38,20 @@ export component MainWindow inherits Window {
             spacing: 6px;
             padding-top: 4px;
             padding-bottom: 4px;
+
+            Row {
+                Text {
+                    text: "Anti-Aliasing";
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    min-width: 80px;
+                }
+                aa-combo := ComboBox {
+                    model: aa-options;
+                    current-index: aa-default-index;
+                    selected => { root.msaa-changed(); }
+                }
+            }
 
             Row {
                 Text {
@@ -103,4 +121,5 @@ export component MainWindow inherits Window {
             horizontal-alignment: center;
         }
     }
+
 }

@@ -8,6 +8,31 @@ use crate::sphere::{self, Vertex};
 const RENDER_WIDTH: u32 = 800;
 const RENDER_HEIGHT: u32 = 600;
 
+/// Build the `ComboBox` labels and find the default index (preferring 4x MSAA).
+pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32>, i32) {
+    let mut labels = Vec::new();
+    let mut counts = Vec::new();
+
+    labels.push("None".into());
+    counts.push(1);
+
+    for &sc in supported {
+        if sc > 1 {
+            labels.push(format!("MSAA {sc}\u{d7}").into());
+            counts.push(sc);
+        }
+    }
+
+    // Default to 4x if available, otherwise the last (highest) option
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let default_index = counts
+        .iter()
+        .position(|&c| c == 4)
+        .unwrap_or(counts.len() - 1) as i32;
+
+    (labels, counts, default_index)
+}
+
 /// GPU resources created during `RenderingSetup`.
 struct GpuResources {
     pipeline: wgpu::RenderPipeline,
@@ -18,18 +43,23 @@ struct GpuResources {
     bind_group: wgpu::BindGroup,
     depth_texture: wgpu::TextureView,
     render_texture: wgpu::Texture,
+    msaa_texture_view: Option<wgpu::TextureView>,
+    msaa_depth_view: Option<wgpu::TextureView>,
+    sample_count: u32,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
 
 /// Register the rendering notifier on the given Slint window.
-pub fn setup_rendering_notifier(window: &MainWindow) {
+pub fn setup_rendering_notifier(window: &MainWindow, aa_counts: Vec<u32>) {
     let window_weak = window.as_weak();
 
     window
         .window()
         .set_rendering_notifier(move |state, graphics_api| {
-            rendering_callback(state, graphics_api, &window_weak);
+            rendering_callback(state, graphics_api, &window_weak, &aa_counts);
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
 }
@@ -40,12 +70,18 @@ thread_local! {
     static GPU_RESOURCES: std::cell::RefCell<Option<GpuResources>> = const { std::cell::RefCell::new(None) };
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn rendering_callback(
     state: RenderingState,
     graphics_api: &GraphicsAPI,
     window_weak: &slint::Weak<MainWindow>,
+    aa_counts: &[u32],
 ) {
+    let lookup_sample_count = |win: &MainWindow| {
+        let idx = usize::try_from(win.get_aa_index()).unwrap_or(0);
+        aa_counts.get(idx).copied().unwrap_or(1)
+    };
+
     match state {
         RenderingState::RenderingSetup => {
             let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api else {
@@ -53,7 +89,10 @@ fn rendering_callback(
                 return;
             };
 
-            let resources = create_gpu_resources(device.clone(), queue.clone());
+            let sample_count = window_weak
+                .upgrade()
+                .map_or(4, |win| lookup_sample_count(&win));
+            let resources = create_gpu_resources(device.clone(), queue.clone(), sample_count);
             GPU_RESOURCES.with(|r| {
                 *r.borrow_mut() = Some(resources);
             });
@@ -68,6 +107,12 @@ fn rendering_callback(
                 let Some(res) = borrow.as_mut() else {
                     return;
                 };
+
+                // Check if sample count changed
+                let desired = lookup_sample_count(&win);
+                if desired != res.sample_count {
+                    rebuild_msaa_resources(res, desired);
+                }
 
                 let camera = OrbitalCamera::new(
                     win.get_camera_longitude(),
@@ -90,17 +135,28 @@ fn rendering_callback(
                             label: Some("sphere_encoder"),
                         });
 
-                let view = res
+                let resolve_view = res
                     .render_texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
+
+                // If MSAA is active, render to the multisampled texture and resolve to the output.
+                // Otherwise, render directly to the output texture.
+                let (color_view, resolve_target) =
+                    if let Some(msaa_view) = res.msaa_texture_view.as_ref() {
+                        (msaa_view, Some(&resolve_view))
+                    } else {
+                        (&resolve_view, None)
+                    };
+
+                let depth_view = res.msaa_depth_view.as_ref().unwrap_or(&res.depth_texture);
 
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("sphere_pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
+                            view: color_view,
                             depth_slice: None,
-                            resolve_target: None,
+                            resolve_target,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color {
                                     r: 0.02,
@@ -112,7 +168,7 @@ fn rendering_callback(
                             },
                         })],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &res.depth_texture,
+                            view: depth_view,
                             depth_ops: Some(wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(1.0),
                                 store: wgpu::StoreOp::Discard,
@@ -147,7 +203,11 @@ fn rendering_callback(
 }
 
 #[allow(clippy::too_many_lines)]
-fn create_gpu_resources(device: wgpu::Device, queue: wgpu::Queue) -> GpuResources {
+fn create_gpu_resources(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    sample_count: u32,
+) -> GpuResources {
     // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
 
@@ -205,6 +265,7 @@ fn create_gpu_resources(device: wgpu::Device, queue: wgpu::Queue) -> GpuResource
         source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sphere.wgsl").into()),
     });
 
+    // The resolve target is always sample_count=1
     let render_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render_texture"),
         size: wgpu::Extent3d {
@@ -219,6 +280,8 @@ fn create_gpu_resources(device: wgpu::Device, queue: wgpu::Queue) -> GpuResource
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
+
+    let (msaa_texture_view, msaa_depth_view) = create_msaa_textures(&device, sample_count);
 
     let depth_texture = device
         .create_texture(&wgpu::TextureDescriptor {
@@ -237,17 +300,45 @@ fn create_gpu_resources(device: wgpu::Device, queue: wgpu::Queue) -> GpuResource
         })
         .create_view(&wgpu::TextureViewDescriptor::default());
 
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
+
+    GpuResources {
+        pipeline,
+        vertex_buffer,
+        index_buffer,
+        #[allow(clippy::cast_possible_truncation)]
+        index_count: mesh.indices.len() as u32,
+        uniform_buffer,
+        bind_group,
+        depth_texture,
+        render_texture,
+        msaa_texture_view,
+        msaa_depth_view,
+        sample_count,
+        shader,
+        pipeline_layout,
+        device,
+        queue,
+    }
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("sphere_pipeline"),
-        layout: Some(&pipeline_layout),
+        layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[Vertex::buffer_layout()],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -269,22 +360,67 @@ fn create_gpu_resources(device: wgpu::Device, queue: wgpu::Queue) -> GpuResource
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
         multiview_mask: None,
         cache: None,
-    });
+    })
+}
 
-    GpuResources {
-        pipeline,
-        vertex_buffer,
-        index_buffer,
-        #[allow(clippy::cast_possible_truncation)]
-        index_count: mesh.indices.len() as u32,
-        uniform_buffer,
-        bind_group,
-        depth_texture,
-        render_texture,
-        device,
-        queue,
+/// Create MSAA color and depth textures. Returns `(None, None)` when `sample_count == 1`.
+fn create_msaa_textures(
+    device: &wgpu::Device,
+    sample_count: u32,
+) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
+    if sample_count <= 1 {
+        return (None, None);
     }
+
+    let msaa_color = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("msaa_color_texture"),
+            size: wgpu::Extent3d {
+                width: RENDER_WIDTH,
+                height: RENDER_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default());
+
+    let msaa_depth = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("msaa_depth_texture"),
+            size: wgpu::Extent3d {
+                width: RENDER_WIDTH,
+                height: RENDER_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default());
+
+    (Some(msaa_color), Some(msaa_depth))
+}
+
+/// Rebuild the pipeline and MSAA textures when sample count changes.
+fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
+    let (msaa_texture_view, msaa_depth_view) = create_msaa_textures(&res.device, sample_count);
+    res.msaa_texture_view = msaa_texture_view;
+    res.msaa_depth_view = msaa_depth_view;
+    res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.sample_count = sample_count;
 }

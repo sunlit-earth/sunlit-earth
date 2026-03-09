@@ -1,10 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod camera;
+mod earth_texture;
 mod grid_texture;
 mod renderer;
 mod sphere;
 mod wgpu_init;
+
+use std::path::PathBuf;
 
 use clap::Parser;
 
@@ -17,6 +20,10 @@ struct Cli {
     /// Force software rendering (CPU-based, no GPU required)
     #[arg(long)]
     software_rendering: bool,
+
+    /// Path to the textures directory
+    #[arg(long)]
+    textures_dir: Option<PathBuf>,
 }
 
 fn main() {
@@ -48,7 +55,30 @@ fn main() {
     })
     .ok();
 
-    // Request a redraw whenever sliders or AA setting change
+    // Load earth texture if available
+    let textures_dir = earth_texture::resolve_textures_dir(cli.textures_dir.as_deref());
+    let earth_pixels = textures_dir.and_then(|dir| {
+        let path = dir.join("earth_4k.jpg");
+        match earth_texture::load(&path) {
+            Ok(img) => {
+                eprintln!("Loaded earth texture: {}×{}", img.width, img.height);
+                Some(img)
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                None
+            }
+        }
+    });
+
+    // Set up texture options — only show "Earth" if the texture loaded
+    if earth_pixels.is_some() {
+        let labels: Vec<slint::SharedString> = vec!["Grid".into(), "Earth".into()];
+        window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
+        window.set_texture_index(1); // default to Earth when available
+    }
+
+    // Request a redraw whenever sliders, AA, or texture change
     let window_weak = window.as_weak();
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
@@ -63,7 +93,14 @@ fn main() {
         }
     });
 
-    renderer::setup_rendering_notifier(&window, aa_counts);
+    let window_weak = window.as_weak();
+    window.on_texture_changed(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.window().request_redraw();
+        }
+    });
+
+    renderer::setup_rendering_notifier(&window, aa_counts, earth_pixels);
 
     window.run().expect("Failed to run window");
 }

@@ -3,6 +3,7 @@ use wgpu::util::DeviceExt;
 
 use crate::MainWindow;
 use crate::camera::OrbitalCamera;
+use crate::earth_texture::DecodedImage;
 use crate::grid_texture;
 use crate::sphere::{self, Vertex};
 
@@ -44,7 +45,8 @@ struct GpuResources {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    grid_bind_group: wgpu::BindGroup,
+    earth_bind_group: Option<wgpu::BindGroup>,
     depth_texture: wgpu::TextureView,
     render_texture: wgpu::Texture,
     msaa_texture_view: Option<wgpu::TextureView>,
@@ -67,18 +69,31 @@ struct FrameState {
     latitude: f32,
     zoom: f32,
     sample_count: u32,
+    rotation: f32,
+    texture_index: i32,
     width: u32,
     height: u32,
 }
 
 /// Register the rendering notifier on the given Slint window.
-pub fn setup_rendering_notifier(window: &MainWindow, aa_counts: Vec<u32>) {
+pub fn setup_rendering_notifier(
+    window: &MainWindow,
+    aa_counts: Vec<u32>,
+    earth_pixels: Option<DecodedImage>,
+) {
     let window_weak = window.as_weak();
+    let earth_pixels = std::cell::RefCell::new(earth_pixels);
 
     window
         .window()
         .set_rendering_notifier(move |state, graphics_api| {
-            rendering_callback(state, graphics_api, &window_weak, &aa_counts);
+            rendering_callback(
+                state,
+                graphics_api,
+                &window_weak,
+                &aa_counts,
+                &earth_pixels,
+            );
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
 }
@@ -95,6 +110,7 @@ fn rendering_callback(
     graphics_api: &GraphicsAPI,
     window_weak: &slint::Weak<MainWindow>,
     aa_counts: &[u32],
+    earth_pixels: &std::cell::RefCell<Option<DecodedImage>>,
 ) {
     let lookup_sample_count = |win: &MainWindow| {
         let idx = usize::try_from(win.get_aa_index()).unwrap_or(0);
@@ -126,8 +142,16 @@ fn rendering_callback(
                         let (w, h) = get_viewport_size(&win);
                         (lookup_sample_count(&win), w, h)
                     });
-            let resources =
-                create_gpu_resources(device.clone(), queue.clone(), sample_count, width, height);
+            // Take earth pixels out of the RefCell — they're consumed during texture upload
+            let earth = earth_pixels.borrow_mut().take();
+            let resources = create_gpu_resources(
+                device.clone(),
+                queue.clone(),
+                sample_count,
+                width,
+                height,
+                earth.as_ref(),
+            );
             GPU_RESOURCES.with(|r| {
                 *r.borrow_mut() = Some(resources);
             });
@@ -160,7 +184,9 @@ fn rendering_callback(
                     longitude: win.get_camera_longitude(),
                     latitude: win.get_camera_latitude(),
                     zoom: win.get_camera_zoom(),
+                    rotation: win.get_earth_rotation(),
                     sample_count: res.sample_count,
+                    texture_index: win.get_texture_index(),
                     width: res.render_width,
                     height: res.render_height,
                 };
@@ -179,9 +205,16 @@ fn rendering_callback(
                 let aspect = res.render_width as f32 / res.render_height as f32;
                 let mvp = camera.mvp_matrix(aspect);
 
-                // Write MVP matrix to uniform buffer
+                // Model matrix: rotate the earth around Y axis
+                let rotation_rad = win.get_earth_rotation().to_radians();
+                let model = glam::Mat4::from_rotation_y(rotation_rad);
+
+                // Write MVP + model matrices to uniform buffer
+                let mut uniform_data = [0u8; 128];
+                uniform_data[..64].copy_from_slice(bytemuck::cast_slice(mvp.as_ref()));
+                uniform_data[64..].copy_from_slice(bytemuck::cast_slice(model.as_ref()));
                 res.queue
-                    .write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(mvp.as_ref()));
+                    .write_buffer(&res.uniform_buffer, 0, &uniform_data);
 
                 // Render pass
                 let mut encoder =
@@ -234,7 +267,12 @@ fn rendering_callback(
                     });
 
                     pass.set_pipeline(&res.pipeline);
-                    pass.set_bind_group(0, &res.bind_group, &[]);
+                    let bind_group = if win.get_texture_index() == 1 {
+                        res.earth_bind_group.as_ref().unwrap_or(&res.grid_bind_group)
+                    } else {
+                        &res.grid_bind_group
+                    };
+                    pass.set_bind_group(0, bind_group, &[]);
                     pass.set_vertex_buffer(0, res.vertex_buffer.slice(..));
                     pass.set_index_buffer(res.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..res.index_count, 0, 0..1);
@@ -264,6 +302,7 @@ fn create_gpu_resources(
     sample_count: u32,
     width: u32,
     height: u32,
+    earth_pixels: Option<&DecodedImage>,
 ) -> GpuResources {
     // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
@@ -280,20 +319,17 @@ fn create_gpu_resources(
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    // Uniform buffer for the MVP matrix (4x4 f32 = 64 bytes)
+    // Uniform buffer for MVP + model matrices (2 × mat4x4 = 128 bytes)
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("mvp_uniform"),
-        size: 64,
+        label: Some("uniforms"),
+        size: 128,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
-    // Generate and upload grid texture with mipmaps
-    let grid_tex = create_grid_texture(&device, &queue);
-    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let grid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("grid_sampler"),
+    // Shared sampler for all textures
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("texture_sampler"),
         address_mode_u: wgpu::AddressMode::Repeat,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
@@ -335,23 +371,45 @@ fn create_gpu_resources(
         ],
     });
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("bind_group"),
-        layout: &bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&grid_tex_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&grid_sampler),
-            },
-        ],
+    // Grid texture
+    let grid_tex = create_mipmapped_texture(
+        &device,
+        &queue,
+        "grid_texture",
+        GRID_TEX_WIDTH,
+        GRID_TEX_HEIGHT,
+        &grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
+    );
+    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let grid_bind_group = create_bind_group(
+        &device,
+        &bind_group_layout,
+        &uniform_buffer,
+        &grid_tex_view,
+        &sampler,
+        "grid_bind_group",
+    );
+
+    // Earth texture (if available)
+    let earth_bind_group = earth_pixels.map(|img| {
+        let earth_tex = create_mipmapped_texture(
+            &device,
+            &queue,
+            "earth_texture",
+            img.width,
+            img.height,
+            &img.pixels,
+        );
+        let earth_tex_view = earth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        create_bind_group(
+            &device,
+            &bind_group_layout,
+            &uniform_buffer,
+            &earth_tex_view,
+            &sampler,
+            "earth_bind_group",
+        )
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -377,7 +435,8 @@ fn create_gpu_resources(
         #[allow(clippy::cast_possible_truncation)]
         index_count: mesh.indices.len() as u32,
         uniform_buffer,
-        bind_group,
+        grid_bind_group,
+        earth_bind_group,
         depth_texture,
         render_texture,
         msaa_texture_view,
@@ -562,15 +621,22 @@ fn rebuild_render_textures(res: &mut GpuResources, width: u32, height: u32) {
 const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
-/// Create the grid texture with CPU-generated mipmaps.
-fn create_grid_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    let mip_count = GRID_TEX_WIDTH.max(GRID_TEX_HEIGHT).ilog2() + 1;
+/// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
+fn create_mipmapped_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    width: u32,
+    height: u32,
+    rgba_pixels: &[u8],
+) -> wgpu::Texture {
+    let mip_count = width.max(height).ilog2() + 1;
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("grid_texture"),
+        label: Some(label),
         size: wgpu::Extent3d {
-            width: GRID_TEX_WIDTH,
-            height: GRID_TEX_HEIGHT,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: mip_count,
@@ -581,13 +647,13 @@ fn create_grid_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Text
         view_formats: &[],
     });
 
-    // Generate and upload mip level 0
-    let mut pixels = grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT);
-    upload_mip(queue, &texture, 0, GRID_TEX_WIDTH, GRID_TEX_HEIGHT, &pixels);
+    // Upload mip level 0
+    upload_mip(queue, &texture, 0, width, height, rgba_pixels);
 
     // Generate subsequent mip levels by box-filtering the previous level
-    let mut w = GRID_TEX_WIDTH;
-    let mut h = GRID_TEX_HEIGHT;
+    let mut pixels = rgba_pixels.to_vec();
+    let mut w = width;
+    let mut h = height;
     for level in 1..mip_count {
         pixels = downsample_2x(&pixels, w, h);
         w = (w / 2).max(1);
@@ -596,6 +662,35 @@ fn create_grid_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Text
     }
 
     texture
+}
+
+/// Create a bind group with a uniform buffer, texture view, and sampler.
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    texture_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 fn upload_mip(

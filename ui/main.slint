@@ -9,15 +9,19 @@ export component MainWindow inherits Window {
     in property <string> renderer-info: "Initializing...";
     in property <[string]> aa-options: ["None", "MSAA 4×"];
     in-out property <int> aa-index: 1;
+    in property <[string]> texture-options: ["Grid", "Earth"];
+    in-out property <int> texture-index: 0;
 
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
     out property <float> camera-zoom: zoom-slider.value;
+    out property <float> earth-rotation: rotation-slider.value;
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
 
     callback sliders-changed();
     callback msaa-changed();
+    callback texture-changed();
 
     VerticalLayout {
         padding: 8px;
@@ -39,6 +43,20 @@ export component MainWindow inherits Window {
             spacing: 6px;
             padding-top: 4px;
             padding-bottom: 4px;
+
+            Row {
+                Text {
+                    text: "Texture";
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    min-width: 80px;
+                }
+                texture-combo := ComboBox {
+                    model: texture-options;
+                    current-index <=> root.texture-index;
+                    selected => { root.texture-changed(); }
+                }
+            }
 
             Row {
                 Text {
@@ -102,13 +120,33 @@ export component MainWindow inherits Window {
                     min-width: 80px;
                 }
                 zoom-slider := Slider {
-                    minimum: 5.0;
-                    maximum: 20.0;
+                    minimum: 2.0;
+                    maximum: 50.0;
                     value: 8.0;
                     changed => { root.sliders-changed(); }
                 }
                 Text {
                     text: round(zoom-slider.value * 10) / 10;
+                    vertical-alignment: center;
+                    min-width: 50px;
+                }
+            }
+
+            Row {
+                Text {
+                    text: "Rotation";
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    min-width: 80px;
+                }
+                rotation-slider := Slider {
+                    minimum: -180;
+                    maximum: 180;
+                    value: 0;
+                    changed => { root.sliders-changed(); }
+                }
+                Text {
+                    text: round(rotation-slider.value) + "°";
                     vertical-alignment: center;
                     min-width: 50px;
                 }

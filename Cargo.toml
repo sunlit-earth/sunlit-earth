@@ -12,6 +12,7 @@ glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [build-dependencies]
 slint-build = "~1.15"

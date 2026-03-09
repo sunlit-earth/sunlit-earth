@@ -12,5 +12,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Raw source assets (large, not for distribution)
+/tmp
+
 # Environment
 .env

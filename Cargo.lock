@@ -4839,6 +4839,7 @@ dependencies = [
  "bytemuck",
  "clap",
  "glam",
+ "image",
  "pollster",
  "slint",
  "slint-build",

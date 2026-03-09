@@ -45,16 +45,6 @@ fn main() {
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
 
-    // Defer setting the index so it applies after Slint processes the model change
-    let window_weak = window.as_weak();
-    slint::invoke_from_event_loop(move || {
-        if let Some(win) = window_weak.upgrade() {
-            win.set_aa_index(aa_default);
-            win.window().request_redraw();
-        }
-    })
-    .ok();
-
     // Load earth texture if available
     let textures_dir = earth_texture::resolve_textures_dir(cli.textures_dir.as_deref());
     let earth_pixels = textures_dir.and_then(|dir| {
@@ -72,11 +62,24 @@ fn main() {
     });
 
     // Set up texture options — only show "Earth" if the texture loaded
-    if earth_pixels.is_some() {
+    let has_earth = earth_pixels.is_some();
+    if has_earth {
         let labels: Vec<slint::SharedString> = vec!["Grid".into(), "Earth".into()];
         window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
-        window.set_texture_index(1); // default to Earth when available
     }
+
+    // Defer setting indices so they apply after Slint processes the model changes
+    let window_weak = window.as_weak();
+    slint::invoke_from_event_loop(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.set_aa_index(aa_default);
+            if has_earth {
+                win.set_texture_index(1);
+            }
+            win.window().request_redraw();
+        }
+    })
+    .ok();
 
     // Request a redraw whenever sliders, AA, or texture change
     let window_weak = window.as_weak();

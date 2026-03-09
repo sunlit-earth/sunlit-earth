@@ -50,10 +50,23 @@ struct GpuResources {
     sample_count: u32,
     render_width: u32,
     render_height: u32,
+    /// Last rendered state for dirty-checking. `None` means first frame.
+    last_state: Option<FrameState>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
     queue: wgpu::Queue,
+}
+
+/// Snapshot of inputs that affect the rendered image.
+#[derive(Clone, PartialEq)]
+struct FrameState {
+    longitude: f32,
+    latitude: f32,
+    zoom: f32,
+    sample_count: u32,
+    width: u32,
+    height: u32,
 }
 
 /// Register the rendering notifier on the given Slint window.
@@ -136,6 +149,20 @@ fn rendering_callback(
                 if vw != res.render_width || vh != res.render_height {
                     rebuild_render_textures(res, vw, vh);
                 }
+
+                // Skip rendering if nothing changed since last frame
+                let current_state = FrameState {
+                    longitude: win.get_camera_longitude(),
+                    latitude: win.get_camera_latitude(),
+                    zoom: win.get_camera_zoom(),
+                    sample_count: res.sample_count,
+                    width: res.render_width,
+                    height: res.render_height,
+                };
+                if res.last_state.as_ref() == Some(&current_state) {
+                    return;
+                }
+                res.last_state = Some(current_state);
 
                 let camera = OrbitalCamera::new(
                     win.get_camera_longitude(),
@@ -353,6 +380,7 @@ fn create_gpu_resources(
         sample_count,
         render_width: width,
         render_height: height,
+        last_state: None,
         shader,
         pipeline_layout,
         device,

@@ -6,8 +6,9 @@ use crate::camera::OrbitalCamera;
 use crate::grid_texture;
 use crate::sphere::{self, Vertex};
 
-const RENDER_WIDTH: u32 = 800;
-const RENDER_HEIGHT: u32 = 600;
+const DEFAULT_WIDTH: u32 = 800;
+const DEFAULT_HEIGHT: u32 = 600;
+const MIN_DIMENSION: u32 = 1;
 
 /// Build the `ComboBox` labels and find the default index (preferring 4x MSAA).
 pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32>, i32) {
@@ -47,6 +48,8 @@ struct GpuResources {
     msaa_texture_view: Option<wgpu::TextureView>,
     msaa_depth_view: Option<wgpu::TextureView>,
     sample_count: u32,
+    render_width: u32,
+    render_height: u32,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
@@ -83,6 +86,14 @@ fn rendering_callback(
         aa_counts.get(idx).copied().unwrap_or(1)
     };
 
+    let get_viewport_size = |win: &MainWindow| -> (u32, u32) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let w = (win.get_viewport_width() * win.window().scale_factor()) as u32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let h = (win.get_viewport_height() * win.window().scale_factor()) as u32;
+        (w.max(MIN_DIMENSION), h.max(MIN_DIMENSION))
+    };
+
     match state {
         RenderingState::RenderingSetup => {
             let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api else {
@@ -90,10 +101,15 @@ fn rendering_callback(
                 return;
             };
 
-            let sample_count = window_weak
-                .upgrade()
-                .map_or(4, |win| lookup_sample_count(&win));
-            let resources = create_gpu_resources(device.clone(), queue.clone(), sample_count);
+            let (sample_count, width, height) =
+                window_weak
+                    .upgrade()
+                    .map_or((4, DEFAULT_WIDTH, DEFAULT_HEIGHT), |win| {
+                        let (w, h) = get_viewport_size(&win);
+                        (lookup_sample_count(&win), w, h)
+                    });
+            let resources =
+                create_gpu_resources(device.clone(), queue.clone(), sample_count, width, height);
             GPU_RESOURCES.with(|r| {
                 *r.borrow_mut() = Some(resources);
             });
@@ -115,6 +131,12 @@ fn rendering_callback(
                     rebuild_msaa_resources(res, desired);
                 }
 
+                // Check if viewport size changed
+                let (vw, vh) = get_viewport_size(&win);
+                if vw != res.render_width || vh != res.render_height {
+                    rebuild_render_textures(res, vw, vh);
+                }
+
                 let camera = OrbitalCamera::new(
                     win.get_camera_longitude(),
                     win.get_camera_latitude(),
@@ -122,7 +144,7 @@ fn rendering_callback(
                 );
 
                 #[allow(clippy::cast_precision_loss)]
-                let aspect = RENDER_WIDTH as f32 / RENDER_HEIGHT as f32;
+                let aspect = res.render_width as f32 / res.render_height as f32;
                 let mvp = camera.mvp_matrix(aspect);
 
                 // Write MVP matrix to uniform buffer
@@ -208,6 +230,8 @@ fn create_gpu_resources(
     device: wgpu::Device,
     queue: wgpu::Queue,
     sample_count: u32,
+    width: u32,
+    height: u32,
 ) -> GpuResources {
     // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
@@ -309,40 +333,8 @@ fn create_gpu_resources(
         source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sphere.wgsl").into()),
     });
 
-    // The resolve target is always sample_count=1
-    let render_texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("render_texture"),
-        size: wgpu::Extent3d {
-            width: RENDER_WIDTH,
-            height: RENDER_HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-
-    let (msaa_texture_view, msaa_depth_view) = create_msaa_textures(&device, sample_count);
-
-    let depth_texture = device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("depth_texture"),
-            size: wgpu::Extent3d {
-                width: RENDER_WIDTH,
-                height: RENDER_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
+        create_render_textures(&device, width, height, sample_count);
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
@@ -359,6 +351,8 @@ fn create_gpu_resources(
         msaa_texture_view,
         msaa_depth_view,
         sample_count,
+        render_width: width,
+        render_height: height,
         shader,
         pipeline_layout,
         device,
@@ -414,42 +408,41 @@ fn create_pipeline(
     })
 }
 
-/// Create MSAA color and depth textures. Returns `(None, None)` when `sample_count == 1`.
-fn create_msaa_textures(
+/// Create all size-dependent render textures (resolve target, depth, and optional MSAA).
+fn create_render_textures(
     device: &wgpu::Device,
+    width: u32,
+    height: u32,
     sample_count: u32,
-) -> (Option<wgpu::TextureView>, Option<wgpu::TextureView>) {
-    if sample_count <= 1 {
-        return (None, None);
-    }
+) -> (
+    wgpu::Texture,
+    wgpu::TextureView,
+    Option<wgpu::TextureView>,
+    Option<wgpu::TextureView>,
+) {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
 
-    let msaa_color = device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("msaa_color_texture"),
-            size: wgpu::Extent3d {
-                width: RENDER_WIDTH,
-                height: RENDER_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let render_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("render_texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
 
-    let msaa_depth = device
+    let depth_texture = device
         .create_texture(&wgpu::TextureDescriptor {
-            label: Some("msaa_depth_texture"),
-            size: wgpu::Extent3d {
-                width: RENDER_WIDTH,
-                height: RENDER_HEIGHT,
-                depth_or_array_layers: 1,
-            },
+            label: Some("depth_texture"),
+            size,
             mip_level_count: 1,
-            sample_count,
+            sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -457,16 +450,68 @@ fn create_msaa_textures(
         })
         .create_view(&wgpu::TextureViewDescriptor::default());
 
-    (Some(msaa_color), Some(msaa_depth))
+    let (msaa_color, msaa_depth) = if sample_count > 1 {
+        let msaa_color = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("msaa_color_texture"),
+                size,
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let msaa_depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("msaa_depth_texture"),
+                size,
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        (Some(msaa_color), Some(msaa_depth))
+    } else {
+        (None, None)
+    };
+
+    (render_texture, depth_texture, msaa_color, msaa_depth)
 }
 
 /// Rebuild the pipeline and MSAA textures when sample count changes.
 fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
-    let (msaa_texture_view, msaa_depth_view) = create_msaa_textures(&res.device, sample_count);
+    let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
+        create_render_textures(
+            &res.device,
+            res.render_width,
+            res.render_height,
+            sample_count,
+        );
+    res.render_texture = render_texture;
+    res.depth_texture = depth_texture;
     res.msaa_texture_view = msaa_texture_view;
     res.msaa_depth_view = msaa_depth_view;
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
+}
+
+/// Rebuild all size-dependent textures when viewport dimensions change.
+fn rebuild_render_textures(res: &mut GpuResources, width: u32, height: u32) {
+    let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
+        create_render_textures(&res.device, width, height, res.sample_count);
+    res.render_texture = render_texture;
+    res.depth_texture = depth_texture;
+    res.msaa_texture_view = msaa_texture_view;
+    res.msaa_depth_view = msaa_depth_view;
+    res.render_width = width;
+    res.render_height = height;
 }
 
 const GRID_TEX_WIDTH: u32 = 2048;

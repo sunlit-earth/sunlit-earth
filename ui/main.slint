@@ -13,6 +13,8 @@ export component MainWindow inherits Window {
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
     out property <float> camera-zoom: zoom-slider.value;
+    out property <length> viewport-width: image-container.width;
+    out property <length> viewport-height: image-container.height;
 
     callback sliders-changed();
     callback msaa-changed();
@@ -21,7 +23,7 @@ export component MainWindow inherits Window {
         padding: 8px;
         spacing: 6px;
 
-        Rectangle {
+        image-container := Rectangle {
             background: black;
             vertical-stretch: 1;
 

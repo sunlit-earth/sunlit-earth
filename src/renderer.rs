@@ -3,6 +3,7 @@ use wgpu::util::DeviceExt;
 
 use crate::MainWindow;
 use crate::camera::OrbitalCamera;
+use crate::grid_texture;
 use crate::sphere::{self, Vertex};
 
 const RENDER_WIDTH: u32 = 800;
@@ -23,11 +24,11 @@ pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32
         }
     }
 
-    // Default to 4x if available, otherwise the last (highest) option
+    // Default to 8x if available, otherwise the highest available option
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     let default_index = counts
         .iter()
-        .position(|&c| c == 4)
+        .position(|&c| c == 8)
         .unwrap_or(counts.len() - 1) as i32;
 
     (labels, counts, default_index)
@@ -231,27 +232,70 @@ fn create_gpu_resources(
         mapped_at_creation: false,
     });
 
+    // Generate and upload grid texture with mipmaps
+    let grid_tex = create_grid_texture(&device, &queue);
+    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let grid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("grid_sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear, // trilinear
+        anisotropy_clamp: 16,
+        ..Default::default()
+    });
+
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("mvp_bind_group_layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        label: Some("bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
     });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("mvp_bind_group"),
+        label: Some("bind_group"),
         layout: &bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: uniform_buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&grid_tex_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&grid_sampler),
+            },
+        ],
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -423,4 +467,101 @@ fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
     res.msaa_depth_view = msaa_depth_view;
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
+}
+
+const GRID_TEX_WIDTH: u32 = 2048;
+const GRID_TEX_HEIGHT: u32 = 1024;
+
+/// Create the grid texture with CPU-generated mipmaps.
+fn create_grid_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let mip_count = GRID_TEX_WIDTH.max(GRID_TEX_HEIGHT).ilog2() + 1;
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("grid_texture"),
+        size: wgpu::Extent3d {
+            width: GRID_TEX_WIDTH,
+            height: GRID_TEX_HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: mip_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    // Generate and upload mip level 0
+    let mut pixels = grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT);
+    upload_mip(queue, &texture, 0, GRID_TEX_WIDTH, GRID_TEX_HEIGHT, &pixels);
+
+    // Generate subsequent mip levels by box-filtering the previous level
+    let mut w = GRID_TEX_WIDTH;
+    let mut h = GRID_TEX_HEIGHT;
+    for level in 1..mip_count {
+        pixels = downsample_2x(&pixels, w, h);
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+        upload_mip(queue, &texture, level, w, h, &pixels);
+    }
+
+    texture
+}
+
+fn upload_mip(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    mip_level: u32,
+    width: u32,
+    height: u32,
+    data: &[u8],
+) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// Box-filter downsample: average each 2x2 block of RGBA pixels.
+#[allow(clippy::cast_possible_truncation)]
+fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
+    let dst_w = (src_w / 2).max(1) as usize;
+    let dst_h = (src_h / 2).max(1) as usize;
+    let sw = src_w as usize;
+    let sh = src_h as usize;
+    let mut dst = vec![0u8; dst_w * dst_h * 4];
+
+    for y in 0..dst_h {
+        for x in 0..dst_w {
+            let sx = x * 2;
+            let sy = y * 2;
+            // Clamp neighbor coordinates to stay within source bounds
+            let sx1 = (sx + 1).min(sw - 1);
+            let sy1 = (sy + 1).min(sh - 1);
+            for c in 0..4 {
+                let tl = u16::from(src[(sy * sw + sx) * 4 + c]);
+                let tr = u16::from(src[(sy * sw + sx1) * 4 + c]);
+                let bl = u16::from(src[(sy1 * sw + sx) * 4 + c]);
+                let br = u16::from(src[(sy1 * sw + sx1) * 4 + c]);
+                dst[(y * dst_w + x) * 4 + c] = ((tl + tr + bl + br + 2) / 4) as u8;
+            }
+        }
+    }
+
+    dst
 }

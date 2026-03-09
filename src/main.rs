@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod camera;
+mod grid_texture;
 mod renderer;
 mod sphere;
 mod wgpu_init;
@@ -36,7 +37,16 @@ fn main() {
         renderer::build_aa_options(&wgpu_context.supported_sample_counts);
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
-    window.set_aa_default_index(aa_default);
+
+    // Defer setting the index so it applies after Slint processes the model change
+    let window_weak = window.as_weak();
+    slint::invoke_from_event_loop(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.set_aa_index(aa_default);
+            win.window().request_redraw();
+        }
+    })
+    .ok();
 
     // Request a redraw whenever sliders or AA setting change
     let window_weak = window.as_weak();

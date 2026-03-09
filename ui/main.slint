@@ -8,12 +8,11 @@ export component MainWindow inherits Window {
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
     in property <[string]> aa-options: ["None", "MSAA 4×"];
-    in property <int> aa-default-index: 1;
+    in-out property <int> aa-index: 1;
 
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
     out property <float> camera-zoom: zoom-slider.value;
-    out property <int> aa-index: aa-combo.current-index;
 
     callback sliders-changed();
     callback msaa-changed();
@@ -48,7 +47,7 @@ export component MainWindow inherits Window {
                 }
                 aa-combo := ComboBox {
                     model: aa-options;
-                    current-index: aa-default-index;
+                    current-index <=> root.aa-index;
                     selected => { root.msaa-changed(); }
                 }
             }

@@ -1,9 +1,26 @@
-import { Slider, ComboBox } from "std-widgets.slint";
+import { Slider, ComboBox, Palette } from "std-widgets.slint";
+
+component Splitter inherits Rectangle {
+    callback moved(length);
+
+    width: 4px;
+    background: touch.has-hover || touch.pressed ? Palette.accent-background : transparent;
+
+    touch := TouchArea {
+        width: 10px;
+        x: -3px;
+        mouse-cursor: ew-resize;
+
+        moved => {
+            root.moved(self.mouse-x - self.pressed-x);
+        }
+    }
+}
 
 export component MainWindow inherits Window {
     title: "Sunlit Earth — MVP";
-    preferred-width: 800px;
-    preferred-height: 650px;
+    preferred-width: 1000px;
+    preferred-height: 600px;
 
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
@@ -23,142 +40,162 @@ export component MainWindow inherits Window {
     callback msaa-changed();
     callback texture-changed();
 
-    VerticalLayout {
-        padding: 8px;
-        spacing: 6px;
+    // Controls panel on the left
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: splitter.x;
+        height: root.height;
+        background: Palette.background.darker(0.2);
 
-        image-container := Rectangle {
-            background: black;
-            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+                alignment: start;
 
-            Image {
-                source: rendered-image;
-                width: parent.width;
-                height: parent.height;
-                image-fit: contain;
-            }
-        }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Texture";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    texture-combo := ComboBox {
+                        model: texture-options;
+                        current-index <=> root.texture-index;
+                        max-height: 24px;
+                        selected => { root.texture-changed(); }
+                    }
+                }
 
-        GridLayout {
-            spacing: 6px;
-            padding-top: 4px;
-            padding-bottom: 4px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Anti-Aliasing";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    aa-combo := ComboBox {
+                        model: aa-options;
+                        current-index <=> root.aa-index;
+                        max-height: 24px;
+                        selected => { root.msaa-changed(); }
+                    }
+                }
 
-            Row {
-                Text {
-                    text: "Texture";
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    min-width: 80px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Longitude";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    longitude-slider := Slider {
+                        minimum: -180;
+                        maximum: 180;
+                        value: 0;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(longitude-slider.value) + "°";
+                        vertical-alignment: center;
+                        min-width: 35px;
+                    }
                 }
-                texture-combo := ComboBox {
-                    model: texture-options;
-                    current-index <=> root.texture-index;
-                    selected => { root.texture-changed(); }
-                }
-            }
 
-            Row {
-                Text {
-                    text: "Anti-Aliasing";
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    min-width: 80px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Latitude";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    latitude-slider := Slider {
+                        minimum: -89;
+                        maximum: 89;
+                        value: 30;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(latitude-slider.value) + "°";
+                        vertical-alignment: center;
+                        min-width: 35px;
+                    }
                 }
-                aa-combo := ComboBox {
-                    model: aa-options;
-                    current-index <=> root.aa-index;
-                    selected => { root.msaa-changed(); }
-                }
-            }
 
-            Row {
-                Text {
-                    text: "Longitude";
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    min-width: 80px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Zoom";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    zoom-slider := Slider {
+                        minimum: 2.0;
+                        maximum: 50.0;
+                        value: 8.0;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(zoom-slider.value * 10) / 10;
+                        vertical-alignment: center;
+                        min-width: 35px;
+                    }
                 }
-                longitude-slider := Slider {
-                    minimum: -180;
-                    maximum: 180;
-                    value: 0;
-                    changed => { root.sliders-changed(); }
-                }
-                Text {
-                    text: round(longitude-slider.value) + "°";
-                    vertical-alignment: center;
-                    min-width: 50px;
-                }
-            }
 
-            Row {
-                Text {
-                    text: "Latitude";
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    min-width: 80px;
-                }
-                latitude-slider := Slider {
-                    minimum: -89;
-                    maximum: 89;
-                    value: 30;
-                    changed => { root.sliders-changed(); }
-                }
-                Text {
-                    text: round(latitude-slider.value) + "°";
-                    vertical-alignment: center;
-                    min-width: 50px;
-                }
-            }
-
-            Row {
-                Text {
-                    text: "Zoom";
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    min-width: 80px;
-                }
-                zoom-slider := Slider {
-                    minimum: 2.0;
-                    maximum: 50.0;
-                    value: 8.0;
-                    changed => { root.sliders-changed(); }
-                }
-                Text {
-                    text: round(zoom-slider.value * 10) / 10;
-                    vertical-alignment: center;
-                    min-width: 50px;
-                }
-            }
-
-            Row {
-                Text {
-                    text: "Rotation";
-                    vertical-alignment: center;
-                    horizontal-alignment: right;
-                    min-width: 80px;
-                }
-                rotation-slider := Slider {
-                    minimum: -180;
-                    maximum: 180;
-                    value: 0;
-                    changed => { root.sliders-changed(); }
-                }
-                Text {
-                    text: round(rotation-slider.value) + "°";
-                    vertical-alignment: center;
-                    min-width: 50px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Rotation";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    rotation-slider := Slider {
+                        minimum: -180;
+                        maximum: 180;
+                        value: 0;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(rotation-slider.value) + "°";
+                        vertical-alignment: center;
+                        min-width: 35px;
+                    }
                 }
             }
-        }
 
+        // Renderer info pinned to bottom
         Text {
+            x: 8px;
+            y: parent.height - self.height - 8px;
             text: renderer-info;
             color: #888888;
             font-size: 11px;
-            horizontal-alignment: center;
         }
     }
 
+    splitter := Splitter {
+        x: 300px;
+        height: 100%;
+
+        moved(delta) => {
+            self.x = clamp(self.x + delta, 160px, root.width - 200px);
+        }
+    }
+
+    // Image fills the area right of the splitter
+    image-container := Rectangle {
+        x: splitter.x + splitter.width;
+        y: 0;
+        width: root.width - self.x;
+        height: root.height;
+        background: black;
+
+        Image {
+            source: rendered-image;
+            width: parent.width;
+            height: parent.height;
+            image-fit: contain;
+        }
+    }
 }

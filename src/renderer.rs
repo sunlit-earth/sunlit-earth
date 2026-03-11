@@ -69,7 +69,6 @@ struct FrameState {
     latitude: f32,
     zoom: f32,
     sample_count: u32,
-    rotation: f32,
     texture_index: i32,
     width: u32,
     height: u32,
@@ -184,7 +183,6 @@ fn rendering_callback(
                     longitude: win.get_camera_longitude(),
                     latitude: win.get_camera_latitude(),
                     zoom: win.get_camera_zoom(),
-                    rotation: win.get_earth_rotation(),
                     sample_count: res.sample_count,
                     texture_index: win.get_texture_index(),
                     width: res.render_width,
@@ -205,16 +203,9 @@ fn rendering_callback(
                 let aspect = res.render_width as f32 / res.render_height as f32;
                 let mvp = camera.mvp_matrix(aspect);
 
-                // Model matrix: rotate the earth around Y axis
-                let rotation_rad = win.get_earth_rotation().to_radians();
-                let model = glam::Mat4::from_rotation_y(rotation_rad);
-
-                // Write MVP + model matrices to uniform buffer
-                let mut uniform_data = [0u8; 128];
-                uniform_data[..64].copy_from_slice(bytemuck::cast_slice(mvp.as_ref()));
-                uniform_data[64..].copy_from_slice(bytemuck::cast_slice(model.as_ref()));
+                // Write MVP matrix to uniform buffer
                 res.queue
-                    .write_buffer(&res.uniform_buffer, 0, &uniform_data);
+                    .write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(mvp.as_ref()));
 
                 // Render pass
                 let mut encoder =
@@ -319,10 +310,10 @@ fn create_gpu_resources(
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    // Uniform buffer for MVP + model matrices (2 × mat4x4 = 128 bytes)
+    // Uniform buffer for the MVP matrix (4x4 f32 = 64 bytes)
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("uniforms"),
-        size: 128,
+        label: Some("mvp_uniform"),
+        size: 64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -471,7 +462,7 @@ fn create_pipeline(
             module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -524,7 +515,7 @@ fn create_render_textures(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
@@ -550,7 +541,7 @@ fn create_render_textures(
                 mip_level_count: 1,
                 sample_count,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             })
@@ -642,7 +633,7 @@ fn create_mipmapped_texture(
         mip_level_count: mip_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });

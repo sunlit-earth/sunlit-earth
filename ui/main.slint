@@ -32,7 +32,6 @@ export component MainWindow inherits Window {
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
     out property <float> camera-zoom: zoom-slider.value;
-    out property <float> earth-rotation: rotation-slider.value;
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
 
@@ -143,25 +142,6 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Rotation";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    rotation-slider := Slider {
-                        minimum: -180;
-                        maximum: 180;
-                        value: 0;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(rotation-slider.value) + "°";
-                        vertical-alignment: center;
-                        min-width: 35px;
-                    }
-                }
             }
 
         // Renderer info pinned to bottom

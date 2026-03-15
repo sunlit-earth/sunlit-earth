@@ -33,29 +33,35 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Rendering lifecycle** is driven by Slint's `set_rendering_notifier()` callback:
 - `RenderingSetup` — create GPU resources (pipeline, buffers, textures)
-- `BeforeRendering` — compute camera matrix from UI sliders, render sphere, convert texture to image
+- `BeforeRendering` — compute camera matrix and sun direction, render sphere with day/night blending, convert texture to image
 - `RenderingTeardown` — drop GPU resources
+- A 2-minute periodic Slint timer triggers automatic redraws so the terminator moves with the sun
 
 **GPU resources** are stored in a `thread_local! { RefCell<Option<GpuResources>> }` in `renderer.rs` because the rendering notifier callback requires `'static` lifetime.
 
 **Key modules:**
-- `main.rs` — CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup
-- `renderer.rs` — GPU pipeline, frame rendering, dirty-checking, MSAA management, texture recreation, lazy texture loading via `TextureSlot` Vec
+- `main.rs` — CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup, periodic sun timer
+- `renderer.rs` — GPU pipeline, frame rendering, dirty-checking, MSAA management, texture recreation, lazy texture loading via `TextureSlot` Vec, day/night composite bind group, 96-byte uniform buffer (MVP + sun_dir + terminator_width + flags)
+- `sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time → renderer coordinate frame)
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation
 - `camera.rs` — orbital camera: (longitude, latitude, distance) → MVP matrix
 - `sphere.rs` — parametric UV sphere mesh generation (64×64, position + UV only)
 - `grid_texture.rs` — procedural equirectangular grid texture (2048×1024) with CPU-computed mipmaps
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
 
-**Shader:** `shaders/sphere.wgsl` — vertex transform by MVP, fragment samples texture.
+**Shader:** `shaders/sphere.wgsl` — vertex transform by MVP, fragment blends day/night textures using `smoothstep` on `dot(world_normal, sun_dir)` with configurable terminator width and optional diffuse shading. Single-texture mode uses `terminator_width < 0` as sentinel.
 
-**UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox, MSAA combobox, longitude/latitude/zoom sliders, adapter info) and image display area.
+**UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox with Day/Night Blend mode, MSAA combobox, longitude/latitude/zoom sliders, terminator width slider, diffuse shading checkbox, adapter info) and image display area.
+
+**Notable dependencies beyond wgpu/slint:**
+- `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
+- `time` — UTC time decomposition for astronomy calculations
 
 ## Key Constraints
 
-- `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe
+- `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` has scoped `#[allow(unsafe_code)]` on individual FFI call sites.
 - Slint version pinned to `~1.15` with `unstable-wgpu-28` feature — this is the integration point between Slint and wgpu 28
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
-- Dirty-checking compares (longitude, latitude, zoom, sample_count, texture_index, dimensions) to skip redundant renders
+- Dirty-checking compares (longitude, latitude, zoom, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading) to skip redundant renders
 - Grid texture uses 16× anisotropic filtering with trilinear mipmaps
 - LF line endings globally

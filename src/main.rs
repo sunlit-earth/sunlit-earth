@@ -106,4 +106,10 @@ fn main() {
     renderer::setup_rendering_notifier(&window, aa_counts, earth_pixels);
 
     window.run().expect("Failed to run window");
+
+    // Exit immediately to avoid a panic from thread-local destruction ordering.
+    // On Windows, Slint's SlintContext thread-local may be destroyed before
+    // wgpu's internal LockTrace thread-local. When Slint drops the wgpu Queue,
+    // Queue::drop tries to access the already-destroyed LockTrace, panicking.
+    std::process::exit(0);
 }

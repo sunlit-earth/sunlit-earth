@@ -58,9 +58,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let blend = smoothstep(-w, w, n_dot_l);
 
     var lit_day = day_color;
-    // Diffuse shading: modulate day texture by max(0, NdotL)
+    // Diffuse shading: gently darken the dayside near the terminator
+    // while keeping the directly-lit area close to full brightness.
+    // smoothstep(0, 0.6, NdotL) gives a soft ramp from 0 at the
+    // terminator to 1.0 well before the subsolar point.
     if (uniforms.flags & 1u) != 0u {
-        lit_day = day_color * max(0.0, n_dot_l);
+        lit_day = day_color * smoothstep(0.0, 0.6, n_dot_l);
     }
 
     let color = mix(night_color, lit_day, blend);

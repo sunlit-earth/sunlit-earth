@@ -61,18 +61,21 @@ fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     // (GAST and RA are both in sidereal hours; 1 hour = 15 degrees)
     let subsolar_lon_deg = (gast_hours - equ.ra) * 15.0;
 
-    // Convert to renderer's Cartesian coordinate frame:
-    //   +X = prime meridian at equator (0N, 0E)
+    // Convert to renderer's Cartesian coordinate frame.
+    // The camera uses: x = sin(lon), y = sin(lat), z = cos(lon)
+    // so longitude=0 looks down the +Z axis. We must match that
+    // convention for the sun direction.
+    //   +Z = prime meridian at equator (0N, 0E)
     //   +Y = north pole
-    //   -Z = 90 degrees East (0N, 90E)
+    //   +X = 90 degrees East (0N, 90E)
     let phi = subsolar_lat_deg.to_radians();
     let lambda = subsolar_lon_deg.to_radians();
 
     #[allow(clippy::cast_possible_truncation)]
     let dir = Vec3::new(
-        (phi.cos() * lambda.cos()) as f32,
+        (phi.cos() * lambda.sin()) as f32,
         phi.sin() as f32,
-        -(phi.cos() * lambda.sin()) as f32,
+        (phi.cos() * lambda.cos()) as f32,
     );
 
     dir.normalize()
@@ -101,20 +104,20 @@ mod tests {
     }
 
     /// At the March equinox UTC noon, the subsolar point is near (0N, 0E).
-    /// Expected direction: approximately (+1, 0, 0).
+    /// In the renderer's frame (+Z = prime meridian), expected: ~(0, 0, +1).
     #[test]
     fn march_equinox_noon() {
         let dir = sun_dir_at(2025, 3, 20, 12, 0);
         assert!(
-            (dir.x - 1.0).abs() < 0.1,
-            "Expected X near 1.0, got {dir}"
+            (dir.z - 1.0).abs() < 0.1,
+            "Expected Z near 1.0, got {dir}"
         );
         assert!(dir.y.abs() < 0.1, "Expected Y near 0.0, got {dir}");
-        assert!(dir.z.abs() < 0.15, "Expected Z near 0.0, got {dir}");
+        assert!(dir.x.abs() < 0.15, "Expected X near 0.0, got {dir}");
     }
 
     /// At the June solstice UTC noon, the subsolar point is near (23.4N, 0E).
-    /// Expected: X ~ cos(23.4) ~ 0.92, Y ~ sin(23.4) ~ 0.40, Z ~ 0.
+    /// Expected: Z ~ cos(23.4) ~ 0.92, Y ~ sin(23.4) ~ 0.40, X ~ 0.
     #[test]
     fn june_solstice_noon() {
         let dir = sun_dir_at(2025, 6, 21, 12, 0);
@@ -123,10 +126,10 @@ mod tests {
             "Expected Y near 0.40, got {dir}"
         );
         assert!(
-            (dir.x - 0.92).abs() < 0.1,
-            "Expected X near 0.92, got {dir}"
+            (dir.z - 0.92).abs() < 0.1,
+            "Expected Z near 0.92, got {dir}"
         );
-        assert!(dir.z.abs() < 0.15, "Expected Z near 0.0, got {dir}");
+        assert!(dir.x.abs() < 0.15, "Expected X near 0.0, got {dir}");
     }
 
     /// At the December solstice UTC noon, the subsolar point is near (23.4S, 0E).
@@ -141,16 +144,16 @@ mod tests {
     }
 
     /// At UTC midnight on the March equinox, the subsolar point is near
-    /// the international date line (180E). Expected: X near -1, Y near 0, Z near 0.
+    /// the international date line (180E). Expected: Z near -1, Y near 0, X near 0.
     #[test]
     fn march_equinox_midnight() {
         let dir = sun_dir_at(2025, 3, 20, 0, 0);
         assert!(
-            (dir.x - (-1.0)).abs() < 0.1,
-            "Expected X near -1.0, got {dir}"
+            (dir.z - (-1.0)).abs() < 0.1,
+            "Expected Z near -1.0, got {dir}"
         );
         assert!(dir.y.abs() < 0.1, "Expected Y near 0.0, got {dir}");
-        assert!(dir.z.abs() < 0.15, "Expected Z near 0.0, got {dir}");
+        assert!(dir.x.abs() < 0.15, "Expected X near 0.0, got {dir}");
     }
 
     /// The returned vector should always have unit length.

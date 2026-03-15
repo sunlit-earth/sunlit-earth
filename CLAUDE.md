@@ -39,18 +39,24 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 **GPU resources** are stored in a `thread_local! { RefCell<Option<GpuResources>> }` in `renderer/mod.rs` because the rendering notifier callback requires `'static` lifetime.
 
 **Key modules:**
-- `main.rs` — CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup, periodic sun timer
+- `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation
+- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup, periodic sun timer
+- `scene/` — scene-level abstractions:
+  - `scene/camera.rs` — orbital camera: (longitude, latitude, distance) -> MVP matrix
+  - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame)
+- `geometry/` — mesh and procedural texture generation:
+  - `geometry/sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
+  - `geometry/grid_texture.rs` — procedural equirectangular grid texture (2048x1024) with CPU-computed mipmaps
 - `renderer/` — GPU pipeline, frame rendering, dirty-checking, split into focused submodules:
-  - `renderer/mod.rs` — public API (`setup_rendering_notifier`, `build_aa_options`, `build_frame_state`), rendering callback, `FrameState`, `quantize_to_granularity`, constants, thread-local `GPU_RESOURCES`
-  - `renderer/gpu_setup.rs` — `GpuResources` struct, `create_gpu_resources()`, `create_pipeline()`, `create_render_textures()`, MSAA/resize rebuild functions
+  - `renderer/mod.rs` — public API (`setup_rendering_notifier`, `build_aa_options`), rendering callback dispatcher, `GpuResources` struct, `quantize_to_granularity`, constants, thread-local `GPU_RESOURCES`
+  - `renderer/frame.rs` — `FrameState` struct and `build_frame_state()` for dirty-check comparison
+  - `renderer/render_pass.rs` — render pass encoding, uniform writes, texture-to-Slint-image conversion
+  - `renderer/texture_routing.rs` — blend mode detection, texture load spawning, loading indicator text
+  - `renderer/gpu_setup.rs` — `create_gpu_resources()`, `create_pipeline()`, `create_render_textures()`, MSAA/resize rebuild functions
   - `renderer/textures.rs` — `TextureSlot`, texture loading/decoding, composite bind group, `create_mipmapped_texture()`, `downsample_2x()`
   - `renderer/uniforms.rs` — `Uniforms` struct with `#[repr(C)]`, compile-time size assertion
-- `sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame)
-- `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
-- `camera.rs` — orbital camera: (longitude, latitude, distance) -> MVP matrix
-- `sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
-- `grid_texture.rs` — procedural equirectangular grid texture (2048x1024) with CPU-computed mipmaps
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
+- `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
 
 **Shader:** Split into two files concatenated at load time by `renderer/gpu_setup.rs`:
 - `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp

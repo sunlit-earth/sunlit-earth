@@ -93,25 +93,38 @@ struct GpuContext {
     pipeline: wgpu::ComputePipeline,
 }
 
-static GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
-    let ctx = pollster::block_on(async {
+fn create_gpu_context(force_software: bool) -> GpuContext {
+    pollster::block_on(async {
         let instance = wgpu::Instance::default();
 
-        let adapter: wgpu::Adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                ..Default::default()
-            })
-            .await
-            .or_else(|_| {
-                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter: wgpu::Adapter = if force_software {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
                     compatible_surface: None,
                     force_fallback_adapter: true,
                     ..Default::default()
-                }))
-            })
-            .expect("no wgpu adapter available (tried hardware and software)");
+                })
+                .await
+                .expect("no software adapter available")
+        } else {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                    ..Default::default()
+                })
+                .await
+                .or_else(|_| {
+                    pollster::block_on(instance.request_adapter(
+                        &wgpu::RequestAdapterOptions {
+                            compatible_surface: None,
+                            force_fallback_adapter: true,
+                            ..Default::default()
+                        },
+                    ))
+                })
+                .expect("no wgpu adapter available (tried hardware and software)")
+        };
 
         let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
@@ -142,8 +155,11 @@ static GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
             queue,
             pipeline,
         }
-    });
-    Mutex::new(ctx)
+    })
+}
+
+static GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
+    Mutex::new(create_gpu_context(false))
 });
 
 // ---------------------------------------------------------------------------
@@ -151,9 +167,13 @@ static GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
 // ---------------------------------------------------------------------------
 
 fn run_on_gpu(cases: &[TestCase]) -> Vec<TestResult> {
+    let gpu = GPU.lock().unwrap();
+    dispatch(&gpu, cases)
+}
+
+fn dispatch(gpu: &GpuContext, cases: &[TestCase]) -> Vec<TestResult> {
     assert!(!cases.is_empty(), "need at least one test case");
 
-    let gpu = GPU.lock().unwrap();
     let device = &gpu.device;
     let queue = &gpu.queue;
     let pipeline = &gpu.pipeline;
@@ -566,5 +586,62 @@ fn never_below_min_across_color_range() {
                 floor
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Software rendering — verifies the tests will pass on CI without a GPU.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn software_adapter_produces_correct_results() {
+    let gpu = create_gpu_context(true);
+
+    // Run a representative subset: ocean + NYC sweeps
+    let mut cases = sweep(OCEAN_DAY, OCEAN_NIGHT, 500, W, true, FLOOR, RAMP);
+    cases.extend(sweep(NYC_DAY, NYC_NIGHT, 500, W, true, FLOOR, RAMP));
+    let results = dispatch(&gpu, &cases);
+
+    // Ocean sweep (first 501 results): monotonic, never below night
+    let ocean = &results[..501];
+    let ocean_lums: Vec<f32> = ocean.iter().map(|r| luminance(&r.color)).collect();
+    let night_lum = luminance(&OCEAN_NIGHT);
+    for (i, w) in ocean_lums.windows(2).enumerate() {
+        assert!(
+            w[1] >= w[0] - EPS,
+            "Software: ocean monotonicity violated at step {i}: {:.6} -> {:.6}",
+            w[0],
+            w[1]
+        );
+    }
+    let min_lum = ocean_lums.iter().copied().reduce(f32::min).unwrap();
+    assert!(
+        min_lum >= night_lum - EPS,
+        "Software: ocean dipped below night: {min_lum:.6} < {night_lum:.6}"
+    );
+
+    // NYC sweep (next 501 results): day side not dominated by city lights
+    let nyc = &results[501..];
+    let day_lum = luminance(&NYC_DAY);
+    // Check the last result (n_dot_l = 1.0, fully lit)
+    let fully_lit = &nyc[500];
+    for (ch, (&got, &expected)) in fully_lit
+        .color
+        .iter()
+        .zip(NYC_DAY.iter())
+        .enumerate()
+    {
+        assert!(
+            (got - expected).abs() < EPS,
+            "Software: NYC fully-lit ch={ch}: got {got:.4}, expected {expected:.4}",
+        );
+    }
+    // Mid-day samples should not exceed day luminance
+    for &step in &[375, 400, 425, 500] {
+        let lum = luminance(&nyc[step].color);
+        assert!(
+            lum <= day_lum + EPS,
+            "Software: NYC step {step} luminance {lum:.4} exceeds day {day_lum:.4}"
+        );
     }
 }

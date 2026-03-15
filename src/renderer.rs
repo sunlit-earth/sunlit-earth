@@ -8,6 +8,7 @@ use crate::MainWindow;
 use crate::camera::OrbitalCamera;
 use crate::grid_texture;
 use crate::sphere::{self, Vertex};
+use crate::sun;
 use crate::texture_loader;
 
 const DEFAULT_WIDTH: u32 = 800;
@@ -15,6 +16,30 @@ const DEFAULT_HEIGHT: u32 = 600;
 /// Render dimensions are rounded to this granularity to avoid
 /// creating new GPU textures on every pixel change during resize.
 const SIZE_GRANULARITY: u32 = 64;
+
+/// Texture slot index for the day texture (JXL).
+const DAY_SLOT: usize = 1;
+/// Texture slot index for the night texture (JXL).
+const NIGHT_SLOT: usize = 2;
+/// Texture combobox index for the day/night blend mode.
+const BLEND_MODE_INDEX: usize = 3;
+
+/// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
+///
+/// Total: 96 bytes (must be a multiple of 16 for std140 alignment).
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    mvp: [f32; 16],           // 64 bytes
+    sun_dir: [f32; 3],        // 12 bytes
+    terminator_width: f32,    // 4 bytes
+    flags: u32,               // 4 bytes
+    diffuse_floor: f32,       // 4 bytes
+    diffuse_ramp: f32,        // 4 bytes
+    _pad: f32,                // 4 bytes
+}
+
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 96);
 
 /// Build the `ComboBox` labels and find the default index (preferring 8x MSAA).
 pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32>, i32) {
@@ -91,6 +116,18 @@ struct GpuResources {
     /// Weak reference to the main window, used by background threads to
     /// trigger a redraw via `upgrade_in_event_loop`.
     window_weak: slint::Weak<MainWindow>,
+    /// 1x1 black texture used as the night texture placeholder in single-texture
+    /// bind groups (Grid, Day, Night modes).
+    dummy_texture_view: wgpu::TextureView,
+    /// Bind group containing both day and night textures, used in blend mode.
+    /// Created once both day and night texture slots have loaded.
+    composite_bind_group: Option<wgpu::BindGroup>,
+    /// Stored texture view for the day texture, needed to build the composite
+    /// bind group when both become available.
+    day_texture_view: Option<wgpu::TextureView>,
+    /// Stored texture view for the night texture, needed to build the composite
+    /// bind group when both become available.
+    night_texture_view: Option<wgpu::TextureView>,
 }
 
 /// Snapshot of inputs that affect the rendered image.
@@ -103,6 +140,16 @@ struct FrameState {
     texture_index: i32,
     width: u32,
     height: u32,
+    /// Sun direction quantized to integer milliradians for stable comparison.
+    sun_direction: [i32; 3],
+    /// Terminator width quantized to integer milliradians.
+    terminator_width: i32,
+    /// Whether diffuse shading is enabled.
+    diffuse_shading: bool,
+    /// Diffuse floor quantized to integer thousandths.
+    diffuse_floor: i32,
+    /// Diffuse ramp quantized to integer thousandths.
+    diffuse_ramp: i32,
 }
 
 /// Register the rendering notifier on the given Slint window.
@@ -210,6 +257,29 @@ fn rendering_callback(
                     rebuild_render_textures(res, vw, vh);
                 }
 
+                // Compute sun direction for this frame
+                let sun_dir = sun::sun_direction_now();
+
+                // Read UI properties for blend mode
+                let terminator_width_f = win.get_terminator_width();
+                let diffuse_shading = win.get_diffuse_shading();
+
+                // Quantize sun direction to milliradians for dirty-checking
+                #[allow(clippy::cast_possible_truncation)]
+                let sun_direction_quantized = [
+                    (sun_dir.x * 1000.0) as i32,
+                    (sun_dir.y * 1000.0) as i32,
+                    (sun_dir.z * 1000.0) as i32,
+                ];
+                #[allow(clippy::cast_possible_truncation)]
+                let terminator_width_quantized = (terminator_width_f * 1000.0) as i32;
+                let diffuse_floor_f = win.get_diffuse_floor();
+                let diffuse_ramp_f = win.get_diffuse_ramp();
+                #[allow(clippy::cast_possible_truncation)]
+                let diffuse_floor_quantized = (diffuse_floor_f * 1000.0) as i32;
+                #[allow(clippy::cast_possible_truncation)]
+                let diffuse_ramp_quantized = (diffuse_ramp_f * 1000.0) as i32;
+
                 // Build current frame state for dirty-checking
                 let current_state = FrameState {
                     longitude: win.get_camera_longitude(),
@@ -219,28 +289,72 @@ fn rendering_callback(
                     texture_index: win.get_texture_index(),
                     width: res.render_width,
                     height: res.render_height,
+                    sun_direction: sun_direction_quantized,
+                    terminator_width: terminator_width_quantized,
+                    diffuse_shading,
+                    diffuse_floor: diffuse_floor_quantized,
+                    diffuse_ramp: diffuse_ramp_quantized,
                 };
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let slot_index = (current_state.texture_index as usize)
+                let raw_index = current_state.texture_index as usize;
+                let is_blend_mode = raw_index == BLEND_MODE_INDEX;
+                let slot_index = raw_index
                     .min(res.texture_slots.len().saturating_sub(1));
 
                 // Phase 2: Kick off background loading if needed
-                maybe_spawn_texture_load(res, slot_index);
+                if is_blend_mode {
+                    maybe_spawn_texture_load(res, DAY_SLOT);
+                    maybe_spawn_texture_load(res, NIGHT_SLOT);
+                } else {
+                    maybe_spawn_texture_load(res, slot_index);
+                }
 
-                // Resolve which slot to actually render with
-                let render_index = resolve_render_index(res, slot_index);
+                // Resolve which bind group to use and whether we're in blend mode
+                let (bind_group_ref, use_blend_uniforms) = if is_blend_mode {
+                    if let Some(composite) = res.composite_bind_group.as_ref() {
+                        // Both textures loaded — use composite bind group
+                        (composite, true)
+                    } else {
+                        // Fallback to single-texture while loading
+                        let fallback_index = resolve_render_index(res, DAY_SLOT);
+                        let bg = res.texture_slots[fallback_index]
+                            .bind_group
+                            .as_ref()
+                            .expect("render_index must always point to a loaded slot");
+                        (bg, false)
+                    }
+                } else {
+                    let render_index = resolve_render_index(res, slot_index);
+                    let bg = res.texture_slots[render_index]
+                        .bind_group
+                        .as_ref()
+                        .expect("render_index must always point to a loaded slot");
+                    (bg, false)
+                };
 
                 // Update loading indicator
-                let loading = res.texture_slots[slot_index].loading;
-                if loading {
-                    let name = win
-                        .get_texture_options()
-                        .row_data(slot_index)
-                        .unwrap_or_default();
-                    win.set_loading_text(format!("Loading {name}...").into());
+                if is_blend_mode {
+                    let day_loading = res.texture_slots[DAY_SLOT].loading;
+                    let night_loading = res.texture_slots[NIGHT_SLOT].loading;
+                    let text = match (day_loading, night_loading) {
+                        (true, true) => "Loading Day and Night...".to_owned(),
+                        (true, false) => "Loading Day...".to_owned(),
+                        (false, true) => "Loading Night...".to_owned(),
+                        (false, false) => String::new(),
+                    };
+                    win.set_loading_text(text.into());
                 } else {
-                    win.set_loading_text(slint::SharedString::default());
+                    let loading = res.texture_slots[slot_index].loading;
+                    if loading {
+                        let name = win
+                            .get_texture_options()
+                            .row_data(slot_index)
+                            .unwrap_or_default();
+                        win.set_loading_text(format!("Loading {name}...").into());
+                    } else {
+                        win.set_loading_text(slint::SharedString::default());
+                    }
                 }
 
                 // Skip rendering if nothing changed since last frame
@@ -260,9 +374,22 @@ fn rendering_callback(
                 let aspect = res.render_width as f32 / res.render_height as f32;
                 let mvp = camera.mvp_matrix(aspect);
 
-                // Write MVP matrix to uniform buffer
+                // Build and write the full uniforms struct
+                let uniforms = Uniforms {
+                    mvp: mvp.to_cols_array(),
+                    sun_dir: sun_dir.into(),
+                    terminator_width: if use_blend_uniforms {
+                        terminator_width_f
+                    } else {
+                        -1.0 // sentinel: single-texture mode
+                    },
+                    flags: u32::from(use_blend_uniforms && diffuse_shading),
+                    diffuse_floor: win.get_diffuse_floor(),
+                    diffuse_ramp: win.get_diffuse_ramp(),
+                    _pad: 0.0,
+                };
                 res.queue
-                    .write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(mvp.as_ref()));
+                    .write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
                 // Render pass
                 let mut encoder =
@@ -315,12 +442,7 @@ fn rendering_callback(
                     });
 
                     pass.set_pipeline(&res.pipeline);
-                    // Use the bind group for the resolved render index (requested or fallback)
-                    let bind_group = res.texture_slots[render_index]
-                        .bind_group
-                        .as_ref()
-                        .expect("render_index must always point to a loaded slot");
-                    pass.set_bind_group(0, bind_group, &[]);
+                    pass.set_bind_group(0, bind_group_ref, &[]);
                     pass.set_vertex_buffer(0, res.vertex_buffer.slice(..));
                     pass.set_index_buffer(res.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..res.index_count, 0, 0..1);
@@ -369,10 +491,22 @@ fn process_decoded_textures(res: &mut GpuResources) -> bool {
                     &res.uniform_buffer,
                     &tex_view,
                     &res.sampler,
+                    &res.dummy_texture_view,
                     &format!("bind_group_slot_{}", msg.slot_index),
                 );
                 res.texture_slots[msg.slot_index].bind_group = Some(bind_group);
                 res.texture_slots[msg.slot_index].loading = false;
+
+                // Store texture views for composite bind group creation
+                if msg.slot_index == DAY_SLOT {
+                    res.day_texture_view = Some(tex_view);
+                } else if msg.slot_index == NIGHT_SLOT {
+                    res.night_texture_view = Some(tex_view);
+                }
+
+                // If both day and night textures are now available, create
+                // the composite bind group for blend mode.
+                maybe_create_composite_bind_group(res);
             }
             Err(e) => {
                 eprintln!("{e}");
@@ -383,6 +517,23 @@ fn process_decoded_textures(res: &mut GpuResources) -> bool {
         }
     }
     received_any
+}
+
+/// Create the composite bind group if both day and night texture views are available.
+fn maybe_create_composite_bind_group(res: &mut GpuResources) {
+    if let (Some(day_view), Some(night_view)) =
+        (&res.day_texture_view, &res.night_texture_view)
+    {
+        res.composite_bind_group = Some(create_bind_group(
+            &res.device,
+            &res.bind_group_layout,
+            &res.uniform_buffer,
+            day_view,
+            &res.sampler,
+            night_view,
+            "composite_bind_group",
+        ));
+    }
 }
 
 /// Spawn a background thread to decode the texture for `slot_index` if
@@ -467,10 +618,11 @@ fn create_gpu_resources(
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    // Uniform buffer for the MVP matrix (4x4 f32 = 64 bytes)
+    // Uniform buffer: MVP (64) + sun_dir (12) + terminator_width (4) +
+    // flags (4) + padding (12) = 96 bytes
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("mvp_uniform"),
-        size: 64,
+        label: Some("uniforms"),
+        size: std::mem::size_of::<Uniforms>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -492,7 +644,7 @@ fn create_gpu_resources(
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -516,8 +668,55 @@ fn create_gpu_resources(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
+
+    // 1x1 black dummy texture used as the night texture placeholder
+    // in single-texture bind groups (Grid, Day, Night modes).
+    let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("dummy_1x1"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &dummy_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[0, 0, 0, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let dummy_texture_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     // Grid texture (always loaded at slot 0)
     let grid_tex = create_mipmapped_texture(
@@ -536,6 +735,7 @@ fn create_gpu_resources(
         &uniform_buffer,
         &grid_tex_view,
         &sampler,
+        &dummy_texture_view,
         "grid_bind_group",
     );
 
@@ -559,9 +759,14 @@ fn create_gpu_resources(
         immediate_size: 0,
     });
 
+    let wgsl_source = format!(
+        "{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sphere_shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sphere.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
     });
 
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
@@ -597,6 +802,10 @@ fn create_gpu_resources(
         texture_tx,
         texture_rx,
         window_weak,
+        dummy_texture_view,
+        composite_bind_group: None,
+        day_texture_view: None,
+        night_texture_view: None,
     }
 }
 
@@ -798,13 +1007,17 @@ fn create_mipmapped_texture(
     texture
 }
 
-/// Create a bind group with a uniform buffer, texture view, and sampler.
+/// Create a bind group with a uniform buffer, day texture, sampler, and night texture.
+///
+/// For single-texture modes (Grid, Day, Night), pass the dummy 1x1 texture
+/// as `night_texture_view`. For blend mode, pass the actual night texture.
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,
     texture_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
+    night_texture_view: &wgpu::TextureView,
     label: &str,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -822,6 +1035,10 @@ fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(night_texture_view),
             },
         ],
     })

@@ -26,7 +26,7 @@ The existing texture pipeline is simple and linear:
 - `earth_texture.rs` loads a single JPEG file using the `image` crate (v0.25, JPEG feature only), decodes to RGBA8, applies a horizontal flip (sphere UV winding) and a 1/4-width horizontal shift (prime meridian alignment).
 - `renderer.rs` receives raw RGBA8 pixel data and creates a wgpu texture with CPU-computed mipmaps via a box-filter `downsample_2x()` function. The texture format is `Rgba8Unorm`.
 - The sampler uses trilinear filtering with 16x anisotropic, Repeat on U axis / ClampToEdge on V axis.
-- Texture resolution is documented in `plan-02-earth-texture.md` as 4096x2048 recommended default, with 2048x1024 (blurry on 4K) and 8192x4096 (future) as alternatives.
+- Texture resolution is documented in `2026-03-09-earth-texture.md` as 4096x2048 recommended default, with 2048x1024 (blurry on 4K) and 8192x4096 (future) as alternatives.
 
 The `image` crate v0.25 has no JPEG-XL support. Adding JXL decoding to the Rust side is a separate future task, outside the scope of this pipeline.
 

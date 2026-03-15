@@ -37,18 +37,12 @@ pub fn load(path: &Path) -> Result<DecodedImage, String> {
 /// with the sphere's u=0.
 fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
-    let shift = w * 3 / 4;
     let row_bytes = w * 4;
-    let mut row_buf = vec![0u8; row_bytes];
+    let shift_bytes = w * 3; // 3/4 width in bytes (each pixel is 4 bytes)
 
     for y in 0..height as usize {
-        let start = y * row_bytes;
-        row_buf.copy_from_slice(&pixels[start..start + row_bytes]);
-        for x in 0..w {
-            let src = x * 4;
-            let dst = ((x + shift) % w) * 4;
-            pixels[start + dst..start + dst + 4].copy_from_slice(&row_buf[src..src + 4]);
-        }
+        let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
+        row.rotate_right(shift_bytes);
     }
 }
 
@@ -58,7 +52,7 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 /// 3. `textures/` relative to the executable
 /// 4. `textures/` relative to the current working directory
 pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = [
+    [
         cli_override.map(Path::to_path_buf),
         std::env::var_os("SUNLIT_EARTH_TEXTURES").map(PathBuf::from),
         std::env::current_exe()
@@ -68,7 +62,5 @@ pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
     ]
     .into_iter()
     .flatten()
-    .collect();
-
-    candidates.into_iter().find(|p| p.is_dir())
+    .find(|p| p.is_dir())
 }

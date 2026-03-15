@@ -14,16 +14,15 @@ const LAND_GREEN: [u8; 3] = [80, 170, 110];
 const GRID_WHITE: [u8; 3] = [204, 204, 204];
 const MAJOR_YELLOW: [u8; 3] = [255, 230, 77];
 
+#[allow(clippy::cast_precision_loss)]
 pub fn generate(width: u32, height: u32) -> Vec<u8> {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
 
     for y in 0..height {
-        #[allow(clippy::cast_precision_loss)]
         let lat_deg = (y as f32 / height as f32) * 180.0;
         let latitude_factor = 1.0 - lat_deg / 180.0;
 
         for x in 0..width {
-            #[allow(clippy::cast_precision_loss)]
             let lon_deg = (x as f32 / width as f32) * 360.0;
 
             // Distance to nearest grid line
@@ -52,10 +51,7 @@ pub fn generate(width: u32, height: u32) -> Vec<u8> {
             };
 
             let idx = ((y * width + x) * 4) as usize;
-            pixels[idx] = color[0];
-            pixels[idx + 1] = color[1];
-            pixels[idx + 2] = color[2];
-            pixels[idx + 3] = 255;
+            pixels[idx..idx + 4].copy_from_slice(&[color[0], color[1], color[2], 255]);
         }
     }
 

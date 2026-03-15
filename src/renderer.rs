@@ -103,6 +103,22 @@ thread_local! {
     static GPU_RESOURCES: std::cell::RefCell<Option<GpuResources>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Look up the MSAA sample count from the AA combobox index.
+fn lookup_sample_count(win: &MainWindow, aa_counts: &[u32]) -> u32 {
+    let idx = usize::try_from(win.get_aa_index()).unwrap_or(0);
+    aa_counts.get(idx).copied().unwrap_or(1)
+}
+
+/// Read the viewport size from the window, quantized to `SIZE_GRANULARITY`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn quantized_viewport_size(win: &MainWindow) -> (u32, u32) {
+    let w = (win.get_viewport_width() * win.window().scale_factor()) as u32;
+    let h = (win.get_viewport_height() * win.window().scale_factor()) as u32;
+    let w = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
+    let h = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
+    (w, h)
+}
+
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn rendering_callback(
     state: RenderingState,
@@ -111,22 +127,6 @@ fn rendering_callback(
     aa_counts: &[u32],
     earth_pixels: &std::cell::RefCell<Option<DecodedImage>>,
 ) {
-    let lookup_sample_count = |win: &MainWindow| {
-        let idx = usize::try_from(win.get_aa_index()).unwrap_or(0);
-        aa_counts.get(idx).copied().unwrap_or(1)
-    };
-
-    let get_viewport_size = |win: &MainWindow| -> (u32, u32) {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let w = (win.get_viewport_width() * win.window().scale_factor()) as u32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let h = (win.get_viewport_height() * win.window().scale_factor()) as u32;
-        // Quantize to SIZE_GRANULARITY to reduce texture churn during resize
-        let w = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
-        let h = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
-        (w, h)
-    };
-
     match state {
         RenderingState::RenderingSetup => {
             let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api else {
@@ -138,8 +138,8 @@ fn rendering_callback(
                 window_weak
                     .upgrade()
                     .map_or((4, DEFAULT_WIDTH, DEFAULT_HEIGHT), |win| {
-                        let (w, h) = get_viewport_size(&win);
-                        (lookup_sample_count(&win), w, h)
+                        let (w, h) = quantized_viewport_size(&win);
+                        (lookup_sample_count(&win, aa_counts), w, h)
                     });
             // Take earth pixels out of the RefCell — they're consumed during texture upload
             let earth = earth_pixels.borrow_mut().take();
@@ -167,13 +167,13 @@ fn rendering_callback(
                 };
 
                 // Check if sample count changed
-                let desired = lookup_sample_count(&win);
+                let desired = lookup_sample_count(&win, aa_counts);
                 if desired != res.sample_count {
                     rebuild_msaa_resources(res, desired);
                 }
 
                 // Check if viewport size changed
-                let (vw, vh) = get_viewport_size(&win);
+                let (vw, vh) = quantized_viewport_size(&win);
                 if vw != res.render_width || vh != res.render_height {
                     rebuild_render_textures(res, vw, vh);
                 }
@@ -191,13 +191,14 @@ fn rendering_callback(
                 if res.last_state.as_ref() == Some(&current_state) {
                     return;
                 }
-                res.last_state = Some(current_state);
 
                 let camera = OrbitalCamera::new(
-                    win.get_camera_longitude(),
-                    win.get_camera_latitude(),
-                    win.get_camera_zoom(),
+                    current_state.longitude,
+                    current_state.latitude,
+                    current_state.zoom,
                 );
+                let texture_index = current_state.texture_index;
+                res.last_state = Some(current_state);
 
                 #[allow(clippy::cast_precision_loss)]
                 let aspect = res.render_width as f32 / res.render_height as f32;
@@ -258,7 +259,7 @@ fn rendering_callback(
                     });
 
                     pass.set_pipeline(&res.pipeline);
-                    let bind_group = if win.get_texture_index() == 1 {
+                    let bind_group = if texture_index == 1 {
                         res.earth_bind_group.as_ref().unwrap_or(&res.grid_bind_group)
                     } else {
                         &res.grid_bind_group
@@ -568,45 +569,31 @@ fn create_render_textures(
     (render_texture, depth_texture, msaa_color, msaa_depth)
 }
 
-/// Drop old size-dependent textures so wgpu can reclaim the memory
-/// before we allocate new ones.
-fn drop_render_textures(res: &mut GpuResources) {
-    res.msaa_texture_view = None;
-    res.msaa_depth_view = None;
-    // render_texture and depth_texture are replaced by assignment below,
-    // but the Slint Image may still hold an Arc to the old render_texture.
-    // We can't force that drop, but clearing MSAA textures frees the bulk.
-}
-
 /// Rebuild the pipeline and MSAA textures when sample count changes.
 fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
-    drop_render_textures(res);
-    let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
-        create_render_textures(
-            &res.device,
-            res.render_width,
-            res.render_height,
-            sample_count,
-        );
-    res.render_texture = render_texture;
-    res.depth_texture = depth_texture;
-    res.msaa_texture_view = msaa_texture_view;
-    res.msaa_depth_view = msaa_depth_view;
+    replace_render_textures(res, res.render_width, res.render_height, sample_count);
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
 }
 
 /// Rebuild all size-dependent textures when viewport dimensions change.
 fn rebuild_render_textures(res: &mut GpuResources, width: u32, height: u32) {
-    drop_render_textures(res);
+    replace_render_textures(res, width, height, res.sample_count);
+    res.render_width = width;
+    res.render_height = height;
+}
+
+/// Replace all size/sample-dependent textures, dropping MSAA views first
+/// so wgpu can reclaim memory before allocating new ones.
+fn replace_render_textures(res: &mut GpuResources, width: u32, height: u32, sample_count: u32) {
+    res.msaa_texture_view = None;
+    res.msaa_depth_view = None;
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
-        create_render_textures(&res.device, width, height, res.sample_count);
+        create_render_textures(&res.device, width, height, sample_count);
     res.render_texture = render_texture;
     res.depth_texture = depth_texture;
     res.msaa_texture_view = msaa_texture_view;
     res.msaa_depth_view = msaa_depth_view;
-    res.render_width = width;
-    res.render_height = height;
 }
 
 const GRID_TEX_WIDTH: u32 = 2048;

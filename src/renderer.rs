@@ -283,10 +283,10 @@ fn rendering_callback(
                 };
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let slot_index = (current_state.texture_index as usize)
+                let raw_index = current_state.texture_index as usize;
+                let is_blend_mode = raw_index == BLEND_MODE_INDEX;
+                let slot_index = raw_index
                     .min(res.texture_slots.len().saturating_sub(1));
-
-                let is_blend_mode = slot_index == BLEND_MODE_INDEX;
 
                 // Phase 2: Kick off background loading if needed
                 if is_blend_mode {

@@ -1,11 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 
-/// A vertex with position, normal, and UV coordinates.
+/// A vertex with position and UV coordinates.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub normal: [f32; 3],
     pub uv: [f32; 2],
 }
 
@@ -22,16 +21,10 @@ impl Vertex {
                     shader_location: 0,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // normal
+                // uv
                 wgpu::VertexAttribute {
                     offset: 12,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // uv
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
                     format: wgpu::VertexFormat::Float32x2,
                 },
             ],
@@ -73,7 +66,6 @@ pub fn generate_uv_sphere(stacks: u32, sectors: u32) -> SphereMesh {
 
             vertices.push(Vertex {
                 position: [x, y, z],
-                normal: [x, y, z], // For a unit sphere, position == normal
                 uv: [u, v],
             });
         }
@@ -133,14 +125,6 @@ mod tests {
     }
 
     #[test]
-    fn normals_match_positions_for_unit_sphere() {
-        let mesh = generate_uv_sphere(16, 32);
-        for v in &mesh.vertices {
-            assert_eq!(v.position, v.normal);
-        }
-    }
-
-    #[test]
     fn uv_coordinates_in_range() {
         let mesh = generate_uv_sphere(16, 32);
         for v in &mesh.vertices {
@@ -165,9 +149,9 @@ mod tests {
     }
 
     #[test]
-    fn vertex_layout_has_three_attributes() {
+    fn vertex_layout_has_two_attributes() {
         let layout = Vertex::buffer_layout();
-        assert_eq!(layout.attributes.len(), 3);
-        assert_eq!(layout.array_stride, 32); // 3+3+2 floats = 8 * 4 = 32 bytes
+        assert_eq!(layout.attributes.len(), 2);
+        assert_eq!(layout.array_stride, 20); // 3+2 floats = 5 * 4 = 20 bytes
     }
 }

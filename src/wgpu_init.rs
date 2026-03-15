@@ -44,7 +44,7 @@ pub fn init(force_software: bool) -> WgpuContext {
     .expect("Failed to create wgpu device");
 
     let supported_sample_counts = adapter
-        .get_texture_format_features(wgpu::TextureFormat::Rgba8UnormSrgb)
+        .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
         .flags
         .supported_sample_counts();
 

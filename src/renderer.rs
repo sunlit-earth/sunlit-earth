@@ -13,7 +13,7 @@ const DEFAULT_HEIGHT: u32 = 600;
 /// creating new GPU textures on every pixel change during resize.
 const SIZE_GRANULARITY: u32 = 64;
 
-/// Build the `ComboBox` labels and find the default index (preferring 4x MSAA).
+/// Build the `ComboBox` labels and find the default index (preferring 8x MSAA).
 pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32>, i32) {
     let mut labels = Vec::new();
     let mut counts = Vec::new();

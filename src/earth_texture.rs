@@ -14,7 +14,7 @@ pub struct DecodedImage {
 /// Two transformations are applied after decoding:
 /// - Horizontal flip: standard equirectangular maps have east-to-the-right,
 ///   but our sphere UV winding goes in the opposite direction.
-/// - Horizontal shift by 1/4 width: aligns the prime meridian with u=0
+/// - Horizontal shift left by 1/4 width: aligns the prime meridian with u=0
 ///   in our sphere's UV mapping.
 pub fn load(path: &Path) -> Result<DecodedImage, String> {
     let img = image::open(path)
@@ -33,7 +33,7 @@ pub fn load(path: &Path) -> Result<DecodedImage, String> {
     })
 }
 
-/// Shift all rows right by 1/4 width (wrapping), aligning the prime meridian
+/// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
 /// with the sphere's u=0.
 fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;

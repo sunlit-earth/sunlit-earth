@@ -19,7 +19,9 @@ impl OrbitalCamera {
     pub fn new(longitude_deg: f32, latitude_deg: f32, distance: f32) -> Self {
         Self {
             longitude_deg,
-            latitude_deg,
+            // Clamp to avoid gimbal lock: at ±90° the eye aligns with the
+            // up vector, making look_at_rh produce a NaN view matrix.
+            latitude_deg: latitude_deg.clamp(-89.9, 89.9),
             distance,
             fov_deg: 20.0,
         }
@@ -82,13 +84,14 @@ mod tests {
     }
 
     #[test]
-    fn eye_at_90_latitude() {
+    fn eye_at_90_latitude_is_clamped() {
         let cam = OrbitalCamera::new(0.0, 90.0, 5.0);
         let eye = cam.eye_position();
-        // At lat=90, camera should be on the +Y axis (north pole)
-        assert!(eye.x.abs() < 1e-4);
-        assert!((eye.y - 5.0).abs() < 1e-4);
-        assert!(eye.z.abs() < 1e-4);
+        // Latitude is clamped to 89.9° to avoid gimbal lock, so the
+        // camera is near (but not exactly on) the +Y axis.
+        assert!(eye.x.abs() < 0.01);
+        assert!((eye.y - 5.0).abs() < 0.01);
+        assert!(eye.z.abs() < 0.02);
     }
 
     #[test]

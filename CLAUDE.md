@@ -18,7 +18,7 @@ Project vision, technical decisions, and implementation plans are documented in 
 ```bash
 cargo build                # Debug build
 cargo build --release      # Release build (LTO, stripped)
-cargo test                 # Run all tests (16 tests across camera, sphere, grid_texture)
+cargo test                 # Run all tests
 cargo test camera          # Run tests in a single module
 cargo clippy               # Lint (pedantic enabled, see Cargo.toml for allows)
 cargo run                  # Run the app
@@ -43,18 +43,19 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `renderer.rs` — GPU pipeline, frame rendering, dirty-checking, MSAA management, texture recreation
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation
 - `camera.rs` — orbital camera: (longitude, latitude, distance) → MVP matrix
-- `sphere.rs` — parametric UV sphere mesh generation (64×64)
+- `sphere.rs` — parametric UV sphere mesh generation (64×64, position + UV only)
 - `grid_texture.rs` — procedural equirectangular grid texture (2048×1024) with CPU-computed mipmaps
+- `earth_texture.rs` — JPG loading with coordinate transforms (flip + shift) for NASA Blue Marble textures
 
-**Shader:** `shaders/sphere.wgsl` — vertex transform by MVP, fragment samples grid texture with diffuse lighting.
+**Shader:** `shaders/sphere.wgsl` — vertex transform by MVP, fragment samples texture.
 
-**UI:** `ui/main.slint` — image display + longitude/latitude/zoom sliders + MSAA combobox + adapter info text.
+**UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox, MSAA combobox, longitude/latitude/zoom sliders, adapter info) and image display area.
 
 ## Key Constraints
 
 - `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe
 - Slint version pinned to `~1.15` with `unstable-wgpu-28` feature — this is the integration point between Slint and wgpu 28
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
-- Dirty-checking compares (longitude, latitude, zoom, sample_count, dimensions) to skip redundant renders
+- Dirty-checking compares (longitude, latitude, zoom, sample_count, texture_index, dimensions) to skip redundant renders
 - Grid texture uses 16× anisotropic filtering with trilinear mipmaps
 - LF line endings globally

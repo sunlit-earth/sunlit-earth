@@ -8,7 +8,7 @@ const GRID_SPACING: f32 = 15.0;
 const LINE_WIDTH: f32 = 0.5; // degrees
 const MAJOR_LINE_WIDTH: f32 = 0.8;
 
-// Colors (linear sRGB, will be stored as sRGB via the texture format)
+// Colors (RGBA8, stored without gamma conversion via Rgba8Unorm format)
 const OCEAN_BLUE: [u8; 3] = [60, 110, 200];
 const LAND_GREEN: [u8; 3] = [80, 170, 110];
 const GRID_WHITE: [u8; 3] = [204, 204, 204];

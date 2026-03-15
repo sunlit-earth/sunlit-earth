@@ -3,8 +3,8 @@ use std::sync::mpsc;
 
 use wgpu::util::DeviceExt;
 
-use crate::grid_texture;
-use crate::sphere::{self, Vertex};
+use crate::geometry::grid_texture;
+use crate::geometry::sphere::{self, Vertex};
 use crate::MainWindow;
 
 use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};

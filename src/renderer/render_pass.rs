@@ -1,6 +1,6 @@
 use slint::Image;
 
-use crate::camera::OrbitalCamera;
+use crate::scene::camera::OrbitalCamera;
 
 use super::GpuResources;
 use super::frame::FrameState;

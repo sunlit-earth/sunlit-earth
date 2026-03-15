@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
-use crate::sun;
+use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{

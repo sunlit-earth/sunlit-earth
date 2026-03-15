@@ -8,6 +8,9 @@ mod sun;
 mod texture_loader;
 mod wgpu_init;
 
+#[cfg(test)]
+mod shading;
+
 use std::path::PathBuf;
 
 use clap::Parser;

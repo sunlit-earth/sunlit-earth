@@ -36,7 +36,7 @@
 - Coordinate transforms (flip + shift) currently applied at load time in Rust
 - Image crate `0.25` has no JPEG-XL support
 
-## Resolution Strategy (from docs/plan-02-earth-texture.md)
+## Resolution Strategy (from docs/plans/2026-03-09-earth-texture.md)
 
 - 2048×1024: ~300 KB (blurry on 4K)
 - 4096×2048: ~1.5 MB (recommended default)

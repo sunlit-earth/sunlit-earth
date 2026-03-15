@@ -6,12 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This project is in its early stages and will continue to evolve with frequent breaking changes. Keep this CLAUDE.md up to date as the codebase changes.
 
-Project vision, technical decisions, and implementation plans are documented in `docs/`:
-- `docs/project.md` — high-level goals and technology stack
-- `docs/tech.md` — deep technical decisions, constraints, rendering approach, wallpaper APIs, astronomy
-- `docs/plan-01-mvp.md` — step-by-step MVP implementation plan
-- `docs/related.md` — competitive analysis of existing solutions
-- `docs/notes.md` — open issues and research topics (e.g. memory usage at high MSAA + 4K)
+Project vision, technical decisions, and implementation plans are documented in `docs/` — see `docs/README.md` for an overview.
 
 ## Build Commands
 

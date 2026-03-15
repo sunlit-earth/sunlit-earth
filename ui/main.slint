@@ -1,4 +1,4 @@
-import { Slider, ComboBox, Palette } from "std-widgets.slint";
+import { Slider, ComboBox, CheckBox, Palette } from "std-widgets.slint";
 
 component Splitter inherits Rectangle {
     callback moved(length);
@@ -24,10 +24,10 @@ export component MainWindow inherits Window {
 
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
-    in property <[string]> aa-options: ["None", "MSAA 4×"];
+    in property <[string]> aa-options: ["None", "MSAA 4\u{d7}"];
     in-out property <int> aa-index: 1;
-    in property <[string]> texture-options: ["Grid", "Day", "Night"];
-    in-out property <int> texture-index: 1;
+    in property <[string]> texture-options: ["Grid", "Day", "Night", "Day/Night Blend"];
+    in-out property <int> texture-index: 3;
     in property <string> loading-text;
 
     out property <float> camera-longitude: longitude-slider.value;
@@ -35,6 +35,8 @@ export component MainWindow inherits Window {
     out property <float> camera-zoom: zoom-slider.value;
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
+    out property <float> terminator-width: terminator-slider.value;
+    out property <bool> diffuse-shading: diffuse-check.checked;
 
     callback sliders-changed();
     callback msaa-changed();
@@ -97,7 +99,7 @@ export component MainWindow inherits Window {
                         changed => { root.sliders-changed(); }
                     }
                     Text {
-                        text: round(longitude-slider.value) + "°";
+                        text: round(longitude-slider.value) + "\u{b0}";
                         vertical-alignment: center;
                         min-width: 35px;
                     }
@@ -117,7 +119,7 @@ export component MainWindow inherits Window {
                         changed => { root.sliders-changed(); }
                     }
                     Text {
-                        text: round(latitude-slider.value) + "°";
+                        text: round(latitude-slider.value) + "\u{b0}";
                         vertical-alignment: center;
                         min-width: 35px;
                     }
@@ -140,6 +142,40 @@ export component MainWindow inherits Window {
                         text: round(zoom-slider.value * 10) / 10;
                         vertical-alignment: center;
                         min-width: 35px;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Terminator";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    terminator-slider := Slider {
+                        minimum: 0.01;
+                        maximum: 0.3;
+                        value: 0.1;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(terminator-slider.value * 1000) / 1000;
+                        vertical-alignment: center;
+                        min-width: 35px;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Diffuse";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    diffuse-check := CheckBox {
+                        text: "Dayside shading";
+                        checked: false;
+                        toggled => { root.sliders-changed(); }
                     }
                 }
 

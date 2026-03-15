@@ -1,4 +1,8 @@
-use astronomy_engine_bindings::*;
+use astronomy_engine_bindings::{
+    Astronomy_CurrentTime, Astronomy_Equator, Astronomy_MakeObserver, Astronomy_SiderealTime,
+    astro_aberration_t_ABERRATION, astro_body_t_BODY_SUN, astro_equator_date_t_EQUATOR_OF_DATE,
+    astro_status_t_ASTRO_SUCCESS, astro_time_t,
+};
 use glam::Vec3;
 
 /// Compute the sun's direction as a unit vector in the renderer's
@@ -20,14 +24,20 @@ fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     // referred to the equator of date, with aberration correction.
     // We use a geocentric observer (lat=0, lon=0, height=0) because
     // we want the direction from Earth's center, not a surface point.
+    //
+    // SAFETY: Astronomy_MakeObserver is a pure C function that constructs a
+    // value type from three doubles.
     #[allow(unsafe_code)]
     let observer = unsafe { Astronomy_MakeObserver(0.0, 0.0, 0.0) };
 
+    // SAFETY: Astronomy_Equator reads the time struct (passed as a mutable
+    // pointer so the C library can cache sidereal time internally) and the
+    // observer value. All inputs are valid.
     #[allow(unsafe_code)]
     let equ = unsafe {
         Astronomy_Equator(
             astro_body_t_BODY_SUN,
-            &mut time,
+            &raw mut time,
             observer,
             astro_equator_date_t_EQUATOR_OF_DATE,
             astro_aberration_t_ABERRATION,
@@ -39,9 +49,10 @@ fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
         "Astronomy_Equator failed"
     );
 
-    // Get Greenwich Apparent Sidereal Time (hours)
+    // SAFETY: Astronomy_SiderealTime reads the time struct (mutable pointer
+    // for internal caching). The time value is valid.
     #[allow(unsafe_code)]
-    let gast_hours = unsafe { Astronomy_SiderealTime(&mut time) };
+    let gast_hours = unsafe { Astronomy_SiderealTime(&raw mut time) };
 
     // Subsolar latitude = sun's declination
     let subsolar_lat_deg = equ.dec;
@@ -68,10 +79,11 @@ fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
 }
 
 /// Create an `astro_time_t` from calendar components (UTC).
-///
-/// This helper is used by tests and by `sun_direction_at` if we ever
-/// need to compute the sun direction for a specific time.
+#[cfg(test)]
 fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64) -> astro_time_t {
+    use astronomy_engine_bindings::Astronomy_MakeTime;
+    // SAFETY: Astronomy_MakeTime is a pure C function that constructs a value
+    // type from calendar components.
     #[allow(unsafe_code)]
     unsafe {
         Astronomy_MakeTime(year, month, day, hour, minute, second)

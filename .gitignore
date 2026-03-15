@@ -15,5 +15,12 @@ Desktop.ini
 # Raw source assets (large, not for distribution)
 /tmp
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+
 # Environment
 .env

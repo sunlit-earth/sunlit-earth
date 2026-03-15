@@ -308,6 +308,6 @@ tools/texture-pipeline/
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Implementation started
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Implementation started
+- [x] Implementation complete

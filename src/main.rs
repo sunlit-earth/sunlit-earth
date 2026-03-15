@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod camera;
-mod texture_loader;
 mod grid_texture;
 mod renderer;
 mod sphere;
+mod sun;
+mod texture_loader;
 mod wgpu_init;
 
 use std::path::PathBuf;

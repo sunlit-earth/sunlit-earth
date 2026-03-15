@@ -1,0 +1,154 @@
+use astronomy_engine_bindings::*;
+use glam::Vec3;
+
+/// Compute the sun's direction as a unit vector in the renderer's
+/// world-space coordinate frame (Y-up, +X = prime meridian at equator,
+/// -Z = 90 degrees East) for the current UTC time.
+pub fn sun_direction_now() -> Vec3 {
+    // SAFETY: Astronomy_CurrentTime is a pure C function with no
+    // preconditions. It reads the system clock and returns a value type.
+    #[allow(unsafe_code)]
+    let time = unsafe { Astronomy_CurrentTime() };
+    sun_direction_from_time(time)
+}
+
+/// Compute the sun direction for a specific `astro_time_t`.
+///
+/// This is the core implementation shared by `sun_direction_now` and tests.
+fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
+    // Get the sun's equatorial coordinates (right ascension and declination)
+    // referred to the equator of date, with aberration correction.
+    // We use a geocentric observer (lat=0, lon=0, height=0) because
+    // we want the direction from Earth's center, not a surface point.
+    #[allow(unsafe_code)]
+    let observer = unsafe { Astronomy_MakeObserver(0.0, 0.0, 0.0) };
+
+    #[allow(unsafe_code)]
+    let equ = unsafe {
+        Astronomy_Equator(
+            astro_body_t_BODY_SUN,
+            &mut time,
+            observer,
+            astro_equator_date_t_EQUATOR_OF_DATE,
+            astro_aberration_t_ABERRATION,
+        )
+    };
+    assert_eq!(
+        equ.status,
+        astro_status_t_ASTRO_SUCCESS,
+        "Astronomy_Equator failed"
+    );
+
+    // Get Greenwich Apparent Sidereal Time (hours)
+    #[allow(unsafe_code)]
+    let gast_hours = unsafe { Astronomy_SiderealTime(&mut time) };
+
+    // Subsolar latitude = sun's declination
+    let subsolar_lat_deg = equ.dec;
+
+    // Subsolar longitude = GAST - RA, converted to degrees
+    // (GAST and RA are both in sidereal hours; 1 hour = 15 degrees)
+    let subsolar_lon_deg = (gast_hours - equ.ra) * 15.0;
+
+    // Convert to renderer's Cartesian coordinate frame:
+    //   +X = prime meridian at equator (0N, 0E)
+    //   +Y = north pole
+    //   -Z = 90 degrees East (0N, 90E)
+    let phi = subsolar_lat_deg.to_radians();
+    let lambda = subsolar_lon_deg.to_radians();
+
+    #[allow(clippy::cast_possible_truncation)]
+    let dir = Vec3::new(
+        (phi.cos() * lambda.cos()) as f32,
+        phi.sin() as f32,
+        -(phi.cos() * lambda.sin()) as f32,
+    );
+
+    dir.normalize()
+}
+
+/// Create an `astro_time_t` from calendar components (UTC).
+///
+/// This helper is used by tests and by `sun_direction_at` if we ever
+/// need to compute the sun direction for a specific time.
+fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64) -> astro_time_t {
+    #[allow(unsafe_code)]
+    unsafe {
+        Astronomy_MakeTime(year, month, day, hour, minute, second)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: compute sun direction for a specific UTC date/time.
+    fn sun_dir_at(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> Vec3 {
+        let time = make_time(year, month, day, hour, minute, 0.0);
+        sun_direction_from_time(time)
+    }
+
+    /// At the March equinox UTC noon, the subsolar point is near (0N, 0E).
+    /// Expected direction: approximately (+1, 0, 0).
+    #[test]
+    fn march_equinox_noon() {
+        let dir = sun_dir_at(2025, 3, 20, 12, 0);
+        assert!(
+            (dir.x - 1.0).abs() < 0.1,
+            "Expected X near 1.0, got {dir}"
+        );
+        assert!(dir.y.abs() < 0.1, "Expected Y near 0.0, got {dir}");
+        assert!(dir.z.abs() < 0.15, "Expected Z near 0.0, got {dir}");
+    }
+
+    /// At the June solstice UTC noon, the subsolar point is near (23.4N, 0E).
+    /// Expected: X ~ cos(23.4) ~ 0.92, Y ~ sin(23.4) ~ 0.40, Z ~ 0.
+    #[test]
+    fn june_solstice_noon() {
+        let dir = sun_dir_at(2025, 6, 21, 12, 0);
+        assert!(
+            (dir.y - 0.40).abs() < 0.1,
+            "Expected Y near 0.40, got {dir}"
+        );
+        assert!(
+            (dir.x - 0.92).abs() < 0.1,
+            "Expected X near 0.92, got {dir}"
+        );
+        assert!(dir.z.abs() < 0.15, "Expected Z near 0.0, got {dir}");
+    }
+
+    /// At the December solstice UTC noon, the subsolar point is near (23.4S, 0E).
+    /// Expected: Y ~ -0.40.
+    #[test]
+    fn december_solstice_noon() {
+        let dir = sun_dir_at(2025, 12, 21, 12, 0);
+        assert!(
+            (dir.y - (-0.40)).abs() < 0.1,
+            "Expected Y near -0.40, got {dir}"
+        );
+    }
+
+    /// At UTC midnight on the March equinox, the subsolar point is near
+    /// the international date line (180E). Expected: X near -1, Y near 0, Z near 0.
+    #[test]
+    fn march_equinox_midnight() {
+        let dir = sun_dir_at(2025, 3, 20, 0, 0);
+        assert!(
+            (dir.x - (-1.0)).abs() < 0.1,
+            "Expected X near -1.0, got {dir}"
+        );
+        assert!(dir.y.abs() < 0.1, "Expected Y near 0.0, got {dir}");
+        assert!(dir.z.abs() < 0.15, "Expected Z near 0.0, got {dir}");
+    }
+
+    /// The returned vector should always have unit length.
+    #[test]
+    fn unit_vector() {
+        let dir = sun_direction_now();
+        let len = dir.length();
+        assert!(
+            (len - 1.0).abs() < 1e-4,
+            "Expected unit vector, got length {len}"
+        );
+    }
+}

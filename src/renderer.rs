@@ -759,9 +759,14 @@ fn create_gpu_resources(
         immediate_size: 0,
     });
 
+    let wgsl_source = format!(
+        "{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sphere_shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sphere.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
     });
 
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =

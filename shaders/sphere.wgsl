@@ -54,23 +54,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let night_color = textureSample(night_texture, sphere_sampler, in.uv).rgb;
     let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
-    let w = uniforms.terminator_width;
-    let blend = smoothstep(-w, w, n_dot_l);
 
-    // Diffuse shading: shade the day texture before blending, then
-    // clamp so no channel dips below min(night, day). Per-channel:
-    //   - Where night < day (ocean, terrain): floor = night → prevents
-    //     the dark terminator band caused by diffuse_floor * day < night.
-    //   - Where night > day (city lights): floor = day → prevents bright
-    //     night-texture pixels from bleeding onto the sunlit side.
-    var shaded_day = day_color;
-    if (uniforms.flags & 1u) != 0u {
-        let shading = mix(uniforms.diffuse_floor, 1.0,
-                          smoothstep(0.0, uniforms.diffuse_ramp, n_dot_l));
-        shaded_day = max(day_color * shading, min(night_color, day_color));
-    }
-
-    let color = mix(night_color, shaded_day, blend);
+    let color = blend_fragment(
+        day_color, night_color, n_dot_l,
+        uniforms.terminator_width,
+        (uniforms.flags & 1u) != 0u,
+        uniforms.diffuse_floor,
+        uniforms.diffuse_ramp,
+    );
 
     return vec4<f32>(color, 1.0);
 }

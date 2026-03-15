@@ -16,21 +16,21 @@ Close test coverage gaps in Sunlit Earth by adding tests for four untested modul
 
 ## Success Criteria
 
-- [ ] cargo-llvm-cov installed and producing an HTML coverage report with baseline recorded
-- [ ] `build_aa_options()`, `downsample_2x()`, and `shift_horizontal()` have unit tests
-- [ ] `approx` crate used for float assertions in new and existing tests
-- [ ] `quantize_to_granularity()` extracted from `renderer.rs` and tested
-- [ ] `adapter_type_rank()` extracted from `wgpu_init.rs` and tested
-- [ ] `grid_texture` coverage deepened with grid-line pixel sampling
-- [ ] Proptest properties for `shift_horizontal` and `downsample_2x`
-- [ ] `renderer.rs` split into `renderer/` submodule
-- [ ] `build_frame_state()` extracted as a pure function and tested
-- [ ] Dirty-check coverage verified for all render-affecting fields
-- [ ] Full render pipeline integration test (sphere.wgsl vertex + fragment) passing
-- [ ] Single-texture mode sentinel (`terminator_width < 0`) tested on GPU
-- [ ] Uniform buffer field offset test catching padding mismatches
-- [ ] Overall coverage at or above 60%
-- [ ] `CLAUDE.md` updated with testing standards and coverage commands
+- [x] cargo-llvm-cov installed and producing an HTML coverage report with baseline recorded
+- [x] `build_aa_options()`, `downsample_2x()`, and `shift_horizontal()` have unit tests
+- [x] `approx` crate used for float assertions in new and existing tests
+- [x] `quantize_to_granularity()` extracted from `renderer.rs` and tested
+- [x] `adapter_type_rank()` extracted from `wgpu_init.rs` and tested
+- [x] `grid_texture` coverage deepened with grid-line pixel sampling
+- [x] Proptest properties for `shift_horizontal` and `downsample_2x`
+- [x] `renderer.rs` split into `renderer/` submodule
+- [x] `build_frame_state()` extracted as a pure function and tested
+- [x] Dirty-check coverage verified for all render-affecting fields
+- [x] Full render pipeline integration test (sphere.wgsl vertex + fragment) passing
+- [x] Single-texture mode sentinel (`terminator_width < 0`) tested on GPU
+- [x] Uniform buffer field offset test catching padding mismatches
+- [ ] Overall coverage at or above 60% (achieved 40.62% line / 64% function — gap is untestable GPU setup and main.rs)
+- [x] `CLAUDE.md` updated with testing standards and coverage commands
 
 ## Implementation Steps
 
@@ -408,10 +408,10 @@ proptest = "1"           # property-based testing for pure functions
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Phase 1 complete (baseline + easy wins)
-- [ ] Phase 2 complete (extract + test hidden logic)
-- [ ] Phase 3 complete (renderer split + humble object)
-- [ ] Phase 4 complete (GPU integration tests)
-- [ ] Phase 5 complete (documentation)
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Phase 1 complete (baseline + easy wins)
+- [x] Phase 2 complete (extract + test hidden logic)
+- [x] Phase 3 complete (renderer split + humble object)
+- [x] Phase 4 complete (GPU integration tests)
+- [x] Phase 5 complete (documentation)
+- [x] Implementation complete

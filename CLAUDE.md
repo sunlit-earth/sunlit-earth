@@ -16,9 +16,12 @@ cargo build --release      # Release build (LTO, stripped)
 cargo test                 # Run all tests
 cargo test camera          # Run tests in a single module
 cargo test --test shading  # Run GPU shader integration tests only
+cargo test --test render_pipeline  # Run render pipeline GPU tests only
 cargo clippy               # Lint (pedantic enabled, see Cargo.toml for allows)
 cargo run                  # Run the app
 cargo run -- --software-rendering  # Force CPU rendering
+cargo llvm-cov --html      # Generate HTML coverage report (target/llvm-cov/html/)
+cargo llvm-cov --lcov      # Generate LCOV coverage report (for CI)
 ```
 
 ## Architecture
@@ -33,19 +36,23 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `RenderingTeardown` — drop GPU resources
 - A 2-minute periodic Slint timer triggers automatic redraws so the terminator moves with the sun
 
-**GPU resources** are stored in a `thread_local! { RefCell<Option<GpuResources>> }` in `renderer.rs` because the rendering notifier callback requires `'static` lifetime.
+**GPU resources** are stored in a `thread_local! { RefCell<Option<GpuResources>> }` in `renderer/mod.rs` because the rendering notifier callback requires `'static` lifetime.
 
 **Key modules:**
 - `main.rs` — CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup, periodic sun timer
-- `renderer.rs` — GPU pipeline, frame rendering, dirty-checking, MSAA management, texture recreation, lazy texture loading via `TextureSlot` Vec, day/night composite bind group, 96-byte uniform buffer (MVP + sun_dir + terminator_width + flags)
-- `sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time → renderer coordinate frame)
-- `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation
-- `camera.rs` — orbital camera: (longitude, latitude, distance) → MVP matrix
-- `sphere.rs` — parametric UV sphere mesh generation (64×64, position + UV only)
-- `grid_texture.rs` — procedural equirectangular grid texture (2048×1024) with CPU-computed mipmaps
+- `renderer/` — GPU pipeline, frame rendering, dirty-checking, split into focused submodules:
+  - `renderer/mod.rs` — public API (`setup_rendering_notifier`, `build_aa_options`, `build_frame_state`), rendering callback, `FrameState`, `quantize_to_granularity`, constants, thread-local `GPU_RESOURCES`
+  - `renderer/gpu_setup.rs` — `GpuResources` struct, `create_gpu_resources()`, `create_pipeline()`, `create_render_textures()`, MSAA/resize rebuild functions
+  - `renderer/textures.rs` — `TextureSlot`, texture loading/decoding, composite bind group, `create_mipmapped_texture()`, `downsample_2x()`
+  - `renderer/uniforms.rs` — `Uniforms` struct with `#[repr(C)]`, compile-time size assertion
+- `sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame)
+- `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
+- `camera.rs` — orbital camera: (longitude, latitude, distance) -> MVP matrix
+- `sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
+- `grid_texture.rs` — procedural equirectangular grid texture (2048x1024) with CPU-computed mipmaps
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
 
-**Shader:** Split into two files concatenated at load time by `renderer.rs`:
+**Shader:** Split into two files concatenated at load time by `renderer/gpu_setup.rs`:
 - `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp
 - `shaders/sphere.wgsl` — vertex transform, texture sampling, uniforms; calls `blend_fragment()`. Single-texture mode uses `terminator_width < 0` as sentinel.
 
@@ -54,6 +61,33 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 **Notable dependencies beyond wgpu/slint:**
 - `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
 - `time` — UTC time decomposition for astronomy calculations
+
+## Testing
+
+### Coverage
+
+Coverage targets by module type:
+- **90-100%**: Pure functions (`build_aa_options`, `quantize_to_granularity`, `adapter_type_rank`, `downsample_2x`, `shift_horizontal`)
+- **80-90%**: Business logic with extracted pure functions (`build_frame_state`, `grid_texture::generate`)
+- **20-40%**: GPU pipeline code (tested indirectly via integration tests)
+- **<20%**: `main.rs` / UI glue (not unit-testable without Slint test backend)
+- **Overall target**: 60-70%
+
+### Conventions
+
+- **Float comparisons**: Use `approx::assert_relative_eq!` (not raw epsilon patterns). `tests/shading.rs` is an exception — its GPU tolerance pattern predates this convention and works well as-is.
+- **GPU integration tests**: Assert behavioral invariants (monotonicity, bounds, visibility), not pixel-exact values, due to cross-hardware float variance.
+- **GPU device sharing**: Use `LazyLock<Mutex<GpuContext>>` to share a single device across parallel test threads. Per-test device creation crashes on Windows.
+- **Shared GPU helpers**: `tests/common/mod.rs` provides `GpuContext`, `create_gpu_context()`, `read_buffer()`, and `read_texture_rgba8()`.
+- **Property-based testing**: `proptest` for invariants of pure functions (output size, identity after N applications).
+
+### Dev-Dependencies
+
+```toml
+[dev-dependencies]
+approx = "0.5"   # assert_relative_eq! for float comparisons
+proptest = "1"    # property-based testing for pure functions
+```
 
 ## Workflow
 
@@ -64,8 +98,8 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` has scoped `#[allow(unsafe_code)]` on individual FFI call sites.
 - Slint version pinned to `~1.15` with `unstable-wgpu-28` feature — this is the integration point between Slint and wgpu 28
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
-- Dirty-checking compares (longitude, latitude, zoom, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading) to skip redundant renders
-- Grid texture uses 16× anisotropic filtering with trilinear mipmaps
+- Dirty-checking via `FrameState` compares (longitude, latitude, zoom, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading, diffuse_floor, diffuse_ramp) to skip redundant renders. Float values are quantized to integer thousandths for stable comparison.
+- Grid texture uses 16x anisotropic filtering with trilinear mipmaps
 - WGSL `vec3<f32>` has 16-byte alignment in storage buffers — Rust `#[repr(C)]` structs must include explicit `_pad: f32` after every `[f32; 3]` field to match layout
-- GPU integration tests (`tests/shading.rs`) run the real WGSL on the GPU via compute shader — use `LazyLock<Mutex<GpuContext>>` to share the device across parallel test threads (per-test device creation crashes on Windows)
+- GPU integration tests (`tests/shading.rs`, `tests/render_pipeline.rs`) run the real WGSL on the GPU — use `LazyLock<Mutex<...>>` to share the device across parallel test threads (per-test device creation crashes on Windows)
 - LF line endings globally

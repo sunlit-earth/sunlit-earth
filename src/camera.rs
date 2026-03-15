@@ -61,6 +61,8 @@ impl OrbitalCamera {
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
 
     #[test]
@@ -68,9 +70,9 @@ mod tests {
         let cam = OrbitalCamera::new(0.0, 0.0, 5.0);
         let eye = cam.eye_position();
         // At lon=0, lat=0, camera should be on the +Z axis
-        assert!(eye.x.abs() < 1e-5);
-        assert!(eye.y.abs() < 1e-5);
-        assert!((eye.z - 5.0).abs() < 1e-5);
+        assert_relative_eq!(eye.x, 0.0, epsilon = 1e-5);
+        assert_relative_eq!(eye.y, 0.0, epsilon = 1e-5);
+        assert_relative_eq!(eye.z, 5.0, epsilon = 1e-5);
     }
 
     #[test]
@@ -78,9 +80,9 @@ mod tests {
         let cam = OrbitalCamera::new(90.0, 0.0, 5.0);
         let eye = cam.eye_position();
         // At lon=90, lat=0, camera should be on the +X axis
-        assert!((eye.x - 5.0).abs() < 1e-4);
-        assert!(eye.y.abs() < 1e-5);
-        assert!(eye.z.abs() < 1e-4);
+        assert_relative_eq!(eye.x, 5.0, epsilon = 1e-4);
+        assert_relative_eq!(eye.y, 0.0, epsilon = 1e-5);
+        assert_relative_eq!(eye.z, 0.0, epsilon = 1e-4);
     }
 
     #[test]
@@ -89,9 +91,9 @@ mod tests {
         let eye = cam.eye_position();
         // Latitude is clamped to 89.9° to avoid gimbal lock, so the
         // camera is near (but not exactly on) the +Y axis.
-        assert!(eye.x.abs() < 0.01);
-        assert!((eye.y - 5.0).abs() < 0.01);
-        assert!(eye.z.abs() < 0.02);
+        assert_relative_eq!(eye.x, 0.0, epsilon = 0.01);
+        assert_relative_eq!(eye.y, 5.0, epsilon = 0.01);
+        assert_relative_eq!(eye.z, 0.0, epsilon = 0.02);
     }
 
     #[test]

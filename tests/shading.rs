@@ -4,6 +4,8 @@
 //! on the GPU via a compute shader, so these tests can never drift out of
 //! sync with the production shader code.
 
+mod common;
+
 use std::sync::{LazyLock, Mutex, mpsc};
 
 use wgpu::util::DeviceExt;
@@ -87,79 +89,43 @@ fn test_main(@builtin(global_invocation_id) id: vec3<u32>) {
 // A Mutex serializes GPU submissions so parallel test threads don't crash.
 // ---------------------------------------------------------------------------
 
-struct GpuContext {
+struct BlendGpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
 }
 
-fn create_gpu_context(force_software: bool) -> GpuContext {
-    pollster::block_on(async {
-        let instance = wgpu::Instance::default();
+fn create_blend_context(force_software: bool) -> BlendGpuContext {
+    let ctx = common::create_gpu_context(force_software);
 
-        let adapter: wgpu::Adapter = if force_software {
-            instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    compatible_surface: None,
-                    force_fallback_adapter: true,
-                    ..Default::default()
-                })
-                .await
-                .expect("no software adapter available")
-        } else {
-            instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                    ..Default::default()
-                })
-                .await
-                .or_else(|_| {
-                    pollster::block_on(instance.request_adapter(
-                        &wgpu::RequestAdapterOptions {
-                            compatible_surface: None,
-                            force_fallback_adapter: true,
-                            ..Default::default()
-                        },
-                    ))
-                })
-                .expect("no wgpu adapter available (tried hardware and software)")
-        };
+    let wgsl_source = format!(
+        "{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        COMPUTE_HARNESS,
+    );
+    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("test_shader"),
+        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+    });
 
-        let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await
-            .expect("failed to create wgpu device");
+    let pipeline = ctx.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("test_pipeline"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("test_main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
 
-        let wgsl_source = format!(
-            "{}\n{}",
-            include_str!("../shaders/blend.wgsl"),
-            COMPUTE_HARNESS,
-        );
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test_shader"),
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-        });
-
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("test_pipeline"),
-            layout: None,
-            module: &shader,
-            entry_point: Some("test_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
-        GpuContext {
-            device,
-            queue,
-            pipeline,
-        }
-    })
+    BlendGpuContext {
+        device: ctx.device,
+        queue: ctx.queue,
+        pipeline,
+    }
 }
 
-static GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
-    Mutex::new(create_gpu_context(false))
+static GPU: LazyLock<Mutex<BlendGpuContext>> = LazyLock::new(|| {
+    Mutex::new(create_blend_context(false))
 });
 
 // ---------------------------------------------------------------------------
@@ -171,7 +137,7 @@ fn run_on_gpu(cases: &[TestCase]) -> Vec<TestResult> {
     dispatch(&gpu, cases)
 }
 
-fn dispatch(gpu: &GpuContext, cases: &[TestCase]) -> Vec<TestResult> {
+fn dispatch(gpu: &BlendGpuContext, cases: &[TestCase]) -> Vec<TestResult> {
     assert!(!cases.is_empty(), "need at least one test case");
 
     let device = &gpu.device;
@@ -595,7 +561,7 @@ fn never_below_min_across_color_range() {
 
 #[test]
 fn software_adapter_produces_correct_results() {
-    let gpu = create_gpu_context(true);
+    let gpu = create_blend_context(true);
 
     // Run a representative subset: ocean + NYC sweeps
     let mut cases = sweep(OCEAN_DAY, OCEAN_NIGHT, 500, W, true, FLOOR, RAMP);

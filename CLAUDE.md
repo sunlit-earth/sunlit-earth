@@ -40,12 +40,12 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Key modules:**
 - `main.rs` — CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup
-- `renderer.rs` — GPU pipeline, frame rendering, dirty-checking, MSAA management, texture recreation
+- `renderer.rs` — GPU pipeline, frame rendering, dirty-checking, MSAA management, texture recreation, lazy texture loading via `TextureSlot` Vec
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation
 - `camera.rs` — orbital camera: (longitude, latitude, distance) → MVP matrix
 - `sphere.rs` — parametric UV sphere mesh generation (64×64, position + UV only)
 - `grid_texture.rs` — procedural equirectangular grid texture (2048×1024) with CPU-computed mipmaps
-- `earth_texture.rs` — JPG loading with coordinate transforms (flip + shift) for NASA Blue Marble textures
+- `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
 
 **Shader:** `shaders/sphere.wgsl` — vertex transform by MVP, fragment samples texture.
 

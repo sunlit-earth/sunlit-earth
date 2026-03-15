@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod camera;
-mod earth_texture;
+mod texture_loader;
 mod grid_texture;
 mod renderer;
 mod sphere;
@@ -45,37 +45,31 @@ fn main() {
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
 
-    // Load earth texture if available
-    let textures_dir = earth_texture::resolve_textures_dir(cli.textures_dir.as_deref());
-    let earth_pixels = textures_dir.and_then(|dir| {
-        let path = dir.join("earth_4k.jpg");
-        match earth_texture::load(&path) {
-            Ok(img) => {
-                eprintln!("Loaded earth texture: {}×{}", img.width, img.height);
-                Some(img)
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                None
-            }
-        }
-    });
+    // Register JXL decoding hook before any image loading
+    texture_loader::register_jxl_hook();
 
-    // Set up texture options — only show "Earth" if the texture loaded
-    let has_earth = earth_pixels.is_some();
-    if has_earth {
-        let labels: Vec<slint::SharedString> = vec!["Grid".into(), "Earth".into()];
-        window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
-    }
+    // Resolve texture paths for JXL files (loaded lazily when selected)
+    let textures_dir = texture_loader::resolve_textures_dir(cli.textures_dir.as_deref());
+    let day_path = textures_dir
+        .as_ref()
+        .map(|d| d.join("world.topo.200405.jxl"))
+        .filter(|p| p.exists());
+    let night_path = textures_dir
+        .as_ref()
+        .map(|d| d.join("BlackMarble_2016.jxl"))
+        .filter(|p| p.exists());
+    let texture_paths = vec![day_path, night_path];
+
+    // Set up texture options — always show all three
+    let labels: Vec<slint::SharedString> = vec!["Grid".into(), "Day".into(), "Night".into()];
+    window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
 
     // Defer setting indices so they apply after Slint processes the model changes
     let window_weak = window.as_weak();
     slint::invoke_from_event_loop(move || {
         if let Some(win) = window_weak.upgrade() {
             win.set_aa_index(aa_default);
-            if has_earth {
-                win.set_texture_index(1);
-            }
+            win.set_texture_index(1);
             win.window().request_redraw();
         }
     })
@@ -103,7 +97,7 @@ fn main() {
         }
     });
 
-    renderer::setup_rendering_notifier(&window, aa_counts, earth_pixels);
+    renderer::setup_rendering_notifier(&window, aa_counts, texture_paths);
 
     window.run().expect("Failed to run window");
 

@@ -1,11 +1,13 @@
+use std::path::PathBuf;
+
 use slint::{ComponentHandle, GraphicsAPI, Image, RenderingState};
 use wgpu::util::DeviceExt;
 
 use crate::MainWindow;
 use crate::camera::OrbitalCamera;
-use crate::earth_texture::DecodedImage;
 use crate::grid_texture;
 use crate::sphere::{self, Vertex};
+use crate::texture_loader;
 
 const DEFAULT_WIDTH: u32 = 800;
 const DEFAULT_HEIGHT: u32 = 600;
@@ -38,6 +40,14 @@ pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32
     (labels, counts, default_index)
 }
 
+/// Descriptor for a texture that can be loaded on demand.
+struct TextureSlot {
+    /// The GPU bind group, populated on first use.
+    bind_group: Option<wgpu::BindGroup>,
+    /// Filesystem path to the texture file (`None` for procedural textures).
+    source_path: Option<PathBuf>,
+}
+
 /// GPU resources created during `RenderingSetup`.
 struct GpuResources {
     pipeline: wgpu::RenderPipeline,
@@ -45,8 +55,12 @@ struct GpuResources {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
-    grid_bind_group: wgpu::BindGroup,
-    earth_bind_group: Option<wgpu::BindGroup>,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    texture_slots: Vec<TextureSlot>,
+    /// Index of the most recently successfully rendered texture slot.
+    /// Used as fallback when the requested slot is not loaded or fails.
+    last_rendered_index: usize,
     depth_texture: wgpu::TextureView,
     render_texture: wgpu::Texture,
     msaa_texture_view: Option<wgpu::TextureView>,
@@ -78,10 +92,9 @@ struct FrameState {
 pub fn setup_rendering_notifier(
     window: &MainWindow,
     aa_counts: Vec<u32>,
-    earth_pixels: Option<DecodedImage>,
+    texture_paths: Vec<Option<PathBuf>>,
 ) {
     let window_weak = window.as_weak();
-    let earth_pixels = std::cell::RefCell::new(earth_pixels);
 
     window
         .window()
@@ -91,7 +104,7 @@ pub fn setup_rendering_notifier(
                 graphics_api,
                 &window_weak,
                 &aa_counts,
-                &earth_pixels,
+                &texture_paths,
             );
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
@@ -125,7 +138,7 @@ fn rendering_callback(
     graphics_api: &GraphicsAPI,
     window_weak: &slint::Weak<MainWindow>,
     aa_counts: &[u32],
-    earth_pixels: &std::cell::RefCell<Option<DecodedImage>>,
+    texture_paths: &[Option<PathBuf>],
 ) {
     match state {
         RenderingState::RenderingSetup => {
@@ -141,15 +154,13 @@ fn rendering_callback(
                         let (w, h) = quantized_viewport_size(&win);
                         (lookup_sample_count(&win, aa_counts), w, h)
                     });
-            // Take earth pixels out of the RefCell — they're consumed during texture upload
-            let earth = earth_pixels.borrow_mut().take();
             let resources = create_gpu_resources(
                 device.clone(),
                 queue.clone(),
                 sample_count,
                 width,
                 height,
-                earth.as_ref(),
+                texture_paths,
             );
             GPU_RESOURCES.with(|r| {
                 *r.borrow_mut() = Some(resources);
@@ -197,8 +208,14 @@ fn rendering_callback(
                     current_state.latitude,
                     current_state.zoom,
                 );
-                let texture_index = current_state.texture_index;
-                res.last_state = Some(current_state);
+                res.last_state = Some(current_state.clone());
+
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let slot_index = (current_state.texture_index as usize)
+                    .min(res.texture_slots.len().saturating_sub(1));
+
+                // Ensure the requested texture slot is loaded (lazy loading)
+                let render_index = ensure_bind_group_loaded(res, slot_index);
 
                 #[allow(clippy::cast_precision_loss)]
                 let aspect = res.render_width as f32 / res.render_height as f32;
@@ -259,11 +276,11 @@ fn rendering_callback(
                     });
 
                     pass.set_pipeline(&res.pipeline);
-                    let bind_group = if texture_index == 1 {
-                        res.earth_bind_group.as_ref().unwrap_or(&res.grid_bind_group)
-                    } else {
-                        &res.grid_bind_group
-                    };
+                    // Use the bind group for the resolved render index (requested or fallback)
+                    let bind_group = res.texture_slots[render_index]
+                        .bind_group
+                        .as_ref()
+                        .expect("render_index must always point to a loaded slot");
                     pass.set_bind_group(0, bind_group, &[]);
                     pass.set_vertex_buffer(0, res.vertex_buffer.slice(..));
                     pass.set_index_buffer(res.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -287,6 +304,69 @@ fn rendering_callback(
     }
 }
 
+/// Ensure the bind group for the given texture slot is loaded.
+///
+/// Returns the index of the slot to render with: either the requested slot
+/// (if it was already loaded or successfully loaded now), or
+/// `last_rendered_index` as a fallback.
+fn ensure_bind_group_loaded(res: &mut GpuResources, slot_index: usize) -> usize {
+    // Already loaded — use it directly
+    if res.texture_slots[slot_index].bind_group.is_some() {
+        res.last_rendered_index = slot_index;
+        return slot_index;
+    }
+
+    // No source path — this slot cannot be loaded (procedural-only or failed)
+    let Some(path) = res.texture_slots[slot_index].source_path.clone() else {
+        return res.last_rendered_index;
+    };
+
+    // Attempt lazy loading
+    let start = std::time::Instant::now();
+    texture_loader::register_jxl_hook();
+
+    match texture_loader::load(&path) {
+        Ok(img) => {
+            let elapsed = start.elapsed();
+            eprintln!(
+                "Loaded texture ({}\u{d7}{}) from {} in {:.2}s",
+                img.width,
+                img.height,
+                path.display(),
+                elapsed.as_secs_f64(),
+            );
+
+            let tex = create_mipmapped_texture(
+                &res.device,
+                &res.queue,
+                &format!("texture_slot_{slot_index}"),
+                img.width,
+                img.height,
+                &img.pixels,
+            );
+            let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = create_bind_group(
+                &res.device,
+                &res.bind_group_layout,
+                &res.uniform_buffer,
+                &tex_view,
+                &res.sampler,
+                &format!("bind_group_slot_{slot_index}"),
+            );
+
+            res.texture_slots[slot_index].bind_group = Some(bind_group);
+            res.last_rendered_index = slot_index;
+            slot_index
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            // Mark source_path as None so we don't retry on every frame
+            res.texture_slots[slot_index].source_path = None;
+            res.last_rendered_index
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn create_gpu_resources(
     device: wgpu::Device,
@@ -294,7 +374,7 @@ fn create_gpu_resources(
     sample_count: u32,
     width: u32,
     height: u32,
-    earth_pixels: Option<&DecodedImage>,
+    texture_paths: &[Option<PathBuf>],
 ) -> GpuResources {
     // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
@@ -363,7 +443,7 @@ fn create_gpu_resources(
         ],
     });
 
-    // Grid texture
+    // Grid texture (always loaded at slot 0)
     let grid_tex = create_mipmapped_texture(
         &device,
         &queue,
@@ -383,26 +463,17 @@ fn create_gpu_resources(
         "grid_bind_group",
     );
 
-    // Earth texture (if available)
-    let earth_bind_group = earth_pixels.map(|img| {
-        let earth_tex = create_mipmapped_texture(
-            &device,
-            &queue,
-            "earth_texture",
-            img.width,
-            img.height,
-            &img.pixels,
-        );
-        let earth_tex_view = earth_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        create_bind_group(
-            &device,
-            &bind_group_layout,
-            &uniform_buffer,
-            &earth_tex_view,
-            &sampler,
-            "earth_bind_group",
-        )
-    });
+    // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from paths
+    let mut texture_slots = vec![TextureSlot {
+        bind_group: Some(grid_bind_group),
+        source_path: None,
+    }];
+    for path in texture_paths {
+        texture_slots.push(TextureSlot {
+            bind_group: None,
+            source_path: path.clone(),
+        });
+    }
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("sphere_pipeline_layout"),
@@ -427,8 +498,10 @@ fn create_gpu_resources(
         #[allow(clippy::cast_possible_truncation)]
         index_count: mesh.indices.len() as u32,
         uniform_buffer,
-        grid_bind_group,
-        earth_bind_group,
+        bind_group_layout,
+        sampler,
+        texture_slots,
+        last_rendered_index: 0,
         depth_texture,
         render_texture,
         msaa_texture_view,

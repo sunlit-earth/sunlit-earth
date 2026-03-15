@@ -5,6 +5,7 @@
 - [project.md](project.md) — project vision, goals, motivation, and technology stack
 - [tech.md](tech.md) — technical decisions, constraints, rendering approach, wallpaper APIs, astronomy
 - [related.md](related.md) — competitive analysis of existing satellite imagery and rendered globe apps
+- [roadmap.md](roadmap.md) — planned features and improvements, roughly ordered by priority
 - [notes.md](notes.md) — open issues and research topics
 
 ## Plans

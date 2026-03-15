@@ -20,6 +20,7 @@ cargo build                # Debug build
 cargo build --release      # Release build (LTO, stripped)
 cargo test                 # Run all tests
 cargo test camera          # Run tests in a single module
+cargo test --test shading  # Run GPU shader integration tests only
 cargo clippy               # Lint (pedantic enabled, see Cargo.toml for allows)
 cargo run                  # Run the app
 cargo run -- --software-rendering  # Force CPU rendering
@@ -49,7 +50,9 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `grid_texture.rs` — procedural equirectangular grid texture (2048×1024) with CPU-computed mipmaps
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
 
-**Shader:** `shaders/sphere.wgsl` — vertex transform by MVP, fragment blends day/night textures using `smoothstep` on `dot(world_normal, sun_dir)` with configurable terminator width and optional diffuse shading. Single-texture mode uses `terminator_width < 0` as sentinel.
+**Shader:** Split into two files concatenated at load time by `renderer.rs`:
+- `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp
+- `shaders/sphere.wgsl` — vertex transform, texture sampling, uniforms; calls `blend_fragment()`. Single-texture mode uses `terminator_width < 0` as sentinel.
 
 **UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox with Day/Night Blend mode, MSAA combobox, longitude/latitude/zoom sliders, terminator width slider, diffuse shading checkbox, adapter info) and image display area.
 
@@ -68,4 +71,6 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
 - Dirty-checking compares (longitude, latitude, zoom, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading) to skip redundant renders
 - Grid texture uses 16× anisotropic filtering with trilinear mipmaps
+- WGSL `vec3<f32>` has 16-byte alignment in storage buffers — Rust `#[repr(C)]` structs must include explicit `_pad: f32` after every `[f32; 3]` field to match layout
+- GPU integration tests (`tests/shading.rs`) run the real WGSL on the GPU via compute shader — use `LazyLock<Mutex<GpuContext>>` to share the device across parallel test threads (per-test device creation crashes on Windows)
 - LF line endings globally

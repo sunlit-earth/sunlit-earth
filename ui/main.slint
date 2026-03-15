@@ -28,6 +28,7 @@ export component MainWindow inherits Window {
     in-out property <int> aa-index: 1;
     in property <[string]> texture-options: ["Grid", "Day", "Night"];
     in-out property <int> texture-index: 1;
+    in property <string> loading-text;
 
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
@@ -176,6 +177,23 @@ export component MainWindow inherits Window {
             width: parent.width;
             height: parent.height;
             image-fit: contain;
+        }
+
+        if loading-text != "" : Rectangle {
+            x: parent.width - loading-label.width - 16px;
+            y: parent.height - loading-label.height - 12px;
+            width: loading-label.width + 16px;
+            height: loading-label.height + 8px;
+            border-radius: 4px;
+            background: #000000aa;
+
+            loading-label := Text {
+                x: 8px;
+                y: 4px;
+                text: loading-text;
+                color: #cccccc;
+                font-size: 12px;
+            }
         }
     }
 }

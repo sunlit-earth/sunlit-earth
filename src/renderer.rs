@@ -1,6 +1,7 @@
 use std::path::PathBuf;
+use std::sync::mpsc;
 
-use slint::{ComponentHandle, GraphicsAPI, Image, RenderingState};
+use slint::{ComponentHandle, GraphicsAPI, Image, Model, RenderingState};
 use wgpu::util::DeviceExt;
 
 use crate::MainWindow;
@@ -40,12 +41,20 @@ pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32
     (labels, counts, default_index)
 }
 
+/// Message sent from a background decode thread when texture loading completes.
+struct DecodedTextureMessage {
+    slot_index: usize,
+    result: Result<texture_loader::DecodedImage, String>,
+}
+
 /// Descriptor for a texture that can be loaded on demand.
 struct TextureSlot {
     /// The GPU bind group, populated on first use.
     bind_group: Option<wgpu::BindGroup>,
     /// Filesystem path to the texture file (`None` for procedural textures).
     source_path: Option<PathBuf>,
+    /// `true` while a background thread is decoding this slot's texture.
+    loading: bool,
 }
 
 /// GPU resources created during `RenderingSetup`.
@@ -74,6 +83,14 @@ struct GpuResources {
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Sender end of the channel for completed texture decodes.
+    /// Cloned into each background decode thread.
+    texture_tx: mpsc::Sender<DecodedTextureMessage>,
+    /// Receiver end of the channel, polled via `try_recv()` in `BeforeRendering`.
+    texture_rx: mpsc::Receiver<DecodedTextureMessage>,
+    /// Weak reference to the main window, used by background threads to
+    /// trigger a redraw via `upgrade_in_event_loop`.
+    window_weak: slint::Weak<MainWindow>,
 }
 
 /// Snapshot of inputs that affect the rendered image.
@@ -161,6 +178,7 @@ fn rendering_callback(
                 width,
                 height,
                 texture_paths,
+                window_weak.clone(),
             );
             GPU_RESOURCES.with(|r| {
                 *r.borrow_mut() = Some(resources);
@@ -177,6 +195,9 @@ fn rendering_callback(
                     return;
                 };
 
+                // Phase 1: Collect completed background texture decodes
+                let received_any = process_decoded_textures(res);
+
                 // Check if sample count changed
                 let desired = lookup_sample_count(&win, aa_counts);
                 if desired != res.sample_count {
@@ -189,7 +210,7 @@ fn rendering_callback(
                     rebuild_render_textures(res, vw, vh);
                 }
 
-                // Skip rendering if nothing changed since last frame
+                // Build current frame state for dirty-checking
                 let current_state = FrameState {
                     longitude: win.get_camera_longitude(),
                     latitude: win.get_camera_latitude(),
@@ -199,7 +220,32 @@ fn rendering_callback(
                     width: res.render_width,
                     height: res.render_height,
                 };
-                if res.last_state.as_ref() == Some(&current_state) {
+
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let slot_index = (current_state.texture_index as usize)
+                    .min(res.texture_slots.len().saturating_sub(1));
+
+                // Phase 2: Kick off background loading if needed
+                maybe_spawn_texture_load(res, slot_index);
+
+                // Resolve which slot to actually render with
+                let render_index = resolve_render_index(res, slot_index);
+
+                // Update loading indicator
+                let loading = res.texture_slots[slot_index].loading;
+                if loading {
+                    let name = win
+                        .get_texture_options()
+                        .row_data(slot_index)
+                        .unwrap_or_default();
+                    win.set_loading_text(format!("Loading {name}...").into());
+                } else {
+                    win.set_loading_text(slint::SharedString::default());
+                }
+
+                // Skip rendering if nothing changed since last frame
+                // (but always render if we just received a completed decode)
+                if !received_any && res.last_state.as_ref() == Some(&current_state) {
                     return;
                 }
 
@@ -208,14 +254,7 @@ fn rendering_callback(
                     current_state.latitude,
                     current_state.zoom,
                 );
-                res.last_state = Some(current_state.clone());
-
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let slot_index = (current_state.texture_index as usize)
-                    .min(res.texture_slots.len().saturating_sub(1));
-
-                // Ensure the requested texture slot is loaded (lazy loading)
-                let render_index = ensure_bind_group_loaded(res, slot_index);
+                res.last_state = Some(current_state);
 
                 #[allow(clippy::cast_precision_loss)]
                 let aspect = res.render_width as f32 / res.render_height as f32;
@@ -304,66 +343,102 @@ fn rendering_callback(
     }
 }
 
-/// Ensure the bind group for the given texture slot is loaded.
+/// Drain the channel for completed background texture decodes and create
+/// GPU resources (mipmapped texture + bind group) for each one.
 ///
-/// Returns the index of the slot to render with: either the requested slot
-/// (if it was already loaded or successfully loaded now), or
-/// `last_rendered_index` as a fallback.
-fn ensure_bind_group_loaded(res: &mut GpuResources, slot_index: usize) -> usize {
-    // Already loaded — use it directly
-    if res.texture_slots[slot_index].bind_group.is_some() {
-        res.last_rendered_index = slot_index;
-        return slot_index;
+/// Returns `true` if at least one decoded texture was processed, signaling
+/// that a re-render is needed even if the frame state hasn't changed.
+fn process_decoded_textures(res: &mut GpuResources) -> bool {
+    let mut received_any = false;
+    while let Ok(msg) = res.texture_rx.try_recv() {
+        received_any = true;
+        match msg.result {
+            Ok(img) => {
+                let tex = create_mipmapped_texture(
+                    &res.device,
+                    &res.queue,
+                    &format!("texture_slot_{}", msg.slot_index),
+                    img.width,
+                    img.height,
+                    &img.pixels,
+                );
+                let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = create_bind_group(
+                    &res.device,
+                    &res.bind_group_layout,
+                    &res.uniform_buffer,
+                    &tex_view,
+                    &res.sampler,
+                    &format!("bind_group_slot_{}", msg.slot_index),
+                );
+                res.texture_slots[msg.slot_index].bind_group = Some(bind_group);
+                res.texture_slots[msg.slot_index].loading = false;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                // Mark source_path as None so we don't retry
+                res.texture_slots[msg.slot_index].source_path = None;
+                res.texture_slots[msg.slot_index].loading = false;
+            }
+        }
+    }
+    received_any
+}
+
+/// Spawn a background thread to decode the texture for `slot_index` if
+/// it is not already loaded or in flight.
+fn maybe_spawn_texture_load(res: &mut GpuResources, slot_index: usize) {
+    let slot = &res.texture_slots[slot_index];
+
+    // Already loaded, already loading, or no source path — nothing to do
+    if slot.bind_group.is_some() || slot.loading || slot.source_path.is_none() {
+        return;
     }
 
-    // No source path — this slot cannot be loaded (procedural-only or failed)
-    let Some(path) = res.texture_slots[slot_index].source_path.clone() else {
-        return res.last_rendered_index;
-    };
+    let path = res.texture_slots[slot_index]
+        .source_path
+        .clone()
+        .expect("checked above");
+    res.texture_slots[slot_index].loading = true;
 
-    // Attempt lazy loading
-    let start = std::time::Instant::now();
-    texture_loader::register_jxl_hook();
+    let tx = res.texture_tx.clone();
+    let window_weak = res.window_weak.clone();
 
-    match texture_loader::load(&path) {
-        Ok(img) => {
-            let elapsed = start.elapsed();
-            eprintln!(
-                "Loaded texture ({}\u{d7}{}) from {} in {:.2}s",
-                img.width,
-                img.height,
-                path.display(),
-                elapsed.as_secs_f64(),
-            );
+    std::thread::spawn(move || {
+        texture_loader::register_jxl_hook();
+        let start = std::time::Instant::now();
+        let result = match texture_loader::load(&path) {
+            Ok(img) => {
+                eprintln!(
+                    "Decoded texture ({}\u{d7}{}) from {} in {:.2}s",
+                    img.width,
+                    img.height,
+                    path.display(),
+                    start.elapsed().as_secs_f64(),
+                );
+                Ok(img)
+            }
+            Err(e) => Err(e),
+        };
 
-            let tex = create_mipmapped_texture(
-                &res.device,
-                &res.queue,
-                &format!("texture_slot_{slot_index}"),
-                img.width,
-                img.height,
-                &img.pixels,
-            );
-            let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group = create_bind_group(
-                &res.device,
-                &res.bind_group_layout,
-                &res.uniform_buffer,
-                &tex_view,
-                &res.sampler,
-                &format!("bind_group_slot_{slot_index}"),
-            );
+        // Send the result to the UI thread; ignore errors (receiver dropped on teardown)
+        let _ = tx.send(DecodedTextureMessage { slot_index, result });
 
-            res.texture_slots[slot_index].bind_group = Some(bind_group);
-            res.last_rendered_index = slot_index;
-            slot_index
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            // Mark source_path as None so we don't retry on every frame
-            res.texture_slots[slot_index].source_path = None;
-            res.last_rendered_index
-        }
+        // Wake the event loop so BeforeRendering fires and picks up the result
+        let _ = window_weak.upgrade_in_event_loop(|win| {
+            win.window().request_redraw();
+        });
+    });
+}
+
+/// Determine which texture slot to render with: the requested slot if loaded,
+/// otherwise `last_rendered_index` as a fallback.
+fn resolve_render_index(res: &mut GpuResources, slot_index: usize) -> usize {
+    if res.texture_slots[slot_index].bind_group.is_some() {
+        res.last_rendered_index = slot_index;
+        slot_index
+    } else {
+        res.last_rendered_index
     }
 }
 
@@ -375,6 +450,7 @@ fn create_gpu_resources(
     width: u32,
     height: u32,
     texture_paths: &[Option<PathBuf>],
+    window_weak: slint::Weak<MainWindow>,
 ) -> GpuResources {
     // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
@@ -467,11 +543,13 @@ fn create_gpu_resources(
     let mut texture_slots = vec![TextureSlot {
         bind_group: Some(grid_bind_group),
         source_path: None,
+        loading: false,
     }];
     for path in texture_paths {
         texture_slots.push(TextureSlot {
             bind_group: None,
             source_path: path.clone(),
+            loading: false,
         });
     }
 
@@ -490,6 +568,8 @@ fn create_gpu_resources(
         create_render_textures(&device, width, height, sample_count);
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
+
+    let (texture_tx, texture_rx) = mpsc::channel();
 
     GpuResources {
         pipeline,
@@ -514,6 +594,9 @@ fn create_gpu_resources(
         pipeline_layout,
         device,
         queue,
+        texture_tx,
+        texture_rx,
+        window_weak,
     }
 }
 

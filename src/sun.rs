@@ -99,6 +99,8 @@ fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f6
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
 
     /// Helper: compute sun direction for a specific UTC date/time.
@@ -112,12 +114,9 @@ mod tests {
     #[test]
     fn march_equinox_noon() {
         let dir = sun_dir_at(2025, 3, 20, 12, 0);
-        assert!(
-            (dir.z - 1.0).abs() < 0.1,
-            "Expected Z near 1.0, got {dir}"
-        );
-        assert!(dir.y.abs() < 0.1, "Expected Y near 0.0, got {dir}");
-        assert!(dir.x.abs() < 0.15, "Expected X near 0.0, got {dir}");
+        assert_relative_eq!(dir.z, 1.0, epsilon = 0.1);
+        assert_relative_eq!(dir.y, 0.0, epsilon = 0.1);
+        assert_relative_eq!(dir.x, 0.0, epsilon = 0.15);
     }
 
     /// At the June solstice UTC noon, the subsolar point is near (23.4N, 0E).
@@ -125,15 +124,9 @@ mod tests {
     #[test]
     fn june_solstice_noon() {
         let dir = sun_dir_at(2025, 6, 21, 12, 0);
-        assert!(
-            (dir.y - 0.40).abs() < 0.1,
-            "Expected Y near 0.40, got {dir}"
-        );
-        assert!(
-            (dir.z - 0.92).abs() < 0.1,
-            "Expected Z near 0.92, got {dir}"
-        );
-        assert!(dir.x.abs() < 0.15, "Expected X near 0.0, got {dir}");
+        assert_relative_eq!(dir.y, 0.40, epsilon = 0.1);
+        assert_relative_eq!(dir.z, 0.92, epsilon = 0.1);
+        assert_relative_eq!(dir.x, 0.0, epsilon = 0.15);
     }
 
     /// At the December solstice UTC noon, the subsolar point is near (23.4S, 0E).
@@ -141,10 +134,7 @@ mod tests {
     #[test]
     fn december_solstice_noon() {
         let dir = sun_dir_at(2025, 12, 21, 12, 0);
-        assert!(
-            (dir.y - (-0.40)).abs() < 0.1,
-            "Expected Y near -0.40, got {dir}"
-        );
+        assert_relative_eq!(dir.y, -0.40, epsilon = 0.1);
     }
 
     /// At UTC midnight on the March equinox, the subsolar point is near
@@ -152,22 +142,15 @@ mod tests {
     #[test]
     fn march_equinox_midnight() {
         let dir = sun_dir_at(2025, 3, 20, 0, 0);
-        assert!(
-            (dir.z - (-1.0)).abs() < 0.1,
-            "Expected Z near -1.0, got {dir}"
-        );
-        assert!(dir.y.abs() < 0.1, "Expected Y near 0.0, got {dir}");
-        assert!(dir.x.abs() < 0.15, "Expected X near 0.0, got {dir}");
+        assert_relative_eq!(dir.z, -1.0, epsilon = 0.1);
+        assert_relative_eq!(dir.y, 0.0, epsilon = 0.1);
+        assert_relative_eq!(dir.x, 0.0, epsilon = 0.15);
     }
 
     /// The returned vector should always have unit length.
     #[test]
     fn unit_vector() {
         let dir = sun_direction_now();
-        let len = dir.length();
-        assert!(
-            (len - 1.0).abs() < 1e-4,
-            "Expected unit vector, got length {len}"
-        );
+        assert_relative_eq!(dir.length(), 1.0, epsilon = 1e-4);
     }
 }

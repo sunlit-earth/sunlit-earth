@@ -60,6 +60,18 @@ pub fn init(force_software: bool) -> WgpuContext {
     }
 }
 
+/// Rank a GPU device type for adapter selection priority.
+/// Lower is better: discrete GPU is preferred, CPU is last resort.
+pub(crate) fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::VirtualGpu => 2,
+        wgpu::DeviceType::Other => 3,
+        wgpu::DeviceType::Cpu => 4,
+    }
+}
+
 fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Adapter {
     if force_software {
         if let Some(adapter) = adapters
@@ -83,17 +95,47 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
         eprintln!("Warning: WGPU_ADAPTER_NAME={name:?} not found, using default selection");
     }
 
-    // Rank by device type preference
-    let rank = |adapter: &wgpu::Adapter| match adapter.get_info().device_type {
-        wgpu::DeviceType::DiscreteGpu => 0,
-        wgpu::DeviceType::IntegratedGpu => 1,
-        wgpu::DeviceType::VirtualGpu => 2,
-        wgpu::DeviceType::Other => 3,
-        wgpu::DeviceType::Cpu => 4,
-    };
-
     adapters
         .iter()
-        .min_by_key(|a| rank(a))
+        .min_by_key(|a| adapter_type_rank(a.get_info().device_type))
         .expect("No adapters available")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discrete_gpu_ranks_best() {
+        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::IntegratedGpu));
+        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::VirtualGpu));
+        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::Other));
+        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::Cpu));
+    }
+
+    #[test]
+    fn cpu_ranks_worst() {
+        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::DiscreteGpu));
+        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::IntegratedGpu));
+        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::VirtualGpu));
+        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::Other));
+    }
+
+    #[test]
+    fn full_ordering() {
+        let ranks: Vec<u32> = [
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::VirtualGpu,
+            wgpu::DeviceType::Other,
+            wgpu::DeviceType::Cpu,
+        ]
+        .iter()
+        .map(|&dt| adapter_type_rank(dt))
+        .collect();
+        // Each rank should be strictly less than the next
+        for w in ranks.windows(2) {
+            assert!(w[0] < w[1], "Expected {}<{}", w[0], w[1]);
+        }
+    }
 }

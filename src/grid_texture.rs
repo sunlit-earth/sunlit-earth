@@ -101,4 +101,58 @@ mod tests {
         assert_eq!(pixels[idx + 1], MAJOR_YELLOW[1]);
         assert_eq!(pixels[idx + 2], MAJOR_YELLOW[2]);
     }
+
+    /// Helper: get the RGB color of a pixel at (x, y) in a 360x180 grid.
+    fn pixel_rgb(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+        let idx = ((y * width + x) * 4) as usize;
+        [pixels[idx], pixels[idx + 1], pixels[idx + 2]]
+    }
+
+    #[test]
+    fn equator_is_major_yellow() {
+        // 360x180: equator is at lat_deg=90, so y=90
+        let pixels = generate(360, 180);
+        // Pick a pixel on the equator away from the prime meridian
+        // x=180 -> lon_deg=180, which is not a major line
+        let color = pixel_rgb(&pixels, 360, 180, 90);
+        assert_eq!(color, MAJOR_YELLOW, "Equator should be MAJOR_YELLOW");
+    }
+
+    #[test]
+    fn prime_meridian_is_major_yellow() {
+        // x=0 -> lon_deg=0 (prime meridian)
+        // y=45 -> away from equator
+        let pixels = generate(360, 180);
+        let color = pixel_rgb(&pixels, 360, 0, 45);
+        assert_eq!(color, MAJOR_YELLOW, "Prime meridian should be MAJOR_YELLOW");
+    }
+
+    #[test]
+    fn minor_grid_line_is_white() {
+        // 15-degree minor line: lon_deg=15 -> x=15 in a 360-wide texture
+        // At y=45 (lat_deg=45), which is also a 15-degree grid line
+        // But lat_deg=45 is not 90 (equator), not 0 or 180 (pm), so it's minor.
+        // Actually lat_deg=45 is a minor grid line too. We just need lon or lat
+        // on a 15-degree multiple that isn't major.
+        let pixels = generate(360, 180);
+        // x=15 -> lon_deg=15 (minor), y=60 -> lat_deg=60 (minor)
+        // This pixel is at a grid line intersection.
+        let color = pixel_rgb(&pixels, 360, 15, 60);
+        assert_eq!(color, GRID_WHITE, "15-degree grid line should be GRID_WHITE");
+    }
+
+    #[test]
+    fn pixel_between_grid_lines_is_base_color() {
+        // Pick a pixel clearly between grid lines
+        // x=100 -> lon_deg=100 (100%15=10, not near a line)
+        // y=50 -> lat_deg=50 (50%15=5, not near a line)
+        let pixels = generate(360, 180);
+        let color = pixel_rgb(&pixels, 360, 100, 50);
+        assert_ne!(color, MAJOR_YELLOW, "Should not be major yellow");
+        assert_ne!(color, GRID_WHITE, "Should not be grid white");
+        // Should be a blend of OCEAN_BLUE and LAND_GREEN — not a grid line color
+        // Verify the pixel alpha is 255 (opaque)
+        let idx = ((50 * 360 + 100) * 4) as usize;
+        assert_eq!(pixels[idx + 3], 255);
+    }
 }

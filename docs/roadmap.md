@@ -32,6 +32,11 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [ ] Improved Controls: Rotate Earth with mouse drag, Zoom with scroll wheel in addition to existing UI controls.
 - [ ] Preset camera views: quick-select buttons for common viewpoints (Europe, Americas, Asia, etc.).
 
+## CI and distribution
+
+- [ ] CI pipeline: GitHub Actions workflows for building, testing, and linting on Windows, Linux, and macOS. GPU integration tests may need to be skipped or run with software rendering in CI.
+- [ ] Cross-platform release builds: produce binaries for Windows, Linux, and macOS from CI. Publish as GitHub release artifacts.
+
 ## Bugs and polish
 
 - [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but something still blocks the UI thread.

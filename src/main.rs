@@ -1,18 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod camera;
-mod grid_texture;
-mod renderer;
-mod sphere;
-mod sun;
-mod texture_loader;
-mod wgpu_init;
-
 use std::path::PathBuf;
 
 use clap::Parser;
+use slint::ComponentHandle;
 
-slint::include_modules!();
+use sunlit_earth::renderer;
+use sunlit_earth::texture_loader;
+use sunlit_earth::wgpu_init;
+use sunlit_earth::MainWindow;
 
 /// Sunlit Earth: get a realistic 3D view of Earth as seen from space and set it as your wallpaper
 #[derive(Parser)]
@@ -126,8 +122,5 @@ fn main() {
     drop(sun_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
-    // On Windows, Slint's SlintContext thread-local may be destroyed before
-    // wgpu's internal LockTrace thread-local. When Slint drops the wgpu Queue,
-    // Queue::drop tries to access the already-destroyed LockTrace, panicking.
     std::process::exit(0);
 }

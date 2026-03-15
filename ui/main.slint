@@ -37,6 +37,8 @@ export component MainWindow inherits Window {
     out property <length> viewport-height: image-container.height;
     out property <float> terminator-width: terminator-slider.value;
     out property <bool> diffuse-shading: diffuse-check.checked;
+    out property <float> diffuse-floor: diffuse-floor-slider.value;
+    out property <float> diffuse-ramp: diffuse-ramp-slider.value;
 
     callback sliders-changed();
     callback msaa-changed();
@@ -174,8 +176,48 @@ export component MainWindow inherits Window {
                     }
                     diffuse-check := CheckBox {
                         text: "Dayside shading";
-                        checked: false;
+                        checked: true;
                         toggled => { root.sliders-changed(); }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "  Floor";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    diffuse-floor-slider := Slider {
+                        minimum: 0.0;
+                        maximum: 1.0;
+                        value: 0.50;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(diffuse-floor-slider.value * 100) / 100;
+                        vertical-alignment: center;
+                        min-width: 35px;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "  Ramp";
+                        vertical-alignment: center;
+                        min-width: 70px;
+                    }
+                    diffuse-ramp-slider := Slider {
+                        minimum: 0.1;
+                        maximum: 1.0;
+                        value: 0.25;
+                        changed => { root.sliders-changed(); }
+                    }
+                    Text {
+                        text: round(diffuse-ramp-slider.value * 100) / 100;
+                        vertical-alignment: center;
+                        min-width: 35px;
                     }
                 }
 

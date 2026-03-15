@@ -3,9 +3,9 @@ struct Uniforms {
     sun_dir: vec3<f32>,        // 12 bytes, offset 64
     terminator_width: f32,     // 4 bytes, offset 76
     flags: u32,                // 4 bytes, offset 80 (bit 0: diffuse shading)
-    _pad1: f32,                // 4 bytes, offset 84
-    _pad2: f32,                // 4 bytes, offset 88
-    _pad3: f32,                // 4 bytes, offset 92
+    diffuse_floor: f32,        // 4 bytes, offset 84
+    diffuse_ramp: f32,         // 4 bytes, offset 88
+    _pad: f32,                 // 4 bytes, offset 92
 };
 
 @group(0) @binding(0)
@@ -57,15 +57,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let w = uniforms.terminator_width;
     let blend = smoothstep(-w, w, n_dot_l);
 
-    var lit_day = day_color;
-    // Diffuse shading: gently darken the dayside near the terminator
-    // while keeping the directly-lit area close to full brightness.
-    // smoothstep(0, 0.6, NdotL) gives a soft ramp from 0 at the
-    // terminator to 1.0 well before the subsolar point.
+    // Diffuse shading: shade the day texture before blending so
+    // the night-to-day transition stays monotonic. Shading the
+    // blended result would double-darken the transition zone.
+    var shaded_day = day_color;
     if (uniforms.flags & 1u) != 0u {
-        lit_day = day_color * smoothstep(0.0, 0.6, n_dot_l);
+        let shading = mix(uniforms.diffuse_floor, 1.0,
+                          smoothstep(0.0, uniforms.diffuse_ramp, n_dot_l));
+        shaded_day = day_color * shading;
     }
 
-    let color = mix(night_color, lit_day, blend);
+    let color = mix(night_color, shaded_day, blend);
+
     return vec4<f32>(color, 1.0);
 }

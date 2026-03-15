@@ -34,7 +34,9 @@ struct Uniforms {
     sun_dir: [f32; 3],        // 12 bytes
     terminator_width: f32,    // 4 bytes
     flags: u32,               // 4 bytes
-    _pad: [f32; 3],           // 12 bytes
+    diffuse_floor: f32,       // 4 bytes
+    diffuse_ramp: f32,        // 4 bytes
+    _pad: f32,                // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 96);
@@ -144,6 +146,10 @@ struct FrameState {
     terminator_width: i32,
     /// Whether diffuse shading is enabled.
     diffuse_shading: bool,
+    /// Diffuse floor quantized to integer thousandths.
+    diffuse_floor: i32,
+    /// Diffuse ramp quantized to integer thousandths.
+    diffuse_ramp: i32,
 }
 
 /// Register the rendering notifier on the given Slint window.
@@ -267,6 +273,12 @@ fn rendering_callback(
                 ];
                 #[allow(clippy::cast_possible_truncation)]
                 let terminator_width_quantized = (terminator_width_f * 1000.0) as i32;
+                let diffuse_floor_f = win.get_diffuse_floor();
+                let diffuse_ramp_f = win.get_diffuse_ramp();
+                #[allow(clippy::cast_possible_truncation)]
+                let diffuse_floor_quantized = (diffuse_floor_f * 1000.0) as i32;
+                #[allow(clippy::cast_possible_truncation)]
+                let diffuse_ramp_quantized = (diffuse_ramp_f * 1000.0) as i32;
 
                 // Build current frame state for dirty-checking
                 let current_state = FrameState {
@@ -280,6 +292,8 @@ fn rendering_callback(
                     sun_direction: sun_direction_quantized,
                     terminator_width: terminator_width_quantized,
                     diffuse_shading,
+                    diffuse_floor: diffuse_floor_quantized,
+                    diffuse_ramp: diffuse_ramp_quantized,
                 };
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -370,7 +384,9 @@ fn rendering_callback(
                         -1.0 // sentinel: single-texture mode
                     },
                     flags: u32::from(use_blend_uniforms && diffuse_shading),
-                    _pad: [0.0; 3],
+                    diffuse_floor: win.get_diffuse_floor(),
+                    diffuse_ramp: win.get_diffuse_ramp(),
+                    _pad: 0.0,
                 };
                 res.queue
                     .write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));

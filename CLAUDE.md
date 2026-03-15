@@ -57,6 +57,10 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
 - `time` — UTC time decomposition for astronomy calculations
 
+## Workflow
+
+- Do not commit during interactive debugging — wait for explicit user confirmation that a change works before committing
+
 ## Key Constraints
 
 - `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` has scoped `#[allow(unsafe_code)]` on individual FFI call sites.

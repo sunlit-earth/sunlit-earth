@@ -65,17 +65,25 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 /// 1. `--textures-dir` CLI flag
 /// 2. `SUNLIT_EARTH_TEXTURES` environment variable
 /// 3. `textures/` relative to the current working directory
-/// 4. `textures/` relative to the executable
+/// 4. `textures/` relative to the executable, walking up ancestor directories
+///    (finds the project root from `target/debug/` or `target/release/`)
 pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
-    [
+    let explicit: [Option<PathBuf>; 3] = [
         cli_override.map(Path::to_path_buf),
         std::env::var_os("SUNLIT_EARTH_TEXTURES").map(PathBuf::from),
         Some(PathBuf::from("textures")),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("textures"))),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|p| p.is_dir())
+    ];
+    if let Some(dir) = explicit.into_iter().flatten().find(|p| p.is_dir()) {
+        return Some(dir);
+    }
+
+    // Walk up from the executable's directory to find a `textures/` folder.
+    let mut dir = std::env::current_exe().ok()?;
+    while dir.pop() {
+        let candidate = dir.join("textures");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
 }

@@ -57,9 +57,13 @@ fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     // Subsolar latitude = sun's declination
     let subsolar_lat_deg = equ.dec;
 
-    // Subsolar longitude = GAST - RA, converted to degrees
-    // (GAST and RA are both in sidereal hours; 1 hour = 15 degrees)
-    let subsolar_lon_deg = (gast_hours - equ.ra) * 15.0;
+    // Subsolar longitude: the Greenwich Hour Angle of the sun is
+    // GAST - RA, but hour angle is measured westward (positive = west).
+    // Geographic longitude is positive east, so we need to negate:
+    //   subsolar_lon = -(GAST - RA) * 15 = (RA - GAST) * 15
+    // Normalize to [-180, 180] because RA and GAST can wrap independently.
+    let mut subsolar_lon_deg = (equ.ra - gast_hours) * 15.0;
+    subsolar_lon_deg = ((subsolar_lon_deg % 360.0) + 540.0) % 360.0 - 180.0;
 
     // Convert to renderer's Cartesian coordinate frame.
     // The camera uses: x = sin(lon), y = sin(lat), z = cos(lon)

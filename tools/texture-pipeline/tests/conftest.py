@@ -3,8 +3,11 @@
 from io import BytesIO
 from pathlib import Path
 
+import geopandas as gpd
+import numpy as np
 import pytest
 from PIL import Image
+from shapely.geometry import box
 
 
 @pytest.fixture
@@ -69,3 +72,91 @@ def jpeg_file_128x64(tmp_path: Path, jpeg_bytes_128x64: bytes) -> Path:
     path = tmp_path / "source_128x64.jpg"
     path.write_bytes(jpeg_bytes_128x64)
     return path
+
+
+def _write_shapefile(tmp_path: Path, name: str, polygons: list) -> Path:
+    """Write a list of Shapely polygons as a shapefile in EPSG:4326.
+
+    :param tmp_path: Directory to write to.
+    :param name: Base name for the shapefile.
+    :param polygons: List of Shapely geometry objects.
+    :returns: Path to the .shp file.
+    """
+    gdf = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
+    path = tmp_path / f"{name}.shp"
+    gdf.to_file(path)
+    return path
+
+
+@pytest.fixture
+def western_half_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a rectangle covering the western half of the globe.
+
+    Longitude -180 to 0, latitude -90 to 90.
+    """
+    return _write_shapefile(tmp_path, "western_half", [box(-180, -90, 0, 90)])
+
+
+@pytest.fixture
+def eastern_half_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a rectangle covering the eastern half of the globe.
+
+    Longitude 0 to 180, latitude -90 to 90.
+    """
+    return _write_shapefile(tmp_path, "eastern_half", [box(0, -90, 180, 90)])
+
+
+@pytest.fixture
+def full_globe_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a rectangle covering the entire globe."""
+    return _write_shapefile(tmp_path, "full_globe", [box(-180, -90, 180, 90)])
+
+
+@pytest.fixture
+def tiny_polygon_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a tiny polygon near the south pole."""
+    return _write_shapefile(tmp_path, "tiny", [box(-180, -90, -179, -89)])
+
+
+@pytest.fixture
+def polar_ice_image_200x100() -> Image.Image:
+    """200x100 image with ice-like and ocean-like pixels for ice detection tests.
+
+    Equirectangular: row 0 = +90, row 100 = -90.
+    Rows where |lat| >= 60 are rows 0..16 (Arctic) and 83..99 (Antarctic).
+    Arctic zone (rows 0..16): dark blue ocean (10, 30, 65) everywhere,
+    EXCEPT a 20x10 bright white block at (col=10..30, row=3..13) = ice,
+    and 3 isolated bright pixels at (50,2), (52,2), (54,2) = noise.
+    Tropical/mid-lat zone (rows 17..82): uniform mid-grey (128, 128, 128).
+    Antarctic zone (rows 83..99): dark blue ocean (10, 30, 65).
+    """
+    arr = np.zeros((100, 200, 3), dtype=np.uint8)
+
+    # Arctic ocean (rows 0..16)
+    arr[:17, :] = [10, 30, 65]
+    # Large contiguous ice block
+    arr[3:13, 10:30] = [240, 240, 240]
+    # 3 isolated noise pixels
+    arr[2, 50] = [240, 240, 240]
+    arr[2, 52] = [240, 240, 240]
+    arr[2, 54] = [240, 240, 240]
+
+    # Tropical zone (rows 17..82)
+    arr[17:83, :] = [128, 128, 128]
+
+    # Antarctic ocean (rows 83..99)
+    arr[83:, :] = [10, 30, 65]
+
+    return Image.fromarray(arr)
+
+
+@pytest.fixture
+def polar_ice_ocean_mask_200x100() -> np.ndarray:
+    """200x100 ocean mask: ocean in polar zones, land in tropics.
+
+    Matches polar_ice_image_200x100 layout.
+    """
+    mask = np.zeros((100, 200), dtype=np.uint8)
+    mask[:17, :] = 255  # Arctic ocean
+    mask[83:, :] = 255  # Antarctic ocean
+    return mask

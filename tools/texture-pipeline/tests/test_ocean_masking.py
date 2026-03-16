@@ -356,6 +356,59 @@ class TestDetectIceSoftEdges:
         assert np.any(intermediate), "Expected soft edges with intermediate values"
 
 
+class TestDetectIceNotErodedAtCoast:
+    def test_ice_mask_covers_coastal_fringe(self) -> None:
+        """Ice abutting the coastline must not be eroded by the Gaussian blur.
+
+        The blur should only create a soft gradient on the open-water side
+        of the ice, not reduce the ice mask at the coast, which would let
+        fill color bleed between land and ice.
+        """
+        w, h = 200, 100
+        # Polar rows: top 17 rows correspond to lat >= ~60 in a 100-row image
+        polar_end = 17
+
+        # Ocean mask: land on left, anti-aliased coast at col 100,
+        # full ocean on right
+        ocean_mask = np.zeros((h, w), dtype=np.uint8)
+        ocean_mask[:, 102:] = 255
+        ocean_mask[:, 101] = 192  # anti-aliased fringe
+        ocean_mask[:, 100] = 128  # anti-aliased fringe
+        ocean_mask[:, 99] = 64  # anti-aliased fringe
+
+        # Image: bright ice in polar rows from col 95 to 130 (straddles coast)
+        arr = np.full((h, w, 3), 10, dtype=np.uint8)  # dark background
+        arr[:polar_end, 95:130] = [240, 240, 240]  # ice block across coast
+        img = Image.fromarray(arr)
+
+        ice = detect_ice_regions(
+            img,
+            ocean_mask,
+            min_region_size=5,
+            blur_radius=3,
+        )
+
+        # Check interior rows only (skip top/bottom 3 rows of the polar
+        # band where morphological closing erodes at the array boundary).
+        interior = slice(3, polar_end - 3)
+
+        # At the coastal fringe (cols 99-101), the ice mask must be >= the
+        # ocean mask so that reduce_mask_for_ice fully cancels the fill.
+        for col in [99, 100, 101]:
+            ice_vals = ice[interior, col]
+            mask_vals = ocean_mask[interior, col]
+            active = mask_vals > 0
+            if not np.any(active):
+                continue
+            assert np.all(ice_vals[active] >= mask_vals[active]), (
+                f"Column {col}: ice mask {ice_vals[active]} should be >= "
+                f"ocean mask {mask_vals[active]} to prevent fill-color bleed"
+            )
+
+        # Sanity: deep ocean ice (col 120) should also be fully covered
+        assert np.all(ice[interior, 120] == 255)
+
+
 class TestReduceMaskNoIce:
     def test_zero_ice_unchanged(self) -> None:
         ocean = np.full((50, 100), 200, dtype=np.uint8)

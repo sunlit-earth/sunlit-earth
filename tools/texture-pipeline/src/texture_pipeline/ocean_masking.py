@@ -227,7 +227,7 @@ def detect_ice_regions(
             image.crop((0, r_start, w, r_end)), dtype=np.float32
         )
         band_mask = ocean_mask[r_start:r_end, :]
-        domain = band_mask > 128
+        domain = band_mask > 0
 
         if not np.any(domain):
             continue
@@ -280,14 +280,19 @@ def detect_ice_regions(
         closed = binary_closing(expanded, structure=struct, iterations=2)
         closed = closed & domain
 
-        # Gaussian blur for soft transitions
+        # Gaussian blur for soft transitions at ice/water boundary.
+        # Take max with the pre-blur mask so the blur can only expand
+        # ice coverage (soft gradient into open water), never erode it
+        # (prevents fill-color bleed at the ice/coast boundary).
         band_ice = closed.astype(np.uint8) * 255
-        ice_img = Image.fromarray(band_ice, mode="L")
         if blur_radius > 0:
+            ice_img = Image.fromarray(band_ice, mode="L")
             ice_img = ice_img.filter(
                 ImageFilter.GaussianBlur(radius=blur_radius)
             )
-        result[r_start:r_end, :] = np.array(ice_img, dtype=np.uint8)
+            blurred = np.array(ice_img, dtype=np.uint8)
+            band_ice = np.maximum(band_ice, blurred)
+        result[r_start:r_end, :] = band_ice
 
     return result
 

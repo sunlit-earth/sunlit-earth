@@ -103,6 +103,7 @@ proptest = "1"    # property-based testing for pure functions
 ## Workflow
 
 - Do not commit during interactive debugging — wait for explicit user confirmation that a change works before committing
+- Git worktrees must be created in the `.worktrees/` folder at the repo root
 
 ## Key Constraints
 

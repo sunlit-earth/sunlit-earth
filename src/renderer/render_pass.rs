@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use slint::Image;
 
-use crate::scene::camera::{CameraParams, OrbitalCamera};
+use crate::scene::camera::{CameraParams, OrbitalCamera, zoom_to_distance};
 
 use super::GpuResources;
 use super::frame::FrameState;
@@ -64,7 +64,7 @@ pub(super) fn write_uniforms(
     let camera = OrbitalCamera::new(
         camera_params.longitude,
         camera_params.latitude,
-        camera_params.zoom,
+        zoom_to_distance(camera_params.zoom),
     );
     let mvp = camera.mvp_matrix(aspect);
     let uniforms = Uniforms {

@@ -40,6 +40,7 @@ export component MainWindow inherits Window {
     out property <float> diffuse-floor: diffuse-floor-slider.value;
     out property <float> diffuse-ramp: diffuse-ramp-slider.value;
 
+    in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
 
     callback sliders-changed();
@@ -150,13 +151,13 @@ export component MainWindow inherits Window {
                                 min-width: 70px;
                             }
                             zoom-slider := Slider {
-                                minimum: 2.0;
-                                maximum: 50.0;
-                                value: 8.0;
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value: 0.421;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
-                                text: round(zoom-slider.value * 10) / 10;
+                                text: round(root.zoom-display-distance * 10) / 10;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

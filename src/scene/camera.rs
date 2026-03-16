@@ -13,9 +13,26 @@ impl Default for CameraParams {
         Self {
             longitude: 0.0,
             latitude: 30.0,
-            zoom: 8.0,
+            zoom: distance_to_zoom(8.0),
         }
     }
+}
+
+/// Minimum camera distance (closest zoom).
+pub const ZOOM_DISTANCE_MIN: f32 = 1.5;
+/// Maximum camera distance (farthest zoom).
+pub const ZOOM_DISTANCE_MAX: f32 = 80.0;
+
+/// Map a normalized slider value (0.0 to 1.0) to a camera distance
+/// using an exponential curve: `1.5 * (80.0 / 1.5)^t`.
+pub fn zoom_to_distance(t: f32) -> f32 {
+    ZOOM_DISTANCE_MIN * (ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN).powf(t)
+}
+
+/// Inverse of `zoom_to_distance`: convert a camera distance back to
+/// a normalized slider value.
+pub fn distance_to_zoom(distance: f32) -> f32 {
+    (distance / ZOOM_DISTANCE_MIN).ln() / (ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN).ln()
 }
 
 /// Orbital camera that orbits around the origin.
@@ -88,7 +105,52 @@ mod tests {
         let params = CameraParams::default();
         assert_relative_eq!(params.longitude, 0.0);
         assert_relative_eq!(params.latitude, 30.0);
-        assert_relative_eq!(params.zoom, 8.0);
+        // Default zoom is the normalized value that produces distance 8.0
+        assert_relative_eq!(zoom_to_distance(params.zoom), 8.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn zoom_to_distance_at_zero() {
+        assert_relative_eq!(zoom_to_distance(0.0), 1.5, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn zoom_to_distance_at_one() {
+        assert_relative_eq!(zoom_to_distance(1.0), 80.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn zoom_to_distance_at_half() {
+        let expected = (1.5_f32 * 80.0).sqrt();
+        assert_relative_eq!(zoom_to_distance(0.5), expected, epsilon = 0.1);
+    }
+
+    #[test]
+    fn zoom_to_distance_monotonic() {
+        let t_values = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let distances: Vec<f32> = t_values.iter().map(|&t| zoom_to_distance(t)).collect();
+        for i in 1..distances.len() {
+            assert!(
+                distances[i] > distances[i - 1],
+                "distance at t={} ({}) should be > distance at t={} ({})",
+                t_values[i], distances[i], t_values[i - 1], distances[i - 1]
+            );
+        }
+    }
+
+    #[test]
+    fn distance_to_zoom_roundtrip() {
+        for &d in &[1.5, 3.0, 8.0, 20.0, 50.0, 80.0] {
+            let t = distance_to_zoom(d);
+            let roundtrip = zoom_to_distance(t);
+            assert_relative_eq!(roundtrip, d, epsilon = 1e-3);
+        }
+    }
+
+    #[test]
+    fn distance_to_zoom_default() {
+        let t = distance_to_zoom(8.0);
+        assert!(t > 0.0 && t < 1.0, "default zoom t={t} should be in (0, 1)");
     }
 
     #[test]
@@ -135,5 +197,17 @@ mod tests {
         let cam = OrbitalCamera::new(45.0, 30.0, 4.0);
         let det = cam.view_matrix().determinant();
         assert!(det.abs() > 0.5, "View matrix should be invertible");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn zoom_range_proptest(t in 0.0_f32..=1.0) {
+            let d = zoom_to_distance(t);
+            proptest::prop_assert!(
+                d >= ZOOM_DISTANCE_MIN && d <= ZOOM_DISTANCE_MAX,
+                "zoom_to_distance({t}) = {d}, expected in [{}, {}]",
+                ZOOM_DISTANCE_MIN, ZOOM_DISTANCE_MAX
+            );
+        }
     }
 }

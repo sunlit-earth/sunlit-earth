@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
-use crate::scene::camera::CameraParams;
+use crate::scene::camera::{CameraParams, zoom_to_distance};
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -334,6 +334,7 @@ fn rendering_callback(
                     latitude: win.get_camera_latitude(),
                     zoom: win.get_camera_zoom(),
                 };
+                win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
                 let current_state = build_frame_state(
                     &camera,
                     res.sample_count,

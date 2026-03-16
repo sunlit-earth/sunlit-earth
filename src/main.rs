@@ -7,6 +7,8 @@ use slint::ComponentHandle;
 
 use sunlit_earth::renderer;
 use sunlit_earth::texture_loader;
+#[cfg(windows)]
+use sunlit_earth::wallpaper;
 use sunlit_earth::wgpu_init;
 use sunlit_earth::MainWindow;
 
@@ -101,6 +103,31 @@ fn main() {
         }
     });
 
+    // "Set as Wallpaper" button callback (Windows only)
+    #[cfg(windows)]
+    {
+        let window_weak = window.as_weak();
+        window.on_set_wallpaper(move || {
+            let Some(win) = window_weak.upgrade() else {
+                return;
+            };
+            match do_set_wallpaper() {
+                Ok(()) => win.set_wallpaper_status("Wallpaper set successfully".into()),
+                Err(e) => win.set_wallpaper_status(format!("Error: {e}").into()),
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let window_weak = window.as_weak();
+        window.on_set_wallpaper(move || {
+            let Some(win) = window_weak.upgrade() else {
+                return;
+            };
+            win.set_wallpaper_status("Not supported on this platform".into());
+        });
+    }
+
     renderer::setup_rendering_notifier(&window, aa_counts, texture_paths);
 
     // Periodic timer to update the sun position (every 2 minutes)
@@ -123,4 +150,15 @@ fn main() {
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     std::process::exit(0);
+}
+
+/// Render the current scene at the primary monitor's resolution, save as TIFF,
+/// and set it as the Windows desktop wallpaper.
+#[cfg(windows)]
+fn do_set_wallpaper() -> Result<(), String> {
+    let (width, height) = wallpaper::get_primary_monitor_resolution()?;
+    let pixels = renderer::export_wallpaper_image(width, height)?;
+    let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
+    wallpaper::set_wallpaper(&path)?;
+    Ok(())
 }

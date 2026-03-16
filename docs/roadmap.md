@@ -4,7 +4,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 ## Wallpaper app
 
-- [ ] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows 11 (`SystemParametersInfo`) first; Linux and macOS later.
+- [x] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows (`SystemParametersInfoW` via `windows-sys`) implemented; Linux and macOS later.
 - [ ] Periodic re-rendering: timer-driven scheduler that re-renders every N minutes so the terminator tracks the sun. Update interval should be user-configurable.
 - [ ] System tray and background operation: minimize to tray with a status menu ("Render Now", "Open Settings", "Quit"). Support headless/daemon mode without the GUI window.
 - [ ] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
@@ -40,3 +40,4 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 ## Bugs and polish
 
 - [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but something still blocks the UI thread.
+- [ ] Diffuse shading banding on JPEG wallpapers: Windows internally re-encodes wallpapers as JPEG (`%APPDATA%\Microsoft\Windows\Themes\TranscodedWallpaper`), which introduces visible banding at the diffuse shading boundary. The lossless TIFF source file looks correct; the artifact only appears after Windows' JPEG transcode. The `JPEGImportQuality` registry key (tested at 100) did not help. Potential fixes: dithering in the shader to make the gradient more compression-friendly, or finding a way to bypass Windows' JPEG transcode.

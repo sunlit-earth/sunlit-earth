@@ -5,6 +5,8 @@ mod texture_routing;
 mod textures;
 pub(crate) mod uniforms;
 
+pub use render_pass::read_texture_rgba8;
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -15,7 +17,8 @@ use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
-    create_gpu_resources, rebuild_msaa_resources, rebuild_render_textures,
+    create_gpu_resources, create_render_textures, rebuild_msaa_resources,
+    rebuild_render_textures,
 };
 use textures::{DecodedTextureMessage, TextureSlot, process_decoded_textures};
 
@@ -65,6 +68,96 @@ pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     (qw, qh)
 }
 
+/// Render the current scene at the given resolution and return raw RGBA8 pixels.
+///
+/// Creates temporary GPU textures with `COPY_SRC` at the target resolution,
+/// renders using the existing pipeline and bind groups (matching the last
+/// displayed frame), reads back the pixels, and drops the temporary textures.
+///
+/// Returns `Err` if the GPU is not initialized, textures are still loading,
+/// or no frame has been rendered yet.
+#[allow(clippy::cast_precision_loss)]
+pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
+    GPU_RESOURCES.with(|r| {
+        let borrow = r.borrow();
+        let res = borrow.as_ref().ok_or("GPU not initialized")?;
+
+        let state = res
+            .last_state
+            .as_ref()
+            .ok_or("No frame rendered yet")?;
+        let shading = res
+            .last_shading
+            .as_ref()
+            .ok_or("No frame rendered yet")?;
+
+        // Look up the bind group that was used for the last rendered frame
+        let bind_group = match res
+            .last_resolved
+            .as_ref()
+            .ok_or("No frame rendered yet")?
+        {
+            texture_routing::ResolvedTexture::Composite => res
+                .composite_bind_group
+                .as_ref()
+                .ok_or("No bind group available")?,
+            texture_routing::ResolvedTexture::Slot(idx) => res.texture_slots[*idx]
+                .bind_group
+                .as_ref()
+                .ok_or("No bind group available")?,
+        };
+
+        // Create temporary render textures with COPY_SRC for readback
+        let (export_texture, export_depth, msaa_color_view, msaa_depth_view) =
+            create_render_textures(
+                &res.device,
+                target_width,
+                target_height,
+                res.sample_count,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            );
+
+        let aspect = target_width as f32 / target_height as f32;
+        render_pass::write_uniforms(
+            &res.queue,
+            &res.uniform_buffer,
+            state.longitude,
+            state.latitude,
+            state.zoom,
+            aspect,
+            shading,
+        );
+
+        let resolve_view = export_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let target = render_pass::RenderTarget::new(
+            &resolve_view,
+            msaa_color_view.as_ref(),
+            &export_depth,
+            msaa_depth_view.as_ref(),
+        );
+
+        render_pass::encode_and_submit(
+            &res.device,
+            &res.queue,
+            &target,
+            &res.pipeline,
+            bind_group,
+            &res.vertex_buffer,
+            &res.index_buffer,
+            res.index_count,
+        );
+
+        Ok(render_pass::read_texture_rgba8(
+            &res.device,
+            &res.queue,
+            &export_texture,
+            target_width,
+            target_height,
+        ))
+    })
+}
+
 /// GPU resources created during `RenderingSetup`.
 struct GpuResources {
     pipeline: wgpu::RenderPipeline,
@@ -87,6 +180,12 @@ struct GpuResources {
     render_height: u32,
     /// Last rendered state for dirty-checking. `None` means first frame.
     last_state: Option<FrameState>,
+    /// Raw shading parameters from the last rendered frame, used by the
+    /// export path to avoid reverse-engineering quantized `FrameState` values.
+    last_shading: Option<render_pass::ShadingParams>,
+    /// Bind group resolution from the last rendered frame, used by the
+    /// export path to reuse the same texture binding without re-resolving.
+    last_resolved: Option<texture_routing::ResolvedTexture>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
@@ -257,7 +356,8 @@ fn rendering_callback(
                     return;
                 }
 
-                // Look up the bind group reference after the mutable borrow is released
+                // Look up the bind group reference and store the resolution
+                // for the export path
                 let bind_group_ref = match &resolved {
                     texture_routing::ResolvedTexture::Composite => res
                         .composite_bind_group
@@ -268,17 +368,23 @@ fn rendering_callback(
                         .as_ref()
                         .expect("render_index must always point to a loaded slot"),
                 };
+                res.last_resolved = Some(resolved);
+
+                let shading = render_pass::ShadingParams {
+                    sun_dir,
+                    use_blend: use_blend_uniforms,
+                    terminator_width: terminator_width_f,
+                    diffuse_shading,
+                    diffuse_floor: diffuse_floor_f,
+                    diffuse_ramp: diffuse_ramp_f,
+                };
+                res.last_shading = Some(shading);
 
                 let image = render_pass::execute_render_pass(
                     res,
                     &current_state,
-                    sun_dir,
                     bind_group_ref,
-                    use_blend_uniforms,
-                    terminator_width_f,
-                    diffuse_shading,
-                    diffuse_floor_f,
-                    diffuse_ramp_f,
+                    res.last_shading.as_ref().unwrap(),
                 );
                 res.last_state = Some(current_state);
                 win.set_rendered_image(image);

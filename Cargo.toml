@@ -12,10 +12,19 @@ glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 pollster = "0.4"
-image = { version = "0.25.8", default-features = false }
+image = { version = "0.25.8", default-features = false, features = ["tiff"] }
+tiff = "0.10"
 jxl-oxide = { version = "0.12", default-features = false, features = ["image", "rayon"] }
 astronomy-engine-bindings = "2.1"
 time = { version = "0.3", features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+    "Win32_System_Registry",
+] }
 
 [dev-dependencies]
 approx = "0.5"

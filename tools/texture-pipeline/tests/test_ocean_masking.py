@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 from texture_pipeline.ocean_masking import (
-    apply_coastal_buffer,
+    apply_coast_offset,
     apply_ocean_mask,
     clear_mask_cache,
     detect_ice_regions,
@@ -167,17 +167,17 @@ def _make_binary_mask_with_edge(width: int, height: int, edge_col: int) -> np.nd
     return mask
 
 
-class TestCoastalBufferZeroIsIdentity:
+class TestCoastOffsetZeroIsIdentity:
     def test_zero_buffer_unchanged(self) -> None:
         mask = _make_binary_mask_with_edge(100, 50, 50)
-        result = apply_coastal_buffer(mask, buffer_pixels=0)
+        result = apply_coast_offset(mask, offset_pixels=0)
         assert np.array_equal(result, mask)
 
 
-class TestCoastalBufferExpandsTransition:
+class TestCoastOffsetExpandsTransition:
     def test_transition_zone_at_boundary(self) -> None:
         mask = _make_binary_mask_with_edge(100, 50, 50)
-        result = apply_coastal_buffer(mask, buffer_pixels=5)
+        result = apply_coast_offset(mask, offset_pixels=5)
         # Pixels on the land side near the edge (columns 45-49) should have
         # intermediate values (not 0, not 255)
         land_near_edge = result[25, 45:50]
@@ -186,26 +186,26 @@ class TestCoastalBufferExpandsTransition:
         )
 
 
-class TestCoastalBufferPreservesDeepOcean:
+class TestCoastOffsetPreservesDeepOcean:
     def test_deep_ocean_stays_255(self) -> None:
         mask = _make_binary_mask_with_edge(100, 50, 50)
-        result = apply_coastal_buffer(mask, buffer_pixels=5)
+        result = apply_coast_offset(mask, offset_pixels=5)
         # Far into ocean (column 90) should still be 255
         assert np.all(result[:, 90] == 255)
 
 
-class TestCoastalBufferPreservesDeepLand:
+class TestCoastOffsetPreservesDeepLand:
     def test_deep_land_stays_0(self) -> None:
         mask = _make_binary_mask_with_edge(100, 50, 50)
-        result = apply_coastal_buffer(mask, buffer_pixels=5)
+        result = apply_coast_offset(mask, offset_pixels=5)
         # Far into land (column 10) should still be 0
         assert np.all(result[:, 10] == 0)
 
 
-class TestCoastalBufferMonotonicDecay:
+class TestCoastOffsetMonotonicDecay:
     def test_monotonic_from_land_to_ocean(self) -> None:
         mask = _make_binary_mask_with_edge(100, 50, 50)
-        result = apply_coastal_buffer(mask, buffer_pixels=5)
+        result = apply_coast_offset(mask, offset_pixels=5)
         # Take a horizontal transect through the middle row
         transect = result[25, :].astype(float)
         diffs = np.diff(transect)
@@ -216,10 +216,38 @@ class TestCoastalBufferMonotonicDecay:
         )
 
 
-class TestCoastalBufferDtype:
+class TestCoastOffsetDtype:
     def test_output_dtype(self) -> None:
         mask = _make_binary_mask_with_edge(100, 50, 50)
-        result = apply_coastal_buffer(mask, buffer_pixels=5)
+        result = apply_coast_offset(mask, offset_pixels=5)
+        assert result.dtype == np.uint8
+
+
+class TestCoastOffsetNegativeErodes:
+    def test_negative_erodes_ocean(self) -> None:
+        mask = _make_binary_mask_with_edge(100, 50, 50)
+        result = apply_coast_offset(mask, offset_pixels=-3)
+        # Pixels that were 255 near the edge (col 50-52) should now be < 255
+        near_edge = result[25, 50:53]
+        assert np.any(near_edge < 255), (
+            f"Expected erosion near coastline, got {near_edge}"
+        )
+
+    def test_negative_preserves_deep_ocean(self) -> None:
+        mask = _make_binary_mask_with_edge(100, 50, 50)
+        result = apply_coast_offset(mask, offset_pixels=-3)
+        # Far into ocean (col 90) should still be 255
+        assert np.all(result[:, 90] == 255)
+
+    def test_negative_preserves_deep_land(self) -> None:
+        mask = _make_binary_mask_with_edge(100, 50, 50)
+        result = apply_coast_offset(mask, offset_pixels=-3)
+        # Far into land (col 10) should still be 0
+        assert np.all(result[:, 10] == 0)
+
+    def test_negative_dtype(self) -> None:
+        mask = _make_binary_mask_with_edge(100, 50, 50)
+        result = apply_coast_offset(mask, offset_pixels=-3)
         assert result.dtype == np.uint8
 
 

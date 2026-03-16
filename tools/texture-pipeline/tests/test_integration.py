@@ -344,7 +344,7 @@ class TestEndToEndOceanMask:
                 "--width", "64",
                 "--effort", "1",
                 "--ocean-mask", str(eastern_half_shapefile),
-                "--ocean-buffer", "3",
+                "--ocean-coast-offset", "3",
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"

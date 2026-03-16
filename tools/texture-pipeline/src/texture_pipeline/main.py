@@ -44,7 +44,7 @@ def run_pipeline(
     ocean_shapefile: Path | None = None,
     ocean_color: tuple[int, int, int] = (10, 40, 80),
     ocean_supersample: int = 2,
-    ocean_buffer: int = 0,
+    ocean_coast_offset: int = 0,
     ocean_preserve_ice: bool = True,
     ocean_ice_luminance: int = 200,
     ocean_ice_latitude: float = 60.0,
@@ -60,7 +60,7 @@ def run_pipeline(
     :param ocean_shapefile: Path to ocean shapefile for masking, or None.
     :param ocean_color: RGB fill color for ocean regions.
     :param ocean_supersample: Supersampling factor for mask anti-aliasing.
-    :param ocean_buffer: Coastal transition zone width in pixels.
+    :param ocean_coast_offset: Signed coastline shift in pixels.
     :param ocean_preserve_ice: Whether to detect and preserve polar ice.
     :param ocean_ice_luminance: Seed luminance threshold for ice detection.
     :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
@@ -108,7 +108,7 @@ def run_pipeline(
                     img.size[0],
                     img.size[1],
                     supersample=ocean_supersample,
-                    buffer_pixels=ocean_buffer,
+                    coast_offset=ocean_coast_offset,
                 )
 
                 if ocean_preserve_ice:
@@ -193,9 +193,9 @@ def _validate_ocean_supersample(value: int) -> int:
     return value
 
 
-def _validate_ocean_buffer(value: int) -> int:
-    if value < 0:
-        raise typer.BadParameter("Ocean buffer must be non-negative.")
+def _validate_ocean_coast_offset(value: int) -> int:
+    if abs(value) > 50:
+        raise typer.BadParameter("Coast offset magnitude must be at most 50.")
     return value
 
 
@@ -292,12 +292,12 @@ def convert(
             callback=_validate_ocean_supersample,
         ),
     ] = 2,
-    ocean_buffer: Annotated[
+    ocean_coast_offset: Annotated[
         int,
         typer.Option(
-            "--ocean-buffer",
-            help="Coastal transition zone width in pixels (0 = disabled).",
-            callback=_validate_ocean_buffer,
+            "--ocean-coast-offset",
+            help="Shift coastline by N px (source res). + = expand, - = erode.",
+            callback=_validate_ocean_coast_offset,
         ),
     ] = 0,
     ocean_preserve_ice: Annotated[
@@ -347,7 +347,7 @@ def convert(
         ocean_shapefile=ocean_mask,
         ocean_color=color_tuple,  # type: ignore[arg-type]
         ocean_supersample=ocean_supersample,
-        ocean_buffer=ocean_buffer,
+        ocean_coast_offset=ocean_coast_offset,
         ocean_preserve_ice=ocean_preserve_ice,
         ocean_ice_luminance=ocean_ice_luminance,
         ocean_ice_latitude=ocean_ice_latitude,

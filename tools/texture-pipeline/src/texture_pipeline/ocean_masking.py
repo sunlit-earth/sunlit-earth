@@ -90,33 +90,49 @@ def apply_ocean_mask(
     return Image.fromarray(result, mode="RGB")
 
 
-def apply_coastal_buffer(
+def apply_coast_offset(
     mask: np.ndarray,
-    buffer_pixels: int,
+    offset_pixels: int,
 ) -> np.ndarray:
-    """Add a transition zone at the coastline by blurring the mask boundary.
+    """Shift the coastline boundary by the given pixel offset.
 
-    Pixels deep in the ocean stay 255; pixels deep inland stay 0. Only the
-    boundary region gains intermediate values, extending the transition into
-    the land side.
+    Positive values expand the ocean into land (Gaussian blur transition).
+    Negative values erode the ocean away from the coast (pull fill color
+    back, preserving more of the original texture at the shoreline).
+    Zero is a no-op.
 
     :param mask: uint8 array of shape (H, W). 0 = land, 255 = ocean.
-    :param buffer_pixels: Width of the transition zone in pixels. 0 = no-op.
-    :returns: uint8 mask with the same shape, with a gradient at the coast.
+    :param offset_pixels: Signed coastline shift in pixels.
+    :returns: uint8 mask with the same shape.
     """
-    if buffer_pixels == 0:
+    if offset_pixels == 0:
         return mask
 
     from PIL import ImageFilter
 
-    img = Image.fromarray(mask, mode="L")
-    blurred = img.filter(ImageFilter.GaussianBlur(radius=buffer_pixels))
-    blurred_arr = np.array(blurred, dtype=np.uint8)
+    if offset_pixels > 0:
+        # Expand ocean into land via Gaussian blur
+        img = Image.fromarray(mask, mode="L")
+        blurred = img.filter(
+            ImageFilter.GaussianBlur(radius=offset_pixels)
+        )
+        blurred_arr = np.array(blurred, dtype=np.uint8)
+        # Preserve deep-ocean pixels at 255
+        result = np.where(mask == 255, np.uint8(255), blurred_arr)
+        return result.astype(np.uint8)
 
-    # Preserve deep-ocean pixels: where the original mask was 255, keep 255.
-    # Elsewhere, use the blurred value (which introduces a gradient at the
-    # coast, extending into land).
-    result = np.where(mask == 255, np.uint8(255), blurred_arr)
+    # Negative: erode ocean away from coast via MinFilter (morphological
+    # erosion), then Gaussian blur for a smooth transition.
+    radius = abs(offset_pixels)
+    img = Image.fromarray(mask, mode="L")
+    # MinFilter kernel must be odd and >= 3
+    kernel = max(3, 2 * radius + 1)
+    eroded = img.filter(ImageFilter.MinFilter(size=kernel))
+    # Smooth the eroded boundary
+    eroded = eroded.filter(ImageFilter.GaussianBlur(radius=radius))
+    result = np.array(eroded, dtype=np.uint8)
+    # Preserve deep-land pixels at 0
+    result = np.where(mask == 0, np.uint8(0), result)
     return result.astype(np.uint8)
 
 
@@ -128,7 +144,7 @@ def get_or_create_mask(
     width: int,
     height: int,
     supersample: int = 2,
-    buffer_pixels: int = 0,
+    coast_offset: int = 0,
 ) -> np.ndarray:
     """Return a cached ocean mask, computing it if not already cached.
 
@@ -136,16 +152,16 @@ def get_or_create_mask(
     :param width: Mask width in pixels.
     :param height: Mask height in pixels.
     :param supersample: Supersampling factor for anti-aliasing.
-    :param buffer_pixels: Coastal transition zone width.
+    :param coast_offset: Coastal transition zone width.
     :returns: uint8 mask array.
     """
-    key = (str(shapefile_path), width, height, supersample, buffer_pixels)
+    key = (str(shapefile_path), width, height, supersample, coast_offset)
     if key in _mask_cache:
         return _mask_cache[key]
 
     mask = rasterize_ocean_mask(shapefile_path, width, height, supersample)
-    if buffer_pixels > 0:
-        mask = apply_coastal_buffer(mask, buffer_pixels)
+    if coast_offset != 0:
+        mask = apply_coast_offset(mask, coast_offset)
 
     _mask_cache[key] = mask
     return mask

@@ -230,12 +230,12 @@ class TestOceanMaskDefaults:
             assert result.exit_code == 0
             assert mock.call_args.kwargs["ocean_supersample"] == 2
 
-    def test_ocean_buffer_default(self, tmp_path: Path) -> None:
+    def test_ocean_coast_offset_default(self, tmp_path: Path) -> None:
         _, args = _base_args(tmp_path)
         with patch("texture_pipeline.main.run_pipeline") as mock:
             result = runner.invoke(app, args)
             assert result.exit_code == 0
-            assert mock.call_args.kwargs["ocean_buffer"] == 0
+            assert mock.call_args.kwargs["ocean_coast_offset"] == 0
 
 
 class TestOceanMaskCustomValues:
@@ -265,13 +265,13 @@ class TestOceanMaskCustomValues:
             assert result.exit_code == 0
             assert mock.call_args.kwargs["ocean_supersample"] == 4
 
-    def test_ocean_buffer_custom(self, tmp_path: Path) -> None:
+    def test_ocean_coast_offset_custom(self, tmp_path: Path) -> None:
         _, args = _base_args(tmp_path)
-        args += ["--ocean-buffer", "3"]
+        args += ["--ocean-coast-offset", "3"]
         with patch("texture_pipeline.main.run_pipeline") as mock:
             result = runner.invoke(app, args)
             assert result.exit_code == 0
-            assert mock.call_args.kwargs["ocean_buffer"] == 3
+            assert mock.call_args.kwargs["ocean_coast_offset"] == 3
 
 
 class TestOceanMaskValidation:
@@ -293,9 +293,17 @@ class TestOceanMaskValidation:
         result = runner.invoke(app, args)
         assert result.exit_code != 0
 
-    def test_ocean_buffer_negative(self, tmp_path: Path) -> None:
+    def test_ocean_coast_offset_negative_valid(self, tmp_path: Path) -> None:
         _, args = _base_args(tmp_path)
-        args += ["--ocean-buffer", "-1"]
+        args += ["--ocean-coast-offset", "-3"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_coast_offset"] == -3
+
+    def test_ocean_coast_offset_too_large(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-coast-offset", "51"]
         result = runner.invoke(app, args)
         assert result.exit_code != 0
 
@@ -304,7 +312,7 @@ class TestOceanFlagsInHelp:
     def test_ocean_flags_in_help(self) -> None:
         result = runner.invoke(app, ["convert", "--help"])
         assert result.exit_code == 0
-        for flag in ["ocean-mask", "ocean-color", "ocean-supersam", "ocean-buffer"]:
+        for flag in ["ocean-mask", "ocean-color", "ocean-supersam", "ocean-coast"]:
             assert flag in result.output, f"Expected '{flag}' in help output"
 
 

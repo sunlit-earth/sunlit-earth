@@ -191,7 +191,13 @@ pub(super) fn create_gpu_resources(
     });
 
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
-        create_render_textures(&device, width, height, sample_count);
+        create_render_textures(
+            &device,
+            width,
+            height,
+            sample_count,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
@@ -216,6 +222,7 @@ pub(super) fn create_gpu_resources(
         render_width: width,
         render_height: height,
         last_state: None,
+        last_shading: None,
         shader,
         pipeline_layout,
         device,
@@ -279,11 +286,16 @@ pub(super) fn create_pipeline(
 }
 
 /// Create all size-dependent render textures (resolve target, depth, and optional MSAA).
+///
+/// `color_usage` controls the usage flags on the resolve (1x sample) color texture.
+/// Preview passes use `RENDER_ATTACHMENT | TEXTURE_BINDING`; export passes use
+/// `RENDER_ATTACHMENT | COPY_SRC` for GPU-to-CPU readback.
 pub(super) fn create_render_textures(
     device: &wgpu::Device,
     width: u32,
     height: u32,
     sample_count: u32,
+    color_usage: wgpu::TextureUsages,
 ) -> (
     wgpu::Texture,
     wgpu::TextureView,
@@ -303,7 +315,7 @@ pub(super) fn create_render_textures(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: color_usage,
         view_formats: &[],
     });
 
@@ -375,7 +387,13 @@ fn replace_render_textures(res: &mut GpuResources, width: u32, height: u32, samp
     res.msaa_texture_view = None;
     res.msaa_depth_view = None;
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
-        create_render_textures(&res.device, width, height, sample_count);
+        create_render_textures(
+            &res.device,
+            width,
+            height,
+            sample_count,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
     res.render_texture = render_texture;
     res.depth_texture = depth_texture;
     res.msaa_texture_view = msaa_texture_view;

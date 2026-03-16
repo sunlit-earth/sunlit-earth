@@ -5,18 +5,20 @@ mod texture_routing;
 mod textures;
 pub(crate) mod uniforms;
 
+pub use render_pass::read_texture_rgba8;
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
-use crate::scene::camera::OrbitalCamera;
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
-    create_gpu_resources, rebuild_msaa_resources, rebuild_render_textures,
+    create_gpu_resources, create_render_textures, rebuild_msaa_resources,
+    rebuild_render_textures,
 };
 use textures::{DecodedTextureMessage, TextureSlot, process_decoded_textures};
 
@@ -74,15 +76,18 @@ pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
 ///
 /// Returns `Err` if the GPU is not initialized, textures are still loading,
 /// or no frame has been rendered yet.
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[allow(clippy::cast_precision_loss)]
 pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
     GPU_RESOURCES.with(|r| {
         let borrow = r.borrow();
         let res = borrow.as_ref().ok_or("GPU not initialized")?;
 
-        // Read the last frame state to reproduce the same scene
         let state = res
             .last_state
+            .as_ref()
+            .ok_or("No frame rendered yet")?;
+        let shading = res
+            .last_shading
             .as_ref()
             .ok_or("No frame rendered yet")?;
 
@@ -130,174 +135,62 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             (bg, false)
         };
 
-        // Create temporary render texture with COPY_SRC for readback
-        let size = wgpu::Extent3d {
-            width: target_width,
-            height: target_height,
-            depth_or_array_layers: 1,
+        // Create temporary render textures with COPY_SRC for readback
+        let (export_texture, export_depth, msaa_color_view, msaa_depth_view) =
+            create_render_textures(
+                &res.device,
+                target_width,
+                target_height,
+                res.sample_count,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            );
+
+        // Use stored shading params, overriding use_blend to match the
+        // resolved bind group (may differ if textures finished loading
+        // between the last render and this export).
+        let export_shading = render_pass::ShadingParams {
+            use_blend: use_blend_uniforms,
+            ..*shading
         };
 
-        let export_texture = res.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("export_render_texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-
-        let export_depth = res
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("export_depth_texture"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Create MSAA textures if the current sample count > 1
-        let (msaa_color_view, msaa_depth_view) = if res.sample_count > 1 {
-            let msaa_color = res
-                .device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("export_msaa_color"),
-                    size,
-                    mip_level_count: 1,
-                    sample_count: res.sample_count,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default());
-
-            let msaa_depth = res
-                .device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("export_msaa_depth"),
-                    size,
-                    mip_level_count: 1,
-                    sample_count: res.sample_count,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Depth32Float,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default());
-
-            (Some(msaa_color), Some(msaa_depth))
-        } else {
-            (None, None)
-        };
-
-        // Compute camera matrix with the target aspect ratio
-        let camera = OrbitalCamera::new(state.longitude, state.latitude, state.zoom);
         let aspect = target_width as f32 / target_height as f32;
-        let mvp = camera.mvp_matrix(aspect);
-
-        // Read shading parameters from last_state
-        let sun_dir = glam::Vec3::new(
-            state.sun_direction[0] as f32 / 1000.0,
-            state.sun_direction[1] as f32 / 1000.0,
-            state.sun_direction[2] as f32 / 1000.0,
-        )
-        .normalize();
-
-        let terminator_width_f = state.terminator_width as f32 / 1000.0;
-        let diffuse_floor_f = state.diffuse_floor as f32 / 1000.0;
-        let diffuse_ramp_f = state.diffuse_ramp as f32 / 1000.0;
-
-        let uniforms = uniforms::Uniforms {
-            mvp: mvp.to_cols_array(),
-            sun_dir: sun_dir.into(),
-            terminator_width: if use_blend_uniforms {
-                terminator_width_f
-            } else {
-                -1.0
-            },
-            flags: u32::from(use_blend_uniforms && state.diffuse_shading),
-            diffuse_floor: diffuse_floor_f,
-            diffuse_ramp: diffuse_ramp_f,
-            _pad: 0.0,
-        };
-        res.queue.write_buffer(
+        render_pass::write_uniforms(
+            &res.queue,
             &res.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[uniforms]),
+            state.longitude,
+            state.latitude,
+            state.zoom,
+            aspect,
+            &export_shading,
         );
-
-        // Encode and submit the render pass
-        let mut encoder = res
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("export_encoder"),
-            });
 
         let resolve_view = export_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let target = render_pass::RenderTarget::new(
+            &resolve_view,
+            msaa_color_view.as_ref(),
+            &export_depth,
+            msaa_depth_view.as_ref(),
+        );
 
-        let (color_view, resolve_target) = if let Some(msaa_view) = msaa_color_view.as_ref() {
-            (msaa_view, Some(&resolve_view))
-        } else {
-            (&resolve_view, None)
-        };
+        render_pass::encode_and_submit(
+            &res.device,
+            &res.queue,
+            &target,
+            &res.pipeline,
+            bind_group,
+            &res.vertex_buffer,
+            &res.index_buffer,
+            res.index_count,
+        );
 
-        let depth_view = msaa_depth_view.as_ref().unwrap_or(&export_depth);
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("export_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    depth_slice: None,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.02,
-                            g: 0.02,
-                            b: 0.05,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-
-            pass.set_pipeline(&res.pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
-            pass.set_vertex_buffer(0, res.vertex_buffer.slice(..));
-            pass.set_index_buffer(res.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..res.index_count, 0, 0..1);
-        }
-
-        res.queue.submit(std::iter::once(encoder.finish()));
-
-        // Read back pixels from the export texture
-        let pixels = render_pass::read_texture_rgba8(
+        Ok(render_pass::read_texture_rgba8(
             &res.device,
             &res.queue,
             &export_texture,
             target_width,
             target_height,
-        );
-
-        Ok(pixels)
+        ))
     })
 }
 
@@ -323,6 +216,9 @@ struct GpuResources {
     render_height: u32,
     /// Last rendered state for dirty-checking. `None` means first frame.
     last_state: Option<FrameState>,
+    /// Raw shading parameters from the last rendered frame, used by the
+    /// export path to avoid reverse-engineering quantized `FrameState` values.
+    last_shading: Option<render_pass::ShadingParams>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
@@ -505,16 +401,21 @@ fn rendering_callback(
                         .expect("render_index must always point to a loaded slot"),
                 };
 
+                let shading = render_pass::ShadingParams {
+                    sun_dir,
+                    use_blend: use_blend_uniforms,
+                    terminator_width: terminator_width_f,
+                    diffuse_shading,
+                    diffuse_floor: diffuse_floor_f,
+                    diffuse_ramp: diffuse_ramp_f,
+                };
+                res.last_shading = Some(shading);
+
                 let image = render_pass::execute_render_pass(
                     res,
                     &current_state,
-                    sun_dir,
                     bind_group_ref,
-                    use_blend_uniforms,
-                    terminator_width_f,
-                    diffuse_shading,
-                    diffuse_floor_f,
-                    diffuse_ramp_f,
+                    res.last_shading.as_ref().unwrap(),
                 );
                 res.last_state = Some(current_state);
                 win.set_rendered_image(image);

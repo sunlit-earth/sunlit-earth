@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
+use crate::scene::camera::{CameraParams, zoom_to_distance};
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -118,12 +119,20 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             );
 
         let aspect = target_width as f32 / target_height as f32;
+        let camera = CameraParams {
+            longitude: state.longitude,
+            latitude: state.latitude,
+            zoom: state.zoom,
+            offset_x: state.offset_x,
+            offset_y: state.offset_y,
+            tilt_deg: state.tilt,
+            yaw_deg: state.yaw,
+            pitch_deg: state.pitch,
+        };
         render_pass::write_uniforms(
             &res.queue,
             &res.uniform_buffer,
-            state.longitude,
-            state.latitude,
-            state.zoom,
+            &camera,
             aspect,
             shading,
         );
@@ -325,10 +334,19 @@ fn rendering_callback(
                 let diffuse_ramp_f = win.get_diffuse_ramp();
 
                 // Build current frame state for dirty-checking
+                let camera = CameraParams {
+                    longitude: win.get_camera_longitude(),
+                    latitude: win.get_camera_latitude(),
+                    zoom: win.get_camera_zoom(),
+                    offset_x: win.get_camera_offset_x(),
+                    offset_y: win.get_camera_offset_y(),
+                    tilt_deg: win.get_camera_tilt(),
+                    yaw_deg: win.get_camera_yaw(),
+                    pitch_deg: win.get_camera_pitch(),
+                };
+                win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
                 let current_state = build_frame_state(
-                    win.get_camera_longitude(),
-                    win.get_camera_latitude(),
-                    win.get_camera_zoom(),
+                    &camera,
                     res.sample_count,
                     win.get_texture_index(),
                     res.render_width,

@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use slint::Image;
 
-use crate::scene::camera::OrbitalCamera;
+use crate::scene::camera::{CameraParams, OrbitalCamera, zoom_to_distance};
 
 use super::GpuResources;
 use super::frame::FrameState;
@@ -57,13 +57,20 @@ impl<'a> RenderTarget<'a> {
 pub(super) fn write_uniforms(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
-    longitude: f32,
-    latitude: f32,
-    zoom: f32,
+    camera_params: &CameraParams,
     aspect: f32,
     shading: &ShadingParams,
 ) {
-    let camera = OrbitalCamera::new(longitude, latitude, zoom);
+    let mut camera = OrbitalCamera::new(
+        camera_params.longitude,
+        camera_params.latitude,
+        zoom_to_distance(camera_params.zoom),
+    );
+    camera.offset_x = camera_params.offset_x;
+    camera.offset_y = camera_params.offset_y;
+    camera.tilt_deg = camera_params.tilt_deg;
+    camera.yaw_deg = camera_params.yaw_deg;
+    camera.pitch_deg = camera_params.pitch_deg;
     let mvp = camera.mvp_matrix(aspect);
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
@@ -145,12 +152,20 @@ pub(super) fn execute_render_pass(
 ) -> Image {
     let aspect = res.render_width as f32 / res.render_height as f32;
 
+    let cam = CameraParams {
+        longitude: state.longitude,
+        latitude: state.latitude,
+        zoom: state.zoom,
+        offset_x: state.offset_x,
+        offset_y: state.offset_y,
+        tilt_deg: state.tilt,
+        yaw_deg: state.yaw,
+        pitch_deg: state.pitch,
+    };
     write_uniforms(
         &res.queue,
         &res.uniform_buffer,
-        state.longitude,
-        state.latitude,
-        state.zoom,
+        &cam,
         aspect,
         shading,
     );

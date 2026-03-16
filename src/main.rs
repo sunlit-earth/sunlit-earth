@@ -6,6 +6,7 @@ use clap::Parser;
 use slint::ComponentHandle;
 
 use sunlit_earth::renderer;
+use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
 use sunlit_earth::texture_loader;
 #[cfg(windows)]
 use sunlit_earth::wallpaper;
@@ -25,6 +26,7 @@ struct Cli {
     textures_dir: Option<PathBuf>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
 
@@ -127,6 +129,69 @@ fn main() {
             win.set_wallpaper_status("Not supported on this platform".into());
         });
     }
+
+    // Mouse drag callback: rotate the globe (tilt-corrected)
+    let window_weak = window.as_weak();
+    window.on_mouse_drag(move |dx, dy| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let tilt_rad = win.get_camera_tilt().to_radians();
+        let cos_t = tilt_rad.cos();
+        let sin_t = tilt_rad.sin();
+
+        // Rotate the (dx, dy) vector by -tilt to undo the screen-space rotation
+        let delta = [
+            dx * cos_t + dy * sin_t,
+            -dx * sin_t + dy * cos_t,
+        ];
+
+        // Scale sensitivity proportionally to camera distance
+        let zoom = win.get_camera_zoom();
+        let degrees_per_px = 0.3 * zoom_to_distance(zoom) / 8.0;
+
+        let new_lon = win.get_camera_longitude() - delta[0] * degrees_per_px;
+        let new_lat = win.get_camera_latitude() + delta[1] * degrees_per_px;
+
+        // Wrap longitude to [-180, 180], clamp latitude to [-89, 89]
+        let wrapped_lon = ((new_lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
+        let clamped_lat = new_lat.clamp(-89.0, 89.0);
+
+        win.set_camera_longitude(wrapped_lon);
+        win.set_camera_latitude(clamped_lat);
+        win.window().request_redraw();
+    });
+
+    // Mouse scroll callback: zoom in/out
+    let window_weak = window.as_weak();
+    window.on_mouse_scroll(move |delta| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let scroll_sensitivity = 0.0003;
+        let current_zoom = win.get_camera_zoom();
+        let new_zoom = (current_zoom - delta * scroll_sensitivity).clamp(0.0, 1.0);
+        win.set_camera_zoom(new_zoom);
+        win.window().request_redraw();
+    });
+
+    // Reset Camera button callback
+    let window_weak = window.as_weak();
+    window.on_reset_camera(move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let defaults = CameraParams::default();
+        win.set_camera_longitude(defaults.longitude);
+        win.set_camera_latitude(defaults.latitude);
+        win.set_camera_zoom(defaults.zoom);
+        win.set_camera_offset_x(defaults.offset_x);
+        win.set_camera_offset_y(defaults.offset_y);
+        win.set_camera_tilt(defaults.tilt_deg);
+        win.set_camera_yaw(defaults.yaw_deg);
+        win.set_camera_pitch(defaults.pitch_deg);
+        win.window().request_redraw();
+    });
 
     renderer::setup_rendering_notifier(&window, aa_counts, texture_paths);
 

@@ -1,5 +1,50 @@
 use glam::Mat4;
 
+/// Groups all camera-related parameters that flow from the UI to the renderer.
+#[derive(Clone, Copy, Debug)]
+pub struct CameraParams {
+    pub longitude: f32,
+    pub latitude: f32,
+    pub zoom: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub tilt_deg: f32,
+    pub yaw_deg: f32,
+    pub pitch_deg: f32,
+}
+
+impl Default for CameraParams {
+    fn default() -> Self {
+        Self {
+            longitude: 0.0,
+            latitude: 30.0,
+            zoom: distance_to_zoom(8.0),
+            offset_x: 0.0,
+            offset_y: 0.0,
+            tilt_deg: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
+        }
+    }
+}
+
+/// Minimum camera distance (closest zoom).
+pub const ZOOM_DISTANCE_MIN: f32 = 1.5;
+/// Maximum camera distance (farthest zoom).
+pub const ZOOM_DISTANCE_MAX: f32 = 80.0;
+
+/// Map a normalized slider value (0.0 to 1.0) to a camera distance
+/// using an exponential curve: `1.5 * (80.0 / 1.5)^t`.
+pub fn zoom_to_distance(t: f32) -> f32 {
+    ZOOM_DISTANCE_MIN * (ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN).powf(t)
+}
+
+/// Inverse of `zoom_to_distance`: convert a camera distance back to
+/// a normalized slider value.
+pub fn distance_to_zoom(distance: f32) -> f32 {
+    (distance / ZOOM_DISTANCE_MIN).ln() / (ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN).ln()
+}
+
 /// Orbital camera that orbits around the origin.
 ///
 /// Longitude rotates around the Y axis, latitude tilts up/down,
@@ -13,6 +58,16 @@ pub struct OrbitalCamera {
     pub distance: f32,
     /// Vertical field of view in degrees
     pub fov_deg: f32,
+    /// Screen-space horizontal offset (-1.0 to 1.0)
+    pub offset_x: f32,
+    /// Screen-space vertical offset (-1.0 to 1.0)
+    pub offset_y: f32,
+    /// Camera roll (tilt) in degrees
+    pub tilt_deg: f32,
+    /// Camera yaw (horizontal look redirection) in degrees
+    pub yaw_deg: f32,
+    /// Camera pitch (vertical look redirection) in degrees
+    pub pitch_deg: f32,
 }
 
 impl OrbitalCamera {
@@ -24,6 +79,11 @@ impl OrbitalCamera {
             latitude_deg: latitude_deg.clamp(-89.9, 89.9),
             distance,
             fov_deg: 20.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            tilt_deg: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
         }
     }
 
@@ -39,12 +99,33 @@ impl OrbitalCamera {
         glam::Vec3::new(x, y, z)
     }
 
-    /// Compute the view matrix (camera looking at the origin).
+    /// Compute the view matrix (camera looking at the origin with optional offset).
+    ///
+    /// Yaw and pitch shift the look-at target away from the origin along the
+    /// camera's local right and up axes via `sin()` mapping: 0 degrees looks at
+    /// the center, 90 degrees shifts the target by 1.0 (Earth's radius) toward
+    /// the surface. Tilt remains a post-view Z rotation (roll around the forward
+    /// axis).
     pub fn view_matrix(&self) -> Mat4 {
         let eye = self.eye_position();
-        let center = glam::Vec3::ZERO;
         let up = glam::Vec3::Y;
-        Mat4::look_at_rh(eye, center, up)
+
+        // Compute local camera frame from eye toward origin
+        let forward = (-eye).normalize();
+        let right = forward.cross(up).normalize();
+        let cam_up = right.cross(forward).normalize();
+
+        // Shift look-at point from origin toward Earth's surface.
+        // sin() maps slider degrees to offset: 0 deg -> center, 90 deg -> Earth surface (radius 1.0)
+        let target = glam::Vec3::ZERO
+            + right * self.yaw_deg.to_radians().sin()
+            + cam_up * self.pitch_deg.to_radians().sin();
+
+        let base_view = Mat4::look_at_rh(eye, target, up);
+
+        // Tilt stays as post-view rotation (roll around forward axis)
+        let tilt = Mat4::from_rotation_z(self.tilt_deg.to_radians());
+        tilt * base_view
     }
 
     /// Compute the projection matrix for the given aspect ratio.
@@ -54,8 +135,11 @@ impl OrbitalCamera {
 
     /// Compute the combined model-view-projection matrix.
     /// The model matrix is identity (sphere at origin).
+    /// Applies a post-projection translation for screen-space pan/offset.
     pub fn mvp_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        self.projection_matrix(aspect_ratio) * self.view_matrix()
+        let base_mvp = self.projection_matrix(aspect_ratio) * self.view_matrix();
+        let offset = Mat4::from_translation(glam::Vec3::new(self.offset_x, self.offset_y, 0.0));
+        offset * base_mvp
     }
 }
 
@@ -64,6 +148,313 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+
+    #[test]
+    fn camera_params_default_values() {
+        let params = CameraParams::default();
+        assert_relative_eq!(params.longitude, 0.0);
+        assert_relative_eq!(params.latitude, 30.0);
+        // Default zoom is the normalized value that produces distance 8.0
+        assert_relative_eq!(zoom_to_distance(params.zoom), 8.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn zoom_to_distance_at_zero() {
+        assert_relative_eq!(zoom_to_distance(0.0), 1.5, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn zoom_to_distance_at_one() {
+        assert_relative_eq!(zoom_to_distance(1.0), 80.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn zoom_to_distance_at_half() {
+        let expected = (1.5_f32 * 80.0).sqrt();
+        assert_relative_eq!(zoom_to_distance(0.5), expected, epsilon = 0.1);
+    }
+
+    #[test]
+    fn zoom_to_distance_monotonic() {
+        let t_values = [0.0, 0.25, 0.5, 0.75, 1.0];
+        let distances: Vec<f32> = t_values.iter().map(|&t| zoom_to_distance(t)).collect();
+        for i in 1..distances.len() {
+            assert!(
+                distances[i] > distances[i - 1],
+                "distance at t={} ({}) should be > distance at t={} ({})",
+                t_values[i], distances[i], t_values[i - 1], distances[i - 1]
+            );
+        }
+    }
+
+    #[test]
+    fn distance_to_zoom_roundtrip() {
+        for &d in &[1.5, 3.0, 8.0, 20.0, 50.0, 80.0] {
+            let t = distance_to_zoom(d);
+            let roundtrip = zoom_to_distance(t);
+            assert_relative_eq!(roundtrip, d, epsilon = 1e-3);
+        }
+    }
+
+    #[test]
+    fn distance_to_zoom_default() {
+        let t = distance_to_zoom(8.0);
+        assert!(t > 0.0 && t < 1.0, "default zoom t={t} should be in (0, 1)");
+    }
+
+    #[test]
+    fn mvp_with_zero_offset_unchanged() {
+        let cam_a = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let mut cam_b = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam_b.offset_x = 0.0;
+        cam_b.offset_y = 0.0;
+        let mvp_a = cam_a.mvp_matrix(16.0 / 9.0);
+        let mvp_b = cam_b.mvp_matrix(16.0 / 9.0);
+        assert_relative_eq!(mvp_a.to_cols_array().as_slice(), mvp_b.to_cols_array().as_slice(), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn mvp_with_positive_x_offset_shifts_right() {
+        let aspect = 16.0 / 9.0;
+        let mut cam_no_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_no_offset.offset_x = 0.0;
+        let mut cam_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_offset.offset_x = 0.5;
+
+        // Transform the origin point
+        let point = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let clip_no = cam_no_offset.mvp_matrix(aspect) * point;
+        let clip_yes = cam_offset.mvp_matrix(aspect) * point;
+
+        // The X in clip space should be larger with the positive offset
+        assert!(
+            clip_yes.x > clip_no.x,
+            "clip_yes.x ({}) should be > clip_no.x ({})",
+            clip_yes.x, clip_no.x
+        );
+    }
+
+    #[test]
+    fn view_with_zero_rotations_unchanged() {
+        let cam_a = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let mut cam_b = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam_b.tilt_deg = 0.0;
+        cam_b.yaw_deg = 0.0;
+        cam_b.pitch_deg = 0.0;
+        let view_a = cam_a.view_matrix();
+        let view_b = cam_b.view_matrix();
+        assert_relative_eq!(view_a.to_cols_array().as_slice(), view_b.to_cols_array().as_slice(), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn view_with_180_tilt_flips_vertical() {
+        let cam_no_tilt = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_tilt = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_tilt.tilt_deg = 180.0;
+
+        let point = glam::Vec4::new(0.0, 1.0, 0.0, 1.0);
+        let v_no = cam_no_tilt.view_matrix() * point;
+        let v_yes = cam_tilt.view_matrix() * point;
+
+        // Y components should have opposite signs (flipped)
+        assert!(
+            v_no.y * v_yes.y < 0.0,
+            "Y should flip: no_tilt.y={}, tilt_180.y={}",
+            v_no.y, v_yes.y
+        );
+    }
+
+    #[test]
+    fn view_with_tilt_preserves_determinant() {
+        for tilt in [0.0, 45.0, 90.0, 135.0, 180.0] {
+            let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+            cam.tilt_deg = tilt;
+            let det = cam.view_matrix().determinant();
+            assert!(det.abs() > 0.5, "Determinant should be non-zero for tilt={tilt}");
+        }
+    }
+
+    #[test]
+    fn tilt_360_equals_zero() {
+        let cam_0 = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let mut cam_360 = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam_360.tilt_deg = 360.0;
+        let v_0 = cam_0.view_matrix();
+        let v_360 = cam_360.view_matrix();
+        assert_relative_eq!(v_0.to_cols_array().as_slice(), v_360.to_cols_array().as_slice(), epsilon = 1e-4);
+    }
+
+    #[test]
+    fn view_with_zero_yaw_pitch_unchanged() {
+        let cam_default = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_explicit = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_explicit.yaw_deg = 0.0;
+        cam_explicit.pitch_deg = 0.0;
+        assert_relative_eq!(
+            cam_default.view_matrix().to_cols_array().as_slice(),
+            cam_explicit.view_matrix().to_cols_array().as_slice(),
+            epsilon = 1e-6
+        );
+    }
+
+    #[test]
+    fn view_with_pitch_shifts_look_target_up() {
+        let cam_no_pitch = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pitch = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pitch.pitch_deg = 30.0;
+
+        // Point above the origin — pitched camera should look toward it
+        let point = glam::Vec4::new(0.0, 0.5, 0.0, 1.0);
+        let v_no = cam_no_pitch.view_matrix() * point;
+        let v_yes = cam_pitch.view_matrix() * point;
+
+        // With pitch applied, the point should be more centered in view-space Y
+        // (closer to zero) because the camera is now looking upward toward it
+        assert!(
+            v_yes.y.abs() < v_no.y.abs(),
+            "Pitched camera should center the point in Y: no_pitch.y={}, pitch_30.y={}",
+            v_no.y, v_yes.y
+        );
+    }
+
+    #[test]
+    fn view_with_yaw_shifts_look_target_right() {
+        let cam_no_yaw = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_yaw = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_yaw.yaw_deg = 30.0;
+
+        // Point to the right of the origin — yawed camera should look toward it
+        let point = glam::Vec4::new(0.5, 0.0, 0.0, 1.0);
+        let v_no = cam_no_yaw.view_matrix() * point;
+        let v_yes = cam_yaw.view_matrix() * point;
+
+        // With yaw applied, the point should be more centered in view-space X
+        // (closer to zero) because the camera is now looking rightward toward it
+        assert!(
+            v_yes.x.abs() < v_no.x.abs(),
+            "Yawed camera should center the point in X: no_yaw.x={}, yaw_30.x={}",
+            v_no.x, v_yes.x
+        );
+    }
+
+    #[test]
+    fn pitch_90_looks_at_surface() {
+        let cam_no_pitch = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pitch = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pitch.pitch_deg = 90.0;
+
+        // Transform the origin through both view matrices
+        let origin = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let v_no = cam_no_pitch.view_matrix() * origin;
+        let v_yes = cam_pitch.view_matrix() * origin;
+
+        // The offset point (0, 1, 0) through the un-pitched camera
+        let offset_point = glam::Vec4::new(0.0, 1.0, 0.0, 1.0);
+        let v_offset = cam_no_pitch.view_matrix() * offset_point;
+
+        // Pitched camera's view of origin should differ in Y from un-pitched,
+        // showing the view direction has shifted upward
+        assert!(
+            (v_yes.y - v_no.y).abs() > 0.1,
+            "pitch=90 should shift view direction significantly: no_pitch.y={}, pitch_90.y={}",
+            v_no.y, v_yes.y
+        );
+
+        // The un-pitched camera's view of offset_point should have meaningful Y component
+        assert!(
+            v_offset.y.abs() > 0.1,
+            "Offset point should have non-trivial Y in view space: {}",
+            v_offset.y
+        );
+    }
+
+    #[test]
+    fn view_with_negative_yaw_mirrors_positive() {
+        let base = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pos = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pos.yaw_deg = 30.0;
+        let mut cam_neg = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_neg.yaw_deg = -30.0;
+
+        let point = glam::Vec4::new(1.0, 0.0, 0.0, 1.0);
+        let v_base = base.view_matrix() * point;
+        let v_pos = cam_pos.view_matrix() * point;
+        let v_neg = cam_neg.view_matrix() * point;
+
+        // Positive and negative yaw should shift X in opposite directions
+        let delta_pos = v_pos.x - v_base.x;
+        let delta_neg = v_neg.x - v_base.x;
+        assert!(
+            delta_pos * delta_neg < 0.0,
+            "Opposite yaw should produce opposite X shifts: +yaw delta={delta_pos}, -yaw delta={delta_neg}"
+        );
+    }
+
+    #[test]
+    fn view_with_negative_pitch_mirrors_positive() {
+        let base = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pos = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pos.pitch_deg = 30.0;
+        let mut cam_neg = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_neg.pitch_deg = -30.0;
+
+        let point = glam::Vec4::new(0.0, 1.0, 0.0, 1.0);
+        let v_base = base.view_matrix() * point;
+        let v_pos = cam_pos.view_matrix() * point;
+        let v_neg = cam_neg.view_matrix() * point;
+
+        // Positive and negative pitch should shift Y in opposite directions
+        let delta_pos = v_pos.y - v_base.y;
+        let delta_neg = v_neg.y - v_base.y;
+        assert!(
+            delta_pos * delta_neg < 0.0,
+            "Opposite pitch should produce opposite Y shifts: +pitch delta={delta_pos}, -pitch delta={delta_neg}"
+        );
+    }
+
+    #[test]
+    fn yaw_pitch_preserves_determinant() {
+        for yaw in [-90.0, -45.0, 0.0, 45.0, 90.0] {
+            for pitch in [-90.0, -45.0, 0.0, 45.0, 90.0] {
+                let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+                cam.yaw_deg = yaw;
+                cam.pitch_deg = pitch;
+                let det = cam.view_matrix().determinant();
+                assert!(
+                    det.abs() > 0.5,
+                    "Determinant should be non-zero for yaw={yaw}, pitch={pitch}, got {det}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_rotations_zero_equals_no_rotation() {
+        let cam_base = OrbitalCamera::new(15.0, 25.0, 6.0);
+        let mut cam_zero = OrbitalCamera::new(15.0, 25.0, 6.0);
+        cam_zero.tilt_deg = 0.0;
+        cam_zero.yaw_deg = 0.0;
+        cam_zero.pitch_deg = 0.0;
+        assert_relative_eq!(
+            cam_base.view_matrix().to_cols_array().as_slice(),
+            cam_zero.view_matrix().to_cols_array().as_slice(),
+            epsilon = 1e-6
+        );
+    }
+
+    #[test]
+    fn mvp_with_offset_preserves_depth() {
+        let aspect = 16.0 / 9.0;
+        let cam_no_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_offset.offset_x = 0.5;
+
+        let point = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let clip_no = cam_no_offset.mvp_matrix(aspect) * point;
+        let clip_yes = cam_offset.mvp_matrix(aspect) * point;
+
+        assert_relative_eq!(clip_no.z, clip_yes.z, epsilon = 1e-6);
+    }
 
     #[test]
     fn eye_at_zero_longitude_zero_latitude() {
@@ -109,5 +500,17 @@ mod tests {
         let cam = OrbitalCamera::new(45.0, 30.0, 4.0);
         let det = cam.view_matrix().determinant();
         assert!(det.abs() > 0.5, "View matrix should be invertible");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn zoom_range_proptest(t in 0.0_f32..=1.0) {
+            let d = zoom_to_distance(t);
+            proptest::prop_assert!(
+                d >= ZOOM_DISTANCE_MIN && d <= ZOOM_DISTANCE_MAX,
+                "zoom_to_distance({t}) = {d}, expected in [{}, {}]",
+                ZOOM_DISTANCE_MIN, ZOOM_DISTANCE_MAX
+            );
+        }
     }
 }

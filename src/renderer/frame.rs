@@ -4,6 +4,11 @@ pub(crate) struct FrameState {
     pub longitude: f32,
     pub latitude: f32,
     pub zoom: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub tilt: f32,
+    pub yaw: f32,
+    pub pitch: f32,
     pub sample_count: u32,
     pub texture_index: i32,
     pub width: u32,
@@ -24,9 +29,7 @@ pub(crate) struct FrameState {
 /// milliradians/thousandths for stable dirty-check comparison.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 pub(crate) fn build_frame_state(
-    longitude: f32,
-    latitude: f32,
-    zoom: f32,
+    camera: &crate::scene::camera::CameraParams,
     sample_count: u32,
     texture_index: i32,
     render_width: u32,
@@ -38,9 +41,14 @@ pub(crate) fn build_frame_state(
     diffuse_ramp: f32,
 ) -> FrameState {
     FrameState {
-        longitude,
-        latitude,
-        zoom,
+        longitude: camera.longitude,
+        latitude: camera.latitude,
+        zoom: camera.zoom,
+        offset_x: camera.offset_x,
+        offset_y: camera.offset_y,
+        tilt: camera.tilt_deg,
+        yaw: camera.yaw_deg,
+        pitch: camera.pitch_deg,
         sample_count,
         texture_index,
         width: render_width,
@@ -60,13 +68,26 @@ pub(crate) fn build_frame_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::camera::CameraParams;
+
+    /// Helper: build a camera params with typical values.
+    fn default_camera() -> CameraParams {
+        CameraParams {
+            longitude: 10.0,
+            latitude: 20.0,
+            zoom: 3.5,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            tilt_deg: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
+        }
+    }
 
     /// Helper: build a frame state with typical values, allowing overrides.
     fn default_frame_state() -> FrameState {
         build_frame_state(
-            10.0,          // longitude
-            20.0,          // latitude
-            3.5,           // zoom
+            &default_camera(),
             4,             // sample_count
             0,             // texture_index
             1920,          // render_width
@@ -102,13 +123,14 @@ mod tests {
 
     #[test]
     fn frame_state_sub_threshold_change_compares_equal() {
+        let cam = default_camera();
         let state_a = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
+            &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1230, -0.5670, 0.9010),
             0.15, true, 0.1, 0.6,
         );
         let state_b = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
+            &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1235, -0.5670, 0.9010),
             0.15, true, 0.1, 0.6,
         );
@@ -117,13 +139,14 @@ mod tests {
 
     #[test]
     fn frame_state_at_threshold_change_compares_different() {
+        let cam = default_camera();
         let state_a = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
+            &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1230, -0.5670, 0.9010),
             0.15, true, 0.1, 0.6,
         );
         let state_b = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
+            &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1240, -0.5670, 0.9010),
             0.15, true, 0.1, 0.6,
         );
@@ -133,89 +156,138 @@ mod tests {
     #[test]
     fn frame_state_each_field_triggers_dirty() {
         let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
 
         let modified = build_frame_state(
-            11.0, 20.0, 3.5, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &CameraParams { longitude: 11.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "longitude change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 21.0, 3.5, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &CameraParams { latitude: 21.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "latitude change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 4.0, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &CameraParams { zoom: 4.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "zoom change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 8, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &cam, 8, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "sample_count change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 1, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &cam, 4, 1, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "texture_index change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1024, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &cam, 4, 0, 1024, 1080,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "width change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 720,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6,
+            &cam, 4, 0, 1920, 720,
+            sun, 0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "height change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
+            &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.5, -0.5678, 0.9012),
             0.15, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "sun_direction change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.25, true, 0.1, 0.6,
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.25, true, 0.1, 0.6,
         );
         assert_ne!(base, modified, "terminator_width change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, false, 0.1, 0.6,
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, false, 0.1, 0.6,
         );
         assert_ne!(base, modified, "diffuse_shading change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.2, 0.6,
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.2, 0.6,
         );
         assert_ne!(base, modified, "diffuse_floor change should trigger dirty");
 
         let modified = build_frame_state(
-            10.0, 20.0, 3.5, 4, 0, 1920, 1080,
-            glam::Vec3::new(0.1234, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.7,
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.7,
         );
         assert_ne!(base, modified, "diffuse_ramp change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_tilt_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { tilt_deg: 45.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "tilt change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_yaw_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { yaw_deg: 30.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "yaw change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_pitch_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { pitch_deg: 30.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "pitch change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_offset_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { offset_x: 0.5, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "offset_x change should trigger dirty");
+
+        let modified = build_frame_state(
+            &CameraParams { offset_y: 0.5, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "offset_y change should trigger dirty");
     }
 }

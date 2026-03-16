@@ -121,19 +121,26 @@ def apply_coast_offset(
         result = np.where(mask == 255, np.uint8(255), blurred_arr)
         return result.astype(np.uint8)
 
-    # Negative: erode ocean away from coast via MinFilter (morphological
-    # erosion), then Gaussian blur for a smooth transition.
+    # Negative: erode the ocean boundary inward so the fill color pulls
+    # back from the coast. The eroded zone stays at 255 (full fill) —
+    # we never reveal original ocean pixels, which would create a visible
+    # dark band between land and fill. Only the new boundary gets a soft
+    # Gaussian gradient toward land.
     radius = abs(offset_pixels)
     img = Image.fromarray(mask, mode="L")
     # MinFilter kernel must be odd and >= 3
     kernel = max(3, 2 * radius + 1)
     eroded = img.filter(ImageFilter.MinFilter(size=kernel))
-    # Smooth the eroded boundary
+    # Blur the new (inward-shifted) boundary for a soft transition
     eroded = eroded.filter(ImageFilter.GaussianBlur(radius=radius))
-    result = np.array(eroded, dtype=np.uint8)
-    # Preserve deep-land pixels at 0
-    result = np.where(mask == 0, np.uint8(0), result)
-    return result.astype(np.uint8)
+    eroded_arr = np.array(eroded, dtype=np.uint8)
+    # Take the minimum of original and eroded: the eroded mask is
+    # smaller, so min() keeps the eroded boundary. But where the
+    # eroded mask is 255 (deep ocean, untouched by erosion), the
+    # original is also 255 — no change. Where the eroded mask is 0
+    # (land side of the new boundary), the original might still be
+    # 255 (was ocean) — min picks 0, hiding the original ocean.
+    return np.minimum(mask, eroded_arr)
 
 
 _mask_cache: dict[tuple[str, int, int, int, int], np.ndarray] = {}

@@ -62,16 +62,32 @@ def apply_ocean_mask(
 ) -> Image.Image:
     """Replace ocean pixels in an image with a uniform fill color.
 
+    Memory-optimized: directly assigns fill color for fully-ocean pixels
+    (mask=255) and fully preserves land pixels (mask=0) using uint8
+    operations. Float blending is only used for the small fraction of
+    anti-aliased edge pixels with intermediate mask values.
+
     :param image: Source RGB image.
     :param mask: uint8 array of shape (H, W). 0 = land, 255 = ocean.
     :param color: RGB fill color for ocean regions.
     :returns: New RGB image with ocean pixels replaced.
     """
-    src = np.array(image, dtype=np.float32)
-    alpha = mask.astype(np.float32) / 255.0
-    fill = np.array(color, dtype=np.float32)
-    result = src * (1.0 - alpha[..., None]) + fill * alpha[..., None]
-    return Image.fromarray(result.clip(0, 255).astype(np.uint8), mode="RGB")
+    result = np.array(image)  # uint8 copy
+
+    # Fully ocean pixels: direct fill (no float math needed)
+    ocean = mask == 255
+    result[ocean] = color
+
+    # Anti-aliased edge pixels: float blend (typically <0.1% of pixels)
+    edges = (mask > 0) & (mask < 255)
+    if np.any(edges):
+        alpha = mask[edges].astype(np.float32) / 255.0
+        src_px = result[edges].astype(np.float32)
+        fill = np.array(color, dtype=np.float32)
+        blended = src_px * (1.0 - alpha[:, np.newaxis]) + fill * alpha[:, np.newaxis]
+        result[edges] = blended.clip(0, 255).astype(np.uint8)
+
+    return Image.fromarray(result, mode="RGB")
 
 
 def apply_coastal_buffer(
@@ -180,68 +196,95 @@ def detect_ice_regions(
         label,
     )
 
-    arr = np.array(image, dtype=np.float32)
-    h, w = arr.shape[:2]
+    h, w = ocean_mask.shape
 
-    # 1. Latitude gate — only polar rows
+    # 1. Latitude gate — identify polar row ranges
     row_latitudes = 90.0 - np.arange(h) * 180.0 / h
     polar_rows = np.abs(row_latitudes) >= latitude_threshold
-    polar_mask_2d = polar_rows[:, np.newaxis]  # (H, 1) for broadcasting
 
-    # 2. Domain: polar ocean pixels
-    domain = (ocean_mask > 128) & polar_mask_2d
-
-    # Early exit if no polar ocean pixels
-    if not np.any(domain):
+    # Find contiguous polar row ranges to avoid processing the full image.
+    # In equirectangular, polar rows are at the top (Arctic) and bottom
+    # (Antarctic) of the image.
+    polar_indices = np.where(polar_rows)[0]
+    if len(polar_indices) == 0:
         return np.zeros((h, w), dtype=np.uint8)
 
-    # 3. Luminance and saturation
-    lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
-    ch_max = arr.max(axis=2)
-    ch_min = arr.min(axis=2)
-    sat = np.where(ch_max > 0, (ch_max - ch_min) / ch_max, 0.0)
+    # Collect slices for each contiguous polar band
+    bands: list[tuple[int, int]] = []
+    band_start = polar_indices[0]
+    for i in range(1, len(polar_indices)):
+        if polar_indices[i] != polar_indices[i - 1] + 1:
+            bands.append((band_start, polar_indices[i - 1] + 1))
+            band_start = polar_indices[i]
+    bands.append((band_start, polar_indices[-1] + 1))
 
-    # 4. Strict seed detection
-    seeds = domain & (lum >= seed_luminance) & (sat <= seed_saturation)
-
-    if not np.any(seeds):
-        return np.zeros((h, w), dtype=np.uint8)
-
-    # 5. Connected-component labeling — remove small regions
-    labeled, _ = label(seeds)
-    sizes = np.bincount(labeled.ravel())
-    keep = sizes >= min_region_size
-    keep[0] = False  # background
-    seeds_filtered = keep[labeled]
-
-    if not np.any(seeds_filtered):
-        return np.zeros((h, w), dtype=np.uint8)
-
-    # 6. Relaxed candidate mask
-    relaxed = domain & (lum >= relax_luminance) & (sat <= relax_saturation)
-
-    # 7. Geodesic dilation: grow seeds into relaxed mask
+    result = np.zeros((h, w), dtype=np.uint8)
     struct = generate_binary_structure(2, 2)  # 8-connectivity
-    expanded = binary_dilation(
-        seeds_filtered,
-        structure=struct,
-        iterations=dilation_iterations,
-        mask=relaxed,
-    )
 
-    # 8. Morphological closing to fill small internal gaps
-    closed = binary_closing(expanded, structure=struct, iterations=2)
-    closed = closed & domain  # re-intersect with polar ocean
+    for r_start, r_end in bands:
+        # Extract only the polar band from the image (avoids full float32)
+        band_arr = np.array(
+            image.crop((0, r_start, w, r_end)), dtype=np.float32
+        )
+        band_mask = ocean_mask[r_start:r_end, :]
+        domain = band_mask > 128
 
-    # 9. Gaussian blur for soft transitions
-    ice_uint8 = (closed.astype(np.uint8) * 255)
-    ice_img = Image.fromarray(ice_uint8, mode="L")
-    if blur_radius > 0:
-        ice_img = ice_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    result = np.array(ice_img, dtype=np.uint8)
+        if not np.any(domain):
+            continue
 
-    # Ensure non-polar rows are zero (blur may have bled across boundary)
-    result[~polar_rows, :] = 0
+        # Luminance and saturation on the band only
+        lum = (
+            0.299 * band_arr[:, :, 0]
+            + 0.587 * band_arr[:, :, 1]
+            + 0.114 * band_arr[:, :, 2]
+        )
+        ch_max = band_arr.max(axis=2)
+        ch_min = band_arr.min(axis=2)
+        sat = np.where(ch_max > 0, (ch_max - ch_min) / ch_max, 0.0)
+
+        # Free the float32 image band early
+        del band_arr
+
+        # Strict seed detection
+        seeds = domain & (lum >= seed_luminance) & (sat <= seed_saturation)
+        if not np.any(seeds):
+            continue
+
+        # Connected-component labeling — remove small regions
+        labeled, _ = label(seeds)
+        sizes = np.bincount(labeled.ravel())
+        keep = sizes >= min_region_size
+        keep[0] = False  # background
+        seeds_filtered = keep[labeled]
+        del labeled, sizes, keep
+
+        if not np.any(seeds_filtered):
+            continue
+
+        # Relaxed candidate mask
+        relaxed = domain & (lum >= relax_luminance) & (sat <= relax_saturation)
+        del lum, ch_max, ch_min, sat
+
+        # Geodesic dilation: grow seeds into relaxed mask
+        expanded = binary_dilation(
+            seeds_filtered,
+            structure=struct,
+            iterations=dilation_iterations,
+            mask=relaxed,
+        )
+
+        # Morphological closing to fill small internal gaps
+        closed = binary_closing(expanded, structure=struct, iterations=2)
+        closed = closed & domain
+
+        # Gaussian blur for soft transitions
+        band_ice = closed.astype(np.uint8) * 255
+        ice_img = Image.fromarray(band_ice, mode="L")
+        if blur_radius > 0:
+            ice_img = ice_img.filter(
+                ImageFilter.GaussianBlur(radius=blur_radius)
+            )
+        result[r_start:r_end, :] = np.array(ice_img, dtype=np.uint8)
 
     return result
 

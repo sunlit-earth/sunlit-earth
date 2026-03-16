@@ -327,9 +327,8 @@ CLAUDE.md                      (modified: PNG references -> JPEG, document dithe
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Phase 1 implementation started
-- [ ] Phase 1 implementation complete
-- [ ] Phase 1 manual verification passed (Phase 2 not needed)
-- [ ] Phase 2 implementation started (only if Phase 1 verification failed)
-- [ ] Phase 2 implementation complete
+- [x] Plan approved
+- [x] Phase 1 implementation started
+- [x] Phase 1 implementation complete
+- [x] Phase 1 manual verification passed (Phase 2 not needed)
+- Phase 2 skipped — PNG is preserved losslessly by Windows

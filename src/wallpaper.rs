@@ -1,4 +1,4 @@
-//! Windows-only wallpaper export: monitor resolution detection, TIFF save,
+//! Windows-only wallpaper export: monitor resolution detection, PNG save,
 //! and `SystemParametersInfoW` to set the desktop wallpaper.
 
 use std::path::{Path, PathBuf};
@@ -240,48 +240,29 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Standard sRGB IEC 61966-2.1 ICC profile (v4, 3,144 bytes).
+/// Encode RGBA8 pixel data as PNG and save it to the wallpaper directory.
 ///
-/// Embedded so that the exported TIFF is correctly color-managed when
-/// displayed as the desktop wallpaper.
-const SRGB_ICC_PROFILE: &[u8] = include_bytes!("../assets/sRGB.icc");
-
-/// Encode RGBA8 pixel data as an LZW-compressed TIFF with an embedded sRGB
-/// ICC profile and save it to the wallpaper directory.
-///
-/// Uses the `tiff` crate directly (rather than `image::save()`) because
-/// the `image` crate's `TiffEncoder` does not expose compression or tag
-/// settings.
+/// Uses fast compression (`CompressionType::Fast`) because the user waits
+/// for the "Set as Wallpaper" operation to complete. Larger file size is
+/// acceptable. Windows preserves PNG wallpapers losslessly (no JPEG
+/// transcode), which avoids the banding artifacts that occurred with TIFF.
 ///
 /// Returns the path to the saved file on success.
 pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<PathBuf, String> {
-    use tiff::encoder::colortype;
-    use tiff::tags::Tag;
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
 
     let dir = wallpaper_dir()?;
-    let path = dir.join("wallpaper.tif");
+    let path = dir.join("wallpaper.png");
 
     let file =
-        std::fs::File::create(&path).map_err(|e| format!("Failed to create TIFF file: {e}"))?;
-    let mut writer = std::io::BufWriter::new(file);
+        std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
+    let writer = std::io::BufWriter::new(file);
 
-    let mut encoder = tiff::encoder::TiffEncoder::new(&mut writer)
-        .map_err(|e| format!("Failed to create TIFF encoder: {e}"))?;
-    encoder = encoder.with_compression(tiff::encoder::Compression::Lzw);
-    encoder = encoder.with_predictor(tiff::encoder::Predictor::Horizontal);
-
-    let mut image = encoder
-        .new_image::<colortype::RGBA8>(width, height)
-        .map_err(|e| format!("Failed to create TIFF image: {e}"))?;
-
-    image
-        .encoder()
-        .write_tag(Tag::IccProfile, SRGB_ICC_PROFILE)
-        .map_err(|e| format!("Failed to write ICC profile: {e}"))?;
-
-    image
-        .write_data(pixels)
-        .map_err(|e| format!("Failed to encode TIFF: {e}"))?;
+    let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
+    encoder
+        .write_image(pixels, width, height, image::ColorType::Rgba8.into())
+        .map_err(|e| format!("Failed to encode PNG: {e}"))?;
 
     Ok(path)
 }
@@ -303,12 +284,12 @@ mod tests {
     }
 
     #[test]
-    fn wallpaper_path_is_tif() {
+    fn wallpaper_path_is_png() {
         let dir = wallpaper_dir().unwrap();
-        let path = dir.join("wallpaper.tif");
+        let path = dir.join("wallpaper.png");
         assert!(
-            path.to_string_lossy().ends_with(".tif"),
-            "wallpaper path should end with .tif"
+            path.to_string_lossy().ends_with(".png"),
+            "wallpaper path should end with .png"
         );
     }
 
@@ -328,7 +309,7 @@ mod tests {
 
     #[test]
     fn set_wallpaper_rejects_missing_file() {
-        let result = set_wallpaper(Path::new(r"C:\nonexistent\fake_wallpaper.tif"));
+        let result = set_wallpaper(Path::new(r"C:\nonexistent\fake_wallpaper.png"));
         assert!(result.is_err(), "should reject missing file");
     }
 
@@ -336,7 +317,7 @@ mod tests {
     fn set_wallpaper_rejects_empty_file() {
         let dir = std::env::temp_dir().join("sunlit_earth_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let empty_file = dir.join("empty.tif");
+        let empty_file = dir.join("empty.png");
         std::fs::write(&empty_file, b"").unwrap();
         let result = set_wallpaper(&empty_file);
         assert!(result.is_err(), "should reject empty file");
@@ -347,7 +328,7 @@ mod tests {
     /// Tests both creation and overwrite in a single test to avoid races
     /// (both operations write to the same fixed wallpaper path).
     #[test]
-    fn save_wallpaper_creates_valid_tiff_and_overwrites() {
+    fn save_wallpaper_creates_valid_png_and_overwrites() {
         // First save: 4x4 solid red
         let width = 4u32;
         let height = 4u32;
@@ -355,11 +336,11 @@ mod tests {
             .flat_map(|_| [255u8, 0, 0, 255])
             .collect();
 
-        let path = save_wallpaper_image(&red_pixels, width, height).expect("should save TIFF");
-        assert!(path.exists(), "TIFF file should exist");
+        let path = save_wallpaper_image(&red_pixels, width, height).expect("should save PNG");
+        assert!(path.exists(), "PNG file should exist");
         assert!(
             std::fs::metadata(&path).unwrap().len() > 0,
-            "TIFF file should be non-empty"
+            "PNG file should be non-empty"
         );
 
         // Verify it can be re-read with correct dimensions

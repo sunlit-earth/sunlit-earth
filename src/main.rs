@@ -152,7 +152,7 @@ fn main() {
     std::process::exit(0);
 }
 
-/// Render the current scene at the primary monitor's resolution, save as TIFF,
+/// Render the current scene at the primary monitor's resolution, save as PNG,
 /// and set it as the Windows desktop wallpaper.
 #[cfg(windows)]
 fn do_set_wallpaper() -> Result<(), String> {

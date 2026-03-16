@@ -12,8 +12,7 @@ glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 pollster = "0.4"
-image = { version = "0.25.8", default-features = false, features = ["tiff"] }
-tiff = "0.10"
+image = { version = "0.25.8", default-features = false, features = ["png"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["image", "rayon"] }
 astronomy-engine-bindings = "2.1"
 time = { version = "0.3", features = ["std"] }

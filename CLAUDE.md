@@ -56,7 +56,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
   - `renderer/textures.rs` — `TextureSlot`, texture loading/decoding, composite bind group, `create_mipmapped_texture()`, `downsample_2x()`
   - `renderer/uniforms.rs` — `Uniforms` struct with `#[repr(C)]`, compile-time size assertion
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
-- `wallpaper.rs` — Windows-only wallpaper export (`cfg(windows)`): monitor resolution detection via `EnumDisplayMonitors`/`GetMonitorInfoW`, TIFF save via `image` crate, wallpaper application via `SystemParametersInfoW` (`windows-sys`)
+- `wallpaper.rs` — Windows-only wallpaper export (`cfg(windows)`): monitor resolution detection via `EnumDisplayMonitors`/`GetMonitorInfoW`, PNG save via `image` crate, wallpaper application via `SystemParametersInfoW` (`windows-sys`)
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
 
 **Shader:** Split into two files concatenated at load time by `renderer/gpu_setup.rs`:
@@ -65,11 +65,11 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox with Day/Night Blend mode, MSAA combobox, longitude/latitude/zoom sliders, terminator width slider, diffuse shading checkbox, "Set as Wallpaper" button with status text, adapter info) and image display area.
 
-**Wallpaper export pipeline:** The "Set as Wallpaper" button renders the current scene at the primary monitor's native resolution using temporary GPU textures with `COPY_SRC` usage (distinct from the preview textures which use `TEXTURE_BINDING`). Pixels are read back via a staging buffer with 256-byte row alignment, encoded as LZW-compressed TIFF, saved to `%LOCALAPPDATA%\SunlitEarth\wallpaper.tif`, and applied via Win32 `SystemParametersInfoW`. The export reuses the existing pipeline and bind groups but creates fresh textures at the target resolution that are dropped after the export completes.
+**Wallpaper export pipeline:** The "Set as Wallpaper" button renders the current scene at the primary monitor's native resolution using temporary GPU textures with `COPY_SRC` usage (distinct from the preview textures which use `TEXTURE_BINDING`). Pixels are read back via a staging buffer with 256-byte row alignment, encoded as PNG (fast compression), saved to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applied via Win32 `SystemParametersInfoW`. The export reuses the existing pipeline and bind groups but creates fresh textures at the target resolution that are dropped after the export completes. PNG is used instead of TIFF because Windows preserves PNG wallpapers losslessly, whereas TIFF wallpapers are JPEG-transcoded at 85% quality, causing visible banding in smooth gradients.
 
 **Notable dependencies beyond wgpu/slint:**
 - `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
-- `image` — TIFF encoding for wallpaper export (via `tiff` feature)
+- `image` — PNG encoding for wallpaper export (via `png` feature)
 - `time` — UTC time decomposition for astronomy calculations
 - `windows-sys` — Win32 FFI for wallpaper export (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`
 

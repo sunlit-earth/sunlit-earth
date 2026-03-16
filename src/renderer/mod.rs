@@ -11,6 +11,7 @@ use std::sync::mpsc;
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
+use crate::scene::camera::OrbitalCamera;
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -63,6 +64,241 @@ pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     let qw = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
     let qh = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
     (qw, qh)
+}
+
+/// Render the current scene at the given resolution and return raw RGBA8 pixels.
+///
+/// Creates temporary GPU textures with `COPY_SRC` at the target resolution,
+/// renders using the existing pipeline and bind groups (matching the last
+/// displayed frame), reads back the pixels, and drops the temporary textures.
+///
+/// Returns `Err` if the GPU is not initialized, textures are still loading,
+/// or no frame has been rendered yet.
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
+    GPU_RESOURCES.with(|r| {
+        let borrow = r.borrow();
+        let res = borrow.as_ref().ok_or("GPU not initialized")?;
+
+        // Read the last frame state to reproduce the same scene
+        let state = res
+            .last_state
+            .as_ref()
+            .ok_or("No frame rendered yet")?;
+
+        // Determine which texture mode / bind group to use
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let raw_index = state.texture_index as usize;
+        let is_blend_mode = raw_index == BLEND_MODE_INDEX;
+
+        // Check if required textures are still loading
+        if is_blend_mode {
+            if res.texture_slots[DAY_SLOT].loading || res.texture_slots[NIGHT_SLOT].loading {
+                return Err("Textures are still loading".to_owned());
+            }
+        } else {
+            let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
+            if res.texture_slots[slot_index].loading {
+                return Err("Textures are still loading".to_owned());
+            }
+        }
+
+        // Resolve the bind group (same logic as BeforeRendering)
+        let (bind_group, use_blend_uniforms) = if is_blend_mode {
+            if let Some(bg) = res.composite_bind_group.as_ref() {
+                (bg, true)
+            } else {
+                // Fall back to a single-texture slot
+                let idx = res.last_rendered_index;
+                let bg = res.texture_slots[idx]
+                    .bind_group
+                    .as_ref()
+                    .ok_or("No texture loaded for fallback")?;
+                (bg, false)
+            }
+        } else {
+            let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
+            let idx = if res.texture_slots[slot_index].bind_group.is_some() {
+                slot_index
+            } else {
+                res.last_rendered_index
+            };
+            let bg = res.texture_slots[idx]
+                .bind_group
+                .as_ref()
+                .ok_or("No texture loaded")?;
+            (bg, false)
+        };
+
+        // Create temporary render texture with COPY_SRC for readback
+        let size = wgpu::Extent3d {
+            width: target_width,
+            height: target_height,
+            depth_or_array_layers: 1,
+        };
+
+        let export_texture = res.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("export_render_texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let export_depth = res
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("export_depth_texture"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create MSAA textures if the current sample count > 1
+        let (msaa_color_view, msaa_depth_view) = if res.sample_count > 1 {
+            let msaa_color = res
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("export_msaa_color"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: res.sample_count,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            let msaa_depth = res
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("export_msaa_depth"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: res.sample_count,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Depth32Float,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            (Some(msaa_color), Some(msaa_depth))
+        } else {
+            (None, None)
+        };
+
+        // Compute camera matrix with the target aspect ratio
+        let camera = OrbitalCamera::new(state.longitude, state.latitude, state.zoom);
+        let aspect = target_width as f32 / target_height as f32;
+        let mvp = camera.mvp_matrix(aspect);
+
+        // Read shading parameters from last_state
+        let sun_dir = glam::Vec3::new(
+            state.sun_direction[0] as f32 / 1000.0,
+            state.sun_direction[1] as f32 / 1000.0,
+            state.sun_direction[2] as f32 / 1000.0,
+        )
+        .normalize();
+
+        let terminator_width_f = state.terminator_width as f32 / 1000.0;
+        let diffuse_floor_f = state.diffuse_floor as f32 / 1000.0;
+        let diffuse_ramp_f = state.diffuse_ramp as f32 / 1000.0;
+
+        let uniforms = uniforms::Uniforms {
+            mvp: mvp.to_cols_array(),
+            sun_dir: sun_dir.into(),
+            terminator_width: if use_blend_uniforms {
+                terminator_width_f
+            } else {
+                -1.0
+            },
+            flags: u32::from(use_blend_uniforms && state.diffuse_shading),
+            diffuse_floor: diffuse_floor_f,
+            diffuse_ramp: diffuse_ramp_f,
+            _pad: 0.0,
+        };
+        res.queue.write_buffer(
+            &res.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[uniforms]),
+        );
+
+        // Encode and submit the render pass
+        let mut encoder = res
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("export_encoder"),
+            });
+
+        let resolve_view = export_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let (color_view, resolve_target) = if let Some(msaa_view) = msaa_color_view.as_ref() {
+            (msaa_view, Some(&resolve_view))
+        } else {
+            (&resolve_view, None)
+        };
+
+        let depth_view = msaa_depth_view.as_ref().unwrap_or(&export_depth);
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("export_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color_view,
+                    depth_slice: None,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.02,
+                            g: 0.02,
+                            b: 0.05,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            pass.set_pipeline(&res.pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_vertex_buffer(0, res.vertex_buffer.slice(..));
+            pass.set_index_buffer(res.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..res.index_count, 0, 0..1);
+        }
+
+        res.queue.submit(std::iter::once(encoder.finish()));
+
+        // Read back pixels from the export texture
+        let pixels = render_pass::read_texture_rgba8(
+            &res.device,
+            &res.queue,
+            &export_texture,
+            target_width,
+            target_height,
+        );
+
+        Ok(pixels)
+    })
 }
 
 /// GPU resources created during `RenderingSetup`.

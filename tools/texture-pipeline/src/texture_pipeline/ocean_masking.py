@@ -240,7 +240,10 @@ def detect_ice_regions(
         )
         ch_max = band_arr.max(axis=2)
         ch_min = band_arr.min(axis=2)
-        sat = np.where(ch_max > 0, (ch_max - ch_min) / ch_max, 0.0)
+        sat = np.divide(
+            ch_max - ch_min, ch_max,
+            out=np.zeros_like(ch_max), where=ch_max > 0,
+        )
 
         # Free the float32 image band early
         del band_arr

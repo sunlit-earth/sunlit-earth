@@ -4,6 +4,8 @@ pub(crate) struct FrameState {
     pub longitude: f32,
     pub latitude: f32,
     pub zoom: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
     pub sample_count: u32,
     pub texture_index: i32,
     pub width: u32,
@@ -39,6 +41,8 @@ pub(crate) fn build_frame_state(
         longitude: camera.longitude,
         latitude: camera.latitude,
         zoom: camera.zoom,
+        offset_x: camera.offset_x,
+        offset_y: camera.offset_y,
         sample_count,
         texture_index,
         width: render_width,
@@ -66,6 +70,8 @@ mod tests {
             longitude: 10.0,
             latitude: 20.0,
             zoom: 3.5,
+            offset_x: 0.0,
+            offset_y: 0.0,
         }
     }
 
@@ -216,5 +222,24 @@ mod tests {
             sun, 0.15, true, 0.1, 0.7,
         );
         assert_ne!(base, modified, "diffuse_ramp change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_offset_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { offset_x: 0.5, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "offset_x change should trigger dirty");
+
+        let modified = build_frame_state(
+            &CameraParams { offset_y: 0.5, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "offset_y change should trigger dirty");
     }
 }

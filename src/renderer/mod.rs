@@ -123,6 +123,8 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             longitude: state.longitude,
             latitude: state.latitude,
             zoom: state.zoom,
+            offset_x: state.offset_x,
+            offset_y: state.offset_y,
         };
         render_pass::write_uniforms(
             &res.queue,
@@ -333,6 +335,8 @@ fn rendering_callback(
                     longitude: win.get_camera_longitude(),
                     latitude: win.get_camera_latitude(),
                     zoom: win.get_camera_zoom(),
+                    offset_x: win.get_camera_offset_x(),
+                    offset_y: win.get_camera_offset_y(),
                 };
                 win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
                 let current_state = build_frame_state(

@@ -33,6 +33,8 @@ export component MainWindow inherits Window {
     out property <float> camera-longitude: longitude-slider.value;
     out property <float> camera-latitude: latitude-slider.value;
     out property <float> camera-zoom: zoom-slider.value;
+    out property <float> camera-offset-x: offset-x-slider.value;
+    out property <float> camera-offset-y: offset-y-slider.value;
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
     out property <float> terminator-width: terminator-slider.value;
@@ -176,6 +178,46 @@ export component MainWindow inherits Window {
                     title: "Framing";
                     VerticalLayout {
                         spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Offset X";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            offset-x-slider := Slider {
+                                minimum: -1.0;
+                                maximum: 1.0;
+                                value: 0.0;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(offset-x-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Offset Y";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            offset-y-slider := Slider {
+                                minimum: -1.0;
+                                maximum: 1.0;
+                                value: 0.0;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(offset-y-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
                     }
                 }
 

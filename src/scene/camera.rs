@@ -6,6 +6,8 @@ pub struct CameraParams {
     pub longitude: f32,
     pub latitude: f32,
     pub zoom: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
 }
 
 impl Default for CameraParams {
@@ -14,6 +16,8 @@ impl Default for CameraParams {
             longitude: 0.0,
             latitude: 30.0,
             zoom: distance_to_zoom(8.0),
+            offset_x: 0.0,
+            offset_y: 0.0,
         }
     }
 }
@@ -48,6 +52,10 @@ pub struct OrbitalCamera {
     pub distance: f32,
     /// Vertical field of view in degrees
     pub fov_deg: f32,
+    /// Screen-space horizontal offset (-1.0 to 1.0)
+    pub offset_x: f32,
+    /// Screen-space vertical offset (-1.0 to 1.0)
+    pub offset_y: f32,
 }
 
 impl OrbitalCamera {
@@ -59,6 +67,8 @@ impl OrbitalCamera {
             latitude_deg: latitude_deg.clamp(-89.9, 89.9),
             distance,
             fov_deg: 20.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
         }
     }
 
@@ -89,8 +99,11 @@ impl OrbitalCamera {
 
     /// Compute the combined model-view-projection matrix.
     /// The model matrix is identity (sphere at origin).
+    /// Applies a post-projection translation for screen-space pan/offset.
     pub fn mvp_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        self.projection_matrix(aspect_ratio) * self.view_matrix()
+        let base_mvp = self.projection_matrix(aspect_ratio) * self.view_matrix();
+        let offset = Mat4::from_translation(glam::Vec3::new(self.offset_x, self.offset_y, 0.0));
+        offset * base_mvp
     }
 }
 
@@ -151,6 +164,52 @@ mod tests {
     fn distance_to_zoom_default() {
         let t = distance_to_zoom(8.0);
         assert!(t > 0.0 && t < 1.0, "default zoom t={t} should be in (0, 1)");
+    }
+
+    #[test]
+    fn mvp_with_zero_offset_unchanged() {
+        let cam_a = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let mut cam_b = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam_b.offset_x = 0.0;
+        cam_b.offset_y = 0.0;
+        let mvp_a = cam_a.mvp_matrix(16.0 / 9.0);
+        let mvp_b = cam_b.mvp_matrix(16.0 / 9.0);
+        assert_relative_eq!(mvp_a.to_cols_array().as_slice(), mvp_b.to_cols_array().as_slice(), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn mvp_with_positive_x_offset_shifts_right() {
+        let aspect = 16.0 / 9.0;
+        let mut cam_no_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_no_offset.offset_x = 0.0;
+        let mut cam_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_offset.offset_x = 0.5;
+
+        // Transform the origin point
+        let point = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let clip_no = cam_no_offset.mvp_matrix(aspect) * point;
+        let clip_yes = cam_offset.mvp_matrix(aspect) * point;
+
+        // The X in clip space should be larger with the positive offset
+        assert!(
+            clip_yes.x > clip_no.x,
+            "clip_yes.x ({}) should be > clip_no.x ({})",
+            clip_yes.x, clip_no.x
+        );
+    }
+
+    #[test]
+    fn mvp_with_offset_preserves_depth() {
+        let aspect = 16.0 / 9.0;
+        let cam_no_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_offset.offset_x = 0.5;
+
+        let point = glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let clip_no = cam_no_offset.mvp_matrix(aspect) * point;
+        let clip_yes = cam_offset.mvp_matrix(aspect) * point;
+
+        assert_relative_eq!(clip_no.z, clip_yes.z, epsilon = 1e-6);
     }
 
     #[test]

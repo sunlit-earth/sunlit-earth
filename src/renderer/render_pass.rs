@@ -61,11 +61,13 @@ pub(super) fn write_uniforms(
     aspect: f32,
     shading: &ShadingParams,
 ) {
-    let camera = OrbitalCamera::new(
+    let mut camera = OrbitalCamera::new(
         camera_params.longitude,
         camera_params.latitude,
         zoom_to_distance(camera_params.zoom),
     );
+    camera.offset_x = camera_params.offset_x;
+    camera.offset_y = camera_params.offset_y;
     let mvp = camera.mvp_matrix(aspect);
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
@@ -151,6 +153,8 @@ pub(super) fn execute_render_pass(
         longitude: state.longitude,
         latitude: state.latitude,
         zoom: state.zoom,
+        offset_x: state.offset_x,
+        offset_y: state.offset_y,
     };
     write_uniforms(
         &res.queue,

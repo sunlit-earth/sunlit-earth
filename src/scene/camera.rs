@@ -1,5 +1,23 @@
 use glam::Mat4;
 
+/// Groups all camera-related parameters that flow from the UI to the renderer.
+#[derive(Clone, Copy, Debug)]
+pub struct CameraParams {
+    pub longitude: f32,
+    pub latitude: f32,
+    pub zoom: f32,
+}
+
+impl Default for CameraParams {
+    fn default() -> Self {
+        Self {
+            longitude: 0.0,
+            latitude: 30.0,
+            zoom: 8.0,
+        }
+    }
+}
+
 /// Orbital camera that orbits around the origin.
 ///
 /// Longitude rotates around the Y axis, latitude tilts up/down,
@@ -64,6 +82,14 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+
+    #[test]
+    fn camera_params_default_values() {
+        let params = CameraParams::default();
+        assert_relative_eq!(params.longitude, 0.0);
+        assert_relative_eq!(params.latitude, 30.0);
+        assert_relative_eq!(params.zoom, 8.0);
+    }
 
     #[test]
     fn eye_at_zero_longitude_zero_latitude() {

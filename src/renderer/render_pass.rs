@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use slint::Image;
 
-use crate::scene::camera::OrbitalCamera;
+use crate::scene::camera::{CameraParams, OrbitalCamera};
 
 use super::GpuResources;
 use super::frame::FrameState;
@@ -57,13 +57,15 @@ impl<'a> RenderTarget<'a> {
 pub(super) fn write_uniforms(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
-    longitude: f32,
-    latitude: f32,
-    zoom: f32,
+    camera_params: &CameraParams,
     aspect: f32,
     shading: &ShadingParams,
 ) {
-    let camera = OrbitalCamera::new(longitude, latitude, zoom);
+    let camera = OrbitalCamera::new(
+        camera_params.longitude,
+        camera_params.latitude,
+        camera_params.zoom,
+    );
     let mvp = camera.mvp_matrix(aspect);
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
@@ -145,12 +147,15 @@ pub(super) fn execute_render_pass(
 ) -> Image {
     let aspect = res.render_width as f32 / res.render_height as f32;
 
+    let cam = CameraParams {
+        longitude: state.longitude,
+        latitude: state.latitude,
+        zoom: state.zoom,
+    };
     write_uniforms(
         &res.queue,
         &res.uniform_buffer,
-        state.longitude,
-        state.latitude,
-        state.zoom,
+        &cam,
         aspect,
         shading,
     );

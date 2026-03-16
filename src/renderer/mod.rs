@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
+use crate::scene::camera::CameraParams;
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -118,12 +119,15 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             );
 
         let aspect = target_width as f32 / target_height as f32;
+        let camera = CameraParams {
+            longitude: state.longitude,
+            latitude: state.latitude,
+            zoom: state.zoom,
+        };
         render_pass::write_uniforms(
             &res.queue,
             &res.uniform_buffer,
-            state.longitude,
-            state.latitude,
-            state.zoom,
+            &camera,
             aspect,
             shading,
         );
@@ -325,10 +329,13 @@ fn rendering_callback(
                 let diffuse_ramp_f = win.get_diffuse_ramp();
 
                 // Build current frame state for dirty-checking
+                let camera = CameraParams {
+                    longitude: win.get_camera_longitude(),
+                    latitude: win.get_camera_latitude(),
+                    zoom: win.get_camera_zoom(),
+                };
                 let current_state = build_frame_state(
-                    win.get_camera_longitude(),
-                    win.get_camera_latitude(),
-                    win.get_camera_zoom(),
+                    &camera,
                     res.sample_count,
                     win.get_texture_index(),
                     res.render_width,

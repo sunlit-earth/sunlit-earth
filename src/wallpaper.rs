@@ -104,61 +104,79 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the
 /// registry keys `HKCU\Control Panel\Desktop\WallpaperStyle` and
 /// `HKCU\Control Panel\Desktop\TileWallpaper`.
-///
-/// Uses `reg.exe` to avoid pulling in additional windows-sys registry features.
 fn ensure_fill_style() -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
+    use std::ptr;
 
-    let status = std::process::Command::new("reg")
-        .args([
-            "add",
-            r"HKCU\Control Panel\Desktop",
-            "/v",
-            "WallpaperStyle",
-            "/t",
-            "REG_SZ",
-            "/d",
-            "10",
-            "/f",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("Failed to run reg.exe for WallpaperStyle: {e}"))?;
-    if !status.status.success() {
-        return Err(format!(
-            "reg.exe WallpaperStyle failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        ));
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, RegCloseKey, RegOpenKeyExW,
+    };
+
+    let subkey: Vec<u16> = "Control Panel\\Desktop\0"
+        .encode_utf16()
+        .collect();
+
+    let mut hkey: HKEY = ptr::null_mut();
+
+    // SAFETY: Opens an existing registry key under HKCU for writing.
+    // subkey is a valid null-terminated UTF-16 string. hkey receives the
+    // opened key handle on success.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &raw mut hkey,
+        )
+    };
+    if status != 0 {
+        return Err(format!("RegOpenKeyExW failed (error code {status})"));
     }
 
-    let status = std::process::Command::new("reg")
-        .args([
-            "add",
-            r"HKCU\Control Panel\Desktop",
-            "/v",
-            "TileWallpaper",
-            "/t",
-            "REG_SZ",
-            "/d",
-            "0",
-            "/f",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("Failed to run reg.exe for TileWallpaper: {e}"))?;
-    if !status.status.success() {
-        return Err(format!(
-            "reg.exe TileWallpaper failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        ));
+    let result = set_reg_string(hkey, "WallpaperStyle", "10")
+        .and_then(|()| set_reg_string(hkey, "TileWallpaper", "0"));
+
+    // SAFETY: hkey is a valid registry key handle opened above.
+    // RegCloseKey releases the handle.
+    #[allow(unsafe_code)]
+    unsafe {
+        RegCloseKey(hkey);
     }
 
-    Ok(())
+    result
 }
 
-/// Windows `CREATE_NO_WINDOW` flag for `Command::creation_flags`.
-/// Prevents a console window from flashing when spawning `reg.exe`.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Write a `REG_SZ` value to an open registry key.
+fn set_reg_string(hkey: windows_sys::Win32::System::Registry::HKEY, name: &str, value: &str) -> Result<(), String> {
+    use windows_sys::Win32::System::Registry::{REG_SZ, RegSetValueExW};
+
+    let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide_value: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+    let byte_len = u32::try_from(wide_value.len() * 2)
+        .map_err(|_| "Registry value too large".to_owned())?;
+
+    // SAFETY: hkey is a valid open registry key handle with KEY_SET_VALUE access.
+    // wide_name and wide_value are valid null-terminated UTF-16 strings.
+    // byte_len is the exact byte length of wide_value including the null terminator.
+    #[allow(unsafe_code)]
+    let status = unsafe {
+        RegSetValueExW(
+            hkey,
+            wide_name.as_ptr(),
+            0,
+            REG_SZ,
+            wide_value.as_ptr().cast(),
+            byte_len,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "RegSetValueExW failed for {name} (error code {status})"
+        ));
+    }
+    Ok(())
+}
 
 /// Set the given image file as the Windows desktop wallpaper.
 ///
@@ -222,17 +240,48 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Encode RGBA8 pixel data as a TIFF file and save it to the wallpaper directory.
+/// Standard sRGB IEC 61966-2.1 ICC profile (v4, 3,144 bytes).
+///
+/// Embedded so that the exported TIFF is correctly color-managed when
+/// displayed as the desktop wallpaper.
+const SRGB_ICC_PROFILE: &[u8] = include_bytes!("../assets/sRGB.icc");
+
+/// Encode RGBA8 pixel data as an LZW-compressed TIFF with an embedded sRGB
+/// ICC profile and save it to the wallpaper directory.
+///
+/// Uses the `tiff` crate directly (rather than `image::save()`) because
+/// the `image` crate's `TiffEncoder` does not expose compression or tag
+/// settings.
 ///
 /// Returns the path to the saved file on success.
 pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<PathBuf, String> {
+    use tiff::encoder::colortype;
+    use tiff::tags::Tag;
+
     let dir = wallpaper_dir()?;
     let path = dir.join("wallpaper.tif");
 
-    let img = image::RgbaImage::from_raw(width, height, pixels.to_vec())
-        .ok_or_else(|| "Failed to create image from pixel data".to_owned())?;
-    img.save(&path)
-        .map_err(|e| format!("Failed to save TIFF: {e}"))?;
+    let file =
+        std::fs::File::create(&path).map_err(|e| format!("Failed to create TIFF file: {e}"))?;
+    let mut writer = std::io::BufWriter::new(file);
+
+    let mut encoder = tiff::encoder::TiffEncoder::new(&mut writer)
+        .map_err(|e| format!("Failed to create TIFF encoder: {e}"))?;
+    encoder = encoder.with_compression(tiff::encoder::Compression::Lzw);
+    encoder = encoder.with_predictor(tiff::encoder::Predictor::Horizontal);
+
+    let mut image = encoder
+        .new_image::<colortype::RGBA8>(width, height)
+        .map_err(|e| format!("Failed to create TIFF image: {e}"))?;
+
+    image
+        .encoder()
+        .write_tag(Tag::IccProfile, SRGB_ICC_PROFILE)
+        .map_err(|e| format!("Failed to write ICC profile: {e}"))?;
+
+    image
+        .write_data(pixels)
+        .map_err(|e| format!("Failed to encode TIFF: {e}"))?;
 
     Ok(path)
 }

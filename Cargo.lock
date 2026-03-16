@@ -5183,6 +5183,7 @@ dependencies = [
  "proptest",
  "slint",
  "slint-build",
+ "tiff",
  "time",
  "wgpu",
  "windows-sys 0.59.0",

@@ -40,4 +40,4 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 ## Bugs and polish
 
 - [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but something still blocks the UI thread.
-- [ ] Diffuse shading banding on JPEG wallpapers: Windows internally re-encodes wallpapers as JPEG (`%APPDATA%\Microsoft\Windows\Themes\TranscodedWallpaper`), which introduces visible banding at the diffuse shading boundary. The lossless TIFF source file looks correct; the artifact only appears after Windows' JPEG transcode. The `JPEGImportQuality` registry key (tested at 100) did not help. Potential fixes: dithering in the shader to make the gradient more compression-friendly, or finding a way to bypass Windows' JPEG transcode.
+- [x] Diffuse shading banding on JPEG wallpapers: fixed by switching the wallpaper export format from TIFF to PNG. Windows preserves PNG wallpapers losslessly (no JPEG transcode), eliminating the banding artifact.

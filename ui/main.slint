@@ -1,4 +1,4 @@
-import { Slider, ComboBox, CheckBox, Palette } from "std-widgets.slint";
+import { Slider, ComboBox, CheckBox, Button, Palette } from "std-widgets.slint";
 
 component Splitter inherits Rectangle {
     callback moved(length);
@@ -40,9 +40,12 @@ export component MainWindow inherits Window {
     out property <float> diffuse-floor: diffuse-floor-slider.value;
     out property <float> diffuse-ramp: diffuse-ramp-slider.value;
 
+    in-out property <string> wallpaper-status;
+
     callback sliders-changed();
     callback msaa-changed();
     callback texture-changed();
+    callback set-wallpaper();
 
     // Controls panel on the left
     Rectangle {
@@ -219,6 +222,20 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                         min-width: 35px;
                     }
+                }
+
+                Rectangle { height: 8px; }
+
+                Button {
+                    text: "Set as Wallpaper";
+                    clicked => { root.set-wallpaper(); }
+                }
+
+                Text {
+                    text: wallpaper-status;
+                    color: #888888;
+                    font-size: 11px;
+                    wrap: word-wrap;
                 }
 
             }

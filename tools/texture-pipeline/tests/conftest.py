@@ -3,8 +3,10 @@
 from io import BytesIO
 from pathlib import Path
 
+import geopandas as gpd
 import pytest
 from PIL import Image
+from shapely.geometry import box
 
 
 @pytest.fixture
@@ -69,3 +71,47 @@ def jpeg_file_128x64(tmp_path: Path, jpeg_bytes_128x64: bytes) -> Path:
     path = tmp_path / "source_128x64.jpg"
     path.write_bytes(jpeg_bytes_128x64)
     return path
+
+
+def _write_shapefile(tmp_path: Path, name: str, polygons: list) -> Path:
+    """Write a list of Shapely polygons as a shapefile in EPSG:4326.
+
+    :param tmp_path: Directory to write to.
+    :param name: Base name for the shapefile.
+    :param polygons: List of Shapely geometry objects.
+    :returns: Path to the .shp file.
+    """
+    gdf = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
+    path = tmp_path / f"{name}.shp"
+    gdf.to_file(path)
+    return path
+
+
+@pytest.fixture
+def western_half_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a rectangle covering the western half of the globe.
+
+    Longitude -180 to 0, latitude -90 to 90.
+    """
+    return _write_shapefile(tmp_path, "western_half", [box(-180, -90, 0, 90)])
+
+
+@pytest.fixture
+def eastern_half_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a rectangle covering the eastern half of the globe.
+
+    Longitude 0 to 180, latitude -90 to 90.
+    """
+    return _write_shapefile(tmp_path, "eastern_half", [box(0, -90, 180, 90)])
+
+
+@pytest.fixture
+def full_globe_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a rectangle covering the entire globe."""
+    return _write_shapefile(tmp_path, "full_globe", [box(-180, -90, 180, 90)])
+
+
+@pytest.fixture
+def tiny_polygon_shapefile(tmp_path: Path) -> Path:
+    """Shapefile with a tiny polygon near the south pole."""
+    return _write_shapefile(tmp_path, "tiny", [box(-180, -90, -179, -89)])

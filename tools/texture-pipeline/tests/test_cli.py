@@ -197,3 +197,112 @@ class TestSharpenFlag:
             assert result.exit_code == 0
             call_kwargs = mock_pipeline.call_args
             assert call_kwargs.kwargs["do_sharpen"] is True
+
+
+def _base_args(tmp_path: Path) -> tuple[Path, list[str]]:
+    """Create input dir and return (input_dir, base CLI args)."""
+    input_dir = tmp_path / "in"
+    input_dir.mkdir()
+    output_dir = tmp_path / "out"
+    args = ["convert", "--input", str(input_dir), "--output", str(output_dir)]
+    return input_dir, args
+
+
+class TestOceanMaskDefaults:
+    def test_ocean_mask_default_none(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_shapefile"] is None
+
+    def test_ocean_color_default(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_color"] == (10, 40, 80)
+
+    def test_ocean_supersample_default(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_supersample"] == 2
+
+    def test_ocean_buffer_default(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_buffer"] == 0
+
+
+class TestOceanMaskCustomValues:
+    def test_ocean_mask_passes_path(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        shp = tmp_path / "ocean.shp"
+        shp.touch()
+        args += ["--ocean-mask", str(shp)]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_shapefile"] == shp
+
+    def test_ocean_color_custom(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-color", "0,100,200"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_color"] == (0, 100, 200)
+
+    def test_ocean_supersample_custom(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-supersample", "4"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_supersample"] == 4
+
+    def test_ocean_buffer_custom(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-buffer", "3"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_buffer"] == 3
+
+
+class TestOceanMaskValidation:
+    def test_ocean_color_invalid_format(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-color", "not,a,color"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+    def test_ocean_color_out_of_range(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-color", "256,0,0"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+    def test_ocean_supersample_too_low(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-supersample", "0"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+    def test_ocean_buffer_negative(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-buffer", "-1"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+
+class TestOceanFlagsInHelp:
+    def test_ocean_flags_in_help(self) -> None:
+        result = runner.invoke(app, ["convert", "--help"])
+        assert result.exit_code == 0
+        for flag in ["ocean-mask", "ocean-color", "ocean-supersample", "ocean-buffer"]:
+            assert flag in result.output, f"Expected '{flag}' in help output"

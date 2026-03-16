@@ -41,6 +41,10 @@ def run_pipeline(
     quality: int,
     effort: int,
     do_sharpen: bool,
+    ocean_shapefile: Path | None = None,
+    ocean_color: tuple[int, int, int] = (10, 40, 80),
+    ocean_supersample: int = 2,
+    ocean_buffer: int = 0,
 ) -> None:
     """Execute the texture conversion pipeline.
 
@@ -50,6 +54,10 @@ def run_pipeline(
     :param quality: JPEG XL encoding quality (1--100).
     :param effort: JPEG XL encoding effort (1--9).
     :param do_sharpen: Whether to apply UnsharpMask after downscaling.
+    :param ocean_shapefile: Path to ocean shapefile for masking, or None.
+    :param ocean_color: RGB fill color for ocean regions.
+    :param ocean_supersample: Supersampling factor for mask anti-aliasing.
+    :param ocean_buffer: Coastal transition zone width in pixels.
     """
     images = discover_images(input_dir)
 
@@ -81,6 +89,21 @@ def run_pipeline(
             if img.mode != "RGB":
                 img = img.convert("RGB")
 
+            if ocean_shapefile is not None:
+                from texture_pipeline.ocean_masking import (
+                    apply_ocean_mask,
+                    get_or_create_mask,
+                )
+
+                mask = get_or_create_mask(
+                    ocean_shapefile,
+                    img.size[0],
+                    img.size[1],
+                    supersample=ocean_supersample,
+                    buffer_pixels=ocean_buffer,
+                )
+                img = apply_ocean_mask(img, mask, color=ocean_color)
+
             for width in widths:
                 progress.update(task, current_file=f"{source_path.name} → {width}px")
 
@@ -98,6 +121,11 @@ def run_pipeline(
                 total_output_size += output_path.stat().st_size
                 files_processed += 1
                 progress.advance(task)
+
+    if ocean_shapefile is not None:
+        from texture_pipeline.ocean_masking import clear_mask_cache
+
+        clear_mask_cache()
 
     typer.echo(f"\nProcessed {files_processed} file(s).")
     typer.echo(f"Total input size:  {total_input_size / 1024 / 1024:.2f} MB")
@@ -124,6 +152,32 @@ def _validate_width(value: int) -> int:
         raise typer.BadParameter("Width must be a positive integer.")
     if value % 2 != 0:
         raise typer.BadParameter("Width must be even (to maintain 2:1 aspect ratio).")
+    return value
+
+
+def _validate_ocean_color(value: str) -> str:
+    try:
+        parts = [int(x) for x in value.split(",")]
+    except ValueError as err:
+        raise typer.BadParameter(
+            "Ocean color must be three comma-separated integers (e.g. '10,40,80')."
+        ) from err
+    if len(parts) != 3:
+        raise typer.BadParameter("Ocean color must have exactly 3 components (R,G,B).")
+    if not all(0 <= c <= 255 for c in parts):
+        raise typer.BadParameter("Each color component must be between 0 and 255.")
+    return value
+
+
+def _validate_ocean_supersample(value: int) -> int:
+    if value < 1:
+        raise typer.BadParameter("Ocean supersample must be at least 1.")
+    return value
+
+
+def _validate_ocean_buffer(value: int) -> int:
+    if value < 0:
+        raise typer.BadParameter("Ocean buffer must be non-negative.")
     return value
 
 
@@ -183,6 +237,39 @@ def convert(
             help="Apply UnsharpMask sharpening after downscale.",
         ),
     ] = False,
+    ocean_mask: Annotated[
+        Path | None,
+        typer.Option(
+            "--ocean-mask",
+            help="Path to ocean shapefile (.shp) for masking ocean pixels.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+    ocean_color: Annotated[
+        str,
+        typer.Option(
+            "--ocean-color",
+            help="Ocean fill color as R,G,B (e.g. '10,40,80').",
+            callback=_validate_ocean_color,
+        ),
+    ] = "10,40,80",
+    ocean_supersample: Annotated[
+        int,
+        typer.Option(
+            "--ocean-supersample",
+            help="Supersampling factor for ocean mask anti-aliasing (minimum 1).",
+            callback=_validate_ocean_supersample,
+        ),
+    ] = 2,
+    ocean_buffer: Annotated[
+        int,
+        typer.Option(
+            "--ocean-buffer",
+            help="Coastal transition zone width in pixels (0 = disabled).",
+            callback=_validate_ocean_buffer,
+        ),
+    ] = 0,
 ) -> None:
     """Convert source textures to JPEG XL at one or more target resolutions."""
     widths = width if width else [8192]
@@ -193,6 +280,10 @@ def convert(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Parse ocean color string into tuple
+    color_tuple = tuple(int(x) for x in ocean_color.split(","))
+    assert len(color_tuple) == 3  # guaranteed by validator
+
     run_pipeline(
         input_dir=input_dir,
         output_dir=output_dir,
@@ -200,4 +291,8 @@ def convert(
         quality=quality,
         effort=effort,
         do_sharpen=do_sharpen,
+        ocean_shapefile=ocean_mask,
+        ocean_color=color_tuple,  # type: ignore[arg-type]
+        ocean_supersample=ocean_supersample,
+        ocean_buffer=ocean_buffer,
     )

@@ -189,7 +189,12 @@ export component MainWindow inherits Window {
                                 minimum: -180;
                                 maximum: 180;
                                 value <=> root.camera-tilt;
-                                changed => { root.sliders-changed(); }
+                                changed => {
+                                    if root.camera-tilt > -5 && root.camera-tilt < 5 {
+                                        root.camera-tilt = 0;
+                                    }
+                                    root.sliders-changed();
+                                }
                             }
                             Text {
                                 text: round(root.camera-tilt) + "\u{b0}";
@@ -209,7 +214,12 @@ export component MainWindow inherits Window {
                                 minimum: -90;
                                 maximum: 90;
                                 value <=> root.camera-yaw;
-                                changed => { root.sliders-changed(); }
+                                changed => {
+                                    if root.camera-yaw > -3 && root.camera-yaw < 3 {
+                                        root.camera-yaw = 0;
+                                    }
+                                    root.sliders-changed();
+                                }
                             }
                             Text {
                                 text: round(root.camera-yaw) + "\u{b0}";
@@ -229,7 +239,12 @@ export component MainWindow inherits Window {
                                 minimum: -90;
                                 maximum: 90;
                                 value <=> root.camera-pitch;
-                                changed => { root.sliders-changed(); }
+                                changed => {
+                                    if root.camera-pitch > -3 && root.camera-pitch < 3 {
+                                        root.camera-pitch = 0;
+                                    }
+                                    root.sliders-changed();
+                                }
                             }
                             Text {
                                 text: round(root.camera-pitch) + "\u{b0}";
@@ -256,7 +271,12 @@ export component MainWindow inherits Window {
                                 minimum: -1.0;
                                 maximum: 1.0;
                                 value <=> root.camera-offset-x;
-                                changed => { root.sliders-changed(); }
+                                changed => {
+                                    if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
+                                        root.camera-offset-x = 0;
+                                    }
+                                    root.sliders-changed();
+                                }
                             }
                             Text {
                                 text: round(root.camera-offset-x * 100) / 100;
@@ -276,7 +296,12 @@ export component MainWindow inherits Window {
                                 minimum: -1.0;
                                 maximum: 1.0;
                                 value <=> root.camera-offset-y;
-                                changed => { root.sliders-changed(); }
+                                changed => {
+                                    if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
+                                        root.camera-offset-y = 0;
+                                    }
+                                    root.sliders-changed();
+                                }
                             }
                             Text {
                                 text: round(root.camera-offset-y * 100) / 100;

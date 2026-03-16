@@ -168,7 +168,7 @@ fn main() {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let scroll_sensitivity = 0.001;
+        let scroll_sensitivity = 0.0003;
         let current_zoom = win.get_camera_zoom();
         let new_zoom = (current_zoom - delta * scroll_sensitivity).clamp(0.0, 1.0);
         win.set_camera_zoom(new_zoom);

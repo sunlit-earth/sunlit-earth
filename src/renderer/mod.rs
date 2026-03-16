@@ -91,48 +91,20 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             .as_ref()
             .ok_or("No frame rendered yet")?;
 
-        // Determine which texture mode / bind group to use
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let raw_index = state.texture_index as usize;
-        let is_blend_mode = raw_index == BLEND_MODE_INDEX;
-
-        // Check if required textures are still loading
-        if is_blend_mode {
-            if res.texture_slots[DAY_SLOT].loading || res.texture_slots[NIGHT_SLOT].loading {
-                return Err("Textures are still loading".to_owned());
-            }
-        } else {
-            let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
-            if res.texture_slots[slot_index].loading {
-                return Err("Textures are still loading".to_owned());
-            }
-        }
-
-        // Resolve the bind group (same logic as BeforeRendering)
-        let (bind_group, use_blend_uniforms) = if is_blend_mode {
-            if let Some(bg) = res.composite_bind_group.as_ref() {
-                (bg, true)
-            } else {
-                // Fall back to a single-texture slot
-                let idx = res.last_rendered_index;
-                let bg = res.texture_slots[idx]
-                    .bind_group
-                    .as_ref()
-                    .ok_or("No texture loaded for fallback")?;
-                (bg, false)
-            }
-        } else {
-            let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
-            let idx = if res.texture_slots[slot_index].bind_group.is_some() {
-                slot_index
-            } else {
-                res.last_rendered_index
-            };
-            let bg = res.texture_slots[idx]
+        // Look up the bind group that was used for the last rendered frame
+        let bind_group = match res
+            .last_resolved
+            .as_ref()
+            .ok_or("No frame rendered yet")?
+        {
+            texture_routing::ResolvedTexture::Composite => res
+                .composite_bind_group
+                .as_ref()
+                .ok_or("No bind group available")?,
+            texture_routing::ResolvedTexture::Slot(idx) => res.texture_slots[*idx]
                 .bind_group
                 .as_ref()
-                .ok_or("No texture loaded")?;
-            (bg, false)
+                .ok_or("No bind group available")?,
         };
 
         // Create temporary render textures with COPY_SRC for readback
@@ -145,14 +117,6 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
 
-        // Use stored shading params, overriding use_blend to match the
-        // resolved bind group (may differ if textures finished loading
-        // between the last render and this export).
-        let export_shading = render_pass::ShadingParams {
-            use_blend: use_blend_uniforms,
-            ..*shading
-        };
-
         let aspect = target_width as f32 / target_height as f32;
         render_pass::write_uniforms(
             &res.queue,
@@ -161,7 +125,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             state.latitude,
             state.zoom,
             aspect,
-            &export_shading,
+            shading,
         );
 
         let resolve_view = export_texture
@@ -219,6 +183,9 @@ struct GpuResources {
     /// Raw shading parameters from the last rendered frame, used by the
     /// export path to avoid reverse-engineering quantized `FrameState` values.
     last_shading: Option<render_pass::ShadingParams>,
+    /// Bind group resolution from the last rendered frame, used by the
+    /// export path to reuse the same texture binding without re-resolving.
+    last_resolved: Option<texture_routing::ResolvedTexture>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
@@ -389,7 +356,8 @@ fn rendering_callback(
                     return;
                 }
 
-                // Look up the bind group reference after the mutable borrow is released
+                // Look up the bind group reference and store the resolution
+                // for the export path
                 let bind_group_ref = match &resolved {
                     texture_routing::ResolvedTexture::Composite => res
                         .composite_bind_group
@@ -400,6 +368,7 @@ fn rendering_callback(
                         .as_ref()
                         .expect("render_index must always point to a loaded slot"),
                 };
+                res.last_resolved = Some(resolved);
 
                 let shading = render_pass::ShadingParams {
                     sun_dir,

@@ -223,6 +223,7 @@ pub(super) fn create_gpu_resources(
         render_height: height,
         last_state: None,
         last_shading: None,
+        last_resolved: None,
         shader,
         pipeline_layout,
         device,

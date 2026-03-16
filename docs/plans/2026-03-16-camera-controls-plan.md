@@ -517,6 +517,6 @@ These items from the research document are resolved as follows for this plan:
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Implementation started
+- [x] Plan approved
+- [x] Implementation started
 - [ ] Implementation complete

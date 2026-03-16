@@ -1,4 +1,4 @@
-import { Slider, ComboBox, CheckBox, Button, Palette } from "std-widgets.slint";
+import { Slider, ComboBox, CheckBox, Button, GroupBox, Palette } from "std-widgets.slint";
 
 component Splitter inherits Rectangle {
     callback moved(length);
@@ -60,167 +60,202 @@ export component MainWindow inherits Window {
                 spacing: 4px;
                 alignment: start;
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Texture";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    texture-combo := ComboBox {
-                        model: texture-options;
-                        current-index <=> root.texture-index;
-                        max-height: 24px;
-                        selected => { root.texture-changed(); }
+                GroupBox {
+                    title: "Rendering";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Texture";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            texture-combo := ComboBox {
+                                model: texture-options;
+                                current-index <=> root.texture-index;
+                                max-height: 24px;
+                                selected => { root.texture-changed(); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Anti-Aliasing";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            aa-combo := ComboBox {
+                                model: aa-options;
+                                current-index <=> root.aa-index;
+                                max-height: 24px;
+                                selected => { root.msaa-changed(); }
+                            }
+                        }
                     }
                 }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Anti-Aliasing";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    aa-combo := ComboBox {
-                        model: aa-options;
-                        current-index <=> root.aa-index;
-                        max-height: 24px;
-                        selected => { root.msaa-changed(); }
+                GroupBox {
+                    title: "Camera Position";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Longitude";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            longitude-slider := Slider {
+                                minimum: -180;
+                                maximum: 180;
+                                value: 0;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(longitude-slider.value) + "\u{b0}";
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Latitude";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            latitude-slider := Slider {
+                                minimum: -89;
+                                maximum: 89;
+                                value: 30;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(latitude-slider.value) + "\u{b0}";
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Zoom";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            zoom-slider := Slider {
+                                minimum: 2.0;
+                                maximum: 50.0;
+                                value: 8.0;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(zoom-slider.value * 10) / 10;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
                     }
                 }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Longitude";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    longitude-slider := Slider {
-                        minimum: -180;
-                        maximum: 180;
-                        value: 0;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(longitude-slider.value) + "\u{b0}";
-                        vertical-alignment: center;
-                        min-width: 35px;
+                GroupBox {
+                    title: "Camera Orientation";
+                    VerticalLayout {
+                        spacing: 4px;
                     }
                 }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Latitude";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    latitude-slider := Slider {
-                        minimum: -89;
-                        maximum: 89;
-                        value: 30;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(latitude-slider.value) + "\u{b0}";
-                        vertical-alignment: center;
-                        min-width: 35px;
+                GroupBox {
+                    title: "Framing";
+                    VerticalLayout {
+                        spacing: 4px;
                     }
                 }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Zoom";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    zoom-slider := Slider {
-                        minimum: 2.0;
-                        maximum: 50.0;
-                        value: 8.0;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(zoom-slider.value * 10) / 10;
-                        vertical-alignment: center;
-                        min-width: 35px;
-                    }
-                }
+                GroupBox {
+                    title: "Lighting";
+                    VerticalLayout {
+                        spacing: 4px;
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Terminator";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    terminator-slider := Slider {
-                        minimum: 0.01;
-                        maximum: 0.3;
-                        value: 0.1;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(terminator-slider.value * 1000) / 1000;
-                        vertical-alignment: center;
-                        min-width: 35px;
-                    }
-                }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Terminator";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            terminator-slider := Slider {
+                                minimum: 0.01;
+                                maximum: 0.3;
+                                value: 0.1;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(terminator-slider.value * 1000) / 1000;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Diffuse";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    diffuse-check := CheckBox {
-                        text: "Dayside shading";
-                        checked: true;
-                        toggled => { root.sliders-changed(); }
-                    }
-                }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Diffuse";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            diffuse-check := CheckBox {
+                                text: "Dayside shading";
+                                checked: true;
+                                toggled => { root.sliders-changed(); }
+                            }
+                        }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "  Floor";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    diffuse-floor-slider := Slider {
-                        minimum: 0.0;
-                        maximum: 1.0;
-                        value: 0.50;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(diffuse-floor-slider.value * 100) / 100;
-                        vertical-alignment: center;
-                        min-width: 35px;
-                    }
-                }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "  Floor";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            diffuse-floor-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value: 0.50;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(diffuse-floor-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
 
-                HorizontalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "  Ramp";
-                        vertical-alignment: center;
-                        min-width: 70px;
-                    }
-                    diffuse-ramp-slider := Slider {
-                        minimum: 0.1;
-                        maximum: 1.0;
-                        value: 0.25;
-                        changed => { root.sliders-changed(); }
-                    }
-                    Text {
-                        text: round(diffuse-ramp-slider.value * 100) / 100;
-                        vertical-alignment: center;
-                        min-width: 35px;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "  Ramp";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            diffuse-ramp-slider := Slider {
+                                minimum: 0.1;
+                                maximum: 1.0;
+                                value: 0.25;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(diffuse-ramp-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
                     }
                 }
 

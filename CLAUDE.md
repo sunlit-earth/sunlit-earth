@@ -40,7 +40,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Key modules:**
 - `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation
-- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA callbacks, rendering notifier setup, periodic sun timer
+- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA/wallpaper callbacks, rendering notifier setup, periodic sun timer
 - `scene/` — scene-level abstractions:
   - `scene/camera.rs` — orbital camera: (longitude, latitude, distance) -> MVP matrix
   - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame)
@@ -48,25 +48,30 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
   - `geometry/sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
   - `geometry/grid_texture.rs` — procedural equirectangular grid texture (2048x1024) with CPU-computed mipmaps
 - `renderer/` — GPU pipeline, frame rendering, dirty-checking, split into focused submodules:
-  - `renderer/mod.rs` — public API (`setup_rendering_notifier`, `build_aa_options`), rendering callback dispatcher, `GpuResources` struct, `quantize_to_granularity`, constants, thread-local `GPU_RESOURCES`
+  - `renderer/mod.rs` — public API (`setup_rendering_notifier`, `build_aa_options`, `export_wallpaper_image`), rendering callback dispatcher, `GpuResources` struct, `quantize_to_granularity`, constants, thread-local `GPU_RESOURCES`
   - `renderer/frame.rs` — `FrameState` struct and `build_frame_state()` for dirty-check comparison
-  - `renderer/render_pass.rs` — render pass encoding, uniform writes, texture-to-Slint-image conversion
+  - `renderer/render_pass.rs` — render pass encoding, uniform writes, texture-to-Slint-image conversion, `read_texture_rgba8` GPU-to-CPU pixel readback
   - `renderer/texture_routing.rs` — blend mode detection, texture load spawning, loading indicator text
   - `renderer/gpu_setup.rs` — `create_gpu_resources()`, `create_pipeline()`, `create_render_textures()`, MSAA/resize rebuild functions
   - `renderer/textures.rs` — `TextureSlot`, texture loading/decoding, composite bind group, `create_mipmapped_texture()`, `downsample_2x()`
   - `renderer/uniforms.rs` — `Uniforms` struct with `#[repr(C)]`, compile-time size assertion
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
+- `wallpaper.rs` — Windows-only wallpaper export (`cfg(windows)`): monitor resolution detection via `EnumDisplayMonitors`/`GetMonitorInfoW`, TIFF save via `image` crate, wallpaper application via `SystemParametersInfoW` (`windows-sys`)
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
 
 **Shader:** Split into two files concatenated at load time by `renderer/gpu_setup.rs`:
 - `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp
 - `shaders/sphere.wgsl` — vertex transform, texture sampling, uniforms; calls `blend_fragment()`. Single-texture mode uses `terminator_width < 0` as sentinel.
 
-**UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox with Day/Night Blend mode, MSAA combobox, longitude/latitude/zoom sliders, terminator width slider, diffuse shading checkbox, adapter info) and image display area.
+**UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox with Day/Night Blend mode, MSAA combobox, longitude/latitude/zoom sliders, terminator width slider, diffuse shading checkbox, "Set as Wallpaper" button with status text, adapter info) and image display area.
+
+**Wallpaper export pipeline:** The "Set as Wallpaper" button renders the current scene at the primary monitor's native resolution using temporary GPU textures with `COPY_SRC` usage (distinct from the preview textures which use `TEXTURE_BINDING`). Pixels are read back via a staging buffer with 256-byte row alignment, encoded as LZW-compressed TIFF, saved to `%LOCALAPPDATA%\SunlitEarth\wallpaper.tif`, and applied via Win32 `SystemParametersInfoW`. The export reuses the existing pipeline and bind groups but creates fresh textures at the target resolution that are dropped after the export completes.
 
 **Notable dependencies beyond wgpu/slint:**
 - `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
+- `image` — TIFF encoding for wallpaper export (via `tiff` feature)
 - `time` — UTC time decomposition for astronomy calculations
+- `windows-sys` — Win32 FFI for wallpaper export (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`
 
 ## Testing
 
@@ -101,7 +106,7 @@ proptest = "1"    # property-based testing for pure functions
 
 ## Key Constraints
 
-- `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` has scoped `#[allow(unsafe_code)]` on individual FFI call sites.
+- `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` and `wallpaper.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments.
 - Slint version pinned to `~1.15` with `unstable-wgpu-28` feature — this is the integration point between Slint and wgpu 28
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
 - Dirty-checking via `FrameState` compares (longitude, latitude, zoom, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading, diffuse_floor, diffuse_ramp) to skip redundant renders. Float values are quantized to integer thousandths for stable comparison.

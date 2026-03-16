@@ -138,3 +138,127 @@ def get_or_create_mask(
 def clear_mask_cache() -> None:
     """Clear the in-memory mask cache."""
     _mask_cache.clear()
+
+
+def detect_ice_regions(
+    image: Image.Image,
+    ocean_mask: np.ndarray,
+    latitude_threshold: float = 60.0,
+    seed_luminance: int = 200,
+    seed_saturation: float = 0.15,
+    relax_luminance: int = 120,
+    relax_saturation: float = 0.3,
+    min_region_size: int = 50,
+    dilation_iterations: int = 5,
+    blur_radius: int = 3,
+) -> np.ndarray:
+    """Detect ice/snow regions in polar ocean areas.
+
+    Uses a two-tier geodesic dilation approach: strict seeds identify
+    high-confidence ice cores, connected-component filtering removes noise,
+    then surviving seeds expand into a relaxed candidate mask to capture
+    marginal ice (thin ice, melt zones, cyan-tinted edges).
+
+    :param image: Source RGB image (equirectangular projection).
+    :param ocean_mask: uint8 array (H, W). 0 = land, 255 = ocean.
+    :param latitude_threshold: Minimum absolute latitude for polar gate.
+    :param seed_luminance: Strict seed luminance threshold (0--255).
+    :param seed_saturation: Strict seed max saturation (0.0--1.0).
+    :param relax_luminance: Relaxed expansion luminance threshold.
+    :param relax_saturation: Relaxed expansion max saturation.
+    :param min_region_size: Minimum connected-component size in pixels.
+    :param dilation_iterations: Geodesic dilation iteration count.
+    :param blur_radius: Gaussian blur radius for soft edges.
+    :returns: uint8 array (H, W). 0 = no ice, 255 = ice, intermediate
+        at blurred edges.
+    """
+    from PIL import ImageFilter
+    from scipy.ndimage import (
+        binary_closing,
+        binary_dilation,
+        generate_binary_structure,
+        label,
+    )
+
+    arr = np.array(image, dtype=np.float32)
+    h, w = arr.shape[:2]
+
+    # 1. Latitude gate — only polar rows
+    row_latitudes = 90.0 - np.arange(h) * 180.0 / h
+    polar_rows = np.abs(row_latitudes) >= latitude_threshold
+    polar_mask_2d = polar_rows[:, np.newaxis]  # (H, 1) for broadcasting
+
+    # 2. Domain: polar ocean pixels
+    domain = (ocean_mask > 128) & polar_mask_2d
+
+    # Early exit if no polar ocean pixels
+    if not np.any(domain):
+        return np.zeros((h, w), dtype=np.uint8)
+
+    # 3. Luminance and saturation
+    lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+    ch_max = arr.max(axis=2)
+    ch_min = arr.min(axis=2)
+    sat = np.where(ch_max > 0, (ch_max - ch_min) / ch_max, 0.0)
+
+    # 4. Strict seed detection
+    seeds = domain & (lum >= seed_luminance) & (sat <= seed_saturation)
+
+    if not np.any(seeds):
+        return np.zeros((h, w), dtype=np.uint8)
+
+    # 5. Connected-component labeling — remove small regions
+    labeled, _ = label(seeds)
+    sizes = np.bincount(labeled.ravel())
+    keep = sizes >= min_region_size
+    keep[0] = False  # background
+    seeds_filtered = keep[labeled]
+
+    if not np.any(seeds_filtered):
+        return np.zeros((h, w), dtype=np.uint8)
+
+    # 6. Relaxed candidate mask
+    relaxed = domain & (lum >= relax_luminance) & (sat <= relax_saturation)
+
+    # 7. Geodesic dilation: grow seeds into relaxed mask
+    struct = generate_binary_structure(2, 2)  # 8-connectivity
+    expanded = binary_dilation(
+        seeds_filtered,
+        structure=struct,
+        iterations=dilation_iterations,
+        mask=relaxed,
+    )
+
+    # 8. Morphological closing to fill small internal gaps
+    closed = binary_closing(expanded, structure=struct, iterations=2)
+    closed = closed & domain  # re-intersect with polar ocean
+
+    # 9. Gaussian blur for soft transitions
+    ice_uint8 = (closed.astype(np.uint8) * 255)
+    ice_img = Image.fromarray(ice_uint8, mode="L")
+    if blur_radius > 0:
+        ice_img = ice_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    result = np.array(ice_img, dtype=np.uint8)
+
+    # Ensure non-polar rows are zero (blur may have bled across boundary)
+    result[~polar_rows, :] = 0
+
+    return result
+
+
+def reduce_mask_for_ice(
+    ocean_mask: np.ndarray,
+    ice_mask: np.ndarray,
+) -> np.ndarray:
+    """Subtract ice regions from the ocean mask.
+
+    Where ice is detected, the ocean mask is reduced so original texture
+    pixels are preserved instead of being replaced with the fill color.
+
+    :param ocean_mask: uint8 array (H, W). 0 = land, 255 = ocean.
+    :param ice_mask: uint8 array (H, W). 0 = no ice, 255 = full ice.
+    :returns: uint8 ocean mask with ice regions reduced toward zero.
+    """
+    return np.clip(
+        ocean_mask.astype(np.int16) - ice_mask.astype(np.int16), 0, 255
+    ).astype(np.uint8)

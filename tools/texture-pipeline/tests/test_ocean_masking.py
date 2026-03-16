@@ -9,8 +9,10 @@ from texture_pipeline.ocean_masking import (
     apply_coastal_buffer,
     apply_ocean_mask,
     clear_mask_cache,
+    detect_ice_regions,
     get_or_create_mask,
     rasterize_ocean_mask,
+    reduce_mask_for_ice,
 )
 
 
@@ -244,3 +246,151 @@ class TestMaskCacheClear:
         clear_mask_cache()
         m2 = get_or_create_mask(western_half_shapefile, 100, 50)
         assert m1 is not m2
+
+
+class TestDetectIceShape:
+    def test_output_shape(
+        self,
+        polar_ice_image_200x100: Image.Image,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        result = detect_ice_regions(
+            polar_ice_image_200x100, polar_ice_ocean_mask_200x100
+        )
+        assert result.shape == (100, 200)
+
+
+class TestDetectIceDtype:
+    def test_output_dtype(
+        self,
+        polar_ice_image_200x100: Image.Image,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        result = detect_ice_regions(
+            polar_ice_image_200x100, polar_ice_ocean_mask_200x100
+        )
+        assert result.dtype == np.uint8
+
+
+class TestDetectIcePreservesLargeRegion:
+    def test_large_block_detected(
+        self,
+        polar_ice_image_200x100: Image.Image,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        result = detect_ice_regions(
+            polar_ice_image_200x100, polar_ice_ocean_mask_200x100
+        )
+        # The 20x10 bright block is at rows 3..13, cols 10..30
+        ice_region = result[4:12, 12:28]
+        assert np.any(ice_region > 0), "Expected ice detected in bright block"
+
+
+class TestDetectIceFiltersSmallNoise:
+    def test_isolated_pixels_removed(
+        self,
+        polar_ice_image_200x100: Image.Image,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        result = detect_ice_regions(
+            polar_ice_image_200x100,
+            polar_ice_ocean_mask_200x100,
+            min_region_size=10,
+        )
+        # The 3 isolated pixels at (2, 50/52/54) should be filtered
+        assert result[2, 50] == 0
+        assert result[2, 52] == 0
+        assert result[2, 54] == 0
+
+
+class TestDetectIceRespectsLatitudeGate:
+    def test_tropical_bright_ignored(
+        self,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        # Create image with bright pixels in tropical zone only
+        arr = np.full((100, 200, 3), 10, dtype=np.uint8)
+        arr[40:60, 80:120] = [240, 240, 240]  # bright block at equator
+        img = Image.fromarray(arr)
+        # Make the whole image "ocean" so only latitude gate filters
+        full_ocean = np.full((100, 200), 255, dtype=np.uint8)
+        result = detect_ice_regions(img, full_ocean, latitude_threshold=60.0)
+        # The tropical bright block should produce zero ice mask
+        assert np.all(result[40:60, 80:120] == 0)
+
+
+class TestDetectIceRespectsOceanMask:
+    def test_bright_on_land_ignored(
+        self,
+        polar_ice_image_200x100: Image.Image,
+    ) -> None:
+        # Mask with land (0) everywhere — no ocean
+        land_mask = np.zeros((100, 200), dtype=np.uint8)
+        result = detect_ice_regions(polar_ice_image_200x100, land_mask)
+        assert np.all(result == 0)
+
+
+class TestDetectIceZeroWhenNoIce:
+    def test_all_dark_image(
+        self,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        dark_img = Image.new("RGB", (200, 100), color=(10, 30, 65))
+        result = detect_ice_regions(dark_img, polar_ice_ocean_mask_200x100)
+        assert np.all(result == 0)
+
+
+class TestDetectIceSoftEdges:
+    def test_intermediate_values_at_boundary(
+        self,
+        polar_ice_image_200x100: Image.Image,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        result = detect_ice_regions(
+            polar_ice_image_200x100,
+            polar_ice_ocean_mask_200x100,
+            blur_radius=3,
+        )
+        # Should have some intermediate values (not just 0 and 255)
+        intermediate = (result > 0) & (result < 255)
+        assert np.any(intermediate), "Expected soft edges with intermediate values"
+
+
+class TestReduceMaskNoIce:
+    def test_zero_ice_unchanged(self) -> None:
+        ocean = np.full((50, 100), 200, dtype=np.uint8)
+        ice = np.zeros((50, 100), dtype=np.uint8)
+        result = reduce_mask_for_ice(ocean, ice)
+        assert np.array_equal(result, ocean)
+
+
+class TestReduceMaskFullIce:
+    def test_full_ice_zeroes_mask(self) -> None:
+        ocean = np.full((50, 100), 200, dtype=np.uint8)
+        ice = np.full((50, 100), 255, dtype=np.uint8)
+        result = reduce_mask_for_ice(ocean, ice)
+        assert np.all(result == 0)
+
+
+class TestReduceMaskPartialIce:
+    def test_partial_subtraction(self) -> None:
+        ocean = np.full((50, 100), 200, dtype=np.uint8)
+        ice = np.full((50, 100), 128, dtype=np.uint8)
+        result = reduce_mask_for_ice(ocean, ice)
+        assert np.all(result == 72)  # 200 - 128
+
+
+class TestReduceMaskDtype:
+    def test_output_dtype(self) -> None:
+        ocean = np.full((50, 100), 200, dtype=np.uint8)
+        ice = np.full((50, 100), 100, dtype=np.uint8)
+        result = reduce_mask_for_ice(ocean, ice)
+        assert result.dtype == np.uint8
+
+
+class TestReduceMaskClampsToZero:
+    def test_no_underflow(self) -> None:
+        ocean = np.full((50, 100), 100, dtype=np.uint8)
+        ice = np.full((50, 100), 255, dtype=np.uint8)
+        result = reduce_mask_for_ice(ocean, ice)
+        assert np.all(result == 0)

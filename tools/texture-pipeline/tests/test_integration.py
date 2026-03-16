@@ -434,3 +434,141 @@ class TestEndToEndOceanMaskMultipleWidths:
             assert right_col[:, 0].mean() < 50, (
                 f"Width {w}: expected dark red channel in ocean"
             )
+
+
+def _create_polar_ice_jpeg(
+    path: Path, width: int, height: int
+) -> None:
+    """Create a JPEG with bright ice-like pixels in the top rows (polar zone).
+
+    Equirectangular: row 0 = +90, top rows = high Arctic.
+    Rows 0..height//6: bright white (240, 240, 240) on the right half,
+    dark blue (10, 30, 65) on the left half.
+    Remaining rows: uniform mid-green (0, 150, 0).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arr = np.zeros((height, width, 3), dtype=np.uint8)
+    polar_rows = height // 6
+    # Left half: dark ocean
+    arr[:polar_rows, : width // 2] = [10, 30, 65]
+    # Right half: bright ice
+    arr[:polar_rows, width // 2 :] = [240, 240, 240]
+    # Rest: green land
+    arr[polar_rows:, :] = [0, 150, 0]
+    Image.fromarray(arr).save(path, format="JPEG", quality=98)
+
+
+class TestEndToEndIcePreservedByDefault:
+    def test_ice_preserved(
+        self, tmp_path: Path, full_globe_shapefile: Path
+    ) -> None:
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+
+        _create_polar_ice_jpeg(input_dir / "earth.jpg", 128, 64)
+
+        result = runner.invoke(
+            app,
+            [
+                "convert",
+                "--input", str(input_dir),
+                "--output", str(output_dir),
+                "--width", "64",
+                "--effort", "1",
+                "--ocean-mask", str(full_globe_shapefile),
+            ],
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+
+        out = np.array(Image.open(output_dir / "64" / "earth.jxl"))
+        # Top-right area (polar ice) should retain high luminance
+        polar_rows = out.shape[0] // 6
+        ice_region = out[1 : max(2, polar_rows - 1), -8:, :]
+        lum = (
+            0.299 * ice_region[:, :, 0].astype(float)
+            + 0.587 * ice_region[:, :, 1].astype(float)
+            + 0.114 * ice_region[:, :, 2].astype(float)
+        )
+        assert lum.mean() > 100, (
+            f"Expected bright ice preserved, got mean luminance {lum.mean():.1f}"
+        )
+
+
+class TestEndToEndIceDisabled:
+    def test_ice_replaced_when_disabled(
+        self, tmp_path: Path, full_globe_shapefile: Path
+    ) -> None:
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+
+        _create_polar_ice_jpeg(input_dir / "earth.jpg", 128, 64)
+
+        result = runner.invoke(
+            app,
+            [
+                "convert",
+                "--input", str(input_dir),
+                "--output", str(output_dir),
+                "--width", "64",
+                "--effort", "1",
+                "--ocean-mask", str(full_globe_shapefile),
+                "--no-ocean-preserve-ice",
+            ],
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+
+        out = np.array(Image.open(output_dir / "64" / "earth.jxl"))
+        # Top-right area should be replaced with fill color (low luminance)
+        polar_rows = out.shape[0] // 6
+        ice_region = out[1 : max(2, polar_rows - 1), -8:, :]
+        lum = (
+            0.299 * ice_region[:, :, 0].astype(float)
+            + 0.587 * ice_region[:, :, 1].astype(float)
+            + 0.114 * ice_region[:, :, 2].astype(float)
+        )
+        assert lum.mean() < 80, (
+            f"Expected ice replaced with fill, got mean luminance {lum.mean():.1f}"
+        )
+
+
+class TestEndToEndTropicalBrightNotPreserved:
+    def test_tropical_bright_replaced(
+        self, tmp_path: Path, full_globe_shapefile: Path
+    ) -> None:
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+
+        # Image with bright block only in the tropical zone (middle rows)
+        arr = np.full((64, 128, 3), 10, dtype=np.uint8)
+        arr[25:40, 80:120] = [240, 240, 240]  # bright tropical block
+        Image.fromarray(arr).save(
+            input_dir / "earth.jpg", format="JPEG", quality=98
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "convert",
+                "--input", str(input_dir),
+                "--output", str(output_dir),
+                "--width", "64",
+                "--effort", "1",
+                "--ocean-mask", str(full_globe_shapefile),
+            ],
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+
+        out = np.array(Image.open(output_dir / "64" / "earth.jxl"))
+        # The tropical bright block should be replaced with fill color
+        tropical_block = out[12:20, 40:60, :]
+        lum = (
+            0.299 * tropical_block[:, :, 0].astype(float)
+            + 0.587 * tropical_block[:, :, 1].astype(float)
+            + 0.114 * tropical_block[:, :, 2].astype(float)
+        )
+        assert lum.mean() < 80, (
+            f"Expected tropical bright replaced, got luminance {lum.mean():.1f}"
+        )

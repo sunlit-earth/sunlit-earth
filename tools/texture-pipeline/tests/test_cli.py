@@ -304,5 +304,80 @@ class TestOceanFlagsInHelp:
     def test_ocean_flags_in_help(self) -> None:
         result = runner.invoke(app, ["convert", "--help"])
         assert result.exit_code == 0
-        for flag in ["ocean-mask", "ocean-color", "ocean-supersample", "ocean-buffer"]:
+        for flag in ["ocean-mask", "ocean-color", "ocean-supersam", "ocean-buffer"]:
+            assert flag in result.output, f"Expected '{flag}' in help output"
+
+
+class TestIcePreservationDefaults:
+    def test_preserve_ice_default_true(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_preserve_ice"] is True
+
+    def test_ice_luminance_default(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_ice_luminance"] == 200
+
+    def test_ice_latitude_default(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_ice_latitude"] == 60.0
+
+
+class TestIcePreservationCustomValues:
+    def test_no_preserve_ice_flag(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--no-ocean-preserve-ice"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_preserve_ice"] is False
+
+    def test_ice_luminance_custom(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-ice-luminance", "180"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_ice_luminance"] == 180
+
+    def test_ice_latitude_custom(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-ice-latitude", "55"]
+        with patch("texture_pipeline.main.run_pipeline") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            assert mock.call_args.kwargs["ocean_ice_latitude"] == 55.0
+
+
+class TestIcePreservationValidation:
+    def test_ice_latitude_out_of_range(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-ice-latitude", "100"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+    def test_ice_luminance_out_of_range(self, tmp_path: Path) -> None:
+        _, args = _base_args(tmp_path)
+        args += ["--ocean-ice-luminance", "300"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+
+class TestIceFlagsInHelp:
+    def test_ice_flags_in_help(self) -> None:
+        result = runner.invoke(app, ["convert", "--help"])
+        assert result.exit_code == 0
+        for flag in [
+            "ocean-preserve-i",
+            "ocean-ice-lumi",
+            "ocean-ice-lati",
+        ]:
             assert flag in result.output, f"Expected '{flag}' in help output"

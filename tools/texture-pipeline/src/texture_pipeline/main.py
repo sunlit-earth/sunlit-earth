@@ -45,6 +45,9 @@ def run_pipeline(
     ocean_color: tuple[int, int, int] = (10, 40, 80),
     ocean_supersample: int = 2,
     ocean_buffer: int = 0,
+    ocean_preserve_ice: bool = True,
+    ocean_ice_luminance: int = 200,
+    ocean_ice_latitude: float = 60.0,
 ) -> None:
     """Execute the texture conversion pipeline.
 
@@ -58,6 +61,9 @@ def run_pipeline(
     :param ocean_color: RGB fill color for ocean regions.
     :param ocean_supersample: Supersampling factor for mask anti-aliasing.
     :param ocean_buffer: Coastal transition zone width in pixels.
+    :param ocean_preserve_ice: Whether to detect and preserve polar ice.
+    :param ocean_ice_luminance: Seed luminance threshold for ice detection.
+    :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
     """
     images = discover_images(input_dir)
 
@@ -92,7 +98,9 @@ def run_pipeline(
             if ocean_shapefile is not None:
                 from texture_pipeline.ocean_masking import (
                     apply_ocean_mask,
+                    detect_ice_regions,
                     get_or_create_mask,
+                    reduce_mask_for_ice,
                 )
 
                 mask = get_or_create_mask(
@@ -102,6 +110,16 @@ def run_pipeline(
                     supersample=ocean_supersample,
                     buffer_pixels=ocean_buffer,
                 )
+
+                if ocean_preserve_ice:
+                    ice = detect_ice_regions(
+                        img,
+                        mask,
+                        latitude_threshold=ocean_ice_latitude,
+                        seed_luminance=ocean_ice_luminance,
+                    )
+                    mask = reduce_mask_for_ice(mask.copy(), ice)
+
                 img = apply_ocean_mask(img, mask, color=ocean_color)
 
             for width in widths:
@@ -178,6 +196,18 @@ def _validate_ocean_supersample(value: int) -> int:
 def _validate_ocean_buffer(value: int) -> int:
     if value < 0:
         raise typer.BadParameter("Ocean buffer must be non-negative.")
+    return value
+
+
+def _validate_ocean_ice_luminance(value: int) -> int:
+    if value < 0 or value > 255:
+        raise typer.BadParameter("Ice luminance must be between 0 and 255.")
+    return value
+
+
+def _validate_ocean_ice_latitude(value: float) -> float:
+    if value < 0 or value > 90:
+        raise typer.BadParameter("Ice latitude must be between 0 and 90.")
     return value
 
 
@@ -270,6 +300,29 @@ def convert(
             callback=_validate_ocean_buffer,
         ),
     ] = 0,
+    ocean_preserve_ice: Annotated[
+        bool,
+        typer.Option(
+            "--ocean-preserve-ice/--no-ocean-preserve-ice",
+            help="Detect and preserve ice regions in polar ocean areas.",
+        ),
+    ] = True,
+    ocean_ice_luminance: Annotated[
+        int,
+        typer.Option(
+            "--ocean-ice-luminance",
+            help="Seed luminance threshold for ice detection (0-255).",
+            callback=_validate_ocean_ice_luminance,
+        ),
+    ] = 200,
+    ocean_ice_latitude: Annotated[
+        float,
+        typer.Option(
+            "--ocean-ice-latitude",
+            help="Minimum absolute latitude for polar ice gate (0-90).",
+            callback=_validate_ocean_ice_latitude,
+        ),
+    ] = 60.0,
 ) -> None:
     """Convert source textures to JPEG XL at one or more target resolutions."""
     widths = width if width else [8192]
@@ -295,4 +348,7 @@ def convert(
         ocean_color=color_tuple,  # type: ignore[arg-type]
         ocean_supersample=ocean_supersample,
         ocean_buffer=ocean_buffer,
+        ocean_preserve_ice=ocean_preserve_ice,
+        ocean_ice_luminance=ocean_ice_luminance,
+        ocean_ice_latitude=ocean_ice_latitude,
     )

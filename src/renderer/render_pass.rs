@@ -1,3 +1,5 @@
+use std::sync::mpsc;
+
 use slint::Image;
 
 use crate::scene::camera::OrbitalCamera;
@@ -106,4 +108,75 @@ pub(super) fn execute_render_pass(
 
     Image::try_from(res.render_texture.clone())
         .expect("Failed to convert wgpu texture to Slint image")
+}
+
+/// Read back a 2D `Rgba8Unorm` texture as raw RGBA8 pixel data.
+///
+/// Creates a staging buffer with 256-byte row alignment, copies the texture
+/// into it, maps the buffer synchronously, and strips any row padding.
+/// This is the production counterpart of `tests/common/mod.rs::read_texture_rgba8`.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn read_texture_rgba8(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    // bytes_per_row must be aligned to 256 for buffer-texture copies
+    let bytes_per_row_unaligned = width * 4;
+    let bytes_per_row = (bytes_per_row_unaligned + 255) & !255;
+    let buffer_size = u64::from(bytes_per_row) * u64::from(height);
+
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("export_readback"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+
+    let slice = readback.slice(..);
+    let (tx, rx) = mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        tx.send(result).unwrap();
+    });
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    rx.recv().unwrap().expect("buffer mapping failed");
+
+    let mapped = slice.get_mapped_range();
+    // Strip row padding if bytes_per_row != width * 4
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for row in 0..height {
+        let start = (row * bytes_per_row) as usize;
+        let end = start + (width * 4) as usize;
+        pixels.extend_from_slice(&mapped[start..end]);
+    }
+    drop(mapped);
+    readback.unmap();
+
+    pixels
 }

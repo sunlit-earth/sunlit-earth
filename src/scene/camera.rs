@@ -8,6 +8,9 @@ pub struct CameraParams {
     pub zoom: f32,
     pub offset_x: f32,
     pub offset_y: f32,
+    pub tilt_deg: f32,
+    pub yaw_deg: f32,
+    pub pitch_deg: f32,
 }
 
 impl Default for CameraParams {
@@ -18,6 +21,9 @@ impl Default for CameraParams {
             zoom: distance_to_zoom(8.0),
             offset_x: 0.0,
             offset_y: 0.0,
+            tilt_deg: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
         }
     }
 }
@@ -56,6 +62,12 @@ pub struct OrbitalCamera {
     pub offset_x: f32,
     /// Screen-space vertical offset (-1.0 to 1.0)
     pub offset_y: f32,
+    /// Camera roll (tilt) in degrees
+    pub tilt_deg: f32,
+    /// Camera yaw (horizontal look redirection) in degrees
+    pub yaw_deg: f32,
+    /// Camera pitch (vertical look redirection) in degrees
+    pub pitch_deg: f32,
 }
 
 impl OrbitalCamera {
@@ -69,6 +81,9 @@ impl OrbitalCamera {
             fov_deg: 20.0,
             offset_x: 0.0,
             offset_y: 0.0,
+            tilt_deg: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
         }
     }
 
@@ -85,11 +100,21 @@ impl OrbitalCamera {
     }
 
     /// Compute the view matrix (camera looking at the origin).
+    ///
+    /// Applies post-view rotations: `Rz(tilt) * Rx(pitch) * Ry(yaw) * base_view`.
+    /// Yaw rotates the view direction left/right, pitch rotates up/down,
+    /// and tilt rolls the camera.
     pub fn view_matrix(&self) -> Mat4 {
         let eye = self.eye_position();
         let center = glam::Vec3::ZERO;
         let up = glam::Vec3::Y;
-        Mat4::look_at_rh(eye, center, up)
+        let base_view = Mat4::look_at_rh(eye, center, up);
+
+        let tilt = Mat4::from_rotation_z(self.tilt_deg.to_radians());
+        let pitch = Mat4::from_rotation_x(self.pitch_deg.to_radians());
+        let yaw = Mat4::from_rotation_y(self.yaw_deg.to_radians());
+
+        tilt * pitch * yaw * base_view
     }
 
     /// Compute the projection matrix for the given aspect ratio.
@@ -195,6 +220,196 @@ mod tests {
             clip_yes.x > clip_no.x,
             "clip_yes.x ({}) should be > clip_no.x ({})",
             clip_yes.x, clip_no.x
+        );
+    }
+
+    #[test]
+    fn view_with_zero_rotations_unchanged() {
+        let cam_a = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let mut cam_b = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam_b.tilt_deg = 0.0;
+        cam_b.yaw_deg = 0.0;
+        cam_b.pitch_deg = 0.0;
+        let view_a = cam_a.view_matrix();
+        let view_b = cam_b.view_matrix();
+        assert_relative_eq!(view_a.to_cols_array().as_slice(), view_b.to_cols_array().as_slice(), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn view_with_180_tilt_flips_vertical() {
+        let cam_no_tilt = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_tilt = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_tilt.tilt_deg = 180.0;
+
+        let point = glam::Vec4::new(0.0, 1.0, 0.0, 1.0);
+        let v_no = cam_no_tilt.view_matrix() * point;
+        let v_yes = cam_tilt.view_matrix() * point;
+
+        // Y components should have opposite signs (flipped)
+        assert!(
+            v_no.y * v_yes.y < 0.0,
+            "Y should flip: no_tilt.y={}, tilt_180.y={}",
+            v_no.y, v_yes.y
+        );
+    }
+
+    #[test]
+    fn view_with_tilt_preserves_determinant() {
+        for tilt in [0.0, 45.0, 90.0, 135.0, 180.0] {
+            let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+            cam.tilt_deg = tilt;
+            let det = cam.view_matrix().determinant();
+            assert!(det.abs() > 0.5, "Determinant should be non-zero for tilt={tilt}");
+        }
+    }
+
+    #[test]
+    fn tilt_360_equals_zero() {
+        let cam_0 = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let mut cam_360 = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam_360.tilt_deg = 360.0;
+        let v_0 = cam_0.view_matrix();
+        let v_360 = cam_360.view_matrix();
+        assert_relative_eq!(v_0.to_cols_array().as_slice(), v_360.to_cols_array().as_slice(), epsilon = 1e-4);
+    }
+
+    #[test]
+    fn view_with_yaw_rotates_horizontally() {
+        let cam_no_yaw = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_yaw = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_yaw.yaw_deg = 45.0;
+
+        // Point directly ahead in world space (at the origin)
+        let point = glam::Vec4::new(0.0, 0.0, -1.0, 1.0);
+        let v_no = cam_no_yaw.view_matrix() * point;
+        let v_yes = cam_yaw.view_matrix() * point;
+
+        assert!(
+            (v_no.x - v_yes.x).abs() > 1e-3,
+            "Yaw should change X: no_yaw.x={}, yaw_45.x={}",
+            v_no.x, v_yes.x
+        );
+    }
+
+    #[test]
+    fn view_with_negative_yaw_mirrors_positive() {
+        let base = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pos = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pos.yaw_deg = 30.0;
+        let mut cam_neg = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_neg.yaw_deg = -30.0;
+
+        let point = glam::Vec4::new(1.0, 0.0, 0.0, 1.0);
+        let v_base = base.view_matrix() * point;
+        let v_pos = cam_pos.view_matrix() * point;
+        let v_neg = cam_neg.view_matrix() * point;
+
+        // Positive and negative yaw should shift X in opposite directions
+        let delta_pos = v_pos.x - v_base.x;
+        let delta_neg = v_neg.x - v_base.x;
+        assert!(
+            delta_pos * delta_neg < 0.0,
+            "Opposite yaw should produce opposite X shifts: +yaw delta={delta_pos}, -yaw delta={delta_neg}"
+        );
+    }
+
+    #[test]
+    fn view_with_yaw_preserves_determinant() {
+        for yaw in [-90.0, -45.0, 0.0, 45.0, 90.0] {
+            let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+            cam.yaw_deg = yaw;
+            let det = cam.view_matrix().determinant();
+            assert!(det.abs() > 0.5, "Determinant should be non-zero for yaw={yaw}");
+        }
+    }
+
+    #[test]
+    fn view_with_pitch_rotates_vertically() {
+        let cam_no_pitch = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pitch = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pitch.pitch_deg = 30.0;
+
+        let point = glam::Vec4::new(0.0, 0.0, -1.0, 1.0);
+        let v_no = cam_no_pitch.view_matrix() * point;
+        let v_yes = cam_pitch.view_matrix() * point;
+
+        assert!(
+            (v_no.y - v_yes.y).abs() > 1e-3,
+            "Pitch should change Y: no_pitch.y={}, pitch_30.y={}",
+            v_no.y, v_yes.y
+        );
+    }
+
+    #[test]
+    fn view_with_negative_pitch_mirrors_positive() {
+        let base = OrbitalCamera::new(0.0, 0.0, 5.0);
+        let mut cam_pos = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_pos.pitch_deg = 30.0;
+        let mut cam_neg = OrbitalCamera::new(0.0, 0.0, 5.0);
+        cam_neg.pitch_deg = -30.0;
+
+        let point = glam::Vec4::new(0.0, 1.0, 0.0, 1.0);
+        let v_base = base.view_matrix() * point;
+        let v_pos = cam_pos.view_matrix() * point;
+        let v_neg = cam_neg.view_matrix() * point;
+
+        // Positive and negative pitch should shift Y in opposite directions
+        let delta_pos = v_pos.y - v_base.y;
+        let delta_neg = v_neg.y - v_base.y;
+        assert!(
+            delta_pos * delta_neg < 0.0,
+            "Opposite pitch should produce opposite Y shifts: +pitch delta={delta_pos}, -pitch delta={delta_neg}"
+        );
+    }
+
+    #[test]
+    fn view_with_pitch_preserves_determinant() {
+        for pitch in [-90.0, -45.0, 0.0, 45.0, 90.0] {
+            let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+            cam.pitch_deg = pitch;
+            let det = cam.view_matrix().determinant();
+            assert!(det.abs() > 0.5, "Determinant should be non-zero for pitch={pitch}");
+        }
+    }
+
+    #[test]
+    fn all_rotations_zero_equals_no_rotation() {
+        let cam_base = OrbitalCamera::new(15.0, 25.0, 6.0);
+        let mut cam_zero = OrbitalCamera::new(15.0, 25.0, 6.0);
+        cam_zero.tilt_deg = 0.0;
+        cam_zero.yaw_deg = 0.0;
+        cam_zero.pitch_deg = 0.0;
+        assert_relative_eq!(
+            cam_base.view_matrix().to_cols_array().as_slice(),
+            cam_zero.view_matrix().to_cols_array().as_slice(),
+            epsilon = 1e-6
+        );
+    }
+
+    #[test]
+    fn rotations_compose_correctly() {
+        let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+        cam.tilt_deg = 30.0;
+        cam.yaw_deg = 20.0;
+        cam.pitch_deg = 10.0;
+        let view_combined = cam.view_matrix();
+
+        // Manually compose: tilt * pitch * yaw * base_view
+        let base_cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+        let base_view = Mat4::look_at_rh(
+            base_cam.eye_position(),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        let tilt = Mat4::from_rotation_z(30.0_f32.to_radians());
+        let pitch = Mat4::from_rotation_x(10.0_f32.to_radians());
+        let yaw = Mat4::from_rotation_y(20.0_f32.to_radians());
+        let manual = tilt * pitch * yaw * base_view;
+
+        assert_relative_eq!(
+            view_combined.to_cols_array().as_slice(),
+            manual.to_cols_array().as_slice(),
+            epsilon = 1e-5
         );
     }
 

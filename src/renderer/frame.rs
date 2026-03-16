@@ -6,6 +6,9 @@ pub(crate) struct FrameState {
     pub zoom: f32,
     pub offset_x: f32,
     pub offset_y: f32,
+    pub tilt: f32,
+    pub yaw: f32,
+    pub pitch: f32,
     pub sample_count: u32,
     pub texture_index: i32,
     pub width: u32,
@@ -43,6 +46,9 @@ pub(crate) fn build_frame_state(
         zoom: camera.zoom,
         offset_x: camera.offset_x,
         offset_y: camera.offset_y,
+        tilt: camera.tilt_deg,
+        yaw: camera.yaw_deg,
+        pitch: camera.pitch_deg,
         sample_count,
         texture_index,
         width: render_width,
@@ -72,6 +78,9 @@ mod tests {
             zoom: 3.5,
             offset_x: 0.0,
             offset_y: 0.0,
+            tilt_deg: 0.0,
+            yaw_deg: 0.0,
+            pitch_deg: 0.0,
         }
     }
 
@@ -222,6 +231,45 @@ mod tests {
             sun, 0.15, true, 0.1, 0.7,
         );
         assert_ne!(base, modified, "diffuse_ramp change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_tilt_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { tilt_deg: 45.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "tilt change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_yaw_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { yaw_deg: 30.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "yaw change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_pitch_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &CameraParams { pitch_deg: 30.0, ..cam }, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6,
+        );
+        assert_ne!(base, modified, "pitch change should trigger dirty");
     }
 
     #[test]

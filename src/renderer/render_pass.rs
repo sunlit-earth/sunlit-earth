@@ -68,6 +68,9 @@ pub(super) fn write_uniforms(
     );
     camera.offset_x = camera_params.offset_x;
     camera.offset_y = camera_params.offset_y;
+    camera.tilt_deg = camera_params.tilt_deg;
+    camera.yaw_deg = camera_params.yaw_deg;
+    camera.pitch_deg = camera_params.pitch_deg;
     let mvp = camera.mvp_matrix(aspect);
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
@@ -155,6 +158,9 @@ pub(super) fn execute_render_pass(
         zoom: state.zoom,
         offset_x: state.offset_x,
         offset_y: state.offset_y,
+        tilt_deg: state.tilt,
+        yaw_deg: state.yaw,
+        pitch_deg: state.pitch,
     };
     write_uniforms(
         &res.queue,

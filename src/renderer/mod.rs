@@ -125,6 +125,9 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             zoom: state.zoom,
             offset_x: state.offset_x,
             offset_y: state.offset_y,
+            tilt_deg: state.tilt,
+            yaw_deg: state.yaw,
+            pitch_deg: state.pitch,
         };
         render_pass::write_uniforms(
             &res.queue,
@@ -337,6 +340,9 @@ fn rendering_callback(
                     zoom: win.get_camera_zoom(),
                     offset_x: win.get_camera_offset_x(),
                     offset_y: win.get_camera_offset_y(),
+                    tilt_deg: win.get_camera_tilt(),
+                    yaw_deg: win.get_camera_yaw(),
+                    pitch_deg: win.get_camera_pitch(),
                 };
                 win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
                 let current_state = build_frame_state(

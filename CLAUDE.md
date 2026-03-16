@@ -40,9 +40,9 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Key modules:**
 - `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation
-- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA/wallpaper callbacks, rendering notifier setup, periodic sun timer
+- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/reset-camera callbacks, rendering notifier setup, periodic sun timer
 - `scene/` — scene-level abstractions:
-  - `scene/camera.rs` — orbital camera: (longitude, latitude, distance) -> MVP matrix
+  - `scene/camera.rs` — `CameraParams` struct grouping all camera parameters; `OrbitalCamera` with offset, tilt, yaw, pitch; exponential zoom mapping (`zoom_to_distance`/`distance_to_zoom`); orbital camera: (longitude, latitude, distance) -> MVP matrix with post-view rotations and post-projection offset
   - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame)
 - `geometry/` — mesh and procedural texture generation:
   - `geometry/sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
@@ -63,7 +63,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp
 - `shaders/sphere.wgsl` — vertex transform, texture sampling, uniforms; calls `blend_fragment()`. Single-texture mode uses `terminator_width < 0` as sentinel.
 
-**UI:** `ui/main.slint` — resizable split layout with controls panel (texture combobox with Day/Night Blend mode, MSAA combobox, longitude/latitude/zoom sliders, terminator width slider, diffuse shading checkbox, "Set as Wallpaper" button with status text, adapter info) and image display area.
+**UI:** `ui/main.slint` — resizable split layout with controls panel organized into five `GroupBox` sections: Rendering (Texture, Anti-Aliasing), Camera Position (Longitude, Latitude, Zoom), Camera Orientation (Tilt, Yaw, Pitch), Framing (Offset X, Offset Y), Lighting (Terminator Width, Diffuse checkbox + Floor + Ramp). Reset Camera and Set as Wallpaper buttons are below the groups. Renderer info is pinned to the bottom. Camera properties are `in-out` (bidirectional) with `<=>` slider bindings so Rust can write values back from mouse events. A `TouchArea` overlay in `image-container` handles mouse drag (globe rotation) and scroll (zoom).
 
 **Wallpaper export pipeline:** The "Set as Wallpaper" button renders the current scene at the primary monitor's native resolution using temporary GPU textures with `COPY_SRC` usage (distinct from the preview textures which use `TEXTURE_BINDING`). Pixels are read back via a staging buffer with 256-byte row alignment, encoded as PNG (fast compression), saved to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applied via Win32 `SystemParametersInfoW`. The export reuses the existing pipeline and bind groups but creates fresh textures at the target resolution that are dropped after the export completes. PNG is used instead of TIFF because Windows preserves PNG wallpapers losslessly, whereas TIFF wallpapers are JPEG-transcoded at 85% quality, causing visible banding in smooth gradients.
 
@@ -110,7 +110,8 @@ proptest = "1"    # property-based testing for pure functions
 - `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` and `wallpaper.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments.
 - Slint version pinned to `~1.15` with `unstable-wgpu-28` feature — this is the integration point between Slint and wgpu 28
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
-- Dirty-checking via `FrameState` compares (longitude, latitude, zoom, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading, diffuse_floor, diffuse_ramp) to skip redundant renders. Float values are quantized to integer thousandths for stable comparison.
+- Dirty-checking via `FrameState` compares (longitude, latitude, zoom, offset_x, offset_y, tilt, yaw, pitch, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading, diffuse_floor, diffuse_ramp) to skip redundant renders. Float values are quantized to integer thousandths for stable comparison.
+- Zoom slider is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance(t)` and `distance_to_zoom(d)` in `scene/camera.rs`.
 - Grid texture uses 16x anisotropic filtering with trilinear mipmaps
 - WGSL `vec3<f32>` has 16-byte alignment in storage buffers — Rust `#[repr(C)]` structs must include explicit `_pad: f32` after every `[f32; 3]` field to match layout
 - GPU integration tests (`tests/shading.rs`, `tests/render_pipeline.rs`) run the real WGSL on the GPU — use `LazyLock<Mutex<...>>` to share the device across parallel test threads (per-test device creation crashes on Windows)

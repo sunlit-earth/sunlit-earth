@@ -54,6 +54,7 @@ export component MainWindow inherits Window {
     callback set-wallpaper();
     callback mouse-drag(float, float);
     callback mouse-scroll(float);
+    callback reset-camera();
 
     // Controls panel on the left
     Rectangle {
@@ -368,6 +369,11 @@ export component MainWindow inherits Window {
                 }
 
                 Rectangle { height: 8px; }
+
+                Button {
+                    text: "Reset Camera";
+                    clicked => { root.reset-camera(); }
+                }
 
                 Button {
                     text: "Set as Wallpaper";

@@ -6,7 +6,7 @@ use clap::Parser;
 use slint::ComponentHandle;
 
 use sunlit_earth::renderer;
-use sunlit_earth::scene::camera::zoom_to_distance;
+use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
 use sunlit_earth::texture_loader;
 #[cfg(windows)]
 use sunlit_earth::wallpaper;
@@ -172,6 +172,24 @@ fn main() {
         let current_zoom = win.get_camera_zoom();
         let new_zoom = (current_zoom - delta * scroll_sensitivity).clamp(0.0, 1.0);
         win.set_camera_zoom(new_zoom);
+        win.window().request_redraw();
+    });
+
+    // Reset Camera button callback
+    let window_weak = window.as_weak();
+    window.on_reset_camera(move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let defaults = CameraParams::default();
+        win.set_camera_longitude(defaults.longitude);
+        win.set_camera_latitude(defaults.latitude);
+        win.set_camera_zoom(defaults.zoom);
+        win.set_camera_offset_x(defaults.offset_x);
+        win.set_camera_offset_y(defaults.offset_y);
+        win.set_camera_tilt(defaults.tilt_deg);
+        win.set_camera_yaw(defaults.yaw_deg);
+        win.set_camera_pitch(defaults.pitch_deg);
         win.window().request_redraw();
     });
 

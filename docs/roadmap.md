@@ -13,7 +13,9 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 ## Rendering
 
-- [ ] Blue Marble water brightness: ocean areas are too dark. Pre-process textures (gamma correction, levels adjustment, or a color ramp on water pixels).
+- [x] Blue Marble water brightness: ocean areas are too dark and sometimes contain satellite imagery. Pre-process textures to get a uniform ocean color, preserving different extents of sea ice per season
+- [ ] Color correction: Rendered textures still look darker than their sources. Investigate if there is a color space issue to resolve and provide in app texture processing to adjust e.g. the gamma value
+- [ ] Water on the day side looks matte and more like a solid surface that happens to be blue. Investigate what kind of effect can be applied to make it look more like actual water.
 - [ ] Seasonal texture switching: auto-select from the 12 monthly NASA Blue Marble variants based on the current month.
 - [ ] Atmosphere glow: subtle blue/orange glow at the Earth's limb.
 - [ ] Cloud overlay: semi-transparent cloud layer from near-real-time satellite data. Requires researching data sources (GOES/Himawari composites, etc.) and building a download + caching pipeline.
@@ -26,10 +28,10 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 ## Camera and controls
 
-- [ ] Offset / pan: shift the camera north/south or east/west so the Earth doesn't have to be centered in the frame.
-- [ ] Tilt: rotate the camera around its view axis for angled compositions.
-- [ ] Zoom curve: zoom should be slower when close to the Earth and faster when far away. Extend the zoom range limits.
-- [ ] Improved Controls: Rotate Earth with mouse drag, Zoom with scroll wheel in addition to existing UI controls.
+- [x] Offset / pan: shift the camera north/south or east/west so the Earth doesn't have to be centered in the frame.
+- [x] Tilt: rotate the camera around its view axis for angled compositions.
+- [x] Zoom curve: zoom should be slower when close to the Earth and faster when far away. Extend the zoom range limits.
+- [x] Improved Controls: Rotate Earth with mouse drag, Zoom with scroll wheel in addition to existing UI controls.
 - [ ] Preset camera views: quick-select buttons for common viewpoints (Europe, Americas, Asia, etc.).
 
 ## CI and distribution
@@ -41,3 +43,4 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 - [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but something still blocks the UI thread.
 - [x] Diffuse shading banding on JPEG wallpapers: fixed by switching the wallpaper export format from TIFF to PNG. Windows preserves PNG wallpapers losslessly (no JPEG transcode), eliminating the banding artifact.
+- [ ] Automated slint UI testing

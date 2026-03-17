@@ -40,10 +40,11 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Key modules:**
 - `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation
-- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/reset-camera callbacks, rendering notifier setup, periodic sun timer
+- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/reset-all callbacks, rendering notifier setup, periodic sun timer, custom datetime label updates
 - `scene/` — scene-level abstractions:
   - `scene/camera.rs` — `CameraParams` struct grouping all camera parameters; `OrbitalCamera` with offset, tilt, yaw, pitch; exponential zoom mapping (`zoom_to_distance`/`distance_to_zoom`); orbital camera: (longitude, latitude, distance) -> MVP matrix with post-view rotations and post-projection offset
-  - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame)
+  - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame); `sun_direction_at()` for custom date/time
+  - `scene/datetime.rs` — pure conversion functions for custom date/time UI: leap year, day-of-year to month/day, hour decomposition, year range; no FFI or side effects
 - `geometry/` — mesh and procedural texture generation:
   - `geometry/sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
   - `geometry/grid_texture.rs` — procedural equirectangular grid texture (2048x1024) with CPU-computed mipmaps
@@ -63,7 +64,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp
 - `shaders/sphere.wgsl` — vertex transform, texture sampling, uniforms; calls `blend_fragment()`. Single-texture mode uses `terminator_width < 0` as sentinel.
 
-**UI:** `ui/main.slint` — resizable split layout with controls panel organized into five `GroupBox` sections: Rendering (Texture, Anti-Aliasing), Camera Position (Longitude, Latitude, Zoom), Camera Orientation (Tilt, Yaw, Pitch), Framing (Offset X, Offset Y), Lighting (Terminator Width, Diffuse checkbox + Floor + Ramp). Reset Camera and Set as Wallpaper buttons are below the groups. Renderer info is pinned to the bottom. Camera properties are `in-out` (bidirectional) with `<=>` slider bindings so Rust can write values back from mouse events. A `TouchArea` overlay in `image-container` handles mouse drag (globe rotation) and scroll (zoom).
+**UI:** `ui/main.slint` — resizable split layout with controls panel wrapped in a `ScrollView`, organized into six `GroupBox` sections: Rendering (Texture, Anti-Aliasing), Camera Position (Longitude, Latitude, Zoom), Camera Orientation (Tilt, Yaw, Pitch), Framing (Offset X, Offset Y), Lighting (Terminator Width, Diffuse checkbox + Floor + Ramp, Shininess, Glint), Date / Time (Custom checkbox, Hour slider, Day slider, Year ComboBox). Reset All and Set as Wallpaper buttons are below the groups. Renderer info scrolls with the controls. Camera properties are `in-out` (bidirectional) with `<=>` slider bindings so Rust can write values back from mouse events. A `TouchArea` overlay in `image-container` handles mouse drag (globe rotation) and scroll (zoom). The Date / Time controls collapse when the checkbox is unchecked.
 
 **Wallpaper export pipeline:** The "Set as Wallpaper" button renders the current scene at the primary monitor's native resolution using temporary GPU textures with `COPY_SRC` usage (distinct from the preview textures which use `TEXTURE_BINDING`). Pixels are read back via a staging buffer with 256-byte row alignment, encoded as PNG (fast compression), saved to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applied via Win32 `SystemParametersInfoW`. The export reuses the existing pipeline and bind groups but creates fresh textures at the target resolution that are dropped after the export completes. PNG is used instead of TIFF because Windows preserves PNG wallpapers losslessly, whereas TIFF wallpapers are JPEG-transcoded at 85% quality, causing visible banding in smooth gradients.
 

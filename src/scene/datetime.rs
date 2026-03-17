@@ -1,3 +1,16 @@
+/// Return the base year for the year ComboBox (current year - 10).
+pub fn base_year() -> i32 {
+    time::OffsetDateTime::now_utc().year() - 10
+}
+
+/// Return the (start, end) year range for the year ComboBox.
+///
+/// The range is current year +/- 10, yielding 21 entries.
+pub fn year_range() -> (i32, i32) {
+    let current = time::OffsetDateTime::now_utc().year();
+    (current - 10, current + 10)
+}
+
 /// Check whether a given year is a leap year.
 ///
 /// A year is a leap year if it is divisible by 4, except for century
@@ -116,6 +129,28 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+
+    // --- base_year / year_range ---
+
+    #[test]
+    fn base_year_is_current_minus_10() {
+        let current = time::OffsetDateTime::now_utc().year();
+        assert_eq!(base_year(), current - 10);
+    }
+
+    #[test]
+    fn year_range_spans_21_years() {
+        let (start, end) = year_range();
+        assert_eq!(end - start + 1, 21);
+    }
+
+    #[test]
+    fn year_range_centered_on_current() {
+        let current = time::OffsetDateTime::now_utc().year();
+        let (start, end) = year_range();
+        assert_eq!(start, current - 10);
+        assert_eq!(end, current + 10);
+    }
 
     // --- is_leap_year ---
 

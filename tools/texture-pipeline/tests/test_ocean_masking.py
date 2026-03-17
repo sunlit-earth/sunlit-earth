@@ -98,14 +98,14 @@ class TestApplyOceanMaskAllOcean:
         mask = np.full((32, 64), 255, dtype=np.uint8)
         result = apply_ocean_mask(img, mask)
         result_arr = np.array(result)
-        expected = np.array([10, 40, 80], dtype=np.uint8)
+        expected = np.array([10, 30, 60], dtype=np.uint8)
         assert np.all(result_arr == expected)
 
 
 class TestApplyOceanMaskBlend128:
     def test_blend_midpoint(self) -> None:
         src_color = (200, 100, 50)
-        fill_color = (10, 40, 80)
+        fill_color = (10, 30, 60)
         img = Image.new("RGB", (64, 32), color=src_color)
         mask = np.full((32, 64), 128, dtype=np.uint8)
         result = apply_ocean_mask(img, mask, color=fill_color)

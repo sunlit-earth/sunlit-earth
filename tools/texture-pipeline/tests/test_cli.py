@@ -221,7 +221,7 @@ class TestOceanMaskDefaults:
         with patch("texture_pipeline.main.run_pipeline") as mock:
             result = runner.invoke(app, args)
             assert result.exit_code == 0
-            assert mock.call_args.kwargs["ocean_color"] == (10, 40, 80)
+            assert mock.call_args.kwargs["ocean_color"] == (10, 30, 60)
 
     def test_ocean_supersample_default(self, tmp_path: Path) -> None:
         _, args = _base_args(tmp_path)

@@ -51,6 +51,8 @@ pub struct AppConfig {
     pub diffuse_ramp: f32,
     pub spec_shininess: f32,
     pub spec_intensity: f32,
+    pub fresnel_mix: f32,
+    pub fresnel_exp: f32,
 
     // Custom date/time override
     pub use_custom_datetime: bool,
@@ -87,10 +89,12 @@ impl Default for AppConfig {
             sample_count: 8,
             terminator_width: 0.1,
             diffuse_shading: true,
-            diffuse_floor: 0.50,
-            diffuse_ramp: 0.25,
-            spec_shininess: 150.0,
-            spec_intensity: 0.4,
+            diffuse_floor: 0.70,
+            diffuse_ramp: 0.20,
+            spec_shininess: 100.0,
+            spec_intensity: 0.2,
+            fresnel_mix: 0.75,
+            fresnel_exp: 4.0,
             use_custom_datetime: false,
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
@@ -281,8 +285,8 @@ mod tests {
         let config = AppConfig::default();
         assert_relative_eq!(config.terminator_width, 0.1);
         assert!(config.diffuse_shading);
-        assert_relative_eq!(config.diffuse_floor, 0.50);
-        assert_relative_eq!(config.diffuse_ramp, 0.25);
+        assert_relative_eq!(config.diffuse_floor, 0.70);
+        assert_relative_eq!(config.diffuse_ramp, 0.20);
     }
 
     #[test]
@@ -328,6 +332,8 @@ mod tests {
             diffuse_ramp: 0.5,
             spec_shininess: 200.0,
             spec_intensity: 0.6,
+            fresnel_mix: 0.5,
+            fresnel_exp: 3.0,
             use_custom_datetime: true,
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
@@ -452,6 +458,8 @@ mod tests {
             diffuse_ramp: 0.4,
             spec_shininess: 300.0,
             spec_intensity: 0.8,
+            fresnel_mix: 0.7,
+            fresnel_exp: 4.0,
             use_custom_datetime: true,
             custom_hour: 8.25,
             custom_day_of_year: 200.0,

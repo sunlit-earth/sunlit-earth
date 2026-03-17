@@ -348,8 +348,8 @@ This ensures that `water == 0.0` (land pixels) short-circuits both effects with 
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Phase 1 complete (uniform buffer + UI + config plumbing)
-- [ ] Phase 2 complete (Fresnel shader logic + tests)
-- [ ] Phase 3 complete (visual tuning + CLAUDE.md update)
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Phase 1 complete (uniform buffer + UI + config plumbing)
+- [x] Phase 2 complete (Fresnel shader logic + tests)
+- [x] Phase 3 complete (visual tuning + CLAUDE.md update)
+- [x] Implementation complete

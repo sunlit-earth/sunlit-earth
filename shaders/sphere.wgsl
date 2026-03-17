@@ -10,7 +10,8 @@ struct Uniforms {
     _pad2: f32,                // 4 bytes, offset 108
     spec_shininess: f32,       // 4 bytes, offset 112
     spec_intensity: f32,       // 4 bytes, offset 116
-    _pad3: vec2<f32>,          // 8 bytes, offset 120
+    fresnel_mix: f32,          // 4 bytes, offset 120
+    fresnel_exp: f32,          // 4 bytes, offset 124
 };
 
 @group(0) @binding(0)
@@ -46,6 +47,16 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+/// Schlick-like Fresnel reflectance for water.
+/// f0 = 0.02 is the normal-incidence reflectance of water.
+/// The exponent controls the extent of the effect: 5.0 is the
+/// physical Schlick approximation; lower values spread the
+/// effect further from the limb, higher values concentrate it.
+fn schlick_fresnel(n_dot_v: f32, exponent: f32) -> f32 {
+    let f0 = 0.02;
+    return f0 + (1.0 - f0) * pow(1.0 - n_dot_v, exponent);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let day = textureSample(sphere_texture, sphere_sampler, in.uv);
@@ -70,19 +81,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    // Specular sun glint on water (Blinn-Phong).
     // Water mask encoded in upper alpha range: land=255, ocean=128.
     // Remap to [0, 1]: water = saturate((1 - alpha) * 2).
-    if uniforms.spec_intensity > 0.0 {
-        let water = saturate((1.0 - day.a) * 2.0);
-        if water > 0.0 {
-            let v = normalize(uniforms.eye_pos - in.world_normal);
+    let water = saturate((1.0 - day.a) * 2.0);
+    if water > 0.0 {
+        let v = normalize(uniforms.eye_pos - in.world_normal);
+        let n_dot_v = max(dot(n, v), 0.0);
+        let fresnel = schlick_fresnel(n_dot_v, uniforms.fresnel_exp);
+
+        // Specular sun glint on water (Blinn-Phong with Fresnel)
+        if uniforms.spec_intensity > 0.0 {
             let h = normalize(uniforms.sun_dir + v);
             let n_dot_h = max(dot(n, h), 0.0);
             let spec = pow(n_dot_h, uniforms.spec_shininess);
-            let glint = spec * max(n_dot_l, 0.0) * result.blend
+            // Normalize Fresnel by F0 so specular stays at its pre-Fresnel
+            // intensity at normal incidence and only grows at grazing angles.
+            let glint = spec * (fresnel / 0.02) * max(n_dot_l, 0.0) * result.blend
                         * uniforms.spec_intensity * water;
             color += vec3<f32>(glint);
+        }
+
+        // Fresnel-driven diffuse color shift: at grazing angles, mix ocean
+        // color toward a sky reflection color, simulating reduced
+        // transmission and increased sky reflection on real water.
+        if uniforms.fresnel_mix > 0.0 {
+            let sky_color = vec3<f32>(0.5, 0.7, 0.9);
+            color = mix(color, sky_color * result.blend, fresnel * uniforms.fresnel_mix * water);
         }
     }
 

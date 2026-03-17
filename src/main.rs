@@ -288,6 +288,8 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_diffuse_ramp(config.diffuse_ramp);
     window.set_spec_shininess(config.spec_shininess);
     window.set_spec_intensity(config.spec_intensity);
+    window.set_fresnel_mix(config.fresnel_mix);
+    window.set_fresnel_exp(config.fresnel_exp);
 
     // Custom datetime
     window.set_use_custom_datetime(config.use_custom_datetime);
@@ -332,6 +334,8 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         diffuse_ramp: window.get_diffuse_ramp(),
         spec_shininess: window.get_spec_shininess(),
         spec_intensity: window.get_spec_intensity(),
+        fresnel_mix: window.get_fresnel_mix(),
+        fresnel_exp: window.get_fresnel_exp(),
         use_custom_datetime: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
         custom_day_of_year: window.get_custom_day_of_year(),

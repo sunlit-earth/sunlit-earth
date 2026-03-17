@@ -284,9 +284,9 @@ class TestEndToEndOceanMask:
         assert jxl_path.exists()
         out = np.array(Image.open(jxl_path))
 
-        # Right half (eastern ocean) should be close to default fill (10, 40, 80)
+        # Right half (eastern ocean) should be close to default fill (10, 30, 60)
         right_quarter = out[:, -8:, :]
-        for ch, expected in enumerate([10, 40, 80]):
+        for ch, expected in enumerate([10, 30, 60]):
             mean_val = right_quarter[:, :, ch].mean()
             assert abs(mean_val - expected) < 15, (
                 f"Channel {ch}: expected ~{expected}, got {mean_val:.1f}"

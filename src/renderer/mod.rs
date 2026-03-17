@@ -345,6 +345,8 @@ fn rendering_callback(
                 let diffuse_ramp_f = win.get_diffuse_ramp();
                 let spec_shininess_f = win.get_spec_shininess();
                 let spec_intensity_f = win.get_spec_intensity();
+                let fresnel_mix_f = win.get_fresnel_mix();
+                let fresnel_exp_f = win.get_fresnel_exp();
 
                 // Build current frame state for dirty-checking
                 let camera = CameraParams {
@@ -371,6 +373,8 @@ fn rendering_callback(
                     diffuse_ramp_f,
                     spec_shininess_f,
                     spec_intensity_f,
+                    fresnel_mix_f,
+                    fresnel_exp_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -412,6 +416,8 @@ fn rendering_callback(
                     diffuse_ramp: diffuse_ramp_f,
                     spec_shininess: spec_shininess_f,
                     spec_intensity: spec_intensity_f,
+                    fresnel_mix: fresnel_mix_f,
+                    fresnel_exp: fresnel_exp_f,
                 };
                 res.last_shading = Some(shading);
 

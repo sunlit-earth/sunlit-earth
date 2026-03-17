@@ -18,8 +18,9 @@ pub fn sun_direction_now() -> Vec3 {
 
 /// Compute the sun direction for a specific `astro_time_t`.
 ///
-/// This is the core implementation shared by `sun_direction_now` and tests.
-fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
+/// This is the core implementation shared by `sun_direction_now`,
+/// `sun_direction_at`, and tests.
+pub fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     // Get the sun's equatorial coordinates (right ascension and declination)
     // referred to the equator of date, with aberration correction.
     // We use a geocentric observer (lat=0, lon=0, height=0) because
@@ -85,9 +86,25 @@ fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     dir.normalize()
 }
 
+/// Compute the sun's direction as a unit vector for a specific UTC date/time.
+///
+/// :param year: Calendar year (e.g. 2025).
+/// :param month: Month, 1-12.
+/// :param day: Day of month, 1-31.
+/// :param hour: Hour, 0-23.
+/// :param minute: Minute, 0-59.
+/// :param second: Fractional second, 0.0..60.0.
+/// :returns: Unit vector in the renderer's world-space coordinate frame.
+pub fn sun_direction_at(
+    year: i32, month: i32, day: i32,
+    hour: i32, minute: i32, second: f64,
+) -> Vec3 {
+    let time = make_time(year, month, day, hour, minute, second);
+    sun_direction_from_time(time)
+}
+
 /// Create an `astro_time_t` from calendar components (UTC).
-#[cfg(test)]
-fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64) -> astro_time_t {
+pub fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64) -> astro_time_t {
     use astronomy_engine_bindings::Astronomy_MakeTime;
     // SAFETY: Astronomy_MakeTime is a pure C function that constructs a value
     // type from calendar components.
@@ -152,5 +169,50 @@ mod tests {
     fn unit_vector() {
         let dir = sun_direction_now();
         assert_relative_eq!(dir.length(), 1.0, epsilon = 1e-4);
+    }
+
+    // --- sun_direction_at ---
+
+    /// `sun_direction_at` matches the test helper for the March equinox.
+    #[test]
+    fn direction_at_matches_helper_equinox() {
+        let via_at = sun_direction_at(2025, 3, 20, 12, 0, 0.0);
+        let via_helper = sun_dir_at(2025, 3, 20, 12, 0);
+        assert_relative_eq!(via_at.x, via_helper.x, epsilon = 1e-5);
+        assert_relative_eq!(via_at.y, via_helper.y, epsilon = 1e-5);
+        assert_relative_eq!(via_at.z, via_helper.z, epsilon = 1e-5);
+    }
+
+    /// `sun_direction_at` matches the test helper for the June solstice.
+    #[test]
+    fn direction_at_matches_helper_solstice() {
+        let via_at = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
+        let via_helper = sun_dir_at(2025, 6, 21, 12, 0);
+        assert_relative_eq!(via_at.x, via_helper.x, epsilon = 1e-5);
+        assert_relative_eq!(via_at.y, via_helper.y, epsilon = 1e-5);
+        assert_relative_eq!(via_at.z, via_helper.z, epsilon = 1e-5);
+    }
+
+    /// `sun_direction_at` always returns a unit vector.
+    #[test]
+    fn direction_at_unit_vector() {
+        let dir = sun_direction_at(2025, 3, 20, 12, 0, 0.0);
+        assert_relative_eq!(dir.length(), 1.0, epsilon = 1e-4);
+    }
+
+    /// March equinox noon expectations for `sun_direction_at`.
+    #[test]
+    fn direction_at_equinox_expectations() {
+        let dir = sun_direction_at(2025, 3, 20, 12, 0, 0.0);
+        assert_relative_eq!(dir.z, 1.0, epsilon = 0.1);
+        assert_relative_eq!(dir.y, 0.0, epsilon = 0.1);
+        assert_relative_eq!(dir.x, 0.0, epsilon = 0.15);
+    }
+
+    /// June solstice noon: y ~ 0.40 (northern declination).
+    #[test]
+    fn direction_at_june_solstice() {
+        let dir = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
+        assert_relative_eq!(dir.y, 0.40, epsilon = 0.1);
     }
 }

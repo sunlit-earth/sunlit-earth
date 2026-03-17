@@ -1,4 +1,4 @@
-import { Slider, ComboBox, CheckBox, Button, GroupBox, Palette } from "std-widgets.slint";
+import { Slider, ComboBox, CheckBox, Button, GroupBox, Palette, ScrollView } from "std-widgets.slint";
 
 component Splitter inherits Rectangle {
     callback moved(length);
@@ -54,9 +54,18 @@ export component MainWindow inherits Window {
     callback msaa-changed();
     callback texture-changed();
     callback set-wallpaper();
+    in-out property <bool> use-custom-datetime: false;
+    in-out property <float> custom-hour: 12.0;
+    in-out property <float> custom-day-of-year: 1.0;
+    in-out property <int> custom-year-index: 10;
+    in property <[string]> year-options;
+    in property <string> hour-label: "12:00";
+    in property <string> day-label: "Jan 1";
+    in property <int> max-day-of-year: 365;
+
     callback mouse-drag(float, float);
     callback mouse-scroll(float);
-    callback reset-camera();
+    callback reset-all();
 
     // Controls panel on the left
     Rectangle {
@@ -66,7 +75,13 @@ export component MainWindow inherits Window {
         height: root.height;
         background: Palette.background.darker(0.2);
 
+        ScrollView {
+            horizontal-scrollbar-policy: always-off;
+            width: parent.width;
+            height: parent.height;
+
             VerticalLayout {
+                width: parent.visible-width;
                 padding: 8px;
                 spacing: 4px;
                 alignment: start;
@@ -435,11 +450,94 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                GroupBox {
+                    title: "Date / Time";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Custom";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            CheckBox {
+                                text: "Override date/time";
+                                checked <=> root.use-custom-datetime;
+                                toggled => {
+                                    root.sliders-changed();
+                                }
+                            }
+                        }
+
+                        if root.use-custom-datetime :
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Hour";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                Slider {
+                                    minimum: 0.0;
+                                    maximum: 23.99;
+                                    value <=> root.custom-hour;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: root.hour-label;
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Day";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                Slider {
+                                    minimum: 1.0;
+                                    maximum: root.max-day-of-year;
+                                    value <=> root.custom-day-of-year;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: root.day-label;
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Year";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                ComboBox {
+                                    model: root.year-options;
+                                    current-index <=> root.custom-year-index;
+                                    max-height: 24px;
+                                    selected => { root.sliders-changed(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Rectangle { height: 8px; }
 
                 Button {
-                    text: "Reset Camera";
-                    clicked => { root.reset-camera(); }
+                    text: "Reset All";
+                    clicked => { root.reset-all(); }
                 }
 
                 Button {
@@ -454,15 +552,14 @@ export component MainWindow inherits Window {
                     wrap: word-wrap;
                 }
 
-            }
+                Rectangle { height: 16px; }
 
-        // Renderer info pinned to bottom
-        Text {
-            x: 8px;
-            y: parent.height - self.height - 8px;
-            text: renderer-info;
-            color: #888888;
-            font-size: 11px;
+                Text {
+                    text: renderer-info;
+                    color: #888888;
+                    font-size: 11px;
+                }
+            }
         }
     }
 

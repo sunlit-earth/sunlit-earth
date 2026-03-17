@@ -9,6 +9,7 @@ use slint::ComponentHandle;
 use sunlit_earth::config::{self, AppConfig};
 use sunlit_earth::renderer;
 use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
+use sunlit_earth::scene::datetime;
 use sunlit_earth::texture_loader;
 #[cfg(windows)]
 use sunlit_earth::wallpaper;
@@ -77,6 +78,12 @@ fn main() {
     ];
     window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
 
+    // Set up year ComboBox options (current year +/- 10)
+    let (base_year, end_year) = datetime::year_range();
+    let year_labels: Vec<slint::SharedString> =
+        (base_year..=end_year).map(|y| slint::SharedString::from(y.to_string())).collect();
+    window.set_year_options(slint::ModelRc::new(slint::VecModel::from(year_labels)));
+
     // Defer setting indices so they apply after Slint processes the model changes
     let config_aa_index = config::find_sample_count_index(&aa_counts, config.sample_count);
     let config_texture_index = config.texture_index;
@@ -109,6 +116,7 @@ fn main() {
     let config_timer_handle = Rc::clone(&config_timer);
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
+            update_datetime_labels(&win, base_year);
             win.window().request_redraw();
         }
         config_timer_handle.restart();
@@ -206,10 +214,10 @@ fn main() {
         config_timer_handle.restart();
     });
 
-    // Reset Camera button callback
+    // Reset All button callback
     let window_weak = window.as_weak();
     let config_timer_handle = Rc::clone(&config_timer);
-    window.on_reset_camera(move || {
+    window.on_reset_all(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
@@ -222,6 +230,12 @@ fn main() {
         win.set_camera_tilt(defaults.tilt_deg);
         win.set_camera_yaw(defaults.yaw_deg);
         win.set_camera_pitch(defaults.pitch_deg);
+        // Reset datetime
+        win.set_use_custom_datetime(false);
+        win.set_custom_hour(12.0);
+        win.set_custom_day_of_year(1.0);
+        win.set_custom_year_index(10); // center = current year
+        update_datetime_labels(&win, base_year);
         win.window().request_redraw();
         config_timer_handle.restart();
     });
@@ -275,6 +289,17 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_spec_shininess(config.spec_shininess);
     window.set_spec_intensity(config.spec_intensity);
 
+    // Custom datetime
+    window.set_use_custom_datetime(config.use_custom_datetime);
+    window.set_custom_hour(config.custom_hour);
+    window.set_custom_day_of_year(config.custom_day_of_year);
+    let base_year = datetime::base_year();
+    let year_index = (config.custom_year - base_year).clamp(0, 20);
+    window.set_custom_year_index(year_index);
+
+    // Update display labels
+    update_datetime_labels(window, base_year);
+
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
         window.window().set_position(slint::PhysicalPosition::new(x, y));
         window.window().set_size(slint::PhysicalSize::new(w, h));
@@ -307,11 +332,37 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         diffuse_ramp: window.get_diffuse_ramp(),
         spec_shininess: window.get_spec_shininess(),
         spec_intensity: window.get_spec_intensity(),
+        use_custom_datetime: window.get_use_custom_datetime(),
+        custom_hour: window.get_custom_hour(),
+        custom_day_of_year: window.get_custom_day_of_year(),
+        custom_year: window.get_custom_year_index() + datetime::base_year(),
         window_x: Some(pos.x),
         window_y: Some(pos.y),
         window_width: Some(size.width),
         window_height: Some(size.height),
     }
+}
+
+/// Update the hour label, day label, and max-day-of-year on the window
+/// based on the current datetime slider values.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn update_datetime_labels(window: &MainWindow, base_year: i32) {
+    let h = window.get_custom_hour();
+    window.set_hour_label(datetime::hour_label(h).into());
+
+    let year = window.get_custom_year_index() + base_year;
+    let max_doy = datetime::days_in_year(year);
+    window.set_max_day_of_year(i32::from(max_doy));
+
+    // Clamp day-of-year if it exceeds the new max (e.g. leap -> non-leap)
+    let doy = window.get_custom_day_of_year();
+    if doy > f32::from(max_doy) {
+        window.set_custom_day_of_year(f32::from(max_doy));
+    }
+
+    let doy = window.get_custom_day_of_year() as u16;
+    let doy = doy.max(1);
+    window.set_day_label(datetime::month_day_label(doy, year).into());
 }
 
 /// Render the current scene at the primary monitor's resolution, save as PNG,

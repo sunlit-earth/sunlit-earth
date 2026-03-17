@@ -272,6 +272,8 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_diffuse_shading(config.diffuse_shading);
     window.set_diffuse_floor(config.diffuse_floor);
     window.set_diffuse_ramp(config.diffuse_ramp);
+    window.set_spec_shininess(config.spec_shininess);
+    window.set_spec_intensity(config.spec_intensity);
 
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
         window.window().set_position(slint::PhysicalPosition::new(x, y));
@@ -303,6 +305,8 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         diffuse_shading: window.get_diffuse_shading(),
         diffuse_floor: window.get_diffuse_floor(),
         diffuse_ramp: window.get_diffuse_ramp(),
+        spec_shininess: window.get_spec_shininess(),
+        spec_intensity: window.get_spec_intensity(),
         window_x: Some(pos.x),
         window_y: Some(pos.y),
         window_width: Some(size.width),

@@ -24,9 +24,14 @@ struct Uniforms {
     diffuse_floor: f32,
     diffuse_ramp: f32,
     _pad: f32,
+    eye_pos: [f32; 3],
+    _pad2: f32,
+    spec_shininess: f32,
+    spec_intensity: f32,
+    _pad3: [f32; 2],
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 96);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -467,6 +472,11 @@ fn sphere_renders_visible_pixels() {
         diffuse_floor: 0.1,
         diffuse_ramp: 0.6,
         _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        _pad3: [0.0; 2],
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
@@ -495,6 +505,11 @@ fn day_side_brighter_than_night_side() {
         diffuse_floor: 0.1,
         diffuse_ramp: 0.6,
         _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        _pad3: [0.0; 2],
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
@@ -527,6 +542,11 @@ fn single_texture_mode_ignores_night() {
         diffuse_floor: 0.1,
         diffuse_ramp: 0.6,
         _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        _pad3: [0.0; 2],
     };
 
     let pixels = render_frame(&ctx, &uniforms, &red, &green, size, size);
@@ -560,6 +580,11 @@ struct Uniforms {
     diffuse_floor: f32,
     diffuse_ramp: f32,
     _pad: f32,
+    eye_pos: vec3<f32>,
+    _pad2: f32,
+    spec_shininess: f32,
+    spec_intensity: f32,
+    _pad3: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -584,6 +609,13 @@ fn main() {
     output[9] = uniforms.diffuse_floor;
     // diffuse_ramp
     output[10] = uniforms.diffuse_ramp;
+    // eye_pos
+    output[11] = uniforms.eye_pos.x;
+    output[12] = uniforms.eye_pos.y;
+    output[13] = uniforms.eye_pos.z;
+    // spec params
+    output[14] = uniforms.spec_shininess;
+    output[15] = uniforms.spec_intensity;
 }
 ";
 
@@ -620,6 +652,11 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         diffuse_floor: 0.5,
         diffuse_ramp: 0.25,
         _pad: 0.0,
+        eye_pos: [1.0, 2.0, 3.0],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.75,
+        _pad3: [0.0; 2],
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -628,8 +665,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 11 floats
-    let output_size = (11 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 16 floats
+    let output_size = (16 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -679,4 +716,9 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[8] - 1.0).abs() < eps, "flags: got {}, expected 1.0", values[8]);
     assert!((values[9] - 0.5).abs() < eps, "diffuse_floor: got {}, expected 0.5", values[9]);
     assert!((values[10] - 0.25).abs() < eps, "diffuse_ramp: got {}, expected 0.25", values[10]);
+    assert!((values[11] - 1.0).abs() < eps, "eye_pos.x: got {}, expected 1.0", values[11]);
+    assert!((values[12] - 2.0).abs() < eps, "eye_pos.y: got {}, expected 2.0", values[12]);
+    assert!((values[13] - 3.0).abs() < eps, "eye_pos.z: got {}, expected 3.0", values[13]);
+    assert!((values[14] - 150.0).abs() < eps, "spec_shininess: got {}, expected 150.0", values[14]);
+    assert!((values[15] - 0.75).abs() < eps, "spec_intensity: got {}, expected 0.75", values[15]);
 }

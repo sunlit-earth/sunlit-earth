@@ -44,6 +44,8 @@ export component MainWindow inherits Window {
     in-out property <bool> diffuse-shading: true;
     in-out property <float> diffuse-floor: 0.50;
     in-out property <float> diffuse-ramp: 0.25;
+    in-out property <float> spec-shininess: 150;
+    in-out property <float> spec-intensity: 0.4;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -386,6 +388,46 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: round(diffuse-ramp-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Shininess";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            spec-shininess-slider := Slider {
+                                minimum: 10;
+                                maximum: 500;
+                                value <=> root.spec-shininess;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(spec-shininess-slider.value);
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Glint";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            spec-intensity-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.spec-intensity;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(spec-intensity-slider.value * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

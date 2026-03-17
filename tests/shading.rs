@@ -38,7 +38,7 @@ const _: () = assert!(std::mem::size_of::<TestCase>() == 64);
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct TestResult {
     color: [f32; 3],
-    _pad: f32,
+    blend: f32,
 }
 
 const _: () = assert!(std::mem::size_of::<TestResult>() == 16);
@@ -65,7 +65,7 @@ struct TestCase {
 
 struct TestResult {
     color: vec3<f32>,
-    _pad: f32,
+    blend: f32,
 }
 
 @group(0) @binding(0) var<storage, read> inputs: array<TestCase>;
@@ -76,11 +76,11 @@ fn test_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if i >= arrayLength(&inputs) { return; }
     let tc = inputs[i];
-    let color = blend_fragment(
+    let result = blend_fragment(
         tc.day, tc.night, tc.n_dot_l, tc.terminator_width,
         tc.diffuse_enabled != 0u, tc.diffuse_floor, tc.diffuse_ramp,
     );
-    outputs[i] = TestResult(color, 0.0);
+    outputs[i] = TestResult(result.color, result.blend);
 }
 ";
 

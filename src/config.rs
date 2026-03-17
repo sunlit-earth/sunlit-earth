@@ -5,6 +5,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::scene::camera::CameraParams;
 
+/// Top-level config file structure, producing a `[sunlit.earth]` table in TOML.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct ConfigFile {
+    sunlit: SunlitSection,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct SunlitSection {
+    earth: AppConfig,
+}
+
 /// All user-configurable settings that are persisted to disk.
 ///
 /// Fields use `#[serde(default)]` at the struct level so that missing
@@ -102,8 +115,8 @@ fn load_config_from(path: &std::path::Path) -> AppConfig {
             return AppConfig::default();
         }
     };
-    match toml::from_str(&contents) {
-        Ok(config) => config,
+    match toml::from_str::<ConfigFile>(&contents) {
+        Ok(file) => file.sunlit.earth,
         Err(e) => {
             eprintln!("Warning: could not parse config file {}: {e}", path.display());
             AppConfig::default()
@@ -126,7 +139,12 @@ pub fn save_config(config: &AppConfig) {
 
 /// Save config to a specific path (used by both the public API and tests).
 fn save_config_to(config: &AppConfig, path: &std::path::Path) {
-    let toml_str = match toml::to_string_pretty(config) {
+    let file = ConfigFile {
+        sunlit: SunlitSection {
+            earth: config.clone(),
+        },
+    };
+    let toml_str = match toml::to_string_pretty(&file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Warning: could not serialize config: {e}");
@@ -434,7 +452,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
 
-        fs::write(&path, "longitude = 99.0\n").unwrap();
+        fs::write(&path, "[sunlit.earth]\nlongitude = 99.0\n").unwrap();
         let config = load_config_from(&path);
         assert_relative_eq!(config.longitude, 99.0);
         // All other fields at defaults
@@ -499,8 +517,8 @@ mod tests {
 
     #[test]
     fn serde_window_geometry_none_omitted() {
-        let config = AppConfig::default();
-        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let file = ConfigFile::default();
+        let toml_str = toml::to_string_pretty(&file).unwrap();
         // None fields should not appear in the TOML output
         assert!(!toml_str.contains("window_x"));
         assert!(!toml_str.contains("window_y"));
@@ -515,12 +533,20 @@ mod tests {
         config.window_y = Some(200);
         config.window_width = Some(1920);
         config.window_height = Some(1080);
-        let toml_str = toml::to_string_pretty(&config).unwrap();
-        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.window_x, Some(100));
-        assert_eq!(parsed.window_y, Some(200));
-        assert_eq!(parsed.window_width, Some(1920));
-        assert_eq!(parsed.window_height, Some(1080));
+        let file = ConfigFile { sunlit: SunlitSection { earth: config } };
+        let toml_str = toml::to_string_pretty(&file).unwrap();
+        let parsed: ConfigFile = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.sunlit.earth.window_x, Some(100));
+        assert_eq!(parsed.sunlit.earth.window_y, Some(200));
+        assert_eq!(parsed.sunlit.earth.window_width, Some(1920));
+        assert_eq!(parsed.sunlit.earth.window_height, Some(1080));
+    }
+
+    #[test]
+    fn config_file_contains_sunlit_earth_table() {
+        let file = ConfigFile::default();
+        let toml_str = toml::to_string_pretty(&file).unwrap();
+        assert!(toml_str.contains("[sunlit.earth]"));
     }
 
     // --- Step 2.5: find_sample_count_index ---

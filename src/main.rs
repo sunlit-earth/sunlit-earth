@@ -230,6 +230,16 @@ fn main() {
         win.set_camera_tilt(defaults.tilt_deg);
         win.set_camera_yaw(defaults.yaw_deg);
         win.set_camera_pitch(defaults.pitch_deg);
+        // Reset lighting
+        let lighting = AppConfig::default();
+        win.set_terminator_width(lighting.terminator_width);
+        win.set_diffuse_shading(lighting.diffuse_shading);
+        win.set_diffuse_floor(lighting.diffuse_floor);
+        win.set_diffuse_ramp(lighting.diffuse_ramp);
+        win.set_spec_shininess(lighting.spec_shininess);
+        win.set_spec_intensity(lighting.spec_intensity);
+        win.set_fresnel_mix(lighting.fresnel_mix);
+        win.set_fresnel_exp(lighting.fresnel_exp);
         // Reset datetime
         win.set_use_custom_datetime(false);
         win.set_custom_hour(12.0);

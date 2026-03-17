@@ -92,7 +92,7 @@ impl Default for AppConfig {
             diffuse_floor: 0.70,
             diffuse_ramp: 0.20,
             spec_shininess: 100.0,
-            spec_intensity: 0.2,
+            spec_intensity: 0.17,
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
             use_custom_datetime: false,

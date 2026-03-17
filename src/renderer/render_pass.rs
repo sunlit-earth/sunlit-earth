@@ -17,6 +17,8 @@ pub(super) struct ShadingParams {
     pub diffuse_shading: bool,
     pub diffuse_floor: f32,
     pub diffuse_ramp: f32,
+    pub spec_shininess: f32,
+    pub spec_intensity: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -72,6 +74,7 @@ pub(super) fn write_uniforms(
     camera.yaw_deg = camera_params.yaw_deg;
     camera.pitch_deg = camera_params.pitch_deg;
     let mvp = camera.mvp_matrix(aspect);
+    let eye_pos = camera.eye_position();
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
         sun_dir: shading.sun_dir.into(),
@@ -84,6 +87,11 @@ pub(super) fn write_uniforms(
         diffuse_floor: shading.diffuse_floor,
         diffuse_ramp: shading.diffuse_ramp,
         _pad: 0.0,
+        eye_pos: eye_pos.into(),
+        _pad2: 0.0,
+        spec_shininess: shading.spec_shininess,
+        spec_intensity: shading.spec_intensity,
+        _pad3: [0.0; 2],
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

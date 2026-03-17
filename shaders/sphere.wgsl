@@ -6,6 +6,11 @@ struct Uniforms {
     diffuse_floor: f32,        // 4 bytes, offset 84
     diffuse_ramp: f32,         // 4 bytes, offset 88
     _pad: f32,                 // 4 bytes, offset 92
+    eye_pos: vec3<f32>,        // 12 bytes, offset 96
+    _pad2: f32,                // 4 bytes, offset 108
+    spec_shininess: f32,       // 4 bytes, offset 112
+    spec_intensity: f32,       // 4 bytes, offset 116
+    _pad3: vec2<f32>,          // 8 bytes, offset 120
 };
 
 @group(0) @binding(0)
@@ -43,25 +48,44 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let day_color = textureSample(sphere_texture, sphere_sampler, in.uv).rgb;
+    let day = textureSample(sphere_texture, sphere_sampler, in.uv);
 
     // If terminator_width is negative, we're in single-texture mode
     // (the night texture binding is a dummy placeholder)
     if uniforms.terminator_width < 0.0 {
-        return vec4<f32>(day_color, 1.0);
+        return vec4<f32>(day.rgb, 1.0);
     }
 
     let night_color = textureSample(night_texture, sphere_sampler, in.uv).rgb;
     let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
 
-    let color = blend_fragment(
-        day_color, night_color, n_dot_l,
+    let result = blend_fragment(
+        day.rgb, night_color, n_dot_l,
         uniforms.terminator_width,
         (uniforms.flags & 1u) != 0u,
         uniforms.diffuse_floor,
         uniforms.diffuse_ramp,
     );
+
+    var color = result.color;
+
+    // Specular sun glint on water (Blinn-Phong + Schlick Fresnel).
+    // Water mask: alpha encodes land=1, ocean=0, so water = 1 - alpha.
+    if uniforms.spec_intensity > 0.0 {
+        let water = 1.0 - day.a;
+        if water > 0.0 {
+            let v = normalize(uniforms.eye_pos - in.world_normal);
+            let h = normalize(uniforms.sun_dir + v);
+            let n_dot_h = max(dot(n, h), 0.0);
+            let spec = pow(n_dot_h, uniforms.spec_shininess);
+            let n_dot_v = max(dot(n, v), 0.0);
+            let fresnel = 0.02 + 0.98 * pow(1.0 - n_dot_v, 5.0);
+            let glint = spec * fresnel * max(n_dot_l, 0.0) * result.blend
+                        * uniforms.spec_intensity * water;
+            color += vec3<f32>(glint);
+        }
+    }
 
     return vec4<f32>(color, 1.0);
 }

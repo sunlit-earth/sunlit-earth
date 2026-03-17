@@ -332,6 +332,8 @@ fn rendering_callback(
                 let diffuse_shading = win.get_diffuse_shading();
                 let diffuse_floor_f = win.get_diffuse_floor();
                 let diffuse_ramp_f = win.get_diffuse_ramp();
+                let spec_shininess_f = win.get_spec_shininess();
+                let spec_intensity_f = win.get_spec_intensity();
 
                 // Build current frame state for dirty-checking
                 let camera = CameraParams {
@@ -356,6 +358,8 @@ fn rendering_callback(
                     diffuse_shading,
                     diffuse_floor_f,
                     diffuse_ramp_f,
+                    spec_shininess_f,
+                    spec_intensity_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -395,6 +399,8 @@ fn rendering_callback(
                     diffuse_shading,
                     diffuse_floor: diffuse_floor_f,
                     diffuse_ramp: diffuse_ramp_f,
+                    spec_shininess: spec_shininess_f,
+                    spec_intensity: spec_intensity_f,
                 };
                 res.last_shading = Some(shading);
 

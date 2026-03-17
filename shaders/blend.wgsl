@@ -1,7 +1,13 @@
+struct BlendResult {
+    color: vec3<f32>,
+    blend: f32,
+}
+
 /// Blend day and night textures with optional diffuse shading.
 ///
 /// Pure function — no access to uniforms or textures. Takes pre-sampled
-/// colors and shading parameters, returns the final fragment RGB.
+/// colors and shading parameters, returns the final fragment RGB and the
+/// day/night blend factor (0 = full night, 1 = full day).
 ///
 /// When diffuse shading is enabled, the day color is darkened by a
 /// smoothstep-based shading factor and then clamped per-channel to
@@ -14,7 +20,7 @@ fn blend_fragment(
     diffuse_enabled: bool,
     diffuse_floor: f32,
     diffuse_ramp: f32,
-) -> vec3<f32> {
+) -> BlendResult {
     let w = terminator_width;
     let blend = smoothstep(-w, w, n_dot_l);
 
@@ -25,5 +31,5 @@ fn blend_fragment(
         shaded_day = max(day_color * shading, min(night_color, day_color));
     }
 
-    return mix(night_color, shaded_day, blend);
+    return BlendResult(mix(night_color, shaded_day, blend), blend);
 }

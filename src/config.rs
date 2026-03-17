@@ -36,6 +36,12 @@ pub struct AppConfig {
     pub diffuse_shading: bool,
     pub diffuse_floor: f32,
     pub diffuse_ramp: f32,
+
+    // Window geometry (None on first launch — let the OS place the window)
+    pub window_x: Option<i32>,
+    pub window_y: Option<i32>,
+    pub window_width: Option<u32>,
+    pub window_height: Option<u32>,
 }
 
 impl Default for AppConfig {
@@ -56,6 +62,10 @@ impl Default for AppConfig {
             diffuse_shading: true,
             diffuse_floor: 0.50,
             diffuse_ramp: 0.25,
+            window_x: None,
+            window_y: None,
+            window_width: None,
+            window_height: None,
         }
     }
 }
@@ -142,6 +152,58 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
     }
 }
 
+/// Check whether the saved window position is visible on at least one
+/// connected monitor by testing if the title bar region overlaps any display.
+///
+/// Returns `true` if the position is on-screen, `false` if off-screen or
+/// if validation cannot be performed.
+#[cfg(windows)]
+#[allow(clippy::cast_possible_truncation)]
+fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
+
+    let title_bar_height = 30i32.min(height.cast_signed());
+    let rect = RECT {
+        left: x,
+        top: y,
+        right: x.saturating_add(width.cast_signed()),
+        bottom: y.saturating_add(title_bar_height),
+    };
+
+    // SAFETY: MonitorFromRect reads a RECT struct and queries the display
+    // configuration. The rect is a local stack variable with valid values.
+    // MONITOR_DEFAULTTONULL returns null if no monitor contains the rect.
+    #[allow(unsafe_code)]
+    let monitor = unsafe { MonitorFromRect(&raw const rect, MONITOR_DEFAULTTONULL) };
+    !monitor.is_null()
+}
+
+#[cfg(not(windows))]
+fn is_position_on_screen(_x: i32, _y: i32, _width: u32, _height: u32) -> bool {
+    // No validation on non-Windows platforms — accept any saved position
+    true
+}
+
+/// Return the saved window geometry if it passes on-screen validation.
+///
+/// Returns `None` if any of the four geometry fields is missing or if
+/// the saved position is no longer visible on any connected monitor.
+pub fn validated_window_geometry(config: &AppConfig) -> Option<(i32, i32, u32, u32)> {
+    let (Some(x), Some(y), Some(w), Some(h)) = (config.window_x, config.window_y, config.window_width, config.window_height) else {
+        return None;
+    };
+    if w == 0 || h == 0 {
+        return None;
+    }
+    if is_position_on_screen(x, y, w, h) {
+        Some((x, y, w, h))
+    } else {
+        eprintln!("Warning: saved window position ({x}, {y}) is off-screen, using OS default");
+        None
+    }
+}
+
 /// Find the index of `desired` sample count in `aa_counts`, or fall back
 /// to the last index (highest available count).
 ///
@@ -201,6 +263,15 @@ mod tests {
     }
 
     #[test]
+    fn default_window_geometry_is_none() {
+        let config = AppConfig::default();
+        assert!(config.window_x.is_none());
+        assert!(config.window_y.is_none());
+        assert!(config.window_width.is_none());
+        assert!(config.window_height.is_none());
+    }
+
+    #[test]
     fn serde_round_trip_non_default() {
         let config = AppConfig {
             longitude: 42.5,
@@ -217,6 +288,10 @@ mod tests {
             diffuse_shading: false,
             diffuse_floor: 0.75,
             diffuse_ramp: 0.5,
+            window_x: Some(100),
+            window_y: Some(200),
+            window_width: Some(1024),
+            window_height: Some(768),
         };
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -286,6 +361,10 @@ mod tests {
             diffuse_shading: false,
             diffuse_floor: 0.8,
             diffuse_ramp: 0.4,
+            window_x: Some(50),
+            window_y: Some(75),
+            window_width: Some(800),
+            window_height: Some(600),
         };
 
         save_config_to(&config, &path);
@@ -366,6 +445,82 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Window geometry validation ---
+
+    #[test]
+    fn validated_geometry_none_when_missing() {
+        let config = AppConfig::default();
+        assert!(validated_window_geometry(&config).is_none());
+    }
+
+    #[test]
+    fn validated_geometry_none_when_partial() {
+        let mut config = AppConfig::default();
+        config.window_x = Some(100);
+        config.window_y = Some(200);
+        // width and height still None
+        assert!(validated_window_geometry(&config).is_none());
+    }
+
+    #[test]
+    fn validated_geometry_none_when_zero_size() {
+        let mut config = AppConfig::default();
+        config.window_x = Some(100);
+        config.window_y = Some(200);
+        config.window_width = Some(0);
+        config.window_height = Some(600);
+        assert!(validated_window_geometry(&config).is_none());
+    }
+
+    #[test]
+    fn validated_geometry_accepts_on_screen() {
+        let mut config = AppConfig::default();
+        config.window_x = Some(100);
+        config.window_y = Some(100);
+        config.window_width = Some(800);
+        config.window_height = Some(600);
+        // On a machine with at least one monitor, (100, 100) should be on-screen
+        let result = validated_window_geometry(&config);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), (100, 100, 800, 600));
+    }
+
+    #[test]
+    fn validated_geometry_rejects_off_screen() {
+        let mut config = AppConfig::default();
+        config.window_x = Some(-50000);
+        config.window_y = Some(-50000);
+        config.window_width = Some(800);
+        config.window_height = Some(600);
+        assert!(validated_window_geometry(&config).is_none());
+    }
+
+    #[test]
+    fn serde_window_geometry_none_omitted() {
+        let config = AppConfig::default();
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        // None fields should not appear in the TOML output
+        assert!(!toml_str.contains("window_x"));
+        assert!(!toml_str.contains("window_y"));
+        assert!(!toml_str.contains("window_width"));
+        assert!(!toml_str.contains("window_height"));
+    }
+
+    #[test]
+    fn serde_window_geometry_round_trip() {
+        let mut config = AppConfig::default();
+        config.window_x = Some(100);
+        config.window_y = Some(200);
+        config.window_width = Some(1920);
+        config.window_height = Some(1080);
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.window_x, Some(100));
+        assert_eq!(parsed.window_y, Some(200));
+        assert_eq!(parsed.window_width, Some(1920));
+        assert_eq!(parsed.window_height, Some(1080));
     }
 
     // --- Step 2.5: find_sample_count_index ---

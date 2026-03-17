@@ -272,13 +272,22 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_diffuse_shading(config.diffuse_shading);
     window.set_diffuse_floor(config.diffuse_floor);
     window.set_diffuse_ramp(config.diffuse_ramp);
+
+    if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
+        window.window().set_position(slint::PhysicalPosition::new(x, y));
+        window.window().set_size(slint::PhysicalSize::new(w, h));
+    }
 }
 
-/// Read all 14 persisted settings from the window's current UI state.
+/// Read all persisted settings from the window's current UI state.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
     let aa_index = window.get_aa_index() as usize;
     let sample_count = aa_counts.get(aa_index).copied().unwrap_or(1);
+
+    let pos = window.window().position();
+    let size = window.window().size();
+
     AppConfig {
         longitude: window.get_camera_longitude(),
         latitude: window.get_camera_latitude(),
@@ -294,6 +303,10 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         diffuse_shading: window.get_diffuse_shading(),
         diffuse_floor: window.get_diffuse_floor(),
         diffuse_ramp: window.get_diffuse_ramp(),
+        window_x: Some(pos.x),
+        window_y: Some(pos.y),
+        window_width: Some(size.width),
+        window_height: Some(size.height),
     }
 }
 

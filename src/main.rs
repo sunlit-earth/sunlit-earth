@@ -209,7 +209,7 @@ fn main() {
     // Reset Camera button callback
     let window_weak = window.as_weak();
     let config_timer_handle = Rc::clone(&config_timer);
-    window.on_reset_camera(move || {
+    window.on_reset_all(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
         };

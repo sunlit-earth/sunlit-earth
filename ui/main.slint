@@ -40,12 +40,12 @@ export component MainWindow inherits Window {
     in-out property <float> camera-pitch: 0;
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
-    out property <float> terminator-width: terminator-slider.value;
-    out property <bool> diffuse-shading: diffuse-check.checked;
-    out property <float> diffuse-floor: diffuse-floor-slider.value;
-    out property <float> diffuse-ramp: diffuse-ramp-slider.value;
-    out property <float> spec-shininess: spec-shininess-slider.value;
-    out property <float> spec-intensity: spec-intensity-slider.value;
+    in-out property <float> terminator-width: 0.1;
+    in-out property <bool> diffuse-shading: true;
+    in-out property <float> diffuse-floor: 0.50;
+    in-out property <float> diffuse-ramp: 0.25;
+    in-out property <float> spec-shininess: 150;
+    in-out property <float> spec-intensity: 0.4;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -329,7 +329,7 @@ export component MainWindow inherits Window {
                             terminator-slider := Slider {
                                 minimum: 0.01;
                                 maximum: 0.3;
-                                value: 0.1;
+                                value <=> root.terminator-width;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
@@ -348,7 +348,7 @@ export component MainWindow inherits Window {
                             }
                             diffuse-check := CheckBox {
                                 text: "Dayside shading";
-                                checked: true;
+                                checked <=> root.diffuse-shading;
                                 toggled => { root.sliders-changed(); }
                             }
                         }
@@ -363,7 +363,7 @@ export component MainWindow inherits Window {
                             diffuse-floor-slider := Slider {
                                 minimum: 0.0;
                                 maximum: 1.0;
-                                value: 0.50;
+                                value <=> root.diffuse-floor;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
@@ -383,7 +383,7 @@ export component MainWindow inherits Window {
                             diffuse-ramp-slider := Slider {
                                 minimum: 0.1;
                                 maximum: 1.0;
-                                value: 0.25;
+                                value <=> root.diffuse-ramp;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
@@ -403,7 +403,7 @@ export component MainWindow inherits Window {
                             spec-shininess-slider := Slider {
                                 minimum: 10;
                                 maximum: 500;
-                                value: 150;
+                                value <=> root.spec-shininess;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
@@ -423,7 +423,7 @@ export component MainWindow inherits Window {
                             spec-intensity-slider := Slider {
                                 minimum: 0.0;
                                 maximum: 1.0;
-                                value: 0.4;
+                                value <=> root.spec-intensity;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {

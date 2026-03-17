@@ -52,11 +52,23 @@ pub struct AppConfig {
     pub spec_shininess: f32,
     pub spec_intensity: f32,
 
+    // Custom date/time override
+    pub use_custom_datetime: bool,
+    pub custom_hour: f32,
+    pub custom_day_of_year: f32,
+    #[serde(default = "default_custom_year")]
+    pub custom_year: i32,
+
     // Window geometry (None on first launch — let the OS place the window)
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
     pub window_width: Option<u32>,
     pub window_height: Option<u32>,
+}
+
+/// Default value for `custom_year` when the field is missing from config.
+fn default_custom_year() -> i32 {
+    time::OffsetDateTime::now_utc().year()
 }
 
 impl Default for AppConfig {
@@ -79,6 +91,10 @@ impl Default for AppConfig {
             diffuse_ramp: 0.25,
             spec_shininess: 150.0,
             spec_intensity: 0.4,
+            use_custom_datetime: false,
+            custom_hour: 12.0,
+            custom_day_of_year: 1.0,
+            custom_year: default_custom_year(),
             window_x: None,
             window_y: None,
             window_width: None,
@@ -312,6 +328,10 @@ mod tests {
             diffuse_ramp: 0.5,
             spec_shininess: 200.0,
             spec_intensity: 0.6,
+            use_custom_datetime: true,
+            custom_hour: 14.5,
+            custom_day_of_year: 76.0,
+            custom_year: 2030,
             window_x: Some(100),
             window_y: Some(200),
             window_width: Some(1024),
@@ -337,6 +357,51 @@ mod tests {
         assert_relative_eq!(config.latitude, defaults.latitude);
         assert_relative_eq!(config.zoom, defaults.zoom);
         assert_eq!(config.texture_index, defaults.texture_index);
+    }
+
+    // --- Custom datetime defaults ---
+
+    #[test]
+    fn default_use_custom_datetime_is_false() {
+        let config = AppConfig::default();
+        assert!(!config.use_custom_datetime);
+    }
+
+    #[test]
+    fn default_custom_hour_is_12() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.custom_hour, 12.0);
+    }
+
+    #[test]
+    fn default_custom_day_of_year_is_1() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.custom_day_of_year, 1.0);
+    }
+
+    #[test]
+    fn default_custom_year_is_current() {
+        let config = AppConfig::default();
+        let current_year = time::OffsetDateTime::now_utc().year();
+        assert_eq!(config.custom_year, current_year);
+    }
+
+    #[test]
+    fn deserialize_missing_datetime_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        let defaults = AppConfig::default();
+        assert!(!config.use_custom_datetime);
+        assert_relative_eq!(config.custom_hour, defaults.custom_hour);
+        assert_relative_eq!(config.custom_day_of_year, defaults.custom_day_of_year);
+        // custom_year uses its own serde default function
+        let current_year = time::OffsetDateTime::now_utc().year();
+        assert_eq!(config.custom_year, current_year);
+    }
+
+    #[test]
+    fn deserialize_explicit_zero_year_stays_zero() {
+        let config: AppConfig = toml::from_str("custom_year = 0").unwrap();
+        assert_eq!(config.custom_year, 0);
     }
 
     #[test]
@@ -387,6 +452,10 @@ mod tests {
             diffuse_ramp: 0.4,
             spec_shininess: 300.0,
             spec_intensity: 0.8,
+            use_custom_datetime: true,
+            custom_hour: 8.25,
+            custom_day_of_year: 200.0,
+            custom_year: 2020,
             window_x: Some(50),
             window_y: Some(75),
             window_width: Some(800),

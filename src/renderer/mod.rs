@@ -14,6 +14,7 @@ use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::MainWindow;
 use crate::scene::camera::{CameraParams, zoom_to_distance};
+use crate::scene::datetime;
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -325,7 +326,16 @@ fn rendering_callback(
                 }
 
                 // Compute sun direction for this frame
-                let sun_dir = sun::sun_direction_now();
+                let sun_dir = if win.get_use_custom_datetime() {
+                    let hour = win.get_custom_hour();
+                    let doy = win.get_custom_day_of_year() as u16;
+                    let year = win.get_custom_year_index() + datetime::base_year();
+                    let (month, day) = datetime::day_of_year_to_month_day(doy.max(1), year);
+                    let (h, m, s) = datetime::hour_float_to_hms(hour);
+                    sun::sun_direction_at(year, i32::from(month), i32::from(day), h, m, s)
+                } else {
+                    sun::sun_direction_now()
+                };
 
                 // Read UI properties for blend mode
                 let terminator_width_f = win.get_terminator_width();

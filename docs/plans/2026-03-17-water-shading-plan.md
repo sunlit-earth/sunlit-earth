@@ -120,17 +120,15 @@ This phase adds all the new data plumbing without any visual change to the shade
 
 ### Phase 2: Encode Water Mask in Day Texture Alpha
 
-This phase is independent of Phase 1 at the code level but depends on Phase 1 being mergeable first to avoid conflicts. The texture pipeline tooling does not currently exist in the repository as committed code (it lives outside the Rust project), so this phase covers only the shader-side readiness and manual texture preparation.
+Modified `main.py` in the texture pipeline to embed the inverted ocean mask as the alpha channel after `apply_ocean_mask()`: `img.putalpha(Image.fromarray(255 - mask, mode="L"))`. Convention: land=255 (opaque), ocean=0 (transparent). This preserves land detail under lossy JXL compression. The shader will compute `water = 1.0 - alpha`.
 
-#### Step 2.1: Prepare day texture with water mask in alpha channel
+Validated output at 8K: alpha channel is correct (land=255, ocean=0, 672K anti-aliased coastline pixels). Land RGB fidelity matches the old texture within lossy tolerance. Ocean fill color shows compression artifacts (stddev ~12-30 per channel vs uniform [10,40,80]) due to reduced bit allocation at alpha=0 — acceptable since the fill is just a base color for specular. Alpha channel adds ~1.1MB to file size (2.1MB -> 3.2MB).
 
-- **Files**: Day texture file (external to the Rust codebase)
-- **Action**: Using the existing ocean masking pipeline (which already identifies water pixels), write 255 into the alpha channel for water pixels, 0 for land pixels, and anti-aliased intermediate values at coastlines. Re-export the day texture as JXL. The alpha channel is currently always 255 and is never read by any code path.
-- **Test cases** (manual):
-  - Load the new texture in an image viewer, inspect the alpha channel: ocean should be white (255), land should be black (0), coastlines should have intermediate values
-  - Run the app with the new texture, verify the scene looks identical to before (alpha channel is not yet used by the shader)
-- **Verify**: Visual inspection confirms identical rendering
-- **Complexity**: Medium (external tooling, not Rust code)
+#### Step 2.1: ~~Prepare day texture with water mask in alpha channel~~ DONE
+
+- **Status**: Complete
+- **Files changed**: `tools/texture-pipeline/src/texture_pipeline/main.py`
+- **Verification**: Output inspected programmatically — alpha semantics correct, land RGB preserved, rendering unchanged (shader still discards alpha via `.rgb` swizzle)
 
 ### Phase 3: Add Specular Calculation to Fragment Shader
 
@@ -166,7 +164,7 @@ This phase adds the visual payoff. It depends on Phase 1 (uniform fields) and Ph
 
 - **Files**: `shaders/sphere.wgsl`
 - **Action**: After the `blend_fragment()` call in `fs_main()`, add the specular calculation:
-  1. Sample the day texture as `vec4` instead of `.rgb` to get the water mask from `.a`
+  1. Sample the day texture as `vec4` instead of `.rgb` to get the water mask from `.a` — convention is inverted: `water = 1.0 - day.a` (land=255/opaque, ocean=0/transparent)
   2. Compute view direction: `v = normalize(uniforms.eye_pos - in.world_normal)` (world_normal doubles as world position on the unit sphere)
   3. Compute half vector: `h = normalize(uniforms.sun_dir + v)`
   4. Compute Blinn-Phong specular: `spec = pow(max(dot(n, h), 0.0), uniforms.spec_shininess)`
@@ -253,7 +251,8 @@ This phase adds the visual payoff. It depends on Phase 1 (uniform fields) and Ph
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Alpha channel not carried through JXL encode/decode | Specular appears on all pixels or no pixels | Verify alpha roundtrip in the JXL pipeline before writing shader code. The existing day texture uses Rgba8Unorm so the alpha channel exists; confirm jxl-oxide preserves it. |
+| Alpha channel not carried through JXL encode/decode | Specular appears on all pixels or no pixels | **Verified**: pillow-jxl encodes RGBA, jxl-oxide decodes it, `.into_rgba8()` preserves alpha. Tested end-to-end. |
+| Lossy JXL degrades ocean fill color at alpha=0 | Visible color banding or noise on ocean surface | Observed: ocean RGB stddev ~12-30/channel. Acceptable since fill is a base for specular, not a precise color. Monitor visually. |
 | Uniform buffer alignment mismatch between Rust and WGSL | Shader reads garbage values for eye_pos or specular params | GPU readback test (Step 1.6) catches this immediately. Follow the existing `_pad` pattern for vec3 alignment. |
 | Specular saturates to white at high intensity | Unrealistic blown-out highlights | Acceptable and matches real camera behavior per the research. The user controls intensity via the slider. |
 | Existing GPU tests become flaky after shader change | False test failures | Keep spec_intensity=0.0 in all existing tests so the specular code path is a no-op. New tests use spec_intensity>0. |
@@ -274,7 +273,7 @@ The specular effect can also be "soft disabled" without reverting code by settin
 
 - [ ] Plan approved
 - [ ] Phase 1 complete (uniform buffer + UI sliders)
-- [ ] Phase 2 complete (water mask in texture alpha)
+- [x] Phase 2 complete (water mask in texture alpha)
 - [ ] Phase 3 complete (specular shader logic + tests)
 - [ ] Phase 4 complete (visual tuning)
 - [ ] Implementation complete

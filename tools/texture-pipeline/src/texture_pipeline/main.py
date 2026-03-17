@@ -121,6 +121,10 @@ def run_pipeline(
                     mask = reduce_mask_for_ice(mask.copy(), ice)
 
                 img = apply_ocean_mask(img, mask, color=ocean_color)
+                # Embed inverted ocean mask as alpha for shader water detection:
+                # land=255 (opaque), ocean=0 (transparent). This preserves land
+                # detail under lossy compression. The shader reads water = 1 - alpha.
+                img.putalpha(Image.fromarray(255 - mask, mode="L"))
 
             for width in widths:
                 progress.update(task, current_file=f"{source_path.name} → {width}px")

@@ -19,6 +19,8 @@ pub(super) struct ShadingParams {
     pub diffuse_ramp: f32,
     pub spec_shininess: f32,
     pub spec_intensity: f32,
+    pub fresnel_mix: f32,
+    pub fresnel_exp: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -91,7 +93,8 @@ pub(super) fn write_uniforms(
         _pad2: 0.0,
         spec_shininess: shading.spec_shininess,
         spec_intensity: shading.spec_intensity,
-        _pad3: [0.0; 2],
+        fresnel_mix: shading.fresnel_mix,
+        fresnel_exp: shading.fresnel_exp,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

@@ -230,6 +230,16 @@ fn main() {
         win.set_camera_tilt(defaults.tilt_deg);
         win.set_camera_yaw(defaults.yaw_deg);
         win.set_camera_pitch(defaults.pitch_deg);
+        // Reset lighting
+        let lighting = AppConfig::default();
+        win.set_terminator_width(lighting.terminator_width);
+        win.set_diffuse_shading(lighting.diffuse_shading);
+        win.set_diffuse_floor(lighting.diffuse_floor);
+        win.set_diffuse_ramp(lighting.diffuse_ramp);
+        win.set_spec_shininess(lighting.spec_shininess);
+        win.set_spec_intensity(lighting.spec_intensity);
+        win.set_fresnel_mix(lighting.fresnel_mix);
+        win.set_fresnel_exp(lighting.fresnel_exp);
         // Reset datetime
         win.set_use_custom_datetime(false);
         win.set_custom_hour(12.0);
@@ -288,6 +298,8 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_diffuse_ramp(config.diffuse_ramp);
     window.set_spec_shininess(config.spec_shininess);
     window.set_spec_intensity(config.spec_intensity);
+    window.set_fresnel_mix(config.fresnel_mix);
+    window.set_fresnel_exp(config.fresnel_exp);
 
     // Custom datetime
     window.set_use_custom_datetime(config.use_custom_datetime);
@@ -332,6 +344,8 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         diffuse_ramp: window.get_diffuse_ramp(),
         spec_shininess: window.get_spec_shininess(),
         spec_intensity: window.get_spec_intensity(),
+        fresnel_mix: window.get_fresnel_mix(),
+        fresnel_exp: window.get_fresnel_exp(),
         use_custom_datetime: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
         custom_day_of_year: window.get_custom_day_of_year(),

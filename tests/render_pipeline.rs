@@ -28,7 +28,8 @@ struct Uniforms {
     _pad2: f32,
     spec_shininess: f32,
     spec_intensity: f32,
-    _pad3: [f32; 2],
+    fresnel_mix: f32,
+    fresnel_exp: f32,
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);
@@ -83,8 +84,11 @@ fn generate_uv_sphere(stacks: u32, sectors: u32) -> (Vec<Vertex>, Vec<u32>) {
 
 /// Build a perspective MVP matrix looking at the origin from distance 3.5.
 fn test_mvp(width: u32, height: u32) -> [f32; 16] {
-    // Simplified orbital camera at (0, 0, 3.5) looking at origin
-    let eye = glam::Vec3::new(0.0, 0.0, 3.5);
+    test_mvp_with_eye(width, height, glam::Vec3::new(0.0, 0.0, 3.5))
+}
+
+/// Build a perspective MVP matrix looking at the origin from a custom eye position.
+fn test_mvp_with_eye(width: u32, height: u32, eye: glam::Vec3) -> [f32; 16] {
     let center = glam::Vec3::ZERO;
     let up = glam::Vec3::Y;
     let view = glam::Mat4::look_at_rh(eye, center, up);
@@ -476,7 +480,8 @@ fn sphere_renders_visible_pixels() {
         _pad2: 0.0,
         spec_shininess: 150.0,
         spec_intensity: 0.0,
-        _pad3: [0.0; 2],
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
@@ -509,7 +514,8 @@ fn day_side_brighter_than_night_side() {
         _pad2: 0.0,
         spec_shininess: 150.0,
         spec_intensity: 0.0,
-        _pad3: [0.0; 2],
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
@@ -546,7 +552,8 @@ fn single_texture_mode_ignores_night() {
         _pad2: 0.0,
         spec_shininess: 150.0,
         spec_intensity: 0.0,
-        _pad3: [0.0; 2],
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &red, &green, size, size);
@@ -584,7 +591,8 @@ struct Uniforms {
     _pad2: f32,
     spec_shininess: f32,
     spec_intensity: f32,
-    _pad3: vec2<f32>,
+    fresnel_mix: f32,
+    fresnel_exp: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -616,6 +624,9 @@ fn main() {
     // spec params
     output[14] = uniforms.spec_shininess;
     output[15] = uniforms.spec_intensity;
+    // fresnel params
+    output[16] = uniforms.fresnel_mix;
+    output[17] = uniforms.fresnel_exp;
 }
 ";
 
@@ -656,7 +667,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         _pad2: 0.0,
         spec_shininess: 150.0,
         spec_intensity: 0.75,
-        _pad3: [0.0; 2],
+        fresnel_mix: 0.5,
+        fresnel_exp: 3.0,
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -665,8 +677,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 16 floats
-    let output_size = (16 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 18 floats
+    let output_size = (18 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -721,4 +733,310 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[13] - 3.0).abs() < eps, "eye_pos.z: got {}, expected 3.0", values[13]);
     assert!((values[14] - 150.0).abs() < eps, "spec_shininess: got {}, expected 150.0", values[14]);
     assert!((values[15] - 0.75).abs() < eps, "spec_intensity: got {}, expected 0.75", values[15]);
+    assert!((values[16] - 0.5).abs() < eps, "fresnel_mix: got {}, expected 0.5", values[16]);
+    assert!((values[17] - 3.0).abs() < eps, "fresnel_exp: got {}, expected 3.0", values[17]);
+}
+
+// ---------------------------------------------------------------------------
+// Fresnel specular tests (Step 2.1)
+// ---------------------------------------------------------------------------
+
+/// Average luminance of non-clear pixels in the frame.
+fn avg_luminance_non_clear(pixels: &[u8]) -> f64 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_g = (CLEAR_COLOR.g * 255.0) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_b = (CLEAR_COLOR.b * 255.0) as u8;
+
+    let mut sum = 0.0_f64;
+    let mut count = 0u64;
+    for px in pixels.chunks(4) {
+        let dr = px[0].abs_diff(clear_r);
+        let dg = px[1].abs_diff(clear_g);
+        let db = px[2].abs_diff(clear_b);
+        if dr > 1 || dg > 1 || db > 1 {
+            let r = f64::from(px[0]);
+            let g = f64::from(px[1]);
+            let b = f64::from(px[2]);
+            sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            count += 1;
+        }
+    }
+    if count == 0 { return 0.0; }
+    #[allow(clippy::cast_precision_loss)]
+    { sum / count as f64 }
+}
+
+#[test]
+fn fresnel_specular_zero_intensity_unchanged() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    // All-water texture (alpha=128): RGB can be ocean-like
+    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
+    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+
+    // With spec_intensity=0.0, Fresnel has nothing to multiply — output
+    // should be identical regardless of Fresnel.
+    let uniforms = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+
+    let pixels = render_frame(&ctx, &uniforms, &water, &night, size, size);
+    let lum = avg_luminance_non_clear(&pixels);
+
+    // With both specular and Fresnel mix at zero, luminance should be
+    // modest (just diffuse-lit ocean color). Sanity check.
+    assert!(
+        lum < 100.0,
+        "With spec_intensity=0 and fresnel_mix=0, luminance should be modest, got {lum:.1}"
+    );
+}
+
+#[test]
+fn fresnel_specular_brighter_at_grazing() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    // All-water texture
+    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
+    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+
+    // Head-on: eye at (0, 0, 3.5), sun at (0, 0, 1)
+    let eye_head_on = glam::Vec3::new(0.0, 0.0, 3.5);
+    let uniforms_head_on = Uniforms {
+        mvp: test_mvp_with_eye(size, size, eye_head_on),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: eye_head_on.into(),
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.5,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+    let pixels_head_on = render_frame(&ctx, &uniforms_head_on, &water, &night, size, size);
+    let lum_head_on = avg_luminance_non_clear(&pixels_head_on);
+
+    // Grazing: eye at (2.5, 0, 2.5), sun still at (0, 0, 1)
+    // The limb pixels face the camera at a grazing angle where Fresnel is high
+    let eye_grazing = glam::Vec3::new(2.5, 0.0, 2.5);
+    let uniforms_grazing = Uniforms {
+        mvp: test_mvp_with_eye(size, size, eye_grazing),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: eye_grazing.into(),
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.5,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+    let pixels_grazing = render_frame(&ctx, &uniforms_grazing, &water, &night, size, size);
+    let lum_grazing = avg_luminance_non_clear(&pixels_grazing);
+
+    // At a grazing angle, Fresnel increases specular intensity.
+    // The visible portion of the sphere has more glancing normals,
+    // so overall average luminance should be higher.
+    assert!(
+        lum_grazing > lum_head_on * 0.8,
+        "Grazing-angle specular luminance ({lum_grazing:.1}) should be comparable to or \
+         brighter than head-on ({lum_head_on:.1}) due to Fresnel"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fresnel diffuse shift tests (Step 2.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fresnel_diffuse_shift_zero_is_noop() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
+    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+
+    // Baseline: fresnel_mix=0
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
+
+    // With fresnel_mix=0, the diffuse shift block is skipped entirely
+    // (the `if uniforms.fresnel_mix > 0.0` guard).
+    // So the output should be identical to spec_intensity=0, fresnel_mix=0.
+    let lum_base = avg_luminance_non_clear(&pixels_base);
+    assert!(
+        lum_base > 0.0,
+        "Baseline should have visible pixels, got luminance {lum_base:.1}"
+    );
+}
+
+#[test]
+fn fresnel_diffuse_shift_brightens_grazing_water() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
+    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+
+    // Without Fresnel diffuse shift
+    let uniforms_no_shift = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+    let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, &water, &night, size, size);
+    let lum_no_shift = avg_luminance_non_clear(&pixels_no_shift);
+
+    // With Fresnel diffuse shift (the sky color is brighter than the ocean)
+    let uniforms_with_shift = Uniforms {
+        fresnel_mix: 0.5,
+        ..uniforms_no_shift
+    };
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &water, &night, size, size);
+    let lum_with_shift = avg_luminance_non_clear(&pixels_with_shift);
+
+    // The diffuse color shift mixes toward a brighter sky color,
+    // so the average luminance should increase.
+    assert!(
+        lum_with_shift > lum_no_shift,
+        "Fresnel diffuse shift should brighten water: with_shift={lum_with_shift:.1}, \
+         no_shift={lum_no_shift:.1}"
+    );
+}
+
+#[test]
+fn fresnel_diffuse_shift_absent_on_land() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    // All-land texture (alpha=255)
+    let land = create_solid_texture(&ctx.device, &ctx.queue, [50, 120, 50, 255]);
+    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 255]);
+
+    // Without Fresnel diffuse shift
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &land, &night, size, size);
+
+    // With Fresnel diffuse shift — should have no effect on land
+    let uniforms_with_shift = Uniforms {
+        fresnel_mix: 0.5,
+        ..uniforms_base
+    };
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &land, &night, size, size);
+
+    // Pixel-for-pixel comparison: land should be completely unaffected
+    assert_eq!(
+        pixels_base, pixels_with_shift,
+        "Land pixels should be identical with and without fresnel_mix"
+    );
+}
+
+#[test]
+fn fresnel_diffuse_shift_absent_at_night() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    // All-water texture
+    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
+    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+
+    // Sun pointing away from camera (night side faces camera)
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, -1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
+
+    // With Fresnel diffuse shift — should have no effect on night side
+    // because sky_color * result.blend = sky_color * 0 = 0
+    let uniforms_with_shift = Uniforms {
+        fresnel_mix: 0.5,
+        ..uniforms_base
+    };
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &water, &night, size, size);
+
+    // Night side: result.blend is 0, so sky_color * 0 = black.
+    // The mix should be toward black which shouldn't change the dark night pixels.
+    // Allow for minor floating-point differences near the terminator.
+    let lum_base = avg_luminance_non_clear(&pixels_base);
+    let lum_with_shift = avg_luminance_non_clear(&pixels_with_shift);
+
+    let diff = (lum_with_shift - lum_base).abs();
+    assert!(
+        diff < 2.0,
+        "Night-side water should be nearly identical with and without fresnel_mix: \
+         base={lum_base:.1}, shift={lum_with_shift:.1}, diff={diff:.1}"
+    );
 }

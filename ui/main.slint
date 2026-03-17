@@ -42,10 +42,12 @@ export component MainWindow inherits Window {
     out property <length> viewport-height: image-container.height;
     in-out property <float> terminator-width: 0.1;
     in-out property <bool> diffuse-shading: true;
-    in-out property <float> diffuse-floor: 0.50;
-    in-out property <float> diffuse-ramp: 0.25;
-    in-out property <float> spec-shininess: 150;
-    in-out property <float> spec-intensity: 0.4;
+    in-out property <float> diffuse-floor: 0.70;
+    in-out property <float> diffuse-ramp: 0.20;
+    in-out property <float> spec-shininess: 100;
+    in-out property <float> spec-intensity: 0.17;
+    in-out property <float> fresnel-mix: 0.75;
+    in-out property <float> fresnel-exp: 4.0;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -443,6 +445,46 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: round(spec-intensity-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Fresnel Mix";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            fresnel-mix-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.fresnel-mix;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(fresnel-mix-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Fresnel Extent";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            fresnel-exp-slider := Slider {
+                                minimum: 1.0;
+                                maximum: 8.0;
+                                value <=> root.fresnel-exp;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(fresnel-exp-slider.value * 10) / 10;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

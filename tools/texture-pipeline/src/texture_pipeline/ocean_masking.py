@@ -58,7 +58,7 @@ def rasterize_ocean_mask(
 def apply_ocean_mask(
     image: Image.Image,
     mask: np.ndarray,
-    color: tuple[int, int, int] = (10, 40, 80),
+    color: tuple[int, int, int] = (10, 30, 60),
 ) -> Image.Image:
     """Replace ocean pixels in an image with a uniform fill color.
 

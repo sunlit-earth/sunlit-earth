@@ -15,7 +15,8 @@ pub(crate) struct Uniforms {
     pub _pad2: f32,               // 4 bytes
     pub spec_shininess: f32,      // 4 bytes
     pub spec_intensity: f32,      // 4 bytes
-    pub _pad3: [f32; 2],          // 8 bytes
+    pub fresnel_mix: f32,         // 4 bytes
+    pub fresnel_exp: f32,         // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);

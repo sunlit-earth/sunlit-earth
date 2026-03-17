@@ -43,7 +43,7 @@ def run_pipeline(
     effort: int,
     do_sharpen: bool,
     ocean_shapefile: Path | None = None,
-    ocean_color: tuple[int, int, int] = (10, 40, 80),
+    ocean_color: tuple[int, int, int] = (10, 30, 60),
     ocean_supersample: int = 2,
     ocean_coast_offset: int = 0,
     ocean_preserve_ice: bool = True,
@@ -189,7 +189,7 @@ def _validate_ocean_color(value: str) -> str:
         parts = [int(x) for x in value.split(",")]
     except ValueError as err:
         raise typer.BadParameter(
-            "Ocean color must be three comma-separated integers (e.g. '10,40,80')."
+            "Ocean color must be three comma-separated integers (e.g. '10,30,60')."
         ) from err
     if len(parts) != 3:
         raise typer.BadParameter("Ocean color must have exactly 3 components (R,G,B).")
@@ -291,10 +291,10 @@ def convert(
         str,
         typer.Option(
             "--ocean-color",
-            help="Ocean fill color as R,G,B (e.g. '10,40,80').",
+            help="Ocean fill color as R,G,B (e.g. '10,30,60').",
             callback=_validate_ocean_color,
         ),
-    ] = "10,40,80",
+    ] = "10,30,60",
     ocean_supersample: Annotated[
         int,
         typer.Option(

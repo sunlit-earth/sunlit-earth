@@ -326,6 +326,7 @@ fn rendering_callback(
                 }
 
                 // Compute sun direction for this frame
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let sun_dir = if win.get_use_custom_datetime() {
                     let hour = win.get_custom_hour();
                     let doy = win.get_custom_day_of_year() as u16;

@@ -1,9 +1,9 @@
-/// Return the base year for the year ComboBox (current year - 10).
+/// Return the base year for the year `ComboBox` (current year - 10).
 pub fn base_year() -> i32 {
     time::OffsetDateTime::now_utc().year() - 10
 }
 
-/// Return the (start, end) year range for the year ComboBox.
+/// Return the (start, end) year range for the year `ComboBox`.
 ///
 /// The range is current year +/- 10, yielding 21 entries.
 pub fn year_range() -> (i32, i32) {
@@ -118,9 +118,9 @@ pub fn hour_float_to_hms(h: f32) -> (i32, i32, f64) {
         return (23, 59, 59.0);
     }
     let hour = h as i32;
-    let rem = (h - hour as f64) * 60.0;
+    let rem = (h - f64::from(hour)) * 60.0;
     let minute = rem as i32;
-    let second = (rem - minute as f64) * 60.0;
+    let second = (rem - f64::from(minute)) * 60.0;
     (hour, minute.min(59), second.min(59.999_999))
 }
 

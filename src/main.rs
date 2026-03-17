@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use clap::Parser;
 use slint::ComponentHandle;
 
+use sunlit_earth::config::{self, AppConfig};
 use sunlit_earth::renderer;
 use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
 use sunlit_earth::texture_loader;
@@ -40,9 +42,14 @@ fn main() {
     let window = MainWindow::new().expect("Failed to create window");
     window.set_renderer_info(wgpu_context.adapter_info.into());
 
+    // Load persisted config (falls back to defaults if missing or corrupt)
+    let config = config::load_config();
+    apply_config_to_window(&window, &config);
+
     // Set up AA options from supported sample counts
-    let (aa_labels, aa_counts, aa_default) =
+    let (aa_labels, aa_counts, _aa_default) =
         renderer::build_aa_options(&wgpu_context.supported_sample_counts);
+    let aa_counts_for_exit = aa_counts.clone();
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
 
@@ -71,38 +78,58 @@ fn main() {
     window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
 
     // Defer setting indices so they apply after Slint processes the model changes
-    #[allow(clippy::cast_possible_wrap)]
-    let blend_mode_index = 3_i32;
+    let config_aa_index = config::find_sample_count_index(&aa_counts, config.sample_count);
+    let config_texture_index = config.texture_index;
     let window_weak = window.as_weak();
     slint::invoke_from_event_loop(move || {
         if let Some(win) = window_weak.upgrade() {
-            win.set_aa_index(aa_default);
-            win.set_texture_index(blend_mode_index);
+            win.set_aa_index(config_aa_index);
+            win.set_texture_index(config_texture_index);
             win.window().request_redraw();
         }
     })
     .ok();
 
+    // Debounced config save timer — restarts on every UI change, fires 1s after last change
+    let config_timer = Rc::new(slint::Timer::default());
+    {
+        let window_weak = window.as_weak();
+        let aa_counts_for_save = aa_counts.clone();
+        config_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_secs(1), move || {
+            if let Some(win) = window_weak.upgrade() {
+                config::save_config(&read_config_from_window(&win, &aa_counts_for_save));
+            }
+        });
+        // Stop the timer immediately — it will be restarted by callbacks
+        config_timer.stop();
+    }
+
     // Request a redraw whenever sliders, AA, or texture change
     let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             win.window().request_redraw();
         }
+        config_timer_handle.restart();
     });
 
     let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
     window.on_msaa_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             win.window().request_redraw();
         }
+        config_timer_handle.restart();
     });
 
     let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
     window.on_texture_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             win.window().request_redraw();
         }
+        config_timer_handle.restart();
     });
 
     // "Set as Wallpaper" button callback (Windows only)
@@ -132,6 +159,7 @@ fn main() {
 
     // Mouse drag callback: rotate the globe (tilt-corrected)
     let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_drag(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -160,10 +188,12 @@ fn main() {
         win.set_camera_longitude(wrapped_lon);
         win.set_camera_latitude(clamped_lat);
         win.window().request_redraw();
+        config_timer_handle.restart();
     });
 
     // Mouse scroll callback: zoom in/out
     let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_scroll(move |delta| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -173,10 +203,12 @@ fn main() {
         let new_zoom = (current_zoom - delta * scroll_sensitivity).clamp(0.0, 1.0);
         win.set_camera_zoom(new_zoom);
         win.window().request_redraw();
+        config_timer_handle.restart();
     });
 
     // Reset Camera button callback
     let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
     window.on_reset_camera(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -191,6 +223,7 @@ fn main() {
         win.set_camera_yaw(defaults.yaw_deg);
         win.set_camera_pitch(defaults.pitch_deg);
         win.window().request_redraw();
+        config_timer_handle.restart();
     });
 
     renderer::setup_rendering_notifier(&window, aa_counts, texture_paths);
@@ -210,11 +243,58 @@ fn main() {
 
     window.run().expect("Failed to run window");
 
-    // Keep sun_timer alive until the event loop exits (prevent drop optimization)
+    // Save config on exit as a backstop (catches any changes during the debounce window)
+    config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
+
+    // Keep timers alive until the event loop exits (prevent drop optimization)
     drop(sun_timer);
+    drop(config_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     std::process::exit(0);
+}
+
+/// Apply a loaded config to all window properties.
+///
+/// Called once at startup to restore persisted settings. The `texture_index`
+/// and `aa_index` are set via a deferred `invoke_from_event_loop` instead,
+/// so they are not set here.
+fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
+    window.set_camera_longitude(config.longitude);
+    window.set_camera_latitude(config.latitude);
+    window.set_camera_zoom(config.zoom);
+    window.set_camera_offset_x(config.offset_x);
+    window.set_camera_offset_y(config.offset_y);
+    window.set_camera_tilt(config.tilt);
+    window.set_camera_yaw(config.yaw);
+    window.set_camera_pitch(config.pitch);
+    window.set_terminator_width(config.terminator_width);
+    window.set_diffuse_shading(config.diffuse_shading);
+    window.set_diffuse_floor(config.diffuse_floor);
+    window.set_diffuse_ramp(config.diffuse_ramp);
+}
+
+/// Read all 14 persisted settings from the window's current UI state.
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
+    let aa_index = window.get_aa_index() as usize;
+    let sample_count = aa_counts.get(aa_index).copied().unwrap_or(1);
+    AppConfig {
+        longitude: window.get_camera_longitude(),
+        latitude: window.get_camera_latitude(),
+        zoom: window.get_camera_zoom(),
+        tilt: window.get_camera_tilt(),
+        yaw: window.get_camera_yaw(),
+        pitch: window.get_camera_pitch(),
+        offset_x: window.get_camera_offset_x(),
+        offset_y: window.get_camera_offset_y(),
+        texture_index: window.get_texture_index(),
+        sample_count,
+        terminator_width: window.get_terminator_width(),
+        diffuse_shading: window.get_diffuse_shading(),
+        diffuse_floor: window.get_diffuse_floor(),
+        diffuse_ramp: window.get_diffuse_ramp(),
+    }
 }
 
 /// Render the current scene at the primary monitor's resolution, save as PNG,

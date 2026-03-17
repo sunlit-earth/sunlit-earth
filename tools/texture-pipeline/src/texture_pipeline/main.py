@@ -1,5 +1,6 @@
 """CLI interface for the texture pipeline."""
 
+import signal
 from pathlib import Path
 from typing import Annotated
 
@@ -83,6 +84,11 @@ def run_pipeline(
         TaskProgressColumn(),
         TextColumn("{task.fields[current_file]}"),
     ) as progress:
+        # Rich installs a SIGINT handler that swallows Ctrl+C. Reset to the OS
+        # default so the process terminates immediately — the main thread is often
+        # blocked inside C extensions (PIL, JXL) where KeyboardInterrupt can't
+        # be delivered until the call returns.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
         task = progress.add_task(
             "Processing textures...", total=total_tasks, current_file=""
         )

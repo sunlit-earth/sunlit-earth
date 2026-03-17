@@ -70,18 +70,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    // Specular sun glint on water (Blinn-Phong + Schlick Fresnel).
-    // Water mask: alpha encodes land=1, ocean=0, so water = 1 - alpha.
+    // Specular sun glint on water (Blinn-Phong).
+    // Water mask encoded in upper alpha range: land=255, ocean=128.
+    // Remap to [0, 1]: water = saturate((1 - alpha) * 2).
     if uniforms.spec_intensity > 0.0 {
-        let water = 1.0 - day.a;
+        let water = saturate((1.0 - day.a) * 2.0);
         if water > 0.0 {
             let v = normalize(uniforms.eye_pos - in.world_normal);
             let h = normalize(uniforms.sun_dir + v);
             let n_dot_h = max(dot(n, h), 0.0);
             let spec = pow(n_dot_h, uniforms.spec_shininess);
-            let n_dot_v = max(dot(n, v), 0.0);
-            let fresnel = 0.02 + 0.98 * pow(1.0 - n_dot_v, 5.0);
-            let glint = spec * fresnel * max(n_dot_l, 0.0) * result.blend
+            let glint = spec * max(n_dot_l, 0.0) * result.blend
                         * uniforms.spec_intensity * water;
             color += vec3<f32>(glint);
         }

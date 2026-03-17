@@ -7,7 +7,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows (`SystemParametersInfoW` via `windows-sys`) implemented; Linux and macOS later.
 - [ ] Periodic re-rendering: timer-driven scheduler that re-renders every N minutes so the terminator tracks the sun. Update interval should be user-configurable.
 - [ ] System tray and background operation: minimize to tray with a status menu ("Render Now", "Open Settings", "Quit"). Support headless/daemon mode without the GUI window.
-- [ ] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
+- [x] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
 - [ ] Wallpaper setting on Linux and macOS: extend the wallpaper setter to support GNOME/KDE (`gsettings`/DBus), X11/Wayland, and macOS (`osascript`/`NSWorkspace`).
 - [ ] Multi-monitor support: detect monitor layout and resolution, render appropriately sized wallpapers for each display.
 
@@ -15,7 +15,8 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 - [x] Blue Marble water brightness: ocean areas are too dark and sometimes contain satellite imagery. Pre-process textures to get a uniform ocean color, preserving different extents of sea ice per season
 - [ ] Color correction: Rendered textures still look darker than their sources. Investigate if there is a color space issue to resolve and provide in app texture processing to adjust e.g. the gamma value
-- [ ] Water on the day side looks matte and more like a solid surface that happens to be blue. Investigate what kind of effect can be applied to make it look more like actual water.
+- [x] Water on the day side looks matte and more like a solid surface that happens to be blue. Investigate what kind of effect can be applied to make it look more like actual water. First iteration completed.
+- [ ] Improve dayside water visuals. Water still looks pretty solid, need to investigate what kind of effects can improve this.
 - [ ] Seasonal texture switching: auto-select from the 12 monthly NASA Blue Marble variants based on the current month.
 - [ ] Atmosphere glow: subtle blue/orange glow at the Earth's limb.
 - [ ] Cloud overlay: semi-transparent cloud layer from near-real-time satellite data. Requires researching data sources (GOES/Himawari composites, etc.) and building a download + caching pipeline.
@@ -33,6 +34,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Zoom curve: zoom should be slower when close to the Earth and faster when far away. Extend the zoom range limits.
 - [x] Improved Controls: Rotate Earth with mouse drag, Zoom with scroll wheel in addition to existing UI controls.
 - [ ] Preset camera views: quick-select buttons for common viewpoints (Europe, Americas, Asia, etc.).
+- [ ] Change date and time of day. Usually we want to display the current view of earth, but it would be nice to render the earth at any date or time of day. Proposed UI controls: Checkbox to enable custom date/time settings, slider for 0 to 24 hours UTC, slider for jan 1st to dec 31st, dropdown to select a year with default to current year. selecting the year will be relevant as soon as we add the moon, planets, stars.
 
 ## CI and distribution
 

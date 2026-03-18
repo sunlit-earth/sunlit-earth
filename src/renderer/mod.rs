@@ -347,6 +347,10 @@ fn rendering_callback(
                 let spec_intensity_f = win.get_spec_intensity();
                 let fresnel_mix_f = win.get_fresnel_mix();
                 let fresnel_exp_f = win.get_fresnel_exp();
+                let day_gamma_f = win.get_day_gamma();
+                let day_saturation_f = win.get_day_saturation();
+                let night_gamma_f = win.get_night_gamma();
+                let night_saturation_f = win.get_night_saturation();
 
                 // Build current frame state for dirty-checking
                 let camera = CameraParams {
@@ -375,6 +379,10 @@ fn rendering_callback(
                     spec_intensity_f,
                     fresnel_mix_f,
                     fresnel_exp_f,
+                    day_gamma_f,
+                    day_saturation_f,
+                    night_gamma_f,
+                    night_saturation_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -418,6 +426,10 @@ fn rendering_callback(
                     spec_intensity: spec_intensity_f,
                     fresnel_mix: fresnel_mix_f,
                     fresnel_exp: fresnel_exp_f,
+                    day_gamma: day_gamma_f,
+                    day_saturation: day_saturation_f,
+                    night_gamma: night_gamma_f,
+                    night_saturation: night_saturation_f,
                 };
                 res.last_shading = Some(shading);
 

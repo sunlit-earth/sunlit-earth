@@ -48,6 +48,10 @@ export component MainWindow inherits Window {
     in-out property <float> spec-intensity: 0.17;
     in-out property <float> fresnel-mix: 0.75;
     in-out property <float> fresnel-exp: 4.0;
+    in-out property <float> day-gamma: 1.0;
+    in-out property <float> day-saturation: 1.0;
+    in-out property <float> night-gamma: 1.0;
+    in-out property <float> night-saturation: 1.0;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -485,6 +489,103 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: round(fresnel-exp-slider.value * 10) / 10;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Color Correction";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        Text {
+                            text: "Day Texture";
+                            font-weight: 700;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "  Gamma";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            day-gamma-slider := Slider {
+                                minimum: 0.2;
+                                maximum: 3.0;
+                                value <=> root.day-gamma;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(day-gamma-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "  Saturation";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            day-saturation-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.day-saturation;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(day-saturation-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        Text {
+                            text: "Night Texture";
+                            font-weight: 700;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "  Gamma";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            night-gamma-slider := Slider {
+                                minimum: 0.2;
+                                maximum: 3.0;
+                                value <=> root.night-gamma;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(night-gamma-slider.value * 100) / 100;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "  Saturation";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            night-saturation-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.night-saturation;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(night-saturation-slider.value * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

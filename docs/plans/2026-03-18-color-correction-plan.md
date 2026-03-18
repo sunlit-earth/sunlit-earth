@@ -416,9 +416,9 @@ Gamma first, then saturation. Gamma corrects the tonal curve (brightness of midt
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Phase 1 complete (uniform buffer + config + UI plumbing)
-- [ ] Phase 2 complete (shader helper functions + fragment shader integration)
-- [ ] Phase 3 complete (GPU integration tests)
-- [ ] Phase 4 complete (visual tuning + CLAUDE.md update)
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Phase 1 complete (uniform buffer + config + UI plumbing)
+- [x] Phase 2 complete (shader helper functions + fragment shader integration)
+- [x] Phase 3 complete (GPU integration tests)
+- [x] Phase 4 complete (visual tuning + CLAUDE.md update)
+- [x] Implementation complete

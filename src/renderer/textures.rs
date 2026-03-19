@@ -52,16 +52,17 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                 res.texture_slots[msg.slot_index].bind_group = Some(bind_group);
                 res.texture_slots[msg.slot_index].loading = false;
 
-                // Store texture views for composite bind group creation
+                // Store texture views for composite/cloud bind group creation
                 if msg.slot_index == super::DAY_SLOT {
                     res.day_texture_view = Some(tex_view);
+                    maybe_create_composite_bind_group(res);
                 } else if msg.slot_index == super::NIGHT_SLOT {
                     res.night_texture_view = Some(tex_view);
+                    maybe_create_composite_bind_group(res);
+                } else if msg.slot_index == super::CLOUDS_SLOT {
+                    res.cloud_texture_view = Some(tex_view);
+                    maybe_create_cloud_bind_group(res);
                 }
-
-                // If both day and night textures are now available, create
-                // the composite bind group for blend mode.
-                maybe_create_composite_bind_group(res);
             }
             Err(e) => {
                 eprintln!("{e}");
@@ -87,6 +88,21 @@ pub(super) fn maybe_create_composite_bind_group(res: &mut super::GpuResources) {
             &res.sampler,
             night_view,
             "composite_bind_group",
+        ));
+    }
+}
+
+/// Create the cloud bind group if the cloud texture view is available.
+pub(super) fn maybe_create_cloud_bind_group(res: &mut super::GpuResources) {
+    if let Some(cloud_view) = &res.cloud_texture_view {
+        res.cloud_bind_group = Some(create_bind_group(
+            &res.device,
+            &res.bind_group_layout,
+            &res.uniform_buffer,
+            cloud_view,
+            &res.sampler,
+            &res.dummy_texture_view, // binding 3 unused by fs_cloud
+            "cloud_bind_group",
         ));
     }
 }

@@ -36,6 +36,12 @@ const DAY_SLOT: usize = 1;
 const NIGHT_SLOT: usize = 2;
 /// Texture combobox index for the day/night blend mode.
 const BLEND_MODE_INDEX: usize = 3;
+/// Texture slot index for the cloud overlay texture.
+/// This shares its numeric value with `BLEND_MODE_INDEX` (a combobox index),
+/// but the two are used in different contexts: `CLOUDS_SLOT` indexes into
+/// `texture_slots` for loading/bind-group creation, while `BLEND_MODE_INDEX`
+/// is compared against the UI combobox value in `resolve_textures`.
+const CLOUDS_SLOT: usize = 3;
 
 /// Build the `ComboBox` labels and find the default index (preferring 8x MSAA).
 pub fn build_aa_options(supported: &[u32]) -> (Vec<slint::SharedString>, Vec<u32>, i32) {
@@ -147,6 +153,13 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             msaa_depth_view.as_ref(),
         );
 
+        let (cloud_pipe, cloud_bg) =
+            if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
+                (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
+            } else {
+                (None, None)
+            };
+
         render_pass::encode_and_submit(
             &res.device,
             &res.queue,
@@ -156,6 +169,8 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             &res.vertex_buffer,
             &res.index_buffer,
             res.index_count,
+            cloud_pipe,
+            cloud_bg,
         );
 
         Ok(render_pass::read_texture_rgba8(
@@ -220,6 +235,12 @@ struct GpuResources {
     /// Stored texture view for the night texture, needed to build the composite
     /// bind group when both become available.
     night_texture_view: Option<wgpu::TextureView>,
+    /// Render pipeline for the cloud overlay sphere.
+    cloud_pipeline: wgpu::RenderPipeline,
+    /// Bind group for the cloud texture (populated after async load completes).
+    cloud_bind_group: Option<wgpu::BindGroup>,
+    /// Stored texture view for the cloud texture, used to rebuild the bind group.
+    cloud_texture_view: Option<wgpu::TextureView>,
 }
 
 /// Register the rendering notifier on the given Slint window.
@@ -227,6 +248,7 @@ pub fn setup_rendering_notifier(
     window: &MainWindow,
     aa_counts: Vec<u32>,
     texture_paths: Vec<Option<PathBuf>>,
+    cloud_path: Option<PathBuf>,
 ) {
     let window_weak = window.as_weak();
 
@@ -239,6 +261,7 @@ pub fn setup_rendering_notifier(
                 &window_weak,
                 &aa_counts,
                 &texture_paths,
+                cloud_path.as_ref(),
             );
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
@@ -271,6 +294,7 @@ fn rendering_callback(
     window_weak: &slint::Weak<MainWindow>,
     aa_counts: &[u32],
     texture_paths: &[Option<PathBuf>],
+    cloud_path: Option<&PathBuf>,
 ) {
     match state {
         RenderingState::RenderingSetup => {
@@ -293,6 +317,7 @@ fn rendering_callback(
                 width,
                 height,
                 texture_paths,
+                cloud_path.cloned(),
                 window_weak.clone(),
             );
             GPU_RESOURCES.with(|r| {
@@ -347,6 +372,7 @@ fn rendering_callback(
                 let spec_intensity_f = win.get_spec_intensity();
                 let fresnel_mix_f = win.get_fresnel_mix();
                 let fresnel_exp_f = win.get_fresnel_exp();
+                let cloud_opacity_f = win.get_cloud_opacity();
 
                 // Build current frame state for dirty-checking
                 let camera = CameraParams {
@@ -375,6 +401,7 @@ fn rendering_callback(
                     spec_intensity_f,
                     fresnel_mix_f,
                     fresnel_exp_f,
+                    cloud_opacity_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -418,6 +445,8 @@ fn rendering_callback(
                     spec_intensity: spec_intensity_f,
                     fresnel_mix: fresnel_mix_f,
                     fresnel_exp: fresnel_exp_f,
+                    cloud_sphere_radius: 1.0015,
+                    cloud_opacity: cloud_opacity_f,
                 };
                 res.last_shading = Some(shading);
 

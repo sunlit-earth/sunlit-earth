@@ -30,9 +30,13 @@ struct Uniforms {
     spec_intensity: f32,
     fresnel_mix: f32,
     fresnel_exp: f32,
+    cloud_sphere_radius: f32,
+    cloud_opacity: f32,
+    _pad3: f32,
+    _pad4: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 144);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -482,6 +486,10 @@ fn sphere_renders_visible_pixels() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
@@ -516,6 +524,10 @@ fn day_side_brighter_than_night_side() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
@@ -554,6 +566,10 @@ fn single_texture_mode_ignores_night() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &red, &green, size, size);
@@ -593,6 +609,10 @@ struct Uniforms {
     spec_intensity: f32,
     fresnel_mix: f32,
     fresnel_exp: f32,
+    cloud_sphere_radius: f32,
+    cloud_opacity: f32,
+    _pad3: f32,
+    _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -627,6 +647,9 @@ fn main() {
     // fresnel params
     output[16] = uniforms.fresnel_mix;
     output[17] = uniforms.fresnel_exp;
+    // cloud params
+    output[18] = uniforms.cloud_sphere_radius;
+    output[19] = uniforms.cloud_opacity;
 }
 ";
 
@@ -669,6 +692,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         spec_intensity: 0.75,
         fresnel_mix: 0.5,
         fresnel_exp: 3.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -677,8 +704,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 18 floats
-    let output_size = (18 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 20 floats
+    let output_size = (20 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -735,6 +762,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[15] - 0.75).abs() < eps, "spec_intensity: got {}, expected 0.75", values[15]);
     assert!((values[16] - 0.5).abs() < eps, "fresnel_mix: got {}, expected 0.5", values[16]);
     assert!((values[17] - 3.0).abs() < eps, "fresnel_exp: got {}, expected 3.0", values[17]);
+    assert!((values[18] - 1.0015).abs() < eps, "cloud_sphere_radius: got {}, expected 1.0015", values[18]);
+    assert!((values[19] - 0.0).abs() < eps, "cloud_opacity: got {}, expected 0.0", values[19]);
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +823,10 @@ fn fresnel_specular_zero_intensity_unchanged() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &water, &night, size, size);
@@ -832,6 +865,10 @@ fn fresnel_specular_brighter_at_grazing() {
         spec_intensity: 0.5,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
     let pixels_head_on = render_frame(&ctx, &uniforms_head_on, &water, &night, size, size);
     let lum_head_on = avg_luminance_non_clear(&pixels_head_on);
@@ -853,6 +890,10 @@ fn fresnel_specular_brighter_at_grazing() {
         spec_intensity: 0.5,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
     let pixels_grazing = render_frame(&ctx, &uniforms_grazing, &water, &night, size, size);
     let lum_grazing = avg_luminance_non_clear(&pixels_grazing);
@@ -894,6 +935,10 @@ fn fresnel_diffuse_shift_zero_is_noop() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
 
@@ -930,6 +975,10 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
     let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, &water, &night, size, size);
     let lum_no_shift = avg_luminance_non_clear(&pixels_no_shift);
@@ -975,6 +1024,10 @@ fn fresnel_diffuse_shift_absent_on_land() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &land, &night, size, size);
 
@@ -1016,6 +1069,10 @@ fn fresnel_diffuse_shift_absent_at_night() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
 
@@ -1038,5 +1095,202 @@ fn fresnel_diffuse_shift_absent_at_night() {
         diff < 2.0,
         "Night-side water should be nearly identical with and without fresnel_mix: \
          base={lum_base:.1}, shift={lum_with_shift:.1}, diff={diff:.1}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cloud pipeline tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cloud_pipeline_renders_with_alpha() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 64;
+
+    // Create a cloud pipeline using vs_cloud / fs_cloud entry points
+    let wgsl_source = format!(
+        "{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+    );
+    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("test_cloud_shader"),
+        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+    });
+
+    let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("test_cloud_pipeline_layout"),
+        bind_group_layouts: &[&ctx.bind_group_layout],
+        immediate_size: 0,
+    });
+
+    let cloud_pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("test_cloud_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_cloud"),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x3,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 12,
+                        shader_location: 1,
+                        format: wgpu::VertexFormat::Float32x2,
+                    },
+                ],
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_cloud"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    });
+
+    // 1x1 white cloud texture (fully opaque cloud)
+    let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
+    let dummy = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 1.0,
+        _pad3: 0.0,
+        _pad4: 0.0,
+    };
+
+    ctx.queue.write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+
+    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test_cloud_bind_group"),
+        layout: &ctx.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ctx.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&cloud_tex),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&ctx.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&dummy),
+            },
+        ],
+    });
+
+    let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_cloud_render_target"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+
+    let depth_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_cloud_depth"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    let color_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("test_cloud_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+
+        pass.set_pipeline(&cloud_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
+        pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..ctx.index_count, 0, 0..1);
+    }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+
+    let pixels = common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, size, size);
+    let visible = count_non_clear_pixels(&pixels);
+
+    assert!(
+        visible > 50,
+        "Cloud pipeline should render visible pixels, got {visible}"
     );
 }

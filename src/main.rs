@@ -68,6 +68,10 @@ fn main() {
         .map(|d| d.join("BlackMarble_2016.jxl"))
         .filter(|p| p.exists());
     let texture_paths = vec![day_path, night_path];
+    let cloud_path = textures_dir
+        .as_ref()
+        .map(|d| d.join("clouds.png"))
+        .filter(|p| p.exists());
 
     // Set up texture options — always show all four
     let labels: Vec<slint::SharedString> = vec![
@@ -240,6 +244,7 @@ fn main() {
         win.set_spec_intensity(lighting.spec_intensity);
         win.set_fresnel_mix(lighting.fresnel_mix);
         win.set_fresnel_exp(lighting.fresnel_exp);
+        win.set_cloud_opacity(lighting.cloud_opacity);
         // Reset datetime
         win.set_use_custom_datetime(false);
         win.set_custom_hour(12.0);
@@ -250,7 +255,7 @@ fn main() {
         config_timer_handle.restart();
     });
 
-    renderer::setup_rendering_notifier(&window, aa_counts, texture_paths);
+    renderer::setup_rendering_notifier(&window, aa_counts, texture_paths, cloud_path);
 
     // Periodic timer to update the sun position (every 2 minutes)
     let window_weak = window.as_weak();
@@ -300,6 +305,7 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_spec_intensity(config.spec_intensity);
     window.set_fresnel_mix(config.fresnel_mix);
     window.set_fresnel_exp(config.fresnel_exp);
+    window.set_cloud_opacity(config.cloud_opacity);
 
     // Custom datetime
     window.set_use_custom_datetime(config.use_custom_datetime);
@@ -346,6 +352,7 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         spec_intensity: window.get_spec_intensity(),
         fresnel_mix: window.get_fresnel_mix(),
         fresnel_exp: window.get_fresnel_exp(),
+        cloud_opacity: window.get_cloud_opacity(),
         use_custom_datetime: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
         custom_day_of_year: window.get_custom_day_of_year(),

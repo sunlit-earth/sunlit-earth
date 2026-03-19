@@ -4,7 +4,7 @@ use crate::MainWindow;
 
 use super::GpuResources;
 use super::textures::{maybe_spawn_texture_load, resolve_render_index};
-use super::{BLEND_MODE_INDEX, DAY_SLOT, NIGHT_SLOT};
+use super::{BLEND_MODE_INDEX, CLOUDS_SLOT, DAY_SLOT, NIGHT_SLOT};
 
 /// Result of texture resolution: identifies which bind group to use.
 pub(super) enum ResolvedTexture {
@@ -32,6 +32,11 @@ pub(super) fn resolve_textures(
         maybe_spawn_texture_load(res, NIGHT_SLOT);
     } else {
         maybe_spawn_texture_load(res, slot_index);
+    }
+
+    // Kick off cloud texture loading unconditionally
+    if CLOUDS_SLOT < res.texture_slots.len() {
+        maybe_spawn_texture_load(res, CLOUDS_SLOT);
     }
 
     // Resolve which bind group to use

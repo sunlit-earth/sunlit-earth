@@ -54,6 +54,9 @@ pub struct AppConfig {
     pub fresnel_mix: f32,
     pub fresnel_exp: f32,
 
+    // Clouds
+    pub cloud_opacity: f32,
+
     // Custom date/time override
     pub use_custom_datetime: bool,
     pub custom_hour: f32,
@@ -95,6 +98,7 @@ impl Default for AppConfig {
             spec_intensity: 0.17,
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
+            cloud_opacity: 0.8,
             use_custom_datetime: false,
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
@@ -334,6 +338,7 @@ mod tests {
             spec_intensity: 0.6,
             fresnel_mix: 0.5,
             fresnel_exp: 3.0,
+            cloud_opacity: 0.6,
             use_custom_datetime: true,
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
@@ -460,6 +465,7 @@ mod tests {
             spec_intensity: 0.8,
             fresnel_mix: 0.7,
             fresnel_exp: 4.0,
+            cloud_opacity: 0.6,
             use_custom_datetime: true,
             custom_hour: 8.25,
             custom_day_of_year: 200.0,

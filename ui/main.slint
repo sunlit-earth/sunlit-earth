@@ -48,6 +48,7 @@ export component MainWindow inherits Window {
     in-out property <float> spec-intensity: 0.17;
     in-out property <float> fresnel-mix: 0.75;
     in-out property <float> fresnel-exp: 4.0;
+    in-out property <float> cloud-opacity: 0.8;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -485,6 +486,33 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: round(fresnel-exp-slider.value * 10) / 10;
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Clouds";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Opacity";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            cloud-opacity-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.cloud-opacity;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(root.cloud-opacity * 100) + "%";
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

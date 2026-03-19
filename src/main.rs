@@ -7,7 +7,7 @@ use clap::Parser;
 use slint::ComponentHandle;
 
 use sunlit_earth::config::{self, AppConfig};
-use sunlit_earth::renderer;
+use sunlit_earth::renderer::{self, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
 use sunlit_earth::scene::datetime;
 use sunlit_earth::texture_loader;
@@ -240,9 +240,9 @@ fn main() {
         win.set_spec_intensity(lighting.spec_intensity);
         win.set_fresnel_mix(lighting.fresnel_mix);
         win.set_fresnel_exp(lighting.fresnel_exp);
-        win.set_day_gamma(lighting.day_gamma);
+        win.set_day_gamma(gamma_value_to_slider(lighting.day_gamma));
         win.set_day_saturation(lighting.day_saturation);
-        win.set_night_gamma(lighting.night_gamma);
+        win.set_night_gamma(gamma_value_to_slider(lighting.night_gamma));
         win.set_night_saturation(lighting.night_saturation);
         // Reset datetime
         win.set_use_custom_datetime(false);
@@ -304,9 +304,9 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_spec_intensity(config.spec_intensity);
     window.set_fresnel_mix(config.fresnel_mix);
     window.set_fresnel_exp(config.fresnel_exp);
-    window.set_day_gamma(config.day_gamma);
+    window.set_day_gamma(gamma_value_to_slider(config.day_gamma));
     window.set_day_saturation(config.day_saturation);
-    window.set_night_gamma(config.night_gamma);
+    window.set_night_gamma(gamma_value_to_slider(config.night_gamma));
     window.set_night_saturation(config.night_saturation);
 
     // Custom datetime
@@ -354,9 +354,9 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         spec_intensity: window.get_spec_intensity(),
         fresnel_mix: window.get_fresnel_mix(),
         fresnel_exp: window.get_fresnel_exp(),
-        day_gamma: window.get_day_gamma(),
+        day_gamma: gamma_slider_to_value(window.get_day_gamma()),
         day_saturation: window.get_day_saturation(),
-        night_gamma: window.get_night_gamma(),
+        night_gamma: gamma_slider_to_value(window.get_night_gamma()),
         night_saturation: window.get_night_saturation(),
         use_custom_datetime: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),

@@ -48,9 +48,9 @@ export component MainWindow inherits Window {
     in-out property <float> spec-intensity: 0.17;
     in-out property <float> fresnel-mix: 0.75;
     in-out property <float> fresnel-exp: 4.0;
-    in-out property <float> day-gamma: 1.0;
+    in-out property <float> day-gamma: 0.5;
     in-out property <float> day-saturation: 1.0;
-    in-out property <float> night-gamma: 1.0;
+    in-out property <float> night-gamma: 0.5;
     in-out property <float> night-saturation: 1.0;
 
     in property <float> zoom-display-distance: 8.0;
@@ -514,13 +514,13 @@ export component MainWindow inherits Window {
                                 min-width: 70px;
                             }
                             day-gamma-slider := Slider {
-                                minimum: 0.2;
-                                maximum: 3.0;
+                                minimum: 0.0;
+                                maximum: 1.0;
                                 value <=> root.day-gamma;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
-                                text: round(day-gamma-slider.value * 100) / 100;
+                                text: round((day-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * day-gamma-slider.value : 1.0 + 4.0 * (day-gamma-slider.value - 0.5)) * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }
@@ -559,13 +559,13 @@ export component MainWindow inherits Window {
                                 min-width: 70px;
                             }
                             night-gamma-slider := Slider {
-                                minimum: 0.2;
-                                maximum: 3.0;
+                                minimum: 0.0;
+                                maximum: 1.0;
                                 value <=> root.night-gamma;
                                 changed => { root.sliders-changed(); }
                             }
                             Text {
-                                text: round(night-gamma-slider.value * 100) / 100;
+                                text: round((night-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * night-gamma-slider.value : 1.0 + 4.0 * (night-gamma-slider.value - 0.5)) * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

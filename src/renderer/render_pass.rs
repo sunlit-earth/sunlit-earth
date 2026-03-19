@@ -21,6 +21,10 @@ pub(super) struct ShadingParams {
     pub spec_intensity: f32,
     pub fresnel_mix: f32,
     pub fresnel_exp: f32,
+    pub day_gamma: f32,
+    pub day_saturation: f32,
+    pub night_gamma: f32,
+    pub night_saturation: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -95,6 +99,10 @@ pub(super) fn write_uniforms(
         spec_intensity: shading.spec_intensity,
         fresnel_mix: shading.fresnel_mix,
         fresnel_exp: shading.fresnel_exp,
+        day_gamma: shading.day_gamma,
+        day_saturation: shading.day_saturation,
+        night_gamma: shading.night_gamma,
+        night_saturation: shading.night_saturation,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

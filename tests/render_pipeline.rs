@@ -30,9 +30,13 @@ struct Uniforms {
     spec_intensity: f32,
     fresnel_mix: f32,
     fresnel_exp: f32,
+    day_gamma: f32,
+    day_saturation: f32,
+    night_gamma: f32,
+    night_saturation: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 144);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -482,6 +486,10 @@ fn sphere_renders_visible_pixels() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
@@ -516,6 +524,10 @@ fn day_side_brighter_than_night_side() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
@@ -554,6 +566,10 @@ fn single_texture_mode_ignores_night() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &red, &green, size, size);
@@ -593,6 +609,10 @@ struct Uniforms {
     spec_intensity: f32,
     fresnel_mix: f32,
     fresnel_exp: f32,
+    day_gamma: f32,
+    day_saturation: f32,
+    night_gamma: f32,
+    night_saturation: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -627,6 +647,11 @@ fn main() {
     // fresnel params
     output[16] = uniforms.fresnel_mix;
     output[17] = uniforms.fresnel_exp;
+    // color correction params
+    output[18] = uniforms.day_gamma;
+    output[19] = uniforms.day_saturation;
+    output[20] = uniforms.night_gamma;
+    output[21] = uniforms.night_saturation;
 }
 ";
 
@@ -669,6 +694,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         spec_intensity: 0.75,
         fresnel_mix: 0.5,
         fresnel_exp: 3.0,
+        day_gamma: 1.5,
+        day_saturation: 0.8,
+        night_gamma: 2.0,
+        night_saturation: 0.6,
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -677,8 +706,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 18 floats
-    let output_size = (18 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 22 floats
+    let output_size = (22 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -735,6 +764,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[15] - 0.75).abs() < eps, "spec_intensity: got {}, expected 0.75", values[15]);
     assert!((values[16] - 0.5).abs() < eps, "fresnel_mix: got {}, expected 0.5", values[16]);
     assert!((values[17] - 3.0).abs() < eps, "fresnel_exp: got {}, expected 3.0", values[17]);
+    assert!((values[18] - 1.5).abs() < eps, "day_gamma: got {}, expected 1.5", values[18]);
+    assert!((values[19] - 0.8).abs() < eps, "day_saturation: got {}, expected 0.8", values[19]);
+    assert!((values[20] - 2.0).abs() < eps, "night_gamma: got {}, expected 2.0", values[20]);
+    assert!((values[21] - 0.6).abs() < eps, "night_saturation: got {}, expected 0.6", values[21]);
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +827,10 @@ fn fresnel_specular_zero_intensity_unchanged() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
 
     let pixels = render_frame(&ctx, &uniforms, &water, &night, size, size);
@@ -832,6 +869,10 @@ fn fresnel_specular_brighter_at_grazing() {
         spec_intensity: 0.5,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
     let pixels_head_on = render_frame(&ctx, &uniforms_head_on, &water, &night, size, size);
     let lum_head_on = avg_luminance_non_clear(&pixels_head_on);
@@ -853,6 +894,10 @@ fn fresnel_specular_brighter_at_grazing() {
         spec_intensity: 0.5,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
     let pixels_grazing = render_frame(&ctx, &uniforms_grazing, &water, &night, size, size);
     let lum_grazing = avg_luminance_non_clear(&pixels_grazing);
@@ -894,6 +939,10 @@ fn fresnel_diffuse_shift_zero_is_noop() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
 
@@ -930,6 +979,10 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
     let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, &water, &night, size, size);
     let lum_no_shift = avg_luminance_non_clear(&pixels_no_shift);
@@ -975,6 +1028,10 @@ fn fresnel_diffuse_shift_absent_on_land() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &land, &night, size, size);
 
@@ -1016,6 +1073,10 @@ fn fresnel_diffuse_shift_absent_at_night() {
         spec_intensity: 0.0,
         fresnel_mix: 0.0,
         fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
 
@@ -1038,5 +1099,393 @@ fn fresnel_diffuse_shift_absent_at_night() {
         diff < 2.0,
         "Night-side water should be nearly identical with and without fresnel_mix: \
          base={lum_base:.1}, shift={lum_with_shift:.1}, diff={diff:.1}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Color correction: gamma tests (Step 3.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gamma_above_one_brightens() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0, // single-texture mode
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
+    let lum_base = avg_luminance_non_clear(&pixels_base);
+
+    let uniforms_bright = Uniforms {
+        day_gamma: 2.0,
+        ..uniforms_base
+    };
+    let pixels_bright = render_frame(&ctx, &uniforms_bright, &mid_gray, &black, size, size);
+    let lum_bright = avg_luminance_non_clear(&pixels_bright);
+
+    assert!(
+        lum_bright > lum_base,
+        "Gamma > 1.0 should brighten midtones: gamma_2.0={lum_bright:.1}, gamma_1.0={lum_base:.1}"
+    );
+}
+
+#[test]
+fn gamma_below_one_darkens() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0,
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
+    let lum_base = avg_luminance_non_clear(&pixels_base);
+
+    let uniforms_dark = Uniforms {
+        day_gamma: 0.5,
+        ..uniforms_base
+    };
+    let pixels_dark = render_frame(&ctx, &uniforms_dark, &mid_gray, &black, size, size);
+    let lum_dark = avg_luminance_non_clear(&pixels_dark);
+
+    assert!(
+        lum_dark < lum_base,
+        "Gamma < 1.0 should darken midtones: gamma_0.5={lum_dark:.1}, gamma_1.0={lum_base:.1}"
+    );
+}
+
+#[test]
+fn gamma_identity_unchanged() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0,
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+
+    // Render twice with identical identity settings
+    let pixels_a = render_frame(&ctx, &uniforms, &mid_gray, &black, size, size);
+    let pixels_b = render_frame(&ctx, &uniforms, &mid_gray, &black, size, size);
+
+    assert_eq!(
+        pixels_a, pixels_b,
+        "Gamma 1.0 (identity) should produce identical output on consecutive renders"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Color correction: saturation tests (Step 3.3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn saturation_zero_produces_greyscale() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0,
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 0.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+
+    let pixels = render_frame(&ctx, &uniforms, &red, &black, size, size);
+
+    // Check all non-clear pixels: R, G, B should be approximately equal
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_g = (CLEAR_COLOR.g * 255.0) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_b = (CLEAR_COLOR.b * 255.0) as u8;
+
+    let mut non_grey_count = 0;
+    for px in pixels.chunks(4) {
+        let dr = px[0].abs_diff(clear_r);
+        let dg = px[1].abs_diff(clear_g);
+        let db = px[2].abs_diff(clear_b);
+        if dr > 1 || dg > 1 || db > 1 {
+            // Non-clear pixel: check R == G == B within GPU tolerance
+            let max_ch = px[0].max(px[1]).max(px[2]);
+            let min_ch = px[0].min(px[1]).min(px[2]);
+            if max_ch - min_ch > 2 {
+                non_grey_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(
+        non_grey_count, 0,
+        "Saturation 0.0 should produce greyscale: found {non_grey_count} non-grey pixels"
+    );
+}
+
+#[test]
+fn saturation_identity_unchanged() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0,
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+
+    let pixels_a = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
+    let pixels_b = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
+
+    assert_eq!(
+        pixels_a, pixels_b,
+        "Saturation 1.0 (identity) should produce identical output on consecutive renders"
+    );
+}
+
+#[test]
+fn saturation_above_one_increases_chroma() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0,
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &colorful, &black, size, size);
+
+    let uniforms_saturated = Uniforms {
+        day_saturation: 2.0,
+        ..uniforms_base
+    };
+    let pixels_saturated = render_frame(&ctx, &uniforms_saturated, &colorful, &black, size, size);
+
+    // Compute average chroma (max - min channel) across non-clear pixels
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_g = (CLEAR_COLOR.g * 255.0) as u8;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clear_b = (CLEAR_COLOR.b * 255.0) as u8;
+
+    let avg_chroma = |pixels: &[u8]| -> f64 {
+        let mut sum = 0.0_f64;
+        let mut count = 0u64;
+        for px in pixels.chunks(4) {
+            let dr = px[0].abs_diff(clear_r);
+            let dg = px[1].abs_diff(clear_g);
+            let db = px[2].abs_diff(clear_b);
+            if dr > 1 || dg > 1 || db > 1 {
+                let max_ch = px[0].max(px[1]).max(px[2]);
+                let min_ch = px[0].min(px[1]).min(px[2]);
+                sum += f64::from(max_ch - min_ch);
+                count += 1;
+            }
+        }
+        if count == 0 { return 0.0; }
+        #[allow(clippy::cast_precision_loss)]
+        { sum / count as f64 }
+    };
+
+    let chroma_base = avg_chroma(&pixels_base);
+    let chroma_saturated = avg_chroma(&pixels_saturated);
+
+    assert!(
+        chroma_saturated > chroma_base,
+        "Saturation > 1.0 should increase chroma: sat_2.0={chroma_saturated:.1}, sat_1.0={chroma_base:.1}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Color correction: independence tests (Step 3.4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn night_gamma_does_not_affect_single_texture_mode() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms_base = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: -1.0, // single-texture mode
+        flags: 0,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 1.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
+
+    let uniforms_night_extreme = Uniforms {
+        night_gamma: 0.3,
+        ..uniforms_base
+    };
+    let pixels_night_extreme = render_frame(&ctx, &uniforms_night_extreme, &mid_gray, &black, size, size);
+
+    assert_eq!(
+        pixels_base, pixels_night_extreme,
+        "Night gamma should have no effect in single-texture mode"
+    );
+}
+
+#[test]
+fn day_and_night_corrections_independent() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    // Use mid-tones so gamma correction produces a visible difference
+    // (pure white and pure black are fixed points of pow)
+    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
+    let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [64, 64, 64, 255]);
+
+    let uniforms_day_bright = Uniforms {
+        mvp: test_mvp(size, size),
+        sun_dir: [0.0, 0.0, 1.0],
+        terminator_width: 0.15,
+        flags: 1,
+        diffuse_floor: 0.1,
+        diffuse_ramp: 0.6,
+        _pad: 0.0,
+        eye_pos: [0.0, 0.0, 3.5],
+        _pad2: 0.0,
+        spec_shininess: 150.0,
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        fresnel_exp: 5.0,
+        day_gamma: 2.0,
+        day_saturation: 1.0,
+        night_gamma: 1.0,
+        night_saturation: 1.0,
+    };
+    let pixels_day_bright = render_frame(&ctx, &uniforms_day_bright, &mid_gray, &dark_gray, size, size);
+
+    let uniforms_night_bright = Uniforms {
+        day_gamma: 1.0,
+        night_gamma: 2.0,
+        ..uniforms_day_bright
+    };
+    let pixels_night_bright = render_frame(&ctx, &uniforms_night_bright, &mid_gray, &dark_gray, size, size);
+
+    assert_ne!(
+        pixels_day_bright, pixels_night_bright,
+        "Day and night corrections should produce different output when targeting different textures"
     );
 }

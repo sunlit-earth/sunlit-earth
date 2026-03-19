@@ -3,6 +3,15 @@ struct BlendResult {
     blend: f32,
 }
 
+fn apply_gamma(color: vec3<f32>, gamma: f32) -> vec3<f32> {
+    return pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / gamma));
+}
+
+fn adjust_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
+    let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(vec3<f32>(luminance), color, saturation);
+}
+
 /// Blend day and night textures with optional diffuse shading.
 ///
 /// Pure function — no access to uniforms or textures. Takes pre-sampled

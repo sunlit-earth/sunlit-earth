@@ -56,6 +56,8 @@ pub struct AppConfig {
 
     // Clouds
     pub cloud_opacity: f32,
+    pub cloud_floor: f32,
+    pub cloud_gamma: f32,
 
     // Custom date/time override
     pub use_custom_datetime: bool,
@@ -98,7 +100,9 @@ impl Default for AppConfig {
             spec_intensity: 0.17,
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
-            cloud_opacity: 0.8,
+            cloud_opacity: 0.85,
+            cloud_floor: 0.25,
+            cloud_gamma: 0.65,
             use_custom_datetime: false,
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
@@ -301,6 +305,25 @@ mod tests {
     }
 
     #[test]
+    fn default_cloud_floor() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.cloud_floor, 0.25);
+    }
+
+    #[test]
+    fn default_cloud_gamma() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.cloud_gamma, 0.65);
+    }
+
+    #[test]
+    fn deserialize_missing_cloud_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
+        assert_relative_eq!(config.cloud_floor, 0.25);
+        assert_relative_eq!(config.cloud_gamma, 0.65);
+    }
+
+    #[test]
     fn serde_round_trip() {
         let config = AppConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -339,6 +362,8 @@ mod tests {
             fresnel_mix: 0.5,
             fresnel_exp: 3.0,
             cloud_opacity: 0.6,
+            cloud_floor: 0.2,
+            cloud_gamma: 0.3,
             use_custom_datetime: true,
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
@@ -466,6 +491,8 @@ mod tests {
             fresnel_mix: 0.7,
             fresnel_exp: 4.0,
             cloud_opacity: 0.6,
+            cloud_floor: 0.15,
+            cloud_gamma: 0.5,
             use_custom_datetime: true,
             custom_hour: 8.25,
             custom_day_of_year: 200.0,

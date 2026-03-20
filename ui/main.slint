@@ -48,7 +48,9 @@ export component MainWindow inherits Window {
     in-out property <float> spec-intensity: 0.17;
     in-out property <float> fresnel-mix: 0.75;
     in-out property <float> fresnel-exp: 4.0;
-    in-out property <float> cloud-opacity: 0.8;
+    in-out property <float> cloud-opacity: 0.85;
+    in-out property <float> cloud-floor: 0.25;
+    in-out property <float> cloud-gamma: 0.65;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -513,6 +515,46 @@ export component MainWindow inherits Window {
                             }
                             Text {
                                 text: round(root.cloud-opacity * 100) + "%";
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Floor";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            cloud-floor-slider := Slider {
+                                minimum: 0.0;
+                                maximum: 0.5;
+                                value <=> root.cloud-floor;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(root.cloud-floor * 100) + "%";
+                                vertical-alignment: center;
+                                min-width: 35px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Gamma";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            cloud-gamma-slider := Slider {
+                                minimum: 0.1;
+                                maximum: 2.0;
+                                value <=> root.cloud-gamma;
+                                changed => { root.sliders-changed(); }
+                            }
+                            Text {
+                                text: round(cloud-gamma-slider.value * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
                             }

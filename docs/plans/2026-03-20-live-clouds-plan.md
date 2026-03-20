@@ -16,16 +16,16 @@ Replace the static local cloud PNG loader with a live-updating cloud texture fet
 
 ## Success Criteria
 
-- [ ] App downloads the 8K cloud JPEG from `https://clouds.matteason.co.uk/images/8192x4096/clouds.jpg` on startup
-- [ ] Downloaded JPEG is cached to `%LOCALAPPDATA%\SunlitEarth\clouds_cache.jpg` with ETag metadata in `clouds_cache_meta.toml`
-- [ ] On startup with a cached image, the cached image loads immediately and a background freshness check runs
-- [ ] Background thread polls every 60 minutes using HEAD+`If-None-Match`; full GET only when ETag changes
-- [ ] App functions normally with no network access (uses cached image or shows no clouds)
-- [ ] Cloud floor and cloud gamma sliders in the UI adjust cloud contrast in real time (GPU-side)
-- [ ] Slider values persist across app restarts via `config.toml`
-- [ ] The static `cloud.png` file loader is fully removed
-- [ ] `cargo test` passes, `cargo clippy` is clean
-- [ ] Uniform buffer remains 144 bytes (compile-time assertion preserved)
+- [x] App downloads the 8K cloud JPEG from `https://clouds.matteason.co.uk/images/8192x4096/clouds.jpg` on startup
+- [x] Downloaded JPEG is cached to `%LOCALAPPDATA%\SunlitEarth\clouds_cache.jpg` with ETag metadata in `clouds_cache_meta.toml`
+- [x] On startup with a cached image, the cached image loads immediately and a background freshness check runs
+- [x] Background thread polls every 60 minutes using HEAD+`If-None-Match`; full GET only when ETag changes
+- [x] App functions normally with no network access (uses cached image or shows no clouds)
+- [x] Cloud floor and cloud gamma sliders in the UI adjust cloud contrast in real time (GPU-side)
+- [x] Slider values persist across app restarts via `config.toml`
+- [x] The static `cloud.png` file loader is fully removed
+- [x] `cargo test` passes, `cargo clippy` is clean
+- [x] Uniform buffer remains 144 bytes (compile-time assertion preserved)
 
 ## Implementation Steps
 
@@ -473,6 +473,6 @@ Individual phases can be partially rolled back by reverting commits, since each 
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Implementation started
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Implementation started
+- [x] Implementation complete

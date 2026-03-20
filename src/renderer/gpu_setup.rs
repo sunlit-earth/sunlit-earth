@@ -22,7 +22,8 @@ pub(super) fn create_gpu_resources(
     width: u32,
     height: u32,
     texture_paths: &[Option<PathBuf>],
-    cloud_path: Option<PathBuf>,
+    texture_tx: mpsc::Sender<super::textures::DecodedTextureMessage>,
+    texture_rx: mpsc::Receiver<super::textures::DecodedTextureMessage>,
     window_weak: slint::Weak<MainWindow>,
 ) -> GpuResources {
     // Generate sphere mesh
@@ -174,10 +175,10 @@ pub(super) fn create_gpu_resources(
             loading: false,
         });
     }
-    // Slot 3 = cloud overlay (separate from the combobox-based Earth textures)
+    // Slot 3 = cloud overlay (populated by the cloud fetcher thread, not file-based)
     texture_slots.push(TextureSlot {
         bind_group: None,
-        source_path: cloud_path,
+        source_path: None,
         loading: false,
     });
 
@@ -208,8 +209,6 @@ pub(super) fn create_gpu_resources(
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
-
-    let (texture_tx, texture_rx) = mpsc::channel();
 
     GpuResources {
         pipeline,

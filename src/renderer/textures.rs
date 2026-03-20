@@ -15,7 +15,7 @@ pub(super) struct TextureSlot {
 }
 
 /// Message sent from a background decode thread when texture loading completes.
-pub(super) struct DecodedTextureMessage {
+pub struct DecodedTextureMessage {
     pub slot_index: usize,
     pub result: Result<texture_loader::DecodedImage, String>,
 }

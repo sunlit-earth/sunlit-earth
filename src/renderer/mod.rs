@@ -6,6 +6,7 @@ mod textures;
 pub(crate) mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
+pub use textures::DecodedTextureMessage;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -22,7 +23,7 @@ use gpu_setup::{
     create_gpu_resources, create_render_textures, rebuild_msaa_resources,
     rebuild_render_textures,
 };
-use textures::{DecodedTextureMessage, TextureSlot, process_decoded_textures};
+use textures::{TextureSlot, process_decoded_textures};
 
 const DEFAULT_WIDTH: u32 = 800;
 const DEFAULT_HEIGHT: u32 = 600;
@@ -248,9 +249,11 @@ pub fn setup_rendering_notifier(
     window: &MainWindow,
     aa_counts: Vec<u32>,
     texture_paths: Vec<Option<PathBuf>>,
-    cloud_path: Option<PathBuf>,
+    texture_tx: mpsc::Sender<textures::DecodedTextureMessage>,
+    texture_rx: mpsc::Receiver<textures::DecodedTextureMessage>,
 ) {
     let window_weak = window.as_weak();
+    let texture_rx = std::cell::RefCell::new(Some(texture_rx));
 
     window
         .window()
@@ -261,7 +264,8 @@ pub fn setup_rendering_notifier(
                 &window_weak,
                 &aa_counts,
                 &texture_paths,
-                cloud_path.as_ref(),
+                &texture_tx,
+                &texture_rx,
             );
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
@@ -294,7 +298,8 @@ fn rendering_callback(
     window_weak: &slint::Weak<MainWindow>,
     aa_counts: &[u32],
     texture_paths: &[Option<PathBuf>],
-    cloud_path: Option<&PathBuf>,
+    texture_tx: &mpsc::Sender<textures::DecodedTextureMessage>,
+    texture_rx: &std::cell::RefCell<Option<mpsc::Receiver<textures::DecodedTextureMessage>>>,
 ) {
     match state {
         RenderingState::RenderingSetup => {
@@ -310,6 +315,10 @@ fn rendering_callback(
                         let (w, h) = quantized_viewport_size(&win);
                         (lookup_sample_count(&win, aa_counts), w, h)
                     });
+            let rx = texture_rx
+                .borrow_mut()
+                .take()
+                .expect("texture_rx should only be taken once during RenderingSetup");
             let resources = create_gpu_resources(
                 device.clone(),
                 queue.clone(),
@@ -317,7 +326,8 @@ fn rendering_callback(
                 width,
                 height,
                 texture_paths,
-                cloud_path.cloned(),
+                texture_tx.clone(),
+                rx,
                 window_weak.clone(),
             );
             GPU_RESOURCES.with(|r| {
@@ -373,6 +383,8 @@ fn rendering_callback(
                 let fresnel_mix_f = win.get_fresnel_mix();
                 let fresnel_exp_f = win.get_fresnel_exp();
                 let cloud_opacity_f = win.get_cloud_opacity();
+                let cloud_floor_f = win.get_cloud_floor();
+                let cloud_gamma_f = win.get_cloud_gamma();
 
                 // Build current frame state for dirty-checking
                 let camera = CameraParams {
@@ -402,6 +414,8 @@ fn rendering_callback(
                     fresnel_mix_f,
                     fresnel_exp_f,
                     cloud_opacity_f,
+                    cloud_floor_f,
+                    cloud_gamma_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -447,6 +461,8 @@ fn rendering_callback(
                     fresnel_exp: fresnel_exp_f,
                     cloud_sphere_radius: 1.0015,
                     cloud_opacity: cloud_opacity_f,
+                    cloud_floor: cloud_floor_f,
+                    cloud_gamma: cloud_gamma_f,
                 };
                 res.last_shading = Some(shading);
 

@@ -23,6 +23,8 @@ pub(super) struct ShadingParams {
     pub fresnel_exp: f32,
     pub cloud_sphere_radius: f32,
     pub cloud_opacity: f32,
+    pub cloud_floor: f32,
+    pub cloud_gamma: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -99,8 +101,8 @@ pub(super) fn write_uniforms(
         fresnel_exp: shading.fresnel_exp,
         cloud_sphere_radius: shading.cloud_sphere_radius,
         cloud_opacity: shading.cloud_opacity,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_floor: shading.cloud_floor,
+        cloud_gamma: shading.cloud_gamma,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

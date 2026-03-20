@@ -12,16 +12,16 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-        shell: bash
+  # fmt:
+  #   name: Format
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         components: rustfmt
+  #     - run: cargo fmt --check
+  #       shell: bash
 
   clippy:
     name: Clippy

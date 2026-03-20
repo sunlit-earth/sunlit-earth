@@ -110,10 +110,10 @@ proptest = "1"    # property-based testing for pure functions
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **`ci.yml`** -- Runs on every push to `main` and every PR targeting `main`. Three jobs:
-  - `fmt` (Ubuntu): `cargo fmt --check` -- fast formatting gate, no compilation needed
+- **`ci.yml`** -- Runs on every push to `main` and every PR targeting `main`. Two active jobs:
   - `clippy` (Windows): `cargo clippy --all-targets --locked` -- lints Windows-specific code (`wallpaper.rs`, `windows-sys` FFI)
   - `test` (Windows): `cargo test --locked` -- full test suite including GPU integration tests on the software adapter
+  - `fmt` is commented out pending a codebase-wide reformat (see `docs/notes.md`)
 - **`release.yml`** -- Runs on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds an optimized binary with `cargo build --release --locked`, packages it as a zip, and creates a GitHub Release with auto-generated notes.
 
 Key CI details:

@@ -13,3 +13,12 @@ Needs proper research before picking a solution. Possible directions:
 - wgpu memory budget APIs (if any exist)
 - How other wallpaper engines handle this (e.g., Wallpaper Engine, Lively)
 
+## CI format check
+
+The `fmt` job in `.github/workflows/ci.yml` is commented out. The codebase was formatted with an older rustfmt and the current stable rustfmt (1.8.0) wants to reformat ~19 files. To enable it:
+
+1. Add a `rustfmt.toml` with the desired `style_edition` (or accept the 2024 default)
+2. Run `cargo fmt` to reformat everything
+3. Commit the reformatting
+4. Uncomment the `fmt` job in `ci.yml`
+

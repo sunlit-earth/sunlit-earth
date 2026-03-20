@@ -38,7 +38,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 ## CI and distribution
 
 - [x] CI pipeline: GitHub Actions workflows for building, testing, and linting on Windows. GPU integration tests run on the software adapter. Release workflow builds and publishes Windows binaries on version tags.
-- [ ] CI format check: the `fmt` job in `ci.yml` is commented out. The codebase needs a one-time reformat with current rustfmt (1.8.0+). Steps: optionally add a `rustfmt.toml` with `style_edition`, run `cargo fmt`, commit, uncomment the `fmt` job.
+- [ ] CI format check: the `fmt` job in `ci.yml` is commented out. The codebase needs a one-time reformat with current rustfmt (1.8.0+). Steps: optionally add a `rustfmt.toml` with `style_edition`, run `cargo fmt`, commit, uncomment the `fmt` job. Similar issue with Clippy, `RUSTFLAGS: "-D warnings"` was commented out in `ci.yml`.
 - [ ] Cross-platform release builds: produce binaries for Windows, Linux, and macOS from CI. Publish as GitHub release artifacts.
 
 ## Bugs and polish

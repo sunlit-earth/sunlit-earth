@@ -103,7 +103,7 @@ proptest = "1"    # property-based testing for pure functions
 
 ## Workflow
 
-- Do not commit during interactive debugging — wait for explicit user confirmation that a change works before committing
+- Do not commit or push without explicit user approval. Wait for explicit user confirmation that a change works before committing.
 - Git worktrees must be created in the `.worktrees/` folder at the repo root
 - Keep `docs/roadmap.md` up to date when implementing features — check off completed items and add new entries as needed
 
@@ -120,7 +120,7 @@ Two GitHub Actions workflows in `.github/workflows/`:
 Key CI details:
 - LLVM 19 is pinned explicitly on all Windows jobs via `KyleMayes/install-llvm-action@v2` to avoid runner-image Clang version instability
 - `LIBCLANG_PATH` is set to `$LLVM_PATH/lib` so bindgen can find `libclang.dll`
-- `RUSTFLAGS: "-D warnings"` is set globally in the CI workflow so any warning fails the build
+- `RUSTFLAGS: "-D warnings"` is commented out pending a lint cleanup (see `docs/roadmap.md`)
 - All `cargo` commands use `--locked` for reproducible builds from `Cargo.lock`
 - GPU integration tests use the wgpu software adapter on CI runners (no hardware GPU available)
 - Clippy and test share a cache (`shared-key: ci-windows`); only test writes it (`save-if: "false"` on clippy)

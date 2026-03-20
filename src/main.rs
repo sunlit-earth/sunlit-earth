@@ -7,7 +7,7 @@ use clap::Parser;
 use slint::ComponentHandle;
 
 use sunlit_earth::config::{self, AppConfig};
-use sunlit_earth::renderer;
+use sunlit_earth::renderer::{self, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
 use sunlit_earth::scene::datetime;
 use sunlit_earth::texture_loader;
@@ -243,6 +243,10 @@ fn main() {
         win.set_cloud_opacity(lighting.cloud_opacity);
         win.set_cloud_floor(lighting.cloud_floor);
         win.set_cloud_gamma(lighting.cloud_gamma);
+        win.set_day_gamma(gamma_value_to_slider(lighting.day_gamma));
+        win.set_day_saturation(lighting.day_saturation);
+        win.set_night_gamma(gamma_value_to_slider(lighting.night_gamma));
+        win.set_night_saturation(lighting.night_saturation);
         // Reset datetime
         win.set_use_custom_datetime(false);
         win.set_custom_hour(12.0);
@@ -324,6 +328,10 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_cloud_opacity(config.cloud_opacity);
     window.set_cloud_floor(config.cloud_floor);
     window.set_cloud_gamma(config.cloud_gamma);
+    window.set_day_gamma(gamma_value_to_slider(config.day_gamma));
+    window.set_day_saturation(config.day_saturation);
+    window.set_night_gamma(gamma_value_to_slider(config.night_gamma));
+    window.set_night_saturation(config.night_saturation);
 
     // Custom datetime
     window.set_use_custom_datetime(config.use_custom_datetime);
@@ -373,6 +381,10 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         cloud_opacity: window.get_cloud_opacity(),
         cloud_floor: window.get_cloud_floor(),
         cloud_gamma: window.get_cloud_gamma(),
+        day_gamma: gamma_slider_to_value(window.get_day_gamma()),
+        day_saturation: window.get_day_saturation(),
+        night_gamma: gamma_slider_to_value(window.get_night_gamma()),
+        night_saturation: window.get_night_saturation(),
         use_custom_datetime: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
         custom_day_of_year: window.get_custom_day_of_year(),

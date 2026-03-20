@@ -37,6 +37,14 @@ pub(crate) struct FrameState {
     pub cloud_floor: i32,
     /// Cloud gamma quantized to integer thousandths.
     pub cloud_gamma: i32,
+    /// Day gamma quantized to integer thousandths.
+    pub day_gamma: i32,
+    /// Day saturation quantized to integer thousandths.
+    pub day_saturation: i32,
+    /// Night gamma quantized to integer thousandths.
+    pub night_gamma: i32,
+    /// Night saturation quantized to integer thousandths.
+    pub night_saturation: i32,
 }
 
 /// Build a `FrameState` from raw values, quantizing floats to integer
@@ -60,6 +68,10 @@ pub(crate) fn build_frame_state(
     cloud_opacity: f32,
     cloud_floor: f32,
     cloud_gamma: f32,
+    day_gamma: f32,
+    day_saturation: f32,
+    night_gamma: f32,
+    night_saturation: f32,
 ) -> FrameState {
     FrameState {
         longitude: camera.longitude,
@@ -90,6 +102,10 @@ pub(crate) fn build_frame_state(
         cloud_opacity: (cloud_opacity * 1000.0) as i32,
         cloud_floor: (cloud_floor * 1000.0) as i32,
         cloud_gamma: (cloud_gamma * 1000.0) as i32,
+        day_gamma: (day_gamma * 1000.0) as i32,
+        day_saturation: (day_saturation * 1000.0) as i32,
+        night_gamma: (night_gamma * 1000.0) as i32,
+        night_saturation: (night_saturation * 1000.0) as i32,
     }
 }
 
@@ -132,6 +148,10 @@ mod tests {
             0.8,           // cloud_opacity
             0.0,           // cloud_floor
             1.0,           // cloud_gamma
+            1.0,           // day_gamma
+            1.0,           // day_saturation
+            1.0,           // night_gamma
+            1.0,           // night_saturation
         )
     }
 
@@ -162,12 +182,14 @@ mod tests {
         let state_a = build_frame_state(
             &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1230, -0.5670, 0.9010),
-            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         let state_b = build_frame_state(
             &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1235, -0.5670, 0.9010),
-            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_eq!(state_a, state_b, "Sub-threshold changes should compare equal");
     }
@@ -178,12 +200,14 @@ mod tests {
         let state_a = build_frame_state(
             &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1230, -0.5670, 0.9010),
-            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         let state_b = build_frame_state(
             &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.1240, -0.5670, 0.9010),
-            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(state_a, state_b, "At-threshold changes should compare different");
     }
@@ -196,86 +220,100 @@ mod tests {
 
         let modified = build_frame_state(
             &CameraParams { longitude: 11.0, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "longitude change should trigger dirty");
 
         let modified = build_frame_state(
             &CameraParams { latitude: 21.0, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "latitude change should trigger dirty");
 
         let modified = build_frame_state(
             &CameraParams { zoom: 4.0, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "zoom change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 8, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "sample_count change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 1, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "texture_index change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1024, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "width change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 720,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "height change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
             glam::Vec3::new(0.5, -0.5678, 0.9012),
-            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "sun_direction change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.25, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.25, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "terminator_width change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, false, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, false, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "diffuse_shading change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.2, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.2, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "diffuse_floor change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.7, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.7, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "diffuse_ramp change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 200.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 200.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "spec_shininess change should trigger dirty");
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.5, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.5, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "spec_intensity change should trigger dirty");
     }
@@ -288,7 +326,8 @@ mod tests {
 
         let modified = build_frame_state(
             &CameraParams { tilt_deg: 45.0, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "tilt change should trigger dirty");
     }
@@ -301,7 +340,8 @@ mod tests {
 
         let modified = build_frame_state(
             &CameraParams { yaw_deg: 30.0, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "yaw change should trigger dirty");
     }
@@ -314,7 +354,8 @@ mod tests {
 
         let modified = build_frame_state(
             &CameraParams { pitch_deg: 30.0, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "pitch change should trigger dirty");
     }
@@ -327,13 +368,15 @@ mod tests {
 
         let modified = build_frame_state(
             &CameraParams { offset_x: 0.5, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "offset_x change should trigger dirty");
 
         let modified = build_frame_state(
             &CameraParams { offset_y: 0.5, ..cam }, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "offset_y change should trigger dirty");
     }
@@ -344,7 +387,8 @@ mod tests {
         let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
         let state = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.5, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.5, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_eq!(state.fresnel_mix, 500);
     }
@@ -357,7 +401,8 @@ mod tests {
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.5, 5.0, 0.8, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.5, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "fresnel_mix change should trigger dirty");
     }
@@ -368,7 +413,8 @@ mod tests {
         let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
         let state = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.75, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.75, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_eq!(state.cloud_opacity, 750);
     }
@@ -381,7 +427,8 @@ mod tests {
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.5, 0.0, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.5, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "cloud_opacity change should trigger dirty");
     }
@@ -392,7 +439,8 @@ mod tests {
         let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
         let state = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.196, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.196, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_eq!(state.cloud_floor, 196);
     }
@@ -403,7 +451,8 @@ mod tests {
         let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
         let state = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 0.3,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 0.3, 1.0, 1.0, 1.0, 1.0,
         );
         assert_eq!(state.cloud_gamma, 300);
     }
@@ -416,7 +465,8 @@ mod tests {
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.2, 1.0,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.2, 1.0, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "cloud_floor change should trigger dirty");
     }
@@ -429,8 +479,68 @@ mod tests {
 
         let modified = build_frame_state(
             &cam, 4, 0, 1920, 1080,
-            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0, 0.8, 0.0, 0.5,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0,
         );
         assert_ne!(base, modified, "cloud_gamma change should trigger dirty");
+    }
+
+    #[test]
+    fn frame_state_day_gamma_quantization() {
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+        let state = build_frame_state(
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.5, 1.0, 1.0, 1.0,
+        );
+        assert_eq!(state.day_gamma, 1500);
+    }
+
+    #[test]
+    fn frame_state_day_saturation_quantization() {
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+        let state = build_frame_state(
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 0.5, 1.0, 1.0,
+        );
+        assert_eq!(state.day_saturation, 500);
+    }
+
+    #[test]
+    fn frame_state_color_correction_triggers_dirty() {
+        let base = default_frame_state();
+        let cam = default_camera();
+        let sun = glam::Vec3::new(0.1234, -0.5678, 0.9012);
+
+        let modified = build_frame_state(
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.5, 1.0, 1.0, 1.0,
+        );
+        assert_ne!(base, modified, "day_gamma change should trigger dirty");
+
+        let modified = build_frame_state(
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 0.5, 1.0, 1.0,
+        );
+        assert_ne!(base, modified, "day_saturation change should trigger dirty");
+
+        let modified = build_frame_state(
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.5, 1.0,
+        );
+        assert_ne!(base, modified, "night_gamma change should trigger dirty");
+
+        let modified = build_frame_state(
+            &cam, 4, 0, 1920, 1080,
+            sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
+            0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 0.5,
+        );
+        assert_ne!(base, modified, "night_saturation change should trigger dirty");
     }
 }

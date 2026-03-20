@@ -59,6 +59,12 @@ pub struct AppConfig {
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
 
+    // Color correction
+    pub day_gamma: f32,
+    pub day_saturation: f32,
+    pub night_gamma: f32,
+    pub night_saturation: f32,
+
     // Custom date/time override
     pub use_custom_datetime: bool,
     pub custom_hour: f32,
@@ -103,6 +109,10 @@ impl Default for AppConfig {
             cloud_opacity: 0.85,
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
+            day_gamma: 1.0,
+            day_saturation: 1.0,
+            night_gamma: 1.0,
+            night_saturation: 1.0,
             use_custom_datetime: false,
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
@@ -324,6 +334,15 @@ mod tests {
     }
 
     #[test]
+    fn default_values_color_correction() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.day_gamma, 1.0);
+        assert_relative_eq!(config.day_saturation, 1.0);
+        assert_relative_eq!(config.night_gamma, 1.0);
+        assert_relative_eq!(config.night_saturation, 1.0);
+    }
+
+    #[test]
     fn serde_round_trip() {
         let config = AppConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -364,6 +383,10 @@ mod tests {
             cloud_opacity: 0.6,
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
+            day_gamma: 1.5,
+            day_saturation: 0.8,
+            night_gamma: 2.0,
+            night_saturation: 0.5,
             use_custom_datetime: true,
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
@@ -493,6 +516,10 @@ mod tests {
             cloud_opacity: 0.6,
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
+            day_gamma: 1.8,
+            day_saturation: 0.6,
+            night_gamma: 2.2,
+            night_saturation: 1.5,
             use_custom_datetime: true,
             custom_hour: 8.25,
             custom_day_of_year: 200.0,

@@ -77,6 +77,31 @@ pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     (qw, qh)
 }
 
+const GAMMA_MIN: f32 = 0.2;
+const GAMMA_MAX: f32 = 3.0;
+
+/// Map a normalized slider position (0.0–1.0) to a gamma value (0.2–3.0).
+/// The midpoint (0.5) maps to gamma 1.0 (identity) so the neutral value
+/// is centered on the slider.  Piecewise linear: lower half spans
+/// `[GAMMA_MIN, 1.0]`, upper half spans `[1.0, GAMMA_MAX]`.
+pub fn gamma_slider_to_value(t: f32) -> f32 {
+    if t <= 0.5 {
+        GAMMA_MIN + (1.0 - GAMMA_MIN) * (t / 0.5)
+    } else {
+        1.0 + (GAMMA_MAX - 1.0) * ((t - 0.5) / 0.5)
+    }
+}
+
+/// Inverse of `gamma_slider_to_value`: convert a gamma value back to a
+/// normalized slider position.
+pub fn gamma_value_to_slider(gamma: f32) -> f32 {
+    if gamma <= 1.0 {
+        (gamma - GAMMA_MIN) / (1.0 - GAMMA_MIN) * 0.5
+    } else {
+        0.5 + (gamma - 1.0) / (GAMMA_MAX - 1.0) * 0.5
+    }
+}
+
 /// Render the current scene at the given resolution and return raw RGBA8 pixels.
 ///
 /// Creates temporary GPU textures with `COPY_SRC` at the target resolution,
@@ -385,6 +410,10 @@ fn rendering_callback(
                 let cloud_opacity_f = win.get_cloud_opacity();
                 let cloud_floor_f = win.get_cloud_floor();
                 let cloud_gamma_f = win.get_cloud_gamma();
+                let day_gamma_f = gamma_slider_to_value(win.get_day_gamma());
+                let day_saturation_f = win.get_day_saturation();
+                let night_gamma_f = gamma_slider_to_value(win.get_night_gamma());
+                let night_saturation_f = win.get_night_saturation();
 
                 // Build current frame state for dirty-checking
                 let camera = CameraParams {
@@ -416,6 +445,10 @@ fn rendering_callback(
                     cloud_opacity_f,
                     cloud_floor_f,
                     cloud_gamma_f,
+                    day_gamma_f,
+                    day_saturation_f,
+                    night_gamma_f,
+                    night_saturation_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -459,6 +492,10 @@ fn rendering_callback(
                     spec_intensity: spec_intensity_f,
                     fresnel_mix: fresnel_mix_f,
                     fresnel_exp: fresnel_exp_f,
+                    day_gamma: day_gamma_f,
+                    day_saturation: day_saturation_f,
+                    night_gamma: night_gamma_f,
+                    night_saturation: night_saturation_f,
                     cloud_sphere_radius: 1.0015,
                     cloud_opacity: cloud_opacity_f,
                     cloud_floor: cloud_floor_f,
@@ -487,6 +524,8 @@ fn rendering_callback(
 
 #[cfg(test)]
 mod tests {
+    use approx::assert_relative_eq;
+
     use super::*;
 
     // -----------------------------------------------------------------------
@@ -579,5 +618,42 @@ mod tests {
     #[test]
     fn quantize_typical_display() {
         assert_eq!(quantize_to_granularity(1920, 1080), (1920, 1024));
+    }
+
+    // -----------------------------------------------------------------------
+    // gamma_slider_to_value / gamma_value_to_slider
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gamma_slider_endpoints() {
+        assert_relative_eq!(gamma_slider_to_value(0.0), 0.2, epsilon = 1e-5);
+        assert_relative_eq!(gamma_slider_to_value(1.0), 3.0, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn gamma_slider_midpoint_is_identity() {
+        assert_relative_eq!(gamma_slider_to_value(0.5), 1.0, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn gamma_slider_monotonic() {
+        let values: Vec<f32> = (0..=10).map(|i| gamma_slider_to_value(i as f32 / 10.0)).collect();
+        for pair in values.windows(2) {
+            assert!(pair[1] > pair[0], "expected {:.3} > {:.3}", pair[1], pair[0]);
+        }
+    }
+
+    #[test]
+    fn gamma_roundtrip() {
+        for gamma in [0.2, 0.5, 1.0, 2.0, 3.0] {
+            let t = gamma_value_to_slider(gamma);
+            let roundtrip = gamma_slider_to_value(t);
+            assert_relative_eq!(roundtrip, gamma, epsilon = 1e-5);
+        }
+    }
+
+    #[test]
+    fn gamma_inverse_midpoint() {
+        assert_relative_eq!(gamma_value_to_slider(1.0), 0.5, epsilon = 1e-5);
     }
 }

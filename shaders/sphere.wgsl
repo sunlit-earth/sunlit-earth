@@ -12,10 +12,14 @@ struct Uniforms {
     spec_intensity: f32,       // 4 bytes, offset 116
     fresnel_mix: f32,          // 4 bytes, offset 120
     fresnel_exp: f32,          // 4 bytes, offset 124
-    cloud_sphere_radius: f32,  // 4 bytes, offset 128
-    cloud_opacity: f32,        // 4 bytes, offset 132
-    cloud_floor: f32,          // 4 bytes, offset 136
-    cloud_gamma: f32,          // 4 bytes, offset 140
+    day_gamma: f32,            // 4 bytes, offset 128
+    day_saturation: f32,       // 4 bytes, offset 132
+    night_gamma: f32,          // 4 bytes, offset 136
+    night_saturation: f32,     // 4 bytes, offset 140
+    cloud_sphere_radius: f32,  // 4 bytes, offset 144
+    cloud_opacity: f32,        // 4 bytes, offset 148
+    cloud_floor: f32,          // 4 bytes, offset 152
+    cloud_gamma: f32,          // 4 bytes, offset 156
 };
 
 @group(0) @binding(0)
@@ -65,18 +69,27 @@ fn schlick_fresnel(n_dot_v: f32, exponent: f32) -> f32 {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let day = textureSample(sphere_texture, sphere_sampler, in.uv);
 
+    // Apply day color correction (gamma first, then saturation)
+    var day_rgb = apply_gamma(day.rgb, uniforms.day_gamma);
+    day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
+
     // If terminator_width is negative, we're in single-texture mode
     // (the night texture binding is a dummy placeholder)
     if uniforms.terminator_width < 0.0 {
-        return vec4<f32>(day.rgb, 1.0);
+        return vec4<f32>(day_rgb, 1.0);
     }
 
     let night_color = textureSample(night_texture, sphere_sampler, in.uv).rgb;
+
+    // Apply night color correction (gamma first, then saturation)
+    var night_rgb = apply_gamma(night_color, uniforms.night_gamma);
+    night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
+
     let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
 
     let result = blend_fragment(
-        day.rgb, night_color, n_dot_l,
+        day_rgb, night_rgb, n_dot_l,
         uniforms.terminator_width,
         (uniforms.flags & 1u) != 0u,
         uniforms.diffuse_floor,

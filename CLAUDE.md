@@ -105,6 +105,7 @@ proptest = "1"    # property-based testing for pure functions
 
 - Do not commit during interactive debugging — wait for explicit user confirmation that a change works before committing
 - Git worktrees must be created in the `.worktrees/` folder at the repo root
+- Keep `docs/roadmap.md` up to date when implementing features — check off completed items and add new entries as needed
 
 ## CI/CD
 

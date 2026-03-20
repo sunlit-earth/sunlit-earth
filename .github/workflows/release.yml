@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "19"
+      - name: Set LIBCLANG_PATH
+        run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+      - run: cargo build --release --locked
+        shell: bash
+      - name: Package binary
+        run: 7z a sunlit-earth-${{ github.ref_name }}-x86_64-windows.zip ./target/release/sunlit-earth.exe
+        shell: bash
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: sunlit-earth-${{ github.ref_name }}-x86_64-windows.zip
+          generate_release_notes: true

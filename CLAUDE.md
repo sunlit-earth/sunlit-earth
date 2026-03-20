@@ -106,6 +106,25 @@ proptest = "1"    # property-based testing for pure functions
 - Do not commit during interactive debugging — wait for explicit user confirmation that a change works before committing
 - Git worktrees must be created in the `.worktrees/` folder at the repo root
 
+## CI/CD
+
+Two GitHub Actions workflows in `.github/workflows/`:
+
+- **`ci.yml`** -- Runs on every push to `main` and every PR targeting `main`. Three jobs:
+  - `fmt` (Ubuntu): `cargo fmt --check` -- fast formatting gate, no compilation needed
+  - `clippy` (Windows): `cargo clippy --all-targets --locked` -- lints Windows-specific code (`wallpaper.rs`, `windows-sys` FFI)
+  - `test` (Windows): `cargo test --locked` -- full test suite including GPU integration tests on the software adapter
+- **`release.yml`** -- Runs on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds an optimized binary with `cargo build --release --locked`, packages it as a zip, and creates a GitHub Release with auto-generated notes.
+
+Key CI details:
+- LLVM 19 is pinned explicitly on all Windows jobs via `KyleMayes/install-llvm-action@v2` to avoid runner-image Clang version instability
+- `LIBCLANG_PATH` is set to `$LLVM_PATH/lib` so bindgen can find `libclang.dll`
+- `RUSTFLAGS: "-D warnings"` is set globally in the CI workflow so any warning fails the build
+- All `cargo` commands use `--locked` for reproducible builds from `Cargo.lock`
+- GPU integration tests use the wgpu software adapter on CI runners (no hardware GPU available)
+- Clippy and test share a cache (`shared-key: ci-windows`); only test writes it (`save-if: "false"` on clippy)
+- Release uses a separate cache (`shared-key: release-windows`) because release artifacts differ from debug
+
 ## Key Constraints
 
 - `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` and `wallpaper.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments.

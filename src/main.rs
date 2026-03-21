@@ -140,6 +140,11 @@ fn main() {
         config_timer_handle.restart();
     });
 
+    let config_timer_handle = Rc::clone(&config_timer);
+    window.on_auto_refresh_changed(move || {
+        config_timer_handle.restart();
+    });
+
     // "Set as Wallpaper" button callback (Windows only)
     #[cfg(windows)]
     {
@@ -249,6 +254,9 @@ fn main() {
         win.set_day_saturation(lighting.day_saturation);
         win.set_night_gamma(gamma_value_to_slider(lighting.night_gamma));
         win.set_night_saturation(lighting.night_saturation);
+        // Reset auto-refresh
+        win.set_auto_refresh_enabled(false);
+        win.set_auto_refresh_interval(5.0);
         // Reset datetime
         win.set_use_custom_datetime(false);
         win.set_custom_hour(12.0);
@@ -335,6 +343,11 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_night_gamma(gamma_value_to_slider(config.night_gamma));
     window.set_night_saturation(config.night_saturation);
 
+    // Auto-refresh
+    window.set_auto_refresh_enabled(config.auto_refresh_enabled);
+    #[allow(clippy::cast_precision_loss)]
+    window.set_auto_refresh_interval(config.auto_refresh_interval_minutes as f32);
+
     // Custom datetime
     window.set_use_custom_datetime(config.use_custom_datetime);
     window.set_custom_hour(config.custom_hour);
@@ -391,6 +404,11 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         custom_hour: window.get_custom_hour(),
         custom_day_of_year: window.get_custom_day_of_year(),
         custom_year: window.get_custom_year_index() + datetime::base_year(),
+        auto_refresh_enabled: window.get_auto_refresh_enabled(),
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
+        // Preserve has_set_wallpaper from disk (updated only on wallpaper export)
+        has_set_wallpaper: config::load_config().has_set_wallpaper,
         window_x: Some(pos.x),
         window_y: Some(pos.y),
         window_width: Some(size.width),
@@ -422,11 +440,20 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
 
 /// Render the scene at the primary monitor's resolution using the headless
 /// renderer, save as PNG, and set it as the Windows desktop wallpaper.
+///
+/// On success, sets `has_set_wallpaper = true` in the config and saves
+/// immediately (not debounced) since this is a significant state change.
 #[cfg(windows)]
 fn do_set_wallpaper(config: &AppConfig) -> Result<(), String> {
     let (width, height) = wallpaper::get_primary_monitor_resolution()?;
     let pixels = renderer::export_wallpaper_image(config, width, height)?;
     let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
     wallpaper::set_wallpaper(&path)?;
+
+    // Mark that the user has set a wallpaper at least once
+    let mut saved_config = config.clone();
+    saved_config.has_set_wallpaper = true;
+    config::save_config(&saved_config);
+
     Ok(())
 }

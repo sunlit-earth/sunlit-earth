@@ -25,6 +25,7 @@ struct SunlitSection {
 /// unknown fields are silently ignored (forward compatibility).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppConfig {
     // Camera position
     pub longitude: f32,
@@ -72,6 +73,13 @@ pub struct AppConfig {
     #[serde(default = "default_custom_year")]
     pub custom_year: i32,
 
+    // Auto-refresh (tray icon background wallpaper updates)
+    pub auto_refresh_enabled: bool,
+    pub auto_refresh_interval_minutes: u32,
+    /// Whether the user has set the wallpaper at least once. Controls whether
+    /// auto-refresh activates and whether subsequent starts use tray-only mode.
+    pub has_set_wallpaper: bool,
+
     // Window geometry (None on first launch — let the OS place the window)
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
@@ -117,6 +125,9 @@ impl Default for AppConfig {
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
             custom_year: default_custom_year(),
+            auto_refresh_enabled: false,
+            auto_refresh_interval_minutes: 5,
+            has_set_wallpaper: false,
             window_x: None,
             window_y: None,
             window_width: None,
@@ -391,6 +402,9 @@ mod tests {
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
             custom_year: 2030,
+            auto_refresh_enabled: true,
+            auto_refresh_interval_minutes: 10,
+            has_set_wallpaper: true,
             window_x: Some(100),
             window_y: Some(200),
             window_width: Some(1024),
@@ -524,6 +538,9 @@ mod tests {
             custom_hour: 8.25,
             custom_day_of_year: 200.0,
             custom_year: 2020,
+            auto_refresh_enabled: true,
+            auto_refresh_interval_minutes: 15,
+            has_set_wallpaper: true,
             window_x: Some(50),
             window_y: Some(75),
             window_width: Some(800),
@@ -692,6 +709,52 @@ mod tests {
         let file = ConfigFile::default();
         let toml_str = toml::to_string_pretty(&file).unwrap();
         assert!(toml_str.contains("[sunlit.earth]"));
+    }
+
+    // --- Auto-refresh / tray fields ---
+
+    #[test]
+    fn default_auto_refresh_enabled_is_false() {
+        assert!(!AppConfig::default().auto_refresh_enabled);
+    }
+
+    #[test]
+    fn default_auto_refresh_interval_minutes_is_5() {
+        assert_eq!(AppConfig::default().auto_refresh_interval_minutes, 5);
+    }
+
+    #[test]
+    fn default_has_set_wallpaper_is_false() {
+        assert!(!AppConfig::default().has_set_wallpaper);
+    }
+
+    #[test]
+    fn deserialize_missing_tray_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert!(!config.auto_refresh_enabled);
+        assert_eq!(config.auto_refresh_interval_minutes, 5);
+        assert!(!config.has_set_wallpaper);
+    }
+
+    #[test]
+    fn serde_round_trip_tray_fields() {
+        let config = AppConfig {
+            auto_refresh_enabled: true,
+            auto_refresh_interval_minutes: 15,
+            has_set_wallpaper: true,
+            ..AppConfig::default()
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(config.auto_refresh_enabled, parsed.auto_refresh_enabled);
+        assert_eq!(config.auto_refresh_interval_minutes, parsed.auto_refresh_interval_minutes);
+        assert_eq!(config.has_set_wallpaper, parsed.has_set_wallpaper);
+    }
+
+    #[test]
+    fn deserialize_zero_interval_succeeds() {
+        let config: AppConfig = toml::from_str("auto_refresh_interval_minutes = 0").unwrap();
+        assert_eq!(config.auto_refresh_interval_minutes, 0);
     }
 
     // --- Step 2.5: find_sample_count_index ---

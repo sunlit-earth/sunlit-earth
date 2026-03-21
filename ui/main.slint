@@ -72,6 +72,10 @@ export component MainWindow inherits Window {
     in property <string> day-label: "Jan 1";
     in property <int> max-day-of-year: 365;
 
+    in-out property <bool> auto-refresh-enabled: false;
+    in-out property <float> auto-refresh-interval: 5;
+
+    callback auto-refresh-changed();
     callback mouse-drag(float, float);
     callback mouse-scroll(float);
     callback reset-all();
@@ -658,6 +662,50 @@ export component MainWindow inherits Window {
                                 text: round(cloud-gamma-slider.value * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Auto Refresh";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Enabled";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            CheckBox {
+                                text: "Refresh wallpaper periodically";
+                                checked <=> root.auto-refresh-enabled;
+                                toggled => {
+                                    root.auto-refresh-changed();
+                                }
+                            }
+                        }
+
+                        if root.auto-refresh-enabled :
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Interval";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            Slider {
+                                minimum: 1;
+                                maximum: 30;
+                                value <=> root.auto-refresh-interval;
+                                changed => { root.auto-refresh-changed(); }
+                            }
+                            Text {
+                                text: round(root.auto-refresh-interval) + " min";
+                                vertical-alignment: center;
+                                min-width: 45px;
                             }
                         }
                     }

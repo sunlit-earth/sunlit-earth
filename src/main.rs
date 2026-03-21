@@ -300,7 +300,18 @@ fn main() {
         },
     );
 
-    window.run().expect("Failed to run window");
+    // Close-to-tray: hide window instead of exiting when the X button is clicked
+    window
+        .window()
+        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+
+    // Spawn the system tray icon thread (Windows only)
+    #[cfg(windows)]
+    sunlit_earth::tray::spawn_tray_thread(window.as_weak(), config);
+
+    // Show window and run event loop (stays alive after window is hidden)
+    window.show().expect("Failed to show window");
+    slint::run_event_loop_until_quit().expect("Event loop error");
 
     // Save config on exit as a backstop (catches any changes during the debounce window)
     config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));

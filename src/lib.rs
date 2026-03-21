@@ -8,6 +8,8 @@ pub mod renderer;
 pub mod scene;
 pub mod texture_loader;
 #[cfg(windows)]
+pub mod tray;
+#[cfg(windows)]
 pub mod wallpaper;
 pub mod wgpu_init;
 

@@ -28,6 +28,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Registry",
 ] }
+tray-icon = "0.21"
+muda = "0.17"
 
 [dev-dependencies]
 approx = "0.5"

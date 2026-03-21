@@ -374,4 +374,41 @@ mod tests {
         let result = render_wallpaper_headless(&config, (0, 0), false);
         assert!(result.is_err(), "0x0 dimensions should be rejected");
     }
+
+    /// Regression test: the headless renderer must complete on a thread with
+    /// a 2 MB stack. This catches stack bloat that would overflow the Windows
+    /// default main thread (1 MB) or spawned threads (2 MB). If this test
+    /// fails with a stack overflow, some function is allocating too much data
+    /// on the stack and needs to be refactored (Box large locals, split into
+    /// smaller functions, etc.).
+    #[test]
+    fn headless_render_fits_in_2mb_stack() {
+        let result = std::thread::Builder::new()
+            .name("stack_budget_test".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let config = AppConfig {
+                    texture_index: 0,
+                    use_custom_datetime: true,
+                    custom_hour: 12.0,
+                    custom_day_of_year: 100.0,
+                    custom_year: 2025,
+                    ..AppConfig::default()
+                };
+                render_wallpaper_headless(&config, (64, 64), false)
+            })
+            .expect("failed to spawn thread")
+            .join();
+
+        match result {
+            Ok(Ok(pixels)) => {
+                assert_eq!(pixels.len(), 64 * 64 * 4);
+            }
+            Ok(Err(e)) => panic!("headless render failed: {e}"),
+            Err(_) => panic!(
+                "headless render overflowed a 2 MB stack — \
+                 refactor to reduce stack usage"
+            ),
+        }
+    }
 }

@@ -37,7 +37,6 @@ struct Cli {
     show_window: bool,
 }
 
-#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
 
@@ -61,8 +60,56 @@ fn main() {
         cli.tray_only || config.has_set_wallpaper
     };
 
-    // Always initialize the wgpu backend for Slint (needed for event loop)
-    let wgpu_context = wgpu_init::init(cli.software_rendering);
+    // Initialize wgpu backend in its own scope so temporaries are released
+    let (adapter_info, supported_sample_counts) = init_wgpu_backend(cli.software_rendering);
+
+    // Create the main window (even in tray-only mode, for lazy show via "Settings")
+    let window = MainWindow::new().expect("Failed to create window");
+    window.set_renderer_info(adapter_info);
+    apply_config_to_window(&window, &config);
+
+    // Set up UI models and wire all callbacks (in a separate function so
+    // the many intermediate locals — Rc clones, Weak refs, closures — are
+    // released from the stack when the function returns)
+    let (config_timer, sun_timer, aa_counts_for_exit) =
+        setup_ui(&window, &config, &supported_sample_counts, cli.textures_dir.as_deref());
+
+    // Close-to-tray: hide window instead of exiting when the X button is clicked
+    window
+        .window()
+        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+
+    // Spawn the system tray icon thread (Windows only)
+    #[cfg(windows)]
+    sunlit_earth::tray::spawn_tray_thread(window.as_weak(), config);
+
+    // Show window (unless tray-only mode) and run event loop
+    if tray_only {
+        eprintln!("Starting in tray-only mode");
+    } else {
+        window.show().expect("Failed to show window");
+    }
+    slint::run_event_loop_until_quit().expect("Event loop error");
+
+    // Save config on exit as a backstop (catches any changes during the debounce window)
+    config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
+
+    // Keep resources alive until the event loop exits (prevent drop optimization)
+    drop(sun_timer);
+    drop(config_timer);
+    drop(instance_guard);
+
+    // Exit immediately to avoid a panic from thread-local destruction ordering.
+    std::process::exit(0);
+}
+
+/// Initialize wgpu manually and register it as the Slint rendering backend.
+///
+/// Returns the supported MSAA sample counts. The wgpu instance, adapter,
+/// device, and queue are moved into the Slint backend and no longer occupy
+/// space on the caller's stack.
+fn init_wgpu_backend(force_software: bool) -> (slint::SharedString, Vec<u32>) {
+    let wgpu_context = wgpu_init::init(force_software);
     let adapter_info: slint::SharedString = wgpu_context.adapter_info.into();
     let supported_sample_counts = wgpu_context.supported_sample_counts.clone();
 
@@ -71,15 +118,26 @@ fn main() {
         .select()
         .expect("Failed to select wgpu backend");
 
-    // Create the main window (even in tray-only mode, for lazy show via "Settings")
-    let window = MainWindow::new().expect("Failed to create window");
-    window.set_renderer_info(adapter_info);
+    (adapter_info, supported_sample_counts)
+}
 
-    apply_config_to_window(&window, &config);
-
+/// Set up all UI models, callbacks, rendering notifier, and background tasks.
+///
+/// This is extracted from `main()` so that the many intermediate locals
+/// (Rc clones, Weak references, closure captures, temporary Vecs) live in
+/// this function's stack frame and are released when it returns, keeping
+/// `main()`'s frame small enough for the Windows 1 MB default thread stack
+/// in debug builds.
+#[allow(clippy::too_many_lines)]
+fn setup_ui(
+    window: &MainWindow,
+    config: &AppConfig,
+    supported_sample_counts: &[u32],
+    textures_dir_override: Option<&std::path::Path>,
+) -> (Rc<slint::Timer>, slint::Timer, Vec<u32>) {
     // Set up AA options from supported sample counts
     let (aa_labels, aa_counts, _aa_default) =
-        renderer::build_aa_options(&supported_sample_counts);
+        renderer::build_aa_options(supported_sample_counts);
     let aa_counts_for_exit = aa_counts.clone();
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
@@ -88,7 +146,7 @@ fn main() {
     texture_loader::register_jxl_hook();
 
     // Resolve texture paths for JXL files (loaded lazily when selected)
-    let textures_dir = texture_loader::resolve_textures_dir(cli.textures_dir.as_deref());
+    let textures_dir = texture_loader::resolve_textures_dir(textures_dir_override);
     let day_path = textures_dir
         .as_ref()
         .map(|d| d.join("world.topo.200405.jxl"))
@@ -137,7 +195,6 @@ fn main() {
                 config::save_config(&read_config_from_window(&win, &aa_counts_for_save));
             }
         });
-        // Stop the timer immediately — it will be restarted by callbacks
         config_timer.stop();
     }
 
@@ -213,20 +270,17 @@ fn main() {
         let cos_t = tilt_rad.cos();
         let sin_t = tilt_rad.sin();
 
-        // Rotate the (dx, dy) vector by -tilt to undo the screen-space rotation
         let delta = [
             dx * cos_t + dy * sin_t,
             -dx * sin_t + dy * cos_t,
         ];
 
-        // Scale sensitivity proportionally to camera distance
         let zoom = win.get_camera_zoom();
         let degrees_per_px = 0.3 * zoom_to_distance(zoom) / 8.0;
 
         let new_lon = win.get_camera_longitude() - delta[0] * degrees_per_px;
         let new_lat = win.get_camera_latitude() + delta[1] * degrees_per_px;
 
-        // Wrap longitude to [-180, 180], clamp latitude to [-89, 89]
         let wrapped_lon = ((new_lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
         let clamped_lat = new_lat.clamp(-89.0, 89.0);
 
@@ -267,7 +321,6 @@ fn main() {
         win.set_camera_tilt(defaults.tilt_deg);
         win.set_camera_yaw(defaults.yaw_deg);
         win.set_camera_pitch(defaults.pitch_deg);
-        // Reset lighting
         let lighting = AppConfig::default();
         win.set_terminator_width(lighting.terminator_width);
         win.set_diffuse_shading(lighting.diffuse_shading);
@@ -284,14 +337,12 @@ fn main() {
         win.set_day_saturation(lighting.day_saturation);
         win.set_night_gamma(gamma_value_to_slider(lighting.night_gamma));
         win.set_night_saturation(lighting.night_saturation);
-        // Reset auto-refresh
         win.set_auto_refresh_enabled(false);
         win.set_auto_refresh_interval(5.0);
-        // Reset datetime
         win.set_use_custom_datetime(false);
         win.set_custom_hour(12.0);
         win.set_custom_day_of_year(1.0);
-        win.set_custom_year_index(10); // center = current year
+        win.set_custom_year_index(10);
         update_datetime_labels(&win, base_year);
         win.window().request_redraw();
         config_timer_handle.restart();
@@ -303,7 +354,7 @@ fn main() {
         std::sync::mpsc::channel::<sunlit_earth::renderer::DecodedTextureMessage>();
 
     renderer::setup_rendering_notifier(
-        &window,
+        window,
         aa_counts,
         texture_paths,
         texture_tx.clone(),
@@ -330,33 +381,7 @@ fn main() {
         },
     );
 
-    // Close-to-tray: hide window instead of exiting when the X button is clicked
-    window
-        .window()
-        .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
-
-    // Spawn the system tray icon thread (Windows only)
-    #[cfg(windows)]
-    sunlit_earth::tray::spawn_tray_thread(window.as_weak(), config);
-
-    // Show window (unless tray-only mode) and run event loop
-    if tray_only {
-        eprintln!("Starting in tray-only mode");
-    } else {
-        window.show().expect("Failed to show window");
-    }
-    slint::run_event_loop_until_quit().expect("Event loop error");
-
-    // Save config on exit as a backstop (catches any changes during the debounce window)
-    config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
-
-    // Keep resources alive until the event loop exits (prevent drop optimization)
-    drop(sun_timer);
-    drop(config_timer);
-    drop(instance_guard);
-
-    // Exit immediately to avoid a panic from thread-local destruction ordering.
-    std::process::exit(0);
+    (config_timer, sun_timer, aa_counts_for_exit)
 }
 
 /// Apply a loaded config to all window properties.

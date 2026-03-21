@@ -5,7 +5,7 @@ use slint::ComponentHandle;
 use crate::texture_loader;
 
 /// Descriptor for a texture that can be loaded on demand.
-pub(super) struct TextureSlot {
+pub(crate) struct TextureSlot {
     /// The GPU bind group, populated on first use.
     pub bind_group: Option<wgpu::BindGroup>,
     /// Filesystem path to the texture file (`None` for procedural textures).
@@ -165,7 +165,7 @@ pub(super) fn resolve_render_index(res: &mut super::GpuResources, slot_index: us
 }
 
 /// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
-pub(super) fn create_mipmapped_texture(
+pub(crate) fn create_mipmapped_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
@@ -211,7 +211,7 @@ pub(super) fn create_mipmapped_texture(
 ///
 /// For single-texture modes (Grid, Day, Night), pass the dummy 1x1 texture
 /// as `night_texture_view`. For blend mode, pass the actual night texture.
-pub(super) fn create_bind_group(
+pub(crate) fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,

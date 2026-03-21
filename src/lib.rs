@@ -3,6 +3,7 @@
 pub mod cloud_fetcher;
 pub mod config;
 pub mod geometry;
+pub mod headless;
 pub mod renderer;
 pub mod scene;
 pub mod texture_loader;

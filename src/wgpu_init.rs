@@ -1,6 +1,6 @@
 use slint::wgpu_28::WGPUConfiguration;
 
-/// Result of initializing wgpu manually.
+/// Result of initializing wgpu manually (for Slint integration).
 pub struct WgpuContext {
     pub config: WGPUConfiguration,
     pub adapter_info: String,
@@ -8,14 +8,28 @@ pub struct WgpuContext {
     pub supported_sample_counts: Vec<u32>,
 }
 
-/// Initialize wgpu manually: create instance, select adapter, request device.
-/// This gives us full control over adapter selection and accurate adapter info.
-///
-/// Adapter selection priority (when `force_software` is false):
-/// 1. `WGPU_ADAPTER_NAME` env var (substring match, case-insensitive)
-/// 2. Best available GPU (`DiscreteGpu` > `IntegratedGpu` > others)
-/// 3. CPU/software fallback as last resort
-pub fn init(force_software: bool) -> WgpuContext {
+/// Result of initializing wgpu without Slint (for headless rendering).
+pub struct HeadlessContext {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub adapter_info: String,
+    /// Supported MSAA sample counts for the color format (always includes 1).
+    pub supported_sample_counts: Vec<u32>,
+}
+
+/// Shared result of adapter selection and device creation.
+struct RawGpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    adapter_info: String,
+    supported_sample_counts: Vec<u32>,
+}
+
+/// Core adapter selection and device creation, shared by both `init()` and
+/// `init_headless()`.
+fn init_raw(force_software: bool) -> RawGpuContext {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
@@ -48,15 +62,51 @@ pub fn init(force_software: bool) -> WgpuContext {
         .flags
         .supported_sample_counts();
 
-    WgpuContext {
-        config: WGPUConfiguration::Manual {
-            instance,
-            adapter: adapter.clone(),
-            device,
-            queue,
-        },
+    RawGpuContext {
+        instance,
+        adapter: adapter.clone(),
+        device,
+        queue,
         adapter_info,
         supported_sample_counts,
+    }
+}
+
+/// Initialize wgpu manually: create instance, select adapter, request device.
+/// This gives us full control over adapter selection and accurate adapter info.
+///
+/// Adapter selection priority (when `force_software` is false):
+/// 1. `WGPU_ADAPTER_NAME` env var (substring match, case-insensitive)
+/// 2. Best available GPU (`DiscreteGpu` > `IntegratedGpu` > others)
+/// 3. CPU/software fallback as last resort
+pub fn init(force_software: bool) -> WgpuContext {
+    let raw = init_raw(force_software);
+
+    WgpuContext {
+        config: WGPUConfiguration::Manual {
+            instance: raw.instance,
+            adapter: raw.adapter,
+            device: raw.device,
+            queue: raw.queue,
+        },
+        adapter_info: raw.adapter_info,
+        supported_sample_counts: raw.supported_sample_counts,
+    }
+}
+
+/// Initialize wgpu for headless rendering (no Slint dependency).
+///
+/// Returns a raw device/queue pair suitable for standalone rendering
+/// without a Slint window. Uses the same adapter selection logic as
+/// `init()`.
+pub fn init_headless(force_software: bool) -> HeadlessContext {
+    let raw = init_raw(force_software);
+
+    HeadlessContext {
+        device: raw.device,
+        queue: raw.queue,
+        adapter_info: raw.adapter_info,
+        supported_sample_counts: raw.supported_sample_counts,
     }
 }
 
@@ -137,5 +187,30 @@ mod tests {
         for w in ranks.windows(2) {
             assert!(w[0] < w[1], "Expected {}<{}", w[0], w[1]);
         }
+    }
+
+    #[test]
+    fn init_headless_returns_usable_context() {
+        let ctx = init_headless(false);
+        assert!(
+            ctx.supported_sample_counts.contains(&1),
+            "sample counts should include 1"
+        );
+        // Verify device is usable by creating a simple buffer
+        let _buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test_buffer"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+    }
+
+    #[test]
+    fn init_headless_adapter_info_nonempty() {
+        let ctx = init_headless(false);
+        assert!(
+            !ctx.adapter_info.is_empty(),
+            "adapter info should be non-empty"
+        );
     }
 }

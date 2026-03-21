@@ -144,11 +144,13 @@ fn main() {
     #[cfg(windows)]
     {
         let window_weak = window.as_weak();
+        let aa_counts_for_wallpaper = aa_counts.clone();
         window.on_set_wallpaper(move || {
             let Some(win) = window_weak.upgrade() else {
                 return;
             };
-            match do_set_wallpaper() {
+            let cfg = read_config_from_window(&win, &aa_counts_for_wallpaper);
+            match do_set_wallpaper(&cfg) {
                 Ok(()) => win.set_wallpaper_status("Wallpaper set successfully".into()),
                 Err(e) => win.set_wallpaper_status(format!("Error: {e}").into()),
             }
@@ -418,12 +420,12 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     window.set_day_label(datetime::month_day_label(doy, year).into());
 }
 
-/// Render the current scene at the primary monitor's resolution, save as PNG,
-/// and set it as the Windows desktop wallpaper.
+/// Render the scene at the primary monitor's resolution using the headless
+/// renderer, save as PNG, and set it as the Windows desktop wallpaper.
 #[cfg(windows)]
-fn do_set_wallpaper() -> Result<(), String> {
+fn do_set_wallpaper(config: &AppConfig) -> Result<(), String> {
     let (width, height) = wallpaper::get_primary_monitor_resolution()?;
-    let pixels = renderer::export_wallpaper_image(width, height)?;
+    let pixels = renderer::export_wallpaper_image(config, width, height)?;
     let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
     wallpaper::set_wallpaper(&path)?;
     Ok(())

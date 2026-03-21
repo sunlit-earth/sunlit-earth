@@ -1,8 +1,8 @@
-mod frame;
-mod gpu_setup;
-mod render_pass;
+pub(crate) mod frame;
+pub(crate) mod gpu_setup;
+pub(crate) mod render_pass;
 mod texture_routing;
-mod textures;
+pub(crate) mod textures;
 pub(crate) mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
@@ -19,10 +19,7 @@ use crate::scene::datetime;
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
-use gpu_setup::{
-    create_gpu_resources, create_render_textures, rebuild_msaa_resources,
-    rebuild_render_textures,
-};
+use gpu_setup::{create_gpu_resources, rebuild_msaa_resources, rebuild_render_textures};
 use textures::{TextureSlot, process_decoded_textures};
 
 const DEFAULT_WIDTH: u32 = 800;
@@ -102,111 +99,17 @@ pub fn gamma_value_to_slider(gamma: f32) -> f32 {
     }
 }
 
-/// Render the current scene at the given resolution and return raw RGBA8 pixels.
+/// Render the scene described by `config` at the given resolution and return
+/// raw RGBA8 pixel data using the headless renderer.
 ///
-/// Creates temporary GPU textures with `COPY_SRC` at the target resolution,
-/// renders using the existing pipeline and bind groups (matching the last
-/// displayed frame), reads back the pixels, and drops the temporary textures.
-///
-/// Returns `Err` if the GPU is not initialized, textures are still loading,
-/// or no frame has been rendered yet.
-#[allow(clippy::cast_precision_loss)]
-pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
-    GPU_RESOURCES.with(|r| {
-        let borrow = r.borrow();
-        let res = borrow.as_ref().ok_or("GPU not initialized")?;
-
-        let state = res
-            .last_state
-            .as_ref()
-            .ok_or("No frame rendered yet")?;
-        let shading = res
-            .last_shading
-            .as_ref()
-            .ok_or("No frame rendered yet")?;
-
-        // Look up the bind group that was used for the last rendered frame
-        let bind_group = match res
-            .last_resolved
-            .as_ref()
-            .ok_or("No frame rendered yet")?
-        {
-            texture_routing::ResolvedTexture::Composite => res
-                .composite_bind_group
-                .as_ref()
-                .ok_or("No bind group available")?,
-            texture_routing::ResolvedTexture::Slot(idx) => res.texture_slots[*idx]
-                .bind_group
-                .as_ref()
-                .ok_or("No bind group available")?,
-        };
-
-        // Create temporary render textures with COPY_SRC for readback
-        let (export_texture, export_depth, msaa_color_view, msaa_depth_view) =
-            create_render_textures(
-                &res.device,
-                target_width,
-                target_height,
-                res.sample_count,
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            );
-
-        let aspect = target_width as f32 / target_height as f32;
-        let camera = CameraParams {
-            longitude: state.longitude,
-            latitude: state.latitude,
-            zoom: state.zoom,
-            offset_x: state.offset_x,
-            offset_y: state.offset_y,
-            tilt_deg: state.tilt,
-            yaw_deg: state.yaw,
-            pitch_deg: state.pitch,
-        };
-        render_pass::write_uniforms(
-            &res.queue,
-            &res.uniform_buffer,
-            &camera,
-            aspect,
-            shading,
-        );
-
-        let resolve_view = export_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let target = render_pass::RenderTarget::new(
-            &resolve_view,
-            msaa_color_view.as_ref(),
-            &export_depth,
-            msaa_depth_view.as_ref(),
-        );
-
-        let (cloud_pipe, cloud_bg) =
-            if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
-                (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
-            } else {
-                (None, None)
-            };
-
-        render_pass::encode_and_submit(
-            &res.device,
-            &res.queue,
-            &target,
-            &res.pipeline,
-            bind_group,
-            &res.vertex_buffer,
-            &res.index_buffer,
-            res.index_count,
-            cloud_pipe,
-            cloud_bg,
-        );
-
-        Ok(render_pass::read_texture_rgba8(
-            &res.device,
-            &res.queue,
-            &export_texture,
-            target_width,
-            target_height,
-        ))
-    })
+/// This is a convenience wrapper around `headless::render_wallpaper_headless()`
+/// for use from the "Set as Wallpaper" button and background refresh.
+pub fn export_wallpaper_image(
+    config: &crate::config::AppConfig,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<u8>, String> {
+    crate::headless::render_wallpaper_headless(config, (target_width, target_height), false)
 }
 
 /// GPU resources created during `RenderingSetup`.

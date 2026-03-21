@@ -32,7 +32,7 @@ fn cache_dir() -> Option<PathBuf> {
     Some(dirs::data_local_dir()?.join("SunlitEarth"))
 }
 
-fn cache_image_path() -> Option<PathBuf> {
+pub(crate) fn cache_image_path() -> Option<PathBuf> {
     Some(cache_dir()?.join("clouds_cache.jpg"))
 }
 
@@ -140,7 +140,7 @@ fn download_image(agent: &ureq::Agent) -> Result<(Vec<u8>, CacheMeta), String> {
 ///
 /// Applies the same transforms as equirectangular texture loading:
 /// horizontal flip and 1/4-width shift to align the prime meridian.
-fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
+pub(crate) fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
     let img = image::load_from_memory(bytes)
         .map_err(|e| format!("Failed to decode cloud JPEG: {e}"))?
         .fliph()
@@ -156,6 +156,81 @@ fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
         width,
         height,
     })
+}
+
+/// Run a synchronous cloud cache freshness check and download if stale.
+///
+/// Used by the headless renderer before wallpaper export. Not called from
+/// the Slint rendering path (which uses the background cloud fetcher thread).
+///
+/// Called before each headless wallpaper render to ensure cloud data is
+/// current. Reuses the existing `check_freshness()` and `download_image()`
+/// logic. Returns `Ok(true)` if a fresh image was downloaded, `Ok(false)`
+/// if the cache was already current, or `Err` on failure.
+pub(crate) fn check_and_refresh_cloud_cache() -> Result<bool, String> {
+    let image_path = cache_image_path().ok_or("Could not determine cloud cache path")?;
+    let meta_path = cache_meta_path().ok_or("Could not determine cloud meta path")?;
+
+    let user_agent = format!("sunlit.earth/{}", env!("CARGO_PKG_VERSION"));
+    let agent = ureq::Agent::config_builder()
+        .user_agent(&user_agent)
+        .build()
+        .new_agent();
+
+    let cached_meta = load_cache_meta(&meta_path);
+
+    let should_download = match &cached_meta {
+        Some(meta) if meta.etag.is_some() => {
+            let etag = meta.etag.as_ref().unwrap();
+            match check_freshness(&agent, etag) {
+                Ok(true) => {
+                    eprintln!("Cloud image unchanged (304)");
+                    false
+                }
+                Ok(false) => {
+                    eprintln!("Cloud image has changed, downloading...");
+                    true
+                }
+                Err(e) => {
+                    eprintln!("Warning: {e}");
+                    false
+                }
+            }
+        }
+        _ => {
+            // No cache or no ETag: need to download
+            if image_path.exists() {
+                // Cache file exists but no meta — use cached file as-is
+                eprintln!("No cloud cache metadata, using existing cache");
+                false
+            } else {
+                eprintln!("No cached cloud image, downloading...");
+                true
+            }
+        }
+    };
+
+    if should_download {
+        let start = std::time::Instant::now();
+        let (bytes, meta) = download_image(&agent)?;
+        let elapsed = start.elapsed().as_secs_f64();
+        eprintln!(
+            "Downloaded cloud image ({} bytes) in {elapsed:.1}s",
+            bytes.len()
+        );
+
+        // Save to cache
+        if let Some(parent) = image_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(&image_path, &bytes)
+            .map_err(|e| format!("Could not cache cloud image: {e}"))?;
+        save_cache_meta(&meta, &meta_path);
+
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Spawn the background cloud fetcher thread.
@@ -388,6 +463,21 @@ mod tests {
         assert!(loaded.last_modified.is_none());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_image_path_ends_with_expected_name() {
+        let path = cache_image_path().expect("should resolve cloud cache path");
+        assert!(
+            path.ends_with("clouds_cache.jpg"),
+            "path should end with clouds_cache.jpg, got: {path:?}"
+        );
+        // Verify it's inside the SunlitEarth directory
+        let parent = path.parent().expect("path should have parent");
+        assert!(
+            parent.ends_with("SunlitEarth"),
+            "parent should end with SunlitEarth, got: {parent:?}"
+        );
     }
 
     #[test]

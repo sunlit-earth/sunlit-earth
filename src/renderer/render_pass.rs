@@ -10,7 +10,7 @@ use super::uniforms::Uniforms;
 
 /// Shading parameters for a render pass.
 #[derive(Clone, Copy)]
-pub(super) struct ShadingParams {
+pub(crate) struct ShadingParams {
     pub sun_dir: glam::Vec3,
     pub use_blend: bool,
     pub terminator_width: f32,
@@ -33,7 +33,7 @@ pub(super) struct ShadingParams {
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
-pub(super) struct RenderTarget<'a> {
+pub(crate) struct RenderTarget<'a> {
     color_view: &'a wgpu::TextureView,
     resolve_target: Option<&'a wgpu::TextureView>,
     depth_view: &'a wgpu::TextureView,
@@ -46,7 +46,7 @@ impl<'a> RenderTarget<'a> {
     /// resolved output. When MSAA views are provided, they become the
     /// primary color/depth attachments with `resolve_view` as the resolve
     /// target.
-    pub fn new(
+    pub(crate) fn new(
         resolve_view: &'a wgpu::TextureView,
         msaa_color_view: Option<&'a wgpu::TextureView>,
         depth_view: &'a wgpu::TextureView,
@@ -66,7 +66,7 @@ impl<'a> RenderTarget<'a> {
 
 /// Build a `Uniforms` struct and write it to the GPU buffer.
 #[allow(clippy::cast_precision_loss)]
-pub(super) fn write_uniforms(
+pub(crate) fn write_uniforms(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
     camera_params: &CameraParams,
@@ -121,7 +121,7 @@ pub(super) fn write_uniforms(
 /// draw call is issued for the cloud overlay sphere within the same render
 /// pass, reusing the already-bound vertex and index buffers.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn encode_and_submit(
+pub(crate) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &RenderTarget,

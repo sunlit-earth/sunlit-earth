@@ -27,29 +27,59 @@ struct Cli {
     /// Path to the textures directory
     #[arg(long)]
     textures_dir: Option<PathBuf>,
+
+    /// Start in tray-only mode (no window, tray icon only)
+    #[arg(long)]
+    tray_only: bool,
+
+    /// Force showing the main window on startup (overrides tray-only auto-detection)
+    #[arg(long)]
+    show_window: bool,
 }
 
 #[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
 
+    // Single-instance detection: prevent multiple processes
+    let instance_guard = single_instance::SingleInstance::new("SunlitEarth")
+        .expect("Failed to create single-instance lock");
+    if !instance_guard.is_single() {
+        eprintln!("Another instance of Sunlit Earth is already running");
+        std::process::exit(0);
+    }
+
+    // Load persisted config (falls back to defaults if missing or corrupt)
+    let config = config::load_config();
+
+    // Determine startup mode: tray-only if explicitly requested, or if the user
+    // has previously set a wallpaper (subsequent starts default to tray-only).
+    // --show-window overrides this.
+    let tray_only = if cli.show_window {
+        false
+    } else {
+        cli.tray_only || config.has_set_wallpaper
+    };
+
+    // Always initialize the wgpu backend for Slint (needed for event loop)
     let wgpu_context = wgpu_init::init(cli.software_rendering);
+    let adapter_info: slint::SharedString = wgpu_context.adapter_info.into();
+    let supported_sample_counts = wgpu_context.supported_sample_counts.clone();
 
     slint::BackendSelector::new()
         .require_wgpu_28(wgpu_context.config)
         .select()
         .expect("Failed to select wgpu backend");
 
+    // Create the main window (even in tray-only mode, for lazy show via "Settings")
     let window = MainWindow::new().expect("Failed to create window");
-    window.set_renderer_info(wgpu_context.adapter_info.into());
+    window.set_renderer_info(adapter_info);
 
-    // Load persisted config (falls back to defaults if missing or corrupt)
-    let config = config::load_config();
     apply_config_to_window(&window, &config);
 
     // Set up AA options from supported sample counts
     let (aa_labels, aa_counts, _aa_default) =
-        renderer::build_aa_options(&wgpu_context.supported_sample_counts);
+        renderer::build_aa_options(&supported_sample_counts);
     let aa_counts_for_exit = aa_counts.clone();
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
@@ -309,16 +339,21 @@ fn main() {
     #[cfg(windows)]
     sunlit_earth::tray::spawn_tray_thread(window.as_weak(), config);
 
-    // Show window and run event loop (stays alive after window is hidden)
-    window.show().expect("Failed to show window");
+    // Show window (unless tray-only mode) and run event loop
+    if tray_only {
+        eprintln!("Starting in tray-only mode");
+    } else {
+        window.show().expect("Failed to show window");
+    }
     slint::run_event_loop_until_quit().expect("Event loop error");
 
     // Save config on exit as a backstop (catches any changes during the debounce window)
     config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
 
-    // Keep timers alive until the event loop exits (prevent drop optimization)
+    // Keep resources alive until the event loop exits (prevent drop optimization)
     drop(sun_timer);
     drop(config_timer);
+    drop(instance_guard);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     std::process::exit(0);

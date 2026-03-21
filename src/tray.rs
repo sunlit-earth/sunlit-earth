@@ -128,6 +128,9 @@ fn run_tray(
         });
     }
 
+    // Create a named event so a second instance can signal us to show the window
+    let show_event = create_show_window_event();
+
     // Win32 message pump (required for tray icon events on Windows)
     let menu_rx = MenuEvent::receiver();
 
@@ -143,6 +146,11 @@ fn run_tray(
                 &auto_refresh_active,
                 &auto_refresh_interval,
             );
+        }
+
+        // Check if a second instance signaled us to show the window
+        if is_event_signaled(show_event) {
+            show_settings_window(&window_weak);
         }
 
         // Small sleep to avoid busy-waiting
@@ -197,12 +205,7 @@ fn handle_menu_event(
     let id_str = id.as_ref();
     match id_str {
         ID_SETTINGS => {
-            let ww = window_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = ww.upgrade() {
-                    win.show().expect("Failed to show window");
-                }
-            });
+            show_settings_window(window_weak);
         }
         ID_QUIT => {
             let _ = slint::invoke_from_event_loop(|| {
@@ -294,6 +297,93 @@ pub(crate) fn do_headless_wallpaper_export(
 
     eprintln!("Wallpaper updated ({width}x{height})");
     Ok(())
+}
+
+/// Show the main settings window from a background thread.
+fn show_settings_window(window_weak: &slint::Weak<MainWindow>) {
+    let ww = window_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(win) = ww.upgrade() {
+            win.show().expect("Failed to show window");
+        }
+    });
+}
+
+/// The named event used to signal the first instance to show its window.
+const SHOW_EVENT_NAME: &str = "Global\\SunlitEarthShowWindow\0";
+
+/// Create a named Win32 event for inter-instance signaling.
+///
+/// Returns the event handle (kept alive for the process lifetime).
+/// A second instance can open and signal this event to request that
+/// the settings window be shown.
+#[allow(unsafe_code)]
+fn create_show_window_event() -> windows_sys::Win32::Foundation::HANDLE {
+    use windows_sys::Win32::System::Threading::CreateEventW;
+
+    let name_wide: Vec<u16> = SHOW_EVENT_NAME.encode_utf16().collect();
+
+    // SAFETY: CreateEventW creates a named manual-reset event. The name
+    // is a null-terminated UTF-16 string. The handle is valid for the
+    // lifetime of the process. Null security attributes use the default.
+    unsafe {
+        CreateEventW(
+            std::ptr::null(),  // default security
+            1,                 // manual-reset (TRUE)
+            0,                 // initially non-signaled (FALSE)
+            name_wide.as_ptr(),
+        )
+    }
+}
+
+/// Check if the named event is signaled (non-blocking).
+///
+/// If signaled, resets the event and returns `true`.
+#[allow(unsafe_code)]
+fn is_event_signaled(event: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    use windows_sys::Win32::System::Threading::{ResetEvent, WaitForSingleObject};
+
+    if event.is_null() {
+        return false;
+    }
+
+    // SAFETY: WaitForSingleObject with timeout 0 is a non-blocking poll.
+    // The event handle was created by create_show_window_event().
+    let result = unsafe { WaitForSingleObject(event, 0) };
+
+    if result == 0 {
+        // WAIT_OBJECT_0 = 0: event was signaled
+        // SAFETY: ResetEvent resets a manual-reset event to non-signaled.
+        unsafe { ResetEvent(event) };
+        true
+    } else {
+        false
+    }
+}
+
+/// Signal the first instance to show its settings window.
+///
+/// Called by the second instance before exiting. Opens the named event
+/// created by the first instance's tray thread and sets it.
+#[allow(unsafe_code)]
+pub fn signal_show_window() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent};
+
+    let name_wide: Vec<u16> = SHOW_EVENT_NAME.encode_utf16().collect();
+
+    // SAFETY: OpenEventW opens an existing named event. EVENT_MODIFY_STATE
+    // (0x0002) grants permission to call SetEvent.
+    let handle = unsafe { OpenEventW(0x0002, 0, name_wide.as_ptr()) };
+    if handle.is_null() {
+        return; // First instance hasn't created the event yet
+    }
+
+    // SAFETY: SetEvent signals the event; CloseHandle releases our handle.
+    unsafe {
+        SetEvent(handle);
+        CloseHandle(handle);
+    }
 }
 
 #[cfg(test)]

@@ -45,6 +45,9 @@ fn main() {
         .expect("Failed to create single-instance lock");
     if !instance_guard.is_single() {
         eprintln!("Another instance of Sunlit Earth is already running");
+        // Signal the running instance to show its settings window
+        #[cfg(windows)]
+        sunlit_earth::tray::signal_show_window();
         std::process::exit(0);
     }
 

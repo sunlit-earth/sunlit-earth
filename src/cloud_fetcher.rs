@@ -210,7 +210,11 @@ pub fn spawn_cloud_fetcher(
     let tx_bg = tx;
     let window_weak_bg = window_weak;
     std::thread::spawn(move || {
-        let agent = ureq::Agent::new_with_defaults();
+        let user_agent = format!("sunlit.earth/{}", env!("CARGO_PKG_VERSION"));
+        let agent = ureq::Agent::config_builder()
+            .user_agent(&user_agent)
+            .build()
+            .new_agent();
         let mut retry_delay = INITIAL_RETRY_DELAY;
 
         loop {

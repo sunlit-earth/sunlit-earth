@@ -16,6 +16,10 @@ struct Uniforms {
     day_saturation: f32,       // 4 bytes, offset 132
     night_gamma: f32,          // 4 bytes, offset 136
     night_saturation: f32,     // 4 bytes, offset 140
+    cloud_sphere_radius: f32,  // 4 bytes, offset 144
+    cloud_opacity: f32,        // 4 bytes, offset 148
+    cloud_floor: f32,          // 4 bytes, offset 152
+    cloud_gamma: f32,          // 4 bytes, offset 156
 };
 
 @group(0) @binding(0)
@@ -124,4 +128,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     return vec4<f32>(color, 1.0);
+}
+
+@vertex
+fn vs_cloud(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let scaled = in.position * uniforms.cloud_sphere_radius;
+    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
+    out.uv = in.uv;
+    // Normal is the unscaled unit-sphere direction
+    out.world_normal = in.position;
+    return out;
+}
+
+@fragment
+fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
+    let raw = textureSample(sphere_texture, sphere_sampler, in.uv).r;
+    let floored = saturate((raw - uniforms.cloud_floor) / max(1.0 - uniforms.cloud_floor, 0.001));
+    let cloud_density = pow(floored, 1.0 / max(uniforms.cloud_gamma, 0.01));
+    let n = normalize(in.world_normal);
+    let n_dot_l = dot(n, uniforms.sun_dir);
+    let brightness = mix(0.05, 1.0, smoothstep(-uniforms.terminator_width, uniforms.terminator_width, n_dot_l));
+    return vec4<f32>(brightness, brightness, brightness, cloud_density * uniforms.cloud_opacity);
 }

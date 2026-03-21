@@ -34,6 +34,9 @@ pub(super) fn resolve_textures(
         maybe_spawn_texture_load(res, slot_index);
     }
 
+    // Cloud texture is populated by the cloud fetcher thread, not by
+    // file-based texture loading. No need to call maybe_spawn_texture_load.
+
     // Resolve which bind group to use
     if is_blend_mode {
         if res.composite_bind_group.is_some() {

@@ -34,9 +34,13 @@ struct Uniforms {
     day_saturation: f32,
     night_gamma: f32,
     night_saturation: f32,
+    cloud_sphere_radius: f32,
+    cloud_opacity: f32,
+    cloud_floor: f32,
+    cloud_gamma: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 144);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 160);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -460,22 +464,12 @@ fn avg_luminance_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1
     { sum / count as f64 }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn sphere_renders_visible_pixels() {
-    let ctx = RENDER_CTX.lock().unwrap();
-    let size = 128;
-
-    let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
-
-    let uniforms = Uniforms {
+/// Helper: default uniforms with identity color correction and no clouds.
+fn default_test_uniforms(size: u32) -> Uniforms {
+    Uniforms {
         mvp: test_mvp(size, size),
         sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0, // single-texture mode
+        terminator_width: -1.0,
         flags: 0,
         diffuse_floor: 0.1,
         diffuse_ramp: 0.6,
@@ -490,7 +484,26 @@ fn sphere_renders_visible_pixels() {
         day_saturation: 1.0,
         night_gamma: 1.0,
         night_saturation: 1.0,
-    };
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.0,
+        cloud_floor: 0.0,
+        cloud_gamma: 1.0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sphere_renders_visible_pixels() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+
+    let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms = default_test_uniforms(size);
 
     let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
     let visible = count_non_clear_pixels(&pixels);
@@ -511,23 +524,9 @@ fn day_side_brighter_than_night_side() {
 
     // Sun pointing along +Z (toward the camera at lon=0)
     let uniforms = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1, // diffuse enabled
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
 
     let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
@@ -552,25 +551,7 @@ fn single_texture_mode_ignores_night() {
     let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
     let green = create_solid_texture(&ctx.device, &ctx.queue, [0, 255, 0, 255]);
 
-    let uniforms = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0, // sentinel: single-texture mode
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms = default_test_uniforms(size);
 
     let pixels = render_frame(&ctx, &uniforms, &red, &green, size, size);
 
@@ -613,6 +594,10 @@ struct Uniforms {
     day_saturation: f32,
     night_gamma: f32,
     night_saturation: f32,
+    cloud_sphere_radius: f32,
+    cloud_opacity: f32,
+    cloud_floor: f32,
+    cloud_gamma: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -652,6 +637,11 @@ fn main() {
     output[19] = uniforms.day_saturation;
     output[20] = uniforms.night_gamma;
     output[21] = uniforms.night_saturation;
+    // cloud params
+    output[22] = uniforms.cloud_sphere_radius;
+    output[23] = uniforms.cloud_opacity;
+    output[24] = uniforms.cloud_floor;
+    output[25] = uniforms.cloud_gamma;
 }
 ";
 
@@ -698,6 +688,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         day_saturation: 0.8,
         night_gamma: 2.0,
         night_saturation: 0.6,
+        cloud_sphere_radius: 1.0015,
+        cloud_opacity: 0.9,
+        cloud_floor: 0.25,
+        cloud_gamma: 0.65,
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -706,8 +700,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 22 floats
-    let output_size = (22 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 26 floats
+    let output_size = (26 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -768,6 +762,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[19] - 0.8).abs() < eps, "day_saturation: got {}, expected 0.8", values[19]);
     assert!((values[20] - 2.0).abs() < eps, "night_gamma: got {}, expected 2.0", values[20]);
     assert!((values[21] - 0.6).abs() < eps, "night_saturation: got {}, expected 0.6", values[21]);
+    assert!((values[22] - 1.0015).abs() < eps, "cloud_sphere_radius: got {}, expected 1.0015", values[22]);
+    assert!((values[23] - 0.9).abs() < eps, "cloud_opacity: got {}, expected 0.9", values[23]);
+    assert!((values[24] - 0.25).abs() < eps, "cloud_floor: got {}, expected 0.25", values[24]);
+    assert!((values[25] - 0.65).abs() < eps, "cloud_gamma: got {}, expected 0.65", values[25]);
 }
 
 // ---------------------------------------------------------------------------
@@ -814,23 +812,9 @@ fn fresnel_specular_zero_intensity_unchanged() {
     // With spec_intensity=0.0, Fresnel has nothing to multiply — output
     // should be identical regardless of Fresnel.
     let uniforms = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
 
     let pixels = render_frame(&ctx, &uniforms, &water, &night, size, size);
@@ -857,22 +841,11 @@ fn fresnel_specular_brighter_at_grazing() {
     let eye_head_on = glam::Vec3::new(0.0, 0.0, 3.5);
     let uniforms_head_on = Uniforms {
         mvp: test_mvp_with_eye(size, size, eye_head_on),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
         eye_pos: eye_head_on.into(),
-        _pad2: 0.0,
-        spec_shininess: 150.0,
         spec_intensity: 0.5,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
     let pixels_head_on = render_frame(&ctx, &uniforms_head_on, &water, &night, size, size);
     let lum_head_on = avg_luminance_non_clear(&pixels_head_on);
@@ -882,22 +855,8 @@ fn fresnel_specular_brighter_at_grazing() {
     let eye_grazing = glam::Vec3::new(2.5, 0.0, 2.5);
     let uniforms_grazing = Uniforms {
         mvp: test_mvp_with_eye(size, size, eye_grazing),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: 0.15,
-        flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
         eye_pos: eye_grazing.into(),
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.5,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..uniforms_head_on
     };
     let pixels_grazing = render_frame(&ctx, &uniforms_grazing, &water, &night, size, size);
     let lum_grazing = avg_luminance_non_clear(&pixels_grazing);
@@ -926,23 +885,9 @@ fn fresnel_diffuse_shift_zero_is_noop() {
 
     // Baseline: fresnel_mix=0
     let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
 
@@ -966,23 +911,9 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
 
     // Without Fresnel diffuse shift
     let uniforms_no_shift = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
     let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, &water, &night, size, size);
     let lum_no_shift = avg_luminance_non_clear(&pixels_no_shift);
@@ -1015,23 +946,9 @@ fn fresnel_diffuse_shift_absent_on_land() {
 
     // Without Fresnel diffuse shift
     let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &land, &night, size, size);
 
@@ -1060,23 +977,10 @@ fn fresnel_diffuse_shift_absent_at_night() {
 
     // Sun pointing away from camera (night side faces camera)
     let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
         sun_dir: [0.0, 0.0, -1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
     let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
 
@@ -1103,6 +1007,189 @@ fn fresnel_diffuse_shift_absent_at_night() {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud pipeline tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cloud_pipeline_renders_with_alpha() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 64;
+
+    // Create a cloud pipeline using vs_cloud / fs_cloud entry points
+    let wgsl_source = format!(
+        "{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+    );
+    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("test_cloud_shader"),
+        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+    });
+
+    let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("test_cloud_pipeline_layout"),
+        bind_group_layouts: &[&ctx.bind_group_layout],
+        immediate_size: 0,
+    });
+
+    let cloud_pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("test_cloud_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_cloud"),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x3,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 12,
+                        shader_location: 1,
+                        format: wgpu::VertexFormat::Float32x2,
+                    },
+                ],
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_cloud"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    });
+
+    // 1x1 white cloud texture (fully opaque cloud)
+    let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
+    let dummy = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+
+    let uniforms = Uniforms {
+        terminator_width: 0.15,
+        cloud_opacity: 1.0,
+        ..default_test_uniforms(size)
+    };
+
+    ctx.queue.write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+
+    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test_cloud_bind_group"),
+        layout: &ctx.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ctx.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&cloud_tex),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&ctx.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&dummy),
+            },
+        ],
+    });
+
+    let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_cloud_render_target"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+
+    let depth_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_cloud_depth"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    let color_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("test_cloud_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+
+        pass.set_pipeline(&cloud_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
+        pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..ctx.index_count, 0, 0..1);
+    }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+
+    let pixels = common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, size, size);
+    let visible = count_non_clear_pixels(&pixels);
+
+    assert!(
+        visible > 50,
+        "Cloud pipeline should render visible pixels, got {visible}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Color correction: gamma tests (Step 3.2)
 // ---------------------------------------------------------------------------
 
@@ -1114,25 +1201,7 @@ fn gamma_above_one_brightens() {
     let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
-    let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0, // single-texture mode
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms_base = default_test_uniforms(size);
     let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
     let lum_base = avg_luminance_non_clear(&pixels_base);
 
@@ -1157,25 +1226,7 @@ fn gamma_below_one_darkens() {
     let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
-    let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0,
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms_base = default_test_uniforms(size);
     let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
     let lum_base = avg_luminance_non_clear(&pixels_base);
 
@@ -1200,25 +1251,7 @@ fn gamma_identity_unchanged() {
     let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
-    let uniforms = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0,
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms = default_test_uniforms(size);
 
     // Render twice with identical identity settings
     let pixels_a = render_frame(&ctx, &uniforms, &mid_gray, &black, size, size);
@@ -1243,23 +1276,8 @@ fn saturation_zero_produces_greyscale() {
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
     let uniforms = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0,
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
         day_saturation: 0.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
 
     let pixels = render_frame(&ctx, &uniforms, &red, &black, size, size);
@@ -1301,25 +1319,7 @@ fn saturation_identity_unchanged() {
     let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
-    let uniforms = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0,
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms = default_test_uniforms(size);
 
     let pixels_a = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
     let pixels_b = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
@@ -1338,25 +1338,7 @@ fn saturation_above_one_increases_chroma() {
     let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
-    let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0,
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms_base = default_test_uniforms(size);
     let pixels_base = render_frame(&ctx, &uniforms_base, &colorful, &black, size, size);
 
     let uniforms_saturated = Uniforms {
@@ -1413,25 +1395,7 @@ fn night_gamma_does_not_affect_single_texture_mode() {
     let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
-    let uniforms_base = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
-        terminator_width: -1.0, // single-texture mode
-        flags: 0,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
-        day_gamma: 1.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
-    };
+    let uniforms_base = default_test_uniforms(size);
     let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
 
     let uniforms_night_extreme = Uniforms {
@@ -1457,23 +1421,10 @@ fn day_and_night_corrections_independent() {
     let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [64, 64, 64, 255]);
 
     let uniforms_day_bright = Uniforms {
-        mvp: test_mvp(size, size),
-        sun_dir: [0.0, 0.0, 1.0],
         terminator_width: 0.15,
         flags: 1,
-        diffuse_floor: 0.1,
-        diffuse_ramp: 0.6,
-        _pad: 0.0,
-        eye_pos: [0.0, 0.0, 3.5],
-        _pad2: 0.0,
-        spec_shininess: 150.0,
-        spec_intensity: 0.0,
-        fresnel_mix: 0.0,
-        fresnel_exp: 5.0,
         day_gamma: 2.0,
-        day_saturation: 1.0,
-        night_gamma: 1.0,
-        night_saturation: 1.0,
+        ..default_test_uniforms(size)
     };
     let pixels_day_bright = render_frame(&ctx, &uniforms_day_bright, &mid_gray, &dark_gray, size, size);
 

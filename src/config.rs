@@ -54,6 +54,11 @@ pub struct AppConfig {
     pub fresnel_mix: f32,
     pub fresnel_exp: f32,
 
+    // Clouds
+    pub cloud_opacity: f32,
+    pub cloud_floor: f32,
+    pub cloud_gamma: f32,
+
     // Color correction
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -101,6 +106,9 @@ impl Default for AppConfig {
             spec_intensity: 0.17,
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
+            cloud_opacity: 0.85,
+            cloud_floor: 0.25,
+            cloud_gamma: 0.65,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -307,6 +315,25 @@ mod tests {
     }
 
     #[test]
+    fn default_cloud_floor() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.cloud_floor, 0.25);
+    }
+
+    #[test]
+    fn default_cloud_gamma() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.cloud_gamma, 0.65);
+    }
+
+    #[test]
+    fn deserialize_missing_cloud_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
+        assert_relative_eq!(config.cloud_floor, 0.25);
+        assert_relative_eq!(config.cloud_gamma, 0.65);
+    }
+
+    #[test]
     fn default_values_color_correction() {
         let config = AppConfig::default();
         assert_relative_eq!(config.day_gamma, 1.0);
@@ -353,6 +380,9 @@ mod tests {
             spec_intensity: 0.6,
             fresnel_mix: 0.5,
             fresnel_exp: 3.0,
+            cloud_opacity: 0.6,
+            cloud_floor: 0.2,
+            cloud_gamma: 0.3,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -483,6 +513,9 @@ mod tests {
             spec_intensity: 0.8,
             fresnel_mix: 0.7,
             fresnel_exp: 4.0,
+            cloud_opacity: 0.6,
+            cloud_floor: 0.15,
+            cloud_gamma: 0.5,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

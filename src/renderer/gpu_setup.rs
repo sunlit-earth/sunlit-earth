@@ -14,7 +14,7 @@ use super::GpuResources;
 const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn create_gpu_resources(
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -22,6 +22,8 @@ pub(super) fn create_gpu_resources(
     width: u32,
     height: u32,
     texture_paths: &[Option<PathBuf>],
+    texture_tx: mpsc::Sender<super::textures::DecodedTextureMessage>,
+    texture_rx: mpsc::Receiver<super::textures::DecodedTextureMessage>,
     window_weak: slint::Weak<MainWindow>,
 ) -> GpuResources {
     // Generate sphere mesh
@@ -173,6 +175,12 @@ pub(super) fn create_gpu_resources(
             loading: false,
         });
     }
+    // Slot 3 = cloud overlay (populated by the cloud fetcher thread, not file-based)
+    texture_slots.push(TextureSlot {
+        bind_group: None,
+        source_path: None,
+        loading: false,
+    });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("sphere_pipeline_layout"),
@@ -200,8 +208,7 @@ pub(super) fn create_gpu_resources(
         );
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
-
-    let (texture_tx, texture_rx) = mpsc::channel();
+    let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
     GpuResources {
         pipeline,
@@ -235,6 +242,9 @@ pub(super) fn create_gpu_resources(
         composite_bind_group: None,
         day_texture_view: None,
         night_texture_view: None,
+        cloud_pipeline,
+        cloud_bind_group: None,
+        cloud_texture_view: None,
     }
 }
 
@@ -272,6 +282,54 @@ pub(super) fn create_pipeline(
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+pub(super) fn create_cloud_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("cloud_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_cloud"),
+            buffers: &[Vertex::buffer_layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_cloud"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::Less,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
@@ -372,6 +430,8 @@ pub(super) fn create_render_textures(
 pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
     replace_render_textures(res, res.render_width, res.render_height, sample_count);
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.cloud_pipeline =
+        create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
 }
 

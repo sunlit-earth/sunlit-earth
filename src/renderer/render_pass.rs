@@ -25,6 +25,10 @@ pub(super) struct ShadingParams {
     pub day_saturation: f32,
     pub night_gamma: f32,
     pub night_saturation: f32,
+    pub cloud_sphere_radius: f32,
+    pub cloud_opacity: f32,
+    pub cloud_floor: f32,
+    pub cloud_gamma: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -103,11 +107,19 @@ pub(super) fn write_uniforms(
         day_saturation: shading.day_saturation,
         night_gamma: shading.night_gamma,
         night_saturation: shading.night_saturation,
+        cloud_sphere_radius: shading.cloud_sphere_radius,
+        cloud_opacity: shading.cloud_opacity,
+        cloud_floor: shading.cloud_floor,
+        cloud_gamma: shading.cloud_gamma,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }
 
 /// Encode and submit a render pass with the given target and bind group.
+///
+/// If `cloud_pipeline` and `cloud_bind_group` are both `Some`, a second
+/// draw call is issued for the cloud overlay sphere within the same render
+/// pass, reusing the already-bound vertex and index buffers.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
@@ -118,6 +130,8 @@ pub(super) fn encode_and_submit(
     vertex_buffer: &wgpu::Buffer,
     index_buffer: &wgpu::Buffer,
     index_count: u32,
+    cloud_pipeline: Option<&wgpu::RenderPipeline>,
+    cloud_bind_group: Option<&wgpu::BindGroup>,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("sphere_encoder"),
@@ -156,6 +170,14 @@ pub(super) fn encode_and_submit(
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..index_count, 0, 0..1);
+
+        // Cloud overlay (second draw in the same render pass)
+        if let (Some(cloud_pipe), Some(cloud_bg)) = (cloud_pipeline, cloud_bind_group) {
+            pass.set_pipeline(cloud_pipe);
+            pass.set_bind_group(0, cloud_bg, &[]);
+            // Vertex and index buffers remain bound from the Earth draw
+            pass.draw_indexed(0..index_count, 0, 0..1);
+        }
     }
 
     queue.submit(std::iter::once(encoder.finish()));
@@ -199,6 +221,15 @@ pub(super) fn execute_render_pass(
         res.msaa_depth_view.as_ref(),
     );
 
+    // Only issue the cloud draw call when the cloud texture has loaded
+    // and the user has not disabled clouds (opacity > 0)
+    let (cloud_pipe, cloud_bg) =
+        if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
+            (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
+        } else {
+            (None, None)
+        };
+
     encode_and_submit(
         &res.device,
         &res.queue,
@@ -208,6 +239,8 @@ pub(super) fn execute_render_pass(
         &res.vertex_buffer,
         &res.index_buffer,
         res.index_count,
+        cloud_pipe,
+        cloud_bg,
     );
 
     Image::try_from(res.render_texture.clone())

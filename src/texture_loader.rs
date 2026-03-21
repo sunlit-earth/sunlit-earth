@@ -50,7 +50,7 @@ pub fn load(path: &Path) -> Result<DecodedImage, String> {
 
 /// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
 /// with the sphere's u=0.
-fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+pub(crate) fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
     let row_bytes = w * 4;
     let shift_bytes = w * 3; // 3/4 width in bytes (each pixel is 4 bytes)

@@ -4,6 +4,9 @@
 //! Communication from the tray thread to the Slint event loop uses
 //! `slint::invoke_from_event_loop()`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use slint::ComponentHandle;
@@ -112,6 +115,19 @@ fn run_tray(
         .build()
         .expect("Failed to build tray icon");
 
+    // Auto-refresh control: shared atomics between tray and refresh threads
+    let auto_refresh_active = Arc::new(AtomicBool::new(config.auto_refresh_enabled));
+    let auto_refresh_interval = Arc::new(AtomicU32::new(config.auto_refresh_interval_minutes));
+
+    // Spawn the auto-refresh background thread
+    {
+        let active = Arc::clone(&auto_refresh_active);
+        let interval = Arc::clone(&auto_refresh_interval);
+        std::thread::spawn(move || {
+            run_auto_refresh_loop(&active, &interval);
+        });
+    }
+
     // Win32 message pump (required for tray icon events on Windows)
     let menu_rx = MenuEvent::receiver();
 
@@ -121,7 +137,12 @@ fn run_tray(
 
         // Poll for menu events (non-blocking)
         if let Ok(event) = menu_rx.try_recv() {
-            handle_menu_event(&event.id, &window_weak);
+            handle_menu_event(
+                &event.id,
+                &window_weak,
+                &auto_refresh_active,
+                &auto_refresh_interval,
+            );
         }
 
         // Small sleep to avoid busy-waiting
@@ -167,7 +188,12 @@ fn pump_win32_messages() {
     }
 }
 
-fn handle_menu_event(id: &MenuId, window_weak: &slint::Weak<MainWindow>) {
+fn handle_menu_event(
+    id: &MenuId,
+    window_weak: &slint::Weak<MainWindow>,
+    auto_refresh_active: &Arc<AtomicBool>,
+    _auto_refresh_interval: &Arc<AtomicU32>,
+) {
     let id_str = id.as_ref();
     match id_str {
         ID_SETTINGS => {
@@ -187,7 +213,7 @@ fn handle_menu_event(id: &MenuId, window_weak: &slint::Weak<MainWindow>) {
             do_headless_refresh();
         }
         ID_AUTO_REFRESH => {
-            toggle_auto_refresh();
+            toggle_auto_refresh(auto_refresh_active);
         }
         _ => {}
     }
@@ -203,15 +229,52 @@ fn do_headless_refresh() {
     });
 }
 
-/// Toggle auto-refresh in the config and save to disk.
-fn toggle_auto_refresh() {
+/// Toggle auto-refresh in the config, update the atomic flag, and save to disk.
+fn toggle_auto_refresh(active: &Arc<AtomicBool>) {
+    let was_active = active.load(Ordering::Relaxed);
+    let now_active = !was_active;
+    active.store(now_active, Ordering::Relaxed);
+
     let mut config = crate::config::load_config();
-    config.auto_refresh_enabled = !config.auto_refresh_enabled;
+    config.auto_refresh_enabled = now_active;
     crate::config::save_config(&config);
     eprintln!(
         "Auto-refresh {}",
-        if config.auto_refresh_enabled { "enabled" } else { "disabled" }
+        if now_active { "enabled" } else { "disabled" }
     );
+}
+
+/// Background auto-refresh loop.
+///
+/// Sleeps for the configured interval, then checks whether auto-refresh is
+/// enabled and `has_set_wallpaper` is true. If both conditions are met,
+/// performs a headless wallpaper export. The loop runs indefinitely and
+/// respects the `active` and `interval` atomics which can be updated from
+/// the tray thread at any time.
+fn run_auto_refresh_loop(active: &AtomicBool, interval_minutes: &AtomicU32) {
+    loop {
+        // Sleep in 1-second increments so we can respond to interval changes
+        let target_secs = u64::from(interval_minutes.load(Ordering::Relaxed).max(1)) * 60;
+        for _ in 0..target_secs {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        // Check if auto-refresh is enabled
+        if !active.load(Ordering::Relaxed) {
+            continue;
+        }
+
+        // Re-read config from disk to get current settings and check has_set_wallpaper
+        let config = crate::config::load_config();
+        if !config.has_set_wallpaper {
+            continue;
+        }
+
+        eprintln!("Auto-refresh: updating wallpaper...");
+        if let Err(e) = do_headless_wallpaper_export(&config) {
+            eprintln!("Auto-refresh failed: {e}");
+        }
+    }
 }
 
 /// Shared headless wallpaper export logic used by both "Refresh" and

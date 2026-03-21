@@ -8,6 +8,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [ ] Periodic re-rendering: timer-driven scheduler that re-renders every N minutes so the terminator tracks the sun. Update interval should be user-configurable.
 - [ ] System tray and background operation: minimize to tray with a status menu ("Render Now", "Open Settings", "Quit"). Support headless/daemon mode without the GUI window.
 - [x] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
+- [ ] Auto-start at login: optionally launch Sunlit Earth at OS startup (Windows registry `HKCU\...\Run`, XDG autostart on Linux, launchd on macOS). Consider using the `auto-launch` crate.
 - [ ] Wallpaper setting on Linux and macOS: extend the wallpaper setter to support GNOME/KDE (`gsettings`/DBus), X11/Wayland, and macOS (`osascript`/`NSWorkspace`).
 - [ ] Multi-monitor support: detect monitor layout and resolution, render appropriately sized wallpapers for each display.
 

@@ -41,6 +41,7 @@ jobs:
         with:
           shared-key: ci-windows
           save-if: "false"
+          add-rust-environment-hash-key: false
       - run: cargo clippy --all-targets --locked
         shell: bash
 
@@ -59,5 +60,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-windows
+          add-rust-environment-hash-key: false
       - run: cargo test --locked
         shell: bash

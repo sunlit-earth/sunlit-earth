@@ -28,6 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-windows
+          add-rust-environment-hash-key: false
       - run: cargo build --release --locked
         shell: bash
       - name: Package binary

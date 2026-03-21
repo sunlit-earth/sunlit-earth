@@ -111,8 +111,8 @@ proptest = "1"    # property-based testing for pure functions
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **`ci.yml`** -- Runs on every push to `main` and every PR targeting `main`. One active job:
-  - `check` (Windows): runs `cargo test --locked` then `cargo clippy --all-targets --locked` sequentially. Test runs first so clippy can reuse compiled dependency artifacts (clippy can't reuse test artifacts from cache across runners due to fingerprint mismatches, but within the same job it works).
+- **`ci.yml`** -- Runs on every push to `main` and every PR targeting `main`. One job:
+  - `test` (Windows): `cargo test --locked` -- full test suite including GPU integration tests on the software adapter
   - `fmt` is commented out pending a codebase-wide reformat (see `docs/notes.md`)
 - **`release.yml`** -- Runs on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds an optimized binary with `cargo build --release --locked`, packages it as a zip, and creates a GitHub Release with auto-generated notes.
 
@@ -122,7 +122,7 @@ Key CI details:
 - `RUSTFLAGS: "-D warnings"` is commented out pending a lint cleanup (see `docs/roadmap.md`)
 - All `cargo` commands use `--locked` for reproducible builds from `Cargo.lock`
 - GPU integration tests use the wgpu software adapter on CI runners (no hardware GPU available)
-- Test and clippy run in a single job so clippy reuses test's compiled artifacts without cache round-tripping
+- Clippy is run locally only, not in CI (cargo clippy artifacts are incompatible with cargo test cache, causing full recompilation)
 - Release uses a separate cache (`shared-key: release-windows`) because release artifacts differ from debug
 
 ## Key Constraints

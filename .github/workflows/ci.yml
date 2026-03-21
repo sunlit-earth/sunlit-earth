@@ -23,14 +23,12 @@ jobs:
   #     - run: cargo fmt --check
   #       shell: bash
 
-  check:
-    name: Test & Clippy
+  test:
+    name: Test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - uses: KyleMayes/install-llvm-action@v2
         with:
           version: "19"
@@ -42,6 +40,4 @@ jobs:
           shared-key: ci-windows
           add-rust-environment-hash-key: false
       - run: cargo test --locked
-        shell: bash
-      - run: cargo clippy --all-targets --locked
         shell: bash

@@ -23,8 +23,8 @@ jobs:
   #     - run: cargo fmt --check
   #       shell: bash
 
-  clippy:
-    name: Clippy
+  check:
+    name: Test & Clippy
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,26 +40,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-windows
-          save-if: "false"
-          add-rust-environment-hash-key: false
-      - run: cargo clippy --all-targets --locked
-        shell: bash
-
-  test:
-    name: Test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "19"
-      - name: Set LIBCLANG_PATH
-        run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
-        shell: bash
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-windows
           add-rust-environment-hash-key: false
       - run: cargo test --locked
+        shell: bash
+      - run: cargo clippy --all-targets --locked
         shell: bash

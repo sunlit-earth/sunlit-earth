@@ -1,4 +1,5 @@
 use slint::wgpu_28::WGPUConfiguration;
+use tracing::{info, warn};
 
 /// Result of initializing wgpu manually.
 pub struct WgpuContext {
@@ -24,6 +25,7 @@ pub fn init(force_software: bool) -> WgpuContext {
     let adapter = select_adapter(&adapters, force_software);
     let info = adapter.get_info();
     let adapter_info = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
+    info!(adapter = %adapter_info, "selected GPU adapter");
 
     // Try to request adapter-specific format features for broader MSAA support.
     // Fall back to no extra features if unsupported.
@@ -80,7 +82,7 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
         {
             return adapter;
         }
-        eprintln!("Warning: no software adapter found, using default selection");
+        warn!("no software adapter found, using default selection");
     }
 
     // Respect WGPU_ADAPTER_NAME env var
@@ -92,7 +94,7 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
         {
             return adapter;
         }
-        eprintln!("Warning: WGPU_ADAPTER_NAME={name:?} not found, using default selection");
+        warn!(name = %name, "WGPU_ADAPTER_NAME not found, using default selection");
     }
 
     adapters

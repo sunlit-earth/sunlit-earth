@@ -5,6 +5,10 @@ use std::rc::Rc;
 
 use clap::Parser;
 use slint::ComponentHandle;
+use tracing::{debug, info};
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, fmt};
 
 use sunlit_earth::config::{self, AppConfig};
 use sunlit_earth::renderer::{self, gamma_slider_to_value, gamma_value_to_slider};
@@ -27,13 +31,72 @@ struct Cli {
     /// Path to the textures directory
     #[arg(long)]
     textures_dir: Option<PathBuf>,
+
+    /// Log level [possible values: error, warn, info, debug, trace]
+    ///
+    /// Takes precedence over the `RUST_LOG` environment variable.
+    #[arg(long)]
+    log_level: Option<String>,
+}
+
+/// Initialize the global tracing subscriber.
+///
+/// `cli_level` is the default log level from the `--log-level` CLI flag.
+/// It is ignored when the `RUST_LOG` environment variable is set.
+///
+/// Returns a `WorkerGuard` that must be kept alive for the duration of the
+/// program so that buffered log lines are flushed before exit.
+fn init_logging(cli_level: Option<&str>) -> tracing_appender::non_blocking::WorkerGuard {
+    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+
+    let base_filter = match cli_level {
+        Some(level) => EnvFilter::new(level),
+        None => EnvFilter::from_default_env().add_directive("info".parse().expect("valid directive")),
+    };
+
+    let env_filter = base_filter
+        .add_directive("wgpu_core=warn".parse().expect("valid directive"))
+        .add_directive("wgpu_hal=error".parse().expect("valid directive"))
+        .add_directive("naga=warn".parse().expect("valid directive"))
+        .add_directive("winit=warn".parse().expect("valid directive"))
+        .add_directive("ureq=warn".parse().expect("valid directive"))
+        .add_directive("ureq_proto=warn".parse().expect("valid directive"))
+        .add_directive("rustls=warn".parse().expect("valid directive"))
+        .add_directive("jxl_render=warn".parse().expect("valid directive"))
+        .add_directive("jxl_grid=warn".parse().expect("valid directive"))
+        .add_directive("jxl_modular=warn".parse().expect("valid directive"))
+        .add_directive("jxl_bitstream=warn".parse().expect("valid directive"))
+        .add_directive("jxl_frame=warn".parse().expect("valid directive"))
+        .add_directive("jxl_color=warn".parse().expect("valid directive"));
+
+    let fmt_layer = fmt::layer()
+        .with_writer(non_blocking)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_span_events(FmtSpan::CLOSE);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .init();
+
+    guard
 }
 
 #[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
+    let _guard = init_logging(cli.log_level.as_deref());
+    info!("sunlit earth v{}", env!("CARGO_PKG_VERSION"));
+    debug!(
+        software_rendering = cli.software_rendering,
+        textures_dir = ?cli.textures_dir,
+        log_level = ?cli.log_level,
+        "parsed CLI arguments"
+    );
 
     let wgpu_context = wgpu_init::init(cli.software_rendering);
+    sunlit_earth::memory::log_memory_usage("after wgpu init");
 
     slint::BackendSelector::new()
         .require_wgpu_28(wgpu_context.config)
@@ -42,10 +105,12 @@ fn main() {
 
     let window = MainWindow::new().expect("Failed to create window");
     window.set_renderer_info(wgpu_context.adapter_info.into());
+    sunlit_earth::memory::log_memory_usage("after window creation");
 
     // Load persisted config (falls back to defaults if missing or corrupt)
     let config = config::load_config();
     apply_config_to_window(&window, &config);
+    debug!("loaded config from disk");
 
     // Set up AA options from supported sample counts
     let (aa_labels, aa_counts, _aa_default) =
@@ -56,6 +121,7 @@ fn main() {
 
     // Register JXL decoding hook before any image loading
     texture_loader::register_jxl_hook();
+    debug!("registered JXL decoding hook");
 
     // Resolve texture paths for JXL files (loaded lazily when selected)
     let textures_dir = texture_loader::resolve_textures_dir(cli.textures_dir.as_deref());
@@ -68,6 +134,7 @@ fn main() {
         .map(|d| d.join("BlackMarble_2016.jxl"))
         .filter(|p| p.exists());
     let texture_paths = vec![day_path, night_path];
+    info!(textures_dir = ?textures_dir, day = ?texture_paths[0], night = ?texture_paths[1], "resolved texture paths");
 
     // Set up texture options — always show all four
     let labels: Vec<slint::SharedString> = vec![
@@ -276,6 +343,7 @@ fn main() {
         window.as_weak(),
         3,
     );
+    info!("spawned cloud fetcher background thread");
 
     // Periodic timer to update the sun position (every 2 minutes)
     let window_weak = window.as_weak();
@@ -285,6 +353,7 @@ fn main() {
         std::time::Duration::from_secs(120),
         move || {
             if let Some(win) = window_weak.upgrade() {
+                sunlit_earth::memory::log_memory_usage("sun timer tick");
                 win.window().request_redraw();
             }
         },
@@ -293,6 +362,8 @@ fn main() {
     window.run().expect("Failed to run window");
 
     // Save config on exit as a backstop (catches any changes during the debounce window)
+    info!("event loop exited, saving config");
+    sunlit_earth::memory::log_memory_usage("before exit");
     config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
 
     // Keep timers alive until the event loop exits (prevent drop optimization)
@@ -300,6 +371,7 @@ fn main() {
     drop(config_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
+    debug!("exiting");
     std::process::exit(0);
 }
 
@@ -422,9 +494,12 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
 /// and set it as the Windows desktop wallpaper.
 #[cfg(windows)]
 fn do_set_wallpaper() -> Result<(), String> {
+    info!("starting wallpaper export");
     let (width, height) = wallpaper::get_primary_monitor_resolution()?;
     let pixels = renderer::export_wallpaper_image(width, height)?;
     let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
     wallpaper::set_wallpaper(&path)?;
+    info!(path = %path.display(), "wallpaper set successfully");
+    sunlit_earth::memory::log_memory_usage("after wallpaper set");
     Ok(())
 }

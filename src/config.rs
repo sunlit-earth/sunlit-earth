@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::scene::camera::CameraParams;
 
@@ -139,7 +140,7 @@ pub fn config_path() -> Option<PathBuf> {
 /// read, or contains invalid TOML. Parse errors are logged to stderr.
 pub fn load_config() -> AppConfig {
     let Some(path) = config_path() else {
-        eprintln!("Warning: could not determine config directory");
+        warn!("could not determine config directory");
         return AppConfig::default();
     };
     load_config_from(&path)
@@ -153,14 +154,14 @@ fn load_config_from(path: &std::path::Path) -> AppConfig {
             return AppConfig::default();
         }
         Err(e) => {
-            eprintln!("Warning: could not read config file {}: {e}", path.display());
+            warn!(path = %path.display(), error = %e, "could not read config file");
             return AppConfig::default();
         }
     };
     match toml::from_str::<ConfigFile>(&contents) {
         Ok(file) => file.sunlit.earth,
         Err(e) => {
-            eprintln!("Warning: could not parse config file {}: {e}", path.display());
+            warn!(path = %path.display(), error = %e, "could not parse config file");
             AppConfig::default()
         }
     }
@@ -173,7 +174,7 @@ fn load_config_from(path: &std::path::Path) -> AppConfig {
 /// if it does not exist. Errors are logged to stderr but never propagated.
 pub fn save_config(config: &AppConfig) {
     let Some(path) = config_path() else {
-        eprintln!("Warning: could not determine config directory; config not saved");
+        warn!("could not determine config directory; config not saved");
         return;
     };
     save_config_to(config, &path);
@@ -189,7 +190,7 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
     let toml_str = match toml::to_string_pretty(&file) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Warning: could not serialize config: {e}");
+            warn!(error = %e, "could not serialize config");
             return;
         }
     };
@@ -197,18 +198,18 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
     if let Some(parent) = path.parent()
         && let Err(e) = fs::create_dir_all(parent)
     {
-        eprintln!("Warning: could not create config directory {}: {e}", parent.display());
+        warn!(path = %parent.display(), error = %e, "could not create config directory");
         return;
     }
 
     let tmp_path = path.with_extension("toml~");
     if let Err(e) = fs::write(&tmp_path, &toml_str) {
-        eprintln!("Warning: could not write temporary config file {}: {e}", tmp_path.display());
+        warn!(path = %tmp_path.display(), error = %e, "could not write temporary config file");
         return;
     }
 
     if let Err(e) = fs::rename(&tmp_path, path) {
-        eprintln!("Warning: could not rename config file to {}: {e}", path.display());
+        warn!(path = %path.display(), error = %e, "could not rename config file");
     }
 }
 
@@ -259,7 +260,7 @@ pub fn validated_window_geometry(config: &AppConfig) -> Option<(i32, i32, u32, u
     if is_position_on_screen(x, y, w, h) {
         Some((x, y, w, h))
     } else {
-        eprintln!("Warning: saved window position ({x}, {y}) is off-screen, using OS default");
+        warn!(x, y, "saved window position is off-screen, using OS default");
         None
     }
 }

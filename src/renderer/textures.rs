@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use slint::ComponentHandle;
+use tracing::{error, info};
 
 use crate::texture_loader;
 
@@ -37,8 +38,12 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                     &format!("texture_slot_{}", msg.slot_index),
                     img.width,
                     img.height,
-                    &img.pixels,
+                    img.pixels,
                 );
+                // Flush staging buffers so they don't accumulate across textures
+                let _ = res.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+                info!(slot = msg.slot_index, "GPU texture created");
+                crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 let bind_group = create_bind_group(
                     &res.device,
@@ -65,7 +70,7 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                 }
             }
             Err(e) => {
-                eprintln!("{e}");
+                error!(slot = msg.slot_index, error = %e, "texture decode failed");
                 // Mark source_path as None so we don't retry
                 res.texture_slots[msg.slot_index].source_path = None;
                 res.texture_slots[msg.slot_index].loading = false;
@@ -131,13 +136,14 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index
         let start = std::time::Instant::now();
         let result = match texture_loader::load(&path) {
             Ok(img) => {
-                eprintln!(
-                    "Decoded texture ({}\u{d7}{}) from {} in {:.2}s",
-                    img.width,
-                    img.height,
-                    path.display(),
-                    start.elapsed().as_secs_f64(),
+                info!(
+                    width = img.width,
+                    height = img.height,
+                    path = %path.display(),
+                    elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
+                    "decoded texture"
                 );
+                crate::memory::log_memory_usage("after texture decode");
                 Ok(img)
             }
             Err(e) => Err(e),
@@ -165,13 +171,17 @@ pub(super) fn resolve_render_index(res: &mut super::GpuResources, slot_index: us
 }
 
 /// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
+///
+/// Takes ownership of `rgba_pixels` to avoid a 128 MB clone for 8K textures.
+/// The buffer is reused in-place for mipmap downsampling.
+#[tracing::instrument(skip(device, queue, rgba_pixels), fields(label, width, height))]
 pub(super) fn create_mipmapped_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
     width: u32,
     height: u32,
-    rgba_pixels: &[u8],
+    rgba_pixels: Vec<u8>,
 ) -> wgpu::Texture {
     let mip_count = width.max(height).ilog2() + 1;
 
@@ -191,10 +201,12 @@ pub(super) fn create_mipmapped_texture(
     });
 
     // Upload mip level 0
-    upload_mip(queue, &texture, 0, width, height, rgba_pixels);
+    upload_mip(queue, &texture, 0, width, height, &rgba_pixels);
+    crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
-    // Generate subsequent mip levels by box-filtering the previous level
-    let mut pixels = rgba_pixels.to_vec();
+    // Generate subsequent mip levels by box-filtering the previous level.
+    // We take ownership of the pixel buffer to avoid cloning 128 MB for 8K textures.
+    let mut pixels = rgba_pixels;
     let mut w = width;
     let mut h = height;
     for level in 1..mip_count {
@@ -203,6 +215,7 @@ pub(super) fn create_mipmapped_texture(
         h = (h / 2).max(1);
         upload_mip(queue, &texture, level, w, h, &pixels);
     }
+    crate::memory::log_memory_usage("mipmap: after all levels");
 
     texture
 }

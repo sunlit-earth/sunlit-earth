@@ -17,7 +17,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Color correction: Rendered textures still look darker than their sources. Investigate if there is a color space issue to resolve and provide in-app texture processing to adjust e.g. gamma and saturation (current image may be oversaturated)
 - [x] Water on the day side looks matte and more like a solid surface that happens to be blue. Investigate what kind of effect can be applied to make it look more like actual water. First iteration: specular sun glint (Blinn-Phong). Second iteration: Schlick Fresnel for specular modulation and diffuse color shift toward sky at grazing angles, with UI sliders for mix strength and extent.
 - [ ] Seasonal texture switching: auto-select from the 12 monthly NASA Blue Marble variants based on the current month.
-- [ ] Atmosphere glow / Airglow: subtle blue/orange glow at the Earth's limb.
+- [x] Atmosphere glow / Airglow: three physically-motivated layers (Rayleigh scattering, orange nightglow, green nightglow) with separate controls.
 - [ ] Cloud overlay: semi-transparent cloud layer from near-real-time satellite data. Requires researching data sources (GOES/Himawari composites, etc.) and building a download + caching pipeline.
 - [ ] Memory budget management: MSAA 8x at 4K uses 600+ MB in render textures (see [notes.md](notes.md)). Auto-reduce MSAA or cap resolution based on available memory.
 - [ ] Star field: astronomically correct background stars.

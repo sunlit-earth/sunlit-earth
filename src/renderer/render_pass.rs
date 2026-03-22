@@ -29,9 +29,14 @@ pub(super) struct ShadingParams {
     pub cloud_opacity: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
-    pub atmo_intensity: f32,
-    pub atmo_falloff: f32,
-    pub atmo_radius: f32,
+    pub rayleigh_intensity: f32,
+    pub rayleigh_sharpness: f32,
+    pub nightglow_intensity: f32,
+    pub nightglow_falloff: f32,
+    pub nightglow_balance: f32,
+    pub rayleigh_radius: f32,
+    pub nightglow_orange_radius: f32,
+    pub nightglow_green_radius: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -114,19 +119,25 @@ pub(super) fn write_uniforms(
         cloud_opacity: shading.cloud_opacity,
         cloud_floor: shading.cloud_floor,
         cloud_gamma: shading.cloud_gamma,
-        atmo_intensity: shading.atmo_intensity,
-        atmo_falloff: shading.atmo_falloff,
-        atmo_radius: shading.atmo_radius,
-        _pad3: 0.0,
+        rayleigh_intensity: shading.rayleigh_intensity,
+        rayleigh_sharpness: shading.rayleigh_sharpness,
+        nightglow_intensity: shading.nightglow_intensity,
+        nightglow_falloff: shading.nightglow_falloff,
+        nightglow_balance: shading.nightglow_balance,
+        rayleigh_radius: shading.rayleigh_radius,
+        nightglow_orange_radius: shading.nightglow_orange_radius,
+        nightglow_green_radius: shading.nightglow_green_radius,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }
 
 /// Encode and submit a render pass with the given target and bind group.
 ///
-/// Draw order: Earth sphere, atmosphere glow overlay (additive), then cloud
-/// overlay (alpha blended). The atmosphere and cloud draws reuse the
-/// already-bound vertex and index buffers from the Earth draw.
+/// Draw order: Earth sphere, cloud overlay (alpha blended), Rayleigh scattering
+/// (premultiplied alpha), nightglow orange (additive), nightglow green (additive).
+/// Clouds draw before atmosphere because they're in the troposphere, well below
+/// the scattering and airglow layers. All overlays reuse the already-bound
+/// vertex and index buffers from the Earth draw.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
@@ -137,8 +148,12 @@ pub(super) fn encode_and_submit(
     vertex_buffer: &wgpu::Buffer,
     index_buffer: &wgpu::Buffer,
     index_count: u32,
-    atmo_pipeline: Option<&wgpu::RenderPipeline>,
-    atmo_bind_group: Option<&wgpu::BindGroup>,
+    rayleigh_pipeline: Option<&wgpu::RenderPipeline>,
+    rayleigh_bind_group: Option<&wgpu::BindGroup>,
+    nightglow_orange_pipeline: Option<&wgpu::RenderPipeline>,
+    nightglow_orange_bind_group: Option<&wgpu::BindGroup>,
+    nightglow_green_pipeline: Option<&wgpu::RenderPipeline>,
+    nightglow_green_bind_group: Option<&wgpu::BindGroup>,
     cloud_pipeline: Option<&wgpu::RenderPipeline>,
     cloud_bind_group: Option<&wgpu::BindGroup>,
 ) {
@@ -180,19 +195,35 @@ pub(super) fn encode_and_submit(
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..index_count, 0, 0..1);
 
-        // Atmosphere glow overlay (additive blending, between Earth and clouds)
-        if let (Some(atmo_pipe), Some(atmo_bg)) = (atmo_pipeline, atmo_bind_group) {
-            pass.set_pipeline(atmo_pipe);
-            pass.set_bind_group(0, atmo_bg, &[]);
-            // Vertex and index buffers remain bound from the Earth draw
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        // Cloud overlay (alpha blended, drawn last)
+        // Cloud overlay (alpha blended, drawn before atmosphere so glow
+        // layers render on top — clouds are in the troposphere, well below
+        // the Rayleigh scattering and nightglow layers)
         if let (Some(cloud_pipe), Some(cloud_bg)) = (cloud_pipeline, cloud_bind_group) {
             pass.set_pipeline(cloud_pipe);
             pass.set_bind_group(0, cloud_bg, &[]);
             // Vertex and index buffers remain bound from the Earth draw
+            pass.draw_indexed(0..index_count, 0, 0..1);
+        }
+
+        // Rayleigh scattering overlay (premultiplied alpha, simulates both
+        // in-scattering and extinction at the limb)
+        if let (Some(pipe), Some(bg)) = (rayleigh_pipeline, rayleigh_bind_group) {
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, bg, &[]);
+            pass.draw_indexed(0..index_count, 0, 0..1);
+        }
+
+        // Nightglow orange overlay (additive, sodium D + FeO, ~1.014 radius)
+        if let (Some(pipe), Some(bg)) = (nightglow_orange_pipeline, nightglow_orange_bind_group) {
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, bg, &[]);
+            pass.draw_indexed(0..index_count, 0, 0..1);
+        }
+
+        // Nightglow green overlay (additive, OI 557.7nm, ~1.015 radius)
+        if let (Some(pipe), Some(bg)) = (nightglow_green_pipeline, nightglow_green_bind_group) {
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, bg, &[]);
             pass.draw_indexed(0..index_count, 0, 0..1);
         }
     }
@@ -238,11 +269,21 @@ pub(super) fn execute_render_pass(
         res.msaa_depth_view.as_ref(),
     );
 
-    // Only issue the atmosphere draw call when intensity > 0.
-    // The atmosphere reuses the Earth's bind group (texture bindings are
-    // present but ignored by fs_atmo).
-    let (atmo_pipe, atmo_bg) = if shading.atmo_intensity > 0.0 {
-        (Some(&res.atmo_pipeline), Some(bind_group))
+    // Only issue atmosphere draw calls when intensity > 0.
+    // The atmosphere shells reuse the Earth's bind group (texture bindings
+    // are present but ignored by the atmosphere fragment shaders).
+    let (rayleigh_pipe, rayleigh_bg) = if shading.rayleigh_intensity > 0.0 {
+        (Some(&res.rayleigh_pipeline), Some(bind_group))
+    } else {
+        (None, None)
+    };
+    let (nightglow_orange_pipe, nightglow_orange_bg) = if shading.nightglow_intensity > 0.0 {
+        (Some(&res.nightglow_orange_pipeline), Some(bind_group))
+    } else {
+        (None, None)
+    };
+    let (nightglow_green_pipe, nightglow_green_bg) = if shading.nightglow_intensity > 0.0 {
+        (Some(&res.nightglow_green_pipeline), Some(bind_group))
     } else {
         (None, None)
     };
@@ -265,8 +306,12 @@ pub(super) fn execute_render_pass(
         &res.vertex_buffer,
         &res.index_buffer,
         res.index_count,
-        atmo_pipe,
-        atmo_bg,
+        rayleigh_pipe,
+        rayleigh_bg,
+        nightglow_orange_pipe,
+        nightglow_orange_bg,
+        nightglow_green_pipe,
+        nightglow_green_bg,
         cloud_pipe,
         cloud_bg,
     );

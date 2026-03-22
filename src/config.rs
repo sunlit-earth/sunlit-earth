@@ -61,8 +61,11 @@ pub struct AppConfig {
 
     // Atmosphere
     pub atmo_enabled: bool,
-    pub atmo_intensity: f32,
-    pub atmo_falloff: f32,
+    pub rayleigh_intensity: f32,
+    pub rayleigh_sharpness: f32,
+    pub nightglow_intensity: f32,
+    pub nightglow_falloff: f32,
+    pub nightglow_balance: f32,
 
     // Color correction
     pub day_gamma: f32,
@@ -115,8 +118,11 @@ impl Default for AppConfig {
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
             atmo_enabled: true,
-            atmo_intensity: 0.3,
-            atmo_falloff: 4.0,
+            rayleigh_intensity: 0.3,
+            rayleigh_sharpness: 10.0,
+            nightglow_intensity: 0.3,
+            nightglow_falloff: 4.0,
+            nightglow_balance: 0.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -341,23 +347,44 @@ mod tests {
     }
 
     #[test]
-    fn default_atmo_intensity() {
+    fn default_rayleigh_intensity() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.atmo_intensity, 0.3);
+        assert_relative_eq!(config.rayleigh_intensity, 0.3);
     }
 
     #[test]
-    fn default_atmo_falloff() {
+    fn default_rayleigh_sharpness() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.atmo_falloff, 4.0);
+        assert_relative_eq!(config.rayleigh_sharpness, 10.0);
+    }
+
+    #[test]
+    fn default_nightglow_intensity() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.nightglow_intensity, 0.3);
+    }
+
+    #[test]
+    fn default_nightglow_falloff() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.nightglow_falloff, 4.0);
+    }
+
+    #[test]
+    fn default_nightglow_balance() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.nightglow_balance, 0.5);
     }
 
     #[test]
     fn deserialize_missing_atmo_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         assert!(config.atmo_enabled);
-        assert_relative_eq!(config.atmo_intensity, 0.3);
-        assert_relative_eq!(config.atmo_falloff, 4.0);
+        assert_relative_eq!(config.rayleigh_intensity, 0.3);
+        assert_relative_eq!(config.rayleigh_sharpness, 10.0);
+        assert_relative_eq!(config.nightglow_intensity, 0.3);
+        assert_relative_eq!(config.nightglow_falloff, 4.0);
+        assert_relative_eq!(config.nightglow_balance, 0.5);
     }
 
     #[test]
@@ -418,8 +445,11 @@ mod tests {
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
             atmo_enabled: false,
-            atmo_intensity: 0.7,
-            atmo_falloff: 6.0,
+            rayleigh_intensity: 0.7,
+            rayleigh_sharpness: 8.0,
+            nightglow_intensity: 0.5,
+            nightglow_falloff: 6.0,
+            nightglow_balance: 0.3,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -554,8 +584,11 @@ mod tests {
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
             atmo_enabled: false,
-            atmo_intensity: 0.5,
-            atmo_falloff: 7.0,
+            rayleigh_intensity: 0.5,
+            rayleigh_sharpness: 7.0,
+            nightglow_intensity: 0.4,
+            nightglow_falloff: 5.0,
+            nightglow_balance: 0.6,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

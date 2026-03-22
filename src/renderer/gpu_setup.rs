@@ -209,7 +209,9 @@ pub(super) fn create_gpu_resources(
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let atmo_pipeline = create_atmo_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let rayleigh_pipeline = create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let nightglow_orange_pipeline = create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let nightglow_green_pipeline = create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
     GpuResources {
         pipeline,
@@ -243,7 +245,9 @@ pub(super) fn create_gpu_resources(
         composite_bind_group: None,
         day_texture_view: None,
         night_texture_view: None,
-        atmo_pipeline,
+        rayleigh_pipeline,
+        nightglow_orange_pipeline,
+        nightglow_green_pipeline,
         cloud_pipeline,
         cloud_bind_group: None,
         cloud_texture_view: None,
@@ -346,24 +350,29 @@ pub(super) fn create_cloud_pipeline(
     })
 }
 
-pub(super) fn create_atmo_pipeline(
+/// Shared additive-blend atmosphere pipeline descriptor, differing only in
+/// vertex/fragment entry points and label.
+fn create_atmo_shell_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     sample_count: u32,
+    label: &str,
+    vs_entry: &str,
+    fs_entry: &str,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("atmo_pipeline"),
+        label: Some(label),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
             module: shader,
-            entry_point: Some("vs_atmo"),
+            entry_point: Some(vs_entry),
             buffers: &[Vertex::buffer_layout()],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_atmo"),
+            entry_point: Some(fs_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 blend: Some(wgpu::BlendState {
@@ -399,6 +408,89 @@ pub(super) fn create_atmo_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+pub(super) fn create_rayleigh_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    // Rayleigh uses screen blending (One + OneMinusSrc) instead of additive:
+    // result = src + dst * (1 - src). Over black (space) this equals additive.
+    // Over bright surfaces (clouds, land) it barely increases brightness,
+    // matching how real atmospheric haze tints but doesn't over-brighten.
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("rayleigh_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_rayleigh"),
+            buffers: &[Vertex::buffer_layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_rayleigh"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::OVER,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+pub(super) fn create_nightglow_orange_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_atmo_shell_pipeline(
+        device, pipeline_layout, shader, sample_count,
+        "nightglow_orange_pipeline", "vs_nightglow_orange", "fs_nightglow_orange",
+    )
+}
+
+pub(super) fn create_nightglow_green_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_atmo_shell_pipeline(
+        device, pipeline_layout, shader, sample_count,
+        "nightglow_green_pipeline", "vs_nightglow_green", "fs_nightglow_green",
+    )
 }
 
 /// Create all size-dependent render textures (resolve target, depth, and optional MSAA).
@@ -489,8 +581,12 @@ pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) 
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.cloud_pipeline =
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.atmo_pipeline =
-        create_atmo_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.rayleigh_pipeline =
+        create_rayleigh_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.nightglow_orange_pipeline =
+        create_nightglow_orange_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.nightglow_green_pipeline =
+        create_nightglow_green_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
 }
 

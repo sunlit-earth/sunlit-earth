@@ -13,3 +13,4 @@ Needs proper research before picking a solution. Possible directions:
 - wgpu memory budget APIs (if any exist)
 - How other wallpaper engines handle this (e.g., Wallpaper Engine, Lively)
 
+

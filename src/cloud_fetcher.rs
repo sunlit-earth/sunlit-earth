@@ -299,6 +299,7 @@ pub fn spawn_cloud_fetcher(
                 }
             }
 
+            crate::memory::log_memory_usage("cloud fetcher idle");
             std::thread::sleep(POLL_INTERVAL);
         }
     });

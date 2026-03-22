@@ -187,6 +187,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
                 (None, None)
             };
 
+        crate::memory::log_memory_usage("wallpaper: before render");
         render_pass::encode_and_submit(
             &res.device,
             &res.queue,
@@ -200,13 +201,16 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             cloud_bg,
         );
 
-        Ok(render_pass::read_texture_rgba8(
+        crate::memory::log_memory_usage("wallpaper: before pixel readback");
+        let pixels = render_pass::read_texture_rgba8(
             &res.device,
             &res.queue,
             &export_texture,
             target_width,
             target_height,
-        ))
+        );
+        crate::memory::log_memory_usage("wallpaper: after pixel readback");
+        Ok(pixels)
     })
 }
 

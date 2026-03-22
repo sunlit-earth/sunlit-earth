@@ -353,6 +353,7 @@ fn main() {
         std::time::Duration::from_secs(120),
         move || {
             if let Some(win) = window_weak.upgrade() {
+                sunlit_earth::memory::log_memory_usage("sun timer tick");
                 win.window().request_redraw();
             }
         },
@@ -362,6 +363,7 @@ fn main() {
 
     // Save config on exit as a backstop (catches any changes during the debounce window)
     info!("event loop exited, saving config");
+    sunlit_earth::memory::log_memory_usage("before exit");
     config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
 
     // Keep timers alive until the event loop exits (prevent drop optimization)
@@ -498,5 +500,6 @@ fn do_set_wallpaper() -> Result<(), String> {
     let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
     wallpaper::set_wallpaper(&path)?;
     info!(path = %path.display(), "wallpaper set successfully");
+    sunlit_earth::memory::log_memory_usage("after wallpaper set");
     Ok(())
 }

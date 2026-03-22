@@ -197,9 +197,11 @@ pub(super) fn create_mipmapped_texture(
 
     // Upload mip level 0
     upload_mip(queue, &texture, 0, width, height, rgba_pixels);
+    crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
     // Generate subsequent mip levels by box-filtering the previous level
     let mut pixels = rgba_pixels.to_vec();
+    crate::memory::log_memory_usage("mipmap: after pixel copy");
     let mut w = width;
     let mut h = height;
     for level in 1..mip_count {
@@ -208,6 +210,7 @@ pub(super) fn create_mipmapped_texture(
         h = (h / 2).max(1);
         upload_mip(queue, &texture, level, w, h, &pixels);
     }
+    crate::memory::log_memory_usage("mipmap: after all levels");
 
     texture
 }

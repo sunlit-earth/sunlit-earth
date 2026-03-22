@@ -178,9 +178,9 @@ mod tests {
             1.0,           // night_saturation
             0.5,           // rayleigh_intensity
             50.0,          // rayleigh_sharpness
-            0.3,           // nightglow_intensity
-            4.0,           // nightglow_falloff
-            0.5,           // nightglow_balance
+            0.25,          // nightglow_intensity
+            15.0,          // nightglow_falloff
+            0.37,          // nightglow_balance
             0.25,          // rayleigh_haze
         )
     }
@@ -663,19 +663,19 @@ mod tests {
     #[test]
     fn frame_state_nightglow_intensity_quantization() {
         let state = default_frame_state();
-        assert_eq!(state.nightglow_intensity, 300);
+        assert_eq!(state.nightglow_intensity, 250);
     }
 
     #[test]
     fn frame_state_nightglow_falloff_quantization() {
         let state = default_frame_state();
-        assert_eq!(state.nightglow_falloff, 4000);
+        assert_eq!(state.nightglow_falloff, 15000);
     }
 
     #[test]
     fn frame_state_nightglow_balance_quantization() {
         let state = default_frame_state();
-        assert_eq!(state.nightglow_balance, 500);
+        assert_eq!(state.nightglow_balance, 370);
     }
 
     #[test]

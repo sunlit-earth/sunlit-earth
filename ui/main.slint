@@ -59,9 +59,9 @@ export component MainWindow inherits Window {
     in-out property <float> rayleigh-intensity: 0.5;
     in-out property <float> rayleigh-sharpness: 50.0;
     in-out property <float> rayleigh-haze: 0.55;
-    in-out property <float> nightglow-intensity: 0.3;
-    in-out property <float> nightglow-balance: 0.5;
-    in-out property <float> nightglow-falloff: 4.0;
+    in-out property <float> nightglow-intensity: 0.25;
+    in-out property <float> nightglow-balance: 0.37;
+    in-out property <float> nightglow-falloff: 15.0;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -813,8 +813,8 @@ export component MainWindow inherits Window {
                                     min-width: 70px;
                                 }
                                 nightglow-falloff-slider := Slider {
-                                    minimum: 1.0;
-                                    maximum: 10.0;
+                                    minimum: 2.0;
+                                    maximum: 50.0;
                                     value <=> root.nightglow-falloff;
                                     changed => { root.sliders-changed(); }
                                 }

@@ -122,9 +122,9 @@ impl Default for AppConfig {
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 50.0,
             rayleigh_haze: 0.55,
-            nightglow_intensity: 0.3,
-            nightglow_falloff: 4.0,
-            nightglow_balance: 0.5,
+            nightglow_intensity: 0.25,
+            nightglow_falloff: 15.0,
+            nightglow_balance: 0.37,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -363,19 +363,19 @@ mod tests {
     #[test]
     fn default_nightglow_intensity() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.nightglow_intensity, 0.3);
+        assert_relative_eq!(config.nightglow_intensity, 0.25);
     }
 
     #[test]
     fn default_nightglow_falloff() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.nightglow_falloff, 4.0);
+        assert_relative_eq!(config.nightglow_falloff, 15.0);
     }
 
     #[test]
     fn default_nightglow_balance() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.nightglow_balance, 0.5);
+        assert_relative_eq!(config.nightglow_balance, 0.37);
     }
 
     #[test]
@@ -384,9 +384,9 @@ mod tests {
         assert!(config.atmo_enabled);
         assert_relative_eq!(config.rayleigh_intensity, 0.5);
         assert_relative_eq!(config.rayleigh_sharpness, 50.0);
-        assert_relative_eq!(config.nightglow_intensity, 0.3);
-        assert_relative_eq!(config.nightglow_falloff, 4.0);
-        assert_relative_eq!(config.nightglow_balance, 0.5);
+        assert_relative_eq!(config.nightglow_intensity, 0.25);
+        assert_relative_eq!(config.nightglow_falloff, 15.0);
+        assert_relative_eq!(config.nightglow_balance, 0.37);
     }
 
     #[test]

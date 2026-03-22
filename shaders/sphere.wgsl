@@ -196,7 +196,7 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     // Day-side blue Rayleigh
     let day_t = smoothstep(-0.1, 0.2, n_dot_l);
     // Terminator orange (Gaussian peak at terminator)
-    let term_t = exp(-n_dot_l * n_dot_l / 0.02);
+    let term_t = exp(-n_dot_l * n_dot_l / 0.008);
     let day_color = vec3<f32>(0.1, 0.4, 0.9);  // deep blue, darker than ocean
     let term_color = vec3<f32>(1.0, 0.5, 0.2);  // orange spectral depletion
     // Night-side fadeout
@@ -209,6 +209,13 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let scatter = color * rim * uniforms.rayleigh_intensity;
     let extinction = rim * uniforms.rayleigh_intensity * uniforms.rayleigh_haze;
     return vec4<f32>(scatter, extinction);
+}
+
+// Screen-space dither to break up 8-bit color banding in faint gradients.
+// Returns a value in [-0.5/255, +0.5/255] based on pixel position.
+fn dither(pos: vec4<f32>) -> f32 {
+    let p = pos.xy;
+    return (fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
 }
 
 // --- Orange nightglow shell (sodium D + FeO, ~1.014 radius) ---
@@ -227,11 +234,16 @@ fn vs_nightglow_orange(in: VertexInput) -> VertexOutput {
 fn fs_nightglow_orange(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let v = normalize(uniforms.eye_pos - in.world_normal);
-    let rim = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), uniforms.nightglow_falloff);
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
     let n_dot_l = dot(n, uniforms.sun_dir);
 
-    // Night-side mask: only visible on night side
-    let night_mask = smoothstep(0.1, -0.1, n_dot_l);
+    // Rim falloff toward disk center, with soft edge at the shell silhouette
+    // to avoid a hard color band where the sphere geometry ends.
+    let rim = pow(1.0 - n_dot_v, uniforms.nightglow_falloff)
+            * smoothstep(0.0, 0.05, n_dot_v);
+
+    // Night-side mask: fully fades before reaching the day side
+    let night_mask = smoothstep(-0.05, -0.2, n_dot_l);
     // Time-of-night: orange is STRONGER near the terminator, weaker at midnight
     let depth = clamp(-n_dot_l, 0.0, 1.0);
     let time_mod = 1.0 - 0.5 * depth;
@@ -241,8 +253,9 @@ fn fs_nightglow_orange(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let color = vec3<f32>(1.0, 0.7, 0.2);  // warm orange-yellow (sodium D + FeO)
     let intensity = uniforms.nightglow_intensity * (1.0 - uniforms.nightglow_balance);
+    let rgb = color * rim * intensity * night_mask * time_mod * lat_mod;
 
-    return vec4<f32>(color * rim * intensity * night_mask * time_mod * lat_mod, 0.0);
+    return vec4<f32>(rgb + dither(in.clip_position), 0.0);
 }
 
 // --- Green nightglow shell (OI 557.7nm, ~1.015 radius) ---
@@ -261,11 +274,15 @@ fn vs_nightglow_green(in: VertexInput) -> VertexOutput {
 fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let v = normalize(uniforms.eye_pos - in.world_normal);
-    let rim = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), uniforms.nightglow_falloff);
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
     let n_dot_l = dot(n, uniforms.sun_dir);
 
-    // Night-side mask: only visible on night side
-    let night_mask = smoothstep(0.1, -0.1, n_dot_l);
+    // Rim falloff toward disk center, with soft edge at the shell silhouette
+    let rim = pow(1.0 - n_dot_v, uniforms.nightglow_falloff)
+            * smoothstep(0.0, 0.05, n_dot_v);
+
+    // Night-side mask: fully fades before reaching the day side
+    let night_mask = smoothstep(-0.05, -0.2, n_dot_l);
     // Time-of-night: green is WEAKER near the terminator, STRONGER at midnight
     let depth = clamp(-n_dot_l, 0.0, 1.0);
     let time_mod = 0.5 + 0.5 * depth;
@@ -275,6 +292,7 @@ fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let color = vec3<f32>(0.2, 1.0, 0.3);  // green (OI 557.7nm)
     let intensity = uniforms.nightglow_intensity * uniforms.nightglow_balance;
+    let rgb = color * rim * intensity * night_mask * time_mod * lat_mod;
 
-    return vec4<f32>(color * rim * intensity * night_mask * time_mod * lat_mod, 0.0);
+    return vec4<f32>(rgb + dither(in.clip_position), 0.0);
 }

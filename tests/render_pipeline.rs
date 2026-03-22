@@ -503,8 +503,8 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         rayleigh_intensity: 0.0,
         rayleigh_sharpness: 50.0,
         nightglow_intensity: 0.0,
-        nightglow_falloff: 4.0,
-        nightglow_balance: 0.5,
+        nightglow_falloff: 15.0,
+        nightglow_balance: 0.37,
         rayleigh_radius: 1.003,
         nightglow_orange_radius: 1.014,
         nightglow_green_radius: 1.015,
@@ -740,9 +740,9 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         cloud_gamma: 0.65,
         rayleigh_intensity: 0.5,
         rayleigh_sharpness: 50.0,
-        nightglow_intensity: 0.3,
-        nightglow_falloff: 4.0,
-        nightglow_balance: 0.5,
+        nightglow_intensity: 0.25,
+        nightglow_falloff: 15.0,
+        nightglow_balance: 0.37,
         rayleigh_radius: 1.003,
         nightglow_orange_radius: 1.014,
         nightglow_green_radius: 1.015,
@@ -805,7 +805,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[4] - 0.0).abs() < eps, "sun_dir.x: got {}, expected 0.0", values[4]);
     assert!((values[5] - 1.0).abs() < eps, "sun_dir.y: got {}, expected 1.0", values[5]);
     assert!((values[6] - 0.0).abs() < eps, "sun_dir.z: got {}, expected 0.0", values[6]);
-    assert!((values[7] - 0.15).abs() < eps, "terminator_width: got {}, expected 0.15", values[7]);
+    assert!((values[7] - 0.15).abs() < eps, "terminator_width: got {}, expected 0.25", values[7]);
     assert!((values[8] - 1.0).abs() < eps, "flags: got {}, expected 1.0", values[8]);
     assert!((values[9] - 0.5).abs() < eps, "diffuse_floor: got {}, expected 0.5", values[9]);
     assert!((values[10] - 0.25).abs() < eps, "diffuse_ramp: got {}, expected 0.55", values[10]);
@@ -826,9 +826,9 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[25] - 0.65).abs() < eps, "cloud_gamma: got {}, expected 0.65", values[25]);
     assert!((values[26] - 0.5).abs() < eps, "rayleigh_intensity: got {}, expected 0.5", values[26]);
     assert!((values[27] - 50.0).abs() < eps, "rayleigh_sharpness: got {}, expected 50.0", values[27]);
-    assert!((values[28] - 0.3).abs() < eps, "nightglow_intensity: got {}, expected 0.3", values[28]);
-    assert!((values[29] - 4.0).abs() < eps, "nightglow_falloff: got {}, expected 4.0", values[29]);
-    assert!((values[30] - 0.5).abs() < eps, "nightglow_balance: got {}, expected 0.5", values[30]);
+    assert!((values[28] - 0.25).abs() < eps, "nightglow_intensity: got {}, expected 0.25", values[28]);
+    assert!((values[29] - 15.0).abs() < eps, "nightglow_falloff: got {}, expected 15.0", values[29]);
+    assert!((values[30] - 0.37).abs() < eps, "nightglow_balance: got {}, expected 0.37", values[30]);
     assert!((values[31] - 1.003).abs() < eps, "rayleigh_radius: got {}, expected 1.003", values[31]);
     assert!((values[32] - 1.014).abs() < eps, "nightglow_orange_radius: got {}, expected 1.014", values[32]);
     assert!((values[33] - 1.015).abs() < eps, "nightglow_green_radius: got {}, expected 1.015", values[33]);

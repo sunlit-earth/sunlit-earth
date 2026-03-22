@@ -29,6 +29,9 @@ pub(super) struct ShadingParams {
     pub cloud_opacity: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
+    pub atmo_intensity: f32,
+    pub atmo_falloff: f32,
+    pub atmo_radius: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -111,15 +114,19 @@ pub(super) fn write_uniforms(
         cloud_opacity: shading.cloud_opacity,
         cloud_floor: shading.cloud_floor,
         cloud_gamma: shading.cloud_gamma,
+        atmo_intensity: shading.atmo_intensity,
+        atmo_falloff: shading.atmo_falloff,
+        atmo_radius: shading.atmo_radius,
+        _pad3: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }
 
 /// Encode and submit a render pass with the given target and bind group.
 ///
-/// If `cloud_pipeline` and `cloud_bind_group` are both `Some`, a second
-/// draw call is issued for the cloud overlay sphere within the same render
-/// pass, reusing the already-bound vertex and index buffers.
+/// Draw order: Earth sphere, atmosphere glow overlay (additive), then cloud
+/// overlay (alpha blended). The atmosphere and cloud draws reuse the
+/// already-bound vertex and index buffers from the Earth draw.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
@@ -130,6 +137,8 @@ pub(super) fn encode_and_submit(
     vertex_buffer: &wgpu::Buffer,
     index_buffer: &wgpu::Buffer,
     index_count: u32,
+    atmo_pipeline: Option<&wgpu::RenderPipeline>,
+    atmo_bind_group: Option<&wgpu::BindGroup>,
     cloud_pipeline: Option<&wgpu::RenderPipeline>,
     cloud_bind_group: Option<&wgpu::BindGroup>,
 ) {
@@ -171,7 +180,15 @@ pub(super) fn encode_and_submit(
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..index_count, 0, 0..1);
 
-        // Cloud overlay (second draw in the same render pass)
+        // Atmosphere glow overlay (additive blending, between Earth and clouds)
+        if let (Some(atmo_pipe), Some(atmo_bg)) = (atmo_pipeline, atmo_bind_group) {
+            pass.set_pipeline(atmo_pipe);
+            pass.set_bind_group(0, atmo_bg, &[]);
+            // Vertex and index buffers remain bound from the Earth draw
+            pass.draw_indexed(0..index_count, 0, 0..1);
+        }
+
+        // Cloud overlay (alpha blended, drawn last)
         if let (Some(cloud_pipe), Some(cloud_bg)) = (cloud_pipeline, cloud_bind_group) {
             pass.set_pipeline(cloud_pipe);
             pass.set_bind_group(0, cloud_bg, &[]);
@@ -221,6 +238,15 @@ pub(super) fn execute_render_pass(
         res.msaa_depth_view.as_ref(),
     );
 
+    // Only issue the atmosphere draw call when intensity > 0.
+    // The atmosphere reuses the Earth's bind group (texture bindings are
+    // present but ignored by fs_atmo).
+    let (atmo_pipe, atmo_bg) = if shading.atmo_intensity > 0.0 {
+        (Some(&res.atmo_pipeline), Some(bind_group))
+    } else {
+        (None, None)
+    };
+
     // Only issue the cloud draw call when the cloud texture has loaded
     // and the user has not disabled clouds (opacity > 0)
     let (cloud_pipe, cloud_bg) =
@@ -239,6 +265,8 @@ pub(super) fn execute_render_pass(
         &res.vertex_buffer,
         &res.index_buffer,
         res.index_count,
+        atmo_pipe,
+        atmo_bg,
         cloud_pipe,
         cloud_bg,
     );

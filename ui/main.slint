@@ -55,6 +55,9 @@ export component MainWindow inherits Window {
     in-out property <float> cloud-opacity: 0.85;
     in-out property <float> cloud-floor: 0.25;
     in-out property <float> cloud-gamma: 0.65;
+    in-out property <bool> atmo-enabled: true;
+    in-out property <float> atmo-intensity: 0.3;
+    in-out property <float> atmo-falloff: 4.0;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -658,6 +661,72 @@ export component MainWindow inherits Window {
                                 text: round(cloud-gamma-slider.value * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Atmosphere";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Enable";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            CheckBox {
+                                text: "Atmosphere glow";
+                                checked <=> root.atmo-enabled;
+                                toggled => { root.sliders-changed(); }
+                            }
+                        }
+
+                        if root.atmo-enabled :
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Intensity";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                atmo-intensity-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.atmo-intensity;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.atmo-intensity * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Falloff";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                atmo-falloff-slider := Slider {
+                                    minimum: 1.0;
+                                    maximum: 10.0;
+                                    value <=> root.atmo-falloff;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(atmo-falloff-slider.value * 10) / 10;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
                             }
                         }
                     }

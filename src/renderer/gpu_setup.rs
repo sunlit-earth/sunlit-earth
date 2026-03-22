@@ -209,6 +209,7 @@ pub(super) fn create_gpu_resources(
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let atmo_pipeline = create_atmo_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
     GpuResources {
         pipeline,
@@ -242,6 +243,7 @@ pub(super) fn create_gpu_resources(
         composite_bind_group: None,
         day_texture_view: None,
         night_texture_view: None,
+        atmo_pipeline,
         cloud_pipeline,
         cloud_bind_group: None,
         cloud_texture_view: None,
@@ -317,6 +319,61 @@ pub(super) fn create_cloud_pipeline(
             targets: &[Some(wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+pub(super) fn create_atmo_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("atmo_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_atmo"),
+            buffers: &[Vertex::buffer_layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_atmo"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::OVER,
+                }),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -432,6 +489,8 @@ pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) 
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.cloud_pipeline =
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.atmo_pipeline =
+        create_atmo_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
 }
 

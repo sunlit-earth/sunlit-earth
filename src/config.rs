@@ -59,6 +59,11 @@ pub struct AppConfig {
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
 
+    // Atmosphere
+    pub atmo_enabled: bool,
+    pub atmo_intensity: f32,
+    pub atmo_falloff: f32,
+
     // Color correction
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -109,6 +114,9 @@ impl Default for AppConfig {
             cloud_opacity: 0.85,
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
+            atmo_enabled: true,
+            atmo_intensity: 0.3,
+            atmo_falloff: 4.0,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -327,6 +335,32 @@ mod tests {
     }
 
     #[test]
+    fn default_atmo_enabled() {
+        let config = AppConfig::default();
+        assert!(config.atmo_enabled);
+    }
+
+    #[test]
+    fn default_atmo_intensity() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.atmo_intensity, 0.3);
+    }
+
+    #[test]
+    fn default_atmo_falloff() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.atmo_falloff, 4.0);
+    }
+
+    #[test]
+    fn deserialize_missing_atmo_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
+        assert!(config.atmo_enabled);
+        assert_relative_eq!(config.atmo_intensity, 0.3);
+        assert_relative_eq!(config.atmo_falloff, 4.0);
+    }
+
+    #[test]
     fn deserialize_missing_cloud_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         assert_relative_eq!(config.cloud_floor, 0.25);
@@ -383,6 +417,9 @@ mod tests {
             cloud_opacity: 0.6,
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
+            atmo_enabled: false,
+            atmo_intensity: 0.7,
+            atmo_falloff: 6.0,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -516,6 +553,9 @@ mod tests {
             cloud_opacity: 0.6,
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
+            atmo_enabled: false,
+            atmo_intensity: 0.5,
+            atmo_falloff: 7.0,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

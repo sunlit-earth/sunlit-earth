@@ -1,6 +1,6 @@
 /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
 ///
-/// Total: 160 bytes (must be a multiple of 16 for std140 alignment).
+/// Total: 176 bytes (must be a multiple of 16 for std140 alignment).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Uniforms {
@@ -25,6 +25,10 @@ pub(crate) struct Uniforms {
     pub cloud_opacity: f32,       // 4 bytes
     pub cloud_floor: f32,         // 4 bytes
     pub cloud_gamma: f32,         // 4 bytes
+    pub atmo_intensity: f32,      // 4 bytes
+    pub atmo_falloff: f32,        // 4 bytes
+    pub atmo_radius: f32,         // 4 bytes
+    pub _pad3: f32,               // 4 bytes
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 160);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 176);

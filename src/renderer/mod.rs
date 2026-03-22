@@ -179,6 +179,12 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             msaa_depth_view.as_ref(),
         );
 
+        let (atmo_pipe, atmo_bg) = if shading.atmo_intensity > 0.0 {
+            (Some(&res.atmo_pipeline), Some(bind_group))
+        } else {
+            (None, None)
+        };
+
         let (cloud_pipe, cloud_bg) =
             if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
                 (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
@@ -195,6 +201,8 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             &res.vertex_buffer,
             &res.index_buffer,
             res.index_count,
+            atmo_pipe,
+            atmo_bg,
             cloud_pipe,
             cloud_bg,
         );
@@ -261,6 +269,8 @@ struct GpuResources {
     /// Stored texture view for the night texture, needed to build the composite
     /// bind group when both become available.
     night_texture_view: Option<wgpu::TextureView>,
+    /// Render pipeline for the atmosphere glow shell.
+    atmo_pipeline: wgpu::RenderPipeline,
     /// Render pipeline for the cloud overlay sphere.
     cloud_pipeline: wgpu::RenderPipeline,
     /// Bind group for the cloud texture (populated after async load completes).
@@ -427,6 +437,16 @@ fn rendering_callback(
                     pitch_deg: win.get_camera_pitch(),
                 };
                 win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
+                // Atmosphere parameters
+                let atmo_enabled = win.get_atmo_enabled();
+                let atmo_intensity_f = if atmo_enabled {
+                    win.get_atmo_intensity()
+                } else {
+                    0.0
+                };
+                let atmo_falloff_f = win.get_atmo_falloff();
+                let atmo_radius_f = 1.02_f32;
+
                 let current_state = build_frame_state(
                     &camera,
                     res.sample_count,
@@ -449,6 +469,9 @@ fn rendering_callback(
                     day_saturation_f,
                     night_gamma_f,
                     night_saturation_f,
+                    atmo_intensity_f,
+                    atmo_falloff_f,
+                    atmo_radius_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -500,6 +523,9 @@ fn rendering_callback(
                     cloud_opacity: cloud_opacity_f,
                     cloud_floor: cloud_floor_f,
                     cloud_gamma: cloud_gamma_f,
+                    atmo_intensity: atmo_intensity_f,
+                    atmo_falloff: atmo_falloff_f,
+                    atmo_radius: atmo_radius_f,
                 };
                 res.last_shading = Some(shading);
 

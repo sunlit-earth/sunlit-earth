@@ -20,6 +20,10 @@ struct Uniforms {
     cloud_opacity: f32,        // 4 bytes, offset 148
     cloud_floor: f32,          // 4 bytes, offset 152
     cloud_gamma: f32,          // 4 bytes, offset 156
+    atmo_intensity: f32,       // 4 bytes, offset 160
+    atmo_falloff: f32,         // 4 bytes, offset 164
+    atmo_radius: f32,          // 4 bytes, offset 168
+    _pad3: f32,                // 4 bytes, offset 172
 };
 
 @group(0) @binding(0)
@@ -150,4 +154,34 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let n_dot_l = dot(n, uniforms.sun_dir);
     let brightness = mix(0.05, 1.0, smoothstep(-uniforms.terminator_width, uniforms.terminator_width, n_dot_l));
     return vec4<f32>(brightness, brightness, brightness, cloud_density * uniforms.cloud_opacity);
+}
+
+@vertex
+fn vs_atmo(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let scaled = in.position * uniforms.atmo_radius;
+    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
+    out.uv = in.uv;
+    // Normal is the unscaled unit-sphere direction
+    out.world_normal = in.position;
+    return out;
+}
+
+@fragment
+fn fs_atmo(in: VertexOutput) -> @location(0) vec4<f32> {
+    let n = normalize(in.world_normal);
+    let v = normalize(uniforms.eye_pos - in.world_normal);
+    let rim = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), uniforms.atmo_falloff);
+    let n_dot_l = dot(n, uniforms.sun_dir);
+
+    // Color selection based on sun angle
+    let day_t = smoothstep(-0.1, 0.2, n_dot_l);
+    let term_t = exp(-n_dot_l * n_dot_l / 0.02);
+    let day_color = vec3<f32>(0.4, 0.6, 1.0);   // blue Rayleigh scattering
+    let term_color = vec3<f32>(1.0, 0.5, 0.2);   // orange spectral depletion
+    let night_color = vec3<f32>(0.3, 1.0, 0.4);  // green OI 557.7nm airglow
+    let color = mix(night_color, day_color, day_t) + term_color * term_t * 0.3;
+
+    let atmo = color * rim * uniforms.atmo_intensity;
+    return vec4<f32>(atmo, 0.0);
 }

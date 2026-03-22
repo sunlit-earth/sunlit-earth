@@ -359,6 +359,6 @@ All changes are contained in a single feature branch (`feature-airglow`). If iss
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Implementation started
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Implementation started
+- [x] Implementation complete -- all automated tests pass, clippy clean

@@ -38,9 +38,13 @@ struct Uniforms {
     cloud_opacity: f32,
     cloud_floor: f32,
     cloud_gamma: f32,
+    atmo_intensity: f32,
+    atmo_falloff: f32,
+    atmo_radius: f32,
+    _pad3: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 160);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 176);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -488,6 +492,10 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         cloud_opacity: 0.0,
         cloud_floor: 0.0,
         cloud_gamma: 1.0,
+        atmo_intensity: 0.0,
+        atmo_falloff: 4.0,
+        atmo_radius: 1.02,
+        _pad3: 0.0,
     }
 }
 
@@ -598,6 +606,10 @@ struct Uniforms {
     cloud_opacity: f32,
     cloud_floor: f32,
     cloud_gamma: f32,
+    atmo_intensity: f32,
+    atmo_falloff: f32,
+    atmo_radius: f32,
+    _pad3: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -642,6 +654,10 @@ fn main() {
     output[23] = uniforms.cloud_opacity;
     output[24] = uniforms.cloud_floor;
     output[25] = uniforms.cloud_gamma;
+    // atmosphere params
+    output[26] = uniforms.atmo_intensity;
+    output[27] = uniforms.atmo_falloff;
+    output[28] = uniforms.atmo_radius;
 }
 ";
 
@@ -692,6 +708,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         cloud_opacity: 0.9,
         cloud_floor: 0.25,
         cloud_gamma: 0.65,
+        atmo_intensity: 0.3,
+        atmo_falloff: 4.0,
+        atmo_radius: 1.02,
+        _pad3: 0.0,
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -700,8 +720,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 26 floats
-    let output_size = (26 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 29 floats
+    let output_size = (29 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -766,6 +786,9 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[23] - 0.9).abs() < eps, "cloud_opacity: got {}, expected 0.9", values[23]);
     assert!((values[24] - 0.25).abs() < eps, "cloud_floor: got {}, expected 0.25", values[24]);
     assert!((values[25] - 0.65).abs() < eps, "cloud_gamma: got {}, expected 0.65", values[25]);
+    assert!((values[26] - 0.3).abs() < eps, "atmo_intensity: got {}, expected 0.3", values[26]);
+    assert!((values[27] - 4.0).abs() < eps, "atmo_falloff: got {}, expected 4.0", values[27]);
+    assert!((values[28] - 1.02).abs() < eps, "atmo_radius: got {}, expected 1.02", values[28]);
 }
 
 // ---------------------------------------------------------------------------

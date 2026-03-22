@@ -38,8 +38,10 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                     &format!("texture_slot_{}", msg.slot_index),
                     img.width,
                     img.height,
-                    &img.pixels,
+                    img.pixels,
                 );
+                // Flush staging buffers so they don't accumulate across textures
+                let _ = res.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
                 info!(slot = msg.slot_index, "GPU texture created");
                 crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -169,6 +171,9 @@ pub(super) fn resolve_render_index(res: &mut super::GpuResources, slot_index: us
 }
 
 /// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
+///
+/// Takes ownership of `rgba_pixels` to avoid a 128 MB clone for 8K textures.
+/// The buffer is reused in-place for mipmap downsampling.
 #[tracing::instrument(skip(device, queue, rgba_pixels), fields(label, width, height))]
 pub(super) fn create_mipmapped_texture(
     device: &wgpu::Device,
@@ -176,7 +181,7 @@ pub(super) fn create_mipmapped_texture(
     label: &str,
     width: u32,
     height: u32,
-    rgba_pixels: &[u8],
+    rgba_pixels: Vec<u8>,
 ) -> wgpu::Texture {
     let mip_count = width.max(height).ilog2() + 1;
 
@@ -196,12 +201,12 @@ pub(super) fn create_mipmapped_texture(
     });
 
     // Upload mip level 0
-    upload_mip(queue, &texture, 0, width, height, rgba_pixels);
+    upload_mip(queue, &texture, 0, width, height, &rgba_pixels);
     crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
-    // Generate subsequent mip levels by box-filtering the previous level
-    let mut pixels = rgba_pixels.to_vec();
-    crate::memory::log_memory_usage("mipmap: after pixel copy");
+    // Generate subsequent mip levels by box-filtering the previous level.
+    // We take ownership of the pixel buffer to avoid cloning 128 MB for 8K textures.
+    let mut pixels = rgba_pixels;
     let mut w = width;
     let mut h = height;
     for level in 1..mip_count {

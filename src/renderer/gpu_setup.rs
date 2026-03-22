@@ -150,8 +150,9 @@ pub(super) fn create_gpu_resources(
         "grid_texture",
         GRID_TEX_WIDTH,
         GRID_TEX_HEIGHT,
-        &grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
+        grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
     );
+    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     let grid_bind_group = create_bind_group(

@@ -31,11 +31,11 @@ Add the `tracing` ecosystem to Sunlit Earth, migrate all 32 `eprintln!` calls to
 
 ## Success Criteria
 
-- [ ] `cargo build` succeeds with no new warnings
-- [ ] `cargo build --release` succeeds and compiles out debug/trace/info level log calls
-- [ ] `cargo test` passes (all existing tests still pass)
-- [ ] `cargo clippy` passes with no new warnings
-- [ ] Zero `eprintln!` calls remain in non-test code
+- [x] `cargo build` succeeds with no new warnings
+- [x] `cargo build --release` succeeds and compiles out debug/trace/info level log calls
+- [x] `cargo test` passes (all existing tests still pass)
+- [x] `cargo clippy` passes with no new warnings
+- [x] Zero `eprintln!` calls remain in non-test code
 - [ ] Running `cargo run` produces timestamped, level-tagged, module-prefixed log output on stderr
 - [ ] Running `RUST_LOG=trace cargo run` shows verbose output including wgpu internals
 - [ ] Running `cargo run --release` shows only warn/error output
@@ -387,6 +387,15 @@ No database migrations, config format changes, or breaking API changes are invol
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Implementation started
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Implementation started
+- [x] Implementation complete
+
+### Completion Notes
+
+- **Step 1.1**: `tracing-log` omitted (not needed -- `tracing-subscriber`'s `fmt` layer handles `log` bridging automatically via its built-in `tracing-log` integration). `Win32_System_Threading` feature added alongside `Win32_System_ProcessStatus` (needed for `GetCurrentProcess`).
+- **Steps 2.1-2.2**: Logging init uses `tracing_subscriber::registry()` with `fmt` layer + `EnvFilter` instead of `set_global_default()` (idiomatic `tracing-subscriber` 0.3 pattern).
+- **Step 2.3**: `current_rss_bytes()` uses `&raw mut` instead of `&mut` for the FFI call to avoid the `implicit_borrow_as_raw_pointer` clippy lint.
+- **All Phase 3 steps**: Complete. Zero `eprintln!` calls remain in any source file.
+- **All Phase 4 steps**: Complete. Span instrumentation added to cloud_fetcher, texture_loader, render_pass, and gpu_setup. Memory checkpoints added at all specified locations.
+- **Phase 5**: `cargo build`, `cargo test` (236 tests pass), `cargo clippy` (0 warnings), `cargo build --release` all succeed.

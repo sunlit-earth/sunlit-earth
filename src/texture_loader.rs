@@ -27,6 +27,7 @@ pub struct DecodedImage {
 ///   but our sphere UV winding goes in the opposite direction.
 /// - Horizontal shift left by 1/4 width: aligns the prime meridian with u=0
 ///   in our sphere's UV mapping.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load(path: &Path) -> Result<DecodedImage, String> {
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;

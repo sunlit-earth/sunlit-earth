@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
+use tracing::{debug, error, trace};
 
 use crate::MainWindow;
 use crate::scene::camera::{CameraParams, zoom_to_distance};
@@ -328,8 +329,9 @@ fn rendering_callback(
 ) {
     match state {
         RenderingState::RenderingSetup => {
+            trace!("rendering setup");
             let GraphicsAPI::WGPU28 { device, queue, .. } = graphics_api else {
-                eprintln!("Expected WGPU28 graphics API, got something else");
+                error!("expected WGPU28 graphics API, got unsupported variant");
                 return;
             };
 
@@ -376,12 +378,14 @@ fn rendering_callback(
                 // Check if sample count changed
                 let desired = lookup_sample_count(&win, aa_counts);
                 if desired != res.sample_count {
+                    debug!(sample_count = desired, "MSAA sample count changed");
                     rebuild_msaa_resources(res, desired);
                 }
 
                 // Check if viewport size changed
                 let (vw, vh) = quantized_viewport_size(&win);
                 if vw != res.render_width || vh != res.render_height {
+                    debug!(width = vw, height = vh, "viewport size changed");
                     rebuild_render_textures(res, vw, vh);
                 }
 
@@ -514,6 +518,7 @@ fn rendering_callback(
             });
         }
         RenderingState::RenderingTeardown => {
+            trace!("rendering teardown");
             GPU_RESOURCES.with(|r| {
                 *r.borrow_mut() = None;
             });

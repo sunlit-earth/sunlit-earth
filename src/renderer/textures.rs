@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use slint::ComponentHandle;
+use tracing::{error, info};
 
 use crate::texture_loader;
 
@@ -39,6 +40,8 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                     img.height,
                     &img.pixels,
                 );
+                info!(slot = msg.slot_index, "GPU texture created");
+                crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 let bind_group = create_bind_group(
                     &res.device,
@@ -65,7 +68,7 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                 }
             }
             Err(e) => {
-                eprintln!("{e}");
+                error!(slot = msg.slot_index, error = %e, "texture decode failed");
                 // Mark source_path as None so we don't retry
                 res.texture_slots[msg.slot_index].source_path = None;
                 res.texture_slots[msg.slot_index].loading = false;
@@ -131,13 +134,14 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index
         let start = std::time::Instant::now();
         let result = match texture_loader::load(&path) {
             Ok(img) => {
-                eprintln!(
-                    "Decoded texture ({}\u{d7}{}) from {} in {:.2}s",
-                    img.width,
-                    img.height,
-                    path.display(),
-                    start.elapsed().as_secs_f64(),
+                info!(
+                    width = img.width,
+                    height = img.height,
+                    path = %path.display(),
+                    elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
+                    "decoded texture"
                 );
+                crate::memory::log_memory_usage("after texture decode");
                 Ok(img)
             }
             Err(e) => Err(e),
@@ -165,6 +169,7 @@ pub(super) fn resolve_render_index(res: &mut super::GpuResources, slot_index: us
 }
 
 /// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
+#[tracing::instrument(skip(device, queue, rgba_pixels), fields(label, width, height))]
 pub(super) fn create_mipmapped_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

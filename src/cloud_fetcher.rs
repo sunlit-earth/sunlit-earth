@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use slint::ComponentHandle;
+use tracing::{info, warn};
 
 use crate::renderer::DecodedTextureMessage;
 use crate::texture_loader::{self, DecodedImage};
@@ -49,7 +50,7 @@ fn save_cache_meta(meta: &CacheMeta, path: &Path) {
     let toml_str = match toml::to_string_pretty(meta) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Warning: could not serialize cloud cache meta: {e}");
+            warn!(error = %e, "could not serialize cloud cache meta");
             return;
         }
     };
@@ -57,27 +58,18 @@ fn save_cache_meta(meta: &CacheMeta, path: &Path) {
     if let Some(parent) = path.parent()
         && let Err(e) = fs::create_dir_all(parent)
     {
-        eprintln!(
-            "Warning: could not create cloud cache directory {}: {e}",
-            parent.display()
-        );
+        warn!(path = %parent.display(), error = %e, "could not create cloud cache directory");
         return;
     }
 
     let tmp_path = path.with_extension("toml~");
     if let Err(e) = fs::write(&tmp_path, &toml_str) {
-        eprintln!(
-            "Warning: could not write cloud cache meta {}: {e}",
-            tmp_path.display()
-        );
+        warn!(path = %tmp_path.display(), error = %e, "could not write cloud cache meta");
         return;
     }
 
     if let Err(e) = fs::rename(&tmp_path, path) {
-        eprintln!(
-            "Warning: could not rename cloud cache meta to {}: {e}",
-            path.display()
-        );
+        warn!(path = %path.display(), error = %e, "could not rename cloud cache meta");
     }
 }
 
@@ -85,6 +77,7 @@ fn save_cache_meta(meta: &CacheMeta, path: &Path) {
 ///
 /// Returns `Ok(true)` if unchanged (304), `Ok(false)` if new content is
 /// available (200), or `Err` on transport/server errors.
+#[tracing::instrument(skip(agent), fields(etag = %etag))]
 fn check_freshness(agent: &ureq::Agent, etag: &str) -> Result<bool, String> {
     let response = agent
         .head(CLOUD_URL)
@@ -102,6 +95,7 @@ fn check_freshness(agent: &ureq::Agent, etag: &str) -> Result<bool, String> {
 /// Download the cloud image unconditionally.
 ///
 /// Returns the raw JPEG bytes and extracted cache metadata (`ETag`, Last-Modified).
+#[tracing::instrument(skip(agent), fields(url = CLOUD_URL))]
 fn download_image(agent: &ureq::Agent) -> Result<(Vec<u8>, CacheMeta), String> {
     let mut response = agent
         .get(CLOUD_URL)
@@ -140,6 +134,7 @@ fn download_image(agent: &ureq::Agent) -> Result<(Vec<u8>, CacheMeta), String> {
 ///
 /// Applies the same transforms as equirectangular texture loading:
 /// horizontal flip and 1/4-width shift to align the prime meridian.
+#[tracing::instrument(skip(bytes), fields(bytes_len = bytes.len()))]
 fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
     let img = image::load_from_memory(bytes)
         .map_err(|e| format!("Failed to decode cloud JPEG: {e}"))?
@@ -185,11 +180,11 @@ pub fn spawn_cloud_fetcher(
         match fs::read(path) {
             Ok(bytes) => match decode_cloud_jpeg(&bytes) {
                 Ok(img) => {
-                    eprintln!(
-                        "Loaded cached cloud image ({}\u{d7}{}) from {}",
-                        img.width,
-                        img.height,
-                        path.display()
+                    info!(
+                        width = img.width,
+                        height = img.height,
+                        path = %path.display(),
+                        "loaded cached cloud image"
                     );
                     let _ = tx.send(DecodedTextureMessage {
                         slot_index: clouds_slot,
@@ -200,9 +195,9 @@ pub fn spawn_cloud_fetcher(
                         win.window().request_redraw();
                     });
                 }
-                Err(e) => eprintln!("Warning: cached cloud image decode failed: {e}"),
+                Err(e) => warn!(error = %e, "cached cloud image decode failed"),
             },
-            Err(e) => eprintln!("Warning: could not read cached cloud image: {e}"),
+            Err(e) => warn!(error = %e, "could not read cached cloud image"),
         }
     }
 
@@ -223,21 +218,21 @@ pub fn spawn_cloud_fetcher(
                     let etag = meta.etag.as_ref().unwrap();
                     match check_freshness(&agent, etag) {
                         Ok(true) => {
-                            eprintln!("Cloud image unchanged (304)");
+                            info!("cloud image unchanged (304 Not Modified)");
                             false
                         }
                         Ok(false) => {
-                            eprintln!("Cloud image has changed, downloading...");
+                            info!("cloud image has changed, downloading");
                             true
                         }
                         Err(e) => {
-                            eprintln!("Warning: {e}");
+                            warn!(error = %e, "cloud freshness check failed");
                             false
                         }
                     }
                 }
                 _ => {
-                    eprintln!("No cached cloud ETag, downloading...");
+                    info!("no cached cloud ETag, downloading");
                     true
                 }
             };
@@ -247,9 +242,10 @@ pub fn spawn_cloud_fetcher(
                 match download_image(&agent) {
                     Ok((bytes, meta)) => {
                         let elapsed = start.elapsed().as_secs_f64();
-                        eprintln!(
-                            "Downloaded cloud image ({} bytes) in {elapsed:.1}s",
-                            bytes.len()
+                        info!(
+                            bytes = bytes.len(),
+                            elapsed_secs = format_args!("{elapsed:.1}"),
+                            "downloaded cloud image"
                         );
 
                         // Save to cache
@@ -258,7 +254,7 @@ pub fn spawn_cloud_fetcher(
                                 let _ = fs::create_dir_all(parent);
                             }
                             if let Err(e) = fs::write(path, &bytes) {
-                                eprintln!("Warning: could not cache cloud image: {e}");
+                                warn!(error = %e, "could not cache cloud image");
                             }
                         }
                         if let Some(ref path) = meta_path {
@@ -269,10 +265,12 @@ pub fn spawn_cloud_fetcher(
                         // Decode and send
                         match decode_cloud_jpeg(&bytes) {
                             Ok(img) => {
-                                eprintln!(
-                                    "Decoded cloud image ({}\u{d7}{})",
-                                    img.width, img.height
+                                info!(
+                                    width = img.width,
+                                    height = img.height,
+                                    "decoded cloud image"
                                 );
+                                crate::memory::log_memory_usage("after cloud decode");
                                 let _ = tx_bg.send(DecodedTextureMessage {
                                     slot_index: clouds_slot,
                                     result: Ok(img),
@@ -282,16 +280,17 @@ pub fn spawn_cloud_fetcher(
                                     win.window().request_redraw();
                                 });
                             }
-                            Err(e) => eprintln!("Warning: cloud image decode failed: {e}"),
+                            Err(e) => warn!(error = %e, "cloud image decode failed"),
                         }
 
                         // Reset backoff on success
                         retry_delay = INITIAL_RETRY_DELAY;
                     }
                     Err(e) => {
-                        eprintln!(
-                            "Warning: {e} (retrying in {}s)",
-                            retry_delay.as_secs()
+                        warn!(
+                            error = %e,
+                            retry_delay_secs = retry_delay.as_secs(),
+                            "cloud download failed, retrying"
                         );
                         std::thread::sleep(retry_delay);
                         retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);

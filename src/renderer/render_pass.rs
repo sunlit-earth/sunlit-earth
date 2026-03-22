@@ -238,6 +238,7 @@ pub(super) fn encode_and_submit(
 
 /// Encode and submit the preview render pass, returning the Slint Image.
 #[allow(clippy::cast_precision_loss)]
+#[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
 pub(super) fn execute_render_pass(
     res: &GpuResources,
     state: &FrameState,

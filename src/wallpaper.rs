@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use tracing::{debug, info};
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER, SystemParametersInfoW,
@@ -94,6 +95,7 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
             let rc = info.monitorInfo.rcMonitor;
             let width = (rc.right - rc.left) as u32;
             let height = (rc.bottom - rc.top) as u32;
+            debug!(width, height, "detected primary monitor resolution");
             return Ok((width, height));
         }
     }
@@ -110,6 +112,8 @@ fn ensure_fill_style() -> Result<(), String> {
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, RegCloseKey, RegOpenKeyExW,
     };
+
+    debug!("setting Fill wallpaper style");
 
     let subkey: Vec<u16> = "Control Panel\\Desktop\0"
         .encode_utf16()
@@ -199,6 +203,8 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     // Set "Fill" wallpaper style before applying
     ensure_fill_style()?;
 
+    info!(path = %abs_path.display(), "applying wallpaper via SystemParametersInfoW");
+
     // Encode path as null-terminated UTF-16
     let mut wide_path: Vec<u16> = abs_path.as_os_str().encode_wide().collect();
     // Strip the \\?\ prefix that canonicalize adds on Windows
@@ -254,6 +260,7 @@ pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<Pa
 
     let dir = wallpaper_dir()?;
     let path = dir.join("wallpaper.png");
+    debug!(path = %path.display(), "saving wallpaper PNG");
 
     let file =
         std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;

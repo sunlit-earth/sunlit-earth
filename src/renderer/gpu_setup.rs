@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
 
+use tracing::debug;
 use wgpu::util::DeviceExt;
 
 use crate::geometry::grid_texture;
@@ -15,6 +16,7 @@ const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(width, height, sample_count))]
 pub(super) fn create_gpu_resources(
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -148,8 +150,9 @@ pub(super) fn create_gpu_resources(
         "grid_texture",
         GRID_TEX_WIDTH,
         GRID_TEX_HEIGHT,
-        &grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
+        grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
     );
+    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     let grid_bind_group = create_bind_group(
@@ -212,6 +215,8 @@ pub(super) fn create_gpu_resources(
     let rayleigh_pipeline = create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let nightglow_orange_pipeline = create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let nightglow_green_pipeline = create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
+
+    crate::memory::log_memory_usage("after GPU resource creation");
 
     GpuResources {
         pipeline,
@@ -578,6 +583,7 @@ pub(super) fn create_render_textures(
 
 /// Rebuild the pipeline and MSAA textures when sample count changes.
 pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
+    debug!("rebuilding MSAA resources");
     replace_render_textures(res, res.render_width, res.render_height, sample_count);
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.cloud_pipeline =
@@ -593,6 +599,7 @@ pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) 
 
 /// Rebuild all size-dependent textures when viewport dimensions change.
 pub(super) fn rebuild_render_textures(res: &mut GpuResources, width: u32, height: u32) {
+    debug!(width, height, "rebuilding render textures");
     replace_render_textures(res, width, height, res.sample_count);
     res.render_width = width;
     res.render_height = height;

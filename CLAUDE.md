@@ -40,7 +40,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Key modules:**
 - `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation
-- `main.rs` — thin binary entry point: CLI (clap), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/reset-all callbacks, rendering notifier setup, periodic sun timer, custom datetime label updates
+- `main.rs` — thin binary entry point: CLI (clap), logging initialization (`init_logging()`), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/reset-all callbacks, rendering notifier setup, periodic sun timer, custom datetime label updates
 - `scene/` — scene-level abstractions:
   - `scene/camera.rs` — `CameraParams` struct grouping all camera parameters; `OrbitalCamera` with offset, tilt, yaw, pitch; exponential zoom mapping (`zoom_to_distance`/`distance_to_zoom`); orbital camera: (longitude, latitude, distance) -> MVP matrix with post-view rotations and post-projection offset
   - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame); `sun_direction_at()` for custom date/time
@@ -57,6 +57,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
   - `renderer/textures.rs` — `TextureSlot`, texture loading/decoding, composite bind group, `create_mipmapped_texture()`, `downsample_2x()`
   - `renderer/uniforms.rs` — `Uniforms` struct (192 bytes) with `#[repr(C)]`, compile-time size assertion. Includes color correction fields (day_gamma, day_saturation, night_gamma, night_saturation at offsets 128-143), cloud fields (cloud_sphere_radius, cloud_opacity, cloud_floor, cloud_gamma at offsets 144-159), and atmosphere fields (rayleigh_intensity, rayleigh_falloff, nightglow_intensity, nightglow_falloff, nightglow_balance, rayleigh_radius, nightglow_orange_radius, nightglow_green_radius at offsets 160-191).
 - `cloud_fetcher.rs` — background cloud texture fetcher: downloads 8K equirectangular cloud JPEG from matteason/live-cloud-maps, caches to `%LOCALAPPDATA%\SunlitEarth\clouds_cache.jpg` with ETag metadata, polls for updates every 60 minutes using HEAD + `If-None-Match` freshness checks, decodes JPEG and sends decoded pixels via `mpsc` channel to the renderer
+- `memory.rs` — process-level memory tracking: `current_rss_bytes()` reads Windows working set via `GetProcessMemoryInfo`, `log_memory_usage()` emits structured `debug!` events at key allocation points
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
 - `wallpaper.rs` — Windows-only wallpaper export (`cfg(windows)`): monitor resolution detection via `EnumDisplayMonitors`/`GetMonitorInfoW`, PNG save via `image` crate, wallpaper application via `SystemParametersInfoW` (`windows-sys`)
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
@@ -73,8 +74,9 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
 - `image` — PNG/JPEG encoding/decoding for wallpaper export (via `png` feature) and cloud image decoding (via `jpeg` feature)
 - `time` — UTC time decomposition for astronomy calculations
+- `tracing` / `tracing-subscriber` / `tracing-appender` — structured logging with `max_level_debug` (debug builds) and `release_max_level_warn` (release builds); `EnvFilter` respects `RUST_LOG`; non-blocking stderr writer with `FmtSpan::CLOSE` for automatic span timing
 - `ureq` — HTTP client for cloud texture fetching (with `rustls` TLS backend)
-- `windows-sys` — Win32 FFI for wallpaper export (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`
+- `windows-sys` — Win32 FFI for wallpaper export and memory tracking (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo`
 
 ## Testing
 

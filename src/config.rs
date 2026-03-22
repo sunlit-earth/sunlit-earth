@@ -63,6 +63,7 @@ pub struct AppConfig {
     pub atmo_enabled: bool,
     pub rayleigh_intensity: f32,
     pub rayleigh_sharpness: f32,
+    pub rayleigh_haze: f32,
     pub nightglow_intensity: f32,
     pub nightglow_falloff: f32,
     pub nightglow_balance: f32,
@@ -118,8 +119,9 @@ impl Default for AppConfig {
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
             atmo_enabled: true,
-            rayleigh_intensity: 0.3,
-            rayleigh_sharpness: 10.0,
+            rayleigh_intensity: 0.5,
+            rayleigh_sharpness: 50.0,
+            rayleigh_haze: 0.55,
             nightglow_intensity: 0.3,
             nightglow_falloff: 4.0,
             nightglow_balance: 0.5,
@@ -349,13 +351,13 @@ mod tests {
     #[test]
     fn default_rayleigh_intensity() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.rayleigh_intensity, 0.3);
+        assert_relative_eq!(config.rayleigh_intensity, 0.5);
     }
 
     #[test]
     fn default_rayleigh_sharpness() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.rayleigh_sharpness, 10.0);
+        assert_relative_eq!(config.rayleigh_sharpness, 50.0);
     }
 
     #[test]
@@ -380,8 +382,8 @@ mod tests {
     fn deserialize_missing_atmo_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         assert!(config.atmo_enabled);
-        assert_relative_eq!(config.rayleigh_intensity, 0.3);
-        assert_relative_eq!(config.rayleigh_sharpness, 10.0);
+        assert_relative_eq!(config.rayleigh_intensity, 0.5);
+        assert_relative_eq!(config.rayleigh_sharpness, 50.0);
         assert_relative_eq!(config.nightglow_intensity, 0.3);
         assert_relative_eq!(config.nightglow_falloff, 4.0);
         assert_relative_eq!(config.nightglow_balance, 0.5);
@@ -447,6 +449,7 @@ mod tests {
             atmo_enabled: false,
             rayleigh_intensity: 0.7,
             rayleigh_sharpness: 8.0,
+            rayleigh_haze: 0.4,
             nightglow_intensity: 0.5,
             nightglow_falloff: 6.0,
             nightglow_balance: 0.3,
@@ -586,6 +589,7 @@ mod tests {
             atmo_enabled: false,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 7.0,
+            rayleigh_haze: 0.5,
             nightglow_intensity: 0.4,
             nightglow_falloff: 5.0,
             nightglow_balance: 0.6,

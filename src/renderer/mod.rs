@@ -463,6 +463,7 @@ fn rendering_callback(
                     0.0
                 };
                 let rayleigh_sharpness_f = win.get_rayleigh_sharpness();
+                let rayleigh_haze_f = win.get_rayleigh_haze();
                 let nightglow_intensity_f = if atmo_enabled {
                     win.get_nightglow_intensity()
                 } else {
@@ -498,6 +499,7 @@ fn rendering_callback(
                     nightglow_intensity_f,
                     nightglow_falloff_f,
                     nightglow_balance_f,
+                    rayleigh_haze_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -557,6 +559,7 @@ fn rendering_callback(
                     rayleigh_radius: 1.015,
                     nightglow_orange_radius: 1.014,
                     nightglow_green_radius: 1.015,
+                    rayleigh_haze: rayleigh_haze_f,
                 };
                 res.last_shading = Some(shading);
 

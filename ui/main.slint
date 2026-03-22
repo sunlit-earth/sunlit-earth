@@ -56,8 +56,9 @@ export component MainWindow inherits Window {
     in-out property <float> cloud-floor: 0.25;
     in-out property <float> cloud-gamma: 0.65;
     in-out property <bool> atmo-enabled: true;
-    in-out property <float> rayleigh-intensity: 0.3;
-    in-out property <float> rayleigh-sharpness: 10.0;
+    in-out property <float> rayleigh-intensity: 0.5;
+    in-out property <float> rayleigh-sharpness: 50.0;
+    in-out property <float> rayleigh-haze: 0.55;
     in-out property <float> nightglow-intensity: 0.3;
     in-out property <float> nightglow-balance: 0.5;
     in-out property <float> nightglow-falloff: 4.0;
@@ -732,6 +733,26 @@ export component MainWindow inherits Window {
                                 }
                                 Text {
                                     text: round(rayleigh-sharpness-slider.value * 10) / 10;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Haze";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                rayleigh-haze-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.rayleigh-haze;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(rayleigh-haze-slider.value * 100) + "%";
                                     vertical-alignment: center;
                                     min-width: 35px;
                                 }

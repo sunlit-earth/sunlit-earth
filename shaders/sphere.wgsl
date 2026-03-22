@@ -28,6 +28,10 @@ struct Uniforms {
     rayleigh_radius: f32,          // 4 bytes, offset 180
     nightglow_orange_radius: f32,  // 4 bytes, offset 184
     nightglow_green_radius: f32,   // 4 bytes, offset 188
+    rayleigh_haze: f32,            // 4 bytes, offset 192
+    _pad3: f32,                    // 4 bytes, offset 196
+    _pad4: f32,                    // 4 bytes, offset 200
+    _pad5: f32,                    // 4 bytes, offset 204
 };
 
 @group(0) @binding(0)
@@ -199,7 +203,12 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let night_fade = smoothstep(0.0, -0.3, n_dot_l);
     let color = mix(term_color * term_t * 0.5, day_color, day_t) * (1.0 - night_fade);
 
-    return vec4<f32>(color * rim * uniforms.rayleigh_intensity, 0.0);
+    // In-scattering: blue light scattered toward the viewer.
+    // Extinction: original light blocked by the atmosphere (controlled by haze).
+    // Both share the same spatial profile (rim) since they're the same interaction.
+    let scatter = color * rim * uniforms.rayleigh_intensity;
+    let extinction = rim * uniforms.rayleigh_intensity * uniforms.rayleigh_haze;
+    return vec4<f32>(scatter, extinction);
 }
 
 // --- Orange nightglow shell (sodium D + FeO, ~1.014 radius) ---

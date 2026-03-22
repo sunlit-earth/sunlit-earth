@@ -416,10 +416,11 @@ pub(super) fn create_rayleigh_pipeline(
     shader: &wgpu::ShaderModule,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    // Rayleigh uses screen blending (One + OneMinusSrc) instead of additive:
-    // result = src + dst * (1 - src). Over black (space) this equals additive.
-    // Over bright surfaces (clouds, land) it barely increases brightness,
-    // matching how real atmospheric haze tints but doesn't over-brighten.
+    // Rayleigh uses premultiplied alpha blending (One + OneMinusSrcAlpha).
+    // The shader outputs RGB = in-scattered light, A = extinction (haze).
+    // result = scatter + dst * (1 - extinction). At haze=0 this equals
+    // additive (no extinction). At haze>0 the atmosphere partially blocks
+    // what's behind it, tinting bright surfaces like clouds blue.
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("rayleigh_pipeline"),
         layout: Some(pipeline_layout),
@@ -437,7 +438,7 @@ pub(super) fn create_rayleigh_pipeline(
                 blend: Some(wgpu::BlendState {
                     color: wgpu::BlendComponent {
                         src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                         operation: wgpu::BlendOperation::Add,
                     },
                     alpha: wgpu::BlendComponent::OVER,

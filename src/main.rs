@@ -246,6 +246,7 @@ fn main() {
         win.set_atmo_enabled(lighting.atmo_enabled);
         win.set_rayleigh_intensity(lighting.rayleigh_intensity);
         win.set_rayleigh_sharpness(lighting.rayleigh_sharpness);
+        win.set_rayleigh_haze(lighting.rayleigh_haze);
         win.set_nightglow_intensity(lighting.nightglow_intensity);
         win.set_nightglow_falloff(lighting.nightglow_falloff);
         win.set_nightglow_balance(lighting.nightglow_balance);
@@ -337,6 +338,7 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_atmo_enabled(config.atmo_enabled);
     window.set_rayleigh_intensity(config.rayleigh_intensity);
     window.set_rayleigh_sharpness(config.rayleigh_sharpness);
+    window.set_rayleigh_haze(config.rayleigh_haze);
     window.set_nightglow_intensity(config.nightglow_intensity);
     window.set_nightglow_falloff(config.nightglow_falloff);
     window.set_nightglow_balance(config.nightglow_balance);
@@ -396,6 +398,7 @@ fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig 
         atmo_enabled: window.get_atmo_enabled(),
         rayleigh_intensity: window.get_rayleigh_intensity(),
         rayleigh_sharpness: window.get_rayleigh_sharpness(),
+        rayleigh_haze: window.get_rayleigh_haze(),
         nightglow_intensity: window.get_nightglow_intensity(),
         nightglow_falloff: window.get_nightglow_falloff(),
         nightglow_balance: window.get_nightglow_balance(),

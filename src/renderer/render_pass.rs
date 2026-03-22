@@ -37,6 +37,7 @@ pub(super) struct ShadingParams {
     pub rayleigh_radius: f32,
     pub nightglow_orange_radius: f32,
     pub nightglow_green_radius: f32,
+    pub rayleigh_haze: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -127,6 +128,10 @@ pub(super) fn write_uniforms(
         rayleigh_radius: shading.rayleigh_radius,
         nightglow_orange_radius: shading.nightglow_orange_radius,
         nightglow_green_radius: shading.nightglow_green_radius,
+        rayleigh_haze: shading.rayleigh_haze,
+        _pad3: 0.0,
+        _pad4: 0.0,
+        _pad5: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

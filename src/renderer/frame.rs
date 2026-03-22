@@ -55,6 +55,8 @@ pub(crate) struct FrameState {
     pub nightglow_falloff: i32,
     /// Nightglow balance quantized to integer thousandths.
     pub nightglow_balance: i32,
+    /// Rayleigh haze (extinction ratio) quantized to integer thousandths.
+    pub rayleigh_haze: i32,
 }
 
 /// Build a `FrameState` from raw values, quantizing floats to integer
@@ -87,6 +89,7 @@ pub(crate) fn build_frame_state(
     nightglow_intensity: f32,
     nightglow_falloff: f32,
     nightglow_balance: f32,
+    rayleigh_haze: f32,
 ) -> FrameState {
     FrameState {
         longitude: camera.longitude,
@@ -126,6 +129,7 @@ pub(crate) fn build_frame_state(
         nightglow_intensity: (nightglow_intensity * 1000.0) as i32,
         nightglow_falloff: (nightglow_falloff * 1000.0) as i32,
         nightglow_balance: (nightglow_balance * 1000.0) as i32,
+        rayleigh_haze: (rayleigh_haze * 1000.0) as i32,
     }
 }
 
@@ -172,11 +176,12 @@ mod tests {
             1.0,           // day_saturation
             1.0,           // night_gamma
             1.0,           // night_saturation
-            0.3,           // rayleigh_intensity
-            10.0,          // rayleigh_sharpness
+            0.5,           // rayleigh_intensity
+            50.0,          // rayleigh_sharpness
             0.3,           // nightglow_intensity
             4.0,           // nightglow_falloff
             0.5,           // nightglow_balance
+            0.25,          // rayleigh_haze
         )
     }
 
@@ -210,6 +215,7 @@ mod tests {
             0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         let state_b = build_frame_state(
             &cam, 4, 0, 1920, 1080,
@@ -217,6 +223,7 @@ mod tests {
             0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state_a, state_b, "Sub-threshold changes should compare equal");
     }
@@ -230,6 +237,7 @@ mod tests {
             0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         let state_b = build_frame_state(
             &cam, 4, 0, 1920, 1080,
@@ -237,6 +245,7 @@ mod tests {
             0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(state_a, state_b, "At-threshold changes should compare different");
     }
@@ -252,6 +261,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "longitude change should trigger dirty");
 
@@ -260,6 +270,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "latitude change should trigger dirty");
 
@@ -268,6 +279,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "zoom change should trigger dirty");
 
@@ -276,6 +288,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "sample_count change should trigger dirty");
 
@@ -284,6 +297,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "texture_index change should trigger dirty");
 
@@ -292,6 +306,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "width change should trigger dirty");
 
@@ -300,6 +315,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "height change should trigger dirty");
 
@@ -309,6 +325,7 @@ mod tests {
             0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "sun_direction change should trigger dirty");
 
@@ -317,6 +334,7 @@ mod tests {
             sun, 0.25, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "terminator_width change should trigger dirty");
 
@@ -325,6 +343,7 @@ mod tests {
             sun, 0.15, false, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "diffuse_shading change should trigger dirty");
 
@@ -333,6 +352,7 @@ mod tests {
             sun, 0.15, true, 0.2, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "diffuse_floor change should trigger dirty");
 
@@ -341,6 +361,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.7, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "diffuse_ramp change should trigger dirty");
 
@@ -349,6 +370,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 200.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "spec_shininess change should trigger dirty");
 
@@ -357,6 +379,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.5, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "spec_intensity change should trigger dirty");
     }
@@ -372,6 +395,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "tilt change should trigger dirty");
     }
@@ -387,6 +411,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "yaw change should trigger dirty");
     }
@@ -402,6 +427,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "pitch change should trigger dirty");
     }
@@ -417,6 +443,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "offset_x change should trigger dirty");
 
@@ -425,6 +452,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "offset_y change should trigger dirty");
     }
@@ -438,6 +466,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.5, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state.fresnel_mix, 500);
     }
@@ -453,6 +482,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.5, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "fresnel_mix change should trigger dirty");
     }
@@ -466,6 +496,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.75, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state.cloud_opacity, 750);
     }
@@ -481,6 +512,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.5, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "cloud_opacity change should trigger dirty");
     }
@@ -494,6 +526,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.196, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state.cloud_floor, 196);
     }
@@ -507,6 +540,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 0.3, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state.cloud_gamma, 300);
     }
@@ -522,6 +556,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.2, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "cloud_floor change should trigger dirty");
     }
@@ -537,6 +572,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "cloud_gamma change should trigger dirty");
     }
@@ -550,6 +586,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.5, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state.day_gamma, 1500);
     }
@@ -563,6 +600,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 0.5, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_eq!(state.day_saturation, 500);
     }
@@ -578,6 +616,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.5, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "day_gamma change should trigger dirty");
 
@@ -586,6 +625,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 0.5, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "day_saturation change should trigger dirty");
 
@@ -594,6 +634,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.5, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "night_gamma change should trigger dirty");
 
@@ -602,6 +643,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 0.5,
             0.3, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "night_saturation change should trigger dirty");
     }
@@ -609,13 +651,13 @@ mod tests {
     #[test]
     fn frame_state_rayleigh_intensity_quantization() {
         let state = default_frame_state();
-        assert_eq!(state.rayleigh_intensity, 300);
+        assert_eq!(state.rayleigh_intensity, 500);
     }
 
     #[test]
     fn frame_state_rayleigh_sharpness_quantization() {
         let state = default_frame_state();
-        assert_eq!(state.rayleigh_sharpness, 10000);
+        assert_eq!(state.rayleigh_sharpness, 50000);
     }
 
     #[test]
@@ -647,6 +689,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.5, 6.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "rayleigh_intensity change should trigger dirty");
     }
@@ -662,6 +705,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 8.0, 0.3, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "rayleigh_sharpness change should trigger dirty");
     }
@@ -677,6 +721,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.5, 4.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "nightglow_intensity change should trigger dirty");
     }
@@ -692,6 +737,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 6.0, 0.5,
+            0.25,
         );
         assert_ne!(base, modified, "nightglow_falloff change should trigger dirty");
     }
@@ -707,6 +753,7 @@ mod tests {
             sun, 0.15, true, 0.1, 0.6, 150.0, 0.4, 0.0, 5.0,
             0.8, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             0.3, 6.0, 0.3, 4.0, 0.8,
+            0.25,
         );
         assert_ne!(base, modified, "nightglow_balance change should trigger dirty");
     }

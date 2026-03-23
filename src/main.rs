@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use clap::Parser;
 use slint::ComponentHandle;
@@ -12,7 +11,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 use sunlit_earth::config::{self, AppConfig};
 use sunlit_earth::renderer::{self, gamma_slider_to_value, gamma_value_to_slider};
-use sunlit_earth::scene::camera::{CameraParams, zoom_to_distance};
+use sunlit_earth::scene::camera::{PRESETS, zoom_to_distance};
 use sunlit_earth::scene::datetime;
 use sunlit_earth::texture_loader;
 #[cfg(windows)]
@@ -115,7 +114,6 @@ fn main() {
     // Set up AA options from supported sample counts
     let (aa_labels, aa_counts, _aa_default) =
         renderer::build_aa_options(&wgpu_context.supported_sample_counts);
-    let aa_counts_for_exit = aa_counts.clone();
     let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
     window.set_aa_options(slint::ModelRc::new(aa_model));
 
@@ -164,77 +162,66 @@ fn main() {
     })
     .ok();
 
-    // Debounced config save timer — restarts on every UI change, fires 1s after last change
-    let config_timer = Rc::new(slint::Timer::default());
-    {
-        let window_weak = window.as_weak();
-        let aa_counts_for_save = aa_counts.clone();
-        config_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_secs(1), move || {
-            if let Some(win) = window_weak.upgrade() {
-                config::save_config(&read_config_from_window(&win, &aa_counts_for_save));
-            }
-        });
-        // Stop the timer immediately — it will be restarted by callbacks
-        config_timer.stop();
-    }
-
     // Request a redraw whenever sliders, AA, or texture change
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             update_datetime_labels(&win, base_year);
             win.window().request_redraw();
         }
-        config_timer_handle.restart();
+    });
+
+    // When "Override date/time" is toggled on, initialize sliders to current UTC time
+    let window_weak = window.as_weak();
+    window.on_datetime_override_toggled(move || {
+        if let Some(win) = window_weak.upgrade() {
+            if win.get_use_custom_datetime() {
+                let now = time::OffsetDateTime::now_utc();
+                let hour =
+                    now.hour() as f32 + now.minute() as f32 / 60.0 + now.second() as f32 / 3600.0;
+                win.set_custom_hour(hour);
+                win.set_custom_day_of_year(now.ordinal() as f32);
+                win.set_custom_year_index(now.year() - base_year);
+            }
+            update_datetime_labels(&win, base_year);
+            win.window().request_redraw();
+        }
     });
 
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_msaa_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             win.window().request_redraw();
         }
-        config_timer_handle.restart();
     });
 
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_texture_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             win.window().request_redraw();
         }
-        config_timer_handle.restart();
     });
 
-    // "Set as Wallpaper" button callback (Windows only)
-    #[cfg(windows)]
+    // "Set as Wallpaper" button: save config, then apply wallpaper.
     {
         let window_weak = window.as_weak();
+        let aa_counts_for_save = aa_counts.clone();
         window.on_set_wallpaper(move || {
             let Some(win) = window_weak.upgrade() else {
                 return;
             };
-            match do_set_wallpaper() {
-                Ok(()) => win.set_wallpaper_status("Wallpaper set successfully".into()),
-                Err(e) => win.set_wallpaper_status(format!("Error: {e}").into()),
+            config::save_config(&read_config_from_window(&win, &aa_counts_for_save));
+            #[cfg(windows)]
+            if let Err(e) = do_set_wallpaper() {
+                tracing::error!("Failed to set wallpaper: {e}");
             }
-        });
-    }
-    #[cfg(not(windows))]
-    {
-        let window_weak = window.as_weak();
-        window.on_set_wallpaper(move || {
-            let Some(win) = window_weak.upgrade() else {
-                return;
-            };
-            win.set_wallpaper_status("Not supported on this platform".into());
+            #[cfg(not(windows))]
+            tracing::warn!("Wallpaper export is not supported on this platform");
         });
     }
 
     // Left-drag callback: rotate the globe (tilt-corrected)
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_drag_globe(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -263,12 +250,10 @@ fn main() {
         win.set_camera_longitude(wrapped_lon);
         win.set_camera_latitude(clamped_lat);
         win.window().request_redraw();
-        config_timer_handle.restart();
     });
 
     // Right-drag callback: adjust framing (offset X/Y) with scrolling behavior
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_drag_frame(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -282,12 +267,10 @@ fn main() {
         win.set_camera_offset_x(new_x);
         win.set_camera_offset_y(new_y);
         win.window().request_redraw();
-        config_timer_handle.restart();
     });
 
     // Middle-drag callback: adjust pitch and yaw
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_drag_orient(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -300,12 +283,10 @@ fn main() {
         win.set_camera_yaw(new_yaw);
         win.set_camera_pitch(new_pitch);
         win.window().request_redraw();
-        config_timer_handle.restart();
     });
 
     // Left+right drag callback: adjust tilt (horizontal only)
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_drag_tilt(move |dx, _dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -318,12 +299,10 @@ fn main() {
 
         win.set_camera_tilt(wrapped_tilt);
         win.window().request_redraw();
-        config_timer_handle.restart();
     });
 
     // Mouse scroll callback: zoom in/out
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
     window.on_mouse_scroll(move |delta| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -333,57 +312,79 @@ fn main() {
         let new_zoom = (current_zoom - delta * scroll_sensitivity).clamp(0.0, 1.0);
         win.set_camera_zoom(new_zoom);
         win.window().request_redraw();
-        config_timer_handle.restart();
     });
 
-    // Reset All button callback
+    // Apply-preset callback: set camera parameters from the PRESETS array
     let window_weak = window.as_weak();
-    let config_timer_handle = Rc::clone(&config_timer);
-    window.on_reset_all(move || {
+    #[allow(clippy::cast_sign_loss)]
+    window.on_apply_preset(move |index| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let defaults = CameraParams::default();
-        win.set_camera_longitude(defaults.longitude);
-        win.set_camera_latitude(defaults.latitude);
-        win.set_camera_zoom(defaults.zoom);
-        win.set_camera_offset_x(defaults.offset_x);
-        win.set_camera_offset_y(defaults.offset_y);
-        win.set_camera_tilt(defaults.tilt_deg);
-        win.set_camera_yaw(defaults.yaw_deg);
-        win.set_camera_pitch(defaults.pitch_deg);
-        // Reset lighting
-        let lighting = AppConfig::default();
-        win.set_terminator_width(lighting.terminator_width);
-        win.set_diffuse_shading(lighting.diffuse_shading);
-        win.set_diffuse_floor(lighting.diffuse_floor);
-        win.set_diffuse_ramp(lighting.diffuse_ramp);
-        win.set_spec_shininess(lighting.spec_shininess);
-        win.set_spec_intensity(lighting.spec_intensity);
-        win.set_fresnel_mix(lighting.fresnel_mix);
-        win.set_fresnel_exp(lighting.fresnel_exp);
-        win.set_cloud_opacity(lighting.cloud_opacity);
-        win.set_cloud_floor(lighting.cloud_floor);
-        win.set_cloud_gamma(lighting.cloud_gamma);
-        win.set_atmo_enabled(lighting.atmo_enabled);
-        win.set_rayleigh_intensity(lighting.rayleigh_intensity);
-        win.set_rayleigh_sharpness(lighting.rayleigh_sharpness);
-        win.set_rayleigh_haze(lighting.rayleigh_haze);
-        win.set_nightglow_intensity(lighting.nightglow_intensity);
-        win.set_nightglow_falloff(lighting.nightglow_falloff);
-        win.set_nightglow_balance(lighting.nightglow_balance);
-        win.set_day_gamma(gamma_value_to_slider(lighting.day_gamma));
-        win.set_day_saturation(lighting.day_saturation);
-        win.set_night_gamma(gamma_value_to_slider(lighting.night_gamma));
-        win.set_night_saturation(lighting.night_saturation);
-        // Reset datetime
-        win.set_use_custom_datetime(false);
-        win.set_custom_hour(12.0);
-        win.set_custom_day_of_year(1.0);
-        win.set_custom_year_index(10); // center = current year
-        update_datetime_labels(&win, base_year);
+        let Some(preset) = PRESETS.get(index as usize) else {
+            return;
+        };
+        win.set_camera_longitude(preset.longitude);
+        win.set_camera_latitude(preset.latitude);
+        win.set_camera_zoom(preset.zoom);
+        win.set_camera_offset_x(preset.offset_x);
+        win.set_camera_offset_y(preset.offset_y);
+        win.set_camera_tilt(preset.tilt_deg);
+        win.set_camera_yaw(preset.yaw_deg);
+        win.set_camera_pitch(preset.pitch_deg);
         win.window().request_redraw();
-        config_timer_handle.restart();
+    });
+
+    // Load-defaults callback: restore all settings to AppConfig::default() without saving
+    let window_weak = window.as_weak();
+    let aa_counts_for_defaults = aa_counts.clone();
+    window.on_load_defaults(move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let defaults = AppConfig::default();
+        apply_config_to_window(&win, &defaults);
+
+        // Defer ComboBox index updates (same pattern as startup)
+        let default_aa_index = config::find_sample_count_index(&aa_counts_for_defaults, defaults.sample_count);
+        let default_texture_index = defaults.texture_index;
+        let win_weak = win.as_weak();
+        slint::invoke_from_event_loop(move || {
+            if let Some(w) = win_weak.upgrade() {
+                w.set_aa_index(default_aa_index);
+                w.set_texture_index(default_texture_index);
+                w.window().request_redraw();
+            }
+        })
+        .ok();
+
+        win.window().request_redraw();
+    });
+
+    // Reset callback: reload config from disk and restore UI to last-saved state
+    let window_weak = window.as_weak();
+    let aa_counts_for_reset = aa_counts.clone();
+    window.on_reset(move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let loaded = config::load_config();
+        apply_config_to_window(&win, &loaded);
+
+        // Defer ComboBox index updates (same pattern as startup)
+        let loaded_aa_index = config::find_sample_count_index(&aa_counts_for_reset, loaded.sample_count);
+        let loaded_texture_index = loaded.texture_index;
+        let win_weak = win.as_weak();
+        slint::invoke_from_event_loop(move || {
+            if let Some(w) = win_weak.upgrade() {
+                w.set_aa_index(loaded_aa_index);
+                w.set_texture_index(loaded_texture_index);
+                w.window().request_redraw();
+            }
+        })
+        .ok();
+
+        win.window().request_redraw();
     });
 
     // Create the texture channel in main.rs so both the renderer and the
@@ -423,14 +424,15 @@ fn main() {
 
     window.run().expect("Failed to run window");
 
-    // Save config on exit as a backstop (catches any changes during the debounce window)
-    info!("event loop exited, saving config");
+    // Save window geometry on close (preserves all other config values on disk)
+    let size = window.window().size();
+    let pos = window.window().position();
+    config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+
     sunlit_earth::memory::log_memory_usage("before exit");
-    config::save_config(&read_config_from_window(&window, &aa_counts_for_exit));
 
     // Keep timers alive until the event loop exits (prevent drop optimization)
     drop(sun_timer);
-    drop(config_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");
@@ -579,3 +581,4 @@ fn do_set_wallpaper() -> Result<(), String> {
     sunlit_earth::memory::log_memory_usage("after wallpaper set");
     Ok(())
 }
+

@@ -64,8 +64,6 @@ export component MainWindow inherits Window {
     in-out property <float> nightglow-falloff: 15.0;
 
     in property <float> zoom-display-distance: 8.0;
-    in-out property <string> wallpaper-status;
-
     callback sliders-changed();
     callback msaa-changed();
     callback texture-changed();
@@ -84,7 +82,12 @@ export component MainWindow inherits Window {
     callback mouse-drag-orient(float, float);
     callback mouse-drag-tilt(float, float);
     callback mouse-scroll(float);
-    callback reset-all();
+    callback apply-preset(int);
+    callback load-defaults();
+    callback reset();
+    callback datetime-override-toggled();
+
+    in-out property <bool> advanced-open: false;
 
     // Controls panel on the left
     Rectangle {
@@ -105,840 +108,946 @@ export component MainWindow inherits Window {
                 spacing: 4px;
                 alignment: start;
 
-                GroupBox {
-                    title: "Rendering";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Texture";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            texture-combo := ComboBox {
-                                model: texture-options;
-                                current-index <=> root.texture-index;
-                                max-height: 24px;
-                                selected => { root.texture-changed(); }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Anti-Aliasing";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            aa-combo := ComboBox {
-                                model: aa-options;
-                                current-index <=> root.aa-index;
-                                max-height: 24px;
-                                selected => { root.msaa-changed(); }
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Camera Position";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Longitude";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            longitude-slider := Slider {
-                                minimum: -180;
-                                maximum: 180;
-                                value <=> root.camera-longitude;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(root.camera-longitude) + "\u{b0}";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Latitude";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            latitude-slider := Slider {
-                                minimum: -89;
-                                maximum: 89;
-                                value <=> root.camera-latitude;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(root.camera-latitude) + "\u{b0}";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Zoom";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            zoom-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.camera-zoom;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(root.zoom-display-distance * 10) / 10;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Camera Orientation";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Tilt";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            tilt-slider := Slider {
-                                minimum: -180;
-                                maximum: 180;
-                                value <=> root.camera-tilt;
-                                changed => {
-                                    if root.camera-tilt > -5 && root.camera-tilt < 5 {
-                                        root.camera-tilt = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-                            Text {
-                                text: round(root.camera-tilt) + "\u{b0}";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Yaw";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            yaw-slider := Slider {
-                                minimum: -90;
-                                maximum: 90;
-                                value <=> root.camera-yaw;
-                                changed => {
-                                    if root.camera-yaw > -3 && root.camera-yaw < 3 {
-                                        root.camera-yaw = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-                            Text {
-                                text: round(root.camera-yaw) + "\u{b0}";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Pitch";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            pitch-slider := Slider {
-                                minimum: -90;
-                                maximum: 90;
-                                value <=> root.camera-pitch;
-                                changed => {
-                                    if root.camera-pitch > -3 && root.camera-pitch < 3 {
-                                        root.camera-pitch = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-                            Text {
-                                text: round(root.camera-pitch) + "\u{b0}";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Framing";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Offset X";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            offset-x-slider := Slider {
-                                minimum: -3.0;
-                                maximum: 3.0;
-                                value <=> root.camera-offset-x;
-                                changed => {
-                                    if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
-                                        root.camera-offset-x = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-                            Text {
-                                text: round(root.camera-offset-x * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Offset Y";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            offset-y-slider := Slider {
-                                minimum: -3.0;
-                                maximum: 3.0;
-                                value <=> root.camera-offset-y;
-                                changed => {
-                                    if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
-                                        root.camera-offset-y = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-                            Text {
-                                text: round(root.camera-offset-y * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Lighting";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Terminator";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            terminator-slider := Slider {
-                                minimum: 0.01;
-                                maximum: 0.3;
-                                value <=> root.terminator-width;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(terminator-slider.value * 1000) / 1000;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Diffuse";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            diffuse-check := CheckBox {
-                                text: "Dayside shading";
-                                checked <=> root.diffuse-shading;
-                                toggled => { root.sliders-changed(); }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "  Floor";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            diffuse-floor-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.diffuse-floor;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(diffuse-floor-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "  Ramp";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            diffuse-ramp-slider := Slider {
-                                minimum: 0.1;
-                                maximum: 1.0;
-                                value <=> root.diffuse-ramp;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(diffuse-ramp-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Shininess";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            spec-shininess-slider := Slider {
-                                minimum: 10;
-                                maximum: 500;
-                                value <=> root.spec-shininess;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(spec-shininess-slider.value);
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Glint";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            spec-intensity-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.spec-intensity;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(spec-intensity-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Fresnel Mix";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            fresnel-mix-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.fresnel-mix;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(fresnel-mix-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Fresnel Extent";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            fresnel-exp-slider := Slider {
-                                minimum: 1.0;
-                                maximum: 8.0;
-                                value <=> root.fresnel-exp;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(fresnel-exp-slider.value * 10) / 10;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Color Correction";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        Text {
-                            text: "Day Texture";
-                            font-weight: 700;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "  Gamma";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            day-gamma-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.day-gamma;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round((day-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * day-gamma-slider.value : 1.0 + 4.0 * (day-gamma-slider.value - 0.5)) * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "  Saturation";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            day-saturation-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.day-saturation;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(day-saturation-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        Text {
-                            text: "Night Texture";
-                            font-weight: 700;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "  Gamma";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            night-gamma-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.night-gamma;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round((night-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * night-gamma-slider.value : 1.0 + 4.0 * (night-gamma-slider.value - 0.5)) * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "  Saturation";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            night-saturation-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.night-saturation;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(night-saturation-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Clouds";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Opacity";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            cloud-opacity-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.cloud-opacity;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(root.cloud-opacity * 100) + "%";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Floor";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            cloud-floor-slider := Slider {
-                                minimum: 0.0;
-                                maximum: 0.5;
-                                value <=> root.cloud-floor;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(root.cloud-floor * 100) + "%";
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Gamma";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            cloud-gamma-slider := Slider {
-                                minimum: 0.1;
-                                maximum: 2.0;
-                                value <=> root.cloud-gamma;
-                                changed => { root.sliders-changed(); }
-                            }
-                            Text {
-                                text: round(cloud-gamma-slider.value * 100) / 100;
-                                vertical-alignment: center;
-                                min-width: 35px;
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Atmosphere";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Enable";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            CheckBox {
-                                text: "Atmosphere glow";
-                                checked <=> root.atmo-enabled;
-                                toggled => { root.sliders-changed(); }
-                            }
-                        }
-
-                        if root.atmo-enabled :
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            Text {
-                                text: "Rayleigh";
-                                font-weight: 700;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Intensity";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                rayleigh-intensity-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.rayleigh-intensity;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.rayleigh-intensity * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Sharpness";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                rayleigh-sharpness-slider := Slider {
-                                    minimum: 10.0;
-                                    maximum: 100.0;
-                                    value <=> root.rayleigh-sharpness;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(rayleigh-sharpness-slider.value * 10) / 10;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Haze";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                rayleigh-haze-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.rayleigh-haze;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(rayleigh-haze-slider.value * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-
-                            Text {
-                                text: "Nightglow";
-                                font-weight: 700;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Intensity";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                nightglow-intensity-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.nightglow-intensity;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.nightglow-intensity * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Balance";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                nightglow-balance-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.nightglow-balance;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: root.nightglow-balance <= 0.01 ? "orange" :
-                                          root.nightglow-balance >= 0.99 ? "green" :
-                                          round(root.nightglow-balance * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Falloff";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                nightglow-falloff-slider := Slider {
-                                    minimum: 2.0;
-                                    maximum: 50.0;
-                                    value <=> root.nightglow-falloff;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(nightglow-falloff-slider.value * 10) / 10;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
-                    title: "Date / Time";
-                    VerticalLayout {
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: "Custom";
-                                vertical-alignment: center;
-                                min-width: 70px;
-                            }
-                            CheckBox {
-                                text: "Override date/time";
-                                checked <=> root.use-custom-datetime;
-                                toggled => {
-                                    root.sliders-changed();
-                                }
-                            }
-                        }
-
-                        if root.use-custom-datetime :
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Hour";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                Slider {
-                                    minimum: 0.0;
-                                    maximum: 23.99;
-                                    value <=> root.custom-hour;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: root.hour-label;
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Day";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                Slider {
-                                    minimum: 1.0;
-                                    maximum: root.max-day-of-year;
-                                    value <=> root.custom-day-of-year;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: root.day-label;
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Year";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                ComboBox {
-                                    model: root.year-options;
-                                    current-index <=> root.custom-year-index;
-                                    max-height: 24px;
-                                    selected => { root.sliders-changed(); }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle { height: 8px; }
-
-                Button {
-                    text: "Reset All";
-                    clicked => { root.reset-all(); }
-                }
+                // --- Top-level actions ---
 
                 Button {
                     text: "Set as Wallpaper";
                     clicked => { root.set-wallpaper(); }
                 }
 
-                Text {
-                    text: wallpaper-status;
-                    color: #888888;
-                    font-size: 11px;
-                    wrap: word-wrap;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Button {
+                        text: "Load Defaults";
+                        min-width: 0;
+                        preferred-width: 0;
+                        clicked => { root.load-defaults(); }
+                    }
+                    Button {
+                        text: "Reset";
+                        min-width: 0;
+                        preferred-width: 0;
+                        clicked => { root.reset(); }
+                    }
                 }
 
-                Rectangle { height: 16px; }
+                // --- 3x3 preset grid ---
+
+                Rectangle { height: 8px; }
 
                 Text {
-                    text: renderer-info;
-                    color: #888888;
-                    font-size: 11px;
+                    text: "Presets";
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                GridLayout {
+                    spacing: 4px;
+                    Row {
+                        Button {
+                            text: "Europe";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(0); }
+                        }
+                        Button {
+                            text: "N. America";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(1); }
+                        }
+                        Button {
+                            text: "S. America";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(2); }
+                        }
+                    }
+                    Row {
+                        Button {
+                            text: "Africa";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(3); }
+                        }
+                        Button {
+                            text: "Asia";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(4); }
+                        }
+                        Button {
+                            text: "Oceania";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(5); }
+                        }
+                    }
+                    Row {
+                        Button {
+                            text: "Pacific";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(6); }
+                        }
+                        Button {
+                            text: "Blue Marble";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(7); }
+                        }
+                        Button {
+                            text: "Earthrise";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.apply-preset(8); }
+                        }
+                    }
+                }
+
+                // --- Advanced toggle ---
+
+                Rectangle { height: 8px; }
+
+                TouchArea {
+                    height: 24px;
+                    clicked => { root.advanced-open = !root.advanced-open; }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: root.advanced-open ? "\u{25bc}" : "\u{25b6}";
+                            vertical-alignment: center;
+                            font-size: 11px;
+                        }
+                        Text {
+                            text: "Advanced";
+                            vertical-alignment: center;
+                            font-weight: 700;
+                        }
+                    }
+                }
+
+                // --- Collapsible advanced section ---
+
+                if root.advanced-open :
+                VerticalLayout {
+                    spacing: 4px;
+
+                    GroupBox {
+                        title: "Camera Position";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Longitude";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                longitude-slider := Slider {
+                                    minimum: -180;
+                                    maximum: 180;
+                                    value <=> root.camera-longitude;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.camera-longitude) + "\u{b0}";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Latitude";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                latitude-slider := Slider {
+                                    minimum: -89;
+                                    maximum: 89;
+                                    value <=> root.camera-latitude;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.camera-latitude) + "\u{b0}";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Zoom";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                zoom-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.camera-zoom;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.zoom-display-distance * 10) / 10;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Camera Orientation";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Tilt";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                tilt-slider := Slider {
+                                    minimum: -180;
+                                    maximum: 180;
+                                    value <=> root.camera-tilt;
+                                    changed => {
+                                        if root.camera-tilt > -5 && root.camera-tilt < 5 {
+                                            root.camera-tilt = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                                Text {
+                                    text: round(root.camera-tilt) + "\u{b0}";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Yaw";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                yaw-slider := Slider {
+                                    minimum: -90;
+                                    maximum: 90;
+                                    value <=> root.camera-yaw;
+                                    changed => {
+                                        if root.camera-yaw > -3 && root.camera-yaw < 3 {
+                                            root.camera-yaw = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                                Text {
+                                    text: round(root.camera-yaw) + "\u{b0}";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Pitch";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                pitch-slider := Slider {
+                                    minimum: -90;
+                                    maximum: 90;
+                                    value <=> root.camera-pitch;
+                                    changed => {
+                                        if root.camera-pitch > -3 && root.camera-pitch < 3 {
+                                            root.camera-pitch = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                                Text {
+                                    text: round(root.camera-pitch) + "\u{b0}";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Framing";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Offset X";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                offset-x-slider := Slider {
+                                    minimum: -3.0;
+                                    maximum: 3.0;
+                                    value <=> root.camera-offset-x;
+                                    changed => {
+                                        if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
+                                            root.camera-offset-x = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                                Text {
+                                    text: round(root.camera-offset-x * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Offset Y";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                offset-y-slider := Slider {
+                                    minimum: -3.0;
+                                    maximum: 3.0;
+                                    value <=> root.camera-offset-y;
+                                    changed => {
+                                        if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
+                                            root.camera-offset-y = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                                Text {
+                                    text: round(root.camera-offset-y * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Date / Time";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Custom";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                CheckBox {
+                                    text: "Override date/time";
+                                    checked <=> root.use-custom-datetime;
+                                    toggled => {
+                                        root.datetime-override-toggled();
+                                    }
+                                }
+                            }
+
+                            if root.use-custom-datetime :
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Hour";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    Slider {
+                                        minimum: 0.0;
+                                        maximum: 23.99;
+                                        value <=> root.custom-hour;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: root.hour-label;
+                                        vertical-alignment: center;
+                                        min-width: 45px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Day";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    Slider {
+                                        minimum: 1.0;
+                                        maximum: root.max-day-of-year;
+                                        value <=> root.custom-day-of-year;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: root.day-label;
+                                        vertical-alignment: center;
+                                        min-width: 45px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Year";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    ComboBox {
+                                        model: root.year-options;
+                                        current-index <=> root.custom-year-index;
+                                        max-height: 24px;
+                                        selected => { root.sliders-changed(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Clouds";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Opacity";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                cloud-opacity-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.cloud-opacity;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.cloud-opacity * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Floor";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                cloud-floor-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 0.5;
+                                    value <=> root.cloud-floor;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.cloud-floor * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Gamma";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                cloud-gamma-slider := Slider {
+                                    minimum: 0.1;
+                                    maximum: 2.0;
+                                    value <=> root.cloud-gamma;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(cloud-gamma-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Atmosphere";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Enable";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                CheckBox {
+                                    text: "Atmosphere glow";
+                                    checked <=> root.atmo-enabled;
+                                    toggled => { root.sliders-changed(); }
+                                }
+                            }
+
+                            if root.atmo-enabled :
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Rayleigh";
+                                    font-weight: 700;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "  Intensity";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    rayleigh-intensity-slider := Slider {
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.rayleigh-intensity;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: round(root.rayleigh-intensity * 100) + "%";
+                                        vertical-alignment: center;
+                                        min-width: 35px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "  Sharpness";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    rayleigh-sharpness-slider := Slider {
+                                        minimum: 10.0;
+                                        maximum: 100.0;
+                                        value <=> root.rayleigh-sharpness;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: round(rayleigh-sharpness-slider.value * 10) / 10;
+                                        vertical-alignment: center;
+                                        min-width: 35px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "  Haze";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    rayleigh-haze-slider := Slider {
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.rayleigh-haze;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: round(rayleigh-haze-slider.value * 100) + "%";
+                                        vertical-alignment: center;
+                                        min-width: 35px;
+                                    }
+                                }
+
+                                Text {
+                                    text: "Nightglow";
+                                    font-weight: 700;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "  Intensity";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    nightglow-intensity-slider := Slider {
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.nightglow-intensity;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: round(root.nightglow-intensity * 100) + "%";
+                                        vertical-alignment: center;
+                                        min-width: 35px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "  Balance";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    nightglow-balance-slider := Slider {
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.nightglow-balance;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: root.nightglow-balance <= 0.01 ? "orange" :
+                                              root.nightglow-balance >= 0.99 ? "green" :
+                                              round(root.nightglow-balance * 100) / 100;
+                                        vertical-alignment: center;
+                                        min-width: 35px;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "  Falloff";
+                                        vertical-alignment: center;
+                                        min-width: 70px;
+                                    }
+                                    nightglow-falloff-slider := Slider {
+                                        minimum: 2.0;
+                                        maximum: 50.0;
+                                        value <=> root.nightglow-falloff;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                    Text {
+                                        text: round(nightglow-falloff-slider.value * 10) / 10;
+                                        vertical-alignment: center;
+                                        min-width: 35px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Lighting";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Terminator";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                terminator-slider := Slider {
+                                    minimum: 0.01;
+                                    maximum: 0.3;
+                                    value <=> root.terminator-width;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(terminator-slider.value * 1000) / 1000;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Diffuse";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                diffuse-check := CheckBox {
+                                    text: "Dayside shading";
+                                    checked <=> root.diffuse-shading;
+                                    toggled => { root.sliders-changed(); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Floor";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                diffuse-floor-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.diffuse-floor;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(diffuse-floor-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Ramp";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                diffuse-ramp-slider := Slider {
+                                    minimum: 0.1;
+                                    maximum: 1.0;
+                                    value <=> root.diffuse-ramp;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(diffuse-ramp-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Shininess";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                spec-shininess-slider := Slider {
+                                    minimum: 10;
+                                    maximum: 500;
+                                    value <=> root.spec-shininess;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(spec-shininess-slider.value);
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Glint";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                spec-intensity-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.spec-intensity;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(spec-intensity-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Fresnel Mix";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                fresnel-mix-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.fresnel-mix;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(fresnel-mix-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Fresnel Extent";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                fresnel-exp-slider := Slider {
+                                    minimum: 1.0;
+                                    maximum: 8.0;
+                                    value <=> root.fresnel-exp;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(fresnel-exp-slider.value * 10) / 10;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Color Correction";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text: "Day Texture";
+                                font-weight: 700;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Gamma";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                day-gamma-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.day-gamma;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round((day-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * day-gamma-slider.value : 1.0 + 4.0 * (day-gamma-slider.value - 0.5)) * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Saturation";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                day-saturation-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.day-saturation;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(day-saturation-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            Text {
+                                text: "Night Texture";
+                                font-weight: 700;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Gamma";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                night-gamma-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.night-gamma;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round((night-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * night-gamma-slider.value : 1.0 + 4.0 * (night-gamma-slider.value - 0.5)) * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Saturation";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                night-saturation-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.night-saturation;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(night-saturation-slider.value * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Rendering";
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Texture";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                texture-combo := ComboBox {
+                                    model: texture-options;
+                                    current-index <=> root.texture-index;
+                                    max-height: 24px;
+                                    selected => { root.texture-changed(); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Anti-Aliasing";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                aa-combo := ComboBox {
+                                    model: aa-options;
+                                    current-index <=> root.aa-index;
+                                    max-height: 24px;
+                                    selected => { root.msaa-changed(); }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: renderer-info;
+                        color: #888888;
+                        font-size: 11px;
+                    }
                 }
             }
         }
@@ -949,7 +1058,7 @@ export component MainWindow inherits Window {
         height: 100%;
 
         moved(delta) => {
-            self.x = clamp(self.x + delta, 160px, root.width - 200px);
+            self.x = clamp(self.x + delta, 230px, root.width - 240px);
         }
     }
 

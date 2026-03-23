@@ -28,6 +28,31 @@ impl Default for CameraParams {
     }
 }
 
+/// Camera presets for the 3x3 preset grid in the UI.
+///
+/// Order: Europe, N. America, S. America, Africa, Asia, Oceania, Pacific,
+/// Blue Marble, Earthrise.
+pub const PRESETS: [CameraParams; 9] = [
+    // 0: Europe (distance 3.2)
+    CameraParams { longitude: 11.0, latitude: 24.0, zoom: 0.19, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 30.0, offset_x: 0.0, offset_y: 0.0 },
+    // 1: N. America
+    CameraParams { longitude: -102.0, latitude: 32.0, zoom: 0.3, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.28 },
+    // 2: S. America
+    CameraParams { longitude: -60.0, latitude: -20.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    // 3: Africa
+    CameraParams { longitude: 20.0, latitude: -10.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    // 4: Asia
+    CameraParams { longitude: 90.0, latitude: 24.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    // 5: Oceania
+    CameraParams { longitude: 147.0, latitude: -5.0, zoom: 0.22, tilt_deg: -155.0, yaw_deg: 0.0, pitch_deg: -26.0, offset_x: 0.0, offset_y: 0.0 },
+    // 6: Pacific
+    CameraParams { longitude: -150.0, latitude: -20.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    // 7: Blue Marble
+    CameraParams { longitude: 37.4, latitude: -26.3, zoom: 0.35, tilt_deg: -176.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    // 8: Earthrise
+    CameraParams { longitude: -12.0, latitude: 4.0, zoom: 0.75, tilt_deg: -116.0, yaw_deg: 0.0, pitch_deg: 45.0, offset_x: 0.0, offset_y: 0.0 },
+];
+
 /// Minimum camera distance (closest zoom).
 pub const ZOOM_DISTANCE_MIN: f32 = 1.5;
 /// Maximum camera distance (farthest zoom).
@@ -511,6 +536,48 @@ mod tests {
                 "zoom_to_distance({t}) = {d}, expected in [{}, {}]",
                 ZOOM_DISTANCE_MIN, ZOOM_DISTANCE_MAX
             );
+        }
+    }
+
+    #[test]
+    fn presets_has_nine_elements() {
+        assert_eq!(PRESETS.len(), 9);
+    }
+
+    #[test]
+    fn preset_europe_longitude() {
+        assert_relative_eq!(PRESETS[0].longitude, 11.0);
+    }
+
+    #[test]
+    fn preset_pacific_longitude() {
+        assert_relative_eq!(PRESETS[6].longitude, -170.0);
+    }
+
+    #[test]
+    fn preset_earthrise_pitch() {
+        assert_relative_eq!(PRESETS[8].pitch_deg, 45.0);
+    }
+
+    #[test]
+    fn default_orientation_presets_have_zero_tilt_yaw() {
+        // Presets 1..=6 have zero tilt, yaw, pitch, and offsets.
+        // Europe (0) has pitch=30, Earthrise (8) has pitch=45.
+        for (i, preset) in PRESETS[1..7].iter().enumerate() {
+            assert_relative_eq!(preset.tilt_deg, 0.0, epsilon = 1e-6);
+            assert_relative_eq!(preset.yaw_deg, 0.0, epsilon = 1e-6);
+            assert_relative_eq!(preset.pitch_deg, 0.0, epsilon = 1e-6);
+            assert_relative_eq!(preset.offset_x, 0.0, epsilon = 1e-6);
+            assert_relative_eq!(preset.offset_y, 0.0, epsilon = 1e-6);
+            let _ = i;
+        }
+    }
+
+    #[test]
+    fn all_presets_have_zero_offsets() {
+        for preset in &PRESETS {
+            assert_relative_eq!(preset.offset_x, 0.0, epsilon = 1e-6);
+            assert_relative_eq!(preset.offset_y, 0.0, epsilon = 1e-6);
         }
     }
 }

@@ -229,6 +229,18 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
     }
 }
 
+/// Save only the window position and size to disk, preserving all other
+/// config values. This is called on window close so geometry is always
+/// persisted, even when the user hasn't clicked "Set as Wallpaper".
+pub fn save_window_geometry(x: i32, y: i32, width: u32, height: u32) {
+    let mut config = load_config();
+    config.window_x = Some(x);
+    config.window_y = Some(y);
+    config.window_width = Some(width);
+    config.window_height = Some(height);
+    save_config(&config);
+}
+
 /// Check whether the saved window position is visible on at least one
 /// connected monitor by testing if the title bar region overlaps any display.
 ///

@@ -60,6 +60,15 @@ pub struct AppConfig {
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
 
+    // Atmosphere
+    pub atmo_enabled: bool,
+    pub rayleigh_intensity: f32,
+    pub rayleigh_sharpness: f32,
+    pub rayleigh_haze: f32,
+    pub nightglow_intensity: f32,
+    pub nightglow_falloff: f32,
+    pub nightglow_balance: f32,
+
     // Color correction
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -110,6 +119,13 @@ impl Default for AppConfig {
             cloud_opacity: 0.85,
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
+            atmo_enabled: true,
+            rayleigh_intensity: 0.5,
+            rayleigh_sharpness: 50.0,
+            rayleigh_haze: 0.55,
+            nightglow_intensity: 0.25,
+            nightglow_falloff: 15.0,
+            nightglow_balance: 0.37,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -328,6 +344,53 @@ mod tests {
     }
 
     #[test]
+    fn default_atmo_enabled() {
+        let config = AppConfig::default();
+        assert!(config.atmo_enabled);
+    }
+
+    #[test]
+    fn default_rayleigh_intensity() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.rayleigh_intensity, 0.5);
+    }
+
+    #[test]
+    fn default_rayleigh_sharpness() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.rayleigh_sharpness, 50.0);
+    }
+
+    #[test]
+    fn default_nightglow_intensity() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.nightglow_intensity, 0.25);
+    }
+
+    #[test]
+    fn default_nightglow_falloff() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.nightglow_falloff, 15.0);
+    }
+
+    #[test]
+    fn default_nightglow_balance() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.nightglow_balance, 0.37);
+    }
+
+    #[test]
+    fn deserialize_missing_atmo_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
+        assert!(config.atmo_enabled);
+        assert_relative_eq!(config.rayleigh_intensity, 0.5);
+        assert_relative_eq!(config.rayleigh_sharpness, 50.0);
+        assert_relative_eq!(config.nightglow_intensity, 0.25);
+        assert_relative_eq!(config.nightglow_falloff, 15.0);
+        assert_relative_eq!(config.nightglow_balance, 0.37);
+    }
+
+    #[test]
     fn deserialize_missing_cloud_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         assert_relative_eq!(config.cloud_floor, 0.25);
@@ -384,6 +447,13 @@ mod tests {
             cloud_opacity: 0.6,
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
+            atmo_enabled: false,
+            rayleigh_intensity: 0.7,
+            rayleigh_sharpness: 8.0,
+            rayleigh_haze: 0.4,
+            nightglow_intensity: 0.5,
+            nightglow_falloff: 6.0,
+            nightglow_balance: 0.3,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -517,6 +587,13 @@ mod tests {
             cloud_opacity: 0.6,
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
+            atmo_enabled: false,
+            rayleigh_intensity: 0.5,
+            rayleigh_sharpness: 7.0,
+            rayleigh_haze: 0.5,
+            nightglow_intensity: 0.4,
+            nightglow_falloff: 5.0,
+            nightglow_balance: 0.6,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

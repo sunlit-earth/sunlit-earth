@@ -55,6 +55,13 @@ export component MainWindow inherits Window {
     in-out property <float> cloud-opacity: 0.85;
     in-out property <float> cloud-floor: 0.25;
     in-out property <float> cloud-gamma: 0.65;
+    in-out property <bool> atmo-enabled: true;
+    in-out property <float> rayleigh-intensity: 0.5;
+    in-out property <float> rayleigh-sharpness: 50.0;
+    in-out property <float> rayleigh-haze: 0.55;
+    in-out property <float> nightglow-intensity: 0.25;
+    in-out property <float> nightglow-balance: 0.37;
+    in-out property <float> nightglow-falloff: 15.0;
 
     in property <float> zoom-display-distance: 8.0;
     in-out property <string> wallpaper-status;
@@ -294,8 +301,8 @@ export component MainWindow inherits Window {
                                 min-width: 70px;
                             }
                             offset-x-slider := Slider {
-                                minimum: -1.0;
-                                maximum: 1.0;
+                                minimum: -3.0;
+                                maximum: 3.0;
                                 value <=> root.camera-offset-x;
                                 changed => {
                                     if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
@@ -319,8 +326,8 @@ export component MainWindow inherits Window {
                                 min-width: 70px;
                             }
                             offset-y-slider := Slider {
-                                minimum: -1.0;
-                                maximum: 1.0;
+                                minimum: -3.0;
+                                maximum: 3.0;
                                 value <=> root.camera-offset-y;
                                 changed => {
                                     if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
@@ -658,6 +665,164 @@ export component MainWindow inherits Window {
                                 text: round(cloud-gamma-slider.value * 100) / 100;
                                 vertical-alignment: center;
                                 min-width: 35px;
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Atmosphere";
+                    VerticalLayout {
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Enable";
+                                vertical-alignment: center;
+                                min-width: 70px;
+                            }
+                            CheckBox {
+                                text: "Atmosphere glow";
+                                checked <=> root.atmo-enabled;
+                                toggled => { root.sliders-changed(); }
+                            }
+                        }
+
+                        if root.atmo-enabled :
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text: "Rayleigh";
+                                font-weight: 700;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Intensity";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                rayleigh-intensity-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.rayleigh-intensity;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.rayleigh-intensity * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Sharpness";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                rayleigh-sharpness-slider := Slider {
+                                    minimum: 10.0;
+                                    maximum: 100.0;
+                                    value <=> root.rayleigh-sharpness;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(rayleigh-sharpness-slider.value * 10) / 10;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Haze";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                rayleigh-haze-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.rayleigh-haze;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(rayleigh-haze-slider.value * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            Text {
+                                text: "Nightglow";
+                                font-weight: 700;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Intensity";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                nightglow-intensity-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.nightglow-intensity;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.nightglow-intensity * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Balance";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                nightglow-balance-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.nightglow-balance;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: root.nightglow-balance <= 0.01 ? "orange" :
+                                          root.nightglow-balance >= 0.99 ? "green" :
+                                          round(root.nightglow-balance * 100) / 100;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "  Falloff";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                nightglow-falloff-slider := Slider {
+                                    minimum: 2.0;
+                                    maximum: 50.0;
+                                    value <=> root.nightglow-falloff;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(nightglow-falloff-slider.value * 10) / 10;
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
                             }
                         }
                     }

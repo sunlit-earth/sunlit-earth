@@ -111,7 +111,7 @@ pub fn gamma_value_to_slider(gamma: f32) -> f32 {
 ///
 /// Returns `Err` if the GPU is not initialized, textures are still loading,
 /// or no frame has been rendered yet.
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
     GPU_RESOURCES.with(|r| {
         let borrow = r.borrow();
@@ -180,6 +180,22 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             msaa_depth_view.as_ref(),
         );
 
+        let (rayleigh_pipe, rayleigh_bg) = if shading.rayleigh_intensity > 0.0 {
+            (Some(&res.rayleigh_pipeline), Some(bind_group))
+        } else {
+            (None, None)
+        };
+        let (nightglow_orange_pipe, nightglow_orange_bg) = if shading.nightglow_intensity > 0.0 {
+            (Some(&res.nightglow_orange_pipeline), Some(bind_group))
+        } else {
+            (None, None)
+        };
+        let (nightglow_green_pipe, nightglow_green_bg) = if shading.nightglow_intensity > 0.0 {
+            (Some(&res.nightglow_green_pipeline), Some(bind_group))
+        } else {
+            (None, None)
+        };
+
         let (cloud_pipe, cloud_bg) =
             if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
                 (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
@@ -197,6 +213,12 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             &res.vertex_buffer,
             &res.index_buffer,
             res.index_count,
+            rayleigh_pipe,
+            rayleigh_bg,
+            nightglow_orange_pipe,
+            nightglow_orange_bg,
+            nightglow_green_pipe,
+            nightglow_green_bg,
             cloud_pipe,
             cloud_bg,
         );
@@ -266,6 +288,12 @@ struct GpuResources {
     /// Stored texture view for the night texture, needed to build the composite
     /// bind group when both become available.
     night_texture_view: Option<wgpu::TextureView>,
+    /// Render pipeline for the Rayleigh scattering atmosphere shell.
+    rayleigh_pipeline: wgpu::RenderPipeline,
+    /// Render pipeline for the orange nightglow atmosphere shell.
+    nightglow_orange_pipeline: wgpu::RenderPipeline,
+    /// Render pipeline for the green nightglow atmosphere shell.
+    nightglow_green_pipeline: wgpu::RenderPipeline,
     /// Render pipeline for the cloud overlay sphere.
     cloud_pipeline: wgpu::RenderPipeline,
     /// Bind group for the cloud texture (populated after async load completes).
@@ -435,6 +463,23 @@ fn rendering_callback(
                     pitch_deg: win.get_camera_pitch(),
                 };
                 win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
+                // Atmosphere parameters
+                let atmo_enabled = win.get_atmo_enabled();
+                let rayleigh_intensity_f = if atmo_enabled {
+                    win.get_rayleigh_intensity()
+                } else {
+                    0.0
+                };
+                let rayleigh_sharpness_f = win.get_rayleigh_sharpness();
+                let rayleigh_haze_f = win.get_rayleigh_haze();
+                let nightglow_intensity_f = if atmo_enabled {
+                    win.get_nightglow_intensity()
+                } else {
+                    0.0
+                };
+                let nightglow_falloff_f = win.get_nightglow_falloff();
+                let nightglow_balance_f = win.get_nightglow_balance();
+
                 let current_state = build_frame_state(
                     &camera,
                     res.sample_count,
@@ -457,6 +502,12 @@ fn rendering_callback(
                     day_saturation_f,
                     night_gamma_f,
                     night_saturation_f,
+                    rayleigh_intensity_f,
+                    rayleigh_sharpness_f,
+                    nightglow_intensity_f,
+                    nightglow_falloff_f,
+                    nightglow_balance_f,
+                    rayleigh_haze_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -508,6 +559,15 @@ fn rendering_callback(
                     cloud_opacity: cloud_opacity_f,
                     cloud_floor: cloud_floor_f,
                     cloud_gamma: cloud_gamma_f,
+                    rayleigh_intensity: rayleigh_intensity_f,
+                    rayleigh_sharpness: rayleigh_sharpness_f,
+                    nightglow_intensity: nightglow_intensity_f,
+                    nightglow_falloff: nightglow_falloff_f,
+                    nightglow_balance: nightglow_balance_f,
+                    rayleigh_radius: 1.015,
+                    nightglow_orange_radius: 1.014,
+                    nightglow_green_radius: 1.015,
+                    rayleigh_haze: rayleigh_haze_f,
                 };
                 res.last_shading = Some(shading);
 

@@ -1,25 +1,37 @@
 struct Uniforms {
-    mvp: mat4x4<f32>,          // 64 bytes, offset 0
-    sun_dir: vec3<f32>,        // 12 bytes, offset 64
-    terminator_width: f32,     // 4 bytes, offset 76
-    flags: u32,                // 4 bytes, offset 80 (bit 0: diffuse shading)
-    diffuse_floor: f32,        // 4 bytes, offset 84
-    diffuse_ramp: f32,         // 4 bytes, offset 88
-    _pad: f32,                 // 4 bytes, offset 92
-    eye_pos: vec3<f32>,        // 12 bytes, offset 96
-    _pad2: f32,                // 4 bytes, offset 108
-    spec_shininess: f32,       // 4 bytes, offset 112
-    spec_intensity: f32,       // 4 bytes, offset 116
-    fresnel_mix: f32,          // 4 bytes, offset 120
-    fresnel_exp: f32,          // 4 bytes, offset 124
-    day_gamma: f32,            // 4 bytes, offset 128
-    day_saturation: f32,       // 4 bytes, offset 132
-    night_gamma: f32,          // 4 bytes, offset 136
-    night_saturation: f32,     // 4 bytes, offset 140
-    cloud_sphere_radius: f32,  // 4 bytes, offset 144
-    cloud_opacity: f32,        // 4 bytes, offset 148
-    cloud_floor: f32,          // 4 bytes, offset 152
-    cloud_gamma: f32,          // 4 bytes, offset 156
+    mvp: mat4x4<f32>,              // 64 bytes, offset 0
+    sun_dir: vec3<f32>,            // 12 bytes, offset 64
+    terminator_width: f32,         // 4 bytes, offset 76
+    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading)
+    diffuse_floor: f32,            // 4 bytes, offset 84
+    diffuse_ramp: f32,             // 4 bytes, offset 88
+    _pad: f32,                     // 4 bytes, offset 92
+    eye_pos: vec3<f32>,            // 12 bytes, offset 96
+    _pad2: f32,                    // 4 bytes, offset 108
+    spec_shininess: f32,           // 4 bytes, offset 112
+    spec_intensity: f32,           // 4 bytes, offset 116
+    fresnel_mix: f32,              // 4 bytes, offset 120
+    fresnel_exp: f32,              // 4 bytes, offset 124
+    day_gamma: f32,                // 4 bytes, offset 128
+    day_saturation: f32,           // 4 bytes, offset 132
+    night_gamma: f32,              // 4 bytes, offset 136
+    night_saturation: f32,         // 4 bytes, offset 140
+    cloud_sphere_radius: f32,      // 4 bytes, offset 144
+    cloud_opacity: f32,            // 4 bytes, offset 148
+    cloud_floor: f32,              // 4 bytes, offset 152
+    cloud_gamma: f32,              // 4 bytes, offset 156
+    rayleigh_intensity: f32,       // 4 bytes, offset 160
+    rayleigh_sharpness: f32,         // 4 bytes, offset 164
+    nightglow_intensity: f32,      // 4 bytes, offset 168
+    nightglow_falloff: f32,        // 4 bytes, offset 172
+    nightglow_balance: f32,        // 4 bytes, offset 176
+    rayleigh_radius: f32,          // 4 bytes, offset 180
+    nightglow_orange_radius: f32,  // 4 bytes, offset 184
+    nightglow_green_radius: f32,   // 4 bytes, offset 188
+    rayleigh_haze: f32,            // 4 bytes, offset 192
+    _pad3: f32,                    // 4 bytes, offset 196
+    _pad4: f32,                    // 4 bytes, offset 200
+    _pad5: f32,                    // 4 bytes, offset 204
 };
 
 @group(0) @binding(0)
@@ -150,4 +162,137 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let n_dot_l = dot(n, uniforms.sun_dir);
     let brightness = mix(0.05, 1.0, smoothstep(-uniforms.terminator_width, uniforms.terminator_width, n_dot_l));
     return vec4<f32>(brightness, brightness, brightness, cloud_density * uniforms.cloud_opacity);
+}
+
+// --- Rayleigh scattering shell (closest to surface, ~1.003 radius) ---
+
+@vertex
+fn vs_rayleigh(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let scaled = in.position * uniforms.rayleigh_radius;
+    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
+    out.uv = in.uv;
+    out.world_normal = in.position;
+    return out;
+}
+
+@fragment
+fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
+    let n = normalize(in.world_normal);
+    let v = normalize(uniforms.eye_pos - in.world_normal);
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
+    let n_dot_l = dot(n, uniforms.sun_dir);
+
+    // Bidirectional falloff: Gaussian-like profile peaking where the view ray
+    // grazes the Earth's surface (not at the shell edge). The shell is larger
+    // than the physical atmosphere so fragments exist on both sides of the peak.
+    // earth_limb_ndotv is the NdotV at which a ray is tangent to the unit sphere
+    // from the atmosphere shell surface: cos(asin(1/R)) ≈ sqrt(1 - 1/R²).
+    let r = uniforms.rayleigh_radius;
+    let earth_limb_ndotv = sqrt(1.0 - 1.0 / (r * r));
+    let dist_from_limb = (n_dot_v - earth_limb_ndotv) * uniforms.rayleigh_sharpness;
+    let rim = exp(-dist_from_limb * dist_from_limb);
+
+    // Day-side blue Rayleigh
+    let day_t = smoothstep(-0.1, 0.2, n_dot_l);
+    // Terminator orange (Gaussian peak at terminator)
+    let term_t = exp(-n_dot_l * n_dot_l / 0.008);
+    let day_color = vec3<f32>(0.1, 0.4, 0.9);  // deep blue, darker than ocean
+    let term_color = vec3<f32>(1.0, 0.5, 0.2);  // orange spectral depletion
+    // Night-side fadeout
+    let night_fade = smoothstep(0.0, -0.3, n_dot_l);
+    let color = mix(term_color * term_t * 0.5, day_color, day_t) * (1.0 - night_fade);
+
+    // In-scattering: blue light scattered toward the viewer.
+    // Extinction: original light blocked by the atmosphere (controlled by haze).
+    // Both share the same spatial profile (rim) since they're the same interaction.
+    let scatter = color * rim * uniforms.rayleigh_intensity;
+    let extinction = rim * uniforms.rayleigh_intensity * uniforms.rayleigh_haze;
+    return vec4<f32>(scatter, extinction);
+}
+
+// Screen-space dither to break up 8-bit color banding in faint gradients.
+// Returns a value in [-0.5/255, +0.5/255] based on pixel position.
+fn dither(pos: vec4<f32>) -> f32 {
+    let p = pos.xy;
+    return (fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+}
+
+// --- Orange nightglow shell (sodium D + FeO, ~1.014 radius) ---
+
+@vertex
+fn vs_nightglow_orange(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let scaled = in.position * uniforms.nightglow_orange_radius;
+    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
+    out.uv = in.uv;
+    out.world_normal = in.position;
+    return out;
+}
+
+@fragment
+fn fs_nightglow_orange(in: VertexOutput) -> @location(0) vec4<f32> {
+    let n = normalize(in.world_normal);
+    let v = normalize(uniforms.eye_pos - in.world_normal);
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
+    let n_dot_l = dot(n, uniforms.sun_dir);
+
+    // Rim falloff toward disk center, with soft edge at the shell silhouette
+    // to avoid a hard color band where the sphere geometry ends.
+    let rim = pow(1.0 - n_dot_v, uniforms.nightglow_falloff)
+            * smoothstep(0.0, 0.05, n_dot_v);
+
+    // Night-side mask: fully fades before reaching the day side
+    let night_mask = smoothstep(-0.05, -0.2, n_dot_l);
+    // Time-of-night: orange is STRONGER near the terminator, weaker at midnight
+    let depth = clamp(-n_dot_l, 0.0, 1.0);
+    let time_mod = 1.0 - 0.5 * depth;
+    // Latitude modulation: enhanced near +/-23 degrees geomagnetic latitude
+    let lat = asin(clamp(n.y, -1.0, 1.0));
+    let lat_mod = 0.7 + 0.3 * exp(-pow((abs(lat) - 0.4) / 0.2, 2.0));
+
+    let color = vec3<f32>(1.0, 0.7, 0.2);  // warm orange-yellow (sodium D + FeO)
+    let intensity = uniforms.nightglow_intensity * (1.0 - uniforms.nightglow_balance);
+    let rgb = color * rim * intensity * night_mask * time_mod * lat_mod;
+
+    return vec4<f32>(rgb + dither(in.clip_position), 0.0);
+}
+
+// --- Green nightglow shell (OI 557.7nm, ~1.015 radius) ---
+
+@vertex
+fn vs_nightglow_green(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let scaled = in.position * uniforms.nightglow_green_radius;
+    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
+    out.uv = in.uv;
+    out.world_normal = in.position;
+    return out;
+}
+
+@fragment
+fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
+    let n = normalize(in.world_normal);
+    let v = normalize(uniforms.eye_pos - in.world_normal);
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
+    let n_dot_l = dot(n, uniforms.sun_dir);
+
+    // Rim falloff toward disk center, with soft edge at the shell silhouette
+    let rim = pow(1.0 - n_dot_v, uniforms.nightglow_falloff)
+            * smoothstep(0.0, 0.05, n_dot_v);
+
+    // Night-side mask: fully fades before reaching the day side
+    let night_mask = smoothstep(-0.05, -0.2, n_dot_l);
+    // Time-of-night: green is WEAKER near the terminator, STRONGER at midnight
+    let depth = clamp(-n_dot_l, 0.0, 1.0);
+    let time_mod = 0.5 + 0.5 * depth;
+    // Latitude modulation: enhanced near +/-23 degrees geomagnetic latitude
+    let lat = asin(clamp(n.y, -1.0, 1.0));
+    let lat_mod = 0.7 + 0.3 * exp(-pow((abs(lat) - 0.4) / 0.2, 2.0));
+
+    let color = vec3<f32>(0.2, 1.0, 0.3);  // green (OI 557.7nm)
+    let intensity = uniforms.nightglow_intensity * uniforms.nightglow_balance;
+    let rgb = color * rim * intensity * night_mask * time_mod * lat_mod;
+
+    return vec4<f32>(rgb + dither(in.clip_position), 0.0);
 }

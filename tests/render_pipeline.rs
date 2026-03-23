@@ -38,9 +38,21 @@ struct Uniforms {
     cloud_opacity: f32,
     cloud_floor: f32,
     cloud_gamma: f32,
+    rayleigh_intensity: f32,
+    rayleigh_sharpness: f32,
+    nightglow_intensity: f32,
+    nightglow_falloff: f32,
+    nightglow_balance: f32,
+    rayleigh_radius: f32,
+    nightglow_orange_radius: f32,
+    nightglow_green_radius: f32,
+    rayleigh_haze: f32,
+    _pad3: f32,
+    _pad4: f32,
+    _pad5: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 160);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 208);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -488,6 +500,18 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         cloud_opacity: 0.0,
         cloud_floor: 0.0,
         cloud_gamma: 1.0,
+        rayleigh_intensity: 0.0,
+        rayleigh_sharpness: 50.0,
+        nightglow_intensity: 0.0,
+        nightglow_falloff: 15.0,
+        nightglow_balance: 0.37,
+        rayleigh_radius: 1.003,
+        nightglow_orange_radius: 1.014,
+        nightglow_green_radius: 1.015,
+        rayleigh_haze: 0.55,
+        _pad3: 0.0,
+        _pad4: 0.0,
+        _pad5: 0.0,
     }
 }
 
@@ -598,6 +622,18 @@ struct Uniforms {
     cloud_opacity: f32,
     cloud_floor: f32,
     cloud_gamma: f32,
+    rayleigh_intensity: f32,
+    rayleigh_sharpness: f32,
+    nightglow_intensity: f32,
+    nightglow_falloff: f32,
+    nightglow_balance: f32,
+    rayleigh_radius: f32,
+    nightglow_orange_radius: f32,
+    nightglow_green_radius: f32,
+    rayleigh_haze: f32,
+    _pad3: f32,
+    _pad4: f32,
+    _pad5: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -642,6 +678,16 @@ fn main() {
     output[23] = uniforms.cloud_opacity;
     output[24] = uniforms.cloud_floor;
     output[25] = uniforms.cloud_gamma;
+    // atmosphere params
+    output[26] = uniforms.rayleigh_intensity;
+    output[27] = uniforms.rayleigh_sharpness;
+    output[28] = uniforms.nightglow_intensity;
+    output[29] = uniforms.nightglow_falloff;
+    output[30] = uniforms.nightglow_balance;
+    output[31] = uniforms.rayleigh_radius;
+    output[32] = uniforms.nightglow_orange_radius;
+    output[33] = uniforms.nightglow_green_radius;
+    output[34] = uniforms.rayleigh_haze;
 }
 ";
 
@@ -692,6 +738,18 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         cloud_opacity: 0.9,
         cloud_floor: 0.25,
         cloud_gamma: 0.65,
+        rayleigh_intensity: 0.5,
+        rayleigh_sharpness: 50.0,
+        nightglow_intensity: 0.25,
+        nightglow_falloff: 15.0,
+        nightglow_balance: 0.37,
+        rayleigh_radius: 1.003,
+        nightglow_orange_radius: 1.014,
+        nightglow_green_radius: 1.015,
+        rayleigh_haze: 0.55,
+        _pad3: 0.0,
+        _pad4: 0.0,
+        _pad5: 0.0,
     };
 
     let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -700,8 +758,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
-    // Output buffer: 26 floats
-    let output_size = (26 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 34 floats
+    let output_size = (35 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -747,10 +805,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[4] - 0.0).abs() < eps, "sun_dir.x: got {}, expected 0.0", values[4]);
     assert!((values[5] - 1.0).abs() < eps, "sun_dir.y: got {}, expected 1.0", values[5]);
     assert!((values[6] - 0.0).abs() < eps, "sun_dir.z: got {}, expected 0.0", values[6]);
-    assert!((values[7] - 0.15).abs() < eps, "terminator_width: got {}, expected 0.15", values[7]);
+    assert!((values[7] - 0.15).abs() < eps, "terminator_width: got {}, expected 0.25", values[7]);
     assert!((values[8] - 1.0).abs() < eps, "flags: got {}, expected 1.0", values[8]);
     assert!((values[9] - 0.5).abs() < eps, "diffuse_floor: got {}, expected 0.5", values[9]);
-    assert!((values[10] - 0.25).abs() < eps, "diffuse_ramp: got {}, expected 0.25", values[10]);
+    assert!((values[10] - 0.25).abs() < eps, "diffuse_ramp: got {}, expected 0.55", values[10]);
     assert!((values[11] - 1.0).abs() < eps, "eye_pos.x: got {}, expected 1.0", values[11]);
     assert!((values[12] - 2.0).abs() < eps, "eye_pos.y: got {}, expected 2.0", values[12]);
     assert!((values[13] - 3.0).abs() < eps, "eye_pos.z: got {}, expected 3.0", values[13]);
@@ -764,8 +822,17 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     assert!((values[21] - 0.6).abs() < eps, "night_saturation: got {}, expected 0.6", values[21]);
     assert!((values[22] - 1.0015).abs() < eps, "cloud_sphere_radius: got {}, expected 1.0015", values[22]);
     assert!((values[23] - 0.9).abs() < eps, "cloud_opacity: got {}, expected 0.9", values[23]);
-    assert!((values[24] - 0.25).abs() < eps, "cloud_floor: got {}, expected 0.25", values[24]);
+    assert!((values[24] - 0.25).abs() < eps, "cloud_floor: got {}, expected 0.55", values[24]);
     assert!((values[25] - 0.65).abs() < eps, "cloud_gamma: got {}, expected 0.65", values[25]);
+    assert!((values[26] - 0.5).abs() < eps, "rayleigh_intensity: got {}, expected 0.5", values[26]);
+    assert!((values[27] - 50.0).abs() < eps, "rayleigh_sharpness: got {}, expected 50.0", values[27]);
+    assert!((values[28] - 0.25).abs() < eps, "nightglow_intensity: got {}, expected 0.25", values[28]);
+    assert!((values[29] - 15.0).abs() < eps, "nightglow_falloff: got {}, expected 15.0", values[29]);
+    assert!((values[30] - 0.37).abs() < eps, "nightglow_balance: got {}, expected 0.37", values[30]);
+    assert!((values[31] - 1.003).abs() < eps, "rayleigh_radius: got {}, expected 1.003", values[31]);
+    assert!((values[32] - 1.014).abs() < eps, "nightglow_orange_radius: got {}, expected 1.014", values[32]);
+    assert!((values[33] - 1.015).abs() < eps, "nightglow_green_radius: got {}, expected 1.015", values[33]);
+    assert!((values[34] - 0.55).abs() < eps, "rayleigh_haze: got {}, expected 0.55", values[34]);
 }
 
 // ---------------------------------------------------------------------------

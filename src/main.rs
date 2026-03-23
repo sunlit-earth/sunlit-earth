@@ -232,10 +232,10 @@ fn main() {
         });
     }
 
-    // Mouse drag callback: rotate the globe (tilt-corrected)
+    // Left-drag callback: rotate the globe (tilt-corrected)
     let window_weak = window.as_weak();
     let config_timer_handle = Rc::clone(&config_timer);
-    window.on_mouse_drag(move |dx, dy| {
+    window.on_mouse_drag_globe(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
@@ -262,6 +262,61 @@ fn main() {
 
         win.set_camera_longitude(wrapped_lon);
         win.set_camera_latitude(clamped_lat);
+        win.window().request_redraw();
+        config_timer_handle.restart();
+    });
+
+    // Right-drag callback: adjust framing (offset X/Y) with scrolling behavior
+    let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
+    window.on_mouse_drag_frame(move |dx, dy| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let zoom = win.get_camera_zoom();
+        let sensitivity = 0.002 * zoom_to_distance(zoom) / 8.0;
+
+        let new_x = (win.get_camera_offset_x() - dx * sensitivity).clamp(-3.0, 3.0);
+        let new_y = (win.get_camera_offset_y() + dy * sensitivity).clamp(-3.0, 3.0);
+
+        win.set_camera_offset_x(new_x);
+        win.set_camera_offset_y(new_y);
+        win.window().request_redraw();
+        config_timer_handle.restart();
+    });
+
+    // Middle-drag callback: adjust pitch and yaw
+    let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
+    window.on_mouse_drag_orient(move |dx, dy| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let degrees_per_px = 0.2;
+
+        let new_yaw = (win.get_camera_yaw() + dx * degrees_per_px).clamp(-90.0, 90.0);
+        let new_pitch = (win.get_camera_pitch() - dy * degrees_per_px).clamp(-90.0, 90.0);
+
+        win.set_camera_yaw(new_yaw);
+        win.set_camera_pitch(new_pitch);
+        win.window().request_redraw();
+        config_timer_handle.restart();
+    });
+
+    // Left+right drag callback: adjust tilt (horizontal only)
+    let window_weak = window.as_weak();
+    let config_timer_handle = Rc::clone(&config_timer);
+    window.on_mouse_drag_tilt(move |dx, _dy| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let degrees_per_px = 0.5;
+
+        let new_tilt = win.get_camera_tilt() + dx * degrees_per_px;
+        // Wrap to [-180, 180]
+        let wrapped_tilt = ((new_tilt + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
+
+        win.set_camera_tilt(wrapped_tilt);
         win.window().request_redraw();
         config_timer_handle.restart();
     });

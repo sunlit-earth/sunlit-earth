@@ -138,7 +138,7 @@ impl OrbitalCamera {
     /// Applies a post-projection translation for screen-space pan/offset.
     pub fn mvp_matrix(&self, aspect_ratio: f32) -> Mat4 {
         let base_mvp = self.projection_matrix(aspect_ratio) * self.view_matrix();
-        let offset = Mat4::from_translation(glam::Vec3::new(self.offset_x, self.offset_y, 0.0));
+        let offset = Mat4::from_translation(glam::Vec3::new(-self.offset_x, -self.offset_y, 0.0));
         offset * base_mvp
     }
 }
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn mvp_with_positive_x_offset_shifts_right() {
+    fn mvp_with_positive_x_offset_shifts_left() {
         let aspect = 16.0 / 9.0;
         let mut cam_no_offset = OrbitalCamera::new(0.0, 0.0, 5.0);
         cam_no_offset.offset_x = 0.0;
@@ -226,10 +226,10 @@ mod tests {
         let clip_no = cam_no_offset.mvp_matrix(aspect) * point;
         let clip_yes = cam_offset.mvp_matrix(aspect) * point;
 
-        // The X in clip space should be larger with the positive offset
+        // Offset is inverted: positive offset_x shifts the image left (negative clip X)
         assert!(
-            clip_yes.x > clip_no.x,
-            "clip_yes.x ({}) should be > clip_no.x ({})",
+            clip_yes.x < clip_no.x,
+            "clip_yes.x ({}) should be < clip_no.x ({})",
             clip_yes.x, clip_no.x
         );
     }

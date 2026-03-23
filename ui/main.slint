@@ -79,7 +79,10 @@ export component MainWindow inherits Window {
     in property <string> day-label: "Jan 1";
     in property <int> max-day-of-year: 365;
 
-    callback mouse-drag(float, float);
+    callback mouse-drag-globe(float, float);
+    callback mouse-drag-frame(float, float);
+    callback mouse-drag-orient(float, float);
+    callback mouse-drag-tilt(float, float);
     callback mouse-scroll(float);
     callback reset-all();
 
@@ -967,23 +970,52 @@ export component MainWindow inherits Window {
 
         property <length> last-mouse-x;
         property <length> last-mouse-y;
+        property <bool> left-held: false;
+        property <bool> right-held: false;
+        property <bool> middle-held: false;
 
         viewport-touch := TouchArea {
             width: parent.width;
             height: parent.height;
 
             pointer-event(event) => {
-                if event.kind == PointerEventKind.down {
+                if event.button == PointerEventButton.left {
+                    image-container.left-held = event.kind == PointerEventKind.down;
+                }
+                if event.button == PointerEventButton.right {
+                    image-container.right-held = event.kind == PointerEventKind.down;
+                }
+                if event.button == PointerEventButton.middle {
+                    image-container.middle-held = event.kind == PointerEventKind.down;
+                }
+                if event.kind == PointerEventKind.down || event.kind == PointerEventKind.up {
                     image-container.last-mouse-x = self.mouse-x;
                     image-container.last-mouse-y = self.mouse-y;
                 }
             }
 
             moved => {
-                root.mouse-drag(
-                    (self.mouse-x - image-container.last-mouse-x) / 1px,
-                    (self.mouse-y - image-container.last-mouse-y) / 1px
-                );
+                if image-container.left-held && image-container.right-held {
+                    root.mouse-drag-tilt(
+                        (self.mouse-x - image-container.last-mouse-x) / 1px,
+                        (self.mouse-y - image-container.last-mouse-y) / 1px
+                    );
+                } else if image-container.left-held {
+                    root.mouse-drag-globe(
+                        (self.mouse-x - image-container.last-mouse-x) / 1px,
+                        (self.mouse-y - image-container.last-mouse-y) / 1px
+                    );
+                } else if image-container.right-held {
+                    root.mouse-drag-frame(
+                        (self.mouse-x - image-container.last-mouse-x) / 1px,
+                        (self.mouse-y - image-container.last-mouse-y) / 1px
+                    );
+                } else if image-container.middle-held {
+                    root.mouse-drag-orient(
+                        (self.mouse-x - image-container.last-mouse-x) / 1px,
+                        (self.mouse-y - image-container.last-mouse-y) / 1px
+                    );
+                }
                 image-container.last-mouse-x = self.mouse-x;
                 image-container.last-mouse-y = self.mouse-y;
             }

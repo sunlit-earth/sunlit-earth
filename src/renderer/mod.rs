@@ -9,10 +9,12 @@ pub use render_pass::read_texture_rgba8;
 pub use textures::DecodedTextureMessage;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 use crate::MainWindow;
 use crate::scene::camera::{CameraParams, zoom_to_distance};
@@ -303,12 +305,17 @@ struct GpuResources {
 }
 
 /// Register the rendering notifier on the given Slint window.
+///
+/// The `textures_ready` flag is set to `true` once all required texture slots
+/// for the current mode are loaded (excluding clouds). This is used by the
+/// `--screenshot` path to know when the scene is fully rendered.
 pub fn setup_rendering_notifier(
     window: &MainWindow,
     aa_counts: Vec<u32>,
     texture_paths: Vec<Option<PathBuf>>,
     texture_tx: mpsc::Sender<textures::DecodedTextureMessage>,
     texture_rx: mpsc::Receiver<textures::DecodedTextureMessage>,
+    textures_ready: Arc<AtomicBool>,
 ) {
     let window_weak = window.as_weak();
     let texture_rx = std::cell::RefCell::new(Some(texture_rx));
@@ -324,6 +331,7 @@ pub fn setup_rendering_notifier(
                 &texture_paths,
                 &texture_tx,
                 &texture_rx,
+                &textures_ready,
             );
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
@@ -349,7 +357,7 @@ fn quantized_viewport_size(win: &MainWindow) -> (u32, u32) {
     quantize_to_granularity(w, h)
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines, clippy::too_many_arguments)]
 fn rendering_callback(
     state: RenderingState,
     graphics_api: &GraphicsAPI,
@@ -358,6 +366,7 @@ fn rendering_callback(
     texture_paths: &[Option<PathBuf>],
     texture_tx: &mpsc::Sender<textures::DecodedTextureMessage>,
     texture_rx: &std::cell::RefCell<Option<mpsc::Receiver<textures::DecodedTextureMessage>>>,
+    textures_ready: &Arc<AtomicBool>,
 ) {
     match state {
         RenderingState::RenderingSetup => {
@@ -571,6 +580,8 @@ fn rendering_callback(
                 };
                 res.last_shading = Some(shading);
 
+                let is_first_frame = res.last_state.is_none();
+
                 let image = render_pass::execute_render_pass(
                     res,
                     &current_state,
@@ -579,6 +590,33 @@ fn rendering_callback(
                 );
                 res.last_state = Some(current_state);
                 win.set_rendered_image(image);
+
+                // Step 1.5: emit "first frame rendered" exactly once
+                if is_first_frame {
+                    info!("first frame rendered");
+                }
+
+                // Step 1.3: set texture-readiness flag once all required
+                // slots for the current mode are loaded (clouds excluded)
+                if !textures_ready.load(Ordering::Relaxed) {
+                    let ready = if raw_index == BLEND_MODE_INDEX {
+                        res.texture_slots[DAY_SLOT].bind_group.is_some()
+                            && !res.texture_slots[DAY_SLOT].loading
+                            && res.texture_slots[NIGHT_SLOT].bind_group.is_some()
+                            && !res.texture_slots[NIGHT_SLOT].loading
+                            && res.composite_bind_group.is_some()
+                    } else {
+                        let slot_index = raw_index.min(
+                            res.texture_slots.len().saturating_sub(1),
+                        );
+                        res.texture_slots[slot_index].bind_group.is_some()
+                            && !res.texture_slots[slot_index].loading
+                    };
+                    if ready {
+                        textures_ready.store(true, Ordering::Relaxed);
+                        debug!("textures ready");
+                    }
+                }
             });
         }
         RenderingState::RenderingTeardown => {

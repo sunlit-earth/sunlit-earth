@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use clap::Parser;
 use slint::ComponentHandle;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -36,6 +38,11 @@ struct Cli {
     /// Takes precedence over the `RUST_LOG` environment variable.
     #[arg(long)]
     log_level: Option<String>,
+
+    /// Path to write a screenshot PNG. When provided, the app waits for
+    /// textures to load, saves a screenshot of the rendered scene, and exits.
+    #[arg(long)]
+    screenshot: Option<PathBuf>,
 }
 
 /// Initialize the global tracing subscriber.
@@ -396,12 +403,15 @@ fn main() {
     let (texture_tx, texture_rx) =
         std::sync::mpsc::channel::<sunlit_earth::renderer::DecodedTextureMessage>();
 
+    let textures_ready = Arc::new(AtomicBool::new(false));
+
     renderer::setup_rendering_notifier(
         &window,
         aa_counts,
         texture_paths,
         texture_tx.clone(),
         texture_rx,
+        Arc::clone(&textures_ready),
     );
 
     // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT)
@@ -426,6 +436,44 @@ fn main() {
         },
     );
 
+    // When --screenshot is provided, register a timer that polls the
+    // texture-readiness flag and saves a screenshot when ready.
+    let screenshot_timer = cli.screenshot.map(|screenshot_path| {
+        let window_weak = window.as_weak();
+        let textures_ready = Arc::clone(&textures_ready);
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(200),
+            move || {
+                if textures_ready.load(Ordering::Relaxed) {
+                    let (w, h) = window_weak
+                        .upgrade()
+                        .map_or((DEFAULT_SCREENSHOT_WIDTH, DEFAULT_SCREENSHOT_HEIGHT), |win| {
+                            let size = win.window().size();
+                            if size.width > 0 && size.height > 0 {
+                                (size.width, size.height)
+                            } else {
+                                (DEFAULT_SCREENSHOT_WIDTH, DEFAULT_SCREENSHOT_HEIGHT)
+                            }
+                        });
+                    match renderer::export_wallpaper_image(w, h) {
+                        Ok(pixels) => {
+                            if let Err(e) = save_screenshot_png(&screenshot_path, w, h, &pixels) {
+                                error!("screenshot failed: {e}");
+                            } else {
+                                info!("screenshot saved to {}", screenshot_path.display());
+                            }
+                        }
+                        Err(e) => error!("screenshot export failed: {e}"),
+                    }
+                    slint::quit_event_loop().ok();
+                }
+            },
+        );
+        timer
+    });
+
     window.run().expect("Failed to run window");
 
     // Save window geometry on close (preserves all other config values on disk)
@@ -437,6 +485,7 @@ fn main() {
 
     // Keep timers alive until the event loop exits (prevent drop optimization)
     drop(sun_timer);
+    drop(screenshot_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");
@@ -567,6 +616,24 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     let doy = window.get_custom_day_of_year() as u16;
     let doy = doy.max(1);
     window.set_day_label(datetime::month_day_label(doy, year).into());
+}
+
+/// Default screenshot dimensions when the window size is not available.
+const DEFAULT_SCREENSHOT_WIDTH: u32 = 800;
+const DEFAULT_SCREENSHOT_HEIGHT: u32 = 600;
+
+/// Encode RGBA8 pixels as PNG and write to the given path.
+fn save_screenshot_png(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<(), String> {
+    use image::{ImageBuffer, Rgba};
+    let img: ImageBuffer<Rgba<u8>, _> =
+        ImageBuffer::from_raw(width, height, pixels.to_vec())
+            .ok_or_else(|| "pixel buffer size mismatch".to_owned())?;
+    img.save(path).map_err(|e| format!("failed to save PNG: {e}"))
 }
 
 /// Render the current scene at the primary monitor's resolution, save as PNG,

@@ -591,12 +591,12 @@ fn rendering_callback(
                 res.last_state = Some(current_state);
                 win.set_rendered_image(image);
 
-                // Step 1.5: emit "first frame rendered" exactly once
+                // Emit "first frame rendered" exactly once
                 if is_first_frame {
                     info!("first frame rendered");
                 }
 
-                // Step 1.3: set texture-readiness flag once all required
+                // Set texture-readiness flag once all required
                 // slots for the current mode are loaded (clouds excluded)
                 if !textures_ready.load(Ordering::Relaxed) {
                     let ready = if raw_index == BLEND_MODE_INDEX {

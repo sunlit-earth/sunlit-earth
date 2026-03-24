@@ -1,0 +1,10 @@
+[sunlit.earth]
+longitude = 11.0
+latitude = 48.0
+zoom = 0.35
+texture_index = 3
+use_custom_datetime = true
+custom_hour = 17.0
+custom_day_of_year = 172
+custom_year = 2026
+cloud_opacity = 0.0

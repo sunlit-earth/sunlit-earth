@@ -1,4 +1,4 @@
-//! End-to-end screenshot tests for the Sunlit Earth binary.
+//! End-to-end render export tests for the Sunlit Earth binary.
 //!
 //! All tests are marked `#[ignore]` because they require a desktop environment
 //! and GPU. Run with `cargo test --test e2e -- --ignored`.
@@ -87,6 +87,80 @@ fn cleanup_temp_dir(dir: &Path) {
     let _ = fs::remove_dir_all(dir);
 }
 
+/// Extract the (R, G, B) channels of a pixel at the given coordinates.
+fn rgb_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 3] {
+    let p = img.get_pixel(x, y).0;
+    [p[0], p[1], p[2]]
+}
+
+/// Assert that a pixel is approximately black (background/space).
+/// Threshold accounts for slight nightglow/atmosphere bleed at edges.
+fn assert_black(rgb: [u8; 3], label: &str) {
+    let sum = u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]);
+    assert!(sum < 40, "{label}: expected black, got {rgb:?} (sum={sum})");
+}
+
+/// Assert that a pixel is dark ocean on the night side (nearly black).
+fn assert_night_ocean(rgb: [u8; 3], label: &str) {
+    let sum = u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]);
+    assert!(sum < 40, "{label}: expected dark ocean, got {rgb:?} (sum={sum})");
+}
+
+/// Assert that a pixel is night-side land (dim, bluish from nightglow).
+fn assert_night_land(rgb: [u8; 3], label: &str) {
+    let [r, g, b] = rgb;
+    let sum = u32::from(r) + u32::from(g) + u32::from(b);
+    assert!(
+        sum > 40 && sum < 200 && b >= r && b >= g,
+        "{label}: expected dim bluish night land, got {rgb:?} (sum={sum})"
+    );
+}
+
+/// Assert that a pixel is greenish (vegetation).
+/// Green must clearly dominate both red and blue.
+fn assert_greenish(rgb: [u8; 3], label: &str) {
+    let [r, g, b] = rgb;
+    assert!(
+        g > r + 10 && g > b && g > 40,
+        "{label}: expected greenish (G dominant), got {rgb:?}"
+    );
+}
+
+/// Assert that a pixel is yellowish/sandy (desert).
+/// Red and green both strong, blue clearly lower.
+fn assert_yellowish(rgb: [u8; 3], label: &str) {
+    let [r, g, b] = rgb;
+    let warm = u32::from(r) + u32::from(g);
+    assert!(
+        warm > 3 * u32::from(b) && r > 80 && g > 80,
+        "{label}: expected yellowish/sandy (R+G >> B), got {rgb:?}"
+    );
+}
+
+/// Assert that a pixel is blue (ocean).
+/// Blue must exceed the sum of red and green.
+fn assert_blue(rgb: [u8; 3], label: &str) {
+    let [r, g, b] = rgb;
+    assert!(
+        u32::from(b) > u32::from(r) + u32::from(g) && b > 30,
+        "{label}: expected blue (B > R+G), got {rgb:?}"
+    );
+}
+
+/// Assert that a pixel is bright/white (ice/snow).
+/// High overall brightness with all channels close together.
+fn assert_ice(rgb: [u8; 3], label: &str) {
+    let [r, g, b] = rgb;
+    let sum = u32::from(r) + u32::from(g) + u32::from(b);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let spread = u32::from(max) - u32::from(min);
+    assert!(
+        sum > 500 && spread < 30,
+        "{label}: expected bright white ice (sum>500, spread<30), got {rgb:?} (sum={sum}, spread={spread})"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -103,18 +177,26 @@ fn test_binary_exists() {
 
 #[test]
 #[ignore = "requires desktop environment and GPU"]
-fn test_screenshot_and_exit() {
-    // 1. Create a temp directory and screenshot path.
+fn test_render_and_exit() {
+    // 1. Create a temp directory and output path.
     let temp_dir = create_temp_dir();
-    let screenshot_path = temp_dir.join("screenshot.png");
+    let output_path = temp_dir.join("render.png");
+    let config_path = format!("{}/tests/fixtures/e2e_config.toml", env!("CARGO_MANIFEST_DIR"));
 
-    // 2. Spawn the binary with --screenshot and --log-level info.
+    // 2. Spawn the binary with the render subcommand.
     let child = Command::new(BINARY)
         .args([
-            "--screenshot",
-            screenshot_path.to_str().expect("non-UTF-8 temp path"),
             "--log-level",
             "info",
+            "render",
+            "--output",
+            output_path.to_str().expect("non-UTF-8 temp path"),
+            "--width",
+            "800",
+            "--height",
+            "800",
+            "--config",
+            &config_path,
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -132,35 +214,57 @@ fn test_screenshot_and_exit() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // 5. Assert the screenshot file exists and is non-empty.
+    // 5. Assert the render output file exists and is non-empty.
     assert!(
-        screenshot_path.exists(),
-        "screenshot file was not created at {}",
-        screenshot_path.display()
+        output_path.exists(),
+        "render output file was not created at {}",
+        output_path.display()
     );
-    let file_size = fs::metadata(&screenshot_path)
-        .expect("failed to read screenshot metadata")
+    let file_size = fs::metadata(&output_path)
+        .expect("failed to read render output metadata")
         .len();
     assert!(
         file_size > 0,
-        "screenshot file is empty (0 bytes)"
+        "render output file is empty (0 bytes)"
     );
 
     // 6. Decode the PNG with the image crate.
-    let img = image::open(&screenshot_path).expect("failed to decode screenshot PNG");
+    let img = image::open(&output_path).expect("failed to decode render output PNG");
 
-    // 7. Assert image dimensions are non-zero.
+    // 7. Assert image dimensions match the requested size.
     let (width, height) = img.dimensions();
-    assert!(width > 0 && height > 0, "image has zero dimensions: {width}x{height}");
+    assert_eq!(width, 800, "render output width mismatch");
+    assert_eq!(height, 800, "render output height mismatch");
 
-    // 8. Sample the center pixel — assert it is not pure black.
-    let center_pixel = img.to_rgba8().get_pixel(width / 2, height / 2).0;
-    let rgb_sum: u32 =
-        u32::from(center_pixel[0]) + u32::from(center_pixel[1]) + u32::from(center_pixel[2]);
-    assert!(
-        rgb_sum > 0,
-        "center pixel is pure black ({center_pixel:?}) — globe may not be visible"
-    );
+    // 8. Sample pixels at known geographic locations to validate the
+    //    rendered globe. The config places the camera at lon=11, lat=48
+    //    (Central Europe) at 17:00 UTC on summer solstice, so the
+    //    terminator runs through eastern Europe with India/Tibet in night.
+    let rgba = img.to_rgba8();
+
+    // Corners should be black (space/background)
+    assert_black(rgb_at(&rgba, 0, 0), "top-left corner");
+    assert_black(rgb_at(&rgba, 799, 0), "top-right corner");
+    assert_black(rgb_at(&rgba, 0, 799), "bottom-left corner");
+    assert_black(rgb_at(&rgba, 799, 799), "bottom-right corner");
+
+    // Center: Central Europe — should be greenish (vegetation)
+    assert_greenish(rgb_at(&rgba, 400, 400), "center (Central Europe)");
+
+    // Sahara: south of center — should be yellowish/sandy
+    assert_yellowish(rgb_at(&rgba, 420, 560), "Sahara");
+
+    // Atlantic Ocean: west/left of center — should be blue
+    assert_blue(rgb_at(&rgba, 250, 400), "Atlantic Ocean");
+
+    // Greenland: upper-left — should be bright white (ice/snow)
+    assert_ice(rgb_at(&rgba, 300, 175), "Greenland");
+
+    // Indian Ocean: night side, far east — should be very dark water
+    assert_night_ocean(rgb_at(&rgba, 730, 500), "Indian Ocean (night)");
+
+    // Tibet: night side land with nightglow — dim and bluish
+    assert_night_land(rgb_at(&rgba, 730, 300), "Tibet (night)");
 
     // 9. Parse stderr — assert no line contains " ERROR ".
     let stderr_text = String::from_utf8_lossy(&output.stderr);

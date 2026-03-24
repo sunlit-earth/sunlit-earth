@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use slint::ComponentHandle;
 use tracing::{debug, error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -39,10 +39,30 @@ struct Cli {
     #[arg(long)]
     log_level: Option<String>,
 
-    /// Path to write a screenshot PNG. When provided, the app waits for
-    /// textures to load, saves a screenshot of the rendered scene, and exits.
-    #[arg(long)]
-    screenshot: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Render the scene to a PNG file and exit.
+    Render {
+        /// Output file path
+        #[arg(short, long, default_value = "render.png")]
+        output: PathBuf,
+
+        /// Image width in pixels
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+
+        /// Image height in pixels
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+
+        /// Path to a config file (TOML). If omitted, uses the saved user config.
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
 }
 
 /// Initialize the global tracing subscriber.
@@ -113,8 +133,12 @@ fn main() {
     window.set_renderer_info(wgpu_context.adapter_info.into());
     sunlit_earth::memory::log_memory_usage("after window creation");
 
-    // Load persisted config (falls back to defaults if missing or corrupt)
-    let config = config::load_config();
+    // Load config: from --config path if render subcommand specifies one,
+    // otherwise from the user's saved config on disk.
+    let config = match &cli.command {
+        Some(Commands::Render { config: Some(path), .. }) => config::load_config_from(path),
+        _ => config::load_config(),
+    };
     apply_config_to_window(&window, &config);
     if let Some((x, y, w, h)) = config::validated_window_geometry(&config) {
         window.window().set_position(slint::PhysicalPosition::new(x, y));
@@ -436,10 +460,12 @@ fn main() {
         },
     );
 
-    // When --screenshot is provided, register a timer that polls the
-    // texture-readiness flag and saves a screenshot when ready.
-    let screenshot_timer = cli.screenshot.map(|screenshot_path| {
-        let window_weak = window.as_weak();
+    // When the `render` subcommand is used, register a timer that polls the
+    // texture-readiness flag and saves a rendered image when ready.
+    let render_timer = if let Some(Commands::Render { output, width, height, .. }) = cli.command {
+        let output_path = output;
+        let render_width = width;
+        let render_height = height;
         let textures_ready = Arc::clone(&textures_ready);
         let timer = slint::Timer::default();
         timer.start(
@@ -447,32 +473,24 @@ fn main() {
             std::time::Duration::from_millis(200),
             move || {
                 if textures_ready.load(Ordering::Relaxed) {
-                    let (w, h) = window_weak
-                        .upgrade()
-                        .map_or((DEFAULT_SCREENSHOT_WIDTH, DEFAULT_SCREENSHOT_HEIGHT), |win| {
-                            let size = win.window().size();
-                            if size.width > 0 && size.height > 0 {
-                                (size.width, size.height)
-                            } else {
-                                (DEFAULT_SCREENSHOT_WIDTH, DEFAULT_SCREENSHOT_HEIGHT)
-                            }
-                        });
-                    match renderer::export_wallpaper_image(w, h) {
+                    match renderer::export_wallpaper_image(render_width, render_height) {
                         Ok(pixels) => {
-                            if let Err(e) = save_screenshot_png(&screenshot_path, w, h, &pixels) {
-                                error!("screenshot failed: {e}");
+                            if let Err(e) = save_render_png(&output_path, render_width, render_height, &pixels) {
+                                error!("render failed: {e}");
                             } else {
-                                info!("screenshot saved to {}", screenshot_path.display());
+                                info!("render saved to {}", output_path.display());
                             }
                         }
-                        Err(e) => error!("screenshot export failed: {e}"),
+                        Err(e) => error!("render export failed: {e}"),
                     }
                     slint::quit_event_loop().ok();
                 }
             },
         );
-        timer
-    });
+        Some(timer)
+    } else {
+        None
+    };
 
     window.run().expect("Failed to run window");
 
@@ -485,7 +503,7 @@ fn main() {
 
     // Keep timers alive until the event loop exits (prevent drop optimization)
     drop(sun_timer);
-    drop(screenshot_timer);
+    drop(render_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");
@@ -618,12 +636,8 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     window.set_day_label(datetime::month_day_label(doy, year).into());
 }
 
-/// Default screenshot dimensions when the window size is not available.
-const DEFAULT_SCREENSHOT_WIDTH: u32 = 800;
-const DEFAULT_SCREENSHOT_HEIGHT: u32 = 600;
-
 /// Encode RGBA8 pixels as PNG and write to the given path.
-fn save_screenshot_png(
+fn save_render_png(
     path: &std::path::Path,
     width: u32,
     height: u32,

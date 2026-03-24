@@ -308,7 +308,7 @@ struct GpuResources {
 ///
 /// The `textures_ready` flag is set to `true` once all required texture slots
 /// for the current mode are loaded (excluding clouds). This is used by the
-/// `--screenshot` path to know when the scene is fully rendered.
+/// `render` subcommand to know when the scene is fully rendered.
 pub fn setup_rendering_notifier(
     window: &MainWindow,
     aa_counts: Vec<u32>,

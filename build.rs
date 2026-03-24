@@ -1,5 +1,6 @@
 fn main() {
-    slint_build::compile("ui/main.slint").unwrap();
+    let config = slint_build::CompilerConfiguration::new().with_debug_info(true);
+    slint_build::compile_with_config("ui/main.slint", config).unwrap();
 
     // Increase the Windows main thread stack from 1 MB to 4 MB.
     // The Slint + wgpu rendering pipeline has deep call chains (backend init,

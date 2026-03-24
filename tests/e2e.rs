@@ -87,6 +87,55 @@ fn cleanup_temp_dir(dir: &Path) {
     let _ = fs::remove_dir_all(dir);
 }
 
+/// A parsed memory usage log entry.
+struct MemoryEntry {
+    context: String,
+    rss_mb: f64,
+    peak_rss_mb: f64,
+}
+
+/// Parse all "memory usage" lines from stderr, stripping ANSI escape codes.
+fn parse_memory_entries(stderr: &str) -> Vec<MemoryEntry> {
+    // Strip ANSI escape sequences: ESC [ ... m
+    let ansi_re = regex_lite::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+
+    let mut entries = Vec::new();
+    for line in stderr.lines() {
+        if !line.contains("memory usage") {
+            continue;
+        }
+        let clean = ansi_re.replace_all(line, "");
+
+        let context = clean
+            .split("context=")
+            .nth(1)
+            .and_then(|s| {
+                // context="some text" — extract between quotes
+                let s = s.trim_start_matches('"');
+                s.split('"').next()
+            })
+            .unwrap_or("")
+            .to_owned();
+
+        let rss_mb = clean
+            .split("rss_mb=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let peak_rss_mb = clean
+            .split("peak_rss_mb=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        entries.push(MemoryEntry { context, rss_mb, peak_rss_mb });
+    }
+    entries
+}
+
 /// Extract the (R, G, B) channels of a pixel at the given coordinates.
 fn rgb_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 3] {
     let p = img.get_pixel(x, y).0;
@@ -187,7 +236,7 @@ fn test_render_and_exit() {
     let child = Command::new(BINARY)
         .args([
             "--log-level",
-            "info",
+            "debug",
             "render",
             "--output",
             output_path.to_str().expect("non-UTF-8 temp path"),
@@ -280,6 +329,43 @@ fn test_render_and_exit() {
         stderr_text.contains("first frame rendered"),
         "stderr does not contain 'first frame rendered':\n{stderr_text}"
     );
+
+    // 11. Validate memory usage profile from debug log entries.
+    let mem = parse_memory_entries(&stderr_text);
+    assert!(
+        !mem.is_empty(),
+        "no memory usage entries found in stderr (is log level debug?)"
+    );
+
+    // Phase A: Early memory should be low (before textures load).
+    if let Some(entry) = mem.iter().find(|e| e.context == "after window creation") {
+        assert!(
+            entry.rss_mb < 300.0,
+            "early memory too high: {:.0} MB at '{}' (expected < 300 MB)",
+            entry.rss_mb, entry.context
+        );
+    }
+
+    // Phase B: Peak RSS should stay within limits during rendering.
+    let peak = mem.iter().map(|e| e.peak_rss_mb).fold(0.0f64, f64::max);
+    assert!(
+        peak < 3000.0,
+        "peak RSS too high: {peak:.0} MB (expected < 3000 MB)"
+    );
+
+    // Phase C: Memory should settle down before exit.
+    if let Some(entry) = mem.iter().rev().find(|e| e.context == "before exit") {
+        assert!(
+            entry.rss_mb < 1000.0,
+            "exit memory too high: {:.0} MB (expected < 1000 MB)",
+            entry.rss_mb
+        );
+        assert!(
+            entry.rss_mb < peak,
+            "memory did not settle: exit RSS {:.0} MB >= peak {:.0} MB",
+            entry.rss_mb, peak
+        );
+    }
 
     // 11. Clean up.
     cleanup_temp_dir(&temp_dir);

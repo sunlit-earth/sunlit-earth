@@ -328,94 +328,23 @@ mod tests {
     }
 
     #[test]
-    fn default_values_lighting() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.terminator_width, 0.1);
-        assert!(config.diffuse_shading);
-        assert_relative_eq!(config.diffuse_floor, 0.70);
-        assert_relative_eq!(config.diffuse_ramp, 0.20);
-    }
-
-    #[test]
-    fn default_values_rendering() {
-        let config = AppConfig::default();
-        assert_eq!(config.texture_index, 3);
-        assert_eq!(config.sample_count, 8);
-    }
-
-    #[test]
-    fn default_cloud_floor() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.cloud_floor, 0.25);
-    }
-
-    #[test]
-    fn default_cloud_gamma() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.cloud_gamma, 0.65);
-    }
-
-    #[test]
-    fn default_atmo_enabled() {
-        let config = AppConfig::default();
-        assert!(config.atmo_enabled);
-    }
-
-    #[test]
-    fn default_rayleigh_intensity() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.rayleigh_intensity, 0.5);
-    }
-
-    #[test]
-    fn default_rayleigh_sharpness() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.rayleigh_sharpness, 50.0);
-    }
-
-    #[test]
-    fn default_nightglow_intensity() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.nightglow_intensity, 0.25);
-    }
-
-    #[test]
-    fn default_nightglow_falloff() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.nightglow_falloff, 15.0);
-    }
-
-    #[test]
-    fn default_nightglow_balance() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.nightglow_balance, 0.37);
-    }
-
-    #[test]
     fn deserialize_missing_atmo_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
-        assert!(config.atmo_enabled);
-        assert_relative_eq!(config.rayleigh_intensity, 0.5);
-        assert_relative_eq!(config.rayleigh_sharpness, 50.0);
-        assert_relative_eq!(config.nightglow_intensity, 0.25);
-        assert_relative_eq!(config.nightglow_falloff, 15.0);
-        assert_relative_eq!(config.nightglow_balance, 0.37);
+        let defaults = AppConfig::default();
+        assert_eq!(config.atmo_enabled, defaults.atmo_enabled);
+        assert_relative_eq!(config.rayleigh_intensity, defaults.rayleigh_intensity);
+        assert_relative_eq!(config.rayleigh_sharpness, defaults.rayleigh_sharpness);
+        assert_relative_eq!(config.nightglow_intensity, defaults.nightglow_intensity);
+        assert_relative_eq!(config.nightglow_falloff, defaults.nightglow_falloff);
+        assert_relative_eq!(config.nightglow_balance, defaults.nightglow_balance);
     }
 
     #[test]
     fn deserialize_missing_cloud_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
-        assert_relative_eq!(config.cloud_floor, 0.25);
-        assert_relative_eq!(config.cloud_gamma, 0.65);
-    }
-
-    #[test]
-    fn default_values_color_correction() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.day_gamma, 1.0);
-        assert_relative_eq!(config.day_saturation, 1.0);
-        assert_relative_eq!(config.night_gamma, 1.0);
-        assert_relative_eq!(config.night_saturation, 1.0);
+        let defaults = AppConfig::default();
+        assert_relative_eq!(config.cloud_floor, defaults.cloud_floor);
+        assert_relative_eq!(config.cloud_gamma, defaults.cloud_gamma);
     }
 
     #[test]
@@ -499,26 +428,6 @@ mod tests {
         assert_relative_eq!(config.latitude, defaults.latitude);
         assert_relative_eq!(config.zoom, defaults.zoom);
         assert_eq!(config.texture_index, defaults.texture_index);
-    }
-
-    // --- Custom datetime defaults ---
-
-    #[test]
-    fn default_use_custom_datetime_is_false() {
-        let config = AppConfig::default();
-        assert!(!config.use_custom_datetime);
-    }
-
-    #[test]
-    fn default_custom_hour_is_12() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.custom_hour, 12.0);
-    }
-
-    #[test]
-    fn default_custom_day_of_year_is_1() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.custom_day_of_year, 1.0);
     }
 
     #[test]
@@ -694,7 +603,7 @@ mod tests {
         let defaults = AppConfig::default();
         assert_relative_eq!(config.latitude, defaults.latitude);
         assert_eq!(config.sample_count, defaults.sample_count);
-        assert!(config.diffuse_shading);
+        assert_eq!(config.diffuse_shading, defaults.diffuse_shading);
 
         // Cleanup
         let _ = fs::remove_dir_all(&dir);

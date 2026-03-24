@@ -109,6 +109,10 @@ fn main() {
     // Load persisted config (falls back to defaults if missing or corrupt)
     let config = config::load_config();
     apply_config_to_window(&window, &config);
+    if let Some((x, y, w, h)) = config::validated_window_geometry(&config) {
+        window.window().set_position(slint::PhysicalPosition::new(x, y));
+        window.window().set_size(slint::PhysicalSize::new(w, h));
+    }
     debug!("loaded config from disk");
 
     // Set up AA options from supported sample counts
@@ -178,9 +182,9 @@ fn main() {
             if win.get_use_custom_datetime() {
                 let now = time::OffsetDateTime::now_utc();
                 let hour =
-                    now.hour() as f32 + now.minute() as f32 / 60.0 + now.second() as f32 / 3600.0;
+                    f32::from(now.hour()) + f32::from(now.minute()) / 60.0 + f32::from(now.second()) / 3600.0;
                 win.set_custom_hour(hour);
-                win.set_custom_day_of_year(now.ordinal() as f32);
+                win.set_custom_day_of_year(f32::from(now.ordinal()));
                 win.set_custom_year_index(now.year() - base_year);
             }
             update_datetime_labels(&win, base_year);
@@ -439,11 +443,12 @@ fn main() {
     std::process::exit(0);
 }
 
-/// Apply a loaded config to all window properties.
+/// Apply a loaded config to all window properties except window geometry.
 ///
-/// Called once at startup to restore persisted settings. The `texture_index`
-/// and `aa_index` are set via a deferred `invoke_from_event_loop` instead,
-/// so they are not set here.
+/// Called at startup, on reset, and on load-defaults. Window geometry is
+/// applied only at startup so that reset/load-defaults don't move or resize
+/// the window. The `texture_index` and `aa_index` are set via a deferred
+/// `invoke_from_event_loop` instead, so they are not set here.
 fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_camera_longitude(config.longitude);
     window.set_camera_latitude(config.latitude);
@@ -487,10 +492,6 @@ fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     // Update display labels
     update_datetime_labels(window, base_year);
 
-    if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
-        window.window().set_position(slint::PhysicalPosition::new(x, y));
-        window.window().set_size(slint::PhysicalSize::new(w, h));
-    }
 }
 
 /// Read all persisted settings from the window's current UI state.

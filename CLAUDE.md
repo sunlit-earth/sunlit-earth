@@ -91,6 +91,7 @@ Coverage targets by module type:
 
 ### Conventions
 
+- **Test behavior, not constants**: Tests verify that the application behaves correctly (invariants, math, pipelines), not that a constant has a specific value. Changing a preset or default should not cause test failures.
 - **Float comparisons**: Use `approx::assert_relative_eq!` (not raw epsilon patterns). `tests/shading.rs` is an exception — its GPU tolerance pattern predates this convention and works well as-is.
 - **GPU integration tests**: Assert behavioral invariants (monotonicity, bounds, visibility), not pixel-exact values, due to cross-hardware float variance.
 - **GPU device sharing**: Use `LazyLock<Mutex<GpuContext>>` to share a single device across parallel test threads. Per-test device creation crashes on Windows.
@@ -107,6 +108,7 @@ proptest = "1"    # property-based testing for pure functions
 
 ## Workflow
 
+- Always run `cargo test` and `cargo clippy` after making code changes to catch regressions and lint issues before presenting work
 - Do not commit or push without explicit user approval. Wait for explicit user confirmation that a change works before committing.
 - Git worktrees must be created in the `.worktrees/` folder at the repo root
 - Keep `docs/roadmap.md` up to date when implementing features — check off completed items and add new entries as needed

@@ -540,44 +540,25 @@ mod tests {
     }
 
     #[test]
-    fn presets_has_nine_elements() {
-        assert_eq!(PRESETS.len(), 9);
-    }
+    fn all_presets_produce_valid_mvp() {
+        let aspect = 16.0 / 9.0;
+        for (i, p) in PRESETS.iter().enumerate() {
+            let mut cam = OrbitalCamera::new(p.longitude, p.latitude, zoom_to_distance(p.zoom));
+            cam.offset_x = p.offset_x;
+            cam.offset_y = p.offset_y;
+            cam.tilt_deg = p.tilt_deg;
+            cam.yaw_deg = p.yaw_deg;
+            cam.pitch_deg = p.pitch_deg;
 
-    #[test]
-    fn preset_europe_longitude() {
-        assert_relative_eq!(PRESETS[0].longitude, 11.0);
-    }
-
-    #[test]
-    fn preset_pacific_longitude() {
-        assert_relative_eq!(PRESETS[6].longitude, -170.0);
-    }
-
-    #[test]
-    fn preset_earthrise_pitch() {
-        assert_relative_eq!(PRESETS[8].pitch_deg, 45.0);
-    }
-
-    #[test]
-    fn default_orientation_presets_have_zero_tilt_yaw() {
-        // Presets 1..=6 have zero tilt, yaw, pitch, and offsets.
-        // Europe (0) has pitch=30, Earthrise (8) has pitch=45.
-        for (i, preset) in PRESETS[1..7].iter().enumerate() {
-            assert_relative_eq!(preset.tilt_deg, 0.0, epsilon = 1e-6);
-            assert_relative_eq!(preset.yaw_deg, 0.0, epsilon = 1e-6);
-            assert_relative_eq!(preset.pitch_deg, 0.0, epsilon = 1e-6);
-            assert_relative_eq!(preset.offset_x, 0.0, epsilon = 1e-6);
-            assert_relative_eq!(preset.offset_y, 0.0, epsilon = 1e-6);
-            let _ = i;
-        }
-    }
-
-    #[test]
-    fn all_presets_have_zero_offsets() {
-        for preset in &PRESETS {
-            assert_relative_eq!(preset.offset_x, 0.0, epsilon = 1e-6);
-            assert_relative_eq!(preset.offset_y, 0.0, epsilon = 1e-6);
+            let mvp = cam.mvp_matrix(aspect);
+            assert!(
+                mvp.to_cols_array().iter().all(|v| v.is_finite()),
+                "Preset {i} produced non-finite MVP"
+            );
+            assert!(
+                cam.view_matrix().determinant().abs() > 0.5,
+                "Preset {i} produced degenerate view matrix"
+            );
         }
     }
 }

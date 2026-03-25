@@ -342,21 +342,17 @@ fn run_event_loop(
             window.show().expect("Failed to show window");
         }
         slint::run_event_loop_until_quit().expect("Failed to run event loop");
-    } else if _ipc_handle.is_some() {
-        // When IPC is active in windowed mode, use run_event_loop_until_quit()
-        // so the IPC `quit` command can stop the event loop. window.run()
-        // uses run_event_loop() which doesn't respond to quit_event_loop().
-        window.show().expect("Failed to show window");
-        slint::run_event_loop_until_quit().expect("Failed to run event loop");
     } else {
+        // window.run() shows the window, runs run_event_loop(), and hides
+        // the window on exit. It responds to quit_event_loop() (e.g., from
+        // IPC quit) and properly tears down the wgpu backend on shutdown.
         window.run().expect("Failed to run window");
     }
 
-    // Save window geometry on close. In tray mode this is also saved in
-    // the on_close_requested callback, but we save here too for windowed
-    // mode. Skip if the window is no longer accessible (e.g., after IPC
-    // quit in windowed mode where Slint may have torn down the backend).
-    if use_tray || _ipc_handle.is_none() {
+    // Save window geometry on close. Skip after IPC-triggered quit because
+    // the Slint backend may be partially torn down, making window accessors
+    // unsafe. In tray mode, geometry is already saved in on_close_requested.
+    if !is_render && _ipc_handle.is_none() {
         let size = window.window().size();
         let pos = window.window().position();
         config::save_window_geometry(pos.x, pos.y, size.width, size.height);
@@ -364,9 +360,11 @@ fn run_event_loop(
 
     sunlit_earth::memory::log_memory_usage("before exit");
 
-    // Keep timers alive until the event loop exits (prevent drop optimization)
-    drop(sun_timer);
-    drop(render_timer);
+    // Intentionally leak timers — their Slint destructors can crash after
+    // quit_event_loop() because the backend may be torn down.
+    // process::exit() terminates everything anyway.
+    std::mem::forget(sun_timer);
+    std::mem::forget(render_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");

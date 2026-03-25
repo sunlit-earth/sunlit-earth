@@ -71,8 +71,15 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
     match cmd {
         "quit" => {
             debug!("ipc command: quit");
+            // Defer quit_event_loop() to a single-shot timer so it fires
+            // during a clean event loop iteration. Calling quit_event_loop()
+            // directly from invoke_from_event_loop crashes the wgpu backend
+            // on Windows (STATUS_STACK_BUFFER_OVERRUN). The timer approach
+            // matches how the render subcommand shuts down successfully.
             slint::invoke_from_event_loop(|| {
-                slint::quit_event_loop().ok();
+                slint::Timer::single_shot(std::time::Duration::ZERO, || {
+                    slint::quit_event_loop().ok();
+                });
             })
             .ok();
         }

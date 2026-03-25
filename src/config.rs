@@ -162,8 +162,11 @@ pub fn load_config() -> AppConfig {
     load_config_from(&path)
 }
 
-/// Load config from a specific path (used by both the public API and tests).
-fn load_config_from(path: &std::path::Path) -> AppConfig {
+/// Load config from a specific path.
+///
+/// Returns `AppConfig::default()` if the file does not exist, cannot be
+/// read, or contains invalid TOML. Parse errors are logged to stderr.
+pub fn load_config_from(path: &std::path::Path) -> AppConfig {
     let contents = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

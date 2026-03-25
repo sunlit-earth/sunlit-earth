@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use slint::ComponentHandle;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -36,6 +38,31 @@ struct Cli {
     /// Takes precedence over the `RUST_LOG` environment variable.
     #[arg(long)]
     log_level: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Render the scene to a PNG file and exit.
+    Render {
+        /// Output file path
+        #[arg(short, long, default_value = "render.png")]
+        output: PathBuf,
+
+        /// Image width in pixels
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+
+        /// Image height in pixels
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+
+        /// Path to a config file (TOML). If omitted, uses the saved user config.
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
 }
 
 /// Initialize the global tracing subscriber.
@@ -106,8 +133,12 @@ fn main() {
     window.set_renderer_info(wgpu_context.adapter_info.into());
     sunlit_earth::memory::log_memory_usage("after window creation");
 
-    // Load persisted config (falls back to defaults if missing or corrupt)
-    let config = config::load_config();
+    // Load config: from --config path if render subcommand specifies one,
+    // otherwise from the user's saved config on disk.
+    let config = match &cli.command {
+        Some(Commands::Render { config: Some(path), .. }) => config::load_config_from(path),
+        _ => config::load_config(),
+    };
     apply_config_to_window(&window, &config);
     if let Some((x, y, w, h)) = config::validated_window_geometry(&config) {
         window.window().set_position(slint::PhysicalPosition::new(x, y));
@@ -396,12 +427,15 @@ fn main() {
     let (texture_tx, texture_rx) =
         std::sync::mpsc::channel::<sunlit_earth::renderer::DecodedTextureMessage>();
 
+    let textures_ready = Arc::new(AtomicBool::new(false));
+
     renderer::setup_rendering_notifier(
         &window,
         aa_counts,
         texture_paths,
         texture_tx.clone(),
         texture_rx,
+        Arc::clone(&textures_ready),
     );
 
     // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT)
@@ -426,6 +460,38 @@ fn main() {
         },
     );
 
+    // When the `render` subcommand is used, register a timer that polls the
+    // texture-readiness flag and saves a rendered image when ready.
+    let render_timer = if let Some(Commands::Render { output, width, height, .. }) = cli.command {
+        let output_path = output;
+        let render_width = width;
+        let render_height = height;
+        let textures_ready = Arc::clone(&textures_ready);
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(200),
+            move || {
+                if textures_ready.load(Ordering::Relaxed) {
+                    match renderer::export_wallpaper_image(render_width, render_height) {
+                        Ok(pixels) => {
+                            if let Err(e) = save_render_png(&output_path, render_width, render_height, &pixels) {
+                                error!("render failed: {e}");
+                            } else {
+                                info!("render saved to {}", output_path.display());
+                            }
+                        }
+                        Err(e) => error!("render export failed: {e}"),
+                    }
+                    slint::quit_event_loop().ok();
+                }
+            },
+        );
+        Some(timer)
+    } else {
+        None
+    };
+
     window.run().expect("Failed to run window");
 
     // Save window geometry on close (preserves all other config values on disk)
@@ -437,6 +503,7 @@ fn main() {
 
     // Keep timers alive until the event loop exits (prevent drop optimization)
     drop(sun_timer);
+    drop(render_timer);
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");
@@ -567,6 +634,20 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     let doy = window.get_custom_day_of_year() as u16;
     let doy = doy.max(1);
     window.set_day_label(datetime::month_day_label(doy, year).into());
+}
+
+/// Encode RGBA8 pixels as PNG and write to the given path.
+fn save_render_png(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<(), String> {
+    use image::{ImageBuffer, Rgba};
+    let img: ImageBuffer<Rgba<u8>, _> =
+        ImageBuffer::from_raw(width, height, pixels.to_vec())
+            .ok_or_else(|| "pixel buffer size mismatch".to_owned())?;
+    img.save(path).map_err(|e| format!("failed to save PNG: {e}"))
 }
 
 /// Render the current scene at the primary monitor's resolution, save as PNG,

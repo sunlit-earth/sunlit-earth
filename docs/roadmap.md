@@ -34,7 +34,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Tilt: rotate the camera around its view axis for angled compositions.
 - [x] Zoom curve: zoom should be slower when close to the Earth and faster when far away. Extend the zoom range limits.
 - [x] Improved Controls: Rotate Earth with mouse drag, Zoom with scroll wheel in addition to existing UI controls.
-- [ ] Preset camera views: quick-select buttons for common viewpoints (Europe, Americas, Asia, etc.), as well as recreations of iconic photographs (blue marble, earthrise) 
+- [x] Preset camera views: quick-select buttons for common viewpoints (Europe, Americas, Asia, etc.), as well as recreations of iconic photographs (blue marble, earthrise). Implemented as a 3x3 grid of preset buttons with `PRESETS` constant array.
 - [x] Change date and time of day: checkbox to enable custom date/time, sliders for hour (UTC) and day of year, year dropdown. Implemented with proper leap year handling and live sun position updates.
 
 ## CI and distribution
@@ -47,4 +47,5 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 - [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but something still blocks the UI thread.
 - [x] Diffuse shading banding on JPEG wallpapers: fixed by switching the wallpaper export format from TIFF to PNG. Windows preserves PNG wallpapers losslessly (no JPEG transcode), eliminating the banding artifact.
+- [x] Refactor `main()`: extract mouse math into `mouse_math.rs` (with unit tests and proptests), UI callback registration into `ui_callbacks.rs`, and initialization into sub-functions. Removed `clippy::too_many_lines` suppression.
 - [ ] Automated slint UI testing

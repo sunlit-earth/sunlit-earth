@@ -309,44 +309,58 @@ fn run_event_loop(
     };
 
     let _tray_handle = if use_tray {
-        // Hide the window on close instead of exiting. Save geometry first
-        // so that position/size persists even if the user doesn't "Exit"
-        // from the tray for a long time.
+        // Intercept the close button: save geometry, minimize the window,
+        // and keep it shown. We use KeepWindowShown + minimize instead of
+        // HideWindow because HideWindow causes run_event_loop() to exit
+        // (treating the hidden window as "closed") and
+        // run_event_loop_until_quit() stops processing timers after
+        // re-entering run_app_on_demand. Minimizing keeps the window
+        // "alive" from the event loop's perspective.
         let window_weak = window.as_weak();
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
                 let size = win.window().size();
                 let pos = win.window().position();
                 config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+                // Move off-screen instead of hiding or minimizing:
+                // - hide() causes run_event_loop() to exit
+                // - set_minimized(true) triggers winit Suspended, stopping timers
+                win.window().set_position(slint::PhysicalPosition::new(-32000, -32000));
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_earth::memory::log_memory_usage("after window hidden");
-            slint::CloseRequestResponse::HideWindow
+            slint::CloseRequestResponse::KeepWindowShown
         });
         Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak()))
     } else {
         None
     };
 
-    // Spawn IPC listener if --ipc-socket was provided
+    // Spawn IPC listener and command timer if --ipc-socket was provided.
+    // Commands are dispatched via a shared queue + polling timer instead of
+    // invoke_from_event_loop, which deadlocks the Slint/winit event loop
+    // on Windows (the proxy message freezes the message pump).
     let _ipc_handle = ipc_socket.map(|name| {
-        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak())
+        let queue = sunlit_earth::ipc::CommandQueue::new();
+        let handle = sunlit_earth::ipc::spawn_ipc_listener(&name, queue.clone());
+        let timer = sunlit_earth::ipc::start_command_timer(queue, window.as_weak());
+        (handle, timer)
     });
 
     if use_tray {
-        // In tray mode, use run_event_loop_until_quit() so the event loop
-        // stays alive after the window is hidden via HideWindow. It only
-        // exits when quit_event_loop() is called (from the tray "Exit" menu
-        // or IPC quit command).
+        // Tray mode: show the window and use run_event_loop_until_quit()
+        // so the loop stays alive when the window is hidden via KeepWindowShown.
+        // run_event_loop() would exit when the window becomes invisible.
         if matches!(tray_start, TrayStart::Visible) {
             window.show().expect("Failed to show window");
         }
         slint::run_event_loop_until_quit().expect("Failed to run event loop");
     } else {
-        // window.run() shows the window, runs run_event_loop(), and hides
-        // the window on exit. It responds to quit_event_loop() (e.g., from
-        // IPC quit) and properly tears down the wgpu backend on shutdown.
-        window.run().expect("Failed to run window");
+        // Windowed mode: show() + run_event_loop(). We avoid window.run()
+        // because its hide() call after quit triggers wgpu teardown during
+        // an unsafe state on Windows (STATUS_STACK_BUFFER_OVERRUN).
+        window.show().expect("Failed to show window");
+        slint::run_event_loop().expect("Failed to run event loop");
     }
 
     // Save window geometry on close. Skip after IPC-triggered quit because
@@ -365,6 +379,9 @@ fn run_event_loop(
     // process::exit() terminates everything anyway.
     std::mem::forget(sun_timer);
     std::mem::forget(render_timer);
+    if let Some((_handle, ipc_timer)) = _ipc_handle {
+        std::mem::forget(ipc_timer);
+    }
 
     // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");

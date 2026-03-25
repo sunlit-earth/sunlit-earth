@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use slint::ComponentHandle;
 use tracing::{debug, error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -36,12 +36,32 @@ struct Cli {
     #[arg(long)]
     log_level: Option<String>,
 
-    /// Run in windowed mode (close exits instead of minimizing to tray)
+    /// Startup mode: tray (default, minimize-to-tray on close) or window (close exits)
+    #[arg(long, value_enum, default_value_t = Mode::Tray)]
+    mode: Mode,
+
+    /// Initial window visibility in tray mode: visible (default) or hidden
+    #[arg(long, value_enum, default_value_t = TrayStart::Visible)]
+    tray_start: TrayStart,
+
+    /// Name of a local IPC socket to listen on for control commands (quit, show-window, hide-window)
     #[arg(long)]
-    windowed: bool,
+    ipc_socket: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Mode {
+    Tray,
+    Window,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TrayStart {
+    Visible,
+    Hidden,
 }
 
 #[derive(Subcommand)]
@@ -210,7 +230,9 @@ fn init_texture_system(
 fn run_event_loop(
     window: MainWindow,
     cli_command: Option<Commands>,
-    windowed: bool,
+    mode: Mode,
+    tray_start: TrayStart,
+    ipc_socket: Option<String>,
     textures_ready: Arc<AtomicBool>,
 ) -> ! {
     // Periodic timer to update the sun position (every 2 minutes)
@@ -264,7 +286,7 @@ fn run_event_loop(
     // 1. Render subcommand — run the event loop and exit (no tray, no single-instance)
     // 2. Tray mode (default, Windows only) — tray icon, hide-on-close, single-instance
     // 3. Windowed mode (--windowed or non-Windows) — original behavior, close exits
-    let use_tray = !is_render && !windowed;
+    let use_tray = !is_render && matches!(mode, Mode::Tray);
 
     if is_render {
         debug!("startup mode: render");
@@ -275,7 +297,13 @@ fn run_event_loop(
     }
 
     let _instance_guard = if use_tray {
-        Some(sunlit_earth::tray::enforce_single_instance())
+        // Scope the mutex name with the IPC socket name so test instances
+        // don't conflict with the real app or each other.
+        let mutex_name = match &ipc_socket {
+            Some(name) => format!("sunlit-earth-{name}"),
+            None => "sunlit-earth-app".to_string(),
+        };
+        Some(sunlit_earth::tray::enforce_single_instance(&mutex_name))
     } else {
         None
     };
@@ -300,20 +328,39 @@ fn run_event_loop(
         None
     };
 
+    // Spawn IPC listener if --ipc-socket was provided
+    let _ipc_handle = ipc_socket.map(|name| {
+        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak())
+    });
+
     if use_tray {
         // In tray mode, use run_event_loop_until_quit() so the event loop
         // stays alive after the window is hidden via HideWindow. It only
-        // exits when quit_event_loop() is called (from the tray "Exit" menu).
+        // exits when quit_event_loop() is called (from the tray "Exit" menu
+        // or IPC quit command).
+        if matches!(tray_start, TrayStart::Visible) {
+            window.show().expect("Failed to show window");
+        }
+        slint::run_event_loop_until_quit().expect("Failed to run event loop");
+    } else if _ipc_handle.is_some() {
+        // When IPC is active in windowed mode, use run_event_loop_until_quit()
+        // so the IPC `quit` command can stop the event loop. window.run()
+        // uses run_event_loop() which doesn't respond to quit_event_loop().
         window.show().expect("Failed to show window");
         slint::run_event_loop_until_quit().expect("Failed to run event loop");
     } else {
         window.run().expect("Failed to run window");
     }
 
-    // Save window geometry on close (preserves all other config values on disk)
-    let size = window.window().size();
-    let pos = window.window().position();
-    config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+    // Save window geometry on close. In tray mode this is also saved in
+    // the on_close_requested callback, but we save here too for windowed
+    // mode. Skip if the window is no longer accessible (e.g., after IPC
+    // quit in windowed mode where Slint may have torn down the backend).
+    if use_tray || _ipc_handle.is_none() {
+        let size = window.window().size();
+        let pos = window.window().position();
+        config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+    }
 
     sunlit_earth::memory::log_memory_usage("before exit");
 
@@ -330,11 +377,19 @@ fn main() {
     let cli = Cli::parse();
     let _guard = init_logging(cli.log_level.as_deref());
     info!("sunlit earth v{}", env!("CARGO_PKG_VERSION"));
+    // Validate: --tray-start hidden only makes sense with --mode tray
+    if matches!(cli.tray_start, TrayStart::Hidden) && matches!(cli.mode, Mode::Window) {
+        eprintln!("error: --tray-start hidden is only valid with --mode tray");
+        std::process::exit(2);
+    }
+
     debug!(
         software_rendering = cli.software_rendering,
         textures_dir = ?cli.textures_dir,
         log_level = ?cli.log_level,
-        windowed = cli.windowed,
+        mode = ?cli.mode,
+        tray_start = ?cli.tray_start,
+        ipc_socket = ?cli.ipc_socket,
         "parsed CLI arguments"
     );
 
@@ -385,5 +440,5 @@ fn main() {
 
     let textures_ready = init_texture_system(&window, aa_counts, texture_paths);
 
-    run_event_loop(window, cli.command, cli.windowed, textures_ready);
+    run_event_loop(window, cli.command, cli.mode, cli.tray_start, cli.ipc_socket, textures_ready);
 }

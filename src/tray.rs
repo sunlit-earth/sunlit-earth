@@ -61,9 +61,9 @@ pub fn create_icon() -> Icon {
 ///
 /// If another instance is already running, this function logs a message
 /// and exits the process with code 0.
-pub fn enforce_single_instance() -> single_instance::SingleInstance {
+pub fn enforce_single_instance(mutex_name: &str) -> single_instance::SingleInstance {
     let instance =
-        single_instance::SingleInstance::new("sunlit-earth-app").expect("failed to create single-instance mutex");
+        single_instance::SingleInstance::new(mutex_name).expect("failed to create single-instance mutex");
     if !instance.is_single() {
         info!("another instance is already running, exiting");
         std::process::exit(0);

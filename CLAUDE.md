@@ -40,7 +40,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 
 **Key modules:**
 - `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation
-- `main.rs` — thin binary entry point: CLI (clap), logging initialization (`init_logging()`), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/apply-preset/load-defaults/reset callbacks, `PRESETS` const array (9 camera presets), rendering notifier setup, periodic sun timer, custom datetime label updates. Config is saved only when "Set as Wallpaper" is clicked (no auto-save timer).
+- `main.rs` — thin binary entry point: CLI (clap), logging initialization (`init_logging()`), window creation, slider/MSAA/wallpaper/mouse-drag/mouse-scroll/apply-preset/load-defaults/reset callbacks, `PRESETS` const array (9 camera presets), rendering notifier setup, periodic sun timer, custom datetime label updates. Three startup modes: **tray mode** (default on Windows) minimizes to system tray on close with single-instance enforcement, **windowed mode** (`--windowed`) uses original close-exits behavior, **render mode** (`render` subcommand) renders to PNG and exits. Config is saved only when "Set as Wallpaper" is clicked (no auto-save timer); in tray mode, window geometry is also saved when the window is hidden.
 - `scene/` — scene-level abstractions:
   - `scene/camera.rs` — `CameraParams` struct grouping all camera parameters; `OrbitalCamera` with offset, tilt, yaw, pitch; exponential zoom mapping (`zoom_to_distance`/`distance_to_zoom`); orbital camera: (longitude, latitude, distance) -> MVP matrix with post-view rotations and post-projection offset
   - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame); `sun_direction_at()` for custom date/time
@@ -59,6 +59,7 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `cloud_fetcher.rs` — background cloud texture fetcher: downloads 8K equirectangular cloud JPEG from matteason/live-cloud-maps, caches to `%LOCALAPPDATA%\SunlitEarth\clouds_cache.jpg` with ETag metadata, polls for updates every 60 minutes using HEAD + `If-None-Match` freshness checks, decodes JPEG and sends decoded pixels via `mpsc` channel to the renderer
 - `memory.rs` — process-level memory tracking: `current_rss_bytes()` reads Windows working set via `GetProcessMemoryInfo`, `log_memory_usage()` emits structured `debug!` events at key allocation points
 - `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
+- `tray.rs` — system tray icon with context menu (Open/Exit), single-instance enforcement via OS mutex, background thread with Win32 message pump (`cfg(windows)` only). Programmatic 32x32 Earth-like icon generation.
 - `wallpaper.rs` — Windows-only wallpaper export (`cfg(windows)`): monitor resolution detection via `EnumDisplayMonitors`/`GetMonitorInfoW`, PNG save via `image` crate, wallpaper application via `SystemParametersInfoW` (`windows-sys`)
 - `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
 
@@ -76,7 +77,9 @@ Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it
 - `time` — UTC time decomposition for astronomy calculations
 - `tracing` / `tracing-subscriber` / `tracing-appender` — structured logging with `max_level_debug` (debug builds) and `release_max_level_warn` (release builds); `EnvFilter` respects `RUST_LOG`; non-blocking stderr writer with `FmtSpan::CLOSE` for automatic span timing
 - `ureq` — HTTP client for cloud texture fetching (with `rustls` TLS backend)
-- `windows-sys` — Win32 FFI for wallpaper export and memory tracking (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo`
+- `tray-icon` — system tray icon with context menu (`cfg(windows)` only); re-exports `muda` as `tray_icon::menu`
+- `single-instance` — OS-level mutex for single-instance enforcement (`cfg(windows)` only)
+- `windows-sys` — Win32 FFI for wallpaper export, memory tracking, and tray message pump (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo`, `GetMessageW`
 
 ## Testing
 

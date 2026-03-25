@@ -1,0 +1,2 @@
+[alias]
+e2e = "test --test e2e -- --ignored"

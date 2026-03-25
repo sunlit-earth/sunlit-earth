@@ -7,6 +7,7 @@ pub mod memory;
 pub mod renderer;
 pub mod scene;
 pub mod texture_loader;
+pub mod tray;
 #[cfg(windows)]
 pub mod wallpaper;
 pub mod wgpu_init;

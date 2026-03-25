@@ -39,6 +39,10 @@ struct Cli {
     #[arg(long)]
     log_level: Option<String>,
 
+    /// Run in windowed mode (close exits instead of minimizing to tray)
+    #[arg(long)]
+    windowed: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -118,6 +122,7 @@ fn main() {
         software_rendering = cli.software_rendering,
         textures_dir = ?cli.textures_dir,
         log_level = ?cli.log_level,
+        windowed = cli.windowed,
         "parsed CLI arguments"
     );
 
@@ -462,6 +467,7 @@ fn main() {
 
     // When the `render` subcommand is used, register a timer that polls the
     // texture-readiness flag and saves a rendered image when ready.
+    let is_render = cli.command.is_some();
     let render_timer = if let Some(Commands::Render { output, width, height, .. }) = cli.command {
         let output_path = output;
         let render_width = width;
@@ -492,7 +498,55 @@ fn main() {
         None
     };
 
-    window.run().expect("Failed to run window");
+    // Branch into one of three startup modes:
+    // 1. Render subcommand — run the event loop and exit (no tray, no single-instance)
+    // 2. Tray mode (default, Windows only) — tray icon, hide-on-close, single-instance
+    // 3. Windowed mode (--windowed or non-Windows) — original behavior, close exits
+    let use_tray = !is_render && !cli.windowed;
+
+    if is_render {
+        debug!("startup mode: render");
+    } else if use_tray {
+        debug!("startup mode: tray");
+    } else {
+        debug!("startup mode: windowed");
+    }
+
+    let _instance_guard = if use_tray {
+        Some(sunlit_earth::tray::enforce_single_instance())
+    } else {
+        None
+    };
+
+    let _tray_handle = if use_tray {
+        // Hide the window on close instead of exiting. Save geometry first
+        // so that position/size persists even if the user doesn't "Exit"
+        // from the tray for a long time.
+        let window_weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            if let Some(win) = window_weak.upgrade() {
+                let size = win.window().size();
+                let pos = win.window().position();
+                config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+            }
+            debug!("main window hidden (minimized to tray)");
+            sunlit_earth::memory::log_memory_usage("after window hidden");
+            slint::CloseRequestResponse::HideWindow
+        });
+        Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak()))
+    } else {
+        None
+    };
+
+    if use_tray {
+        // In tray mode, use run_event_loop_until_quit() so the event loop
+        // stays alive after the window is hidden via HideWindow. It only
+        // exits when quit_event_loop() is called (from the tray "Exit" menu).
+        window.show().expect("Failed to show window");
+        slint::run_event_loop_until_quit().expect("Failed to run event loop");
+    } else {
+        window.run().expect("Failed to run window");
+    }
 
     // Save window geometry on close (preserves all other config values on disk)
     let size = window.window().size();

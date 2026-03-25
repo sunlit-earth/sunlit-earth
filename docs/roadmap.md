@@ -6,7 +6,8 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 - [x] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows (`SystemParametersInfoW` via `windows-sys`) implemented; Linux and macOS later.
 - [ ] Periodic re-rendering: timer-driven scheduler that re-renders every N minutes so the terminator tracks the sun. Update interval should be user-configurable.
-- [ ] System tray and background operation: minimize to tray with a status menu ("Render Now", "Open Settings", "Quit"). Support headless/daemon mode without the GUI window.
+- [x] System tray icon: minimize to tray on window close with "Open" / "Exit" context menu, single-instance enforcement, `--windowed` flag for original close-exits behavior (Windows only).
+- [ ] System tray extended features: add "Render Now" tray menu item. Support headless/daemon mode without the GUI window.
 - [x] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
 - [ ] Wallpaper setting on Linux and macOS: extend the wallpaper setter to support GNOME/KDE (`gsettings`/DBus), X11/Wayland, and macOS (`osascript`/`NSWorkspace`).
 - [ ] Multi-monitor support: detect monitor layout and resolution, render appropriately sized wallpapers for each display.

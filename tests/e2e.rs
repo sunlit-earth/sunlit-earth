@@ -9,6 +9,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use image::GenericImageView;
+use serial_test::serial;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -216,6 +217,7 @@ fn assert_ice(rgb: [u8; 3], label: &str) {
 
 #[test]
 #[ignore = "requires desktop environment and GPU"]
+#[serial]
 fn test_binary_exists() {
     let path = Path::new(BINARY);
     assert!(
@@ -226,6 +228,7 @@ fn test_binary_exists() {
 
 #[test]
 #[ignore = "requires desktop environment and GPU"]
+#[serial]
 fn test_render_and_exit() {
     // 1. Create a temp directory and output path.
     let temp_dir = create_temp_dir();
@@ -369,4 +372,125 @@ fn test_render_and_exit() {
 
     // 11. Clean up.
     cleanup_temp_dir(&temp_dir);
+}
+
+/// Spawn the binary, let it run for `run_duration`, then kill it and return
+/// the collected stderr. Unlike `wait_with_timeout`, this does not panic on
+/// timeout — the kill is the expected outcome for long-running modes.
+fn spawn_run_and_kill(args: &[&str], run_duration: Duration) -> (bool, String) {
+    let mut child = Command::new(BINARY)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn sunlit-earth binary");
+
+    std::thread::sleep(run_duration);
+
+    // The process should still be alive (tray/windowed mode).
+    let was_alive = child.try_wait().expect("error polling child").is_none();
+    let _ = child.kill();
+    let output = child.wait_with_output().expect("failed to collect output");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (was_alive, stderr)
+}
+
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_tray_mode_starts_and_can_be_killed() {
+    // Default launch (no extra args) starts in tray mode.
+    let (was_alive, stderr) = spawn_run_and_kill(
+        &["--log-level", "debug"],
+        Duration::from_secs(3),
+    );
+
+    // The process should have been alive when we killed it (tray keeps it running).
+    assert!(was_alive, "process exited before kill — tray mode should keep it running");
+
+    // Startup banner should be present.
+    assert!(
+        stderr.contains("sunlit earth v"),
+        "stderr missing startup banner:\n{stderr}"
+    );
+
+    // No errors in log.
+    for line in stderr.lines() {
+        assert!(
+            !line.contains(" ERROR "),
+            "found ERROR in stderr:\n{line}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_windowed_mode_starts() {
+    let (was_alive, stderr) = spawn_run_and_kill(
+        &["--windowed", "--log-level", "debug"],
+        Duration::from_secs(3),
+    );
+
+    // Windowed mode also stays alive (it just doesn't have a tray icon).
+    assert!(was_alive, "process exited before kill — windowed mode should keep it running");
+
+    // Startup banner should be present.
+    assert!(
+        stderr.contains("sunlit earth v"),
+        "stderr missing startup banner:\n{stderr}"
+    );
+
+    // No errors in log.
+    for line in stderr.lines() {
+        assert!(
+            !line.contains(" ERROR "),
+            "found ERROR in stderr:\n{line}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_single_instance_second_exits() {
+    // 1. Spawn instance A in tray mode (acquires the single-instance mutex).
+    let mut instance_a = Command::new(BINARY)
+        .args(["--log-level", "debug"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn instance A");
+
+    // 2. Wait for A to initialize and acquire the mutex.
+    std::thread::sleep(Duration::from_secs(3));
+
+    // 3. Spawn instance B (should detect A and exit immediately).
+    let instance_b = Command::new(BINARY)
+        .args(["--log-level", "debug"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn instance B");
+
+    // 4. Wait for B with a 10-second timeout.
+    let output_b = wait_with_timeout(instance_b, Duration::from_secs(10));
+
+    // 5. B should have exited with code 0.
+    assert!(
+        output_b.status.success(),
+        "instance B exited with non-zero status: {:?}",
+        output_b.status
+    );
+
+    // 6. B's stderr should contain the single-instance detection message.
+    let stderr_b = String::from_utf8_lossy(&output_b.stderr);
+    assert!(
+        stderr_b.contains("another instance is already running"),
+        "instance B stderr missing single-instance message:\n{stderr_b}"
+    );
+
+    // 7. Clean up instance A.
+    let _ = instance_a.kill();
+    let _ = instance_a.wait();
 }

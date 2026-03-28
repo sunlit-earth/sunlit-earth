@@ -1,0 +1,570 @@
+# Research: invoke_from_event_loop Deadlock on Windows (2026-03-28)
+
+## Background
+
+Sunlit Earth's IPC control channel (added on the `feat/ipc-e2e-signaling`
+branch) originally dispatched commands to the Slint event loop by calling
+`slint::invoke_from_event_loop` from a background IPC listener thread. This
+caused a complete freeze: `invoke_from_event_loop` returned `Ok(())`, but the
+closure was never executed, and no further events (timers, rendering callbacks,
+window messages) were processed. The workaround — a shared command queue
+polled by a 50 ms Slint `Timer` — was adopted without a full understanding of
+the root cause. This document provides that understanding.
+
+---
+
+## Q1: Known Slint issues with invoke_from_event_loop on Windows
+
+Several Slint GitHub issues describe closely related behaviour.
+
+**[Slint #5720 — Right click on title bar causes event loop to hang][s5720]:**
+Multiple reporters confirm that on Windows (x86-64), user interactions with
+the window's non-client area (right-click on title bar, click-and-drag to move
+the window) pause the event loop entirely. Timers stop firing. The window
+resumes only when the user completes the operation or forces a resize. One
+reporter confirmed the hang occurs with any window interaction that triggers
+Windows' internal modal loop. The Slint maintainer (ogoffart) attributed this
+to a winit bug and linked to winit #3272.
+
+**[Slint #5699 — upgrade_in_event_loop not always processed][s5699]:**
+On Android, `upgrade_in_event_loop` closures are sometimes enqueued but never
+executed until the next user interaction triggers a wake. The Slint maintainer
+confirmed the wakeup signal is sent but `PollEvent::Wake` is not received by
+the event loop. A workaround was merged (PR #5729) that processes pending queue
+items whenever any event arrives. The Android backend uses a separate wakeup
+mechanism from winit's Windows backend, so the exact cause differs, but the
+symptom (enqueued-but-never-dispatched) is identical to the Windows behaviour
+observed in Sunlit Earth.
+
+**[Slint #3849 — VecModel.push and invoke_from_event_loop in thread not
+update ListView][s3849]:** A `ListView` updated via `upgrade_in_event_loop`
+from a background thread reflects the change only after a mouse movement
+triggers a redraw. This confirms that `invoke_from_event_loop` on Windows does
+not reliably trigger a repaint or wake the event loop's idle path.
+
+**[Slint #418 — Window refresh requires user input on Windows with GL
+backend][s418]:** A timer-driven animation worked correctly on Linux but
+required mouse movement to update on Windows. The Slint maintainer found that
+`WM_PAINT` was received by `thread_event_target_callback` but not by
+`public_window_callback` — only the latter triggers `Event::RedrawRequested`.
+This is a structural split in how winit delivers paint events on Windows.
+
+**Confidence: High.** Multiple independent reporters on different Slint
+versions and platforms describe the same core symptom. The Slint maintainer
+explicitly acknowledged winit upstream as the source of the Windows freeze.
+
+---
+
+## Q2: Known winit issues with EventLoopProxy::send_event on Windows
+
+**[winit #3272 — ControlFlow is ignored while window is being resized on
+Windows][w3272]:** This is the upstream issue Slint links to. The root cause
+is fully documented in the issue comments:
+
+- When `DefWindowProc` handles `WM_NCLBUTTONDOWN` (which fires on any
+  non-client area click — title bar, borders, system menu), it blocks and
+  does not return until the user releases the mouse or completes the
+  operation.
+- While `DefWindowProc` is blocked, Windows enters an internal modal loop.
+  This modal loop runs its own `GetMessage` / `DispatchMessage` cycle.
+- Messages that arrive via `PostMessageW` to any window on the same thread
+  during this modal loop are queued in the Win32 message queue but are only
+  processed by the modal loop's internal pump, not by the application's
+  outer dispatch loop.
+- A winit maintainer (msiglreith) confirmed: "Trying to wakeup this modal
+  loop by manually scheduling a WM_PAINT, a timer to trigger WM_TIMER, or
+  a custom event via PostMessageW doesn't work, the message may only be
+  received afterwards."
+- Another contributor (dtzxporter) confirmed: "dispatch_peeked_messages
+  never returns after DispatchMessageW(msg = WM_NCLBUTTONDOWN) until after
+  the user releases the mouse."
+
+The issue is marked as a bug and assigned to winit 0.32.0 but remains open as
+of March 2026. Winit 0.30.13 (used by Slint 1.15.1) is affected.
+
+**General PostMessage behaviour during Windows modal loops:**
+Windows platform documentation and developer forums confirm: when
+`DefWindowProc` enters a modal loop (resize, move, menu, message box),
+`PostMessageW` messages to the associated thread's windows are queued but not
+dispatched to the application's wndproc until the modal loop exits. The
+`WM_TIMER` case is special: timer messages generated by `SetTimer` can be
+delivered during modal loops because they are synthesised by the internal pump.
+However, custom registered messages posted via `PostMessageW` to a
+message-only window are not.
+
+**Winit's `EventLoopProxy::send_event` on Windows (version 0.30.13):**
+The implementation (confirmed by source review) does the following:
+
+1. Sends the closure through an `mpsc` channel.
+2. Calls `PostMessageW(self.target_window, USER_EVENT_MSG_ID.get(), 0, 0)`
+   to wake the event loop.
+
+`USER_EVENT_MSG_ID` is a registered custom message name
+(`"Winit::WakeupMsg\0"`). `target_window` is an invisible message-only window
+created by winit's Windows backend. This is exactly the mechanism that fails
+during a modal loop: the `PostMessageW` call succeeds (returns non-zero, queue
+is not full), but the `WM_USER`-class message to the hidden window is only
+processed after the modal loop exits.
+
+**Confidence: High.** The winit maintainer confirmed the mechanism in the
+issue thread. Source code was inspected at tag v0.30.13.
+
+---
+
+## Q3: Does wgpu rendering block winit's event dispatch?
+
+The Sunlit Earth app does not use a surface/swapchain in the conventional
+sense. It renders to an offscreen texture (no
+`wgpu::Surface::get_current_texture`), converts the texture to a Slint
+`Image`, and displays it through Slint's image component. Slint manages its
+own swapchain for the window surface.
+
+The `BeforeRendering` callback from `set_rendering_notifier` executes
+synchronously on the event loop thread during Slint's own paint cycle. During
+this callback, `wgpu::Queue::submit` and the texture-to-image conversion
+occur. This does not hold any winit or Windows message pump locks — the GPU
+commands are asynchronous from the CPU's perspective.
+
+However, the `BeforeRendering` callback does mean that the event loop thread
+is occupied with GPU work during each frame. If `invoke_from_event_loop` is
+called during this window (i.e., the `PostMessageW` arrives while the event
+loop is inside the rendering callback), the message sits in the queue but
+processing resumes once the callback returns. This alone would not cause a
+persistent freeze — it would cause a one-frame delay at most.
+
+The observed full deadlock (no more timer ticks, no more rendering, event loop
+never processes the user event) is not consistent with a transient rendering
+block. It is consistent with a modal loop takeover or a reentrancy issue.
+
+**wgpu deadlocks (unrelated to this issue):** Several wgpu issues document
+`snatchable_lock` deadlocks when `present()` and other operations race across
+threads. These are not relevant here because Sunlit Earth uses offscreen
+rendering with no cross-thread wgpu calls.
+
+**Confidence: Medium.** The rendering callback occupies the event loop thread
+briefly but should not cause a persistent freeze. The evidence points
+elsewhere.
+
+---
+
+## Q4: Reentrancy issues with PostMessageW during active event processing
+
+Winit's Windows backend tracks reentrancy via `WindowData::recurse_depth`,
+which is incremented on each wndproc entry and decremented on exit. This
+protects against window data being freed mid-callback but does not prevent
+the modal loop problem.
+
+The specific reentrancy risk relevant here is subtler: if `PostMessageW` is
+called to the hidden event-target window while winit's outer loop is inside
+`dispatch_peeked_messages`, the posted message will be received on the next
+iteration of `PeekMessageW` — unless a modal loop has taken over.
+
+The Sunlit Earth IPC thread calls `invoke_from_event_loop` from a completely
+separate thread with no synchronisation guarantee about the event loop's
+current state. The event loop may be in any of these states:
+
+- Idle (waiting in `MsgWaitForMultipleObjectsEx`) — PostMessage works, wakes
+  the loop
+- Inside a rendering callback — PostMessage works, processed after callback
+  returns
+- Inside a `DefWindowProc` modal loop (resize/move/menu) — PostMessage is
+  queued but not dispatched
+- Suspended (winit `Suspended` event, no active windows) — behaviour unknown
+
+The observation that "the event loop ran normally during the 3-second delay
+but froze the moment `invoke_from_event_loop` was called" suggests that the
+timing of the IPC call coincides with a state where the message pump cannot
+process the event. Given that IPC tests do not trigger window interactions,
+the modal loop explanation may not be the primary cause in the automated test
+scenario.
+
+An alternative explanation: `run_event_loop_until_quit` wraps
+`run_app_on_demand` in a loop. When the window is hidden before the loop
+starts (the tray-mode test scenario), `run_app_on_demand` may exit
+immediately (no active windows) and re-enter with a new generation counter.
+During this cycling, there is a window where the event loop proxy's inner
+winit proxy is stale — the hidden window created for message delivery may
+belong to the previous loop generation and not be pumped by the new one.
+
+**Confidence: Medium.** The reentrancy tracker is not the issue. The timing
+of PostMessage relative to the event loop state is the key variable, and the
+tray-mode hidden-window scenario adds a second potential failure path.
+
+---
+
+## Q5: Does set_rendering_notifier interact with user event processing?
+
+`set_rendering_notifier` installs a callback that fires during Slint's own
+paint cycle, on the event loop thread. The callback is invoked at
+`RenderingState::BeforeRendering` synchronously before Slint composites the
+scene. During this callback, Slint does not process other events.
+
+The callback is not, however, a message pump blocker — it does not call
+`GetMessage` or `DefWindowProc`. It does call wgpu APIs (`queue.submit`,
+texture conversion), which are CPU-synchronous but do not hold Win32 message
+queue locks.
+
+If the `PostMessageW` wake arrives while the event loop is inside the
+`BeforeRendering` callback, the custom message sits in the Win32 queue.
+Once the callback returns and Slint's compositor finishes, control returns
+to winit's `dispatch_peeked_messages`, which will process the queued
+`USER_EVENT_MSG_ID` message and call `user_event(CustomEvent::UserEvent(...))`
+which executes the closure.
+
+This analysis implies the rendering notifier alone cannot cause a persistent
+deadlock. The deadlock requires either a modal loop or a broken pump cycle.
+
+**Confidence: High.** The rendering notifier callback is synchronous and
+bounded; it does not hold Win32 locks. The interaction with user events is
+a brief one-frame delay, not a deadlock.
+
+---
+
+## Q6: Why does the timer-based workaround succeed when invoke_from_event_loop fails?
+
+Slint's timer implementation in the winit backend uses a fundamentally
+different wakeup mechanism than `invoke_from_event_loop`.
+
+**Timer path (works):**
+
+```rust
+about_to_wait() {
+    if let Some(next) = corelib::platform::duration_until_next_timer_update() {
+        event_loop.set_control_flow(ControlFlow::wait_duration(next));
+    }
+}
+```
+
+Winit implements `ControlFlow::WaitUntil` on Windows using a high-resolution
+waitable timer (`SetWaitableTimer`) passed as a handle to
+`MsgWaitForMultipleObjectsEx`. When the timer fires,
+`MsgWaitForMultipleObjectsEx` returns with `WAIT_OBJECT_0` (the timer handle
+was signalled), not `WAIT_OBJECT_0 + n` (a message arrived). Winit then calls
+`new_events(StartCause::ResumeTimeReached)`, which invokes
+`update_timers_and_animations()`, which dispatches all due Slint timers —
+including the 50 ms IPC polling timer.
+
+Key property: the waitable timer fires at the kernel level.
+`MsgWaitForMultipleObjectsEx` with `MWMO_INPUTAVAILABLE` wakes on either a
+kernel object signal OR a new message — whichever comes first. The timer
+handle is a kernel-level signal that bypasses the Win32 message queue
+entirely.
+
+During a Win32 modal loop (resize/move), the modal loop runs its own
+`GetMessage` / `DispatchMessage` iteration. `WM_TIMER` messages (from
+`SetTimer`) are delivered during modal loops because they are synthesised by
+the OS kernel. Waitable timers are signalled at the kernel level as well, so
+`MsgWaitForMultipleObjectsEx` with a waitable timer handle should also wake
+during modal loops — but only if the application is running the
+`MsgWaitForMultipleObjectsEx` call, which it is not when `DefWindowProc` has
+taken over the thread. This is why even timers stop firing during heavy modal
+loops (as seen in Slint #5720 and Sunlit Earth issue #3).
+
+The critical difference in the non-modal case (normal event loop running) is:
+
+- `invoke_from_event_loop` → `PostMessageW` to the hidden window → message
+  sits in the Win32 queue → the message-only window's wndproc is never called
+  unless PeekMessage explicitly retrieves it
+- Timer → waitable timer kernel signal → `MsgWaitForMultipleObjectsEx`
+  returns → `new_events` → `update_timers_and_animations` → IPC timer
+  callback fires → `CommandQueue` is drained
+
+When the IPC timer fires and dequeues a `ShowWindow` or `HideWindow` command,
+it calls `window.show()` / `window.window().set_minimized(false)` directly
+from the event loop thread. No cross-thread signalling is needed; no
+`PostMessageW` is involved.
+
+**Why the cloud_fetcher's `upgrade_in_event_loop` appears to work:**
+The cloud fetcher fires during the first frame, very early in the app
+lifecycle. At that point the event loop is just entering its first cycle
+after `run_app_on_demand` starts, so `MsgWaitForMultipleObjectsEx` is idle,
+no modal loop is active, and the initial `PostMessageW` is picked up
+immediately on the first `dispatch_peeked_messages` pass. The cloud fetcher's
+subsequent 60-minute poll interval means `invoke_from_event_loop` is only
+called again much later — when the app is running stably, no IPC tests are
+active, and the risk of hitting the frozen-pump state is low.
+
+**Confidence: High.** The timer mechanism is independently documented in
+Slint's event_loop.rs source. The kernel-level timer vs. PostMessageW
+distinction is well-established Win32 behaviour.
+
+---
+
+## Q7: Could the tracing-appender non-blocking writer be involved?
+
+The `tracing-appender::non_blocking` writer spawns a background worker thread
+that receives log lines from an internal `mpsc` channel and writes them to
+stderr. This thread has no interaction with the Win32 message pump. It does
+not call `PostMessageW`, `GetMessage`, `DefWindowProc`, or any winit API.
+
+The non-blocking writer does introduce a global stderr lock
+(`std::io::stderr` uses an internal mutex). During the GPU setup burst, the
+worker thread can hold this lock while blocked on a pipe write (the 4 KB
+anonymous pipe buffer fills). Any `eprintln!` call from the event loop thread
+or IPC thread will then block waiting for the stderr lock. This is Issue #4
+from the investigation document and is a real problem for test reliability.
+
+However, this mechanism does not affect the Win32 message pump. The event
+loop thread does not need the stderr lock to dispatch `WM_USER` messages. The
+tracing writer cannot cause the message pump to freeze.
+
+**Confidence: High.** The tracing-appender background thread is isolated from
+the Win32 message pump. It affects log delivery timing but not event dispatch.
+
+---
+
+## Root Cause Analysis
+
+The "deadlock" is not a classical deadlock (mutual lock acquisition). It is
+more precisely described as a **persistent event loop stall caused by a failed
+PostMessageW wake mechanism**.
+
+### Primary cause: PostMessageW to winit's hidden window fails to wake the loop
+
+`slint::invoke_from_event_loop` delegates to the winit backend's
+`EventLoopProxy::send_event`, which does the following:
+
+1. Pushes the closure into an `mpsc` channel.
+2. Calls `PostMessageW(target_window, USER_EVENT_MSG_ID, 0, 0)` where
+   `target_window` is winit's invisible event-target window.
+
+On Windows, the event-target window's wndproc (`thread_event_target_callback`)
+processes `USER_EVENT_MSG_ID` to drain the user event channel. But this wndproc
+is only invoked when winit's own `PeekMessageW` loop explicitly retrieves the
+`WM_USER`-class message from the queue.
+
+Under normal conditions this works: winit is blocked in
+`MsgWaitForMultipleObjectsEx` with `MWMO_INPUTAVAILABLE`, a new message in
+the queue satisfies the wait, and `dispatch_peeked_messages` retrieves and
+processes it.
+
+The failure occurs when winit's own message loop cannot process the queued
+message. Two scenarios explain this in the context of Sunlit Earth's e2e
+tests.
+
+**Scenario A — run_app_on_demand cycling (most likely in tests):**
+`run_event_loop_until_quit` wraps `run_app_on_demand` in a loop and
+re-invokes it if no exit code is set. Each invocation of `run_app_on_demand`
+creates and then exits an event loop run. When the window is hidden or
+minimised (as in the tray-mode test), `run_app_on_demand` may return (no
+visible windows, or `Suspended` event), and the outer loop calls it again
+with an incremented generation counter. During the inter-run gap and while
+the new run is initialising, `PostMessageW` messages to the old event-target
+window may not be pumped. The Slint backend's `EventLoopProxy` holds a
+reference to the winit proxy from the previous run; whether that proxy's
+`target_window` is still being pumped in the new run is uncertain.
+
+Bevy engineers encountered the same problem and merged a "dirty fix"
+([Bevy #14155][b14155]) that forces app updates to run even when no windows
+are visible, to prevent the loop from stalling between `run_app_on_demand`
+re-entries.
+
+**Scenario B — modal loop takeover (interactive use):**
+When the user drags or resizes the window, `DefWindowProc` handling
+`WM_NCLBUTTONDOWN` enters Windows' internal modal loop and does not return
+until the operation completes. `PostMessageW` messages are queued but are
+only processed by the modal loop's internal pump, which does not call the
+application's wndproc for custom registered messages. This is confirmed by
+winit #3272 and the winit maintainer's explicit statement.
+
+### Contributing factor: divergent wake paths for timers vs. invoke
+
+Slint timers use waitable kernel objects via `ControlFlow::WaitUntil`, which
+`MsgWaitForMultipleObjectsEx` monitors at the kernel level. They are
+independent of the Win32 message queue. `invoke_from_event_loop` uses
+`PostMessageW`, which puts a message in the Win32 queue. If the queue is
+being managed by a different pump (the modal loop), or if the event loop is
+between `run_app_on_demand` runs, the message is orphaned. The timer signal,
+being a kernel-level event, would eventually be processed when the loop
+restarts — but a PostMessageW message to a window that is no longer being
+pumped is effectively lost.
+
+### Why the closure is "never executed" after the freeze
+
+Once the event loop enters the stalled state, all further processing stops:
+
+- No more `PeekMessageW` passes
+- No more `dispatch_peeked_messages`
+- No more `new_events` calls
+- No more `update_timers_and_animations`
+- The USER_EVENT_MSG_ID message remains in the queue, unprocessed
+
+This explains why even a no-op closure never executes and why all subsequent
+timer ticks also stop — nothing is dispatching any messages.
+
+---
+
+## Recommended Workarounds
+
+### 1. Shared command queue + Slint polling timer (adopted, works)
+
+The current implementation in `src/ipc.rs` uses:
+
+- An `Arc<Mutex<VecDeque<IpcCommand>>>` that the IPC thread pushes to
+- A 50 ms `slint::Timer` on the event loop thread that drains the queue
+
+This works because:
+
+- The timer fires via the kernel-level waitable timer mechanism, bypassing
+  the Win32 message queue entirely
+- The IPC thread never calls `PostMessageW` or anything that touches the
+  message pump
+- Commands are executed from the event loop thread (correct threading for
+  Slint operations)
+
+**Limitation:** 50 ms polling latency. Commands arrive up to 50 ms late. For
+test purposes this is fine. For time-sensitive interactive use, the interval
+could be reduced.
+
+### 2. Dedicated timer thread using OS primitives
+
+An alternative that avoids `slint::Timer` entirely: use a background Rust
+thread with a `Condvar` / `AtomicBool` that the IPC thread signals. A second
+background thread (or the IPC thread itself) then calls
+`slint::invoke_from_event_loop` after a delay. This does not solve the
+underlying PostMessageW problem; it just changes who calls
+`invoke_from_event_loop`. Not recommended for this app.
+
+### 3. process::exit bypass for quit commands (adopted, works)
+
+The IPC `quit` command calls `std::process::exit(0)` directly from the IPC
+listener thread. This bypasses the event loop entirely and avoids both the
+PostMessageW deadlock and the wgpu teardown crash. GPU resources are not
+cleaned up explicitly, but Windows reclaims all memory on process exit.
+
+### 4. run_event_loop instead of run_event_loop_until_quit
+
+Using `run_event_loop()` avoids the `run_app_on_demand` cycling that is the
+likely root cause in the automated test scenario. The trade-off is that
+`run_event_loop()` exits when the last window is closed or minimised, making
+it unsuitable for tray-mode apps that need the loop alive with no visible
+window. See the investigation document for the history of approaches tried.
+
+### 5. Window visibility via KeepWindowShown + off-screen position
+
+Instead of hiding the window (which can cause the event loop to exit or
+stall), move it off-screen and intercept the close request with
+`KeepWindowShown`. This keeps `run_event_loop()` running with a "visible"
+(off-screen) window, preserving the `run_app_on_demand` single-run path and
+avoiding the cycling issue. The event loop remains in its normal pumping
+state, so both timers and `invoke_from_event_loop` would theoretically work —
+though `invoke_from_event_loop` still cannot be trusted during user-triggered
+modal loops.
+
+---
+
+## Open Questions
+
+### OQ1: Why does invoke_from_event_loop freeze even without window interaction?
+
+The investigation document records that `invoke_from_event_loop` was called
+after a 3-second delay during which the event loop ran normally (timers fired,
+frames rendered). The freeze happened the moment `invoke_from_event_loop` was
+called, with no window dragging or resizing involved. This rules out the
+interactive modal loop (Scenario B) as the sole cause in the test context.
+
+Scenario A (run_app_on_demand cycling between runs) is the more likely
+explanation, but it has not been definitively confirmed. A targeted test —
+calling `invoke_from_event_loop` from a thread while simultaneously logging
+the winit event loop state transitions — would confirm this.
+
+**Open:** High priority. The mechanism in non-interactive automated tests is
+not fully pinned.
+
+### OQ2: Is the hidden event-target window pumped across run_app_on_demand runs?
+
+Winit creates the event-target window once per `EventLoop` instance, not once
+per `run_app_on_demand` invocation. If the outer `run_event_loop_until_quit`
+loop re-enters `run_app_on_demand` using the same `EventLoop` (and thus the
+same event-target window), the HWND should remain valid and pumped across
+runs. If each re-entry creates a new `EventLoop`, the HWND changes and the
+old proxy's PostMessageW target would be invalid.
+
+Source review of Slint's `event_loop.rs` shows `run()` stores and restores
+`not_running_event_loop` — suggesting the same `EventLoop` is reused across
+`run_app_on_demand` re-entries. If true, Scenario A is less likely than the
+modal loop hypothesis.
+
+**Open:** Medium priority. Requires reading Slint's `EventLoopState` lifecycle
+across `run_app_on_demand` re-entries in detail.
+
+### OQ3: Is the cloud_fetcher's invoke_from_event_loop also at risk?
+
+The cloud fetcher calls `upgrade_in_event_loop` (which wraps
+`invoke_from_event_loop`) from a background thread. In practice it fires
+during the first frame and on a 60-minute poll schedule. The IPC investigation
+confirmed that `invoke_from_event_loop` is unreliable when called from a
+background thread while the loop is running in the specific app configuration.
+The cloud fetcher appears to escape detection only because (a) it calls during
+the very first iteration when the loop is initialising, and (b) its subsequent
+calls are infrequent and have low probability of hitting the bad state.
+
+A cloud update arriving during window dragging or during a run_app_on_demand
+gap would silently fail to render the new cloud texture until the next
+60-minute cycle. This is acceptable for a background texture update but should
+be documented.
+
+**Open:** Low priority. Silent failure is acceptable for cloud updates.
+
+### OQ4: Will the tray module's invoke_from_event_loop calls deadlock?
+
+`tray.rs` dispatches tray menu events via `invoke_from_event_loop` (lines
+121, 131, 142 as noted in the investigation document). These are triggered by
+user clicks on the tray icon context menu. At the moment of a tray menu click,
+the main window is likely hidden or minimised. The Win32 tray message pump is
+separate from the main window's WndProc, so it may or may not interfere with
+the event-target window's message delivery.
+
+This has not been observed to fail in practice because tray tests are not part
+of the automated suite. However, given the evidence, using
+`invoke_from_event_loop` from the tray thread is structurally risky on the
+same grounds as the IPC thread.
+
+**Open:** Medium priority. Should be converted to the shared command queue
+pattern for consistency and safety.
+
+---
+
+## Sources
+
+| Source | Notes |
+| --- | --- |
+| [Slint #5720][s5720] | Windows title bar hang, attributed to winit #3272 |
+| [Slint #5699][s5699] | Android: upgrade_in_event_loop closures not dispatched |
+| [Slint #3849][s3849] | ListView update only after mouse move on Windows |
+| [Slint #418][s418] | Windows GL backend: refresh requires user input |
+| [Slint #6562][s6562] | quit_event_loop ordering vs invoke_from_event_loop queue |
+| [Slint event_loop.rs][sel] | UserEvent → user_callback() directly, no queue |
+| [Slint lib.rs (winit backend)][slib] | invoke_from_event_loop → send_event directly |
+| [Slint platform.rs][spl] | EVENTLOOP_PROXY OnceCell, with_event_loop_proxy |
+| [winit #3272][w3272] | Windows ControlFlow ignored during resize; modal loop root cause |
+| [winit #3715][w3715] | Web: send_event executes immediately in microtasks |
+| [winit 0.30.13 event_loop.rs][wel] | send_event → mpsc + PostMessageW; USER_EVENT_MSG_ID |
+| [Win32 WM_ENTERSIZEMOVE][wes] | Modal loop entry on window move/resize |
+| [Win32 WM_ENTERMENULOOP][wem] | Modal loop entry on menu open |
+| [Win32 PostMessageW][wpm] | Posted messages queued, not delivered during modal loops |
+| [gamedev.net modal loop][gd] | Window moving done in a separate Windows internal message loop |
+| [Raymond Chen: MsgWaitForMultipleObjects][rc] | Message-pumping while waiting; modal loop limits |
+| [Bevy #14155][b14155] | Dirty fix for app hang when windows invisible with winit/Windows |
+| [winit Discussion #3662][wd3662] | How the event loop system works |
+| `2026-03-25-e2e-fix-investigation.md` | Symptoms and workarounds tried |
+| `2026-03-28-research-e2e-test-signaling.md` | Deadlock confirmed; timer fix |
+
+[s5720]: https://github.com/slint-ui/slint/issues/5720
+[s5699]: https://github.com/slint-ui/slint/issues/5699
+[s3849]: https://github.com/slint-ui/slint/issues/3849
+[s418]: https://github.com/slint-ui/slint/issues/418
+[s6562]: https://github.com/slint-ui/slint/issues/6562
+[sel]: https://raw.githubusercontent.com/slint-ui/slint/master/internal/backends/winit/event_loop.rs
+[slib]: https://raw.githubusercontent.com/slint-ui/slint/master/internal/backends/winit/lib.rs
+[spl]: https://raw.githubusercontent.com/slint-ui/slint/master/internal/core/platform.rs
+[w3272]: https://github.com/rust-windowing/winit/issues/3272
+[w3715]: https://github.com/rust-windowing/winit/issues/3715
+[wel]: https://raw.githubusercontent.com/rust-windowing/winit/v0.30.13/src/platform_impl/windows/event_loop.rs
+[wes]: https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-entersizemove
+[wem]: https://learn.microsoft.com/en-us/windows/win32/menurc/wm-entermenuloop
+[wpm]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew
+[gd]: https://www.gamedev.net/forums/topic/488074-win32-message-pump-and-opengl---rendering-pauses-while-draggingresizing/
+[rc]: https://devblogs.microsoft.com/oldnewthing/20060126-00/?p=32513
+[b14155]: https://github.com/bevyengine/bevy/pull/14155
+[wd3662]: https://github.com/rust-windowing/winit/discussions/3662

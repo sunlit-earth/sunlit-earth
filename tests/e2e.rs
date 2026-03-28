@@ -4,11 +4,15 @@
 //! and GPU. Run with `cargo test --test e2e -- --ignored`.
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::time::{Duration, Instant};
 
 use image::GenericImageView;
+use interprocess::local_socket::{GenericNamespaced, ToNsName};
+use interprocess::local_socket::traits::Stream as StreamExt;
 use serial_test::serial;
 
 // ---------------------------------------------------------------------------
@@ -17,6 +21,37 @@ use serial_test::serial;
 
 /// The compiled binary path, resolved by Cargo at build time.
 const BINARY: &str = env!("CARGO_BIN_EXE_sunlit-earth");
+
+/// RAII guard that kills a child process on drop if it hasn't exited yet.
+///
+/// This prevents orphaned application windows from leaking when a test panics
+/// before it gets a chance to send the IPC quit command.
+struct ChildGuard {
+    child: Option<Child>,
+}
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    /// Take ownership of the inner `Child`, disabling the kill-on-drop guard.
+    /// Use this when handing the child to `wait_with_timeout`.
+    fn take(&mut self) -> Child {
+        self.child.take().expect("child already taken")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
 
 /// Poll `child.try_wait()` until the process exits or `timeout` elapses.
 ///
@@ -212,6 +247,169 @@ fn assert_ice(rgb: [u8; 3], label: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// IPC helpers
+// ---------------------------------------------------------------------------
+
+/// Monotonically increasing counter for unique socket names.
+static SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Generate a unique local socket name for a test.
+fn unique_socket_name() -> String {
+    let counter = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "sunlit-earth-test-{}-{}",
+        std::process::id(),
+        counter
+    )
+}
+
+/// Send a single IPC command to the named local socket.
+fn send_ipc_command(socket_name: &str, command: &str) {
+    let name = socket_name
+        .to_ns_name::<GenericNamespaced>()
+        .expect("failed to convert socket name");
+    let mut stream = interprocess::local_socket::Stream::connect(name)
+        .unwrap_or_else(|e| panic!("failed to connect to IPC socket '{socket_name}': {e}"));
+    stream
+        .write_all(format!("{command}\n").as_bytes())
+        .unwrap_or_else(|e| panic!("failed to write IPC command '{command}': {e}"));
+}
+
+/// Watches a child process's stderr in a background thread, collecting lines
+/// as they arrive. Provides `wait_for_log()` to block until a specific
+/// substring appears in stderr output.
+struct StderrWatcher {
+    lines: Arc<Mutex<Vec<String>>>,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl StderrWatcher {
+    /// Create a new watcher that takes ownership of `child.stderr`.
+    fn new(child: &mut Child) -> Self {
+        let stderr = child.stderr.take().expect("child stderr not piped");
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let lines_clone = Arc::clone(&lines);
+
+        let thread = std::thread::Builder::new()
+            .name("stderr-watcher".into())
+            .spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => {
+                            lines_clone.lock().expect("stderr watcher lock poisoned").push(l);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("failed to spawn stderr watcher thread");
+
+        Self { lines, _thread: thread }
+    }
+
+    /// Block until a line containing `needle` appears in stderr, or panic
+    /// after `timeout` elapses.
+    fn wait_for_log(&self, needle: &str, timeout: Duration) {
+        let start = Instant::now();
+        let mut last_checked = 0;
+        loop {
+            {
+                let lines = self.lines.lock().expect("stderr watcher lock poisoned");
+                for line in &lines[last_checked..] {
+                    if line.contains(needle) {
+                        return;
+                    }
+                }
+                last_checked = lines.len();
+            }
+            if start.elapsed() > timeout {
+                let lines = self.lines.lock().expect("stderr watcher lock poisoned");
+                panic!(
+                    "timed out after {:.0}s waiting for '{needle}' in stderr.\n\
+                     Collected {} lines:\n{}",
+                    timeout.as_secs_f64(),
+                    lines.len(),
+                    lines.join("\n")
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Return all collected stderr lines.
+    fn lines(&self) -> Vec<String> {
+        self.lines.lock().expect("stderr watcher lock poisoned").clone()
+    }
+}
+
+/// Watches a child process's stdout in a background thread, collecting lines
+/// as they arrive. Provides `wait_for_signal()` to block until a specific
+/// `SIGNAL:<name>` line appears. Stdout is used as a dedicated signaling
+/// channel, separate from the tracing stderr stream, to avoid pipe buffer
+/// congestion and stderr lock contention.
+struct StdoutWatcher {
+    lines: Arc<Mutex<Vec<String>>>,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl StdoutWatcher {
+    /// Create a new watcher that takes ownership of `child.stdout`.
+    fn new(child: &mut Child) -> Self {
+        let stdout = child.stdout.take().expect("child stdout not piped");
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let lines_clone = Arc::clone(&lines);
+
+        let thread = std::thread::Builder::new()
+            .name("stdout-watcher".into())
+            .spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => {
+                            lines_clone.lock().expect("stdout watcher lock poisoned").push(l);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("failed to spawn stdout watcher thread");
+
+        Self { lines, _thread: thread }
+    }
+
+    /// Block until a `SIGNAL:<name>` line appears in stdout, or panic
+    /// after `timeout` elapses.
+    fn wait_for_signal(&self, name: &str, timeout: Duration) {
+        let needle = format!("SIGNAL:{name}");
+        let start = Instant::now();
+        let mut last_checked = 0;
+        loop {
+            {
+                let lines = self.lines.lock().expect("stdout watcher lock poisoned");
+                for line in &lines[last_checked..] {
+                    if line.contains(&needle) {
+                        return;
+                    }
+                }
+                last_checked = lines.len();
+            }
+            if start.elapsed() > timeout {
+                let lines = self.lines.lock().expect("stdout watcher lock poisoned");
+                panic!(
+                    "timed out after {:.0}s waiting for '{needle}' in stdout.\n\
+                     Collected {} lines:\n{}",
+                    timeout.as_secs_f64(),
+                    lines.len(),
+                    lines.join("\n")
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -237,6 +435,7 @@ fn test_render_and_exit() {
 
     // 2. Spawn the binary with the render subcommand.
     let child = Command::new(BINARY)
+        .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .args([
             "--log-level",
             "debug",
@@ -255,8 +454,8 @@ fn test_render_and_exit() {
         .spawn()
         .expect("failed to spawn sunlit-earth binary");
 
-    // 3. Wait for the process to exit (60s timeout).
-    let output = wait_with_timeout(child, Duration::from_secs(60));
+    // 3. Wait for the process to exit (30s timeout).
+    let output = wait_with_timeout(child, Duration::from_secs(30));
 
     // 4. Assert exit code is 0.
     assert!(
@@ -374,48 +573,77 @@ fn test_render_and_exit() {
     cleanup_temp_dir(&temp_dir);
 }
 
-/// Spawn the binary, let it run for `run_duration`, then kill it and return
-/// the collected stderr. Unlike `wait_with_timeout`, this does not panic on
-/// timeout — the kill is the expected outcome for long-running modes.
-fn spawn_run_and_kill(args: &[&str], run_duration: Duration) -> (bool, String) {
-    let mut child = Command::new(BINARY)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn sunlit-earth binary");
-
-    std::thread::sleep(run_duration);
-
-    // The process should still be alive (tray/windowed mode).
-    let was_alive = child.try_wait().expect("error polling child").is_none();
-    let _ = child.kill();
-    let output = child.wait_with_output().expect("failed to collect output");
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (was_alive, stderr)
-}
-
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
-fn test_tray_mode_starts_and_can_be_killed() {
-    // Default launch (no extra args) starts in tray mode.
-    let (was_alive, stderr) = spawn_run_and_kill(
-        &["--log-level", "debug"],
-        Duration::from_secs(3),
+fn test_tray_mode_ipc_lifecycle() {
+    let socket_name = unique_socket_name();
+
+    // 1. Spawn the binary in tray mode with window hidden and IPC enabled.
+    let mut guard = ChildGuard::new(
+        Command::new(BINARY)
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .args([
+                "--log-level", "debug",
+                "--tray-start", "hidden",
+                "--ipc-socket", &socket_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
     );
+    let child = guard.child.as_mut().unwrap();
 
-    // The process should have been alive when we killed it (tray keeps it running).
-    assert!(was_alive, "process exited before kill — tray mode should keep it running");
+    let stdout_watcher = StdoutWatcher::new(child);
+    let watcher = StderrWatcher::new(child);
 
-    // Startup banner should be present.
+    // 2. Wait for the IPC listener and the deferred hide to complete.
+    //    The deferred hide fires via Timer::single_shot(ZERO) after the
+    //    event loop starts. We must wait for it before sending show-window
+    //    to avoid a race where show fires before the timer hides the window.
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("window_hidden_deferred", ready_timeout);
+
+    // 3. Show the window via IPC so the rendering notifier fires
+    //    (hidden windows don't trigger Slint rendering callbacks).
+    send_ipc_command(&socket_name, "show-window");
+    stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(10));
+    stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
+
+    // 4. Hide the window via IPC (actual window.hide()).
+    send_ipc_command(&socket_name, "hide-window");
+    stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
+
+    // 5. Send quit via IPC and wait for graceful exit.
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
+
+    // 6. Assert exit code 0.
     assert!(
-        stderr.contains("sunlit earth v"),
-        "stderr missing startup banner:\n{stderr}"
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
     );
 
-    // No errors in log.
-    for line in stderr.lines() {
+    // 7. Assert expected log messages are present.
+    let stderr = watcher.lines().join("\n");
+    assert!(
+        stderr.contains("startup mode: tray"),
+        "stderr missing 'startup mode: tray':\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ipc listener ready"),
+        "stderr missing 'ipc listener ready':\n{stderr}"
+    );
+    assert!(
+        stderr.contains("quit_event_loop"),
+        "stderr missing 'quit_event_loop':\n{stderr}"
+    );
+
+    // 8. Assert no ERROR lines in stderr.
+    for line in watcher.lines() {
         assert!(
             !line.contains(" ERROR "),
             "found ERROR in stderr:\n{line}"
@@ -426,23 +654,56 @@ fn test_tray_mode_starts_and_can_be_killed() {
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
-fn test_windowed_mode_starts() {
-    let (was_alive, stderr) = spawn_run_and_kill(
-        &["--windowed", "--log-level", "debug"],
-        Duration::from_secs(3),
+fn test_windowed_mode_graceful_shutdown() {
+    let socket_name = unique_socket_name();
+
+    // 1. Spawn in windowed mode with IPC enabled.
+    let mut guard = ChildGuard::new(
+        Command::new(BINARY)
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .args([
+                "--mode", "window",
+                "--log-level", "debug",
+                "--ipc-socket", &socket_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
     );
+    let child = guard.child.as_mut().unwrap();
 
-    // Windowed mode also stays alive (it just doesn't have a tray icon).
-    assert!(was_alive, "process exited before kill — windowed mode should keep it running");
+    let stdout_watcher = StdoutWatcher::new(child);
+    let watcher = StderrWatcher::new(child);
 
-    // Startup banner should be present.
+    // 2. Wait for readiness.
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    watcher.wait_for_log("first frame rendered", ready_timeout);
+
+    // 3. Send quit via IPC.
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
+
+    // 4. Assert exit code 0 and expected log messages.
     assert!(
-        stderr.contains("sunlit earth v"),
-        "stderr missing startup banner:\n{stderr}"
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
     );
 
-    // No errors in log.
-    for line in stderr.lines() {
+    let stderr = watcher.lines().join("\n");
+    assert!(
+        stderr.contains("startup mode: windowed"),
+        "stderr missing 'startup mode: windowed':\n{stderr}"
+    );
+    assert!(
+        stderr.contains("quit_event_loop"),
+        "stderr missing 'quit_event_loop':\n{stderr}"
+    );
+
+    // 5. No errors in log.
+    for line in watcher.lines() {
         assert!(
             !line.contains(" ERROR "),
             "found ERROR in stderr:\n{line}"
@@ -454,20 +715,36 @@ fn test_windowed_mode_starts() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_single_instance_second_exits() {
-    // 1. Spawn instance A in tray mode (acquires the single-instance mutex).
-    let mut instance_a = Command::new(BINARY)
-        .args(["--log-level", "debug"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn instance A");
+    let socket_name = unique_socket_name();
 
-    // 2. Wait for A to initialize and acquire the mutex.
-    std::thread::sleep(Duration::from_secs(3));
+    // 1. Spawn instance A in tray mode with IPC (acquires the single-instance mutex).
+    let mut guard_a = ChildGuard::new(
+        Command::new(BINARY)
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .args([
+                "--log-level", "debug",
+                "--ipc-socket", &socket_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn instance A"),
+    );
+    let instance_a = guard_a.child.as_mut().unwrap();
 
-    // 3. Spawn instance B (should detect A and exit immediately).
+    let stdout_watcher_a = StdoutWatcher::new(instance_a);
+    let _watcher_a = StderrWatcher::new(instance_a);
+
+    // 2. Wait for instance A to be ready.
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher_a.wait_for_signal("ipc_listener_ready", ready_timeout);
+
+    // 3. Spawn instance B with the SAME ipc-socket name so it uses the
+    //    same scoped mutex as A (otherwise it checks the default mutex
+    //    which may conflict with a real running instance).
     let instance_b = Command::new(BINARY)
-        .args(["--log-level", "debug"])
+        .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+        .args(["--log-level", "debug", "--ipc-socket", &socket_name])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -490,7 +767,78 @@ fn test_single_instance_second_exits() {
         "instance B stderr missing single-instance message:\n{stderr_b}"
     );
 
-    // 7. Clean up instance A.
-    let _ = instance_a.kill();
-    let _ = instance_a.wait();
+    // 7. Clean up instance A via IPC quit.
+    send_ipc_command(&socket_name, "quit");
+    let output_a = wait_with_timeout(guard_a.take(), Duration::from_secs(10));
+
+    // 8. Instance A should exit with code 0.
+    assert!(
+        output_a.status.success(),
+        "instance A exited with non-zero status: {:?}",
+        output_a.status
+    );
+}
+
+/// Verify that the Slint event loop stays alive and the window can be
+/// shown again after being hidden via tray close.
+///
+/// The critical assertion: after hiding, the `show-window` IPC command
+/// is processed. If the event loop dies after hide, this times out.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_tray_hide_show_cycle() {
+    let socket_name = unique_socket_name();
+
+    // 1. Spawn the binary in tray mode with IPC enabled.
+    let mut guard = ChildGuard::new(
+        Command::new(BINARY)
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .args([
+                "--log-level", "debug",
+                "--tray-start", "visible",
+                "--ipc-socket", &socket_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+
+    let stdout_watcher = StdoutWatcher::new(child);
+    let stderr_watcher = StderrWatcher::new(child);
+
+    // 2. Wait for the IPC listener and first frame via stdout signals.
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
+
+    // 3. Hide the window via IPC (actual window.hide()).
+    send_ipc_command(&socket_name, "hide-window");
+    stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
+
+    // 4. KEY TEST: Show again. If the event loop died after hide,
+    //    this command will never be processed and the test times out.
+    send_ipc_command(&socket_name, "show-window");
+    stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(10));
+
+    // 5. Send quit via IPC and wait for graceful exit.
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
+
+    // 6. Assert exit code 0.
+    assert!(
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
+    );
+
+    // 7. Assert no ERROR lines in stderr.
+    for line in stderr_watcher.lines() {
+        assert!(
+            !line.contains(" ERROR "),
+            "found ERROR in stderr:\n{line}"
+        );
+    }
 }

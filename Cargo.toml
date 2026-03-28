@@ -26,6 +26,7 @@ tracing-appender = "0.2"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_warn"] }
 tray-icon = "0.21"
 single-instance = "0.3"
+interprocess = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -44,6 +45,7 @@ serial_test = "3"
 i-slint-backend-testing = "=1.15.1"
 image = { version = "0.25.8", default-features = false, features = ["png"] }
 regex-lite = "0.1"
+interprocess = "2"
 
 [build-dependencies]
 slint-build = "~1.15"

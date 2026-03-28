@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use slint::ComponentHandle;
 use tracing::{debug, error, info};
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -36,12 +36,32 @@ struct Cli {
     #[arg(long)]
     log_level: Option<String>,
 
-    /// Run in windowed mode (close exits instead of minimizing to tray)
+    /// Startup mode: tray (default, minimize-to-tray on close) or window (close exits)
+    #[arg(long, value_enum, default_value_t = Mode::Tray)]
+    mode: Mode,
+
+    /// Initial window visibility in tray mode: visible (default) or hidden
+    #[arg(long, value_enum, default_value_t = TrayStart::Visible)]
+    tray_start: TrayStart,
+
+    /// Name of a local IPC socket to listen on for control commands (quit, show-window, hide-window)
     #[arg(long)]
-    windowed: bool,
+    ipc_socket: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Mode {
+    Tray,
+    Window,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TrayStart {
+    Visible,
+    Hidden,
 }
 
 #[derive(Subcommand)]
@@ -71,10 +91,17 @@ enum Commands {
 /// `cli_level` is the default log level from the `--log-level` CLI flag.
 /// It is ignored when the `RUST_LOG` environment variable is set.
 ///
+/// When `SUNLIT_EARTH_SYNC_LOG` is set in the environment, a synchronous
+/// stderr writer is used instead of the non-blocking one. This eliminates
+/// pipe buffer congestion and stderr lock contention that cause log messages
+/// to arrive late (or not at all) in e2e tests. The trade-off is that log
+/// writes block the calling thread, which is acceptable in test mode.
+///
 /// Returns a `WorkerGuard` that must be kept alive for the duration of the
-/// program so that buffered log lines are flushed before exit.
-fn init_logging(cli_level: Option<&str>) -> tracing_appender::non_blocking::WorkerGuard {
-    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+/// program so that buffered log lines are flushed before exit. In sync mode,
+/// no guard is needed and `None` is returned.
+fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let sync_log = std::env::var("SUNLIT_EARTH_SYNC_LOG").is_ok();
 
     let base_filter = match cli_level {
         Some(level) => EnvFilter::new(level),
@@ -96,18 +123,35 @@ fn init_logging(cli_level: Option<&str>) -> tracing_appender::non_blocking::Work
         .add_directive("jxl_frame=warn".parse().expect("valid directive"))
         .add_directive("jxl_color=warn".parse().expect("valid directive"));
 
-    let fmt_layer = fmt::layer()
-        .with_writer(non_blocking)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_span_events(FmtSpan::CLOSE);
+    if sync_log {
+        let fmt_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_span_events(FmtSpan::CLOSE);
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .init();
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
 
-    guard
+        None
+    } else {
+        let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+
+        let fmt_layer = fmt::layer()
+            .with_writer(non_blocking)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_span_events(FmtSpan::CLOSE);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+
+        Some(guard)
+    }
 }
 
 /// Set up UI `ComboBox` models, apply initial config, and register callbacks.
@@ -188,29 +232,38 @@ fn init_texture_system(
         Arc::clone(&textures_ready),
     );
 
-    // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT)
-    sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
-        texture_tx,
-        window.as_weak(),
-        3,
-    );
-    info!("spawned cloud fetcher background thread");
+    // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT).
+    // Skip when SUNLIT_EARTH_NO_CLOUDS is set — used by e2e tests to
+    // avoid network access.
+    if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_err() {
+        sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
+            texture_tx,
+            window.as_weak(),
+            3,
+        );
+        info!("spawned cloud fetcher background thread");
+    } else {
+        info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
+    }
 
     textures_ready
 }
 
 /// Run the event loop with timers, tray setup, and shutdown logic.
 ///
-/// This function does not return normally — it calls `process::exit(0)` after
-/// the event loop exits to avoid panics from thread-local destruction ordering.
+/// Uses `run_event_loop_until_quit()` for all modes. This keeps the event loop
+/// alive even when all windows are hidden (tray mode), and returns cleanly
+/// after `quit_event_loop()` is called.
 ///
-/// Takes ownership of `window` and `textures_ready` to ensure they live
-/// until after the event loop exits.
-#[allow(clippy::needless_pass_by_value)]
+/// Terminates via `process::exit(0)` to avoid a wgpu thread-local destruction
+/// ordering panic (see comment at end of function).
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn run_event_loop(
     window: MainWindow,
     cli_command: Option<Commands>,
-    windowed: bool,
+    mode: Mode,
+    tray_start: TrayStart,
+    ipc_socket: Option<String>,
     textures_ready: Arc<AtomicBool>,
 ) -> ! {
     // Periodic timer to update the sun position (every 2 minutes)
@@ -260,11 +313,7 @@ fn run_event_loop(
         None
     };
 
-    // Branch into one of three startup modes:
-    // 1. Render subcommand — run the event loop and exit (no tray, no single-instance)
-    // 2. Tray mode (default, Windows only) — tray icon, hide-on-close, single-instance
-    // 3. Windowed mode (--windowed or non-Windows) — original behavior, close exits
-    let use_tray = !is_render && !windowed;
+    let use_tray = !is_render && matches!(mode, Mode::Tray);
 
     if is_render {
         debug!("startup mode: render");
@@ -274,16 +323,22 @@ fn run_event_loop(
         debug!("startup mode: windowed");
     }
 
+    // Single-instance enforcement (tray mode only).
     let _instance_guard = if use_tray {
-        Some(sunlit_earth::tray::enforce_single_instance())
+        let mutex_name = match &ipc_socket {
+            Some(name) => format!("sunlit-earth-{name}"),
+            None => "sunlit-earth-app".to_string(),
+        };
+        Some(sunlit_earth::tray::enforce_single_instance(&mutex_name))
     } else {
         None
     };
 
-    let _tray_handle = if use_tray {
-        // Hide the window on close instead of exiting. Save geometry first
-        // so that position/size persists even if the user doesn't "Exit"
-        // from the tray for a long time.
+    // Close handler depends on mode:
+    // - Tray: save geometry, hide window (stays in tray)
+    // - Windowed: quit the event loop (app exits)
+    // - Render: no close handler (render timer calls quit_event_loop)
+    if use_tray {
         let window_weak = window.as_weak();
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
@@ -295,34 +350,67 @@ fn run_event_loop(
             sunlit_earth::memory::log_memory_usage("after window hidden");
             slint::CloseRequestResponse::HideWindow
         });
+    } else if !is_render {
+        window.window().on_close_requested(|| {
+            debug!("window closed, quitting event loop");
+            slint::quit_event_loop().ok();
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+    }
+
+    // Spawn tray thread (tray mode only).
+    let _tray_handle = if use_tray {
+        info!("spawning tray thread");
         Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak()))
     } else {
         None
     };
 
-    if use_tray {
-        // In tray mode, use run_event_loop_until_quit() so the event loop
-        // stays alive after the window is hidden via HideWindow. It only
-        // exits when quit_event_loop() is called (from the tray "Exit" menu).
-        window.show().expect("Failed to show window");
-        slint::run_event_loop_until_quit().expect("Failed to run event loop");
-    } else {
-        window.run().expect("Failed to run window");
+    // Spawn IPC listener if --ipc-socket was provided.
+    // Commands are dispatched directly via invoke_from_event_loop.
+    let _ipc_handle = ipc_socket.map(|name| {
+        info!("spawning IPC listener on {name}");
+        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak())
+    });
+
+    // Show the window and enter the event loop.
+    window.show().expect("Failed to show window");
+
+    // In tray mode with --tray-start hidden, defer the hide to a zero-duration
+    // timer so it fires after the event loop is running. Hiding synchronously
+    // before run_event_loop_until_quit() causes the loop to exit immediately.
+    if use_tray && matches!(tray_start, TrayStart::Hidden) {
+        let ww = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(win) = ww.upgrade() {
+                debug!("hiding window for --tray-start hidden (deferred)");
+                win.hide().ok();
+            }
+            println!("SIGNAL:window_hidden_deferred");
+        });
     }
 
-    // Save window geometry on close (preserves all other config values on disk)
-    let size = window.window().size();
-    let pos = window.window().position();
-    config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+    info!("entering event loop");
+    slint::run_event_loop_until_quit().expect("Failed to run event loop");
+    info!("event loop exited");
 
     sunlit_earth::memory::log_memory_usage("before exit");
 
-    // Keep timers alive until the event loop exits (prevent drop optimization)
-    drop(sun_timer);
-    drop(render_timer);
+    // Intentionally leak timers — their Slint destructors can crash after
+    // quit_event_loop() because the backend may be partially torn down.
+    std::mem::forget(sun_timer);
+    std::mem::forget(render_timer);
 
-    // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");
+
+    // Exit immediately to skip thread-local destructor ordering.
+    // With WGPUConfiguration::Manual, the wgpu device lives in Slint's
+    // thread-local backend state. During normal process exit, Rust destroys
+    // thread-locals in arbitrary order. wgpu's Queue::drop accesses its own
+    // LockTrace thread-local, which may already be destroyed, causing a
+    // panic ("cannot access a Thread Local Storage value during or after
+    // destruction"). This does not happen with WGPUConfiguration::Automatic
+    // because Slint controls the destruction order internally.
     std::process::exit(0);
 }
 
@@ -330,11 +418,19 @@ fn main() {
     let cli = Cli::parse();
     let _guard = init_logging(cli.log_level.as_deref());
     info!("sunlit earth v{}", env!("CARGO_PKG_VERSION"));
+    // Validate: --tray-start hidden only makes sense with --mode tray
+    if matches!(cli.tray_start, TrayStart::Hidden) && matches!(cli.mode, Mode::Window) {
+        eprintln!("error: --tray-start hidden is only valid with --mode tray");
+        std::process::exit(2);
+    }
+
     debug!(
         software_rendering = cli.software_rendering,
         textures_dir = ?cli.textures_dir,
         log_level = ?cli.log_level,
-        windowed = cli.windowed,
+        mode = ?cli.mode,
+        tray_start = ?cli.tray_start,
+        ipc_socket = ?cli.ipc_socket,
         "parsed CLI arguments"
     );
 
@@ -385,5 +481,5 @@ fn main() {
 
     let textures_ready = init_texture_system(&window, aa_counts, texture_paths);
 
-    run_event_loop(window, cli.command, cli.windowed, textures_ready);
+    run_event_loop(window, cli.command, cli.mode, cli.tray_start, cli.ipc_socket, textures_ready);
 }

@@ -3,6 +3,7 @@
 pub mod cloud_fetcher;
 pub mod config;
 pub mod geometry;
+pub mod ipc;
 pub mod memory;
 pub mod mouse_math;
 pub mod renderer;

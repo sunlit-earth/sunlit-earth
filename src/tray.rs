@@ -61,9 +61,9 @@ pub fn create_icon() -> Icon {
 ///
 /// If another instance is already running, this function logs a message
 /// and exits the process with code 0.
-pub fn enforce_single_instance() -> single_instance::SingleInstance {
+pub fn enforce_single_instance(mutex_name: &str) -> single_instance::SingleInstance {
     let instance =
-        single_instance::SingleInstance::new("sunlit-earth-app").expect("failed to create single-instance mutex");
+        single_instance::SingleInstance::new(mutex_name).expect("failed to create single-instance mutex");
     if !instance.is_single() {
         info!("another instance is already running, exiting");
         std::process::exit(0);
@@ -117,33 +117,46 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
     let window_weak_menu = window_weak.clone();
     tray_icon::menu::MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
         if event.id == open_id {
+            debug!("tray: Open menu item clicked, dispatching to event loop");
             let ww = window_weak_menu.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
-                    debug!("main window shown (from tray menu)");
+                    debug!("tray: showing window");
                     crate::memory::log_memory_usage("after window shown");
                     win.show().ok();
                 }
             })
             .ok();
         } else if event.id == exit_id {
-            debug!("exit requested from tray menu");
+            debug!("tray: Exit menu item clicked, dispatching to event loop");
             slint::invoke_from_event_loop(move || {
+                debug!("tray: executing quit_event_loop");
                 slint::quit_event_loop().ok();
             })
             .ok();
         }
     }));
 
-    // Left-click on the tray icon shows the window.
+    // Left-click on the tray icon toggles window visibility.
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-        if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = event {
+        if let TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        } = event
+        {
+            debug!("tray: left-click, dispatching toggle to event loop");
             let ww = window_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
-                    debug!("main window shown (from tray left-click)");
-                    crate::memory::log_memory_usage("after window shown");
-                    win.show().ok();
+                    if win.window().is_visible() {
+                        debug!("tray: hiding window (left-click)");
+                        win.hide().ok();
+                    } else {
+                        debug!("tray: showing window (left-click)");
+                        crate::memory::log_memory_usage("after window shown");
+                        win.show().ok();
+                    }
                 }
             })
             .ok();

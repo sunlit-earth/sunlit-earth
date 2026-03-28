@@ -594,6 +594,7 @@ fn rendering_callback(
                 // Emit "first frame rendered" exactly once
                 if is_first_frame {
                     info!("first frame rendered");
+                    println!("SIGNAL:first_frame_rendered");
                 }
 
                 // Set texture-readiness flag once all required

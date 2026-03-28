@@ -266,6 +266,11 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_night_gamma(gamma_value_to_slider(config.night_gamma));
     window.set_night_saturation(config.night_saturation);
 
+    // Auto-refresh
+    window.set_auto_refresh_enabled(config.auto_refresh_enabled);
+    #[allow(clippy::cast_precision_loss)] // interval_minutes fits in f32 mantissa
+    window.set_auto_refresh_interval(config.auto_refresh_interval_minutes as f32);
+
     // Custom datetime
     window.set_use_custom_datetime(config.use_custom_datetime);
     window.set_custom_hour(config.custom_hour);
@@ -279,7 +284,7 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
 }
 
 /// Read all persisted settings from the window's current UI state.
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
     let aa_index = window.get_aa_index() as usize;
     let sample_count = aa_counts.get(aa_index).copied().unwrap_or(1);
@@ -320,6 +325,8 @@ pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppCon
         day_saturation: window.get_day_saturation(),
         night_gamma: gamma_slider_to_value(window.get_night_gamma()),
         night_saturation: window.get_night_saturation(),
+        auto_refresh_enabled: window.get_auto_refresh_enabled(),
+        auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
         use_custom_datetime: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
         custom_day_of_year: window.get_custom_day_of_year(),

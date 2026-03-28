@@ -9,9 +9,17 @@
 //! `tray-icon` crate). Only the message pump is platform-specific — currently
 //! implemented for Windows only.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 use slint::ComponentHandle;
 use tray_icon::Icon;
 use tracing::{debug, info};
+
+/// OS thread ID of the tray thread (set once, read from any thread).
+static TRAY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+/// Shared auto-refresh state for UI → tray sync.
+static TRAY_AUTO_REFRESH: AtomicBool = AtomicBool::new(false);
 
 /// Icon dimensions (width and height in pixels).
 const ICON_SIZE: u32 = 32;
@@ -71,6 +79,28 @@ pub fn enforce_single_instance(mutex_name: &str) -> single_instance::SingleInsta
     instance
 }
 
+/// Notify the tray thread to sync its "Auto-refresh" checkmark with the
+/// given state. This is safe to call from any thread (including the Slint
+/// event loop thread). On non-Windows platforms this is a no-op.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn sync_tray_auto_refresh(enabled: bool) {
+    TRAY_AUTO_REFRESH.store(enabled, Ordering::Relaxed);
+    let thread_id = TRAY_THREAD_ID.load(Ordering::Relaxed);
+    if thread_id != 0 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_USER};
+        // SAFETY: PostThreadMessageW posts a message to a thread's message
+        // queue. The thread ID is valid (set by the tray thread itself) and
+        // WM_USER is a safe application-defined message.
+        unsafe {
+            PostThreadMessageW(thread_id, WM_USER, 0, 0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn sync_tray_auto_refresh(_enabled: bool) {}
+
 /// Spawn a background thread that creates a system tray icon with a
 /// context menu ("Open" / "Exit") and runs a Win32 message pump.
 ///
@@ -92,17 +122,55 @@ pub fn spawn_tray_thread(window_weak: slint::Weak<crate::MainWindow>) -> std::th
 
 /// Create the tray icon, register event handlers, and run the Win32
 /// message pump. This function blocks until the message pump exits.
+#[allow(clippy::too_many_lines)]
 fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
-    use tray_icon::menu::{Menu, MenuItem};
+    use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
     use tray_icon::{TrayIconBuilder, TrayIconEvent};
+
+    // Store this thread's OS ID so sync_tray_auto_refresh can post messages.
+    #[cfg(windows)]
+    {
+        // SAFETY: GetCurrentThreadId is always safe to call.
+        #[allow(unsafe_code)]
+        let tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+        TRAY_THREAD_ID.store(tid, Ordering::Relaxed);
+    }
+
+    // Read initial auto-refresh state from the Slint window.
+    // This runs on the tray thread, so we block briefly to read the value
+    // from the event loop thread.
+    let initial_auto_refresh = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ww = window_weak.clone();
+        slint::invoke_from_event_loop(move || {
+            let enabled = ww.upgrade().is_some_and(|win| win.get_auto_refresh_enabled());
+            tx.send(enabled).ok();
+        })
+        .ok();
+        rx.recv().unwrap_or(false)
+    };
+    TRAY_AUTO_REFRESH.store(initial_auto_refresh, Ordering::Relaxed);
 
     let menu = Menu::new();
     let open_item = MenuItem::new("Open", true, None);
+    let refresh_item = MenuItem::new("Refresh Now", true, None);
+    let auto_refresh_item = CheckMenuItem::new("Auto-refresh", true, initial_auto_refresh, None);
     let exit_item = MenuItem::new("Exit", true, None);
     menu.append(&open_item).expect("failed to add Open menu item");
+    menu.append(&PredefinedMenuItem::separator()).expect("failed to add separator");
+    menu.append(&refresh_item).expect("failed to add Refresh Now menu item");
+    menu.append(&auto_refresh_item).expect("failed to add Auto-refresh menu item");
+    menu.append(&PredefinedMenuItem::separator()).expect("failed to add separator");
     menu.append(&exit_item).expect("failed to add Exit menu item");
 
     let open_id = open_item.id().clone();
+    let refresh_id = refresh_item.id().clone();
+    let auto_refresh_id = auto_refresh_item.id().clone();
+    // Track auto-refresh state with an AtomicBool because CheckMenuItem is !Sync
+    // and can't be captured in the menu event handler closure.
+    // CheckMenuItem auto-toggles its visual checkmark on click; we mirror
+    // that state here so we can read it from the Send+Sync closure.
+    let auto_refresh_state = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(initial_auto_refresh));
     let exit_id = exit_item.id().clone();
 
     let _tray_icon = TrayIconBuilder::new()
@@ -113,7 +181,8 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
         .build()
         .expect("failed to build tray icon");
 
-    // Menu event handler: "Open" shows the window, "Exit" quits.
+    // Menu event handler: "Open" shows the window, "Refresh Now" exports
+    // wallpaper, "Auto-refresh" toggles the scheduler, "Exit" quits.
     let window_weak_menu = window_weak.clone();
     tray_icon::menu::MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
         if event.id == open_id {
@@ -124,6 +193,29 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
                     debug!("tray: showing window");
                     crate::memory::log_memory_usage("after window shown");
                     win.show().ok();
+                }
+            })
+            .ok();
+        } else if event.id == refresh_id {
+            debug!("tray: Refresh Now clicked, dispatching to event loop");
+            slint::invoke_from_event_loop(move || {
+                info!("tray: refreshing wallpaper");
+                #[cfg(windows)]
+                if let Err(e) = crate::ui_callbacks::do_set_wallpaper() {
+                    tracing::error!("tray: refresh failed: {e}");
+                }
+            })
+            .ok();
+        } else if event.id == auto_refresh_id {
+            // CheckMenuItem auto-toggles its visual state on click.
+            // Flip our mirror AtomicBool to match.
+            let checked = !auto_refresh_state.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            debug!(checked, "tray: Auto-refresh toggled, dispatching to event loop");
+            let ww = window_weak_menu.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(win) = ww.upgrade() {
+                    win.set_auto_refresh_enabled(checked);
+                    win.invoke_auto_refresh_changed();
                 }
             })
             .ok();
@@ -164,7 +256,7 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
     }));
 
     // Run the platform message pump so tray events are dispatched.
-    run_message_pump();
+    run_message_pump(&auto_refresh_item);
 
     // _tray_icon is dropped here when the thread exits.
 }
@@ -176,9 +268,9 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
 /// implemented.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn run_message_pump() {
+fn run_message_pump(auto_refresh_item: &tray_icon::menu::CheckMenuItem) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, MSG, TranslateMessage,
+        DispatchMessageW, GetMessageW, MSG, TranslateMessage, WM_USER,
     };
 
     let mut msg: MSG = unsafe { std::mem::zeroed() };
@@ -189,6 +281,11 @@ fn run_message_pump() {
         let ret = unsafe { GetMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0) };
         if ret <= 0 {
             break;
+        }
+        // WM_USER is sent by sync_tray_auto_refresh to update the checkmark.
+        if msg.message == WM_USER {
+            auto_refresh_item.set_checked(TRAY_AUTO_REFRESH.load(Ordering::Relaxed));
+            continue;
         }
         // SAFETY: `TranslateMessage` and `DispatchMessageW` are safe to call
         // with a valid MSG pointer obtained from `GetMessageW`.
@@ -205,7 +302,7 @@ fn run_message_pump() {
 /// platform-specific event loop (e.g. GLib on Linux, CFRunLoop on macOS)
 /// is implemented here.
 #[cfg(not(windows))]
-fn run_message_pump() {
+fn run_message_pump(auto_refresh_item: &tray_icon::menu::CheckMenuItem) {
     std::thread::park();
 }
 

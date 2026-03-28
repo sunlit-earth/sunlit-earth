@@ -117,18 +117,20 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
     let window_weak_menu = window_weak.clone();
     tray_icon::menu::MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
         if event.id == open_id {
+            debug!("tray: Open menu item clicked, dispatching to event loop");
             let ww = window_weak_menu.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
-                    debug!("main window shown (from tray menu)");
+                    debug!("tray: showing window");
                     crate::memory::log_memory_usage("after window shown");
                     win.show().ok();
                 }
             })
             .ok();
         } else if event.id == exit_id {
-            debug!("exit requested from tray menu");
+            debug!("tray: Exit menu item clicked, dispatching to event loop");
             slint::invoke_from_event_loop(move || {
+                debug!("tray: executing quit_event_loop");
                 slint::quit_event_loop().ok();
             })
             .ok();
@@ -138,10 +140,11 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
     // Left-click on the tray icon shows the window.
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
         if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = event {
+            debug!("tray: left-click, dispatching show to event loop");
             let ww = window_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
-                    debug!("main window shown (from tray left-click)");
+                    debug!("tray: showing window (left-click)");
                     crate::memory::log_memory_usage("after window shown");
                     win.show().ok();
                 }

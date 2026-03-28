@@ -233,9 +233,8 @@ fn init_texture_system(
     );
 
     // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT).
-    // Skip when SUNLIT_EARTH_NO_CLOUDS is set — used by e2e tests to avoid
-    // network access and to prevent upgrade_in_event_loop calls from the
-    // cloud fetcher thread, which can deadlock the winit event loop on Windows.
+    // Skip when SUNLIT_EARTH_NO_CLOUDS is set — used by e2e tests to
+    // avoid network access.
     if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_err() {
         sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
             texture_tx,
@@ -252,11 +251,9 @@ fn init_texture_system(
 
 /// Run the event loop with timers, tray setup, and shutdown logic.
 ///
-/// This function does not return normally — it calls `process::exit(0)` after
-/// the event loop exits to avoid panics from thread-local destruction ordering.
-///
-/// Takes ownership of `window` and `textures_ready` to ensure they live
-/// until after the event loop exits.
+/// Uses `run_event_loop_until_quit()` for all modes. This keeps the event loop
+/// alive even when all windows are hidden (tray mode), and returns cleanly
+/// after `quit_event_loop()` is called.
 #[allow(clippy::needless_pass_by_value)]
 fn run_event_loop(
     window: MainWindow,
@@ -265,7 +262,7 @@ fn run_event_loop(
     tray_start: TrayStart,
     ipc_socket: Option<String>,
     textures_ready: Arc<AtomicBool>,
-) -> ! {
+) {
     // Periodic timer to update the sun position (every 2 minutes)
     let window_weak = window.as_weak();
     let sun_timer = slint::Timer::default();
@@ -313,10 +310,6 @@ fn run_event_loop(
         None
     };
 
-    // Branch into one of three startup modes:
-    // 1. Render subcommand — run the event loop and exit (no tray, no single-instance)
-    // 2. Tray mode (default, Windows only) — tray icon, hide-on-close, single-instance
-    // 3. Windowed mode (--windowed or non-Windows) — original behavior, close exits
     let use_tray = !is_render && matches!(mode, Mode::Tray);
 
     if is_render {
@@ -327,9 +320,8 @@ fn run_event_loop(
         debug!("startup mode: windowed");
     }
 
+    // Single-instance enforcement (tray mode only).
     let _instance_guard = if use_tray {
-        // Scope the mutex name with the IPC socket name so test instances
-        // don't conflict with the real app or each other.
         let mutex_name = match &ipc_socket {
             Some(name) => format!("sunlit-earth-{name}"),
             None => "sunlit-earth-app".to_string(),
@@ -339,85 +331,67 @@ fn run_event_loop(
         None
     };
 
-    let _tray_handle = if use_tray {
-        // Intercept the close button: save geometry and move the window
-        // off-screen. We use KeepWindowShown + off-screen positioning
-        // instead of HideWindow because run_event_loop_until_quit() stops
-        // processing timers when all windows are hidden on Windows (winit
-        // backend). Moving off-screen keeps the window "visible" from
-        // Slint/winit's perspective so the event loop stays active.
+    // Close handler depends on mode:
+    // - Tray: save geometry, hide window (stays in tray)
+    // - Windowed: quit the event loop (app exits)
+    // - Render: no close handler (render timer calls quit_event_loop)
+    if use_tray {
         let window_weak = window.as_weak();
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
                 let size = win.window().size();
                 let pos = win.window().position();
                 config::save_window_geometry(pos.x, pos.y, size.width, size.height);
-                win.window().set_size(slint::PhysicalSize::new(1, 1));
-                win.window().set_position(slint::PhysicalPosition::new(0, 0));
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_earth::memory::log_memory_usage("after window hidden");
+            slint::CloseRequestResponse::HideWindow
+        });
+    } else if !is_render {
+        window.window().on_close_requested(|| {
+            debug!("window closed, quitting event loop");
+            slint::quit_event_loop().ok();
             slint::CloseRequestResponse::KeepWindowShown
         });
+    }
+
+    // Spawn tray thread (tray mode only).
+    let _tray_handle = if use_tray {
+        info!("spawning tray thread");
         Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak()))
     } else {
         None
     };
 
-    // Spawn IPC listener and command timer if --ipc-socket was provided.
-    // Commands are dispatched via a shared queue + polling timer instead of
-    // invoke_from_event_loop, which deadlocks the Slint/winit event loop
-    // on Windows (the proxy message freezes the message pump).
+    // Spawn IPC listener if --ipc-socket was provided.
+    // Commands are dispatched directly via invoke_from_event_loop.
     let _ipc_handle = ipc_socket.map(|name| {
-        let queue = sunlit_earth::ipc::CommandQueue::new();
-        let handle = sunlit_earth::ipc::spawn_ipc_listener(&name, queue.clone());
-        let timer = sunlit_earth::ipc::start_command_timer(queue, window.as_weak());
-        (handle, timer)
+        info!("spawning IPC listener on {name}");
+        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak())
     });
 
-    // Both modes use show() + run_event_loop(). We use run_event_loop()
-    // (not run_event_loop_until_quit()) because the latter stops processing
-    // timers on Windows when all windows are hidden — a confirmed platform
-    // limitation of the Slint/winit backend. Since tray mode uses off-screen
-    // positioning instead of actual hide(), the window is always "visible"
-    // from Slint's perspective and run_event_loop() won't exit prematurely.
+    // Show the window and enter the event loop.
     window.show().expect("Failed to show window");
-    if use_tray && matches!(tray_start, TrayStart::Hidden) {
-        // Defer the shrink to after the event loop starts. Shrinking before
-        // the loop enters its dispatch state can prevent timers from firing.
-        let weak = window.as_weak();
-        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-            if let Some(win) = weak.upgrade() {
-                win.window().set_size(slint::PhysicalSize::new(1, 1));
-                win.window().set_position(slint::PhysicalPosition::new(0, 0));
-            }
-        });
-    }
-    slint::run_event_loop().expect("Failed to run event loop");
 
-    // Save window geometry on close. Skip after IPC-triggered quit because
-    // the Slint backend may be partially torn down, making window accessors
-    // unsafe. In tray mode, geometry is already saved in on_close_requested.
-    if !is_render && _ipc_handle.is_none() {
-        let size = window.window().size();
-        let pos = window.window().position();
-        config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+    // In tray mode with --tray-start hidden, hide immediately after showing.
+    // run_event_loop_until_quit() stays alive even with no visible windows.
+    if use_tray && matches!(tray_start, TrayStart::Hidden) {
+        debug!("hiding window for --tray-start hidden");
+        window.hide().expect("Failed to hide window");
     }
+
+    info!("entering event loop");
+    slint::run_event_loop_until_quit().expect("Failed to run event loop");
+    info!("event loop exited");
 
     sunlit_earth::memory::log_memory_usage("before exit");
 
     // Intentionally leak timers — their Slint destructors can crash after
-    // quit_event_loop() because the backend may be torn down.
-    // process::exit() terminates everything anyway.
+    // quit_event_loop() because the backend may be partially torn down.
     std::mem::forget(sun_timer);
     std::mem::forget(render_timer);
-    if let Some((_handle, ipc_timer)) = _ipc_handle {
-        std::mem::forget(ipc_timer);
-    }
 
-    // Exit immediately to avoid a panic from thread-local destruction ordering.
     debug!("exiting");
-    std::process::exit(0);
 }
 
 fn main() {

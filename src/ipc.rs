@@ -4,56 +4,28 @@
 //! local socket for single-line commands. This is a fire-and-forget protocol:
 //! clients connect, send one command line, and disconnect. No response is sent.
 //!
-//! Commands are pushed to a shared queue and processed by a Slint timer on the
-//! event loop thread. This avoids `invoke_from_event_loop`, which deadlocks the
-//! Slint/winit event loop on Windows (the proxy message freezes the message pump).
+//! Commands are dispatched directly via `invoke_from_event_loop` to the Slint
+//! event loop thread, following the recommended Slint cross-thread pattern.
 //!
 //! Supported commands:
 //! - `quit` — triggers `slint::quit_event_loop()`
 //! - `show-window` — makes the main window visible
 //! - `hide-window` — hides the main window
 
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
-use std::sync::{Arc, Mutex};
+use std::io::{BufRead, BufReader, Write};
 
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
 use tracing::{debug, info, warn};
 
-/// An IPC command received from an external process.
-#[derive(Debug)]
-enum IpcCommand {
-    ShowWindow,
-    HideWindow,
-}
-
-/// Shared command queue between the IPC listener thread and the event loop.
-///
-/// The internal command type is private — callers only pass this between
-/// `spawn_ipc_listener` and `start_command_timer`.
-#[derive(Clone)]
-pub struct CommandQueue(Arc<Mutex<VecDeque<IpcCommand>>>);
-
-impl CommandQueue {
-    /// Create a new empty command queue.
-    pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(VecDeque::new())))
-    }
-}
-
 /// Spawn a background thread that listens for IPC commands on a local socket.
 ///
-/// Commands are pushed to `queue` for processing by the event loop timer.
-/// `socket_name` is converted to a platform-specific namespaced name.
-///
-/// Returns a `JoinHandle` for the listener thread. The handle should be kept
-/// alive for the duration of the program; the thread terminates when the
-/// process exits.
+/// Commands are dispatched directly via `invoke_from_event_loop` to the Slint
+/// event loop thread. Returns a `JoinHandle` for the listener thread.
 pub fn spawn_ipc_listener(
     socket_name: &str,
-    queue: CommandQueue,
+    window_weak: slint::Weak<crate::MainWindow>,
 ) -> std::thread::JoinHandle<()> {
     let name = socket_name
         .to_ns_name::<GenericNamespaced>()
@@ -73,20 +45,17 @@ pub fn spawn_ipc_listener(
             for conn in listener.incoming() {
                 match conn {
                     Ok(stream) => {
-                        let reader = BufReader::new(stream);
-                        for line in reader.lines() {
-                            match line {
-                                Ok(cmd) => enqueue_command(cmd.trim(), &queue),
-                                Err(e) => {
-                                    warn!("ipc read error: {e}");
-                                    break;
-                                }
-                            }
+                        let mut reader = BufReader::new(stream);
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            continue;
                         }
+                        let cmd = line.trim().to_owned();
+                        drop(reader);
+                        dispatch_command(&cmd, &window_weak);
                     }
                     Err(e) => {
                         warn!("ipc accept error: {e}");
-                        // Continue accepting — transient errors are recoverable
                     }
                 }
             }
@@ -94,84 +63,52 @@ pub fn spawn_ipc_listener(
         .expect("failed to spawn ipc-listener thread")
 }
 
-/// Parse and enqueue a single IPC command.
-///
-/// The `quit` command is handled immediately (process::exit) rather than
-/// queued, because the event loop timer may not fire reliably on Windows
-/// after wgpu rendering has started.
-fn enqueue_command(cmd: &str, queue: &CommandQueue) {
-    let command = match cmd {
+/// Parse and dispatch a single IPC command via `invoke_from_event_loop`.
+fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
+    match cmd {
         "quit" => {
-            eprintln!("exiting via ipc quit");
-            std::process::exit(0);
+            debug!("ipc: received quit command, dispatching to event loop");
+            slint::invoke_from_event_loop(|| {
+                debug!("ipc: executing quit_event_loop");
+                slint::quit_event_loop().ok();
+            })
+            .ok();
         }
         "show-window" => {
-            debug!("ipc command: show-window");
-            IpcCommand::ShowWindow
+            debug!("ipc: received show-window command");
+            let ww = window_weak.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(win) = ww.upgrade() {
+                    debug!("ipc: showing window");
+                    win.show().ok();
+                }
+                signal("window_shown");
+            })
+            .ok();
         }
         "hide-window" => {
-            debug!("ipc command: hide-window");
-            IpcCommand::HideWindow
+            debug!("ipc: received hide-window command");
+            let ww = window_weak.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(win) = ww.upgrade() {
+                    debug!("ipc: hiding window");
+                    win.hide().ok();
+                }
+                signal("window_hidden");
+            })
+            .ok();
         }
-        "" => return, // Ignore empty lines
+        "" => {}
         _ => {
             warn!("unknown ipc command: {cmd}");
-            return;
         }
-    };
-    queue.0.lock().expect("ipc command queue poisoned").push_back(command);
+    }
 }
 
-/// Start a Slint timer that polls the command queue and executes commands
-/// on the event loop thread.
-///
-/// Returns the timer handle, which must be kept alive for the duration of
-/// the program.
-pub fn start_command_timer(
-    queue: CommandQueue,
-    window_weak: slint::Weak<crate::MainWindow>,
-) -> slint::Timer {
-    let timer = slint::Timer::default();
-    timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(50),
-        move || {
-            // Drain all pending commands each tick.
-            let commands: Vec<IpcCommand> = {
-                let mut q = queue.0.lock().expect("ipc command queue poisoned");
-                q.drain(..).collect()
-            };
-            for command in commands {
-                match command {
-                    IpcCommand::ShowWindow => {
-                        if let Some(win) = window_weak.upgrade() {
-                            // Restore from the 1x1 "hidden" state.
-                            win.window().set_size(slint::PhysicalSize::new(800, 600));
-                            win.window().set_position(
-                                slint::PhysicalPosition::new(100, 100),
-                            );
-                            win.show().ok();
-                        }
-                        println!("SIGNAL:window_shown");
-                    }
-                    IpcCommand::HideWindow => {
-                        if let Some(win) = window_weak.upgrade() {
-                            // Shrink to 1x1 at (0,0) instead of hiding or
-                            // moving far off-screen. Hiding kills timers on
-                            // Windows; extreme off-screen positions (-32000)
-                            // intermittently cause the compositor to stop
-                            // processing the window, also killing timers.
-                            // A 1x1 window stays "visible" to the DWM.
-                            win.window().set_size(slint::PhysicalSize::new(1, 1));
-                            win.window().set_position(
-                                slint::PhysicalPosition::new(0, 0),
-                            );
-                        }
-                        println!("SIGNAL:window_hidden");
-                    }
-                }
-            }
-        },
-    );
-    timer
+fn signal(name: &str) {
+    let msg = format!("SIGNAL:{name}\n");
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    let _ = lock.write_all(msg.as_bytes());
+    let _ = lock.flush();
 }

@@ -608,7 +608,7 @@ fn test_tray_mode_ipc_lifecycle() {
     stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(10));
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
-    // 4. Send hide-window via IPC and confirm via signal.
+    // 4. Hide the window via IPC (actual window.hide()).
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
 
@@ -775,11 +775,11 @@ fn test_single_instance_second_exits() {
     );
 }
 
-/// Verify that the Slint event loop stays alive and timers continue to fire
-/// after `window.hide()` under `run_event_loop_until_quit()`.
+/// Verify that the Slint event loop stays alive and the window can be
+/// shown again after being hidden via tray close.
 ///
-/// The critical assertion is step 5: if timers die after hide, the second
-/// `show-window` command will never be processed and the test times out.
+/// The critical assertion: after hiding, the `show-window` IPC command
+/// is processed. If the event loop dies after hide, this times out.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -787,9 +787,6 @@ fn test_tray_hide_show_cycle() {
     let socket_name = unique_socket_name();
 
     // 1. Spawn the binary in tray mode with IPC enabled.
-    //    No SUNLIT_EARTH_SYNC_LOG — synchronous stderr writes from the event
-    //    loop thread block on the pipe buffer during rendering, which itself
-    //    prevents the IPC timer from firing. All test gates use stdout signals.
     let mut guard = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
@@ -813,27 +810,27 @@ fn test_tray_hide_show_cycle() {
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
-    // 3. Hide the window via IPC (off-screen positioning).
+    // 3. Hide the window via IPC (actual window.hide()).
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
 
-    // 4. KEY TEST: Show again. If timers died after the off-screen move,
+    // 4. KEY TEST: Show again. If the event loop died after hide,
     //    this command will never be processed and the test times out.
     send_ipc_command(&socket_name, "show-window");
     stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(10));
 
-    // 7. Send quit via IPC and wait for graceful exit.
+    // 5. Send quit via IPC and wait for graceful exit.
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
 
-    // 8. Assert exit code 0.
+    // 6. Assert exit code 0.
     assert!(
         output.status.success(),
         "process exited with non-zero status: {:?}",
         output.status
     );
 
-    // 9. Assert no ERROR lines in stderr.
+    // 7. Assert no ERROR lines in stderr.
     for line in stderr_watcher.lines() {
         assert!(
             !line.contains(" ERROR "),

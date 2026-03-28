@@ -842,3 +842,68 @@ fn test_tray_hide_show_cycle() {
         );
     }
 }
+
+/// Verify that GPU resources persist after `window.hide()` and that
+/// `export_wallpaper_image()` works on a hidden window.
+///
+/// This is a gate test for the wallpaper scheduler feature: if the GPU
+/// export fails after hide, automatic wallpaper refresh in tray mode
+/// is not viable without a show-render-hide cycle.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_gpu_persistence_after_hide() {
+    let socket_name = unique_socket_name();
+
+    // 1. Spawn in tray mode with visible window and IPC enabled.
+    let mut guard = ChildGuard::new(
+        Command::new(BINARY)
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .args([
+                "--log-level", "debug",
+                "--tray-start", "visible",
+                "--ipc-socket", &socket_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+
+    let stdout_watcher = StdoutWatcher::new(child);
+    let stderr_watcher = StderrWatcher::new(child);
+
+    // 2. Wait for GPU init and first frame.
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
+
+    // 3. Hide the window — GPU resources should persist.
+    send_ipc_command(&socket_name, "hide-window");
+    stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
+
+    // 4. CRITICAL ASSERTION: GPU export must succeed on a hidden window.
+    //    If RenderingTeardown fires on hide, this would fail with
+    //    "GPU not initialized".
+    send_ipc_command(&socket_name, "export-test");
+    stdout_watcher.wait_for_signal("export_test_ok", Duration::from_secs(30));
+
+    // 5. Clean exit.
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
+
+    assert!(
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
+    );
+
+    // 6. No errors in log.
+    for line in stderr_watcher.lines() {
+        assert!(
+            !line.contains(" ERROR "),
+            "found ERROR in stderr:\n{line}"
+        );
+    }
+}

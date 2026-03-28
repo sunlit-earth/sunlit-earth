@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -257,7 +258,7 @@ fn init_texture_system(
 ///
 /// Terminates via `process::exit(0)` to avoid a wgpu thread-local destruction
 /// ordering panic (see comment at end of function).
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines, clippy::too_many_arguments)]
 fn run_event_loop(
     window: MainWindow,
     cli_command: Option<Commands>,
@@ -265,6 +266,8 @@ fn run_event_loop(
     tray_start: TrayStart,
     ipc_socket: Option<String>,
     textures_ready: Arc<AtomicBool>,
+    config: &config::AppConfig,
+    aa_counts: &[u32],
 ) -> ! {
     // Periodic timer to update the sun position (every 2 minutes)
     let window_weak = window.as_weak();
@@ -280,9 +283,114 @@ fn run_event_loop(
         },
     );
 
+    let is_render = cli_command.is_some();
+    let use_tray = !is_render && matches!(mode, Mode::Tray);
+
+    // --- Auto-refresh scheduler timer ---
+    let scheduler_timer = Rc::new(slint::Timer::default());
+    if config.auto_refresh_enabled {
+        let interval_secs = u64::from(config.auto_refresh_interval_minutes) * 60;
+        let ww = window.as_weak();
+        scheduler_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(interval_secs),
+            move || {
+                if let Some(win) = ww.upgrade()
+                    && win.get_auto_refresh_enabled()
+                {
+                    info!("auto-refresh: updating wallpaper");
+                    #[cfg(windows)]
+                    if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
+                        error!("auto-refresh failed: {e}");
+                    }
+                }
+            },
+        );
+        debug!(interval_minutes = config.auto_refresh_interval_minutes, "auto-refresh timer started");
+    }
+
+    // Wire auto-refresh-changed callback to restart/stop the scheduler timer.
+    // Also syncs the tray checkmark and refreshes immediately on enable.
+    {
+        let timer = Rc::clone(&scheduler_timer);
+        let window_weak = window.as_weak();
+        let aa_counts = aa_counts.to_vec();
+        let prev_enabled = std::cell::Cell::new(config.auto_refresh_enabled);
+        window.on_auto_refresh_changed(move || {
+            let Some(win) = window_weak.upgrade() else {
+                return;
+            };
+            let enabled = win.get_auto_refresh_enabled();
+            let was_enabled = prev_enabled.replace(enabled);
+
+            // Sync tray checkmark with UI state
+            if use_tray {
+                sunlit_earth::tray::sync_tray_auto_refresh(enabled);
+            }
+
+            if enabled {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let interval_secs = u64::from(win.get_auto_refresh_interval().max(1.0) as u32) * 60;
+                let ww = window_weak.clone();
+                timer.start(
+                    slint::TimerMode::Repeated,
+                    std::time::Duration::from_secs(interval_secs),
+                    move || {
+                        if let Some(win) = ww.upgrade()
+                            && win.get_auto_refresh_enabled()
+                        {
+                            info!("auto-refresh: updating wallpaper");
+                            #[cfg(windows)]
+                            if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
+                                error!("auto-refresh failed: {e}");
+                            }
+                        }
+                    },
+                );
+                debug!(interval_secs, "auto-refresh timer restarted");
+
+                // Refresh immediately when toggling on (not on slider change)
+                if !was_enabled {
+                    info!("auto-refresh: immediate refresh on enable");
+                    #[cfg(windows)]
+                    if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
+                        error!("auto-refresh immediate refresh failed: {e}");
+                    }
+                }
+            } else {
+                timer.stop();
+                debug!("auto-refresh timer stopped");
+            }
+            config::save_config(
+                &sunlit_earth::ui_callbacks::read_config_from_window(&win, &aa_counts),
+            );
+        });
+    }
+
+    // When auto-refresh is enabled at startup, update wallpaper after first frame
+    if config.auto_refresh_enabled {
+        let textures_ready_startup = Arc::clone(&textures_ready);
+        let startup_timer = Rc::new(slint::Timer::default());
+        let startup_timer_clone = Rc::clone(&startup_timer);
+        startup_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(200),
+            move || {
+                if textures_ready_startup.load(Ordering::Relaxed) {
+                    info!("auto-refresh: initial wallpaper update on startup");
+                    #[cfg(windows)]
+                    if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
+                        error!("auto-refresh initial update failed: {e}");
+                    }
+                    startup_timer_clone.stop();
+                }
+            },
+        );
+        // startup_timer stays alive via the Rc in the closure
+    }
+
     // When the `render` subcommand is used, register a timer that polls the
     // texture-readiness flag and saves a rendered image when ready.
-    let is_render = cli_command.is_some();
     let render_timer = if let Some(Commands::Render { output, width, height, .. }) = cli_command {
         let output_path = output;
         let render_width = width;
@@ -312,8 +420,6 @@ fn run_event_loop(
     } else {
         None
     };
-
-    let use_tray = !is_render && matches!(mode, Mode::Tray);
 
     if is_render {
         debug!("startup mode: render");
@@ -479,7 +585,7 @@ fn main() {
         textures_dir.as_deref(),
     );
 
-    let textures_ready = init_texture_system(&window, aa_counts, texture_paths);
+    let textures_ready = init_texture_system(&window, aa_counts.clone(), texture_paths);
 
-    run_event_loop(window, cli.command, cli.mode, cli.tray_start, cli.ipc_socket, textures_ready);
+    run_event_loop(window, cli.command, cli.mode, cli.tray_start, cli.ipc_socket, textures_ready, &config, &aa_counts);
 }

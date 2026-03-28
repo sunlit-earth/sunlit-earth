@@ -26,6 +26,7 @@ struct SunlitSection {
 /// unknown fields are silently ignored (forward compatibility).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppConfig {
     // Camera position
     pub longitude: f32,
@@ -74,6 +75,10 @@ pub struct AppConfig {
     pub day_saturation: f32,
     pub night_gamma: f32,
     pub night_saturation: f32,
+
+    // Auto-refresh (wallpaper scheduler)
+    pub auto_refresh_enabled: bool,
+    pub auto_refresh_interval_minutes: u32,
 
     // Custom date/time override
     pub use_custom_datetime: bool,
@@ -130,6 +135,8 @@ impl Default for AppConfig {
             day_saturation: 1.0,
             night_gamma: 1.0,
             night_saturation: 1.0,
+            auto_refresh_enabled: false,
+            auto_refresh_interval_minutes: 5,
             use_custom_datetime: false,
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
@@ -331,6 +338,20 @@ mod tests {
     }
 
     #[test]
+    fn default_auto_refresh_is_disabled_with_5_min_interval() {
+        let config = AppConfig::default();
+        assert!(!config.auto_refresh_enabled);
+        assert_eq!(config.auto_refresh_interval_minutes, 5);
+    }
+
+    #[test]
+    fn deserialize_missing_auto_refresh_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert!(!config.auto_refresh_enabled);
+        assert_eq!(config.auto_refresh_interval_minutes, 5);
+    }
+
+    #[test]
     fn deserialize_missing_atmo_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         let defaults = AppConfig::default();
@@ -402,6 +423,8 @@ mod tests {
             day_saturation: 0.8,
             night_gamma: 2.0,
             night_saturation: 0.5,
+            auto_refresh_enabled: true,
+            auto_refresh_interval_minutes: 15,
             use_custom_datetime: true,
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
@@ -522,6 +545,8 @@ mod tests {
             day_saturation: 0.6,
             night_gamma: 2.2,
             night_saturation: 1.5,
+            auto_refresh_enabled: true,
+            auto_refresh_interval_minutes: 10,
             use_custom_datetime: true,
             custom_hour: 8.25,
             custom_day_of_year: 200.0,

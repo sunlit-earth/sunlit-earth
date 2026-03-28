@@ -87,6 +87,10 @@ export component MainWindow inherits Window {
     callback reset();
     callback datetime-override-toggled();
 
+    in-out property <bool> auto-refresh-enabled: false;
+    in-out property <float> auto-refresh-interval: 5.0;
+    callback auto-refresh-changed();
+
     in-out property <bool> advanced-open: false;
 
     // Controls panel on the left
@@ -128,6 +132,29 @@ export component MainWindow inherits Window {
                         min-width: 0;
                         preferred-width: 0;
                         clicked => { root.reset(); }
+                    }
+                }
+
+                // --- Auto-refresh ---
+
+                CheckBox {
+                    text: "Auto-refresh wallpaper";
+                    checked <=> root.auto-refresh-enabled;
+                    toggled => { root.auto-refresh-changed(); }
+                }
+
+                if root.auto-refresh-enabled : HorizontalLayout {
+                    spacing: 4px;
+                    padding-left: 24px;
+                    Slider {
+                        minimum: 1;
+                        maximum: 30;
+                        value <=> root.auto-refresh-interval;
+                        changed(value) => { root.auto-refresh-changed(); }
+                    }
+                    Text {
+                        text: "every " + round(root.auto-refresh-interval) + " min";
+                        vertical-alignment: center;
                     }
                 }
 

@@ -11,6 +11,7 @@
 //! - `quit` — triggers `slint::quit_event_loop()`
 //! - `show-window` — makes the main window visible
 //! - `hide-window` — hides the main window
+//! - `export-test` — attempts a small GPU export, signals success/failure
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -95,6 +96,22 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
                     win.hide().ok();
                 }
                 signal("window_hidden");
+            })
+            .ok();
+        }
+        "export-test" => {
+            debug!("ipc: received export-test command");
+            slint::invoke_from_event_loop(move || {
+                match crate::renderer::export_wallpaper_image(64, 64) {
+                    Ok(_) => {
+                        debug!("ipc: export-test succeeded");
+                        signal("export_test_ok");
+                    }
+                    Err(e) => {
+                        debug!("ipc: export-test failed: {e}");
+                        signal("export_test_failed");
+                    }
+                }
             })
             .ok();
         }

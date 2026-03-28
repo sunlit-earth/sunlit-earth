@@ -326,6 +326,72 @@ All changes are in `src/main.rs`, `src/ipc.rs`, `src/tray.rs`,
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Implementation started
-- [ ] Implementation complete
+- [x] Plan approved
+- [x] Implementation started
+- [x] Implementation complete (commit `0b62c15`)
+
+## Results
+
+### Verification (2026-03-28)
+
+| Check | Result |
+| --- | --- |
+| `cargo test` (247 unit + 31 GPU) | All pass |
+| `cargo clippy` | Clean |
+| `test_binary_exists` | PASS |
+| `test_render_and_exit` | PASS |
+| `test_windowed_mode_graceful_shutdown` | PASS |
+| `test_tray_hide_show_cycle` | PASS |
+| `test_single_instance_second_exits` | PASS |
+| `test_tray_mode_ipc_lifecycle` | **FAIL** |
+| Manual: tray hide/show cycle | PASS |
+| Manual: tray Exit menu item | PASS |
+
+### Failing test: `test_tray_mode_ipc_lifecycle`
+
+**Symptom**: The test starts the app with `--tray-start hidden`,
+waits for `SIGNAL:ipc_listener_ready` (received), then sends
+`show-window` via IPC. The `SIGNAL:window_shown` never arrives.
+The `invoke_from_event_loop` closure is never dispatched.
+
+**Root cause**: `window.hide()` is called before
+`run_event_loop_until_quit()` enters its dispatch loop. The
+current implementation does:
+
+```rust
+window.show().expect("...");
+if use_tray && matches!(tray_start, TrayStart::Hidden) {
+    window.hide().expect("...");
+}
+slint::run_event_loop_until_quit().expect("...");
+```
+
+When the event loop starts with no visible windows, the winit
+backend does not pump messages, so `invoke_from_event_loop`
+closures posted from the IPC thread are never executed.
+
+**This is NOT the same issue as the original bug.** The original
+bug was `run_event_loop()` exiting after hide. That is fixed.
+This is a separate issue: `run_event_loop_until_quit()` enters
+a sleep state when there are no visible windows at startup,
+and does not wake up for `invoke_from_event_loop` messages.
+
+**Why `test_tray_hide_show_cycle` passes**: That test starts
+with `--tray-start visible`, so the event loop enters with a
+visible window and begins pumping messages. When the window is
+hidden via IPC later, the event loop is already in its active
+dispatch state and continues processing events.
+
+**Possible fix approaches** (not yet implemented):
+
+1. Defer the hide to after the event loop starts via
+   `Timer::single_shot(Duration::ZERO, ...)`. This was the
+   old workaround pattern (with 1x1 shrink). It may work with
+   actual `window.hide()` now that we use
+   `run_event_loop_until_quit()`.
+2. Use `window.set_minimized(true)` instead of `window.hide()`.
+   Minimizing keeps the window in Slint's window list (not
+   "closed"), so the event loop stays active.
+3. Accept that `--tray-start hidden` requires the window to
+   briefly flash on screen before hiding. Show first, enter
+   the event loop, then hide via a deferred timer.

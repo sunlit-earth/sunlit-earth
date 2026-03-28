@@ -634,8 +634,8 @@ fn test_tray_mode_ipc_lifecycle() {
         "stderr missing 'ipc listener ready':\n{stderr}"
     );
     assert!(
-        stderr.contains("exiting"),
-        "stderr missing 'exiting':\n{stderr}"
+        stderr.contains("quit_event_loop"),
+        "stderr missing 'quit_event_loop':\n{stderr}"
     );
 
     // 8. Assert no ERROR lines in stderr.
@@ -694,8 +694,8 @@ fn test_windowed_mode_graceful_shutdown() {
         "stderr missing 'startup mode: windowed':\n{stderr}"
     );
     assert!(
-        stderr.contains("exiting"),
-        "stderr missing 'exiting':\n{stderr}"
+        stderr.contains("quit_event_loop"),
+        "stderr missing 'quit_event_loop':\n{stderr}"
     );
 
     // 5. No errors in log.

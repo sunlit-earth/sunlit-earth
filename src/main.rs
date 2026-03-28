@@ -254,7 +254,10 @@ fn init_texture_system(
 /// Uses `run_event_loop_until_quit()` for all modes. This keeps the event loop
 /// alive even when all windows are hidden (tray mode), and returns cleanly
 /// after `quit_event_loop()` is called.
-#[allow(clippy::needless_pass_by_value)]
+///
+/// Terminates via `process::exit(0)` to avoid a wgpu thread-local destruction
+/// ordering panic (see comment at end of function).
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn run_event_loop(
     window: MainWindow,
     cli_command: Option<Commands>,
@@ -262,7 +265,7 @@ fn run_event_loop(
     tray_start: TrayStart,
     ipc_socket: Option<String>,
     textures_ready: Arc<AtomicBool>,
-) {
+) -> ! {
     // Periodic timer to update the sun position (every 2 minutes)
     let window_weak = window.as_weak();
     let sun_timer = slint::Timer::default();
@@ -392,6 +395,16 @@ fn run_event_loop(
     std::mem::forget(render_timer);
 
     debug!("exiting");
+
+    // Exit immediately to skip thread-local destructor ordering.
+    // With WGPUConfiguration::Manual, the wgpu device lives in Slint's
+    // thread-local backend state. During normal process exit, Rust destroys
+    // thread-locals in arbitrary order. wgpu's Queue::drop accesses its own
+    // LockTrace thread-local, which may already be destroyed, causing a
+    // panic ("cannot access a Thread Local Storage value during or after
+    // destruction"). This does not happen with WGPUConfiguration::Automatic
+    // because Slint controls the destruction order internally.
+    std::process::exit(0);
 }
 
 fn main() {

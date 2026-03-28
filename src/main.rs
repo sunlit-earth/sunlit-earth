@@ -91,10 +91,17 @@ enum Commands {
 /// `cli_level` is the default log level from the `--log-level` CLI flag.
 /// It is ignored when the `RUST_LOG` environment variable is set.
 ///
+/// When `SUNLIT_EARTH_SYNC_LOG` is set in the environment, a synchronous
+/// stderr writer is used instead of the non-blocking one. This eliminates
+/// pipe buffer congestion and stderr lock contention that cause log messages
+/// to arrive late (or not at all) in e2e tests. The trade-off is that log
+/// writes block the calling thread, which is acceptable in test mode.
+///
 /// Returns a `WorkerGuard` that must be kept alive for the duration of the
-/// program so that buffered log lines are flushed before exit.
-fn init_logging(cli_level: Option<&str>) -> tracing_appender::non_blocking::WorkerGuard {
-    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+/// program so that buffered log lines are flushed before exit. In sync mode,
+/// no guard is needed and `None` is returned.
+fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let sync_log = std::env::var("SUNLIT_EARTH_SYNC_LOG").is_ok();
 
     let base_filter = match cli_level {
         Some(level) => EnvFilter::new(level),
@@ -116,18 +123,35 @@ fn init_logging(cli_level: Option<&str>) -> tracing_appender::non_blocking::Work
         .add_directive("jxl_frame=warn".parse().expect("valid directive"))
         .add_directive("jxl_color=warn".parse().expect("valid directive"));
 
-    let fmt_layer = fmt::layer()
-        .with_writer(non_blocking)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_span_events(FmtSpan::CLOSE);
+    if sync_log {
+        let fmt_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_span_events(FmtSpan::CLOSE);
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .init();
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
 
-    guard
+        None
+    } else {
+        let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+
+        let fmt_layer = fmt::layer()
+            .with_writer(non_blocking)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_span_events(FmtSpan::CLOSE);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+
+        Some(guard)
+    }
 }
 
 /// Set up UI `ComboBox` models, apply initial config, and register callbacks.
@@ -208,13 +232,20 @@ fn init_texture_system(
         Arc::clone(&textures_ready),
     );
 
-    // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT)
-    sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
-        texture_tx,
-        window.as_weak(),
-        3,
-    );
-    info!("spawned cloud fetcher background thread");
+    // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT).
+    // Skip when SUNLIT_EARTH_NO_CLOUDS is set — used by e2e tests to avoid
+    // network access and to prevent upgrade_in_event_loop calls from the
+    // cloud fetcher thread, which can deadlock the winit event loop on Windows.
+    if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_err() {
+        sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
+            texture_tx,
+            window.as_weak(),
+            3,
+        );
+        info!("spawned cloud fetcher background thread");
+    } else {
+        info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
+    }
 
     textures_ready
 }
@@ -309,23 +340,20 @@ fn run_event_loop(
     };
 
     let _tray_handle = if use_tray {
-        // Intercept the close button: save geometry, minimize the window,
-        // and keep it shown. We use KeepWindowShown + minimize instead of
-        // HideWindow because HideWindow causes run_event_loop() to exit
-        // (treating the hidden window as "closed") and
-        // run_event_loop_until_quit() stops processing timers after
-        // re-entering run_app_on_demand. Minimizing keeps the window
-        // "alive" from the event loop's perspective.
+        // Intercept the close button: save geometry and move the window
+        // off-screen. We use KeepWindowShown + off-screen positioning
+        // instead of HideWindow because run_event_loop_until_quit() stops
+        // processing timers when all windows are hidden on Windows (winit
+        // backend). Moving off-screen keeps the window "visible" from
+        // Slint/winit's perspective so the event loop stays active.
         let window_weak = window.as_weak();
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
                 let size = win.window().size();
                 let pos = win.window().position();
                 config::save_window_geometry(pos.x, pos.y, size.width, size.height);
-                // Move off-screen instead of hiding or minimizing:
-                // - hide() causes run_event_loop() to exit
-                // - set_minimized(true) triggers winit Suspended, stopping timers
-                win.window().set_position(slint::PhysicalPosition::new(-32000, -32000));
+                win.window().set_size(slint::PhysicalSize::new(1, 1));
+                win.window().set_position(slint::PhysicalPosition::new(0, 0));
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_earth::memory::log_memory_usage("after window hidden");
@@ -347,21 +375,25 @@ fn run_event_loop(
         (handle, timer)
     });
 
-    if use_tray {
-        // Tray mode: show the window and use run_event_loop_until_quit()
-        // so the loop stays alive when the window is hidden via KeepWindowShown.
-        // run_event_loop() would exit when the window becomes invisible.
-        if matches!(tray_start, TrayStart::Visible) {
-            window.show().expect("Failed to show window");
-        }
-        slint::run_event_loop_until_quit().expect("Failed to run event loop");
-    } else {
-        // Windowed mode: show() + run_event_loop(). We avoid window.run()
-        // because its hide() call after quit triggers wgpu teardown during
-        // an unsafe state on Windows (STATUS_STACK_BUFFER_OVERRUN).
-        window.show().expect("Failed to show window");
-        slint::run_event_loop().expect("Failed to run event loop");
+    // Both modes use show() + run_event_loop(). We use run_event_loop()
+    // (not run_event_loop_until_quit()) because the latter stops processing
+    // timers on Windows when all windows are hidden — a confirmed platform
+    // limitation of the Slint/winit backend. Since tray mode uses off-screen
+    // positioning instead of actual hide(), the window is always "visible"
+    // from Slint's perspective and run_event_loop() won't exit prematurely.
+    window.show().expect("Failed to show window");
+    if use_tray && matches!(tray_start, TrayStart::Hidden) {
+        // Defer the shrink to after the event loop starts. Shrinking before
+        // the loop enters its dispatch state can prevent timers from firing.
+        let weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(win) = weak.upgrade() {
+                win.window().set_size(slint::PhysicalSize::new(1, 1));
+                win.window().set_position(slint::PhysicalPosition::new(0, 0));
+            }
+        });
     }
+    slint::run_event_loop().expect("Failed to run event loop");
 
     // Save window geometry on close. Skip after IPC-triggered quit because
     // the Slint backend may be partially torn down, making window accessors

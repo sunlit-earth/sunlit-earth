@@ -65,6 +65,7 @@ pub fn spawn_ipc_listener(
         .expect("failed to create IPC listener");
 
     info!("ipc listener ready on {socket_name}");
+    println!("SIGNAL:ipc_listener_ready");
 
     std::thread::Builder::new()
         .name("ipc-listener".into())
@@ -106,16 +107,10 @@ fn enqueue_command(cmd: &str, queue: &CommandQueue) {
         }
         "show-window" => {
             debug!("ipc command: show-window");
-            // Log expected markers via eprintln (synchronous) on the IPC
-            // thread. The tracing non-blocking writer can drop messages when
-            // the stderr pipe is congested from GPU setup logging.
-            // The IPC thread can safely block on stderr.
-            eprintln!("main window shown (from ipc)");
             IpcCommand::ShowWindow
         }
         "hide-window" => {
             debug!("ipc command: hide-window");
-            eprintln!("main window hidden (from ipc)");
             IpcCommand::HideWindow
         }
         "" => return, // Ignore empty lines
@@ -150,20 +145,29 @@ pub fn start_command_timer(
                 match command {
                     IpcCommand::ShowWindow => {
                         if let Some(win) = window_weak.upgrade() {
-                            win.window().set_minimized(false);
+                            // Restore from the 1x1 "hidden" state.
+                            win.window().set_size(slint::PhysicalSize::new(800, 600));
+                            win.window().set_position(
+                                slint::PhysicalPosition::new(100, 100),
+                            );
                             win.show().ok();
                         }
+                        println!("SIGNAL:window_shown");
                     }
                     IpcCommand::HideWindow => {
                         if let Some(win) = window_weak.upgrade() {
-                            // Move off-screen instead of hiding or minimizing:
-                            // - hide() causes run_event_loop() to exit
-                            // - set_minimized(true) triggers winit Suspended,
-                            //   which stops timer processing
+                            // Shrink to 1x1 at (0,0) instead of hiding or
+                            // moving far off-screen. Hiding kills timers on
+                            // Windows; extreme off-screen positions (-32000)
+                            // intermittently cause the compositor to stop
+                            // processing the window, also killing timers.
+                            // A 1x1 window stays "visible" to the DWM.
+                            win.window().set_size(slint::PhysicalSize::new(1, 1));
                             win.window().set_position(
-                                slint::PhysicalPosition::new(-32000, -32000),
+                                slint::PhysicalPosition::new(0, 0),
                             );
                         }
+                        println!("SIGNAL:window_hidden");
                     }
                 }
             }

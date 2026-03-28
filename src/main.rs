@@ -376,11 +376,18 @@ fn run_event_loop(
     // Show the window and enter the event loop.
     window.show().expect("Failed to show window");
 
-    // In tray mode with --tray-start hidden, hide immediately after showing.
-    // run_event_loop_until_quit() stays alive even with no visible windows.
+    // In tray mode with --tray-start hidden, defer the hide to a zero-duration
+    // timer so it fires after the event loop is running. Hiding synchronously
+    // before run_event_loop_until_quit() causes the loop to exit immediately.
     if use_tray && matches!(tray_start, TrayStart::Hidden) {
-        debug!("hiding window for --tray-start hidden");
-        window.hide().expect("Failed to hide window");
+        let ww = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(win) = ww.upgrade() {
+                debug!("hiding window for --tray-start hidden (deferred)");
+                win.hide().ok();
+            }
+            println!("SIGNAL:window_hidden_deferred");
+        });
     }
 
     info!("entering event loop");

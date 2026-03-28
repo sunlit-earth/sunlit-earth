@@ -598,9 +598,13 @@ fn test_tray_mode_ipc_lifecycle() {
     let stdout_watcher = StdoutWatcher::new(child);
     let watcher = StderrWatcher::new(child);
 
-    // 2. Wait for the IPC listener to be ready.
+    // 2. Wait for the IPC listener and the deferred hide to complete.
+    //    The deferred hide fires via Timer::single_shot(ZERO) after the
+    //    event loop starts. We must wait for it before sending show-window
+    //    to avoid a race where show fires before the timer hides the window.
     let ready_timeout = Duration::from_secs(30);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("window_hidden_deferred", ready_timeout);
 
     // 3. Show the window via IPC so the rendering notifier fires
     //    (hidden windows don't trigger Slint rendering callbacks).

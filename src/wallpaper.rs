@@ -107,78 +107,21 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
 /// registry keys `HKCU\Control Panel\Desktop\WallpaperStyle` and
 /// `HKCU\Control Panel\Desktop\TileWallpaper`.
 fn ensure_fill_style() -> Result<(), String> {
-    use std::ptr;
-
-    use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, RegCloseKey, RegOpenKeyExW,
-    };
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    use winreg::RegKey;
 
     debug!("setting Fill wallpaper style");
 
-    let subkey: Vec<u16> = "Control Panel\\Desktop\0"
-        .encode_utf16()
-        .collect();
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey_with_flags("Control Panel\\Desktop", KEY_SET_VALUE)
+        .map_err(|e| format!("Failed to open Desktop registry key: {e}"))?;
 
-    let mut hkey: HKEY = ptr::null_mut();
+    key.set_value("WallpaperStyle", &"10")
+        .map_err(|e| format!("Failed to set WallpaperStyle: {e}"))?;
+    key.set_value("TileWallpaper", &"0")
+        .map_err(|e| format!("Failed to set TileWallpaper: {e}"))?;
 
-    // SAFETY: Opens an existing registry key under HKCU for writing.
-    // subkey is a valid null-terminated UTF-16 string. hkey receives the
-    // opened key handle on success.
-    #[allow(unsafe_code)]
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            subkey.as_ptr(),
-            0,
-            KEY_SET_VALUE,
-            &raw mut hkey,
-        )
-    };
-    if status != 0 {
-        return Err(format!("RegOpenKeyExW failed (error code {status})"));
-    }
-
-    let result = set_reg_string(hkey, "WallpaperStyle", "10")
-        .and_then(|()| set_reg_string(hkey, "TileWallpaper", "0"));
-
-    // SAFETY: hkey is a valid registry key handle opened above.
-    // RegCloseKey releases the handle.
-    #[allow(unsafe_code)]
-    unsafe {
-        RegCloseKey(hkey);
-    }
-
-    result
-}
-
-/// Write a `REG_SZ` value to an open registry key.
-fn set_reg_string(hkey: windows_sys::Win32::System::Registry::HKEY, name: &str, value: &str) -> Result<(), String> {
-    use windows_sys::Win32::System::Registry::{REG_SZ, RegSetValueExW};
-
-    let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-    let wide_value: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
-    let byte_len = u32::try_from(wide_value.len() * 2)
-        .map_err(|_| "Registry value too large".to_owned())?;
-
-    // SAFETY: hkey is a valid open registry key handle with KEY_SET_VALUE access.
-    // wide_name and wide_value are valid null-terminated UTF-16 strings.
-    // byte_len is the exact byte length of wide_value including the null terminator.
-    #[allow(unsafe_code)]
-    let status = unsafe {
-        RegSetValueExW(
-            hkey,
-            wide_name.as_ptr(),
-            0,
-            REG_SZ,
-            wide_value.as_ptr().cast(),
-            byte_len,
-        )
-    };
-    if status != 0 {
-        return Err(format!(
-            "RegSetValueExW failed for {name} (error code {status})"
-        ));
-    }
     Ok(())
 }
 

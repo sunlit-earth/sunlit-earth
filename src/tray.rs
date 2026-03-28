@@ -9,17 +9,15 @@
 //! `tray-icon` crate). Only the message pump is platform-specific — currently
 //! implemented for Windows only.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 use slint::ComponentHandle;
 use tray_icon::Icon;
 use tracing::{debug, info};
 
-/// OS thread ID of the tray thread (set once, read from any thread).
-static TRAY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-
-/// Shared auto-refresh state for UI → tray sync.
-static TRAY_AUTO_REFRESH: AtomicBool = AtomicBool::new(false);
+/// Channel sender for UI → tray auto-refresh sync. Initialized once
+/// by the tray thread; `sync_tray_auto_refresh` sends on it from any thread.
+static TRAY_SYNC_TX: OnceLock<crossbeam_channel::Sender<bool>> = OnceLock::new();
 
 /// Icon dimensions (width and height in pixels).
 const ICON_SIZE: u32 = 32;
@@ -83,18 +81,9 @@ pub fn enforce_single_instance(mutex_name: &str) -> single_instance::SingleInsta
 /// given state. This is safe to call from any thread (including the Slint
 /// event loop thread). On non-Windows platforms this is a no-op.
 #[cfg(windows)]
-#[allow(unsafe_code)]
 pub fn sync_tray_auto_refresh(enabled: bool) {
-    TRAY_AUTO_REFRESH.store(enabled, Ordering::Relaxed);
-    let thread_id = TRAY_THREAD_ID.load(Ordering::Relaxed);
-    if thread_id != 0 {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_USER};
-        // SAFETY: PostThreadMessageW posts a message to a thread's message
-        // queue. The thread ID is valid (set by the tray thread itself) and
-        // WM_USER is a safe application-defined message.
-        unsafe {
-            PostThreadMessageW(thread_id, WM_USER, 0, 0);
-        }
+    if let Some(tx) = TRAY_SYNC_TX.get() {
+        let _ = tx.send(enabled);
     }
 }
 
@@ -127,14 +116,9 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
     use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
     use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
-    // Store this thread's OS ID so sync_tray_auto_refresh can post messages.
-    #[cfg(windows)]
-    {
-        // SAFETY: GetCurrentThreadId is always safe to call.
-        #[allow(unsafe_code)]
-        let tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
-        TRAY_THREAD_ID.store(tid, Ordering::Relaxed);
-    }
+    // Set up the channel for UI → tray auto-refresh sync.
+    let (sync_tx, sync_rx) = crossbeam_channel::unbounded();
+    TRAY_SYNC_TX.set(sync_tx).ok();
 
     // Read initial auto-refresh state from the Slint window.
     // This runs on the tray thread, so we block briefly to read the value
@@ -149,7 +133,6 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
         .ok();
         rx.recv().unwrap_or(false)
     };
-    TRAY_AUTO_REFRESH.store(initial_auto_refresh, Ordering::Relaxed);
 
     let menu = Menu::new();
     let open_item = MenuItem::new("Open", true, None);
@@ -256,7 +239,7 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
     }));
 
     // Run the platform message pump so tray events are dispatched.
-    run_message_pump(&auto_refresh_item);
+    run_message_pump(&auto_refresh_item, &sync_rx);
 
     // _tray_icon is dropped here when the thread exits.
 }
@@ -265,14 +248,20 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
 ///
 /// This blocks until the pump exits (e.g. `WM_QUIT` on Windows). Each
 /// platform needs its own event loop — currently only Windows is
-/// implemented.
+/// implemented. The `sync_rx` channel receives auto-refresh state
+/// updates from `sync_tray_auto_refresh`.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn run_message_pump(auto_refresh_item: &tray_icon::menu::CheckMenuItem) {
+fn run_message_pump(
+    auto_refresh_item: &tray_icon::menu::CheckMenuItem,
+    sync_rx: &crossbeam_channel::Receiver<bool>,
+) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, MSG, TranslateMessage, WM_USER,
+        DispatchMessageW, GetMessageW, MSG, TranslateMessage,
     };
 
+    // SAFETY: MSG is a plain-old-data C struct. Zeroing it is safe;
+    // all fields default to zero/null.
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         // SAFETY: `GetMessageW` is safe to call with a valid MSG pointer and
@@ -282,10 +271,9 @@ fn run_message_pump(auto_refresh_item: &tray_icon::menu::CheckMenuItem) {
         if ret <= 0 {
             break;
         }
-        // WM_USER is sent by sync_tray_auto_refresh to update the checkmark.
-        if msg.message == WM_USER {
-            auto_refresh_item.set_checked(TRAY_AUTO_REFRESH.load(Ordering::Relaxed));
-            continue;
+        // Check for auto-refresh sync from the UI thread.
+        if let Ok(enabled) = sync_rx.try_recv() {
+            auto_refresh_item.set_checked(enabled);
         }
         // SAFETY: `TranslateMessage` and `DispatchMessageW` are safe to call
         // with a valid MSG pointer obtained from `GetMessageW`.
@@ -302,7 +290,10 @@ fn run_message_pump(auto_refresh_item: &tray_icon::menu::CheckMenuItem) {
 /// platform-specific event loop (e.g. GLib on Linux, CFRunLoop on macOS)
 /// is implemented here.
 #[cfg(not(windows))]
-fn run_message_pump(auto_refresh_item: &tray_icon::menu::CheckMenuItem) {
+fn run_message_pump(
+    _auto_refresh_item: &tray_icon::menu::CheckMenuItem,
+    _sync_rx: &crossbeam_channel::Receiver<bool>,
+) {
     std::thread::park();
 }
 

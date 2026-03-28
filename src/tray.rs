@@ -137,16 +137,26 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
         }
     }));
 
-    // Left-click on the tray icon shows the window.
+    // Left-click on the tray icon toggles window visibility.
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-        if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, .. } = event {
-            debug!("tray: left-click, dispatching show to event loop");
+        if let TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        } = event
+        {
+            debug!("tray: left-click, dispatching toggle to event loop");
             let ww = window_weak.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
-                    debug!("tray: showing window (left-click)");
-                    crate::memory::log_memory_usage("after window shown");
-                    win.show().ok();
+                    if win.window().is_visible() {
+                        debug!("tray: hiding window (left-click)");
+                        win.hide().ok();
+                    } else {
+                        debug!("tray: showing window (left-click)");
+                        crate::memory::log_memory_usage("after window shown");
+                        win.show().ok();
+                    }
                 }
             })
             .ok();

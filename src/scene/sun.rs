@@ -114,6 +114,43 @@ pub fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second
     }
 }
 
+/// Input parameters for astronomical computations, extracted from the UI.
+///
+/// This struct captures the datetime state needed to compute time-dependent
+/// scene properties (sun direction, future moon/planet positions). It is
+/// independent of Slint — use `ui_callbacks::read_datetime_input()` to
+/// populate it from the window, or construct it directly for headless use.
+pub struct DateTimeInput {
+    /// Whether the user has selected a custom date/time (vs. live UTC).
+    pub use_custom: bool,
+    /// Custom hour as a float (0.0..24.0), only used when `use_custom` is true.
+    pub custom_hour: f32,
+    /// Custom day of year (1..366), only used when `use_custom` is true.
+    pub custom_day_of_year: u16,
+    /// Custom calendar year (e.g. 2025), only used when `use_custom` is true.
+    pub custom_year: i32,
+}
+
+/// Compute the sun direction from datetime parameters.
+///
+/// When `dt.use_custom` is true, computes the sun direction for the specified
+/// custom date/time. Otherwise, computes it for the current UTC time.
+///
+/// This encapsulates the custom-vs-now branching that was previously inline
+/// in `BeforeRendering`, making it callable from both the rendering callback
+/// and the wallpaper scheduler timer.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn compute_sun_direction(dt: &DateTimeInput) -> Vec3 {
+    if dt.use_custom {
+        let doy = dt.custom_day_of_year.max(1);
+        let (month, day) = super::datetime::day_of_year_to_month_day(doy, dt.custom_year);
+        let (h, m, s) = super::datetime::hour_float_to_hms(dt.custom_hour);
+        sun_direction_at(dt.custom_year, i32::from(month), i32::from(day), h, m, s)
+    } else {
+        sun_direction_now()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use approx::assert_relative_eq;
@@ -214,5 +251,58 @@ mod tests {
     fn direction_at_june_solstice() {
         let dir = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
         assert_relative_eq!(dir.y, 0.40, epsilon = 0.1);
+    }
+
+    // --- compute_sun_direction ---
+
+    /// `compute_sun_direction` with `use_custom: false` matches `sun_direction_now()`.
+    #[test]
+    fn compute_sun_direction_live() {
+        let dt = DateTimeInput {
+            use_custom: false,
+            custom_hour: 0.0,
+            custom_day_of_year: 1,
+            custom_year: 2025,
+        };
+        let a = compute_sun_direction(&dt);
+        let b = sun_direction_now();
+        // Both called within microseconds — should be nearly identical.
+        assert_relative_eq!(a.x, b.x, epsilon = 1e-3);
+        assert_relative_eq!(a.y, b.y, epsilon = 1e-3);
+        assert_relative_eq!(a.z, b.z, epsilon = 1e-3);
+    }
+
+    /// `compute_sun_direction` with custom datetime matches `sun_direction_at`.
+    #[test]
+    fn compute_sun_direction_custom() {
+        let dt = DateTimeInput {
+            use_custom: true,
+            custom_hour: 12.0,
+            // June 21 = day 172
+            custom_day_of_year: 172,
+            custom_year: 2025,
+        };
+        let a = compute_sun_direction(&dt);
+        let b = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
+        assert_relative_eq!(a.x, b.x, epsilon = 1e-5);
+        assert_relative_eq!(a.y, b.y, epsilon = 1e-5);
+        assert_relative_eq!(a.z, b.z, epsilon = 1e-5);
+    }
+
+    /// `compute_sun_direction` clamps day_of_year 0 to 1.
+    #[test]
+    fn compute_sun_direction_clamps_doy_zero() {
+        let dt = DateTimeInput {
+            use_custom: true,
+            custom_hour: 12.0,
+            custom_day_of_year: 0,
+            custom_year: 2025,
+        };
+        let a = compute_sun_direction(&dt);
+        // Day 0 clamped to day 1 = January 1.
+        let b = sun_direction_at(2025, 1, 1, 12, 0, 0.0);
+        assert_relative_eq!(a.x, b.x, epsilon = 1e-5);
+        assert_relative_eq!(a.y, b.y, epsilon = 1e-5);
+        assert_relative_eq!(a.z, b.z, epsilon = 1e-5);
     }
 }

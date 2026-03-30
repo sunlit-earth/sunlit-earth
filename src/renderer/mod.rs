@@ -18,7 +18,6 @@ use tracing::{debug, error, info, trace};
 
 use crate::MainWindow;
 use crate::scene::camera::{CameraParams, zoom_to_distance};
-use crate::scene::datetime;
 use crate::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -114,6 +113,22 @@ pub fn gamma_value_to_slider(gamma: f32) -> f32 {
 /// Returns `Err` if the GPU is not initialized, textures are still loading,
 /// or no frame has been rendered yet.
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+/// Update the sun direction in the stored shading parameters.
+///
+/// Called by the wallpaper scheduler timer before exporting, so the export
+/// uses a fresh sun direction even when `BeforeRendering` hasn't fired
+/// (i.e. when the window is hidden to tray). Must be called on the main
+/// thread (same thread as GPU_RESOURCES).
+pub fn update_sun_direction(sun_dir: glam::Vec3) {
+    GPU_RESOURCES.with(|r| {
+        if let Some(res) = r.borrow_mut().as_mut() {
+            if let Some(shading) = &mut res.last_shading {
+                shading.sun_dir = sun_dir;
+            }
+        }
+    });
+}
+
 pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
     GPU_RESOURCES.with(|r| {
         let borrow = r.borrow();
@@ -431,17 +446,8 @@ fn rendering_callback(
                 }
 
                 // Compute sun direction for this frame
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let sun_dir = if win.get_use_custom_datetime() {
-                    let hour = win.get_custom_hour();
-                    let doy = win.get_custom_day_of_year() as u16;
-                    let year = win.get_custom_year_index() + datetime::base_year();
-                    let (month, day) = datetime::day_of_year_to_month_day(doy.max(1), year);
-                    let (h, m, s) = datetime::hour_float_to_hms(hour);
-                    sun::sun_direction_at(year, i32::from(month), i32::from(day), h, m, s)
-                } else {
-                    sun::sun_direction_now()
-                };
+                let dt = crate::ui_callbacks::read_datetime_input(&win);
+                let sun_dir = sun::compute_sun_direction(&dt);
 
                 // Read UI properties for blend mode
                 let terminator_width_f = win.get_terminator_width();

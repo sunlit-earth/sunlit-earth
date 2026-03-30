@@ -285,6 +285,20 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
 
 /// Read all persisted settings from the window's current UI state.
 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+/// Extract datetime parameters from the Slint window for astronomical computations.
+///
+/// This is the thin UI-reading layer — the actual computation lives in
+/// `scene::sun::compute_sun_direction()`.
+pub fn read_datetime_input(window: &MainWindow) -> crate::scene::sun::DateTimeInput {
+    crate::scene::sun::DateTimeInput {
+        use_custom: window.get_use_custom_datetime(),
+        custom_hour: window.get_custom_hour(),
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        custom_day_of_year: window.get_custom_day_of_year() as u16,
+        custom_year: window.get_custom_year_index() + crate::scene::datetime::base_year(),
+    }
+}
+
 pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
     let aa_index = window.get_aa_index() as usize;
     let sample_count = aa_counts.get(aa_index).copied().unwrap_or(1);

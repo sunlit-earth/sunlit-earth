@@ -298,6 +298,12 @@ fn run_event_loop(
                 if let Some(win) = ww.upgrade()
                     && win.get_auto_refresh_enabled()
                 {
+                    // Refresh sun direction so the export uses the current time,
+                    // even when BeforeRendering hasn't fired (window hidden to tray).
+                    let dt = sunlit_earth::ui_callbacks::read_datetime_input(&win);
+                    let sun_dir = sunlit_earth::scene::sun::compute_sun_direction(&dt);
+                    sunlit_earth::renderer::update_sun_direction(sun_dir);
+
                     info!("auto-refresh: updating wallpaper");
                     #[cfg(windows)]
                     if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
@@ -339,6 +345,10 @@ fn run_event_loop(
                         if let Some(win) = ww.upgrade()
                             && win.get_auto_refresh_enabled()
                         {
+                            let dt = sunlit_earth::ui_callbacks::read_datetime_input(&win);
+                            let sun_dir = sunlit_earth::scene::sun::compute_sun_direction(&dt);
+                            sunlit_earth::renderer::update_sun_direction(sun_dir);
+
                             info!("auto-refresh: updating wallpaper");
                             #[cfg(windows)]
                             if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {

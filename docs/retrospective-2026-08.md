@@ -224,29 +224,29 @@ Invert the current asset strategy. Today the app decodes 8K JXL/JPEG assets and 
 
 ## 10. Phased roadmap
 
-Phase 0, stop the bleeding (small, on current main, ships as 0.1.1):
-1. Replace the texture channel with per-slot latest-value mailboxes and add a visibility-independent drain (event-loop timer). Cap: one frame per slot.
-2. Send compressed bytes (or a cache-file notification) through the mailbox instead of decoded pixels; decode on consumption.
-3. Enable release-build RSS logging (info level or a dedicated metrics writer) plus a warn-level RSS budget alert.
-4. Runtime verification of the leak fix per section 8.2.
+Revised 2026-08-15 after discussion. Phases 0 to 3 are commitments in this order; what comes after is direction, to be refined when we get there.
 
-Phase 1, testability foundations:
-1. Fake clock and fixture cloud server; first soak test reproducing the 10-day tray scenario in seconds (red against the old code, green against Phase 0).
-2. CI matrix to Linux + macOS (windowed tests under xvfb on Linux, Metal probe job on macOS); re-enable `fmt` and `-D warnings`.
-3. Golden-image + contact-sheet job on lavapipe and WARP.
+Phase 0, stop the bleeding, with proof (Windows only, ships as 0.1.1). The reproduction test comes first so the fix has a red test to turn green. Detailed plan: `plans/2026-08-15-phase0-memory-leak-plan.md`.
+1. Test knobs: environment overrides for the cloud URL, poll interval, and cache directory (all currently hardcoded in `cloud_fetcher.rs`), plus a `query-memory` IPC command, so the leak reproduces in minutes instead of days and memory can be sampled deterministically.
+2. Leak regression test: a Windows e2e test that runs the real binary with the window hidden via IPC, serves fixture cloud JPEGs with rotating ETags from a local HTTP stub, and asserts bounded memory across many updates. Red against current code (growth of one decoded frame per update), green after the fix.
+3. The fix: per-slot latest-value mailboxes with replacement semantics, drained by an event-loop timer that runs regardless of window visibility and processes updates, so wallpaper exports keep getting fresh clouds. Optional hardening: carry compressed bytes or a cache-file notification instead of decoded pixels to shrink the parked worst case.
+4. Production memory telemetry that survives release builds: periodic samples to a small metrics file plus a warn-level budget alert; manual verification on the real binary per section 8.2.
 
-Phase 2, the restructure (section 7):
-1. Extract `sunlit-core` (engine owns thread, resources, injected clock/sources); `SceneParams` unification; retire the thread-local and the exit hacks.
-2. Port `sunlit-app` onto the engine; evaluate Slint 1.17 + wgpu 29 (built-in `SystemTrayIcon` replacing `tray.rs`, drag-and-drop, tooltip support).
-3. Build the xtask VM orchestration (section 8.3: provider trait, golden images, guest contract); move e2e to the engine + IPC surface and desktop e2e onto the VMs, off the dev desktop.
+Phase 1, the restructure (section 7), with nothing else mixed in:
+1. Extract `sunlit-core`: engine owns its thread and resources, `SceneParams` unification, injected clock and asset sources; retire the thread-local and the exit hacks.
+2. The tests the restructure enables, as its acceptance criteria: mock-clock soak test (14 simulated days in seconds), engine integration tests, golden-image + contact-sheet job on the existing Windows CI (WARP).
+3. Low quality tier as the default for dev and tests (config plus small texture variants; the cloud service already publishes them).
+4. Port `sunlit-app` onto the engine; upgrade to Slint 1.17 + wgpu 29 (`SystemTrayIcon` replaces `tray.rs`; test whether the `process::exit(0)` workaround is still needed). Splits into its own step if the upgrade fights back.
 
-Phase 3, performance and assets:
-1. Quality tiers, offline asset pipeline (KTX2 mips), progressive startup.
-2. Benchmark job with budgets in CI.
+Phase 2, basic cross-platform support:
+1. Build and run on Linux and macOS: cfg gates, paths, per-OS memory snapshots; the engine and render layers pass on lavapipe and Metal.
+2. Then expand CI to the three-OS matrix (build/unit/engine everywhere, windowed tests under xvfb on Linux, the Metal probe job on macOS); re-enable `fmt` and `-D warnings`; per-adapter golden images.
 
-Phase 4, actual cross-platform features:
-1. Linux wallpaper setter (gsettings/DBus/swaybg paths) and `/proc`-based memory snapshots; Linux desktop e2e green.
-2. macOS wallpaper setter and tray, developed and tested against GitHub-hosted runners only (decision 2026-08-15: no Mac hardware planned).
+Phase 3, VM orchestration (section 8.3):
+1. The xtask crate with the provider trait (Hyper-V and QEMU), golden images, and the guest contract.
+2. Desktop e2e moves onto the VMs, off the dev desktop.
+
+Later, direction rather than commitment, refined when we get there: full Linux wallpaper setters (GNOME/KDE) and Linux tray via StatusNotifier; macOS wallpaper and tray against hosted runners; multi-monitor via `IDesktopWallpaper` (section 11, question 5); the offline KTX2 asset pipeline, BC7, progressive startup, and benchmark budgets in CI (section 9).
 
 ## 11. Research questions: answers (researched 2026-08-15)
 
@@ -264,6 +264,6 @@ The open questions from the first version of this document, now answered. What r
 
 **Still open** (small, deferred to the phases where they matter):
 
-- Does the `process::exit(0)` teardown workaround remain necessary on Slint 1.17 / wgpu 29? Test during the Phase 2 upgrade.
-- Does our render pipeline pass on the macOS paravirtual GPU? One probe job in Phase 1.
-- Which StatusNotifier setup the Linux VM image needs for tray e2e (GNOME plus extension vs KDE)? Decide when Linux tray work starts in Phase 4.
+- Does the `process::exit(0)` teardown workaround remain necessary on Slint 1.17 / wgpu 29? Test during the Phase 1 upgrade.
+- Does our render pipeline pass on the macOS paravirtual GPU? One probe job in Phase 2.
+- Which StatusNotifier setup the Linux VM image needs for tray e2e (GNOME plus extension vs KDE)? Decide when Linux tray work starts, after Phase 3.

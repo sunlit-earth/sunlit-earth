@@ -1,8 +1,22 @@
 //! Process-level memory tracking.
 //!
-//! Provides memory measurement on Windows via `GetProcessMemoryInfo`,
-//! a convenience function that logs values as structured events, and a CSV
-//! metrics file written by the watchdog timer.
+//! Provides memory measurement on Windows, Linux, and macOS, a convenience
+//! function that logs values as structured events, and a CSV metrics file
+//! written by the watchdog timer.
+//!
+//! The three implementations answer the same three questions with whatever the
+//! platform calls them, so `MemorySnapshot` and the CSV format are identical
+//! everywhere and the soak test's assertions hold on all three:
+//!
+//! | | Windows | Linux | macOS |
+//! |---|---|---|---|
+//! | `rss_bytes` | `WorkingSetSize` | `VmRSS` | `resident_size` |
+//! | `peak_rss_bytes` | `PeakWorkingSetSize` | `VmHWM` | `resident_size_peak` |
+//! | `private_bytes` | `PrivateUsage` | `Private_Clean` + `Private_Dirty` | `phys_footprint` |
+//!
+//! The numbers are close cousins rather than the same quantity, so compare
+//! them within one OS and not across. What every column does share is the
+//! property the tests depend on: parking a decoded frame makes it go up.
 //!
 //! The metrics file exists because release builds compile out `debug!` and
 //! `info!` (`release_max_level_warn`), so the tray-mode memory leak produced no
@@ -46,14 +60,20 @@ pub struct MemorySnapshot {
     pub rss_bytes: u64,
     /// Peak RSS observed since process start, in bytes.
     pub peak_rss_bytes: u64,
-    /// Committed private memory in bytes (what Task Manager shows as "Private Bytes").
+    /// Memory this process does not share with any other, in bytes.
+    ///
+    /// Windows "Private Bytes", the sum of the private mappings on Linux, and
+    /// the phys-footprint ledger on macOS. See the module docs for the exact
+    /// counter per platform.
     pub private_bytes: u64,
 }
 
 /// Return a snapshot of the current process's memory counters.
 ///
-/// On Windows this calls `GetProcessMemoryInfo` with `PROCESS_MEMORY_COUNTERS_EX`.
-/// On other platforms, returns `None`.
+/// Windows calls `GetProcessMemoryInfo` with `PROCESS_MEMORY_COUNTERS_EX`,
+/// Linux reads `/proc/self`, macOS asks the Mach kernel. Returns `None` on any
+/// other platform, and on the three supported ones only if the OS refuses to
+/// answer.
 #[cfg(windows)]
 #[allow(clippy::cast_possible_truncation)]
 pub fn snapshot() -> Option<MemorySnapshot> {
@@ -103,7 +123,118 @@ pub fn snapshot() -> Option<MemorySnapshot> {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: `/proc/self/status` for the resident sizes, `/proc/self/smaps_rollup`
+/// for the private total. Both are plain text, so this needs no `unsafe` and no
+/// binding crate.
+#[cfg(target_os = "linux")]
+pub fn snapshot() -> Option<MemorySnapshot> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let rss_bytes = parse_status_kib(&status, "VmRSS")?;
+    let peak_rss_bytes = parse_status_kib(&status, "VmHWM")?;
+
+    // smaps_rollup arrived in Linux 4.14. Where it is missing (or unreadable
+    // under a hardened kernel) RSS is the honest stand-in: it is an upper bound
+    // on the private total, so the soak test's growth assertion stays valid,
+    // it just also counts shared pages.
+    let private_bytes = fs::read_to_string("/proc/self/smaps_rollup")
+        .ok()
+        .and_then(|rollup| parse_private_kib(&rollup))
+        .unwrap_or(rss_bytes);
+
+    Some(MemorySnapshot {
+        rss_bytes,
+        peak_rss_bytes,
+        private_bytes,
+    })
+}
+
+/// Read one `Key:   1234 kB` line out of a `/proc` file and return it in bytes.
+///
+/// Compiled on Linux and in every test build, so the parsing is covered by the
+/// unit tests on the development machine rather than only on the Linux runner.
+#[cfg(any(target_os = "linux", test))]
+fn parse_status_kib(text: &str, key: &str) -> Option<u64> {
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix(key) else {
+            continue;
+        };
+        // `VmRSS` must not match a hypothetical `VmRSSFoo`.
+        let Some(rest) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let value: u64 = rest.split_whitespace().next()?.parse().ok()?;
+        return Some(value * 1024);
+    }
+    None
+}
+
+/// Sum the private mappings reported by `/proc/self/smaps_rollup`, in bytes.
+///
+/// Clean plus dirty, which is what the rollup offers as "not shared with
+/// anyone else". Swapped-out private pages are not included; a runner that is
+/// swapping has bigger problems than this counter.
+#[cfg(any(target_os = "linux", test))]
+fn parse_private_kib(rollup: &str) -> Option<u64> {
+    let clean = parse_status_kib(rollup, "Private_Clean")?;
+    let dirty = parse_status_kib(rollup, "Private_Dirty")?;
+    Some(clean + dirty)
+}
+
+/// macOS: `task_info(TASK_VM_INFO)`.
+///
+/// `phys_footprint` is the counter Activity Monitor shows as "Memory" and the
+/// one the jetsam limits are enforced against, which makes it the closest
+/// analogue of Windows private bytes: it is what this process is charged for
+/// and excludes pages shared with other processes.
+#[cfg(target_os = "macos")]
+pub fn snapshot() -> Option<MemorySnapshot> {
+    use mach2::kern_return::KERN_SUCCESS;
+    use mach2::message::mach_msg_type_number_t;
+    use mach2::task::task_info;
+    use mach2::task_info::{TASK_VM_INFO, task_vm_info};
+    use mach2::traps::mach_task_self;
+    use mach2::vm_types::{integer_t, natural_t};
+
+    let mut info = task_vm_info::default();
+    // The kernel fills as many revisions of the struct as it knows and writes
+    // back how many it filled; asking for the whole of the binding crate's
+    // (possibly newer) struct is how the SDK's own TASK_VM_INFO_COUNT is
+    // defined, and `phys_footprint` has been in revision 1 since 10.11.
+    let mut count =
+        mach_msg_type_number_t::try_from(size_of::<task_vm_info>() / size_of::<natural_t>())
+            .ok()?;
+
+    // SAFETY: `mach_task_self()` returns the send right to this process's own
+    // task port, which is always valid and needs no deallocation. `task_info`
+    // writes at most `count` `integer_t`s into the buffer it is given; the
+    // buffer is a live local `task_vm_info` and `count` is derived from that
+    // same type's size, so the kernel cannot write past it. `info` is fully
+    // initialized before the call, so any field the kernel leaves alone reads
+    // back as zero rather than as garbage.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        task_info(
+            mach_task_self(),
+            TASK_VM_INFO,
+            std::ptr::addr_of_mut!(info).cast::<integer_t>(),
+            &raw mut count,
+        )
+    };
+
+    if result != KERN_SUCCESS {
+        return None;
+    }
+
+    // `task_vm_info` is `repr(packed(4))`, so these are field reads by value
+    // rather than references into the struct.
+    Some(MemorySnapshot {
+        rss_bytes: info.resident_size,
+        peak_rss_bytes: info.resident_size_peak,
+        private_bytes: info.phys_footprint,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn snapshot() -> Option<MemorySnapshot> {
     None
 }
@@ -377,18 +508,57 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Every platform the project builds for must be able to measure itself.
+    ///
+    /// This used to be Windows-only, and everything that asserts on memory
+    /// (the soak test above all) quietly became a no-op elsewhere. Making it
+    /// an assertion on all three supported platforms is what stops a broken
+    /// per-OS snapshot from looking like a passing test suite.
     #[test]
-    fn snapshot_returns_some_on_windows() {
+    fn snapshot_returns_some_on_every_supported_platform() {
         let snap = snapshot();
-        if cfg!(windows) {
-            let snap = snap.expect("expected Some on Windows");
+        if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
+            let snap = snap.expect("expected Some on Windows, Linux and macOS");
             assert!(snap.rss_bytes > 0, "RSS should be > 0");
             assert!(
                 snap.peak_rss_bytes >= snap.rss_bytes,
-                "peak RSS should be >= current RSS"
+                "peak RSS {} should be >= current RSS {}",
+                snap.peak_rss_bytes,
+                snap.rss_bytes
             );
             assert!(snap.private_bytes > 0, "private bytes should be > 0");
         }
+    }
+
+    #[test]
+    fn status_parser_reads_kibibytes_as_bytes() {
+        let status = "Name:\tsunlit-earth\nVmHWM:\t  204800 kB\nVmRSS:\t   102400 kB\n";
+        assert_eq!(parse_status_kib(status, "VmRSS"), Some(102_400 * 1024));
+        assert_eq!(parse_status_kib(status, "VmHWM"), Some(204_800 * 1024));
+    }
+
+    #[test]
+    fn status_parser_returns_none_for_a_missing_key() {
+        let status = "VmRSS:\t 100 kB\n";
+        assert_eq!(parse_status_kib(status, "VmSwap"), None);
+    }
+
+    /// `VmRSS` must not be satisfied by a longer key that starts the same way.
+    #[test]
+    fn status_parser_requires_the_whole_key() {
+        let status = "VmRSSExtra:\t 999 kB\nVmRSS:\t 100 kB\n";
+        assert_eq!(parse_status_kib(status, "VmRSS"), Some(100 * 1024));
+    }
+
+    #[test]
+    fn rollup_parser_sums_clean_and_dirty() {
+        let rollup = "Rss:\t 4096 kB\nPrivate_Clean:\t 256 kB\nPrivate_Dirty:\t 1024 kB\n";
+        assert_eq!(parse_private_kib(rollup), Some((256 + 1024) * 1024));
+    }
+
+    #[test]
+    fn rollup_parser_returns_none_when_a_field_is_absent() {
+        assert_eq!(parse_private_kib("Private_Clean:\t 256 kB\n"), None);
     }
 
     #[test]

@@ -33,6 +33,14 @@ windows-sys = { workspace = true, features = [
 ] }
 winreg.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Raw Mach bindings for the memory snapshot, nothing more. This is the macOS
+# counterpart of `windows-sys` above: declarations only, with the `unsafe` call
+# site and its SAFETY comment living in `memory.rs`. libc's own `mach_task_self`
+# is deprecated in favour of this crate, and libc does not declare
+# `task_vm_info` at all.
+mach2.workspace = true
+
 [dev-dependencies]
 approx.workspace = true
 proptest.workspace = true

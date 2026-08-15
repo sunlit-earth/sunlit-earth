@@ -12,6 +12,26 @@ pub trait WallpaperSink: Send + Sync {
     fn publish(&self, pixels: &[u8], width: u32, height: u32) -> Result<(), String>;
 }
 
+/// Render size used off Windows, where there is no monitor query yet.
+///
+/// Windows enumerates the real monitors (`wallpaper::get_primary_monitor_resolution`).
+/// The obvious non-Windows equivalent would be to ask the windowing layer, but
+/// Slint 1.17's public `Window` API reports the window's own size and scale
+/// factor and nothing about the display it sits on, and adding a second
+/// windowing dependency to serve a code path that currently ends in
+/// "unsupported" would be the wrong trade. A common desktop resolution is
+/// therefore the documented placeholder until the real Linux and macOS setters
+/// land, at which point each of them brings its own native query.
+pub const DEFAULT_TARGET_SIZE: (u32, u32) = (2560, 1440);
+
+/// Message returned by the non-Windows `publish`.
+///
+/// Deliberately a plain error rather than a stub that writes a PNG somewhere
+/// and reports success: the UI shows this string in the status line, and a
+/// wallpaper that silently did not change is worse than one that says so.
+#[cfg(not(windows))]
+const UNSUPPORTED: &str = "setting the desktop wallpaper is not supported on this platform yet";
+
 /// The real desktop: save a PNG and hand it to the OS.
 pub struct SystemWallpaper;
 
@@ -23,7 +43,7 @@ impl WallpaperSink for SystemWallpaper {
 
     #[cfg(not(windows))]
     fn target_size(&self) -> Result<(u32, u32), String> {
-        Err("wallpaper export is not supported on this platform".to_owned())
+        Ok(DEFAULT_TARGET_SIZE)
     }
 
     #[cfg(windows)]
@@ -37,7 +57,7 @@ impl WallpaperSink for SystemWallpaper {
 
     #[cfg(not(windows))]
     fn publish(&self, _pixels: &[u8], _width: u32, _height: u32) -> Result<(), String> {
-        Err("wallpaper export is not supported on this platform".to_owned())
+        Err(UNSUPPORTED.to_owned())
     }
 }
 

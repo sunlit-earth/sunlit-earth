@@ -14,9 +14,14 @@ pub struct GpuContext {
 }
 
 /// Create a GPU context, optionally forcing the software adapter.
+///
+/// The instance comes from `sunlit_core::wgpu_init::instance` rather than from
+/// a fresh `wgpu::Instance`: there is one per process, and dropping the last
+/// one unloads the Vulkan loader out from under Mesa's TLS destructors. See the
+/// comment on `INSTANCE` there.
 pub fn create_gpu_context(force_software: bool) -> GpuContext {
     pollster::block_on(async {
-        let instance = wgpu::Instance::default();
+        let instance = sunlit_core::wgpu_init::instance();
 
         let adapter: wgpu::Adapter = if force_software {
             instance

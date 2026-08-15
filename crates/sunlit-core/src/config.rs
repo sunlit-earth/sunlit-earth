@@ -360,10 +360,40 @@ fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
     !monitor.is_null()
 }
 
+/// Non-Windows: a coordinate-range check rather than a monitor query.
+///
+/// There is no portable way to enumerate displays from this crate. `sunlit-core`
+/// owns no window, and Slint's public `Window` API reports the window's own
+/// size and scale factor but nothing about the display behind it, so the exact
+/// answer Win32 gives is not available here.
+///
+/// What is available is the range a window position can take at all. X11's core
+/// protocol carries window coordinates as `INT16`, and the Windows virtual
+/// screen is bounded the same way by GDI, so a saved position outside
+/// -32768..=32767 cannot name a place any window can be. Rejecting those is
+/// coarser than the Win32 check (a position inside the range but on a monitor
+/// that has since been unplugged still passes here) but it is the part that
+/// matters most: it stops a config carried from a large multi-monitor desk to a
+/// laptop from restoring a window into nowhere, with no way to get it back.
+///
+/// The precise per-monitor check arrives on each platform with that platform's
+/// windowing work; see the wallpaper entries in `docs/roadmap.md`.
 #[cfg(not(windows))]
-fn is_position_on_screen(_x: i32, _y: i32, _width: u32, _height: u32) -> bool {
-    // No validation on non-Windows platforms — accept any saved position
-    true
+fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
+    const MIN: i32 = i16::MIN as i32;
+    const MAX: i32 = i16::MAX as i32;
+
+    let Ok(width) = i32::try_from(width) else {
+        return false;
+    };
+    let Ok(height) = i32::try_from(height) else {
+        return false;
+    };
+
+    (MIN..=MAX).contains(&x)
+        && (MIN..=MAX).contains(&y)
+        && (MIN..=MAX).contains(&x.saturating_add(width))
+        && (MIN..=MAX).contains(&y.saturating_add(height))
 }
 
 /// Return the saved window geometry if it passes on-screen validation.
@@ -796,6 +826,9 @@ mod tests {
         assert_eq!(result.unwrap(), (100, 100, 800, 600));
     }
 
+    /// Both implementations must reject this: Windows because no monitor
+    /// contains the rect, everywhere else because the coordinates are outside
+    /// the range a window position can take.
     #[test]
     fn validated_geometry_rejects_off_screen() {
         let config = AppConfig {

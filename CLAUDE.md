@@ -176,7 +176,8 @@ Windows is the platform that ships. Linux and macOS build, test, and render head
 
 | | Windows | Linux | macOS |
 |---|---|---|---|
-| Build, unit, engine, GPU, soak, golden | yes | yes (lavapipe) | yes (Metal) |
+| Build, unit, engine, GPU shader, soak | yes | yes (lavapipe) | yes (Metal) |
+| Golden images | yes (`warp`) | yes (`lavapipe`) | yes (`metal`) |
 | `render` subcommand | yes | yes | yes |
 | Settings window | yes | untested | untested |
 | Set the desktop wallpaper | yes | no | no |

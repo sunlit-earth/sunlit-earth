@@ -216,7 +216,7 @@ pub fn snapshot() -> Option<MemorySnapshot> {
         task_info(
             mach_task_self(),
             TASK_VM_INFO,
-            std::ptr::addr_of_mut!(info).cast::<integer_t>(),
+            (&raw mut info).cast::<integer_t>(),
             &raw mut count,
         )
     };

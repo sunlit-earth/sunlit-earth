@@ -69,10 +69,23 @@ jobs:
           fi
         shell: bash
 
-      # Same key as the CI matrix, so this reuses that job's build.
+      # Reuse the CI matrix's cache rather than building cold. Written as a case
+      # rather than a nested `&&`/`||` expression because this workflow cannot
+      # be dispatched until it is on the default branch, so it gets no test run
+      # before someone depends on it.
+      - name: Resolve the matching CI cache key
+        id: cache_key
+        run: |
+          case "${{ inputs.os }}" in
+            ubuntu-latest)  echo "key=linux"   >> "$GITHUB_OUTPUT" ;;
+            windows-latest) echo "key=windows" >> "$GITHUB_OUTPUT" ;;
+            macos-latest)   echo "key=macos"   >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown runner ${{ inputs.os }}"; exit 1 ;;
+          esac
+        shell: bash
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-${{ inputs.os == 'ubuntu-latest' && 'linux' || (inputs.os == 'windows-latest' && 'windows' || 'macos') }}
+          shared-key: ci-${{ steps.cache_key.outputs.key }}
 
       # --nocapture so the log names the adapter the references belong to.
       - name: Regenerate

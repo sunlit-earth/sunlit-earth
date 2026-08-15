@@ -152,27 +152,6 @@ jobs:
           fi
         shell: bash
 
-      # TEMPORARY. `golden.yml` is the permanent home for this, but GitHub only
-      # registers a dispatchable workflow once it is on the default branch, so
-      # it cannot be run from here and the `metal` reference set has to come off
-      # a macOS runner somehow. This regenerates and uploads every adapter's set
-      # for review. It runs *after* the test step, so the committed references
-      # are still compared first and a real mismatch cannot hide behind the
-      # regeneration. Removed as soon as the sets are committed.
-      - name: Regenerate golden references
-        if: always()
-        env:
-          SUNLIT_EARTH_UPDATE_GOLDEN: "1"
-        run: ${{ matrix.wrap }} cargo test -p sunlit-core --test golden --locked -- --nocapture
-        shell: bash
-      - name: Upload regenerated golden references
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: golden-${{ matrix.name }}
-          path: crates/sunlit-core/tests/golden/
-          if-no-files-found: error
-
       # The contact sheet renders every camera preset into one image. It is not
       # asserted on; it exists so a human can glance at a shading change. Per OS,
       # because the three adapters are exactly what it is worth comparing.

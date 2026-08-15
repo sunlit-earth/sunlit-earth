@@ -89,15 +89,25 @@ Each step is a separate commit or small commit series on `feat/phase2-cross-plat
 
 ## Status
 
-In progress on `feat/phase2-cross-platform` (PR #24).
+Implemented on `feat/phase2-cross-platform` (PR #24). All seven steps are done and every success criterion is met.
 
 - Step 1, reformat and the `fmt` gate: done, green in CI (run 31911197718).
-- Step 2, warning cleanup and `-D warnings`: done.
-- Step 3, Linux: done. Full suite green in WSL against lavapipe, under `xvfb-run -a` and with `-D warnings`. The Windows suite (380 tests) and the desktop e2e suite (8 tests) were re-run after the changes and stay green.
-- Step 4, macOS probe: running.
-- Step 5, the matrix: written, held until the probe reports.
-- Step 6, per-adapter goldens: directory restructure, the `workflow_dispatch` job, and the WARP and lavapipe sets done; `metal` outstanding.
-- Step 7, docs: done pending the final numbers.
+- Step 2, warning cleanup and `-D warnings`: done, green in CI (run 31911787852).
+- Step 3, Linux: done. Full suite green in WSL against lavapipe, under `xvfb-run -a` and with `-D warnings`, and green on the Ubuntu runner. The Windows suite (380 tests) and the desktop e2e suite (8 tests) were re-run after the changes and stay green.
+- Step 4, macOS probe: done. See the probe section below; the paravirtual Metal GPU runs the whole pipeline.
+- Step 5, the matrix: done, green on all three OSes (run 31914066981).
+- Step 6, per-adapter goldens: done. Directory restructure, the `workflow_dispatch` regeneration workflow, and all three reference sets (`warp`, `lavapipe`, `metal`).
+- Step 7, docs: done. CLAUDE.md, `docs/roadmap.md`, and this document.
+
+Against the success criteria:
+
+1. CI green on all three OSes with both gates enabled: yes.
+2. `cargo test` passes on Linux and macOS with the soak assertions live: yes, and no per-OS calibration was needed.
+3. `render` produces a PNG on all three in CI: yes, 70452 bytes on Windows, 70590 on Linux, 69672 on macOS.
+4. `memory::snapshot()` returns `Some` everywhere: yes, asserted by `snapshot_returns_some_on_every_supported_platform`.
+5. References for at least WARP and lavapipe: exceeded, all three exist.
+6. No new unconditional `unsafe`: yes, the one new FFI site is a scoped allow with a `// SAFETY:` comment.
+7. Windows runtime close to baseline: yes, 20 m 16 s against a 44 m 18 s cold first run.
 
 ## Deviations
 
@@ -110,6 +120,12 @@ In progress on `feat/phase2-cross-platform` (PR #24).
 4. **`is_position_on_screen` off Windows became a coordinate-range check rather than staying a no-op.** Not planned, but running the suite on Linux turned `validated_geometry_rejects_off_screen` red, and the honest reading was that the test was right and the code was wrong: the non-Windows branch accepted every coordinate, so config carried from a multi-monitor desk to a laptop restored a window nobody could reach. The fix asserts the portable half of the question (X11 carries window coordinates as `INT16`, and the Windows virtual screen is bounded the same way) so the test now passes on all three platforms instead of being weakened to Windows-only.
 
 5. **`wgpu::Instance` moved into a process-wide `OnceLock`.** Also not planned, and the largest single finding of the phase; see Results. It is a behavior change on every platform, though an invisible one on Windows.
+
+6. **One test now skips on macOS.** `software_adapter_produces_correct_results` asks for a software adapter, and Metal has none to give. The risk this plan warns about is a per-OS skip papering over a real precision difference, so the skip is written to make that impossible: it is conditional on querying the adapter rather than on `cfg!(target_os)`, and it asserts that the adapter *is* present on everything except macOS, so a missing WARP or lavapipe fails the test rather than quietly skipping it. Windows and Linux run the full assertions unchanged, verified at 12 passed on each. No tolerance was touched anywhere.
+
+7. **The `textures_ready` defect is recorded rather than fixed.** Finding it was a side effect of the phase (CI checks out Git LFS pointers, which decode-fail and leave the slot in the same terminal state an unconfigured slot is in), but it is an asset-lifecycle bug that behaves identically on Windows, and fixing it properly means reasoning about the blend-mode composite bind group and the settings window together. Phase 2 takes the two scoped pieces it needs: `run_render` no longer waits when there is no texture file at all, and the CI smoke step points at an empty textures directory so it is deterministic and does not spend two minutes per OS waiting for an event that cannot arrive. The general fix is on the roadmap with the diagnosis written out.
+
+8. **The Metal references came from a temporary step in `ci.yml`, not from `golden.yml`.** GitHub only registers a `workflow_dispatch` workflow once it is on the default branch, so the regeneration workflow this phase adds cannot be dispatched from the branch that adds it. The set was produced by a temporary matrix step that ran the golden test with `SUNLIT_EARTH_UPDATE_GOLDEN=1` and uploaded the directory as an artifact, which was then reviewed, committed, and the step removed. The step deliberately ran *after* the normal test step so the committed references were still compared first and a genuine mismatch could not hide behind the regeneration; the artifact confirmed this by shipping the `warp` and `lavapipe` directories byte-identical to the committed ones.
 
 ## Results
 
@@ -142,32 +158,40 @@ The absolute figures differ by up to a factor of eight, which is the counters ra
 | Adapter | Key | Status |
 |---|---|---|
 | WARP (Windows, D3D12) | `warp` | committed, unchanged from before the restructure |
-| lavapipe (Linux, Vulkan) | `lavapipe` | committed, generated in WSL on Mesa 23.2.1 / LLVM 15; the runner ships a different Mesa, so the Linux job is what confirms them |
-| Metal (macOS) | `metal` | pending the probe |
+| lavapipe (Linux, Vulkan) | `lavapipe` | committed, generated in WSL on Mesa 23.2.1 / LLVM 15.0.7 and confirmed by the matrix run against the runner's LLVM 20.1.2 |
+| Metal (macOS) | `metal` | committed, generated on `macos-latest` and uploaded as a CI artifact (see Deviations 8) |
 
-Measured difference between the WARP and lavapipe sets, against a tolerance of mean 2.0 and 1% outliers:
+Measured difference between the reference sets, both against WARP, with a tolerance of mean 2.0 and 1% outliers:
 
-| Scene | Mean channel difference | Outliers |
-|---|---|---|
-| default | 0.707 | 0.417% |
-| nightglow | 0.860 | 0.381% |
-| rayleigh | 0.558 | 0.182% |
-| close_up | 0.188 | 0.001% |
+| Scene | lavapipe, mean | lavapipe, outliers | Metal, mean | Metal, outliers |
+|---|---|---|---|---|
+| default | 0.707 | 0.417% | 0.137 | 0.008% |
+| nightglow | 0.860 | 0.381% | 0.180 | 0.007% |
+| rayleigh | 0.558 | 0.182% | 0.120 | 0.000% |
+| close_up | 0.188 | 0.001% | 0.008 | 0.000% |
 
-Worth recording because it contradicts the assumption behind decision 5: two conformant software rasterizers on different backends agree well inside the existing tolerance, so a single shared reference set would in fact have passed. The case for per-adapter directories is therefore about margin, not compatibility. One shared set would spend up to 43% of the mean budget on the difference between two correct implementations, leaving a regression that size able to hide on one platform while failing on the other. Per-adapter references give every platform the whole tolerance to spend on detecting real change.
+The paravirtual Metal GPU turns out to agree with WARP roughly five times more closely than lavapipe does, which was not the expected ordering: the two CPU rasterizers are the pair that disagree most.
+
+That the WSL-generated lavapipe set passed unmodified on a runner five LLVM major versions ahead is itself a useful data point: the tolerance absorbs a large shader-compiler difference within one rasterizer family, which is the case it was designed for.
+
+Worth recording because it contradicts the assumption behind decision 5. Every adapter pair agrees well inside the existing tolerance, so a single shared reference set would in fact have passed on all three today, and the case for per-adapter directories is about margin rather than compatibility: one shared set would spend up to 43% of the mean budget (0.860 of 2.0) on the difference between two correct implementations, leaving a regression that size able to hide on one platform while failing on another. Per-adapter references give every platform the whole tolerance to spend on detecting real change, and the numbers above are the evidence for how much that is worth rather than an assertion that it was necessary.
 
 ### CI runtimes
 
-| Job | Cold cache | Warm cache |
-|---|---|---|
-| Windows | 44 m 18 s, then 48 m 4 s and 37 m 30 s on the two runs that started before the first one had saved a cache | pending |
-| Linux | pending | pending |
-| macOS | pending | pending |
-| Format (Ubuntu) | 8 to 12 s | n/a |
+Run 31914066981, the first run of the three-OS matrix, green on all four jobs.
 
-The cold figure is the documented cost of the first run on a new PR: Actions caches are scoped per merge ref, so there is nothing to restore. Three runs in a row paid it here only because they were pushed inside the first one's build window.
+| Job | Total | `cargo test` | Render smoke | Cache state |
+|---|---|---|---|---|
+| Windows | 20 m 16 s | 8 m 56 s | 6 m 53 s | partly warm |
+| macOS | 18 m 23 s | 15 m 54 s | 1 m 42 s | cold |
+| Linux | 30 m 25 s | 26 m 14 s | 3 m 7 s | cold |
+| Format (Ubuntu) | 12 s | n/a | n/a | none needed |
 
-Green in CI so far: run 31911197718 (step 1, reformat plus the `fmt` gate) and run 31911787852 (step 2, warning cleanup plus `-D warnings`).
+Success criterion 7 is met with room to spare: the Windows job went from 44 m 18 s on the first (fully cold) run of the PR to 20 m 16 s here, on a cache that was only partly warm because adding `mach2` changed `Cargo.lock` and forced a prefix-match restore. Earlier runs on this branch took 48 m 4 s and 37 m 30 s only because they were pushed inside the first one's build window and so also started cold. Actions caches are scoped per merge ref, so the first run on any new PR pays this; it is not a regression.
+
+The render smoke step is dominated by `cargo run` rebuilding the binary in the dev profile after `cargo test` built the test profile, not by the render, which takes under a second. It is the price of asking a real binary rather than a test harness to produce the image.
+
+Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix).
 
 ### macOS probe
 
@@ -187,6 +211,6 @@ This answers retrospective section 11, question 1 for our pipeline, and the answ
 | Golden | 6 passed, comparisons skipped (no `metal` set) |
 | `slint_ui` | 17 passed |
 
-The single failure was `software_adapter_produces_correct_results`, and it was not a shading or precision problem. wgpu reports `no_fallback_backends: Backends(METAL)`: the Metal backend exposes no software adapter, so a case that explicitly asks for one has nothing to run. The test now checks for the adapter and skips only when it is genuinely absent, and asserts that it is present anywhere other than macOS, so a missing WARP or lavapipe still fails rather than quietly skipping. The other eleven cases in that file already cover the adapter macOS actually uses.
+The single failure was `software_adapter_produces_correct_results`, and it was not a shading or precision problem. wgpu reports `no_fallback_backends: Backends(METAL)`: the Metal backend exposes no software adapter, so a case that explicitly asks for one has nothing to run. `docs/tech.md` had already written this down during the technology selection ("macOS: No software rendering path. Apple deprecated OpenGL and there's no Mesa equivalent"), so the probe confirmed an existing note rather than discovering something; it was simply never connected to the test that depends on it. The test now checks for the adapter and skips only when it is genuinely absent, and asserts that it is present anywhere other than macOS, so a missing WARP or lavapipe still fails rather than quietly skipping. The other eleven cases in that file already cover the adapter macOS actually uses.
 
 Also found here, though not a macOS issue: `textures/**` is Git LFS, and `actions/checkout` leaves pointer files behind. They resolve as texture paths and then fail to decode as JXL, which clears the slot's path and leaves `textures_ready` permanently false, so `run_render` waited the full 120-second timeout on every OS and logged an error about a problem that did not exist. The smoke step now points `SUNLIT_EARTH_TEXTURES` at an empty directory, which is both faster and an honest statement of what it tests; `run_render` additionally skips the wait when no texture file was found at all. The general defect in `Renderer::textures_ready` is on the roadmap rather than patched here, because it needs the blend-mode composite state and the settings-window path considered together.

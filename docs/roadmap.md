@@ -43,7 +43,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] CI lint gates: the codebase-wide reformat and the warning cleanup landed in Phase 2, so `ci.yml` runs a `fmt` job again and sets `RUSTFLAGS: "-D warnings"`. Clippy stays a local command: its artifacts do not share the test cache and running it in CI would force a full recompile.
 - [x] Cross-platform build and test: the workspace builds, tests, and renders headlessly on Linux (lavapipe) and macOS (Metal), and CI is a three-OS matrix. Phase 2, see [plans/2026-08-15-phase2-cross-platform-plan.md](plans/2026-08-15-phase2-cross-platform-plan.md).
 - [ ] Cross-platform release builds: `release.yml` still builds Windows only. Produce binaries for Linux and macOS too and publish them as GitHub release artifacts.
-- [ ] Golden references on macOS: the `metal` reference set is generated through `golden.yml`, which needs the workflow on the default branch before it can be dispatched. Until it exists the golden test skips on macOS.
+- [ ] Golden reference regeneration: `golden.yml` is the intended route, but GitHub only registers a dispatchable workflow once it is on the default branch, so it becomes usable after this branch merges. The `warp`, `lavapipe`, and `metal` sets all exist; until the workflow is dispatchable, regenerate on the adapter in question with `SUNLIT_EARTH_UPDATE_GOLDEN=1`.
 
 ## Bugs and polish
 

@@ -20,14 +20,31 @@ cargo test -p sunlit-core --test engine   # Engine integration tests
 cargo test -p sunlit-core --test soak     # Mock-clock soak test (14 simulated days)
 cargo test -p sunlit-core --test golden   # Golden images + contact sheet
 cargo test --test e2e -- --ignored # Desktop e2e suite (needs a real desktop and GPU)
+cargo fmt --check                  # Format gate (CI runs this)
 cargo clippy --all-targets         # Lint (pedantic enabled, see Cargo.toml for allows)
 cargo run                          # Run the app
 cargo run -- --software-rendering  # Force CPU rendering
 cargo run -- --quality high        # Override the quality tier for one run
+cargo run -- render --output x.png --width 640 --height 360   # Headless render, works on all three OSes
 cargo llvm-cov --html              # HTML coverage report (target/llvm-cov/html/)
 
-SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden  # Regenerate goldens
+SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden  # Regenerate goldens for this machine's adapter
 ```
+
+CI sets `RUSTFLAGS: "-D warnings"`, so a warning is a build failure there. `cargo clippy --all-targets` locally is what keeps that true; clippy is not run in CI because its artifacts do not share the test cache and would force a full recompile.
+
+### Building on Linux from Windows
+
+The Linux port is developed through WSL. Build into a Linux-native target
+directory, or the Windows and Linux artifacts fight over `target/`:
+
+```bash
+wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/path/to/sunlit-earth && CARGO_TARGET_DIR=$HOME/sunlit-target cargo test --workspace'
+```
+
+Build dependencies (Ubuntu): `build-essential pkg-config clang libclang-dev libfontconfig-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev mesa-vulkan-drivers xvfb`. `mesa-vulkan-drivers` supplies lavapipe, which is the software adapter the GPU tests use there.
+
+Note that WSL's default adapter is a GL passthrough to the host GPU, not lavapipe; `--software-rendering` and `EngineConfig::headless` select lavapipe, which is what CI uses.
 
 ## Workspace Layout
 
@@ -151,20 +168,41 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 - `ureq` (rustls): cloud fetching. `crossbeam-channel`: engine command and reply channels
 - `interprocess`: local socket IPC. `single-instance`: the OS mutex (app only)
 - `windows-sys`: Win32 FFI, `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo` in core; `AttachConsole` in the app
+- `mach2`: Mach FFI on macOS, for `task_info(TASK_VM_INFO)` in `memory.rs` and nothing else. Declarations only; the `unsafe` call site is ours
+
+## Platform support
+
+Windows is the platform that ships. Linux and macOS build, test, and render headlessly; what they do not do yet is set a wallpaper.
+
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Build, unit, engine, GPU, soak, golden | yes | yes (lavapipe) | yes (Metal) |
+| `render` subcommand | yes | yes | yes |
+| Settings window | yes | untested | untested |
+| Set the desktop wallpaper | yes | no | no |
+| Desktop e2e (`tests/e2e.rs`) | yes, local only | no | no |
+
+Per-OS implementations live in three places, each behind a `cfg` and each documented where it sits:
+
+- `memory::snapshot`: `GetProcessMemoryInfo`, `/proc/self/{status,smaps_rollup}`, `task_info(TASK_VM_INFO)`. Same `MemorySnapshot`, same CSV, so every memory assertion in the suite is live on all three.
+- `engine::wallpaper_sink::SystemWallpaper`: off Windows, `target_size` returns a documented 2560x1440 and `publish` returns a plain "not supported on this platform yet", which the UI shows in the status line. Not a stub that pretends to succeed.
+- `config::is_position_on_screen`: Win32 monitor enumeration on Windows; elsewhere a coordinate-range check against the INT16 window-position range, which is the portable part of the same question.
+
+The desktop e2e suite stays `#[ignore]`d and Windows-only: hosted runners have no interactive desktop, and the VM story is Phase 3.
 
 ## Testing
 
 ### Layers
 
-| Layer | Where | What |
-|---|---|---|
-| Unit + property | both crates | pure functions, `proptest` invariants |
-| Engine integration | `sunlit-core/tests/engine.rs` | real engine, real GPU, headless |
-| Soak | `sunlit-core/tests/soak.rs` | mock clock, fixture cloud, 14 simulated days |
-| Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance |
-| GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU |
-| UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` |
-| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d |
+| Layer | Where | What | Runs on |
+|---|---|---|---|
+| Unit + property | both crates | pure functions, `proptest` invariants | all three |
+| Engine integration | `sunlit-core/tests/engine.rs` | real engine, real GPU, headless | all three |
+| Soak | `sunlit-core/tests/soak.rs` | mock clock, fixture cloud, 14 simulated days | all three |
+| Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance | all three, per-adapter references |
+| GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU | all three |
+| UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` | all three |
+| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | Windows, locally |
 
 ### Conventions
 
@@ -172,7 +210,8 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 - **Float comparisons**: `approx::assert_relative_eq!`. `tests/shading.rs` predates this and keeps its own GPU tolerance pattern.
 - **GPU tests assert invariants** (monotonicity, bounds, visibility), not exact pixels, because of cross-adapter float variance.
 - **One GPU device at a time.** Per-test device creation crashes on Windows. Shader tests share a device through `LazyLock<Mutex<GpuContext>>`; engine, soak, and golden tests each hold a `GPU_SERIAL` mutex for the lifetime of their engine.
-- **Golden images** force the software adapter so a developer machine and a CI runner compare against the same references. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
+- **One wgpu instance per process, ever.** `wgpu_init::instance()` holds it in a `OnceLock` and nothing else may call `wgpu::Instance::new`. An instance owns the loaded driver libraries, and dropping the last one `dlclose`s the Vulkan loader while Mesa's pthread TLS destructors still point into it, so the next thread to exit dies in `__nptl_deallocate_tsd`. That is not theoretical: it killed all 14 engine tests on lavapipe.
+- **Golden images** force the software adapter where the platform has one, so a developer machine and a CI runner compare against the same references. References are per adapter (`tests/golden/warp/`, `lavapipe/`, `metal/`), keyed by `wgpu_init::adapter_key`; the reasoning and the measured cross-adapter deltas are on that function. An adapter with no directory skips; a directory missing one case fails. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
 - **Soak measurements** take their baseline after warm-up (the first cloud texture and wgpu's allocator pools are a one-off ~85 MiB); the assertion is on the remaining simulated days.
 
 ### Resource-flow rules (from the retrospective, section 8.2)
@@ -193,22 +232,27 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 
 ## CI/CD
 
-Two GitHub Actions workflows in `.github/workflows/`:
+Three GitHub Actions workflows in `.github/workflows/`:
 
-- **`ci.yml`**: on every push to `main` and every PR regardless of its base branch (stacked PRs target other PR branches). One `test` job on Windows: `cargo test --locked` across the workspace, then uploads `target/contact-sheet.png` as an artifact. A `fmt` job runs `cargo fmt --check` once on Ubuntu.
-- **`release.yml`**: on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds `cargo build --release --locked`, zips `target/release/sunlit-earth.exe`, and creates a GitHub Release.
+- **`ci.yml`**: on every push to `main` and every PR regardless of its base branch (stacked PRs target other PR branches). A `fmt` job runs `cargo fmt --check` once on Ubuntu, and a `test` matrix runs `cargo test --locked` plus a headless `render` smoke test on `ubuntu-latest`, `windows-latest`, and `macos-latest`, uploading the contact sheet and the smoke render per OS.
+- **`golden.yml`**: `workflow_dispatch` only. Pick an OS, run it, download the `golden-<os>` artifact, review the images, commit them. GitHub only registers dispatchable workflows from the default branch, so it is usable once merged; before that, regenerate locally on the adapter in question.
+- **`release.yml`**: on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds `cargo build --release --locked`, zips `target/release/sunlit-earth.exe`, and creates a GitHub Release. Windows only; cross-platform release artifacts are still a roadmap item.
 
 Key details:
 
-- LLVM 19 is pinned on all Windows jobs via `KyleMayes/install-llvm-action@v2`; `LIBCLANG_PATH` is set to `$LLVM_PATH/lib` so bindgen finds `libclang.dll`.
-- `RUSTFLAGS: "-D warnings"` is commented out pending a lint cleanup.
+- `fail-fast: false` on the matrix. All three results, every time: cancelling macOS because Linux failed costs a round trip to learn something the same run already knew.
+- Per-OS setup, all of it explicit rather than relied on from the runner image: LLVM 19 pinned on Windows via `KyleMayes/install-llvm-action@v2` with `LIBCLANG_PATH`; Slint's build dependencies plus `mesa-vulkan-drivers` and `xvfb` via apt on Ubuntu; Xcode's `libclang.dylib` located defensively on macOS.
+- Linux tests run under `xvfb-run -a`. Nothing opens a window today, so this is for the first windowed test to arrive. It does propagate the exit status, so a failing suite still fails the job.
+- The render smoke test is deliberately **not** wrapped in xvfb: `run_render` claims to need no window, and running it with no `DISPLAY` is what makes that a tested claim.
+- Cache keys are `ci-linux` / `ci-windows` / `ci-macos`. The Windows one is spelled out rather than derived from the runner label so it kept the key it had before the matrix.
+- The first run on a new PR builds cold (roughly 45 minutes on Windows) because Actions caches are scoped per merge ref. Later runs on the same PR restore it. That is expected, not a regression.
 - All `cargo` commands use `--locked`. `Cargo.lock` lives at the workspace root.
-- GPU tests run on the software adapter on CI runners.
-- Clippy runs locally only (its artifacts are incompatible with the test cache and force full recompilation).
+- GPU tests run on the software adapter where the platform has one: WARP on Windows, lavapipe on Linux. macOS has no CPU adapter, so it falls back to the runner's paravirtual Metal GPU, which is a real one.
+- Clippy runs locally only (its artifacts are incompatible with the test cache and force full recompilation). `-D warnings` in CI covers rustc's own lints.
 
 ## Key Constraints
 
-- `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `wallpaper.rs`, `config.rs`, `memory.rs`, and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments.
+- `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `wallpaper.rs`, `config.rs`, `memory.rs`, and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments. New FFI, on any platform, follows that pattern; the macOS `task_info` call in `memory.rs` is the most recent example.
 - Slint is pinned to `~1.17` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during resize, and then capped by the quality tier.
 - Zoom is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.

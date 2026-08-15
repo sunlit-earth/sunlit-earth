@@ -91,18 +91,102 @@ Each step is a separate commit or small commit series on `feat/phase2-cross-plat
 
 In progress on `feat/phase2-cross-platform` (PR #24).
 
-- Step 1, reformat and the `fmt` gate: done.
-- Step 2, warning cleanup and `-D warnings`: not started.
-- Step 3, Linux: not started.
-- Step 4, macOS probe: not started.
-- Step 5, the matrix: not started.
-- Step 6, per-adapter goldens: not started.
-- Step 7, docs: not started.
+- Step 1, reformat and the `fmt` gate: done, green in CI (run 31911197718).
+- Step 2, warning cleanup and `-D warnings`: done.
+- Step 3, Linux: done. Full suite green in WSL against lavapipe, under `xvfb-run -a` and with `-D warnings`. The Windows suite (380 tests) and the desktop e2e suite (8 tests) were re-run after the changes and stay green.
+- Step 4, macOS probe: running.
+- Step 5, the matrix: written, held until the probe reports.
+- Step 6, per-adapter goldens: directory restructure, the `workflow_dispatch` job, and the WARP and lavapipe sets done; `metal` outstanding.
+- Step 7, docs: done pending the final numbers.
 
 ## Deviations
 
-(To be filled during implementation.)
+1. **`mach2` is a dependency, where decision 2 said "instead of a crate dependency".** That phrase rules out a memory-measurement crate such as `sysinfo`, and the same decision asks the macOS path to match "the existing Windows FFI pattern", which is `windows-sys` (raw declarations) plus our own scoped `unsafe` and `// SAFETY:` comment. `mach2` is the macOS equivalent of exactly that: declarations only, no logic, and libc's own deprecation notice on `mach_task_self` points at it. Hand-rolling `task_vm_info` was the alternative and was rejected: it is a 30-field struct whose layout would have to be transcribed blind, with no macOS hardware to test the transcription on.
+
+2. **Step 6's directory restructure landed with Step 3 rather than after Step 5.** The lavapipe references had to be generated during the WSL session that was already open, and generating them requires the per-adapter layout to exist first. The rest of Step 6 (the `workflow_dispatch` job, the Metal set) stayed in place.
+
+3. **Decision 4's "primary monitor size reported by the windowing layer" is not implemented; the documented 2560x1440 default is used everywhere off Windows.** Slint 1.17's public `Window` API exposes the window's own size, position and scale factor and nothing about the display behind it, so there is no windowing layer to ask. Adding a second windowing dependency to serve a code path that immediately returns "wallpaper setting is not supported on this platform yet" would be the wrong trade. Recorded on the roadmap: the real Linux and macOS wallpaper setters each bring a native display query with them, and that is where this placeholder goes away.
+
+4. **`is_position_on_screen` off Windows became a coordinate-range check rather than staying a no-op.** Not planned, but running the suite on Linux turned `validated_geometry_rejects_off_screen` red, and the honest reading was that the test was right and the code was wrong: the non-Windows branch accepted every coordinate, so config carried from a multi-monitor desk to a laptop restored a window nobody could reach. The fix asserts the portable half of the question (X11 carries window coordinates as `INT16`, and the Windows virtual screen is bounded the same way) so the test now passes on all three platforms instead of being weakened to Windows-only.
+
+5. **`wgpu::Instance` moved into a process-wide `OnceLock`.** Also not planned, and the largest single finding of the phase; see Results. It is a behavior change on every platform, though an invisible one on Windows.
 
 ## Results
 
-(To be filled during implementation: per-OS CI runtimes, soak numbers per OS, the macOS probe outcome, and golden reference status per adapter.)
+### What running on a second OS actually found
+
+Three defects, none of which a Windows-only suite could have shown. This is the return on the phase and worth stating plainly.
+
+**Dropping the wgpu instance unloads the Vulkan loader.** `wgpu_init::init` built a `wgpu::Instance` per engine and let it go at the end of the function, on the stated reasoning that "wgpu's own handles keep whatever they need alive". They do, which is precisely the problem: keeping it alive only defers the unload to whenever the device dies. When the engine thread ended and dropped the device, the last reference went with it, `libvulkan.so.1` was `dlclose`d, and Mesa's pthread TLS destructors were left pointing into an unmapped page. All 14 engine integration tests died with SIGSEGV in `__nptl_deallocate_tsd` while joining the engine thread. The instance now lives in a `OnceLock` for the process. Windows never showed this because unloading the D3D12 runtime is safe; the defect was always in the code, only the platform was forgiving. The test harness in `tests/common` carried the same latent pattern and now shares the one instance.
+
+**`is_position_on_screen` accepted every coordinate off Windows.** Saved geometry from a large multi-monitor desk would restore a window nowhere reachable on a laptop. Now a coordinate-range check; see Deviations 4.
+
+**The memory assertions were silently inert everywhere but Windows.** Not a discovery so much as the thing this phase was for, but worth noting that the soak test printed "no memory counters on this platform, skipping the growth assertion" and passed, which from the outside looks identical to passing for the right reason.
+
+### Soak test, per OS
+
+Same test, same limits: growth under 16 MiB, warm-up under 192 MiB. No per-OS calibration was needed.
+
+| | Windows (WARP) | Linux (lavapipe, WSL) | macOS (Metal) |
+|---|---|---|---|
+| Wall clock for 14 simulated days | 44.2 s | 14.2 s | 17.4 s |
+| Exports / cloud fetches | 336 / 113 | 336 / 113 | 336 / 113 |
+| Private at startup | 531.1 MiB | 195.5 MiB | 67.9 MiB |
+| Warm-up allocation | +87.6 MiB | +12.2 MiB | +0.0 MiB |
+| Growth over 12 simulated days | +2.1 MiB | +0.0 MiB | +1.8 MiB |
+
+The absolute figures differ by up to a factor of eight, which is the counters rather than the program: Windows `PrivateUsage` charges committed-but-not-resident pages, Linux `Private_Clean + Private_Dirty` counts only resident private pages, and macOS `phys_footprint` is a ledger that compression and reclaim can move downward. macOS in fact ends warm-up *below* its startup figure, which is why its warm-up column reads +0.0: the saturating subtraction floors it. The growth row is what the test asserts on, and it is flat on all three.
+
+### Golden references, per adapter
+
+| Adapter | Key | Status |
+|---|---|---|
+| WARP (Windows, D3D12) | `warp` | committed, unchanged from before the restructure |
+| lavapipe (Linux, Vulkan) | `lavapipe` | committed, generated in WSL on Mesa 23.2.1 / LLVM 15; the runner ships a different Mesa, so the Linux job is what confirms them |
+| Metal (macOS) | `metal` | pending the probe |
+
+Measured difference between the WARP and lavapipe sets, against a tolerance of mean 2.0 and 1% outliers:
+
+| Scene | Mean channel difference | Outliers |
+|---|---|---|
+| default | 0.707 | 0.417% |
+| nightglow | 0.860 | 0.381% |
+| rayleigh | 0.558 | 0.182% |
+| close_up | 0.188 | 0.001% |
+
+Worth recording because it contradicts the assumption behind decision 5: two conformant software rasterizers on different backends agree well inside the existing tolerance, so a single shared reference set would in fact have passed. The case for per-adapter directories is therefore about margin, not compatibility. One shared set would spend up to 43% of the mean budget on the difference between two correct implementations, leaving a regression that size able to hide on one platform while failing on the other. Per-adapter references give every platform the whole tolerance to spend on detecting real change.
+
+### CI runtimes
+
+| Job | Cold cache | Warm cache |
+|---|---|---|
+| Windows | 44 m 18 s, then 48 m 4 s and 37 m 30 s on the two runs that started before the first one had saved a cache | pending |
+| Linux | pending | pending |
+| macOS | pending | pending |
+| Format (Ubuntu) | 8 to 12 s | n/a |
+
+The cold figure is the documented cost of the first run on a new PR: Actions caches are scoped per merge ref, so there is nothing to restore. Three runs in a row paid it here only because they were pushed inside the first one's build window.
+
+Green in CI so far: run 31911197718 (step 1, reformat plus the `fmt` gate) and run 31911787852 (step 2, warning cleanup plus `-D warnings`).
+
+### macOS probe
+
+Run 31912759965, job 95080200216, on `macos-latest`. Adapter: **`Apple Paravirtual device (Metal, IntegratedGpu)`**.
+
+This answers retrospective section 11, question 1 for our pipeline, and the answer is yes. MSAA, mipmapped texture upload, offscreen rendering, and buffer readback all work on the paravirtual device: the engine integration tests and the render-pipeline tests pass there unmodified, and the headless `render` subcommand produced a valid 69672-byte PNG.
+
+| Step | Result |
+|---|---|
+| Build | success |
+| Unit tests | 266 + 38 passed |
+| Render smoke test | success, 640x360 PNG |
+| Engine integration | 14 passed |
+| `render_pipeline` | 19 passed |
+| `shading` | 11 passed, 1 failed |
+| Soak | passed |
+| Golden | 6 passed, comparisons skipped (no `metal` set) |
+| `slint_ui` | 17 passed |
+
+The single failure was `software_adapter_produces_correct_results`, and it was not a shading or precision problem. wgpu reports `no_fallback_backends: Backends(METAL)`: the Metal backend exposes no software adapter, so a case that explicitly asks for one has nothing to run. The test now checks for the adapter and skips only when it is genuinely absent, and asserts that it is present anywhere other than macOS, so a missing WARP or lavapipe still fails rather than quietly skipping. The other eleven cases in that file already cover the adapter macOS actually uses.
+
+Also found here, though not a macOS issue: `textures/**` is Git LFS, and `actions/checkout` leaves pointer files behind. They resolve as texture paths and then fail to decode as JXL, which clears the slot's path and leaves `textures_ready` permanently false, so `run_render` waited the full 120-second timeout on every OS and logged an error about a problem that did not exist. The smoke step now points `SUNLIT_EARTH_TEXTURES` at an empty directory, which is both faster and an honest statement of what it tests; `run_render` additionally skips the wait when no texture file was found at all. The general defect in `Renderer::textures_ready` is on the roadmap rather than patched here, because it needs the blend-mode composite state and the settings-window path considered together.

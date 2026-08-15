@@ -1,7 +1,7 @@
 use glam::Mat4;
 
 /// Groups all camera-related parameters that flow from the UI to the renderer.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraParams {
     pub longitude: f32,
     pub latitude: f32,

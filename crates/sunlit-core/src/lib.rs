@@ -8,6 +8,7 @@ pub mod assets;
 pub mod config;
 pub mod geometry;
 pub mod memory;
+pub mod params;
 pub mod scene;
 #[cfg(windows)]
 pub mod wallpaper;

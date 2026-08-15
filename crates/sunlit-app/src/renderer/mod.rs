@@ -16,7 +16,7 @@ use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 use tracing::{debug, error, info, trace};
 
 use crate::MainWindow;
-use sunlit_core::scene::camera::{CameraParams, zoom_to_distance};
+use sunlit_core::scene::camera::zoom_to_distance;
 use sunlit_core::scene::sun;
 
 use frame::{FrameState, build_frame_state};
@@ -78,29 +78,20 @@ pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     (qw, qh)
 }
 
-const GAMMA_MIN: f32 = 0.2;
-const GAMMA_MAX: f32 = 3.0;
-
-/// Map a normalized slider position (0.0–1.0) to a gamma value (0.2–3.0).
-/// The midpoint (0.5) maps to gamma 1.0 (identity) so the neutral value
-/// is centered on the slider.  Piecewise linear: lower half spans
-/// `[GAMMA_MIN, 1.0]`, upper half spans `[1.0, GAMMA_MAX]`.
-pub fn gamma_slider_to_value(t: f32) -> f32 {
-    if t <= 0.5 {
-        GAMMA_MIN + (1.0 - GAMMA_MIN) * (t / 0.5)
-    } else {
-        1.0 + (GAMMA_MAX - 1.0) * ((t - 0.5) / 0.5)
-    }
-}
-
-/// Inverse of `gamma_slider_to_value`: convert a gamma value back to a
-/// normalized slider position.
-pub fn gamma_value_to_slider(gamma: f32) -> f32 {
-    if gamma <= 1.0 {
-        (gamma - GAMMA_MIN) / (1.0 - GAMMA_MIN) * 0.5
-    } else {
-        0.5 + (gamma - 1.0) / (GAMMA_MAX - 1.0) * 0.5
-    }
+/// Update the sun direction used by the next wallpaper export.
+///
+/// Called by the wallpaper scheduler timer before exporting, so the export
+/// uses a fresh sun direction even when `BeforeRendering` hasn't fired
+/// (that is, when the window is hidden to tray). Must be called on the main
+/// thread, the same thread as `GPU_RESOURCES`.
+pub fn update_sun_direction(sun_dir: glam::Vec3) {
+    GPU_RESOURCES.with(|r| {
+        if let Some(res) = r.borrow_mut().as_mut()
+            && let Some(inputs) = &mut res.last_inputs
+        {
+            inputs.sun_dir = sun_dir;
+        }
+    });
 }
 
 /// Render the current scene at the given resolution and return raw RGBA8 pixels.
@@ -111,36 +102,14 @@ pub fn gamma_value_to_slider(gamma: f32) -> f32 {
 ///
 /// Returns `Err` if the GPU is not initialized, textures are still loading,
 /// or no frame has been rendered yet.
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-/// Update the sun direction in the stored shading parameters.
-///
-/// Called by the wallpaper scheduler timer before exporting, so the export
-/// uses a fresh sun direction even when `BeforeRendering` hasn't fired
-/// (i.e. when the window is hidden to tray). Must be called on the main
-/// thread (same thread as GPU_RESOURCES).
-pub fn update_sun_direction(sun_dir: glam::Vec3) {
-    GPU_RESOURCES.with(|r| {
-        if let Some(res) = r.borrow_mut().as_mut() {
-            if let Some(shading) = &mut res.last_shading {
-                shading.sun_dir = sun_dir;
-            }
-        }
-    });
-}
-
+#[allow(clippy::cast_precision_loss)]
 pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
     GPU_RESOURCES.with(|r| {
         let borrow = r.borrow();
         let res = borrow.as_ref().ok_or("GPU not initialized")?;
 
-        let state = res
-            .last_state
-            .as_ref()
-            .ok_or("No frame rendered yet")?;
-        let shading = res
-            .last_shading
-            .as_ref()
-            .ok_or("No frame rendered yet")?;
+        let params = res.last_params.as_ref().ok_or("No frame rendered yet")?;
+        let inputs = res.last_inputs.as_ref().ok_or("No frame rendered yet")?;
 
         // Look up the bind group that was used for the last rendered frame
         let bind_group = match res
@@ -169,23 +138,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             );
 
         let aspect = target_width as f32 / target_height as f32;
-        let camera = CameraParams {
-            longitude: state.longitude,
-            latitude: state.latitude,
-            zoom: state.zoom,
-            offset_x: state.offset_x,
-            offset_y: state.offset_y,
-            tilt_deg: state.tilt,
-            yaw_deg: state.yaw,
-            pitch_deg: state.pitch,
-        };
-        render_pass::write_uniforms(
-            &res.queue,
-            &res.uniform_buffer,
-            &camera,
-            aspect,
-            shading,
-        );
+        render_pass::write_uniforms(&res.queue, &res.uniform_buffer, params, aspect, inputs);
 
         let resolve_view = export_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -196,28 +149,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             msaa_depth_view.as_ref(),
         );
 
-        let (rayleigh_pipe, rayleigh_bg) = if shading.rayleigh_intensity > 0.0 {
-            (Some(&res.rayleigh_pipeline), Some(bind_group))
-        } else {
-            (None, None)
-        };
-        let (nightglow_orange_pipe, nightglow_orange_bg) = if shading.nightglow_intensity > 0.0 {
-            (Some(&res.nightglow_orange_pipeline), Some(bind_group))
-        } else {
-            (None, None)
-        };
-        let (nightglow_green_pipe, nightglow_green_bg) = if shading.nightglow_intensity > 0.0 {
-            (Some(&res.nightglow_green_pipeline), Some(bind_group))
-        } else {
-            (None, None)
-        };
-
-        let (cloud_pipe, cloud_bg) =
-            if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
-                (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
-            } else {
-                (None, None)
-            };
+        let overlays = render_pass::Overlays::select(res, params, bind_group);
 
         sunlit_core::memory::log_memory_usage("wallpaper: before render");
         render_pass::encode_and_submit(
@@ -229,14 +161,14 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             &res.vertex_buffer,
             &res.index_buffer,
             res.index_count,
-            rayleigh_pipe,
-            rayleigh_bg,
-            nightglow_orange_pipe,
-            nightglow_orange_bg,
-            nightglow_green_pipe,
-            nightglow_green_bg,
-            cloud_pipe,
-            cloud_bg,
+            overlays.rayleigh.0,
+            overlays.rayleigh.1,
+            overlays.nightglow_orange.0,
+            overlays.nightglow_orange.1,
+            overlays.nightglow_green.0,
+            overlays.nightglow_green.1,
+            overlays.cloud.0,
+            overlays.cloud.1,
         );
 
         sunlit_core::memory::log_memory_usage("wallpaper: before pixel readback");
@@ -274,9 +206,13 @@ struct GpuResources {
     render_height: u32,
     /// Last rendered state for dirty-checking. `None` means first frame.
     last_state: Option<FrameState>,
-    /// Raw shading parameters from the last rendered frame, used by the
-    /// export path to avoid reverse-engineering quantized `FrameState` values.
-    last_shading: Option<render_pass::ShadingParams>,
+    /// Scene parameters from the last rendered frame, replayed by the export
+    /// path so the wallpaper matches what the preview shows.
+    last_params: Option<sunlit_core::params::SceneParams>,
+    /// Per-frame inputs (sun direction, blend flag) from the last rendered
+    /// frame. The auto-refresh scheduler overwrites `sun_dir` here so a hidden
+    /// window still exports with the current sun position.
+    last_inputs: Option<render_pass::FrameInputs>,
     /// Bind group resolution from the last rendered frame, used by the
     /// export path to reuse the same texture binding without re-resolving.
     last_resolved: Option<texture_routing::ResolvedTexture>,
@@ -454,11 +390,14 @@ fn rendering_callback(
                 process_decoded_textures(res);
                 let received_any = std::mem::take(&mut res.texture_dirty);
 
+                // One read of the window into the single scene parameter
+                // struct; everything below derives from it.
+                let params = crate::ui_callbacks::read_params_from_window(&win, aa_counts);
+
                 // Check if sample count changed
-                let desired = lookup_sample_count(&win, aa_counts);
-                if desired != res.sample_count {
-                    debug!(sample_count = desired, "MSAA sample count changed");
-                    rebuild_msaa_resources(res, desired);
+                if params.sample_count != res.sample_count {
+                    debug!(sample_count = params.sample_count, "MSAA sample count changed");
+                    rebuild_msaa_resources(res, params.sample_count);
                 }
 
                 // Check if viewport size changed
@@ -468,88 +407,18 @@ fn rendering_callback(
                     rebuild_render_textures(res, vw, vh);
                 }
 
-                // Compute sun direction for this frame
-                let dt = crate::ui_callbacks::read_datetime_input(&win);
-                let sun_dir = sun::compute_sun_direction(&dt);
-
-                // Read UI properties for blend mode
-                let terminator_width_f = win.get_terminator_width();
-                let diffuse_shading = win.get_diffuse_shading();
-                let diffuse_floor_f = win.get_diffuse_floor();
-                let diffuse_ramp_f = win.get_diffuse_ramp();
-                let spec_shininess_f = win.get_spec_shininess();
-                let spec_intensity_f = win.get_spec_intensity();
-                let fresnel_mix_f = win.get_fresnel_mix();
-                let fresnel_exp_f = win.get_fresnel_exp();
-                let cloud_opacity_f = win.get_cloud_opacity();
-                let cloud_floor_f = win.get_cloud_floor();
-                let cloud_gamma_f = win.get_cloud_gamma();
-                let day_gamma_f = gamma_slider_to_value(win.get_day_gamma());
-                let day_saturation_f = win.get_day_saturation();
-                let night_gamma_f = gamma_slider_to_value(win.get_night_gamma());
-                let night_saturation_f = win.get_night_saturation();
-
-                // Build current frame state for dirty-checking
-                let camera = CameraParams {
-                    longitude: win.get_camera_longitude(),
-                    latitude: win.get_camera_latitude(),
-                    zoom: win.get_camera_zoom(),
-                    offset_x: win.get_camera_offset_x(),
-                    offset_y: win.get_camera_offset_y(),
-                    tilt_deg: win.get_camera_tilt(),
-                    yaw_deg: win.get_camera_yaw(),
-                    pitch_deg: win.get_camera_pitch(),
-                };
-                win.set_zoom_display_distance(zoom_to_distance(camera.zoom));
-                // Atmosphere parameters
-                let atmo_enabled = win.get_atmo_enabled();
-                let rayleigh_intensity_f = if atmo_enabled {
-                    win.get_rayleigh_intensity()
-                } else {
-                    0.0
-                };
-                let rayleigh_sharpness_f = win.get_rayleigh_sharpness();
-                let rayleigh_haze_f = win.get_rayleigh_haze();
-                let nightglow_intensity_f = if atmo_enabled {
-                    win.get_nightglow_intensity()
-                } else {
-                    0.0
-                };
-                let nightglow_falloff_f = win.get_nightglow_falloff();
-                let nightglow_balance_f = win.get_nightglow_balance();
+                let sun_dir = sun::compute_sun_direction(&params.datetime);
+                win.set_zoom_display_distance(zoom_to_distance(params.camera.zoom));
 
                 let current_state = build_frame_state(
-                    &camera,
-                    res.sample_count,
-                    win.get_texture_index(),
+                    &params,
                     res.render_width,
                     res.render_height,
                     sun_dir,
-                    terminator_width_f,
-                    diffuse_shading,
-                    diffuse_floor_f,
-                    diffuse_ramp_f,
-                    spec_shininess_f,
-                    spec_intensity_f,
-                    fresnel_mix_f,
-                    fresnel_exp_f,
-                    cloud_opacity_f,
-                    cloud_floor_f,
-                    cloud_gamma_f,
-                    day_gamma_f,
-                    day_saturation_f,
-                    night_gamma_f,
-                    night_saturation_f,
-                    rayleigh_intensity_f,
-                    rayleigh_sharpness_f,
-                    nightglow_intensity_f,
-                    nightglow_falloff_f,
-                    nightglow_balance_f,
-                    rayleigh_haze_f,
                 );
 
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let raw_index = current_state.texture_index as usize;
+                let raw_index = params.texture_index as usize;
 
                 // Resolve textures and kick off background loads
                 let (resolved, use_blend_uniforms) =
@@ -577,45 +446,19 @@ fn rendering_callback(
                         .expect("render_index must always point to a loaded slot"),
                 };
                 res.last_resolved = Some(resolved);
-
-                let shading = render_pass::ShadingParams {
+                res.last_params = Some(params);
+                res.last_inputs = Some(render_pass::FrameInputs {
                     sun_dir,
                     use_blend: use_blend_uniforms,
-                    terminator_width: terminator_width_f,
-                    diffuse_shading,
-                    diffuse_floor: diffuse_floor_f,
-                    diffuse_ramp: diffuse_ramp_f,
-                    spec_shininess: spec_shininess_f,
-                    spec_intensity: spec_intensity_f,
-                    fresnel_mix: fresnel_mix_f,
-                    fresnel_exp: fresnel_exp_f,
-                    day_gamma: day_gamma_f,
-                    day_saturation: day_saturation_f,
-                    night_gamma: night_gamma_f,
-                    night_saturation: night_saturation_f,
-                    cloud_sphere_radius: 1.0015,
-                    cloud_opacity: cloud_opacity_f,
-                    cloud_floor: cloud_floor_f,
-                    cloud_gamma: cloud_gamma_f,
-                    rayleigh_intensity: rayleigh_intensity_f,
-                    rayleigh_sharpness: rayleigh_sharpness_f,
-                    nightglow_intensity: nightglow_intensity_f,
-                    nightglow_falloff: nightglow_falloff_f,
-                    nightglow_balance: nightglow_balance_f,
-                    rayleigh_radius: 1.015,
-                    nightglow_orange_radius: 1.014,
-                    nightglow_green_radius: 1.015,
-                    rayleigh_haze: rayleigh_haze_f,
-                };
-                res.last_shading = Some(shading);
+                });
 
                 let is_first_frame = res.last_state.is_none();
 
                 let image = render_pass::execute_render_pass(
                     res,
-                    &current_state,
+                    &params,
                     bind_group_ref,
-                    res.last_shading.as_ref().unwrap(),
+                    res.last_inputs.as_ref().expect("just assigned"),
                 );
                 res.last_state = Some(current_state);
                 win.set_rendered_image(image);
@@ -661,8 +504,6 @@ fn rendering_callback(
 
 #[cfg(test)]
 mod tests {
-    use approx::assert_relative_eq;
-
     use super::*;
 
     // -----------------------------------------------------------------------
@@ -757,40 +598,4 @@ mod tests {
         assert_eq!(quantize_to_granularity(1920, 1080), (1920, 1024));
     }
 
-    // -----------------------------------------------------------------------
-    // gamma_slider_to_value / gamma_value_to_slider
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn gamma_slider_endpoints() {
-        assert_relative_eq!(gamma_slider_to_value(0.0), 0.2, epsilon = 1e-5);
-        assert_relative_eq!(gamma_slider_to_value(1.0), 3.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn gamma_slider_midpoint_is_identity() {
-        assert_relative_eq!(gamma_slider_to_value(0.5), 1.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn gamma_slider_monotonic() {
-        let values: Vec<f32> = (0..=10).map(|i| gamma_slider_to_value(i as f32 / 10.0)).collect();
-        for pair in values.windows(2) {
-            assert!(pair[1] > pair[0], "expected {:.3} > {:.3}", pair[1], pair[0]);
-        }
-    }
-
-    #[test]
-    fn gamma_roundtrip() {
-        for gamma in [0.2, 0.5, 1.0, 2.0, 3.0] {
-            let t = gamma_value_to_slider(gamma);
-            let roundtrip = gamma_slider_to_value(t);
-            assert_relative_eq!(roundtrip, gamma, epsilon = 1e-5);
-        }
-    }
-
-    #[test]
-    fn gamma_inverse_midpoint() {
-        assert_relative_eq!(gamma_value_to_slider(1.0), 0.5, epsilon = 1e-5);
-    }
 }

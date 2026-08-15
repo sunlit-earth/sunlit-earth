@@ -2,42 +2,22 @@ use std::sync::mpsc;
 
 use slint::Image;
 
-use sunlit_core::scene::camera::{CameraParams, OrbitalCamera, zoom_to_distance};
+use sunlit_core::params::{
+    CLOUD_SPHERE_RADIUS, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS, RAYLEIGH_RADIUS,
+    SceneParams,
+};
+use sunlit_core::scene::camera::{OrbitalCamera, zoom_to_distance};
 
 use super::GpuResources;
-use super::frame::FrameState;
 use super::uniforms::Uniforms;
 
-/// Shading parameters for a render pass.
+/// The per-frame values that are not part of `SceneParams`: the sun direction
+/// derived from the clock, and whether the resolved bind group carries both a
+/// day and a night texture.
 #[derive(Clone, Copy)]
-pub(super) struct ShadingParams {
+pub(super) struct FrameInputs {
     pub sun_dir: glam::Vec3,
     pub use_blend: bool,
-    pub terminator_width: f32,
-    pub diffuse_shading: bool,
-    pub diffuse_floor: f32,
-    pub diffuse_ramp: f32,
-    pub spec_shininess: f32,
-    pub spec_intensity: f32,
-    pub fresnel_mix: f32,
-    pub fresnel_exp: f32,
-    pub day_gamma: f32,
-    pub day_saturation: f32,
-    pub night_gamma: f32,
-    pub night_saturation: f32,
-    pub cloud_sphere_radius: f32,
-    pub cloud_opacity: f32,
-    pub cloud_floor: f32,
-    pub cloud_gamma: f32,
-    pub rayleigh_intensity: f32,
-    pub rayleigh_sharpness: f32,
-    pub nightglow_intensity: f32,
-    pub nightglow_falloff: f32,
-    pub nightglow_balance: f32,
-    pub rayleigh_radius: f32,
-    pub nightglow_orange_radius: f32,
-    pub nightglow_green_radius: f32,
-    pub rayleigh_haze: f32,
 }
 
 /// Texture views to render into. Decouples render pass encoding from
@@ -74,61 +54,62 @@ impl<'a> RenderTarget<'a> {
 }
 
 /// Build a `Uniforms` struct and write it to the GPU buffer.
+///
+/// This is one of the two translation points for `SceneParams` (the other is
+/// the Slint bridge in the app): everything the shader reads is derived here
+/// and nowhere else.
 #[allow(clippy::cast_precision_loss)]
 pub(super) fn write_uniforms(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
-    camera_params: &CameraParams,
+    params: &SceneParams,
     aspect: f32,
-    shading: &ShadingParams,
+    inputs: &FrameInputs,
 ) {
-    let mut camera = OrbitalCamera::new(
-        camera_params.longitude,
-        camera_params.latitude,
-        zoom_to_distance(camera_params.zoom),
-    );
-    camera.offset_x = camera_params.offset_x;
-    camera.offset_y = camera_params.offset_y;
-    camera.tilt_deg = camera_params.tilt_deg;
-    camera.yaw_deg = camera_params.yaw_deg;
-    camera.pitch_deg = camera_params.pitch_deg;
+    let cam = &params.camera;
+    let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
+    camera.offset_x = cam.offset_x;
+    camera.offset_y = cam.offset_y;
+    camera.tilt_deg = cam.tilt_deg;
+    camera.yaw_deg = cam.yaw_deg;
+    camera.pitch_deg = cam.pitch_deg;
     let mvp = camera.mvp_matrix(aspect);
     let eye_pos = camera.eye_position();
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
-        sun_dir: shading.sun_dir.into(),
-        terminator_width: if shading.use_blend {
-            shading.terminator_width
+        sun_dir: inputs.sun_dir.into(),
+        terminator_width: if inputs.use_blend {
+            params.terminator_width
         } else {
             -1.0
         },
-        flags: u32::from(shading.use_blend && shading.diffuse_shading),
-        diffuse_floor: shading.diffuse_floor,
-        diffuse_ramp: shading.diffuse_ramp,
+        flags: u32::from(inputs.use_blend && params.diffuse_shading),
+        diffuse_floor: params.diffuse_floor,
+        diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,
         eye_pos: eye_pos.into(),
         _pad2: 0.0,
-        spec_shininess: shading.spec_shininess,
-        spec_intensity: shading.spec_intensity,
-        fresnel_mix: shading.fresnel_mix,
-        fresnel_exp: shading.fresnel_exp,
-        day_gamma: shading.day_gamma,
-        day_saturation: shading.day_saturation,
-        night_gamma: shading.night_gamma,
-        night_saturation: shading.night_saturation,
-        cloud_sphere_radius: shading.cloud_sphere_radius,
-        cloud_opacity: shading.cloud_opacity,
-        cloud_floor: shading.cloud_floor,
-        cloud_gamma: shading.cloud_gamma,
-        rayleigh_intensity: shading.rayleigh_intensity,
-        rayleigh_sharpness: shading.rayleigh_sharpness,
-        nightglow_intensity: shading.nightglow_intensity,
-        nightglow_falloff: shading.nightglow_falloff,
-        nightglow_balance: shading.nightglow_balance,
-        rayleigh_radius: shading.rayleigh_radius,
-        nightglow_orange_radius: shading.nightglow_orange_radius,
-        nightglow_green_radius: shading.nightglow_green_radius,
-        rayleigh_haze: shading.rayleigh_haze,
+        spec_shininess: params.spec_shininess,
+        spec_intensity: params.spec_intensity,
+        fresnel_mix: params.fresnel_mix,
+        fresnel_exp: params.fresnel_exp,
+        day_gamma: params.day_gamma,
+        day_saturation: params.day_saturation,
+        night_gamma: params.night_gamma,
+        night_saturation: params.night_saturation,
+        cloud_sphere_radius: CLOUD_SPHERE_RADIUS,
+        cloud_opacity: params.cloud_opacity,
+        cloud_floor: params.cloud_floor,
+        cloud_gamma: params.cloud_gamma,
+        rayleigh_intensity: params.effective_rayleigh_intensity(),
+        rayleigh_sharpness: params.rayleigh_sharpness,
+        nightglow_intensity: params.effective_nightglow_intensity(),
+        nightglow_falloff: params.nightglow_falloff,
+        nightglow_balance: params.nightglow_balance,
+        rayleigh_radius: RAYLEIGH_RADIUS,
+        nightglow_orange_radius: NIGHTGLOW_ORANGE_RADIUS,
+        nightglow_green_radius: NIGHTGLOW_GREEN_RADIUS,
+        rayleigh_haze: params.rayleigh_haze,
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
@@ -241,29 +222,13 @@ pub(super) fn encode_and_submit(
 #[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
 pub(super) fn execute_render_pass(
     res: &GpuResources,
-    state: &FrameState,
+    params: &SceneParams,
     bind_group: &wgpu::BindGroup,
-    shading: &ShadingParams,
+    inputs: &FrameInputs,
 ) -> Image {
     let aspect = res.render_width as f32 / res.render_height as f32;
 
-    let cam = CameraParams {
-        longitude: state.longitude,
-        latitude: state.latitude,
-        zoom: state.zoom,
-        offset_x: state.offset_x,
-        offset_y: state.offset_y,
-        tilt_deg: state.tilt,
-        yaw_deg: state.yaw,
-        pitch_deg: state.pitch,
-    };
-    write_uniforms(
-        &res.queue,
-        &res.uniform_buffer,
-        &cam,
-        aspect,
-        shading,
-    );
+    write_uniforms(&res.queue, &res.uniform_buffer, params, aspect, inputs);
 
     let resolve_view = res
         .render_texture
@@ -275,34 +240,7 @@ pub(super) fn execute_render_pass(
         res.msaa_depth_view.as_ref(),
     );
 
-    // Only issue atmosphere draw calls when intensity > 0.
-    // The atmosphere shells reuse the Earth's bind group (texture bindings
-    // are present but ignored by the atmosphere fragment shaders).
-    let (rayleigh_pipe, rayleigh_bg) = if shading.rayleigh_intensity > 0.0 {
-        (Some(&res.rayleigh_pipeline), Some(bind_group))
-    } else {
-        (None, None)
-    };
-    let (nightglow_orange_pipe, nightglow_orange_bg) = if shading.nightglow_intensity > 0.0 {
-        (Some(&res.nightglow_orange_pipeline), Some(bind_group))
-    } else {
-        (None, None)
-    };
-    let (nightglow_green_pipe, nightglow_green_bg) = if shading.nightglow_intensity > 0.0 {
-        (Some(&res.nightglow_green_pipeline), Some(bind_group))
-    } else {
-        (None, None)
-    };
-
-    // Only issue the cloud draw call when the cloud texture has loaded
-    // and the user has not disabled clouds (opacity > 0)
-    let (cloud_pipe, cloud_bg) =
-        if shading.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
-            (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
-        } else {
-            (None, None)
-        };
-
+    let overlays = Overlays::select(res, params, bind_group);
     encode_and_submit(
         &res.device,
         &res.queue,
@@ -312,18 +250,55 @@ pub(super) fn execute_render_pass(
         &res.vertex_buffer,
         &res.index_buffer,
         res.index_count,
-        rayleigh_pipe,
-        rayleigh_bg,
-        nightglow_orange_pipe,
-        nightglow_orange_bg,
-        nightglow_green_pipe,
-        nightglow_green_bg,
-        cloud_pipe,
-        cloud_bg,
+        overlays.rayleigh.0,
+        overlays.rayleigh.1,
+        overlays.nightglow_orange.0,
+        overlays.nightglow_orange.1,
+        overlays.nightglow_green.0,
+        overlays.nightglow_green.1,
+        overlays.cloud.0,
+        overlays.cloud.1,
     );
 
     Image::try_from(res.render_texture.clone())
         .expect("Failed to convert wgpu texture to Slint image")
+}
+
+/// Which optional overlay shells to draw for a frame, and with which bind
+/// group. Shared by the preview pass and the wallpaper export so the two
+/// cannot drift apart.
+pub(super) struct Overlays<'a> {
+    pub rayleigh: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
+    pub nightglow_orange: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
+    pub nightglow_green: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
+    pub cloud: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
+}
+
+impl<'a> Overlays<'a> {
+    /// Atmosphere shells reuse the Earth's bind group (their fragment shaders
+    /// ignore the texture bindings). Clouds need their own, and only exist once
+    /// the cloud texture has been uploaded.
+    pub fn select(
+        res: &'a GpuResources,
+        params: &SceneParams,
+        bind_group: &'a wgpu::BindGroup,
+    ) -> Self {
+        let atmo = |on: bool, pipe: &'a wgpu::RenderPipeline| {
+            if on { (Some(pipe), Some(bind_group)) } else { (None, None) }
+        };
+        let rayleigh_on = params.effective_rayleigh_intensity() > 0.0;
+        let nightglow_on = params.effective_nightglow_intensity() > 0.0;
+        Self {
+            rayleigh: atmo(rayleigh_on, &res.rayleigh_pipeline),
+            nightglow_orange: atmo(nightglow_on, &res.nightglow_orange_pipeline),
+            nightglow_green: atmo(nightglow_on, &res.nightglow_green_pipeline),
+            cloud: if params.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
+                (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
+            } else {
+                (None, None)
+            },
+        }
+    }
 }
 
 /// Read back a 2D `Rgba8Unorm` texture as raw RGBA8 pixel data.

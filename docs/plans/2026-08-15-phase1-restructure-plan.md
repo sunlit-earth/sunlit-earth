@@ -186,3 +186,25 @@ Verification: `cargo test` 319 pass (181 core, 91 app, 19 render_pipeline, 12 sh
 slint_ui), `cargo clippy --all-targets` 31 warnings, all present in the Step 1 baseline (the count
 dropped because lib and lib-test no longer double-report the same lints across one crate).
 Full e2e suite 8 pass in 43 seconds.
+
+### Step 3: SceneParams
+
+`sunlit_core::params` now holds `SceneParams`, its quantized `ParamsDigest`, the four shell radii,
+the gamma slider mapping, and `AppConfig` conversions in both directions. The 27-argument
+`build_frame_state` is gone: `FrameState` is now the digest plus width, height, and the quantized
+sun direction. `ShadingParams` is gone too: `write_uniforms` takes `&SceneParams` plus a small
+`FrameInputs` (sun direction and the blend flag, neither of which is a scene parameter). The
+overlay-selection logic that was copy-pasted between the preview pass and the wallpaper export is
+now `Overlays::select`, so the two paths cannot drift.
+
+The Slint bridge gained `read_params_from_window` and `apply_params_to_window`;
+`read_config_from_window` and `apply_config_to_window` are now thin wrappers that add window
+geometry and the auto-refresh fields. The `BeforeRendering` callback reads the window exactly once
+into a `SceneParams` and derives everything from it, including the MSAA rebuild check.
+
+The 40-odd positional `build_frame_state` dirty-check tests were rewritten as a single table-driven
+test in `params.rs` that walks every shader parameter, so adding a knob without wiring the dirty
+check now fails a test instead of producing stale frames.
+
+Verification: `cargo test` 304 pass (196 core, 61 app, 19 render_pipeline, 12 shading, 16
+slint_ui), `cargo clippy --all-targets` 21 warnings, all pre-existing kinds. Full e2e suite 8 pass.

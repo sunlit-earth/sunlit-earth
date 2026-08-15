@@ -120,6 +120,7 @@ pub fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second
 /// scene properties (sun direction, future moon/planet positions). It is
 /// independent of Slint — use `ui_callbacks::read_datetime_input()` to
 /// populate it from the window, or construct it directly for headless use.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DateTimeInput {
     /// Whether the user has selected a custom date/time (vs. live UTC).
     pub use_custom: bool,

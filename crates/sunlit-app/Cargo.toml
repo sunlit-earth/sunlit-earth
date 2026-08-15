@@ -17,20 +17,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 log.workspace = true
-tray-icon.workspace = true
 single-instance.workspace = true
 interprocess.workspace = true
 crossbeam-channel.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = [
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_Foundation",
-    "Win32_System_ProcessStatus",
-    "Win32_System_Threading",
-    "Win32_System_Console",
-] }
+# Only for AttachConsole; everything else Win32 lives in sunlit-core.
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 approx.workspace = true

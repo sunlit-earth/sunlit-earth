@@ -1,23 +1,18 @@
-//! System tray icon with context menu and single-instance enforcement.
+//! System tray wiring and single-instance enforcement.
 //!
-//! This module provides:
-//! - A programmatically generated 32x32 Earth-like tray icon
-//! - A background thread with a platform-specific message pump for tray events
-//! - Single-instance enforcement via an OS-level mutex
-//!
-//! The tray icon, menu, and event handlers are cross-platform (via the
-//! `tray-icon` crate). Only the message pump is platform-specific — currently
-//! implemented for Windows only.
-
-use std::sync::OnceLock;
+//! The tray icon itself is a `SystemTrayIcon` declared in `ui/main.slint`, so
+//! Slint owns the platform integration (Shell notification area on Windows,
+//! `NSStatusItem` on macOS, `StatusNotifierItem` on Linux). What is left here
+//! is the procedurally generated icon, the callback wiring, and the
+//! single-instance mutex.
 
 use slint::ComponentHandle;
-use tray_icon::Icon;
 use tracing::{debug, info};
 
-/// Channel sender for UI → tray auto-refresh sync. Initialized once
-/// by the tray thread; `sync_tray_auto_refresh` sends on it from any thread.
-static TRAY_SYNC_TX: OnceLock<crossbeam_channel::Sender<bool>> = OnceLock::new();
+use sunlit_core::engine::EngineCommand;
+
+use crate::engine_client::EngineLink;
+use crate::{MainWindow, TrayIcon};
 
 /// Icon dimensions (width and height in pixels).
 const ICON_SIZE: u32 = 32;
@@ -31,7 +26,7 @@ const ICON_SIZE: u32 = 32;
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
 )]
-pub fn create_icon() -> Icon {
+pub fn create_icon() -> slint::Image {
     let size = ICON_SIZE as usize;
     let mut rgba = vec![0u8; size * size * 4];
     let center = size as f32 / 2.0;
@@ -56,241 +51,81 @@ pub fn create_icon() -> Icon {
         }
     }
 
-    Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).expect("valid 32x32 RGBA icon")
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        &rgba, ICON_SIZE, ICON_SIZE,
+    );
+    slint::Image::from_rgba8(buffer)
 }
 
 /// Check that no other instance of Sunlit Earth is running.
 ///
-/// Returns the `SingleInstance` guard, which must be kept alive for the
-/// entire process lifetime. Dropping it releases the OS mutex and allows
-/// another instance to start.
-///
-/// If another instance is already running, this function logs a message
-/// and exits the process with code 0.
+/// Returns the `SingleInstance` guard, which must be kept alive for the entire
+/// process lifetime; dropping it releases the OS mutex and allows another
+/// instance to start. `None` means an instance is already running, and the
+/// caller is expected to exit.
 pub fn acquire_single_instance(mutex_name: &str) -> Option<single_instance::SingleInstance> {
     let instance =
         single_instance::SingleInstance::new(mutex_name).expect("failed to create single-instance mutex");
     instance.is_single().then_some(instance)
 }
 
-/// Notify the tray thread to sync its "Auto-refresh" checkmark with the
-/// given state. This is safe to call from any thread (including the Slint
-/// event loop thread). On non-Windows platforms this is a no-op.
-#[cfg(windows)]
-pub fn sync_tray_auto_refresh(enabled: bool) {
-    if let Some(tx) = TRAY_SYNC_TX.get() {
-        let _ = tx.send(enabled);
-    }
-}
-
-#[cfg(not(windows))]
-pub fn sync_tray_auto_refresh(_enabled: bool) {}
-
-/// Spawn a background thread that creates a system tray icon with a
-/// context menu ("Open" / "Exit") and runs a Win32 message pump.
+/// Create the tray icon and wire its callbacks to the window and the engine.
 ///
-/// The thread runs until the message pump receives `WM_QUIT` (which
-/// happens when the process is exiting). The `TrayIcon` is `!Send` and
-/// lives entirely on the spawned thread.
-///
-/// `window_weak` is a weak reference to the main Slint window, used
-/// to show/hide the window from tray menu actions. `engine` carries the
-/// "Refresh Now" request to the engine thread. Returns a `JoinHandle` for the
-/// tray thread (caller should keep it alive).
-pub fn spawn_tray_thread(
-    window_weak: slint::Weak<crate::MainWindow>,
-    engine: crate::engine_client::EngineLink,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("tray-icon".into())
-        .spawn(move || {
-            run_tray_event_loop(window_weak, engine);
-        })
-        .expect("failed to spawn tray-icon thread")
-}
+/// The returned handle must be kept alive: dropping it removes the icon from
+/// the tray.
+pub fn create_tray(window: &MainWindow, engine: &EngineLink) -> TrayIcon {
+    let tray = TrayIcon::new().expect("failed to create tray icon");
+    tray.set_tray_image(create_icon());
+    tray.set_auto_refresh_enabled(window.get_auto_refresh_enabled());
 
-/// Create the tray icon, register event handlers, and run the Win32
-/// message pump. This function blocks until the message pump exits.
-#[allow(clippy::too_many_lines)]
-fn run_tray_event_loop(
-    window_weak: slint::Weak<crate::MainWindow>,
-    engine: crate::engine_client::EngineLink,
-) {
-    use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-    use tray_icon::{TrayIconBuilder, TrayIconEvent};
-
-    // Set up the channel for UI → tray auto-refresh sync.
-    let (sync_tx, sync_rx) = crossbeam_channel::unbounded();
-    TRAY_SYNC_TX.set(sync_tx).ok();
-
-    // Read initial auto-refresh state from the Slint window.
-    // This runs on the tray thread, so we block briefly to read the value
-    // from the event loop thread.
-    let initial_auto_refresh = {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ww = window_weak.clone();
-        slint::invoke_from_event_loop(move || {
-            let enabled = ww.upgrade().is_some_and(|win| win.get_auto_refresh_enabled());
-            tx.send(enabled).ok();
-        })
-        .ok();
-        rx.recv().unwrap_or(false)
-    };
-
-    let menu = Menu::new();
-    let open_item = MenuItem::new("Open", true, None);
-    let refresh_item = MenuItem::new("Refresh Now", true, None);
-    let auto_refresh_item = CheckMenuItem::new("Auto-refresh", true, initial_auto_refresh, None);
-    let exit_item = MenuItem::new("Exit", true, None);
-    menu.append(&open_item).expect("failed to add Open menu item");
-    menu.append(&PredefinedMenuItem::separator()).expect("failed to add separator");
-    menu.append(&refresh_item).expect("failed to add Refresh Now menu item");
-    menu.append(&auto_refresh_item).expect("failed to add Auto-refresh menu item");
-    menu.append(&PredefinedMenuItem::separator()).expect("failed to add separator");
-    menu.append(&exit_item).expect("failed to add Exit menu item");
-
-    let open_id = open_item.id().clone();
-    let refresh_id = refresh_item.id().clone();
-    let auto_refresh_id = auto_refresh_item.id().clone();
-    // Track auto-refresh state with an AtomicBool because CheckMenuItem is !Sync
-    // and can't be captured in the menu event handler closure.
-    // CheckMenuItem auto-toggles its visual checkmark on click; we mirror
-    // that state here so we can read it from the Send+Sync closure.
-    let auto_refresh_state = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(initial_auto_refresh));
-    let exit_id = exit_item.id().clone();
-
-    let _tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("Sunlit Earth")
-        .with_icon(create_icon())
-        .with_menu_on_left_click(false)
-        .build()
-        .expect("failed to build tray icon");
-
-    // Menu event handler: "Open" shows the window, "Refresh Now" exports
-    // wallpaper, "Auto-refresh" toggles the scheduler, "Exit" quits.
-    let window_weak_menu = window_weak.clone();
-    tray_icon::menu::MenuEvent::set_event_handler(Some(move |event: tray_icon::menu::MenuEvent| {
-        if event.id == open_id {
-            debug!("tray: Open menu item clicked, dispatching to event loop");
-            let ww = window_weak_menu.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(win) = ww.upgrade() {
-                    debug!("tray: showing window");
-                    sunlit_core::memory::log_memory_usage("after window shown");
-                    win.show().ok();
-                }
-            })
-            .ok();
-        } else if event.id == refresh_id {
-            info!("tray: refreshing wallpaper");
-            engine.send(sunlit_core::engine::EngineCommand::RenderWallpaperNow);
-        } else if event.id == auto_refresh_id {
-            // CheckMenuItem auto-toggles its visual state on click.
-            // Flip our mirror AtomicBool to match.
-            let checked = !auto_refresh_state.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-            debug!(checked, "tray: Auto-refresh toggled, dispatching to event loop");
-            let ww = window_weak_menu.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(win) = ww.upgrade() {
-                    win.set_auto_refresh_enabled(checked);
-                    win.invoke_auto_refresh_changed();
-                }
-            })
-            .ok();
-        } else if event.id == exit_id {
-            debug!("tray: Exit menu item clicked, dispatching to event loop");
-            slint::invoke_from_event_loop(move || {
-                debug!("tray: executing quit_event_loop");
-                slint::quit_event_loop().ok();
-            })
-            .ok();
+    let window_weak = window.as_weak();
+    tray.on_open_window(move || {
+        if let Some(win) = window_weak.upgrade() {
+            debug!("tray: showing window");
+            sunlit_core::memory::log_memory_usage("after window shown");
+            win.show().ok();
         }
-    }));
+    });
 
-    // Left-click on the tray icon toggles window visibility.
-    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-        if let TrayIconEvent::Click {
-            button: tray_icon::MouseButton::Left,
-            button_state: tray_icon::MouseButtonState::Up,
-            ..
-        } = event
-        {
-            debug!("tray: left-click, dispatching toggle to event loop");
-            let ww = window_weak.clone();
-            slint::invoke_from_event_loop(move || {
-                if let Some(win) = ww.upgrade() {
-                    if win.window().is_visible() {
-                        debug!("tray: hiding window (left-click)");
-                        win.hide().ok();
-                    } else {
-                        debug!("tray: showing window (left-click)");
-                        sunlit_core::memory::log_memory_usage("after window shown");
-                        win.show().ok();
-                    }
-                }
-            })
-            .ok();
+    let window_weak = window.as_weak();
+    tray.on_toggle_window(move || {
+        if let Some(win) = window_weak.upgrade() {
+            if win.window().is_visible() {
+                debug!("tray: hiding window (icon clicked)");
+                win.hide().ok();
+            } else {
+                debug!("tray: showing window (icon clicked)");
+                sunlit_core::memory::log_memory_usage("after window shown");
+                win.show().ok();
+            }
         }
-    }));
+    });
 
-    // Run the platform message pump so tray events are dispatched.
-    run_message_pump(&auto_refresh_item, &sync_rx);
+    let engine_link = engine.clone();
+    tray.on_refresh_now(move || {
+        info!("tray: refreshing wallpaper");
+        engine_link.send(EngineCommand::RenderWallpaperNow);
+    });
 
-    // _tray_icon is dropped here when the thread exits.
-}
-
-/// Run the platform message pump so `tray-icon` events are dispatched.
-///
-/// This blocks until the pump exits (e.g. `WM_QUIT` on Windows). Each
-/// platform needs its own event loop — currently only Windows is
-/// implemented. The `sync_rx` channel receives auto-refresh state
-/// updates from `sync_tray_auto_refresh`.
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn run_message_pump(
-    auto_refresh_item: &tray_icon::menu::CheckMenuItem,
-    sync_rx: &crossbeam_channel::Receiver<bool>,
-) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, MSG, TranslateMessage,
-    };
-
-    // SAFETY: MSG is a plain-old-data C struct. Zeroing it is safe;
-    // all fields default to zero/null.
-    let mut msg: MSG = unsafe { std::mem::zeroed() };
-    loop {
-        // SAFETY: `GetMessageW` is safe to call with a valid MSG pointer and
-        // null HWND (receives messages for all windows on this thread).
-        // The zero min/max filter values mean all messages are received.
-        let ret = unsafe { GetMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0) };
-        if ret <= 0 {
-            break;
+    // The tray menu item and the checkbox in the settings window are two views
+    // of the same setting, so the tray hands the change to the window and lets
+    // the existing auto-refresh callback do the work.
+    let window_weak = window.as_weak();
+    tray.on_auto_refresh_toggled(move |checked| {
+        debug!(checked, "tray: auto-refresh toggled");
+        if let Some(win) = window_weak.upgrade() {
+            win.set_auto_refresh_enabled(checked);
+            win.invoke_auto_refresh_changed();
         }
-        // Check for auto-refresh sync from the UI thread.
-        if let Ok(enabled) = sync_rx.try_recv() {
-            auto_refresh_item.set_checked(enabled);
-        }
-        // SAFETY: `TranslateMessage` and `DispatchMessageW` are safe to call
-        // with a valid MSG pointer obtained from `GetMessageW`.
-        unsafe {
-            TranslateMessage(&raw const msg);
-            DispatchMessageW(&raw const msg);
-        }
-    }
-}
+    });
 
-/// Placeholder message pump for non-Windows platforms.
-///
-/// Parks the thread indefinitely — tray events won't fire until a
-/// platform-specific event loop (e.g. GLib on Linux, CFRunLoop on macOS)
-/// is implemented here.
-#[cfg(not(windows))]
-fn run_message_pump(
-    _auto_refresh_item: &tray_icon::menu::CheckMenuItem,
-    _sync_rx: &crossbeam_channel::Receiver<bool>,
-) {
-    std::thread::park();
+    tray.on_exit_app(|| {
+        debug!("tray: exit requested, executing quit_event_loop");
+        slint::quit_event_loop().ok();
+    });
+
+    tray.show().expect("failed to show tray icon");
+    tray
 }
 
 #[cfg(test)]
@@ -299,8 +134,8 @@ mod tests {
 
     #[test]
     fn icon_is_32x32() {
-        // create_icon() validates dimensions internally and panics on mismatch,
-        // so simply calling it is the assertion.
-        let _icon = create_icon();
+        let icon = create_icon();
+        assert_eq!(icon.size().width, ICON_SIZE);
+        assert_eq!(icon.size().height, ICON_SIZE);
     }
 }

@@ -324,7 +324,7 @@ fn register_auto_refresh_callback(
     window: &MainWindow,
     link: &EngineLink,
     config: &AppConfig,
-    use_tray: bool,
+    tray: Option<std::rc::Rc<sunlit_earth::TrayIcon>>,
 ) {
     let window_weak = window.as_weak();
     let engine = link.clone();
@@ -336,8 +336,9 @@ fn register_auto_refresh_callback(
         let enabled = win.get_auto_refresh_enabled();
         let was_enabled = prev_enabled.replace(enabled);
 
-        if use_tray {
-            sunlit_earth::tray::sync_tray_auto_refresh(enabled);
+        // Keep the tray checkmark in step with the settings window.
+        if let Some(tray) = tray.as_ref() {
+            tray.set_auto_refresh_enabled(enabled);
         }
 
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
@@ -439,7 +440,13 @@ fn run_app(
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
 
     init_ui(&window, config, &link);
-    register_auto_refresh_callback(&window, &link, config, use_tray);
+
+    // The tray icon is a top-level Slint component of its own; it must exist
+    // before the auto-refresh callback so the two views of that setting can be
+    // kept in step.
+    let tray = use_tray
+        .then(|| std::rc::Rc::new(sunlit_earth::tray::create_tray(&window, &link)));
+    register_auto_refresh_callback(&window, &link, config, tray.clone());
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
         window.window().set_position(slint::PhysicalPosition::new(x, y));
         window.window().set_size(slint::PhysicalSize::new(w, h));
@@ -502,14 +509,6 @@ fn run_app(
         });
     }
 
-    // Spawn tray thread (tray mode only).
-    let _tray_handle = if use_tray {
-        info!("spawning tray thread");
-        Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak(), link.clone()))
-    } else {
-        None
-    };
-
     // Spawn IPC listener if --ipc-socket was provided.
     let _ipc_handle = ipc_socket.map(|name| {
         info!("spawning IPC listener on {name}");
@@ -545,6 +544,7 @@ fn run_app(
     engine.shutdown();
     drop(viewport_timer);
     drop(startup_refresh_timer);
+    drop(tray);
 
     debug!("exiting");
     ExitCode::SUCCESS

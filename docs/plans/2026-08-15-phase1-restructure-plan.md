@@ -38,7 +38,7 @@ Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scen
 - [x] Mock-clock soak test: 14 simulated days of cloud updates and auto-refresh in under a minute, bounded private bytes
 - [x] Golden-image test with tolerance, plus contact-sheet artifact job in CI
 - [x] Quality tiers exist; dev/test default is low; release default unchanged in output quality
-- [ ] Slint 1.17: tray via `SystemTrayIcon`, `tray.rs` message pump deleted; teardown without `process::exit(0)` attempted and outcome documented
+- [x] Slint 1.17: tray via `SystemTrayIcon`, `tray.rs` message pump deleted; teardown without `process::exit(0)` attempted and outcome documented
 - [ ] `cargo clippy` clean; CLAUDE.md rewritten for the new layout
 
 ## Implementation Steps
@@ -135,7 +135,7 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 - [x] Steps 3-4: SceneParams + engine
 - [x] Step 5: app switched, old path deleted
 - [x] Steps 6-7: tiers + new test layers
-- [ ] Step 8: Slint 1.17 + tray (or descoped with findings)
+- [x] Step 8: Slint 1.17 + tray (or descoped with findings)
 - [ ] Step 9: docs + CI
 
 ## Deviations
@@ -349,3 +349,30 @@ uploaded by CI as an artifact. It asserts nothing; it exists so a human can glan
 change.
 
 Verification: `cargo test` 352 pass, clippy no new warnings.
+
+### Step 8: Slint 1.17 and the tray
+
+Not descoped. The upgrade to Slint 1.17.1 needed no source changes at all: with the wgpu feature
+already gone in Step 5, the app only touches the stable window, model, and image APIs. The testing
+backend pin moved to `=1.17.1`.
+
+`SystemTrayIcon` replaced `tray.rs`'s Win32 message pump. The icon, its menu (Open, Refresh Now,
+checkable Auto-refresh, Exit) and the `clicked()` toggle are declared in `ui/main.slint` as a
+component inheriting `SystemTrayIcon`; `tray.rs` shrank from 306 lines to 141 and now holds only
+the procedurally generated icon, the callback wiring, and the single-instance mutex. Deleted with
+the pump: the Win32 `GetMessageW` loop, the tray thread, the `crossbeam` sync channel and its
+`OnceLock`, the mirrored `AtomicBool` for the checkmark, and the `tray-icon` dependency. The app's
+`windows-sys` features are down to `Win32_System_Console` for `AttachConsole`.
+
+Two API details worth knowing for anyone touching this again:
+
+- Only properties and callbacks *declared* on the derived component are exposed to Rust;
+  the inherited `icon`, `tooltip`, `title`, `visible`, and `clicked` are not. The icon is fed
+  through a declared `tray-image` property that the inherited `icon` binds to.
+- A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so
+  there is no `as_weak()`. The handle is kept in an `Rc` and cloned into the auto-refresh callback.
+
+Verification: `cargo test` 352 pass, clippy no new warnings, full e2e suite 8 pass. The tray-mode
+e2e tests exercise the new code path (they run `--mode tray`, which now constructs and shows the
+Slint tray) but drive the app over IPC rather than through the tray menu, so whether the icon
+renders correctly and the menu entries look right still needs a human eye.

@@ -152,8 +152,16 @@ impl Default for AppConfig {
 /// Returns the path to the config file.
 ///
 /// On Windows this resolves to `%LOCALAPPDATA%\SunlitEarth\config.toml`.
-/// Returns `None` if the platform's local data directory cannot be determined.
+/// `SUNLIT_EARTH_CONFIG` overrides the location so tests do not read or write
+/// the developer's real settings. Returns `None` if the platform's local data
+/// directory cannot be determined.
 pub fn config_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var("SUNLIT_EARTH_CONFIG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(PathBuf::from(path));
+    }
     Some(dirs::data_local_dir()?.join("SunlitEarth").join("config.toml"))
 }
 

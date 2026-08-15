@@ -157,16 +157,54 @@ All changes are in `src/cloud_fetcher.rs`, `src/ipc.rs`, `src/renderer/textures.
 
 - [x] Plan approved
 - [x] Steps 1-2: test knobs and query-memory landed
-- [ ] Step 3: regression test red against unfixed code (record below)
+- [x] Step 3: regression test red against unfixed code (record below)
 - [ ] Step 4: fix landed, regression test green
 - [ ] Step 5: telemetry landed
 - [ ] Steps 6-7: docs, multi-day validation, 0.1.1
+
+## Deviations
+
+Recorded as they happened, smallest change that kept the plan's intent.
+
+1. **Step 3, extra `SUNLIT_EARTH_CONFIG` knob in `src/config.rs`.** The plan isolated the cloud
+   cache but not the app config. Every e2e test spawns the binary with the developer's real
+   config from `%LOCALAPPDATA%\SunlitEarth`, and with auto-refresh enabled there a test run
+   replaces the desktop wallpaper of the machine running the tests, using whatever the test
+   happens to render. `config_path()` now honors `SUNLIT_EARTH_CONFIG`, and every spawn site in
+   `tests/e2e.rs` points at a throwaway config file. Same rationale as the cache-dir knob, one
+   file further.
+2. **Step 3, assertion order.** The plan asserts memory (item 7) before shutting the process down
+   (item 9). The test instead collects both samples, runs the export check, shows the window,
+   quits, and asserts afterwards. A failing run then leaves a gracefully exited process and a
+   complete log rather than one killed by `ChildGuard`. The private-bytes assertion is still the
+   first assertion, so it is what a regression reports.
+3. **Step 3, "processed while hidden" measurement.** Counting `GPU texture created` lines from
+   the hide onwards is wrong: `show-window` drains everything that was parked, so the burst that
+   arrives at the end of the test lands inside the counted range and the unfixed code appears to
+   have processed all 15 updates while hidden. The count is taken between a cursor set after the
+   hide and a second cursor set immediately before `show-window`.
 
 ## Results
 
 ### Red run (unfixed code)
 
-To be filled in during Step 3: observed private-bytes growth across 15 updates while hidden.
+`cargo test --test e2e -- --ignored --nocapture test_hidden_window_cloud_updates_do_not_grow_memory`
+on the development desktop (Windows 11, real GPU), 2026-08-15, commit `f4a6121` plus the test:
+
+```
+baseline: rss=241.0 MiB private=340.4 MiB
+after 15 hidden cloud updates: rss=361.4 MiB private=460.8 MiB peak_rss=373.4 MiB
+growth: private=120.4 MiB rss=120.3 MiB (limit 40 MiB), GPU textures created while hidden: 0
+FAILED: private bytes grew by 120.4 MiB across 15 cloud updates while hidden (limit 40 MiB)
+```
+
+120.4 MiB over 15 updates is 8.03 MiB per update, exactly the decoded size of the 2048x1024
+fixture (2048 x 1024 x 4 = 8 MiB). Three consecutive runs reproduced this within 0.3 MiB.
+
+The child's log confirms the mechanism directly: the window was hidden at 11:20:30.5 and no
+`GPU texture created` line appeared until `show-window` at 11:21:01.4, at which point all 15
+parked frames were processed in a 1.4 second burst. Nothing consumes the channel while the
+window is hidden, which is the leak.
 
 ### Green run (fixed code)
 

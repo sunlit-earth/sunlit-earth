@@ -5,9 +5,10 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}};
 use std::time::{Duration, Instant};
 
 use image::GenericImageView;
@@ -121,6 +122,22 @@ fn create_temp_dir() -> PathBuf {
 /// Remove a directory and all its contents, ignoring errors.
 fn cleanup_temp_dir(dir: &Path) {
     let _ = fs::remove_dir_all(dir);
+}
+
+/// A throwaway config path, passed to every spawned binary via
+/// `SUNLIT_EARTH_CONFIG`.
+///
+/// Without it the tests read the developer's real settings from
+/// `%LOCALAPPDATA%\SunlitEarth` and, when auto-refresh is enabled there,
+/// replace the desktop wallpaper of the machine running the tests.
+fn isolated_config_path() -> PathBuf {
+    let dir = std::env::temp_dir().join("sunlit_earth_e2e_config");
+    let _ = fs::create_dir_all(&dir);
+    dir.join(format!(
+        "config_{}_{}.toml",
+        std::process::id(),
+        SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 /// A parsed memory usage log entry.
@@ -341,6 +358,12 @@ impl StderrWatcher {
     fn lines(&self) -> Vec<String> {
         self.lines.lock().expect("stderr watcher lock poisoned").clone()
     }
+
+    /// Number of stderr lines collected so far, usable as a cursor into
+    /// a later `lines()` snapshot.
+    fn line_count(&self) -> usize {
+        self.lines.lock().expect("stderr watcher lock poisoned").len()
+    }
 }
 
 /// Watches a child process's stdout in a background thread, collecting lines
@@ -450,6 +473,146 @@ fn query_memory(socket_name: &str, watcher: &StdoutWatcher) -> MemoryQuery {
     }
 }
 
+/// Convert a byte count to MiB for readable log output.
+#[allow(clippy::cast_precision_loss)]
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+// ---------------------------------------------------------------------------
+// Cloud stub server
+// ---------------------------------------------------------------------------
+
+/// Shared state of the stub cloud server: the currently published image
+/// version and the number of full downloads served.
+struct StubState {
+    version: AtomicU64,
+    gets: AtomicU64,
+}
+
+/// Start a minimal HTTP/1.1 server on an ephemeral port that serves `jpeg`
+/// as the cloud image.
+///
+/// `HEAD` answers `304 Not Modified` when the request's `If-None-Match` matches
+/// the current version and `200` otherwise; `GET` always returns the body and
+/// increments the download counter. Every response carries `Content-Length` and
+/// `Connection: close` and the socket is closed afterwards, so `ureq` never
+/// waits for a keep-alive continuation.
+///
+/// Returns the bound port and the shared state, which the test uses to publish
+/// new versions and observe downloads.
+fn spawn_cloud_stub(jpeg: Vec<u8>) -> (u16, Arc<StubState>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind cloud stub server");
+    let port = listener
+        .local_addr()
+        .expect("cloud stub server has no local address")
+        .port();
+    let state = Arc::new(StubState {
+        version: AtomicU64::new(1),
+        gets: AtomicU64::new(0),
+    });
+
+    let server_state = Arc::clone(&state);
+    std::thread::Builder::new()
+        .name("cloud-stub".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                serve_cloud_request(stream, &jpeg, &server_state);
+            }
+        })
+        .expect("failed to spawn cloud stub thread");
+
+    (port, state)
+}
+
+/// Handle a single stub request, then close the connection.
+fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
+    const INM: &str = "if-none-match:";
+
+    let Ok(peek) = stream.try_clone() else { return };
+    let mut reader = BufReader::new(peek);
+
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+        return;
+    }
+    let method = request_line.split_whitespace().next().unwrap_or_default().to_owned();
+
+    let mut if_none_match: Option<String> = None;
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).unwrap_or(0) == 0 {
+            break;
+        }
+        if header.trim().is_empty() {
+            break;
+        }
+        if header.to_ascii_lowercase().starts_with(INM) {
+            if_none_match = Some(header[INM.len()..].trim().to_owned());
+        }
+    }
+
+    let etag = format!("\"v{}\"", state.version.load(Ordering::SeqCst));
+    let response = if method == "HEAD" && if_none_match.as_deref() == Some(etag.as_str()) {
+        format!("HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    } else {
+        format!(
+            "HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            jpeg.len()
+        )
+    };
+
+    if stream.write_all(response.as_bytes()).is_err() {
+        return;
+    }
+    if method == "GET" {
+        if stream.write_all(jpeg).is_err() {
+            return;
+        }
+        if stream.flush().is_err() {
+            return;
+        }
+        state.gets.fetch_add(1, Ordering::SeqCst);
+    }
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Both);
+}
+
+/// Encode a JPEG the stub server can serve as the cloud image.
+///
+/// The gradient keeps the encoded file small while the decoded RGBA buffer is
+/// `width * height * 4` bytes, which is what the leak used to park in memory.
+fn cloud_fixture_jpeg(width: u32, height: u32) -> Vec<u8> {
+    let mut img = image::RgbImage::new(width, height);
+    for (x, y, pixel) in img.enumerate_pixels_mut() {
+        let r = u8::try_from(x % 256).expect("modulo 256 fits in u8");
+        let g = u8::try_from(y % 256).expect("modulo 256 fits in u8");
+        *pixel = image::Rgb([r, g, 128]);
+    }
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Jpeg)
+        .expect("failed to encode cloud fixture JPEG");
+    buf.into_inner()
+}
+
+/// Block until the stub server has served at least `target` downloads.
+fn wait_for_downloads(stub: &StubState, target: u64, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        let served = stub.gets.load(Ordering::SeqCst);
+        if served >= target {
+            return;
+        }
+        assert!(
+            start.elapsed() <= timeout,
+            "timed out after {:.0}s waiting for cloud download #{target} (served {served})",
+            timeout.as_secs_f64()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -477,6 +640,7 @@ fn test_render_and_exit() {
     // 2. Spawn the binary with the render subcommand.
     let child = Command::new(BINARY)
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .args([
             "--log-level",
             "debug",
@@ -624,6 +788,7 @@ fn test_tray_mode_ipc_lifecycle() {
     let mut guard = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .args([
                 "--log-level", "debug",
                 "--tray-start", "hidden",
@@ -702,6 +867,7 @@ fn test_windowed_mode_graceful_shutdown() {
     let mut guard = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .args([
                 "--mode", "window",
                 "--log-level", "debug",
@@ -762,6 +928,7 @@ fn test_single_instance_second_exits() {
     let mut guard_a = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .args([
                 "--log-level", "debug",
                 "--ipc-socket", &socket_name,
@@ -785,6 +952,7 @@ fn test_single_instance_second_exits() {
     //    which may conflict with a real running instance).
     let instance_b = Command::new(BINARY)
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .args(["--log-level", "debug", "--ipc-socket", &socket_name])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -835,6 +1003,7 @@ fn test_tray_hide_show_cycle() {
     let mut guard = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .args([
                 "--log-level", "debug",
                 "--tray-start", "visible",
@@ -900,6 +1069,7 @@ fn test_gpu_persistence_after_hide() {
     let mut guard = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .args([
                 "--log-level", "debug",
                 "--tray-start", "visible",
@@ -947,4 +1117,160 @@ fn test_gpu_persistence_after_hide() {
             "found ERROR in stderr:\n{line}"
         );
     }
+}
+
+/// Verify that cloud updates arriving while the window is hidden do not grow
+/// process memory without bound.
+///
+/// This is the regression test for the tray-mode memory leak: decoded cloud
+/// frames used to accumulate in an unbounded channel that was drained only from
+/// `BeforeRendering`, which stops firing once the window is hidden. The test
+/// points the fetcher at a local stub server, hides the window, publishes 15
+/// updates, and asserts both that private bytes stay bounded and that the
+/// updates still reach the GPU while hidden.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+#[allow(clippy::too_many_lines)]
+fn test_hidden_window_cloud_updates_do_not_grow_memory() {
+    /// Decoded size is 2048 * 1024 * 4 = 8 MiB per frame.
+    const FIXTURE_WIDTH: u32 = 2048;
+    const FIXTURE_HEIGHT: u32 = 1024;
+    const UPDATES: u64 = 15;
+    const GROWTH_LIMIT_BYTES: u64 = 40 * 1024 * 1024;
+    /// Long enough for at least one tick of the 5 s drain timer.
+    const SETTLE: Duration = Duration::from_secs(8);
+
+    let socket_name = unique_socket_name();
+    let temp_dir = create_temp_dir();
+    let cache_dir = temp_dir.join("cache");
+    let textures_dir = temp_dir.join("textures");
+    fs::create_dir_all(&cache_dir).expect("failed to create stub cache dir");
+    fs::create_dir_all(&textures_dir).expect("failed to create empty textures dir");
+
+    let (port, stub) = spawn_cloud_stub(cloud_fixture_jpeg(FIXTURE_WIDTH, FIXTURE_HEIGHT));
+
+    // 1. Spawn in windowed mode: no tray icon and no single-instance mutex,
+    //    while hiding over IPC still reproduces the exact leak condition.
+    //    The empty textures directory leaves the JXL slots unloaded, so cloud
+    //    frames are the only large allocations in flight.
+    let mut guard = ChildGuard::new(
+        Command::new(BINARY)
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_SYNC_LOG", "1")
+            .env("SUNLIT_EARTH_CLOUD_URL", format!("http://127.0.0.1:{port}/clouds.jpg"))
+            .env("SUNLIT_EARTH_CLOUD_POLL_SECS", "1")
+            .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
+            .args([
+                "--mode", "window",
+                "--log-level", "debug",
+                "--ipc-socket", &socket_name,
+                "--textures-dir", textures_dir.to_str().expect("non-UTF-8 temp path"),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+    let stdout_watcher = StdoutWatcher::new(child);
+    let stderr_watcher = StderrWatcher::new(child);
+
+    // 2. Wait for startup and for the first cloud image to be downloaded and
+    //    uploaded to the GPU while the window is still visible.
+    let ready_timeout = Duration::from_secs(60);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
+    wait_for_downloads(&stub, 1, ready_timeout);
+    stderr_watcher.wait_for_log("GPU texture created", ready_timeout);
+
+    // 3. Hide the window. From here on BeforeRendering no longer fires.
+    send_ipc_command(&socket_name, "hide-window");
+    stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(15));
+
+    // 4. Let everything in flight settle, then take the baseline sample.
+    std::thread::sleep(SETTLE);
+    let baseline = query_memory(&socket_name, &stdout_watcher);
+    let stderr_cursor = stderr_watcher.line_count();
+
+    // 5. Publish new cloud images, waiting for each download to be served.
+    for _ in 0..UPDATES {
+        let target = stub.gets.load(Ordering::SeqCst) + 1;
+        stub.version.fetch_add(1, Ordering::SeqCst);
+        wait_for_downloads(&stub, target, Duration::from_secs(15));
+    }
+
+    // 6. Settle again so the last update is processed, then take the end sample.
+    std::thread::sleep(SETTLE);
+    let end = query_memory(&socket_name, &stdout_watcher);
+
+    // 7. The GPU must still be usable while hidden.
+    send_ipc_command(&socket_name, "export-test");
+    stdout_watcher.wait_for_signal("export_test_ok", Duration::from_secs(30));
+
+    // 8. Close the log window covering the hidden phase, then show again and
+    //    shut down cleanly before asserting, so a failing run still produces a
+    //    complete log instead of a killed process. Showing the window drains
+    //    everything that was parked, so the cursor must be taken before it.
+    let stderr_cursor_end = stderr_watcher.line_count();
+    send_ipc_command(&socket_name, "show-window");
+    stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(15));
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+
+    let private_growth = end.private.saturating_sub(baseline.private);
+    let rss_growth = end.rss.saturating_sub(baseline.rss);
+    let created_while_hidden = stderr_watcher.lines()[stderr_cursor..stderr_cursor_end]
+        .iter()
+        .filter(|line| line.contains("GPU texture created"))
+        .count();
+
+    println!(
+        "baseline: rss={:.1} MiB private={:.1} MiB",
+        mib(baseline.rss),
+        mib(baseline.private)
+    );
+    println!(
+        "after {UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB",
+        mib(end.rss),
+        mib(end.private),
+        mib(end.peak_rss)
+    );
+    println!(
+        "growth: private={:.1} MiB rss={:.1} MiB (limit {:.0} MiB), \
+         GPU textures created while hidden: {created_while_hidden}",
+        mib(private_growth),
+        mib(rss_growth),
+        mib(GROWTH_LIMIT_BYTES)
+    );
+
+    // 9. The leak assertion. Private bytes (commit charge) is used instead of
+    //    RSS because working-set trimming can hide heap growth from RSS.
+    assert!(
+        private_growth < GROWTH_LIMIT_BYTES,
+        "private bytes grew by {:.1} MiB across {UPDATES} cloud updates while hidden \
+         (limit {:.0} MiB, RSS grew by {:.1} MiB)",
+        mib(private_growth),
+        mib(GROWTH_LIMIT_BYTES),
+        mib(rss_growth)
+    );
+
+    // 10. Updates must be processed while hidden, not merely discarded.
+    assert!(
+        created_while_hidden > 0,
+        "no 'GPU texture created' line after the window was hidden: \
+         cloud updates are not reaching the GPU while hidden"
+    );
+
+    assert!(
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
+    );
+
+    for line in stderr_watcher.lines() {
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
+    }
+
+    cleanup_temp_dir(&temp_dir);
 }

@@ -6,12 +6,26 @@
 //! than exactly: the existing behavioral-invariant convention exists because
 //! float and filtering differences across adapters are real.
 //!
-//! All of these force the software adapter, so a developer machine with a
-//! discrete GPU and a CI runner with WARP compare against the same references.
+//! All of these force the software adapter where the platform has one, so a
+//! developer machine with a discrete GPU and a CI runner with WARP compare
+//! against the same references.
+//!
+//! References live one directory per adapter, named by
+//! `sunlit_core::wgpu_init::adapter_key`: `tests/golden/warp/`,
+//! `tests/golden/lavapipe/`, `tests/golden/metal/`. That is about preserving
+//! the tolerance for what it is meant to catch rather than spending it on the
+//! difference between two correct rasterizers; the measurement and the argument
+//! are on `adapter_key`.
+//!
+//! An adapter with no directory at all skips rather than fails, which is what
+//! lets the CI matrix land before every reference set has been generated; a
+//! directory that exists but is missing one case still fails, because that
+//! means a case was added without regenerating.
 //!
 //! Regenerate with `SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core
-//! --test golden`. Review the diff by eye before committing it: that is the
-//! whole point of a golden test.
+//! --test golden`, on a machine using the adapter you are generating for.
+//! Review the diff by eye before committing it: that is the whole point of a
+//! golden test.
 
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -73,27 +87,43 @@ fn base_params() -> SceneParams {
     params
 }
 
-fn golden_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
+/// Reference directory for the adapter this run is using.
+fn golden_dir(adapter_key: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(adapter_key)
 }
 
 fn updating() -> bool {
     std::env::var("SUNLIT_EARTH_UPDATE_GOLDEN").is_ok()
 }
 
-/// Render `params` and compare against `tests/golden/<name>.png`.
+/// Render `params` and compare against `tests/golden/<adapter>/<name>.png`.
 fn check_golden(name: &str, params: &SceneParams) {
     let engine = engine();
+    let adapter_key = engine.adapter_key().to_owned();
     engine.send(EngineCommand::UpdateParams(Box::new(*params)));
     let pixels = engine
         .export_pixels(WIDTH, HEIGHT)
         .expect("the engine should be able to export");
     drop(engine);
 
-    let path = golden_dir().join(format!("{name}.png"));
+    let dir = golden_dir(&adapter_key);
+    let path = dir.join(format!("{name}.png"));
+
+    // A missing directory means this adapter has no reference set yet, which
+    // is a known state rather than a failure; see the module docs.
+    if !updating() && !dir.exists() {
+        eprintln!(
+            "no golden references for adapter {adapter_key} yet ({}); \
+             generate them with SUNLIT_EARTH_UPDATE_GOLDEN=1, skipping",
+            dir.display()
+        );
+        return;
+    }
 
     if updating() || !path.exists() {
-        std::fs::create_dir_all(golden_dir()).expect("create golden directory");
+        std::fs::create_dir_all(&dir).expect("create golden directory");
         sunlit_core::engine::save_png(&path, WIDTH, HEIGHT, &pixels).expect("write golden");
         assert!(
             updating(),
@@ -262,12 +292,13 @@ fn every_golden_case_is_distinguishable() {
         eprintln!("references are being regenerated in parallel, skipping");
         return;
     }
+    let adapter_key = engine().adapter_key().to_owned();
     let names = ["default", "nightglow", "rayleigh", "close_up"];
     let mut images = Vec::new();
     for name in names {
-        let path = golden_dir().join(format!("{name}.png"));
+        let path = golden_dir(&adapter_key).join(format!("{name}.png"));
         if !path.exists() {
-            eprintln!("golden references not generated yet, skipping");
+            eprintln!("golden references for {adapter_key} not generated yet, skipping");
             return;
         }
         images.push(image::open(&path).expect("read golden").to_rgba8());

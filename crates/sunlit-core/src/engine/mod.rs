@@ -165,7 +165,16 @@ impl EngineConfig {
 pub struct EngineHandle {
     tx: Sender<EngineCommand>,
     thread: Option<JoinHandle<()>>,
-    adapter_info: String,
+    adapter: AdapterReport,
+}
+
+/// What the engine thread reports back about the GPU it opened.
+///
+/// Sent once, before the loop starts, so `start` can return a handle that
+/// already knows what it is running on.
+struct AdapterReport {
+    info: String,
+    key: String,
     supported_sample_counts: Vec<u32>,
 }
 
@@ -189,12 +198,18 @@ impl EngineHandle {
 
     /// Description of the selected GPU adapter, for the UI's renderer label.
     pub fn adapter_info(&self) -> &str {
-        &self.adapter_info
+        &self.adapter.info
+    }
+
+    /// Slug naming the adapter's implementation, for per-adapter golden
+    /// references. See `wgpu_init::adapter_key`.
+    pub fn adapter_key(&self) -> &str {
+        &self.adapter.key
     }
 
     /// MSAA sample counts the adapter supports for the render format.
     pub fn supported_sample_counts(&self) -> &[u32] {
-        &self.supported_sample_counts
+        &self.adapter.supported_sample_counts
     }
 
     /// Render `width` x `height` pixels and block until they are ready.
@@ -301,15 +316,14 @@ pub fn start(config: EngineConfig) -> EngineHandle {
         })
         .expect("failed to spawn engine thread");
 
-    let (adapter_info, supported_sample_counts) = ready_rx
+    let adapter = ready_rx
         .recv()
         .expect("engine thread died before reporting its adapter");
 
     EngineHandle {
         tx,
         thread: Some(thread),
-        adapter_info,
-        supported_sample_counts,
+        adapter,
     }
 }
 
@@ -402,7 +416,7 @@ impl Engine {
         config: EngineConfig,
         rx: Receiver<EngineCommand>,
         command_tx: &Sender<EngineCommand>,
-        ready: &Sender<(String, Vec<u32>)>,
+        ready: &Sender<AdapterReport>,
     ) -> Self {
         let EngineConfig {
             force_software,
@@ -422,10 +436,11 @@ impl Engine {
         } = config;
 
         let gpu = crate::wgpu_init::init(force_software);
-        let _ = ready.send((
-            gpu.adapter_info.clone(),
-            gpu.supported_sample_counts.clone(),
-        ));
+        let _ = ready.send(AdapterReport {
+            info: gpu.adapter_info.clone(),
+            key: gpu.adapter_key.clone(),
+            supported_sample_counts: gpu.supported_sample_counts.clone(),
+        });
         crate::memory::log_memory_usage("engine: after wgpu init");
 
         // Slots: grid + one per texture path + clouds.

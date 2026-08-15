@@ -38,7 +38,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-windows
-          add-rust-environment-hash-key: false
       - run: cargo test --locked
         shell: bash
       # The contact sheet renders every camera preset into one image. It is

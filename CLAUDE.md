@@ -14,6 +14,7 @@ Project vision, technical decisions, and implementation plans are documented in 
 cargo build                        # Debug build (whole workspace)
 cargo build --release              # Release build (LTO, stripped)
 cargo test                         # Run all tests in the workspace
+cargo unit                         # Unit tests only (~1 s): skips the integration targets and doc tests
 cargo test -p sunlit-core          # Core only
 cargo test -p sunlit-core --test engine   # Engine integration tests
 cargo test -p sunlit-core --test soak     # Mock-clock soak test (14 simulated days)

@@ -3,6 +3,11 @@
 //! Downloads an 8K equirectangular cloud JPEG from the matteason/live-cloud-maps
 //! service, caches it to disk, and polls for updates every 60 minutes using
 //! HEAD + `ETag` freshness checks.
+//!
+//! Three values can be overridden through the environment so tests can point
+//! the fetcher at a local stub server without touching the real cache:
+//! `SUNLIT_EARTH_CLOUD_URL`, `SUNLIT_EARTH_CLOUD_POLL_SECS`, and
+//! `SUNLIT_EARTH_CACHE_DIR`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,6 +27,13 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3600);
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
 
+/// Environment variable overriding the cloud image URL.
+const ENV_CLOUD_URL: &str = "SUNLIT_EARTH_CLOUD_URL";
+/// Environment variable overriding the poll interval, in seconds.
+const ENV_POLL_SECS: &str = "SUNLIT_EARTH_CLOUD_POLL_SECS";
+/// Environment variable overriding the cloud cache directory.
+const ENV_CACHE_DIR: &str = "SUNLIT_EARTH_CACHE_DIR";
+
 /// Metadata cached alongside the cloud JPEG for freshness checks.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CacheMeta {
@@ -29,8 +41,45 @@ struct CacheMeta {
     last_modified: Option<String>,
 }
 
+/// Read an environment override, treating unset and blank values as absent.
+fn env_override(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// Resolve the cloud image URL from an optional environment override.
+fn resolve_cloud_url(raw: Option<&str>) -> String {
+    raw.map_or_else(|| CLOUD_URL.to_owned(), ToOwned::to_owned)
+}
+
+/// Resolve the poll interval from an optional environment override.
+///
+/// Values that do not parse as a positive number of seconds are ignored
+/// with a warning and the compiled-in interval is used instead.
+fn resolve_poll_interval(raw: Option<&str>) -> Duration {
+    let Some(value) = raw else {
+        return POLL_INTERVAL;
+    };
+    match value.trim().parse::<u64>() {
+        Ok(secs) if secs > 0 => Duration::from_secs(secs),
+        _ => {
+            warn!(value, env = ENV_POLL_SECS, "invalid poll interval, using default");
+            POLL_INTERVAL
+        }
+    }
+}
+
+/// Resolve the cloud cache directory from an optional environment override.
+fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
+    match raw {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => Some(dirs::data_local_dir()?.join("SunlitEarth")),
+    }
+}
+
 fn cache_dir() -> Option<PathBuf> {
-    Some(dirs::data_local_dir()?.join("SunlitEarth"))
+    resolve_cache_dir(env_override(ENV_CACHE_DIR).as_deref())
 }
 
 fn cache_image_path() -> Option<PathBuf> {
@@ -78,9 +127,9 @@ fn save_cache_meta(meta: &CacheMeta, path: &Path) {
 /// Returns `Ok(true)` if unchanged (304), `Ok(false)` if new content is
 /// available (200), or `Err` on transport/server errors.
 #[tracing::instrument(skip(agent), fields(etag = %etag))]
-fn check_freshness(agent: &ureq::Agent, etag: &str) -> Result<bool, String> {
+fn check_freshness(agent: &ureq::Agent, url: &str, etag: &str) -> Result<bool, String> {
     let response = agent
-        .head(CLOUD_URL)
+        .head(url)
         .header("If-None-Match", etag)
         .call()
         .map_err(|e| format!("Cloud freshness check failed: {e}"))?;
@@ -95,10 +144,10 @@ fn check_freshness(agent: &ureq::Agent, etag: &str) -> Result<bool, String> {
 /// Download the cloud image unconditionally.
 ///
 /// Returns the raw JPEG bytes and extracted cache metadata (`ETag`, Last-Modified).
-#[tracing::instrument(skip(agent), fields(url = CLOUD_URL))]
-fn download_image(agent: &ureq::Agent) -> Result<(Vec<u8>, CacheMeta), String> {
+#[tracing::instrument(skip(agent), fields(url = %url))]
+fn download_image(agent: &ureq::Agent, url: &str) -> Result<(Vec<u8>, CacheMeta), String> {
     let mut response = agent
-        .get(CLOUD_URL)
+        .get(url)
         .call()
         .map_err(|e| format!("Cloud download failed: {e}"))?;
 
@@ -168,6 +217,14 @@ pub fn spawn_cloud_fetcher(
 ) {
     let image_path = cache_image_path();
     let meta_path = cache_meta_path();
+    let cloud_url = resolve_cloud_url(env_override(ENV_CLOUD_URL).as_deref());
+    let poll_interval = resolve_poll_interval(env_override(ENV_POLL_SECS).as_deref());
+    info!(
+        url = %cloud_url,
+        poll_secs = poll_interval.as_secs(),
+        cache_dir = ?cache_dir(),
+        "cloud fetcher configuration"
+    );
 
     // Load cached image synchronously so clouds appear on the first frame
     let mut cached_meta = meta_path
@@ -216,7 +273,7 @@ pub fn spawn_cloud_fetcher(
             let should_download = match &cached_meta {
                 Some(meta) if meta.etag.is_some() => {
                     let etag = meta.etag.as_ref().unwrap();
-                    match check_freshness(&agent, etag) {
+                    match check_freshness(&agent, &cloud_url, etag) {
                         Ok(true) => {
                             info!("cloud image unchanged (304 Not Modified)");
                             false
@@ -239,7 +296,7 @@ pub fn spawn_cloud_fetcher(
 
             if should_download {
                 let start = std::time::Instant::now();
-                match download_image(&agent) {
+                match download_image(&agent, &cloud_url) {
                     Ok((bytes, meta)) => {
                         let elapsed = start.elapsed().as_secs_f64();
                         info!(
@@ -300,7 +357,7 @@ pub fn spawn_cloud_fetcher(
             }
 
             crate::memory::log_memory_usage("cloud fetcher idle");
-            std::thread::sleep(POLL_INTERVAL);
+            std::thread::sleep(poll_interval);
         }
     });
 }
@@ -388,6 +445,54 @@ mod tests {
         assert!(loaded.last_modified.is_none());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_cloud_url_without_override_uses_constant() {
+        assert_eq!(resolve_cloud_url(None), CLOUD_URL);
+    }
+
+    #[test]
+    fn resolve_cloud_url_with_override() {
+        assert_eq!(
+            resolve_cloud_url(Some("http://127.0.0.1:8080/clouds.jpg")),
+            "http://127.0.0.1:8080/clouds.jpg"
+        );
+    }
+
+    #[test]
+    fn resolve_poll_interval_without_override_uses_constant() {
+        assert_eq!(resolve_poll_interval(None), POLL_INTERVAL);
+    }
+
+    #[test]
+    fn resolve_poll_interval_parses_seconds() {
+        assert_eq!(resolve_poll_interval(Some("5")), Duration::from_secs(5));
+        assert_eq!(resolve_poll_interval(Some(" 42 ")), Duration::from_secs(42));
+    }
+
+    #[test]
+    fn resolve_poll_interval_rejects_invalid_values() {
+        for value in ["0", "-1", "abc", "1.5", ""] {
+            assert_eq!(
+                resolve_poll_interval(Some(value)),
+                POLL_INTERVAL,
+                "expected fallback for {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_cache_dir_with_override() {
+        let dir = resolve_cache_dir(Some("C:/tmp/sunlit")).expect("override should resolve");
+        assert_eq!(dir, PathBuf::from("C:/tmp/sunlit"));
+    }
+
+    #[test]
+    fn resolve_cache_dir_without_override_ends_in_app_folder() {
+        if let Some(dir) = resolve_cache_dir(None) {
+            assert!(dir.ends_with("SunlitEarth"), "unexpected cache dir: {}", dir.display());
+        }
     }
 
     #[test]

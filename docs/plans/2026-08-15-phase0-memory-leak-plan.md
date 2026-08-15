@@ -155,8 +155,8 @@ All changes are in `src/cloud_fetcher.rs`, `src/ipc.rs`, `src/renderer/textures.
 
 ## Status
 
-- [ ] Plan approved
-- [ ] Steps 1-2: test knobs and query-memory landed
+- [x] Plan approved
+- [x] Steps 1-2: test knobs and query-memory landed
 - [ ] Step 3: regression test red against unfixed code (record below)
 - [ ] Step 4: fix landed, regression test green
 - [ ] Step 5: telemetry landed

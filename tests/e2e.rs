@@ -381,15 +381,27 @@ impl StdoutWatcher {
     /// Block until a `SIGNAL:<name>` line appears in stdout, or panic
     /// after `timeout` elapses.
     fn wait_for_signal(&self, name: &str, timeout: Duration) {
+        self.wait_for_signal_line_from(name, 0, timeout);
+    }
+
+    /// Number of stdout lines collected so far. Used as a cursor so repeated
+    /// queries do not match the reply to an earlier request.
+    fn line_count(&self) -> usize {
+        self.lines.lock().expect("stdout watcher lock poisoned").len()
+    }
+
+    /// Block until a `SIGNAL:<name>` line appears at or after line index
+    /// `from`, returning the matched line. Panics after `timeout` elapses.
+    fn wait_for_signal_line_from(&self, name: &str, from: usize, timeout: Duration) -> String {
         let needle = format!("SIGNAL:{name}");
         let start = Instant::now();
-        let mut last_checked = 0;
+        let mut last_checked = from;
         loop {
             {
                 let lines = self.lines.lock().expect("stdout watcher lock poisoned");
-                for line in &lines[last_checked..] {
+                for line in &lines[last_checked.min(lines.len())..] {
                     if line.contains(&needle) {
-                        return;
+                        return line.clone();
                     }
                 }
                 last_checked = lines.len();
@@ -406,6 +418,35 @@ impl StdoutWatcher {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+/// Process memory counters reported by the `query-memory` IPC command.
+#[derive(Clone, Copy)]
+struct MemoryQuery {
+    rss: u64,
+    peak_rss: u64,
+    private: u64,
+}
+
+/// Extract a `key=<u64>` field from a `SIGNAL:memory ...` line.
+fn parse_memory_field(line: &str, key: &str) -> u64 {
+    let prefix = format!("{key}=");
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix(&prefix))
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("missing '{key}' in memory signal line: {line}"))
+}
+
+/// Send `query-memory` over IPC and parse the reply signal line.
+fn query_memory(socket_name: &str, watcher: &StdoutWatcher) -> MemoryQuery {
+    let from = watcher.line_count();
+    send_ipc_command(socket_name, "query-memory");
+    let line = watcher.wait_for_signal_line_from("memory ", from, Duration::from_secs(15));
+    MemoryQuery {
+        rss: parse_memory_field(&line, "rss_bytes"),
+        peak_rss: parse_memory_field(&line, "peak_rss_bytes"),
+        private: parse_memory_field(&line, "private_bytes"),
     }
 }
 

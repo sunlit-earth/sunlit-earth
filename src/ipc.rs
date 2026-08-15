@@ -4,14 +4,17 @@
 //! local socket for single-line commands. This is a fire-and-forget protocol:
 //! clients connect, send one command line, and disconnect. No response is sent.
 //!
-//! Commands are dispatched directly via `invoke_from_event_loop` to the Slint
-//! event loop thread, following the recommended Slint cross-thread pattern.
+//! Commands that touch the window are dispatched via `invoke_from_event_loop`
+//! to the Slint event loop thread, following the recommended Slint cross-thread
+//! pattern. Commands that only read process-wide state are answered directly on
+//! the listener thread.
 //!
 //! Supported commands:
 //! - `quit` — triggers `slint::quit_event_loop()`
 //! - `show-window` — makes the main window visible
 //! - `hide-window` — hides the main window
 //! - `export-test` — attempts a small GPU export, signals success/failure
+//! - `query-memory` — reports the current process memory counters
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -114,6 +117,18 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
                 }
             })
             .ok();
+        }
+        "query-memory" => {
+            debug!("ipc: received query-memory command");
+            // Answered on this thread: GetProcessMemoryInfo is process-wide,
+            // so the reply is correct even when the event loop is idle or busy.
+            match crate::memory::snapshot() {
+                Some(snap) => signal(&format!(
+                    "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
+                    snap.rss_bytes, snap.peak_rss_bytes, snap.private_bytes
+                )),
+                None => signal("memory_unavailable"),
+            }
         }
         "" => {}
         _ => {

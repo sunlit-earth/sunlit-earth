@@ -1,0 +1,89 @@
+name: Regenerate golden references
+
+# Manual only. Golden references are supposed to change when a human decided
+# they should, so nothing here runs on a push.
+#
+# Pick an OS, run it, download the `golden-<os>` artifact, and commit the
+# directory it contains under `crates/sunlit-core/tests/golden/`. Look at the
+# images first: a golden test that is regenerated without being reviewed is a
+# test that asserts whatever the code currently does.
+#
+# GitHub only offers `workflow_dispatch` for workflows that exist on the default
+# branch, so this becomes usable once the branch adding it is merged. Until
+# then, generate references locally on the adapter in question with
+# `SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden`.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner to generate references on"
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  regenerate:
+    name: Regenerate on ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: inputs.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libclang-dev \
+            mesa-vulkan-drivers \
+            xvfb
+        shell: bash
+
+      - uses: KyleMayes/install-llvm-action@v2
+        if: inputs.os == 'windows-latest'
+        with:
+          version: "19"
+      - name: Set LIBCLANG_PATH
+        if: inputs.os == 'windows-latest'
+        run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Point bindgen at Xcode's libclang
+        if: inputs.os == 'macos-latest'
+        run: |
+          LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if [ -f "$LIB/libclang.dylib" ]; then
+            echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
+      # Same key as the CI matrix, so this reuses that job's build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ inputs.os == 'ubuntu-latest' && 'linux' || (inputs.os == 'windows-latest' && 'windows' || 'macos') }}
+
+      # --nocapture so the log names the adapter the references belong to.
+      - name: Regenerate
+        env:
+          SUNLIT_EARTH_UPDATE_GOLDEN: "1"
+        run: cargo test -p sunlit-core --test golden --locked -- --nocapture
+        shell: bash
+
+      - name: Upload references
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-${{ inputs.os }}
+          path: crates/sunlit-core/tests/golden/
+          if-no-files-found: error

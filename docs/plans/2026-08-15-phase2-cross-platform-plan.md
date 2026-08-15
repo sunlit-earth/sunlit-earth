@@ -89,7 +89,15 @@ Each step is a separate commit or small commit series on `feat/phase2-cross-plat
 
 ## Status
 
-Planned. Implementation has not started.
+In progress on `feat/phase2-cross-platform` (PR #24).
+
+- Step 1, reformat and the `fmt` gate: done.
+- Step 2, warning cleanup and `-D warnings`: not started.
+- Step 3, Linux: not started.
+- Step 4, macOS probe: not started.
+- Step 5, the matrix: not started.
+- Step 6, per-adapter goldens: not started.
+- Step 7, docs: not started.
 
 ## Deviations
 

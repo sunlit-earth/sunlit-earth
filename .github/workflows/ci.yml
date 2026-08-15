@@ -12,16 +12,17 @@ env:
   # RUSTFLAGS: "-D warnings"
 
 jobs:
-  # fmt:
-  #   name: Format
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         components: rustfmt
-  #     - run: cargo fmt --check
-  #       shell: bash
+  # Formatting is OS-independent, so it runs once rather than per matrix entry.
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+        shell: bash
 
   test:
     name: Test

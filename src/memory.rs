@@ -1,7 +1,29 @@
 //! Process-level memory tracking.
 //!
 //! Provides memory measurement on Windows via `GetProcessMemoryInfo`,
-//! and a convenience function that logs values as structured events.
+//! a convenience function that logs values as structured events, and a CSV
+//! metrics file written by the watchdog timer.
+//!
+//! The metrics file exists because release builds compile out `debug!` and
+//! `info!` (`release_max_level_warn`), so the tray-mode memory leak produced no
+//! telemetry at all across ten days of uptime. The CSV and the budget `warn!`
+//! both survive that filter.
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use tracing::warn;
+
+/// Soft budget for committed private memory. Crossing it emits a `warn!`.
+pub const PRIVATE_BYTES_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Size at which the metrics file is rotated, roughly 145 days of samples at
+/// the watchdog cadence.
+const METRICS_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Column header written when a metrics file is created.
+const METRICS_HEADER: &str = "unix_ts,rss_bytes,peak_rss_bytes,private_bytes\n";
 
 /// Snapshot of process memory counters.
 pub struct MemorySnapshot {
@@ -90,9 +112,208 @@ pub fn log_memory_usage(context: &str) {
     }
 }
 
+/// Returns the path of the memory metrics CSV.
+///
+/// On Windows this resolves to `%LOCALAPPDATA%\SunlitEarth\memory-metrics.csv`.
+/// Returns `None` if the platform's local data directory cannot be determined.
+pub fn metrics_path() -> Option<PathBuf> {
+    Some(
+        dirs::data_local_dir()?
+            .join("SunlitEarth")
+            .join("memory-metrics.csv"),
+    )
+}
+
+/// Seconds since the Unix epoch, or 0 if the clock is before it.
+fn unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Format one CSV data line for a snapshot, including the trailing newline.
+fn format_metrics_line(unix_ts: u64, snap: &MemorySnapshot) -> String {
+    format!(
+        "{unix_ts},{},{},{}\n",
+        snap.rss_bytes, snap.peak_rss_bytes, snap.private_bytes
+    )
+}
+
+/// Append one sample to the metrics CSV at `path`, rotating to `.csv.old`
+/// first if the file has grown past `max_bytes`.
+///
+/// Errors are logged and never propagated: telemetry must not take the app
+/// down.
+fn append_sample_to(path: &Path, snap: &MemorySnapshot, max_bytes: u64) {
+    if let Some(parent) = path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        warn!(path = %parent.display(), error = %e, "could not create metrics directory");
+        return;
+    }
+
+    if file_len(path) > max_bytes {
+        let rotated = path.with_extension("csv.old");
+        if let Err(e) = fs::rename(path, &rotated) {
+            warn!(path = %path.display(), error = %e, "could not rotate metrics file");
+        }
+    }
+
+    let needs_header = file_len(path) == 0;
+    let mut file = match fs::OpenOptions::new().create(true).append(true).open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "could not open metrics file");
+            return;
+        }
+    };
+
+    let mut contents = String::new();
+    if needs_header {
+        contents.push_str(METRICS_HEADER);
+    }
+    contents.push_str(&format_metrics_line(unix_timestamp(), snap));
+
+    if let Err(e) = file.write_all(contents.as_bytes()) {
+        warn!(path = %path.display(), error = %e, "could not write metrics sample");
+    }
+}
+
+/// Size of `path` in bytes, or 0 if it cannot be read.
+fn file_len(path: &Path) -> u64 {
+    fs::metadata(path).map_or(0, |m| m.len())
+}
+
+/// Append one sample to the metrics CSV at `path`.
+pub fn append_metrics_sample(path: &Path, snap: &MemorySnapshot) {
+    append_sample_to(path, snap, METRICS_MAX_BYTES);
+}
+
+/// Take a sample, write it to the metrics file, and warn when private memory
+/// exceeds `PRIVATE_BYTES_BUDGET`.
+///
+/// Called by the watchdog timer in `main.rs`. Does nothing on platforms
+/// without a memory snapshot implementation.
+pub fn record_metrics_sample() {
+    let Some(snap) = snapshot() else {
+        return;
+    };
+
+    if let Some(path) = metrics_path() {
+        append_metrics_sample(&path, &snap);
+    }
+
+    if snap.private_bytes > PRIVATE_BYTES_BUDGET {
+        warn!(
+            private_bytes = snap.private_bytes,
+            budget_bytes = PRIVATE_BYTES_BUDGET,
+            rss_bytes = snap.rss_bytes,
+            "memory budget exceeded"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a snapshot with known values for format and rotation tests.
+    fn sample_snapshot() -> MemorySnapshot {
+        MemorySnapshot {
+            rss_bytes: 111,
+            peak_rss_bytes: 222,
+            private_bytes: 333,
+        }
+    }
+
+    /// A unique scratch directory for one metrics test.
+    fn metrics_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sunlit_earth_test_metrics_{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn format_metrics_line_has_four_columns() {
+        let line = format_metrics_line(1_700_000_000, &sample_snapshot());
+        assert_eq!(line, "1700000000,111,222,333\n");
+        assert_eq!(line.trim_end().split(',').count(), 4);
+    }
+
+    #[test]
+    fn append_writes_header_once_then_data_lines() {
+        let dir = metrics_test_dir("append");
+        let path = dir.join("memory-metrics.csv");
+
+        append_sample_to(&path, &sample_snapshot(), METRICS_MAX_BYTES);
+        append_sample_to(&path, &sample_snapshot(), METRICS_MAX_BYTES);
+
+        let contents = fs::read_to_string(&path).expect("metrics file should exist");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 3, "expected header + 2 samples, got {contents:?}");
+        assert_eq!(lines[0], METRICS_HEADER.trim_end());
+        for line in &lines[1..] {
+            assert_eq!(line.split(',').count(), 4);
+            assert!(line.ends_with(",111,222,333"), "unexpected data line: {line}");
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_creates_missing_parent_directory() {
+        let dir = metrics_test_dir("mkdir");
+        let path = dir.join("nested").join("memory-metrics.csv");
+
+        append_sample_to(&path, &sample_snapshot(), METRICS_MAX_BYTES);
+        assert!(path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_rotates_when_file_exceeds_limit() {
+        let dir = metrics_test_dir("rotate");
+        let path = dir.join("memory-metrics.csv");
+        let rotated = dir.join("memory-metrics.csv.old");
+
+        // Two samples with a tiny limit: the second rotates the first away.
+        append_sample_to(&path, &sample_snapshot(), 8);
+        let first = fs::read_to_string(&path).expect("first metrics file should exist");
+        append_sample_to(&path, &sample_snapshot(), 8);
+
+        assert!(rotated.exists(), "rotated file was not created");
+        assert_eq!(
+            fs::read_to_string(&rotated).expect("rotated file should be readable"),
+            first
+        );
+
+        let contents = fs::read_to_string(&path).expect("fresh metrics file should exist");
+        assert_eq!(contents.lines().count(), 2, "fresh file should have header + 1 sample");
+        assert_eq!(contents.lines().next(), Some(METRICS_HEADER.trim_end()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_replaces_a_previous_rotation() {
+        let dir = metrics_test_dir("rotate_twice");
+        let path = dir.join("memory-metrics.csv");
+        let rotated = dir.join("memory-metrics.csv.old");
+
+        for _ in 0..3 {
+            append_sample_to(&path, &sample_snapshot(), 8);
+        }
+
+        assert!(rotated.exists());
+        assert_eq!(
+            fs::read_dir(&dir).expect("metrics dir should exist").count(),
+            2,
+            "rotation should keep exactly one .old file"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn snapshot_returns_some_on_windows() {

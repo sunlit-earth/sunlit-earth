@@ -159,7 +159,7 @@ All changes are in `src/cloud_fetcher.rs`, `src/ipc.rs`, `src/renderer/textures.
 - [x] Steps 1-2: test knobs and query-memory landed
 - [x] Step 3: regression test red against unfixed code (record below)
 - [x] Step 4: fix landed, regression test green
-- [ ] Step 5: telemetry landed
+- [x] Step 5: telemetry landed
 - [ ] Steps 6-7: docs, multi-day validation, 0.1.1
 
 ## Deviations
@@ -178,17 +178,22 @@ Recorded as they happened, smallest change that kept the plan's intent.
    quits, and asserts afterwards. A failing run then leaves a gracefully exited process and a
    complete log rather than one killed by `ChildGuard`. The private-bytes assertion is still the
    first assertion, so it is what a regression reports.
-3. **Step 4, extra `texture_dirty` flag on `GpuResources`.** With two consumers, the drain timer
+3. **Step 3, "processed while hidden" measurement.** Counting `GPU texture created` lines from
+   the hide onwards is wrong: `show-window` drains everything that was parked, so the burst that
+   arrives at the end of the test lands inside the counted range and the unfixed code appears to
+   have processed all 15 updates while hidden. The count is taken between a cursor set after the
+   hide and a second cursor set immediately before `show-window`.
+4. **Step 4, extra `texture_dirty` flag on `GpuResources`.** With two consumers, the drain timer
    can take a message before `BeforeRendering` sees it. `process_decoded_textures` then returns
    `false` on the next frame and the dirty check skips the render, so a freshly uploaded texture
    would not be displayed until some other parameter changed. The flag is set whenever a texture
    is uploaded and taken by `BeforeRendering`, so the re-render happens no matter which consumer
    drained the mailbox.
-4. **Step 3, "processed while hidden" measurement.** Counting `GPU texture created` lines from
-   the hide onwards is wrong: `show-window` drains everything that was parked, so the burst that
-   arrives at the end of the test lands inside the counted range and the unfixed code appears to
-   have processed all 15 updates while hidden. The count is taken between a cursor set after the
-   hide and a second cursor set immediately before `show-window`.
+5. **Step 5, one metrics sample at startup.** The plan has the watchdog write only on its timer,
+   which means nothing is recorded for the first ten minutes and a short-lived run leaves no
+   trace at all. `run_event_loop` writes one sample before starting the timer, so every run has a
+   startup baseline for later samples to be compared against. It also makes the feature verifiable
+   without waiting out a full interval.
 
 ## Results
 

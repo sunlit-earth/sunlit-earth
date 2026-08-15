@@ -294,6 +294,19 @@ fn run_event_loop(
         renderer::drain_texture_updates,
     );
 
+    // Memory watchdog (every 10 minutes). Appends a sample to
+    // %LOCALAPPDATA%\SunlitEarth\memory-metrics.csv and warns past the budget.
+    // Release builds compile out debug and info logging, so this is the only
+    // memory telemetry a shipped binary produces. One sample is written up
+    // front so every run leaves a startup baseline to compare later ones with.
+    sunlit_earth::memory::record_metrics_sample();
+    let memory_timer = slint::Timer::default();
+    memory_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(600),
+        sunlit_earth::memory::record_metrics_sample,
+    );
+
     let is_render = cli_command.is_some();
     let use_tray = !is_render && matches!(mode, Mode::Tray);
 
@@ -527,6 +540,7 @@ fn run_event_loop(
     // quit_event_loop() because the backend may be partially torn down.
     std::mem::forget(sun_timer);
     std::mem::forget(drain_timer);
+    std::mem::forget(memory_timer);
     std::mem::forget(render_timer);
 
     debug!("exiting");

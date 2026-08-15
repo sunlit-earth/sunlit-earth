@@ -29,7 +29,7 @@ pub struct DecodedTextureMessage {
 /// only the most recent frame per slot is ever useful, so `post` overwrites the
 /// parked message instead of queueing behind it. Parked memory is therefore
 /// capped at one decoded frame per slot no matter how long the consumer stalls,
-/// which is what the window being hidden to the tray does to it.
+/// which is exactly what hiding the window to the tray used to do to it.
 #[derive(Clone)]
 pub struct TextureMailbox {
     slots: Arc<Mutex<Vec<Option<DecodedTextureMessage>>>>,

@@ -36,11 +36,11 @@ Three design mistakes compound: an unbounded producer paired with a conditional 
 
 ## Success Criteria
 
-- [ ] Regression test demonstrates the leak against unfixed code (red run recorded in Results below)
-- [ ] Regression test passes against fixed code: bounded memory across 15 cloud updates while hidden
-- [ ] Cloud updates are processed while the window is hidden (GPU texture creation observed between hide and show)
-- [ ] `cargo test` and `cargo clippy` clean; full e2e suite (`cargo test --test e2e -- --ignored`) passes
-- [ ] Release build writes memory metrics CSV and warns above the budget
+- [x] Regression test demonstrates the leak against unfixed code (red run recorded in Results below)
+- [x] Regression test passes against fixed code: bounded memory across 15 cloud updates while hidden
+- [x] Cloud updates are processed while the window is hidden (GPU texture creation observed between hide and show)
+- [x] `cargo test` and `cargo clippy` clean; full e2e suite (`cargo test --test e2e -- --ignored`) passes
+- [x] Release build writes memory metrics CSV and warns above the budget (CSV verified on the release binary; the `warn!` path is code-reviewed only, since tripping a 2 GiB budget on purpose is not worth the test time)
 - [ ] Multi-day validation on the real desktop: metrics CSV flat while hidden with live cloud updates, then check off the roadmap bug entry and tag 0.1.1
 
 ## Implementation Steps
@@ -160,7 +160,9 @@ All changes are in `src/cloud_fetcher.rs`, `src/ipc.rs`, `src/renderer/textures.
 - [x] Step 3: regression test red against unfixed code (record below)
 - [x] Step 4: fix landed, regression test green
 - [x] Step 5: telemetry landed
-- [ ] Steps 6-7: docs, multi-day validation, 0.1.1
+- [x] Step 6: docs updated (`CLAUDE.md`, `docs/roadmap.md`, `docs/retrospective-2026-08.md`)
+- [x] Step 7 items 1-2: full suite green, red-then-green record filled in below
+- [ ] Step 7 items 3-4: multi-day validation, roadmap check-off, 0.1.1 tag
 
 ## Deviations
 
@@ -239,6 +241,22 @@ which is the only one that matters. Peak RSS also drops from 373.4 MiB to 270.5 
 the 15 parked frames are no longer processed in one burst when the window is shown again.
 
 Full suite: `cargo test --test e2e -- --ignored` passes all 8 tests in 43 seconds.
+
+### Release telemetry check
+
+`cargo build --release`, then the binary run windowed with the window hidden over IPC for twelve
+minutes, `%LOCALAPPDATA%\SunlitEarth\memory-metrics.csv` afterwards:
+
+```
+unix_ts,rss_bytes,peak_rss_bytes,private_bytes
+1786793992,200224768,201232384,319733760
+1786794592,257556480,258437120,370249728
+```
+
+The second sample is exactly 600 seconds after the first, so the watchdog timer fires in a
+release build, and the header plus both rows confirm the format. Release stderr was empty: with
+`release_max_level_warn` nothing below `warn!` is emitted and private bytes stayed far under the
+2 GiB budget, which is the expected quiet case.
 
 ### Multi-day validation
 

@@ -39,8 +39,8 @@ Three design mistakes compound: an unbounded producer paired with a conditional 
 - [x] Regression test demonstrates the leak against unfixed code (red run recorded in Results below)
 - [x] Regression test passes against fixed code: bounded memory across 15 cloud updates while hidden
 - [x] Cloud updates are processed while the window is hidden (GPU texture creation observed between hide and show)
-- [x] `cargo test` and `cargo clippy` clean; full e2e suite (`cargo test --test e2e -- --ignored`) passes
-- [x] Release build writes memory metrics CSV and warns above the budget (CSV verified on the release binary; the `warn!` path is code-reviewed only, since tripping a 2 GiB budget on purpose is not worth the test time)
+- [x] `cargo test` passes and `cargo clippy` reports no new warnings; the suite still carries pre-existing pedantic warnings that predate this work, so "clean" is not literally true and was never achieved. Full e2e suite (`cargo test --test e2e -- --ignored`) passes
+- [x] Release build writes memory metrics CSV and warns above the budget (CSV verified on the release binary; the `warn!` path is code-reviewed only, since tripping a 2 GiB budget on purpose is not worth the test time). Caveat: rows carry no process identity, so a CSV cannot be attributed to a particular binary after the fact. `SUNLIT_EARTH_METRICS_DIR` keeps test-spawned processes out of the real file, which is what makes the multi-day sample trustworthy
 - [ ] Multi-day validation on the real desktop: metrics CSV flat while hidden with live cloud updates, then check off the roadmap bug entry and tag 0.1.1
 
 ## Implementation Steps
@@ -196,6 +196,14 @@ Recorded as they happened, smallest change that kept the plan's intent.
    trace at all. `run_event_loop` writes one sample before starting the timer, so every run has a
    startup baseline for later samples to be compared against. It also makes the feature verifiable
    without waiting out a full interval.
+6. **Post-review, `SUNLIT_EARTH_METRICS_DIR` knob in `src/memory.rs`.** Combined with the startup
+   sample above, the unconditional `metrics_path()` meant every test-spawned process appended to
+   the developer's real metrics CSV. Since rows carry no process identity, those samples could not
+   be filtered out again, which would have quietly corrupted the multi-day validation this plan
+   still depends on. The directory is now overridable and all eight e2e spawn sites redirect it,
+   the same treatment `SUNLIT_EARTH_CONFIG` gets. The `env_override` helper that defines "unset or
+   blank" moved to `lib.rs` so the cloud, config, and metrics knobs share one definition, each
+   resolved by a pure `*_from(Option<&str>)` function with unit tests on both branches.
 
 ## Results
 
@@ -257,6 +265,17 @@ The second sample is exactly 600 seconds after the first, so the watchdog timer 
 release build, and the header plus both rows confirm the format. Release stderr was empty: with
 `release_max_level_warn` nothing below `warn!` is emitted and private bytes stayed far under the
 2 GiB budget, which is the expected quiet case.
+
+Caveat found in review: CSV rows record only a timestamp and three counters, so a row cannot be
+attributed to the binary that wrote it. Before `SUNLIT_EARTH_METRICS_DIR` existed, every
+test-spawned process appended to the same real file (an e2e run left it at 22 lines), and those
+rows could not be told apart from production samples afterwards. The knob keeps test runs out of
+the file entirely, which is the prerequisite for the multi-day validation below meaning anything.
+Attributing rows to a run, for example a process-start marker column, is left for later.
+
+Verified after the fix: the real CSV was 22 lines with checksum `9e5411cb...` before a full e2e
+run and 22 lines with the same checksum after it, while the redirected file in the test scratch
+directory picked up 9 lines (a header plus one startup sample from each of the eight spawns).
 
 ### Multi-day validation
 

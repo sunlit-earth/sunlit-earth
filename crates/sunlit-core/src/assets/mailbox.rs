@@ -97,7 +97,10 @@ mod tests {
         assert_eq!(taken[0].slot_index, 0);
         assert_eq!(taken[1].slot_index, 3);
 
-        assert!(mailbox.take_all().is_empty(), "second take should find nothing");
+        assert!(
+            mailbox.take_all().is_empty(),
+            "second take should find nothing"
+        );
     }
 
     #[test]

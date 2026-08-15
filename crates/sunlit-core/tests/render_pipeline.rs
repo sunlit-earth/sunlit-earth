@@ -82,7 +82,10 @@ fn generate_uv_sphere(stacks: u32, sectors: u32) -> (Vec<Vertex>, Vec<u32>) {
             let z = xy * sector_angle.sin();
             let u = j as f32 / sectors_f;
             let v = i as f32 / stacks_f;
-            vertices.push(Vertex { position: [x, y, z], uv: [u, v] });
+            vertices.push(Vertex {
+                position: [x, y, z],
+                uv: [u, v],
+            });
         }
     }
 
@@ -301,9 +304,8 @@ fn create_render_context() -> RenderContext {
     }
 }
 
-static RENDER_CTX: LazyLock<Mutex<RenderContext>> = LazyLock::new(|| {
-    Mutex::new(create_render_context())
-});
+static RENDER_CTX: LazyLock<Mutex<RenderContext>> =
+    LazyLock::new(|| Mutex::new(create_render_context()));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -318,10 +320,18 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 };
 
 /// Create a 1x1 solid-color texture.
-fn create_solid_texture(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> wgpu::TextureView {
+fn create_solid_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    rgba: [u8; 4],
+) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("solid_texture"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -342,7 +352,11 @@ fn create_solid_texture(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4
             bytes_per_row: Some(4),
             rows_per_image: Some(1),
         },
-        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
     );
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
@@ -356,7 +370,8 @@ fn render_frame(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    ctx.queue.write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
+    ctx.queue
+        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
     let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_bind_group"),
@@ -383,7 +398,11 @@ fn render_frame(
 
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_render_target"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -394,7 +413,11 @@ fn render_frame(
 
     let depth_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_depth"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -406,7 +429,9 @@ fn render_frame(
     let color_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -450,12 +475,15 @@ fn count_non_clear_pixels(pixels: &[u8]) -> usize {
     let clear_g = (CLEAR_COLOR.g * 255.0) as u8;
     let clear_b = (CLEAR_COLOR.b * 255.0) as u8;
 
-    pixels.chunks(4).filter(|px| {
-        let dr = px[0].abs_diff(clear_r);
-        let dg = px[1].abs_diff(clear_g);
-        let db = px[2].abs_diff(clear_b);
-        dr > 1 || dg > 1 || db > 1
-    }).count()
+    pixels
+        .chunks(4)
+        .filter(|px| {
+            let dr = px[0].abs_diff(clear_r);
+            let dg = px[1].abs_diff(clear_g);
+            let db = px[2].abs_diff(clear_b);
+            dr > 1 || dg > 1 || db > 1
+        })
+        .count()
 }
 
 /// Average luminance of pixels in a rectangular region.
@@ -473,7 +501,9 @@ fn avg_luminance_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1
         }
     }
     #[allow(clippy::cast_precision_loss)]
-    { sum / count as f64 }
+    {
+        sum / count as f64
+    }
 }
 
 /// Helper: default uniforms with identity color correction and no clouds.
@@ -557,7 +587,14 @@ fn day_side_brighter_than_night_side() {
 
     // The sphere faces the camera (along +Z). Sun is also along +Z.
     // Center of the image should be brightly lit.
-    let center_lum = avg_luminance_region(&pixels, size, size / 4, size / 4, 3 * size / 4, 3 * size / 4);
+    let center_lum = avg_luminance_region(
+        &pixels,
+        size,
+        size / 4,
+        size / 4,
+        3 * size / 4,
+        3 * size / 4,
+    );
 
     // Day-lit white sphere center should be significantly bright
     assert!(
@@ -695,19 +732,23 @@ fn main() {
 fn uniform_buffer_field_offsets_match_wgsl() {
     let ctx = RENDER_CTX.lock().unwrap();
 
-    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("uniform_readback_shader"),
-        source: wgpu::ShaderSource::Wgsl(UNIFORM_READBACK_SHADER.into()),
-    });
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("uniform_readback_shader"),
+            source: wgpu::ShaderSource::Wgsl(UNIFORM_READBACK_SHADER.into()),
+        });
 
-    let pipeline = ctx.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("uniform_readback_pipeline"),
-        layout: None,
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("uniform_readback_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
     // Write known values to a fresh uniform buffer
     let mut mvp = [0.0f32; 16];
@@ -752,11 +793,13 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         _pad5: 0.0,
     };
 
-    let uniform_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("test_uniform_buf"),
-        contents: bytemuck::cast_slice(&[uniforms]),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
+    let uniform_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test_uniform_buf"),
+            contents: bytemuck::cast_slice(&[uniforms]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
 
     // Output buffer: 34 floats
     let output_size = (35 * std::mem::size_of::<f32>()) as u64;
@@ -782,7 +825,9 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         ],
     });
 
-    let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: None,
@@ -798,41 +843,181 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     let values: &[f32] = bytemuck::cast_slice(&data);
 
     let eps = 1e-6;
-    assert!((values[0] - 1.0).abs() < eps, "MVP[0][0]: got {}, expected 1.0", values[0]);
-    assert!((values[1] - 2.0).abs() < eps, "MVP[1][1]: got {}, expected 2.0", values[1]);
-    assert!((values[2] - 3.0).abs() < eps, "MVP[2][2]: got {}, expected 3.0", values[2]);
-    assert!((values[3] - 4.0).abs() < eps, "MVP[3][3]: got {}, expected 4.0", values[3]);
-    assert!((values[4] - 0.0).abs() < eps, "sun_dir.x: got {}, expected 0.0", values[4]);
-    assert!((values[5] - 1.0).abs() < eps, "sun_dir.y: got {}, expected 1.0", values[5]);
-    assert!((values[6] - 0.0).abs() < eps, "sun_dir.z: got {}, expected 0.0", values[6]);
-    assert!((values[7] - 0.15).abs() < eps, "terminator_width: got {}, expected 0.25", values[7]);
-    assert!((values[8] - 1.0).abs() < eps, "flags: got {}, expected 1.0", values[8]);
-    assert!((values[9] - 0.5).abs() < eps, "diffuse_floor: got {}, expected 0.5", values[9]);
-    assert!((values[10] - 0.25).abs() < eps, "diffuse_ramp: got {}, expected 0.55", values[10]);
-    assert!((values[11] - 1.0).abs() < eps, "eye_pos.x: got {}, expected 1.0", values[11]);
-    assert!((values[12] - 2.0).abs() < eps, "eye_pos.y: got {}, expected 2.0", values[12]);
-    assert!((values[13] - 3.0).abs() < eps, "eye_pos.z: got {}, expected 3.0", values[13]);
-    assert!((values[14] - 150.0).abs() < eps, "spec_shininess: got {}, expected 150.0", values[14]);
-    assert!((values[15] - 0.75).abs() < eps, "spec_intensity: got {}, expected 0.75", values[15]);
-    assert!((values[16] - 0.5).abs() < eps, "fresnel_mix: got {}, expected 0.5", values[16]);
-    assert!((values[17] - 3.0).abs() < eps, "fresnel_exp: got {}, expected 3.0", values[17]);
-    assert!((values[18] - 1.5).abs() < eps, "day_gamma: got {}, expected 1.5", values[18]);
-    assert!((values[19] - 0.8).abs() < eps, "day_saturation: got {}, expected 0.8", values[19]);
-    assert!((values[20] - 2.0).abs() < eps, "night_gamma: got {}, expected 2.0", values[20]);
-    assert!((values[21] - 0.6).abs() < eps, "night_saturation: got {}, expected 0.6", values[21]);
-    assert!((values[22] - 1.0015).abs() < eps, "cloud_sphere_radius: got {}, expected 1.0015", values[22]);
-    assert!((values[23] - 0.9).abs() < eps, "cloud_opacity: got {}, expected 0.9", values[23]);
-    assert!((values[24] - 0.25).abs() < eps, "cloud_floor: got {}, expected 0.55", values[24]);
-    assert!((values[25] - 0.65).abs() < eps, "cloud_gamma: got {}, expected 0.65", values[25]);
-    assert!((values[26] - 0.5).abs() < eps, "rayleigh_intensity: got {}, expected 0.5", values[26]);
-    assert!((values[27] - 50.0).abs() < eps, "rayleigh_sharpness: got {}, expected 50.0", values[27]);
-    assert!((values[28] - 0.25).abs() < eps, "nightglow_intensity: got {}, expected 0.25", values[28]);
-    assert!((values[29] - 15.0).abs() < eps, "nightglow_falloff: got {}, expected 15.0", values[29]);
-    assert!((values[30] - 0.37).abs() < eps, "nightglow_balance: got {}, expected 0.37", values[30]);
-    assert!((values[31] - 1.003).abs() < eps, "rayleigh_radius: got {}, expected 1.003", values[31]);
-    assert!((values[32] - 1.014).abs() < eps, "nightglow_orange_radius: got {}, expected 1.014", values[32]);
-    assert!((values[33] - 1.015).abs() < eps, "nightglow_green_radius: got {}, expected 1.015", values[33]);
-    assert!((values[34] - 0.55).abs() < eps, "rayleigh_haze: got {}, expected 0.55", values[34]);
+    assert!(
+        (values[0] - 1.0).abs() < eps,
+        "MVP[0][0]: got {}, expected 1.0",
+        values[0]
+    );
+    assert!(
+        (values[1] - 2.0).abs() < eps,
+        "MVP[1][1]: got {}, expected 2.0",
+        values[1]
+    );
+    assert!(
+        (values[2] - 3.0).abs() < eps,
+        "MVP[2][2]: got {}, expected 3.0",
+        values[2]
+    );
+    assert!(
+        (values[3] - 4.0).abs() < eps,
+        "MVP[3][3]: got {}, expected 4.0",
+        values[3]
+    );
+    assert!(
+        (values[4] - 0.0).abs() < eps,
+        "sun_dir.x: got {}, expected 0.0",
+        values[4]
+    );
+    assert!(
+        (values[5] - 1.0).abs() < eps,
+        "sun_dir.y: got {}, expected 1.0",
+        values[5]
+    );
+    assert!(
+        (values[6] - 0.0).abs() < eps,
+        "sun_dir.z: got {}, expected 0.0",
+        values[6]
+    );
+    assert!(
+        (values[7] - 0.15).abs() < eps,
+        "terminator_width: got {}, expected 0.25",
+        values[7]
+    );
+    assert!(
+        (values[8] - 1.0).abs() < eps,
+        "flags: got {}, expected 1.0",
+        values[8]
+    );
+    assert!(
+        (values[9] - 0.5).abs() < eps,
+        "diffuse_floor: got {}, expected 0.5",
+        values[9]
+    );
+    assert!(
+        (values[10] - 0.25).abs() < eps,
+        "diffuse_ramp: got {}, expected 0.55",
+        values[10]
+    );
+    assert!(
+        (values[11] - 1.0).abs() < eps,
+        "eye_pos.x: got {}, expected 1.0",
+        values[11]
+    );
+    assert!(
+        (values[12] - 2.0).abs() < eps,
+        "eye_pos.y: got {}, expected 2.0",
+        values[12]
+    );
+    assert!(
+        (values[13] - 3.0).abs() < eps,
+        "eye_pos.z: got {}, expected 3.0",
+        values[13]
+    );
+    assert!(
+        (values[14] - 150.0).abs() < eps,
+        "spec_shininess: got {}, expected 150.0",
+        values[14]
+    );
+    assert!(
+        (values[15] - 0.75).abs() < eps,
+        "spec_intensity: got {}, expected 0.75",
+        values[15]
+    );
+    assert!(
+        (values[16] - 0.5).abs() < eps,
+        "fresnel_mix: got {}, expected 0.5",
+        values[16]
+    );
+    assert!(
+        (values[17] - 3.0).abs() < eps,
+        "fresnel_exp: got {}, expected 3.0",
+        values[17]
+    );
+    assert!(
+        (values[18] - 1.5).abs() < eps,
+        "day_gamma: got {}, expected 1.5",
+        values[18]
+    );
+    assert!(
+        (values[19] - 0.8).abs() < eps,
+        "day_saturation: got {}, expected 0.8",
+        values[19]
+    );
+    assert!(
+        (values[20] - 2.0).abs() < eps,
+        "night_gamma: got {}, expected 2.0",
+        values[20]
+    );
+    assert!(
+        (values[21] - 0.6).abs() < eps,
+        "night_saturation: got {}, expected 0.6",
+        values[21]
+    );
+    assert!(
+        (values[22] - 1.0015).abs() < eps,
+        "cloud_sphere_radius: got {}, expected 1.0015",
+        values[22]
+    );
+    assert!(
+        (values[23] - 0.9).abs() < eps,
+        "cloud_opacity: got {}, expected 0.9",
+        values[23]
+    );
+    assert!(
+        (values[24] - 0.25).abs() < eps,
+        "cloud_floor: got {}, expected 0.55",
+        values[24]
+    );
+    assert!(
+        (values[25] - 0.65).abs() < eps,
+        "cloud_gamma: got {}, expected 0.65",
+        values[25]
+    );
+    assert!(
+        (values[26] - 0.5).abs() < eps,
+        "rayleigh_intensity: got {}, expected 0.5",
+        values[26]
+    );
+    assert!(
+        (values[27] - 50.0).abs() < eps,
+        "rayleigh_sharpness: got {}, expected 50.0",
+        values[27]
+    );
+    assert!(
+        (values[28] - 0.25).abs() < eps,
+        "nightglow_intensity: got {}, expected 0.25",
+        values[28]
+    );
+    assert!(
+        (values[29] - 15.0).abs() < eps,
+        "nightglow_falloff: got {}, expected 15.0",
+        values[29]
+    );
+    assert!(
+        (values[30] - 0.37).abs() < eps,
+        "nightglow_balance: got {}, expected 0.37",
+        values[30]
+    );
+    assert!(
+        (values[31] - 1.003).abs() < eps,
+        "rayleigh_radius: got {}, expected 1.003",
+        values[31]
+    );
+    assert!(
+        (values[32] - 1.014).abs() < eps,
+        "nightglow_orange_radius: got {}, expected 1.014",
+        values[32]
+    );
+    assert!(
+        (values[33] - 1.015).abs() < eps,
+        "nightglow_green_radius: got {}, expected 1.015",
+        values[33]
+    );
+    assert!(
+        (values[34] - 0.55).abs() < eps,
+        "rayleigh_haze: got {}, expected 0.55",
+        values[34]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -862,9 +1047,13 @@ fn avg_luminance_non_clear(pixels: &[u8]) -> f64 {
             count += 1;
         }
     }
-    if count == 0 { return 0.0; }
+    if count == 0 {
+        return 0.0;
+    }
     #[allow(clippy::cast_precision_loss)]
-    { sum / count as f64 }
+    {
+        sum / count as f64
+    }
 }
 
 #[test]
@@ -1088,72 +1277,78 @@ fn cloud_pipeline_renders_with_alpha() {
         include_str!("../shaders/blend.wgsl"),
         include_str!("../shaders/sphere.wgsl"),
     );
-    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("test_cloud_shader"),
-        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-    });
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test_cloud_shader"),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        });
 
-    let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("test_cloud_pipeline_layout"),
-        bind_group_layouts: &[&ctx.bind_group_layout],
-        immediate_size: 0,
-    });
+    let pipeline_layout = ctx
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("test_cloud_pipeline_layout"),
+            bind_group_layouts: &[&ctx.bind_group_layout],
+            immediate_size: 0,
+        });
 
-    let cloud_pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("test_cloud_pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_cloud"),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: 0,
-                        format: wgpu::VertexFormat::Float32x3,
-                    },
-                    wgpu::VertexAttribute {
-                        offset: 12,
-                        shader_location: 1,
-                        format: wgpu::VertexFormat::Float32x2,
-                    },
-                ],
-            }],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_cloud"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    });
+    let cloud_pipeline = ctx
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("test_cloud_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_cloud"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_cloud"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
 
     // 1x1 white cloud texture (fully opaque cloud)
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
@@ -1165,7 +1360,8 @@ fn cloud_pipeline_renders_with_alpha() {
         ..default_test_uniforms(size)
     };
 
-    ctx.queue.write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+    ctx.queue
+        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
     let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_cloud_bind_group"),
@@ -1192,7 +1388,11 @@ fn cloud_pipeline_renders_with_alpha() {
 
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_cloud_render_target"),
-        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1203,7 +1403,11 @@ fn cloud_pipeline_renders_with_alpha() {
 
     let depth_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_cloud_depth"),
-        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1215,7 +1419,9 @@ fn cloud_pipeline_renders_with_alpha() {
     let color_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("test_cloud_pass"),
@@ -1436,9 +1642,13 @@ fn saturation_above_one_increases_chroma() {
                 count += 1;
             }
         }
-        if count == 0 { return 0.0; }
+        if count == 0 {
+            return 0.0;
+        }
         #[allow(clippy::cast_precision_loss)]
-        { sum / count as f64 }
+        {
+            sum / count as f64
+        }
     };
 
     let chroma_base = avg_chroma(&pixels_base);
@@ -1469,7 +1679,8 @@ fn night_gamma_does_not_affect_single_texture_mode() {
         night_gamma: 0.3,
         ..uniforms_base
     };
-    let pixels_night_extreme = render_frame(&ctx, &uniforms_night_extreme, &mid_gray, &black, size, size);
+    let pixels_night_extreme =
+        render_frame(&ctx, &uniforms_night_extreme, &mid_gray, &black, size, size);
 
     assert_eq!(
         pixels_base, pixels_night_extreme,
@@ -1493,14 +1704,28 @@ fn day_and_night_corrections_independent() {
         day_gamma: 2.0,
         ..default_test_uniforms(size)
     };
-    let pixels_day_bright = render_frame(&ctx, &uniforms_day_bright, &mid_gray, &dark_gray, size, size);
+    let pixels_day_bright = render_frame(
+        &ctx,
+        &uniforms_day_bright,
+        &mid_gray,
+        &dark_gray,
+        size,
+        size,
+    );
 
     let uniforms_night_bright = Uniforms {
         day_gamma: 1.0,
         night_gamma: 2.0,
         ..uniforms_day_bright
     };
-    let pixels_night_bright = render_frame(&ctx, &uniforms_night_bright, &mid_gray, &dark_gray, size, size);
+    let pixels_night_bright = render_frame(
+        &ctx,
+        &uniforms_night_bright,
+        &mid_gray,
+        &dark_gray,
+        size,
+        size,
+    );
 
     assert_ne!(
         pixels_day_bright, pixels_night_bright,

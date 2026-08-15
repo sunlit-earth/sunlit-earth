@@ -45,8 +45,7 @@ pub fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
         )
     };
     assert_eq!(
-        equ.status,
-        astro_status_t_ASTRO_SUCCESS,
+        equ.status, astro_status_t_ASTRO_SUCCESS,
         "Astronomy_Equator failed"
     );
 
@@ -96,15 +95,26 @@ pub fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
 /// :param second: Fractional second, 0.0..60.0.
 /// :returns: Unit vector in the renderer's world-space coordinate frame.
 pub fn sun_direction_at(
-    year: i32, month: i32, day: i32,
-    hour: i32, minute: i32, second: f64,
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: f64,
 ) -> Vec3 {
     let time = make_time(year, month, day, hour, minute, second);
     sun_direction_from_time(time)
 }
 
 /// Create an `astro_time_t` from calendar components (UTC).
-pub fn make_time(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64) -> astro_time_t {
+pub fn make_time(
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: f64,
+) -> astro_time_t {
     use astronomy_engine_bindings::Astronomy_MakeTime;
     // SAFETY: Astronomy_MakeTime is a pure C function that constructs a value
     // type from calendar components.

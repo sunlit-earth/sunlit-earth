@@ -138,7 +138,11 @@ pub fn event_forwarder(
             let announce = first_frame.swap(false, Ordering::Relaxed);
             let _ = slint::invoke_from_event_loop(move || {
                 mailbox.wake_pending.store(false, Ordering::Release);
-                let parked = mailbox.slot.lock().expect("preview mailbox poisoned").take();
+                let parked = mailbox
+                    .slot
+                    .lock()
+                    .expect("preview mailbox poisoned")
+                    .take();
                 if let (Some(frame), Some(win)) = (parked, weak.upgrade()) {
                     win.set_rendered_image(to_image(&frame));
                     if announce {

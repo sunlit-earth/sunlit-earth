@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER, SystemParametersInfoW,
+    SPI_SETDESKWALLPAPER, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SystemParametersInfoW,
 };
 
 /// Return the wallpaper output directory (`%LOCALAPPDATA%\SunlitEarth\`),
@@ -84,9 +84,7 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
         // info is a properly sized MONITORINFOEXW with cbSize set.
         // GetMonitorInfoW writes into info and returns TRUE on success.
         #[allow(unsafe_code)]
-        let ok = unsafe {
-            GetMonitorInfoW(hmon, (&raw mut info).cast::<MONITORINFO>())
-        };
+        let ok = unsafe { GetMonitorInfoW(hmon, (&raw mut info).cast::<MONITORINFO>()) };
         if ok == 0 {
             continue;
         }
@@ -107,8 +105,8 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
 /// registry keys `HKCU\Control Panel\Desktop\WallpaperStyle` and
 /// `HKCU\Control Panel\Desktop\TileWallpaper`.
 fn ensure_fill_style() -> Result<(), String> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
     use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
 
     debug!("setting Fill wallpaper style");
 
@@ -133,8 +131,7 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     // Verify the file exists and is non-empty
-    let metadata =
-        std::fs::metadata(path).map_err(|e| format!("Wallpaper file not found: {e}"))?;
+    let metadata = std::fs::metadata(path).map_err(|e| format!("Wallpaper file not found: {e}"))?;
     if metadata.len() == 0 {
         return Err("Wallpaper file is empty".to_owned());
     }
@@ -181,9 +178,7 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
         // calling thread's last-error code. No preconditions.
         #[allow(unsafe_code)]
         let err = unsafe { GetLastError() };
-        return Err(format!(
-            "SystemParametersInfoW failed (error code {err})"
-        ));
+        return Err(format!("SystemParametersInfoW failed (error code {err})"));
     }
 
     Ok(())
@@ -198,8 +193,8 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
 ///
 /// Returns the path to the saved file on success.
 pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<PathBuf, String> {
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     use image::ImageEncoder;
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 
     let dir = wallpaper_dir()?;
     let path = dir.join("wallpaper.png");
@@ -301,9 +296,7 @@ mod tests {
         // Second save: 2x2 solid blue (overwrite)
         let w2 = 2u32;
         let h2 = 2u32;
-        let blue_pixels: Vec<u8> = (0..w2 * h2)
-            .flat_map(|_| [0u8, 0, 255, 255])
-            .collect();
+        let blue_pixels: Vec<u8> = (0..w2 * h2).flat_map(|_| [0u8, 0, 255, 255]).collect();
         let path2 = save_wallpaper_image(&blue_pixels, w2, h2).expect("second save");
         assert_eq!(path, path2, "should write to same path");
 

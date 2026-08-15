@@ -263,10 +263,22 @@ pub(super) fn execute_render_pass(
 /// group. Shared by the preview pass and the wallpaper export so the two
 /// cannot drift apart.
 pub(super) struct Overlays<'a> {
-    pub rayleigh: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
-    pub nightglow_orange: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
-    pub nightglow_green: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
-    pub cloud: (Option<&'a wgpu::RenderPipeline>, Option<&'a wgpu::BindGroup>),
+    pub rayleigh: (
+        Option<&'a wgpu::RenderPipeline>,
+        Option<&'a wgpu::BindGroup>,
+    ),
+    pub nightglow_orange: (
+        Option<&'a wgpu::RenderPipeline>,
+        Option<&'a wgpu::BindGroup>,
+    ),
+    pub nightglow_green: (
+        Option<&'a wgpu::RenderPipeline>,
+        Option<&'a wgpu::BindGroup>,
+    ),
+    pub cloud: (
+        Option<&'a wgpu::RenderPipeline>,
+        Option<&'a wgpu::BindGroup>,
+    ),
 }
 
 impl<'a> Overlays<'a> {
@@ -279,7 +291,11 @@ impl<'a> Overlays<'a> {
         bind_group: &'a wgpu::BindGroup,
     ) -> Self {
         let atmo = |on: bool, pipe: &'a wgpu::RenderPipeline| {
-            if on { (Some(pipe), Some(bind_group)) } else { (None, None) }
+            if on {
+                (Some(pipe), Some(bind_group))
+            } else {
+                (None, None)
+            }
         };
         let rayleigh_on = params.effective_rayleigh_intensity() > 0.0;
         let nightglow_on = params.effective_nightglow_intensity() > 0.0;

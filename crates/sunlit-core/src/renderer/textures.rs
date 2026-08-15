@@ -37,7 +37,10 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                     img.pixels,
                 );
                 // Flush staging buffers so they don't accumulate across textures
-                let _ = res.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+                let _ = res.device.poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                });
                 info!(slot = msg.slot_index, "GPU texture created");
                 crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -78,9 +81,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
 
 /// Create the composite bind group if both day and night texture views are available.
 pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
-    if let (Some(day_view), Some(night_view)) =
-        (&res.day_texture_view, &res.night_texture_view)
-    {
+    if let (Some(day_view), Some(night_view)) = (&res.day_texture_view, &res.night_texture_view) {
         res.composite_bind_group = Some(create_bind_group(
             &res.device,
             &res.bind_group_layout,
@@ -317,7 +318,9 @@ mod tests {
 
     #[test]
     fn downsample_2x2_uniform_red() {
-        let src = vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255];
+        let src = vec![
+            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+        ];
         let dst = downsample_2x(&src, 2, 2);
         assert_eq!(dst, [255, 0, 0, 255]);
     }

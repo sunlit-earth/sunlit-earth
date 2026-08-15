@@ -64,12 +64,8 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let (new_yaw, new_pitch) = mouse_math::apply_orient_drag(
-            win.get_camera_yaw(),
-            win.get_camera_pitch(),
-            dx,
-            dy,
-        );
+        let (new_yaw, new_pitch) =
+            mouse_math::apply_orient_drag(win.get_camera_yaw(), win.get_camera_pitch(), dx, dy);
         win.set_camera_yaw(new_yaw);
         win.set_camera_pitch(new_pitch);
         engine.push_params(&win);
@@ -139,8 +135,9 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
         if let Some(win) = window_weak.upgrade() {
             if win.get_use_custom_datetime() {
                 let now = time::OffsetDateTime::now_utc();
-                let hour =
-                    f32::from(now.hour()) + f32::from(now.minute()) / 60.0 + f32::from(now.second()) / 3600.0;
+                let hour = f32::from(now.hour())
+                    + f32::from(now.minute()) / 60.0
+                    + f32::from(now.second()) / 3600.0;
                 win.set_custom_hour(hour);
                 win.set_custom_day_of_year(f32::from(now.ordinal()));
                 win.set_custom_year_index(now.year() - base_year);

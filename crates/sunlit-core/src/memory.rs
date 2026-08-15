@@ -269,7 +269,11 @@ mod tests {
     #[test]
     fn metrics_path_without_override_uses_app_folder() {
         if let Some(path) = metrics_path_from(None) {
-            assert!(path.ends_with(METRICS_FILE_NAME), "unexpected path: {}", path.display());
+            assert!(
+                path.ends_with(METRICS_FILE_NAME),
+                "unexpected path: {}",
+                path.display()
+            );
             assert!(
                 path.parent().is_some_and(|p| p.ends_with("SunlitEarth")),
                 "expected the app folder, got {}",
@@ -295,11 +299,18 @@ mod tests {
 
         let contents = fs::read_to_string(&path).expect("metrics file should exist");
         let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 3, "expected header + 2 samples, got {contents:?}");
+        assert_eq!(
+            lines.len(),
+            3,
+            "expected header + 2 samples, got {contents:?}"
+        );
         assert_eq!(lines[0], METRICS_HEADER.trim_end());
         for line in &lines[1..] {
             assert_eq!(line.split(',').count(), 4);
-            assert!(line.ends_with(",111,222,333"), "unexpected data line: {line}");
+            assert!(
+                line.ends_with(",111,222,333"),
+                "unexpected data line: {line}"
+            );
         }
 
         let _ = fs::remove_dir_all(&dir);
@@ -334,7 +345,11 @@ mod tests {
         );
 
         let contents = fs::read_to_string(&path).expect("fresh metrics file should exist");
-        assert_eq!(contents.lines().count(), 2, "fresh file should have header + 1 sample");
+        assert_eq!(
+            contents.lines().count(),
+            2,
+            "fresh file should have header + 1 sample"
+        );
         assert_eq!(contents.lines().next(), Some(METRICS_HEADER.trim_end()));
 
         let _ = fs::remove_dir_all(&dir);
@@ -352,7 +367,9 @@ mod tests {
 
         assert!(rotated.exists());
         assert_eq!(
-            fs::read_dir(&dir).expect("metrics dir should exist").count(),
+            fs::read_dir(&dir)
+                .expect("metrics dir should exist")
+                .count(),
             2,
             "rotation should keep exactly one .old file"
         );
@@ -378,9 +395,21 @@ mod tests {
     fn snapshot_values_are_reasonable() {
         if let Some(snap) = snapshot() {
             let ten_gb = 10 * 1024 * 1024 * 1024u64;
-            assert!(snap.rss_bytes < ten_gb, "RSS {} exceeds 10 GB", snap.rss_bytes);
-            assert!(snap.peak_rss_bytes < ten_gb, "peak RSS {} exceeds 10 GB", snap.peak_rss_bytes);
-            assert!(snap.private_bytes < ten_gb, "private bytes {} exceeds 10 GB", snap.private_bytes);
+            assert!(
+                snap.rss_bytes < ten_gb,
+                "RSS {} exceeds 10 GB",
+                snap.rss_bytes
+            );
+            assert!(
+                snap.peak_rss_bytes < ten_gb,
+                "peak RSS {} exceeds 10 GB",
+                snap.peak_rss_bytes
+            );
+            assert!(
+                snap.private_bytes < ten_gb,
+                "private bytes {} exceeds 10 GB",
+                snap.private_bytes
+            );
         }
     }
 }

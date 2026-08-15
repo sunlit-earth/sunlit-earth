@@ -24,9 +24,7 @@ use crate::assets::mailbox::TextureMailbox;
 use crate::params::SceneParams;
 
 use frame::{FrameState, build_frame_state};
-use gpu_setup::{
-    create_render_textures, rebuild_msaa_resources, rebuild_render_textures,
-};
+use gpu_setup::{create_render_textures, rebuild_msaa_resources, rebuild_render_textures};
 use textures::{TextureSlot, process_decoded_textures};
 
 /// Render dimensions are rounded to this granularity to avoid
@@ -258,7 +256,8 @@ impl Renderer {
     pub fn textures_ready(&self, texture_index: i32) -> bool {
         let raw_index = slot_of(texture_index);
         if raw_index == BLEND_MODE_INDEX {
-            self.slot_loaded(DAY_SLOT) && self.slot_loaded(NIGHT_SLOT)
+            self.slot_loaded(DAY_SLOT)
+                && self.slot_loaded(NIGHT_SLOT)
                 && self.composite_bind_group.is_some()
         } else {
             self.slot_loaded(raw_index.min(self.texture_slots.len().saturating_sub(1)))
@@ -287,7 +286,10 @@ impl Renderer {
     /// the frame is skipped, so a mode switch starts loading immediately.
     pub fn render(&mut self, params: &SceneParams, sun_dir: Vec3) -> RenderOutcome {
         if params.sample_count != self.sample_count {
-            debug!(sample_count = params.sample_count, "MSAA sample count changed");
+            debug!(
+                sample_count = params.sample_count,
+                "MSAA sample count changed"
+            );
             rebuild_msaa_resources(self, params.sample_count);
         }
 
@@ -449,7 +451,10 @@ mod tests {
     #[test]
     fn aa_options_full_range() {
         let (labels, counts, default) = build_aa_options(&[1, 2, 4, 8], u32::MAX);
-        assert_eq!(labels, ["None", "MSAA 2\u{d7}", "MSAA 4\u{d7}", "MSAA 8\u{d7}"]);
+        assert_eq!(
+            labels,
+            ["None", "MSAA 2\u{d7}", "MSAA 4\u{d7}", "MSAA 8\u{d7}"]
+        );
         assert_eq!(counts, [1, 2, 4, 8]);
         assert_eq!(default, 3); // index of 8x
     }

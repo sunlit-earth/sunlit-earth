@@ -103,19 +103,23 @@ fn create_blend_context(force_software: bool) -> BlendGpuContext {
         include_str!("../shaders/blend.wgsl"),
         COMPUTE_HARNESS,
     );
-    let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("test_shader"),
-        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-    });
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test_shader"),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        });
 
-    let pipeline = ctx.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("test_pipeline"),
-        layout: None,
-        module: &shader,
-        entry_point: Some("test_main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("test_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("test_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
     BlendGpuContext {
         device: ctx.device,
@@ -124,9 +128,8 @@ fn create_blend_context(force_software: bool) -> BlendGpuContext {
     }
 }
 
-static GPU: LazyLock<Mutex<BlendGpuContext>> = LazyLock::new(|| {
-    Mutex::new(create_blend_context(false))
-});
+static GPU: LazyLock<Mutex<BlendGpuContext>> =
+    LazyLock::new(|| Mutex::new(create_blend_context(false)));
 
 // ---------------------------------------------------------------------------
 // GPU dispatch helper
@@ -183,8 +186,7 @@ fn dispatch(gpu: &BlendGpuContext, cases: &[TestCase]) -> Vec<TestResult> {
         ],
     });
 
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: None,
@@ -204,9 +206,7 @@ fn dispatch(gpu: &BlendGpuContext, cases: &[TestCase]) -> Vec<TestResult> {
     slice.map_async(wgpu::MapMode::Read, move |result| {
         tx.send(result).unwrap();
     });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .unwrap();
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.recv().unwrap().expect("buffer mapping failed");
 
     let mapped = slice.get_mapped_range();
@@ -355,12 +355,7 @@ fn per_channel_never_below_night() {
     let results = run_on_gpu(&cases);
 
     for (i, r) in results.iter().enumerate() {
-        for (ch, (&got, &expected)) in r
-            .color
-            .iter()
-            .zip(OCEAN_NIGHT.iter())
-            .enumerate()
-        {
+        for (ch, (&got, &expected)) in r.color.iter().zip(OCEAN_NIGHT.iter()).enumerate() {
             assert!(
                 got >= expected - EPS,
                 "Ocean ch={ch} below night at step {i}: {got:.6} < {expected:.6}",
@@ -371,17 +366,10 @@ fn per_channel_never_below_night() {
 
 #[test]
 fn fully_lit_matches_day_color() {
-    let cases = vec![make_case(
-        OCEAN_DAY, OCEAN_NIGHT, 1.0, W, true, FLOOR, RAMP,
-    )];
+    let cases = vec![make_case(OCEAN_DAY, OCEAN_NIGHT, 1.0, W, true, FLOOR, RAMP)];
     let results = run_on_gpu(&cases);
 
-    for (ch, (&got, &expected)) in results[0]
-        .color
-        .iter()
-        .zip(OCEAN_DAY.iter())
-        .enumerate()
-    {
+    for (ch, (&got, &expected)) in results[0].color.iter().zip(OCEAN_DAY.iter()).enumerate() {
         assert!(
             (got - expected).abs() < EPS,
             "Fully-lit ch={ch}: {got:.6} vs expected {expected:.6}",
@@ -392,16 +380,17 @@ fn fully_lit_matches_day_color() {
 #[test]
 fn fully_dark_matches_night_color() {
     let cases = vec![make_case(
-        OCEAN_DAY, OCEAN_NIGHT, -1.0, W, true, FLOOR, RAMP,
+        OCEAN_DAY,
+        OCEAN_NIGHT,
+        -1.0,
+        W,
+        true,
+        FLOOR,
+        RAMP,
     )];
     let results = run_on_gpu(&cases);
 
-    for (ch, (&got, &expected)) in results[0]
-        .color
-        .iter()
-        .zip(OCEAN_NIGHT.iter())
-        .enumerate()
-    {
+    for (ch, (&got, &expected)) in results[0].color.iter().zip(OCEAN_NIGHT.iter()).enumerate() {
         assert!(
             (got - expected).abs() < EPS,
             "Fully-dark ch={ch}: {got:.6} vs expected {expected:.6}",
@@ -440,12 +429,7 @@ fn nyc_fully_lit_matches_day_color() {
     let cases = vec![make_case(NYC_DAY, NYC_NIGHT, 1.0, W, true, FLOOR, RAMP)];
     let results = run_on_gpu(&cases);
 
-    for (ch, (&got, &expected)) in results[0]
-        .color
-        .iter()
-        .zip(NYC_DAY.iter())
-        .enumerate()
-    {
+    for (ch, (&got, &expected)) in results[0].color.iter().zip(NYC_DAY.iter()).enumerate() {
         assert!(
             (got - expected).abs() < EPS,
             "NYC fully-lit ch={ch}: got {got:.4}, expected day {expected:.4}",
@@ -591,12 +575,7 @@ fn software_adapter_produces_correct_results() {
     let day_lum = luminance(&NYC_DAY);
     // Check the last result (n_dot_l = 1.0, fully lit)
     let fully_lit = &nyc[500];
-    for (ch, (&got, &expected)) in fully_lit
-        .color
-        .iter()
-        .zip(NYC_DAY.iter())
-        .enumerate()
-    {
+    for (ch, (&got, &expected)) in fully_lit.color.iter().zip(NYC_DAY.iter()).enumerate() {
         assert!(
             (got - expected).abs() < EPS,
             "Software: NYC fully-lit ch={ch}: got {got:.4}, expected {expected:.4}",

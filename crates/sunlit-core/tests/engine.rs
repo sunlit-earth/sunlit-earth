@@ -23,7 +23,9 @@ static GPU_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Hold the GPU lock even if a previous test panicked while holding it.
 fn gpu_lock() -> MutexGuard<'static, ()> {
-    GPU_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    GPU_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// How long to wait for the engine to produce something before giving up.
@@ -73,7 +75,12 @@ impl Harness {
     fn next_frame(&self) -> (Vec<u8>, u32, u32) {
         let deadline = std::time::Instant::now() + TIMEOUT;
         while let Ok(event) = self.events.recv_deadline(deadline) {
-            if let EngineEvent::PreviewFrame { rgba, width, height } = event {
+            if let EngineEvent::PreviewFrame {
+                rgba,
+                width,
+                height,
+            } = event
+            {
                 return (rgba, width, height);
             }
         }
@@ -96,7 +103,8 @@ impl Harness {
 /// A frame is "lit" when at least one pixel is clearly brighter than the
 /// clear color (which is near-black).
 fn has_lit_pixels(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4).any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40)
+    rgba.chunks_exact(4)
+        .any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40)
 }
 
 #[test]
@@ -106,7 +114,10 @@ fn engine_renders_a_first_preview_frame() {
 
     assert_eq!((width, height), (512, 256), "512x288 quantizes to 512x256");
     assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
-    assert!(has_lit_pixels(&rgba), "the globe should be visible on the first frame");
+    assert!(
+        has_lit_pixels(&rgba),
+        "the globe should be visible on the first frame"
+    );
 }
 
 #[test]
@@ -139,7 +150,9 @@ fn changed_parameters_produce_a_new_frame() {
         },
         ..test_params()
     };
-    harness.engine.send(EngineCommand::UpdateParams(Box::new(moved)));
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(moved)));
 
     let (rgba, _, _) = harness.next_frame();
     assert!(has_lit_pixels(&rgba));
@@ -168,7 +181,9 @@ fn disabling_the_preview_stops_frames_without_stopping_the_engine() {
         cloud_opacity: 0.1,
         ..test_params()
     };
-    harness.engine.send(EngineCommand::UpdateParams(Box::new(moved)));
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(moved)));
     assert!(
         harness.drained_frame(Duration::from_millis(500)).is_none(),
         "no frames should be delivered while the preview is off"
@@ -291,7 +306,9 @@ fn switching_texture_mode_produces_a_new_frame() {
         texture_index: 1,
         ..test_params()
     };
-    harness.engine.send(EngineCommand::UpdateParams(Box::new(swapped)));
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(swapped)));
     let (rgba, width, height) = harness.next_frame();
     assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
 }
@@ -348,5 +365,8 @@ fn textures_ready_fires_for_the_procedural_grid() {
             break;
         }
     }
-    assert!(ready, "the grid texture is built up front and is always ready");
+    assert!(
+        ready,
+        "the grid texture is built up front and is always ready"
+    );
 }

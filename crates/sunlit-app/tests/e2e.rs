@@ -8,12 +8,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use image::GenericImageView;
-use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use interprocess::local_socket::traits::Stream as StreamExt;
+use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use serial_test::serial;
 
 // ---------------------------------------------------------------------------
@@ -132,7 +135,9 @@ struct TempDirGuard {
 
 impl TempDirGuard {
     fn new() -> Self {
-        Self { path: create_temp_dir() }
+        Self {
+            path: create_temp_dir(),
+        }
     }
 
     fn path(&self) -> &Path {
@@ -213,7 +218,11 @@ fn parse_memory_entries(stderr: &str) -> Vec<MemoryEntry> {
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
 
-        entries.push(MemoryEntry { context, rss_mb, peak_rss_mb });
+        entries.push(MemoryEntry {
+            context,
+            rss_mb,
+            peak_rss_mb,
+        });
     }
     entries
 }
@@ -234,7 +243,10 @@ fn assert_black(rgb: [u8; 3], label: &str) {
 /// Assert that a pixel is dark ocean on the night side (nearly black).
 fn assert_night_ocean(rgb: [u8; 3], label: &str) {
     let sum = u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]);
-    assert!(sum < 40, "{label}: expected dark ocean, got {rgb:?} (sum={sum})");
+    assert!(
+        sum < 40,
+        "{label}: expected dark ocean, got {rgb:?} (sum={sum})"
+    );
 }
 
 /// Assert that a pixel is night-side land (dim, bluish from nightglow).
@@ -302,11 +314,7 @@ static SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// Generate a unique local socket name for a test.
 fn unique_socket_name() -> String {
     let counter = SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "sunlit-earth-test-{}-{}",
-        std::process::id(),
-        counter
-    )
+    format!("sunlit-earth-test-{}-{}", std::process::id(), counter)
 }
 
 /// Send a single IPC command to the named local socket.
@@ -343,7 +351,10 @@ impl StderrWatcher {
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            lines_clone.lock().expect("stderr watcher lock poisoned").push(l);
+                            lines_clone
+                                .lock()
+                                .expect("stderr watcher lock poisoned")
+                                .push(l);
                         }
                         Err(_) => break,
                     }
@@ -351,7 +362,10 @@ impl StderrWatcher {
             })
             .expect("failed to spawn stderr watcher thread");
 
-        Self { lines, _thread: thread }
+        Self {
+            lines,
+            _thread: thread,
+        }
     }
 
     /// Block until a line containing `needle` appears in stderr, or panic
@@ -385,13 +399,19 @@ impl StderrWatcher {
 
     /// Return all collected stderr lines.
     fn lines(&self) -> Vec<String> {
-        self.lines.lock().expect("stderr watcher lock poisoned").clone()
+        self.lines
+            .lock()
+            .expect("stderr watcher lock poisoned")
+            .clone()
     }
 
     /// Number of stderr lines collected so far, usable as a cursor into
     /// a later `lines()` snapshot.
     fn line_count(&self) -> usize {
-        self.lines.lock().expect("stderr watcher lock poisoned").len()
+        self.lines
+            .lock()
+            .expect("stderr watcher lock poisoned")
+            .len()
     }
 }
 
@@ -419,7 +439,10 @@ impl StdoutWatcher {
                 for line in reader.lines() {
                     match line {
                         Ok(l) => {
-                            lines_clone.lock().expect("stdout watcher lock poisoned").push(l);
+                            lines_clone
+                                .lock()
+                                .expect("stdout watcher lock poisoned")
+                                .push(l);
                         }
                         Err(_) => break,
                     }
@@ -427,7 +450,10 @@ impl StdoutWatcher {
             })
             .expect("failed to spawn stdout watcher thread");
 
-        Self { lines, _thread: thread }
+        Self {
+            lines,
+            _thread: thread,
+        }
     }
 
     /// Block until a `SIGNAL:<name>` line appears in stdout, or panic
@@ -439,7 +465,10 @@ impl StdoutWatcher {
     /// Number of stdout lines collected so far. Used as a cursor so repeated
     /// queries do not match the reply to an earlier request.
     fn line_count(&self) -> usize {
-        self.lines.lock().expect("stdout watcher lock poisoned").len()
+        self.lines
+            .lock()
+            .expect("stdout watcher lock poisoned")
+            .len()
     }
 
     /// Block until a `SIGNAL:<name>` line appears at or after line index
@@ -575,7 +604,11 @@ fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
     if !matches!(reader.read_line(&mut request_line), Ok(n) if n > 0) {
         return;
     }
-    let method = request_line.split_whitespace().next().unwrap_or_default().to_owned();
+    let method = request_line
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
 
     let mut if_none_match: Option<String> = None;
     loop {
@@ -595,7 +628,9 @@ fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
 
     let etag = format!("\"v{}\"", state.version.load(Ordering::SeqCst));
     let response = if method == "HEAD" && if_none_match.as_deref() == Some(etag.as_str()) {
-        format!("HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        format!(
+            "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
     } else {
         format!(
             "HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -676,7 +711,10 @@ fn test_render_and_exit() {
     //    below still cleans the directory up.
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
-    let config_path = format!("{}/tests/fixtures/e2e_config.toml", env!("CARGO_MANIFEST_DIR"));
+    let config_path = format!(
+        "{}/tests/fixtures/e2e_config.toml",
+        env!("CARGO_MANIFEST_DIR")
+    );
 
     // 2. Spawn the binary with the render subcommand.
     let child = Command::new(BINARY)
@@ -721,10 +759,7 @@ fn test_render_and_exit() {
     let file_size = fs::metadata(&output_path)
         .expect("failed to read render output metadata")
         .len();
-    assert!(
-        file_size > 0,
-        "render output file is empty (0 bytes)"
-    );
+    assert!(file_size > 0, "render output file is empty (0 bytes)");
 
     // 6. Decode the PNG with the image crate.
     let img = image::open(&output_path).expect("failed to decode render output PNG");
@@ -767,10 +802,7 @@ fn test_render_and_exit() {
     // 9. Parse stderr — assert no line contains " ERROR ".
     let stderr_text = String::from_utf8_lossy(&output.stderr);
     for line in stderr_text.lines() {
-        assert!(
-            !line.contains(" ERROR "),
-            "found ERROR in stderr:\n{line}"
-        );
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 
     // 10. Assert stderr contains "first frame rendered".
@@ -791,7 +823,8 @@ fn test_render_and_exit() {
         assert!(
             entry.rss_mb < 300.0,
             "early memory too high: {:.0} MB at '{}' (expected < 300 MB)",
-            entry.rss_mb, entry.context
+            entry.rss_mb,
+            entry.context
         );
     }
 
@@ -812,10 +845,10 @@ fn test_render_and_exit() {
         assert!(
             entry.rss_mb < peak,
             "memory did not settle: exit RSS {:.0} MB >= peak {:.0} MB",
-            entry.rss_mb, peak
+            entry.rss_mb,
+            peak
         );
     }
-
 }
 
 #[test]
@@ -831,9 +864,12 @@ fn test_tray_mode_ipc_lifecycle() {
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
-                "--log-level", "debug",
-                "--tray-start", "hidden",
-                "--ipc-socket", &socket_name,
+                "--log-level",
+                "debug",
+                "--tray-start",
+                "hidden",
+                "--ipc-socket",
+                &socket_name,
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -891,10 +927,7 @@ fn test_tray_mode_ipc_lifecycle() {
 
     // 8. Assert no ERROR lines in stderr.
     for line in watcher.lines() {
-        assert!(
-            !line.contains(" ERROR "),
-            "found ERROR in stderr:\n{line}"
-        );
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 }
 
@@ -911,9 +944,12 @@ fn test_windowed_mode_graceful_shutdown() {
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
-                "--mode", "window",
-                "--log-level", "debug",
-                "--ipc-socket", &socket_name,
+                "--mode",
+                "window",
+                "--log-level",
+                "debug",
+                "--ipc-socket",
+                &socket_name,
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -953,10 +989,7 @@ fn test_windowed_mode_graceful_shutdown() {
 
     // 5. No errors in log.
     for line in watcher.lines() {
-        assert!(
-            !line.contains(" ERROR "),
-            "found ERROR in stderr:\n{line}"
-        );
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 }
 
@@ -972,10 +1005,7 @@ fn test_single_instance_second_exits() {
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
-            .args([
-                "--log-level", "debug",
-                "--ipc-socket", &socket_name,
-            ])
+            .args(["--log-level", "debug", "--ipc-socket", &socket_name])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1050,9 +1080,12 @@ fn test_tray_hide_show_cycle() {
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
-                "--log-level", "debug",
-                "--tray-start", "visible",
-                "--ipc-socket", &socket_name,
+                "--log-level",
+                "debug",
+                "--tray-start",
+                "visible",
+                "--ipc-socket",
+                &socket_name,
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1091,10 +1124,7 @@ fn test_tray_hide_show_cycle() {
 
     // 7. Assert no ERROR lines in stderr.
     for line in stderr_watcher.lines() {
-        assert!(
-            !line.contains(" ERROR "),
-            "found ERROR in stderr:\n{line}"
-        );
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 }
 
@@ -1117,9 +1147,12 @@ fn test_gpu_persistence_after_hide() {
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
-                "--log-level", "debug",
-                "--tray-start", "visible",
-                "--ipc-socket", &socket_name,
+                "--log-level",
+                "debug",
+                "--tray-start",
+                "visible",
+                "--ipc-socket",
+                &socket_name,
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1158,10 +1191,7 @@ fn test_gpu_persistence_after_hide() {
 
     // 6. No errors in log.
     for line in stderr_watcher.lines() {
-        assert!(
-            !line.contains(" ERROR "),
-            "found ERROR in stderr:\n{line}"
-        );
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 }
 
@@ -1206,14 +1236,21 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .env("SUNLIT_EARTH_SYNC_LOG", "1")
-            .env("SUNLIT_EARTH_CLOUD_URL", format!("http://127.0.0.1:{port}/clouds.jpg"))
+            .env(
+                "SUNLIT_EARTH_CLOUD_URL",
+                format!("http://127.0.0.1:{port}/clouds.jpg"),
+            )
             .env("SUNLIT_EARTH_CLOUD_POLL_SECS", "1")
             .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
             .args([
-                "--mode", "window",
-                "--log-level", "debug",
-                "--ipc-socket", &socket_name,
-                "--textures-dir", textures_dir.to_str().expect("non-UTF-8 temp path"),
+                "--mode",
+                "window",
+                "--log-level",
+                "debug",
+                "--ipc-socket",
+                &socket_name,
+                "--textures-dir",
+                textures_dir.to_str().expect("non-UTF-8 temp path"),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

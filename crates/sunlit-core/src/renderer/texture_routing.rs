@@ -15,10 +15,7 @@ pub(super) enum ResolvedTexture {
 /// Spawns background texture loads as needed, resolves which bind group to use,
 /// and returns a `ResolvedTexture` indicating the bind group along with whether
 /// blend uniforms should be active.
-pub(super) fn resolve_textures(
-    res: &mut Renderer,
-    raw_index: usize,
-) -> (ResolvedTexture, bool) {
+pub(super) fn resolve_textures(res: &mut Renderer, raw_index: usize) -> (ResolvedTexture, bool) {
     let is_blend_mode = raw_index == BLEND_MODE_INDEX;
     let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
 

@@ -43,7 +43,9 @@ fn init() {
 fn create_window() -> MainWindow {
     init();
     let window = MainWindow::new().unwrap();
-    window.window().set_size(slint::PhysicalSize::new(1200, 5000));
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1200, 5000));
     window
 }
 
@@ -110,8 +112,7 @@ fn test_preset_europe_fires_callback() {
         *captured.borrow_mut() = Some(index);
     });
 
-    let buttons: Vec<_> =
-        ElementHandle::find_by_accessible_label(&window, "Europe").collect();
+    let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Europe").collect();
     assert_eq!(buttons.len(), 1, "expected exactly one 'Europe' button");
     buttons[0].invoke_accessible_default_action();
 
@@ -128,8 +129,7 @@ fn test_preset_earthrise_fires_callback() {
         *captured.borrow_mut() = Some(index);
     });
 
-    let buttons: Vec<_> =
-        ElementHandle::find_by_accessible_label(&window, "Earthrise").collect();
+    let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Earthrise").collect();
     assert_eq!(buttons.len(), 1, "expected exactly one 'Earthrise' button");
     buttons[0].invoke_accessible_default_action();
 
@@ -167,8 +167,7 @@ fn test_preset_changes_camera_properties() {
     window.set_camera_latitude(0.0);
 
     // Click the Europe preset button
-    let buttons: Vec<_> =
-        ElementHandle::find_by_accessible_label(&window, "Europe").collect();
+    let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Europe").collect();
     assert_eq!(buttons.len(), 1);
     buttons[0].invoke_accessible_default_action();
 
@@ -217,7 +216,11 @@ fn test_load_defaults_fires_callback() {
     // Click "Load Defaults"
     let buttons: Vec<_> =
         ElementHandle::find_by_accessible_label(&window, "Load Defaults").collect();
-    assert_eq!(buttons.len(), 1, "expected exactly one 'Load Defaults' button");
+    assert_eq!(
+        buttons.len(),
+        1,
+        "expected exactly one 'Load Defaults' button"
+    );
     buttons[0].invoke_accessible_default_action();
 
     // Verify the callback restored the default longitude
@@ -280,8 +283,7 @@ fn test_advanced_section_starts_closed() {
     // The longitude slider is inside `if root.advanced-open:` so it should
     // not appear in the element tree when advanced is closed.
     let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider")
-            .collect();
+        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
     assert!(
         sliders.is_empty(),
         "longitude slider should not be in the tree when advanced is closed"
@@ -295,8 +297,7 @@ fn test_advanced_section_opens() {
     window.set_advanced_open(true);
 
     let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider")
-            .collect();
+        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
     assert!(
         !sliders.is_empty(),
         "longitude slider should be in the tree when advanced is open"
@@ -312,8 +313,7 @@ fn test_advanced_section_closes() {
     window.set_advanced_open(false);
 
     let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider")
-            .collect();
+        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
     assert!(
         sliders.is_empty(),
         "longitude slider should disappear when advanced is closed again"
@@ -332,11 +332,9 @@ fn test_atmosphere_sliders_hidden_when_disabled() {
     window.set_advanced_open(true);
     window.set_atmo_enabled(false);
 
-    let sliders: Vec<_> = ElementHandle::find_by_element_id(
-        &window,
-        "MainWindow::rayleigh-intensity-slider",
-    )
-    .collect();
+    let sliders: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::rayleigh-intensity-slider")
+            .collect();
     assert!(
         sliders.is_empty(),
         "rayleigh intensity slider should not be in the tree when atmosphere is disabled"
@@ -349,13 +347,14 @@ fn test_atmosphere_sliders_visible_when_enabled() {
 
     // Open advanced section; atmo-enabled defaults to true.
     window.set_advanced_open(true);
-    assert!(window.get_atmo_enabled(), "precondition: atmo-enabled should default to true");
+    assert!(
+        window.get_atmo_enabled(),
+        "precondition: atmo-enabled should default to true"
+    );
 
-    let sliders: Vec<_> = ElementHandle::find_by_element_id(
-        &window,
-        "MainWindow::rayleigh-intensity-slider",
-    )
-    .collect();
+    let sliders: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::rayleigh-intensity-slider")
+            .collect();
     assert!(
         !sliders.is_empty(),
         "rayleigh intensity slider should be in the tree when atmosphere is enabled"

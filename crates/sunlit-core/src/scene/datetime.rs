@@ -58,8 +58,7 @@ pub fn day_of_year_to_month_day(doy: u16, year: i32) -> (u8, u8) {
 
 /// Abbreviated month names for display labels.
 const MONTH_NAMES: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
 /// Format a day-of-year as a "Mon DD" label (e.g. "Mar 17").

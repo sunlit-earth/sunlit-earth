@@ -46,7 +46,9 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
 });
 
 fn engine() -> MutexGuard<'static, EngineHandle> {
-    ENGINE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    ENGINE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Parameters shared by every case: the grid texture, no multisampling, and a
@@ -239,10 +241,7 @@ fn contact_sheet_of_every_preset() {
     }
 
     let path = std::env::var("SUNLIT_EARTH_CONTACT_SHEET").map_or_else(
-        |_| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/contact-sheet.png")
-        },
+        |_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/contact-sheet.png"),
         PathBuf::from,
     );
     if let Some(parent) = path.parent() {

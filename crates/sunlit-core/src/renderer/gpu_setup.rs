@@ -157,7 +157,10 @@ pub(super) fn create_renderer(
         GRID_TEX_HEIGHT,
         grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
     );
-    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
     let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     let grid_bind_group = create_bind_group(
@@ -207,19 +210,16 @@ pub(super) fn create_renderer(
     });
 
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
-        create_render_textures(
-            &device,
-            width,
-            height,
-            sample_count,
-            PREVIEW_USAGE,
-        );
+        create_render_textures(&device, width, height, sample_count, PREVIEW_USAGE);
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let rayleigh_pipeline = create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let nightglow_orange_pipeline = create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let nightglow_green_pipeline = create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let rayleigh_pipeline =
+        create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let nightglow_orange_pipeline =
+        create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let nightglow_green_pipeline =
+        create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
     crate::memory::log_memory_usage("after GPU resource creation");
 
@@ -488,8 +488,13 @@ pub(super) fn create_nightglow_orange_pipeline(
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
     create_atmo_shell_pipeline(
-        device, pipeline_layout, shader, sample_count,
-        "nightglow_orange_pipeline", "vs_nightglow_orange", "fs_nightglow_orange",
+        device,
+        pipeline_layout,
+        shader,
+        sample_count,
+        "nightglow_orange_pipeline",
+        "vs_nightglow_orange",
+        "fs_nightglow_orange",
     )
 }
 
@@ -500,8 +505,13 @@ pub(super) fn create_nightglow_green_pipeline(
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
     create_atmo_shell_pipeline(
-        device, pipeline_layout, shader, sample_count,
-        "nightglow_green_pipeline", "vs_nightglow_green", "fs_nightglow_green",
+        device,
+        pipeline_layout,
+        shader,
+        sample_count,
+        "nightglow_green_pipeline",
+        "vs_nightglow_green",
+        "fs_nightglow_green",
     )
 }
 
@@ -596,10 +606,18 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.rayleigh_pipeline =
         create_rayleigh_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.nightglow_orange_pipeline =
-        create_nightglow_orange_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.nightglow_green_pipeline =
-        create_nightglow_green_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.nightglow_orange_pipeline = create_nightglow_orange_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+    );
+    res.nightglow_green_pipeline = create_nightglow_green_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+    );
     res.sample_count = sample_count;
 }
 
@@ -617,13 +635,7 @@ fn replace_render_textures(res: &mut Renderer, width: u32, height: u32, sample_c
     res.msaa_texture_view = None;
     res.msaa_depth_view = None;
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
-        create_render_textures(
-            &res.device,
-            width,
-            height,
-            sample_count,
-            PREVIEW_USAGE,
-        );
+        create_render_textures(&res.device, width, height, sample_count, PREVIEW_USAGE);
     res.render_texture = render_texture;
     res.depth_texture = depth_texture;
     res.msaa_texture_view = msaa_texture_view;

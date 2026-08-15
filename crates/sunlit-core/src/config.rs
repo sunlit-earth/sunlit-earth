@@ -231,7 +231,11 @@ pub fn config_path() -> Option<PathBuf> {
 fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
     match env_path {
         Some(path) => Some(PathBuf::from(path)),
-        None => Some(dirs::data_local_dir()?.join("SunlitEarth").join("config.toml")),
+        None => Some(
+            dirs::data_local_dir()?
+                .join("SunlitEarth")
+                .join("config.toml"),
+        ),
     }
 }
 
@@ -367,7 +371,12 @@ fn is_position_on_screen(_x: i32, _y: i32, _width: u32, _height: u32) -> bool {
 /// Returns `None` if any of the four geometry fields is missing or if
 /// the saved position is no longer visible on any connected monitor.
 pub fn validated_window_geometry(config: &AppConfig) -> Option<(i32, i32, u32, u32)> {
-    let (Some(x), Some(y), Some(w), Some(h)) = (config.window_x, config.window_y, config.window_width, config.window_height) else {
+    let (Some(x), Some(y), Some(w), Some(h)) = (
+        config.window_x,
+        config.window_y,
+        config.window_width,
+        config.window_height,
+    ) else {
         return None;
     };
     if w == 0 || h == 0 {
@@ -376,7 +385,10 @@ pub fn validated_window_geometry(config: &AppConfig) -> Option<(i32, i32, u32, u
     if is_position_on_screen(x, y, w, h) {
         Some((x, y, w, h))
     } else {
-        warn!(x, y, "saved window position is off-screen, using OS default");
+        warn!(
+            x,
+            y, "saved window position is off-screen, using OS default"
+        );
         None
     }
 }
@@ -403,15 +415,19 @@ mod tests {
 
     #[test]
     fn config_path_with_override_uses_that_file() {
-        let path = config_path_from(Some("C:/tmp/sunlit/custom.toml"))
-            .expect("override should resolve");
+        let path =
+            config_path_from(Some("C:/tmp/sunlit/custom.toml")).expect("override should resolve");
         assert_eq!(path, PathBuf::from("C:/tmp/sunlit/custom.toml"));
     }
 
     #[test]
     fn config_path_without_override_uses_app_folder() {
         if let Some(path) = config_path_from(None) {
-            assert!(path.ends_with("config.toml"), "unexpected path: {}", path.display());
+            assert!(
+                path.ends_with("config.toml"),
+                "unexpected path: {}",
+                path.display()
+            );
             assert!(
                 path.parent().is_some_and(|p| p.ends_with("SunlitEarth")),
                 "expected the app folder, got {}",
@@ -671,18 +687,14 @@ mod tests {
         let dir = std::env::temp_dir()
             .join("sunlit_earth_test_mkdir")
             .join("nested");
-        let _ = fs::remove_dir_all(
-            std::env::temp_dir().join("sunlit_earth_test_mkdir"),
-        );
+        let _ = fs::remove_dir_all(std::env::temp_dir().join("sunlit_earth_test_mkdir"));
         let path = dir.join("config.toml");
 
         save_config_to(&AppConfig::default(), &path);
         assert!(path.exists());
 
         // Cleanup
-        let _ = fs::remove_dir_all(
-            std::env::temp_dir().join("sunlit_earth_test_mkdir"),
-        );
+        let _ = fs::remove_dir_all(std::env::temp_dir().join("sunlit_earth_test_mkdir"));
     }
 
     #[test]
@@ -806,7 +818,9 @@ mod tests {
         config.window_y = Some(200);
         config.window_width = Some(1920);
         config.window_height = Some(1080);
-        let file = ConfigFile { sunlit: SunlitSection { earth: config } };
+        let file = ConfigFile {
+            sunlit: SunlitSection { earth: config },
+        };
         let toml_str = toml::to_string_pretty(&file).unwrap();
         let parsed: ConfigFile = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.sunlit.earth.window_x, Some(100));
@@ -878,7 +892,10 @@ mod tests {
     #[test]
     fn quality_tier_round_trips_for_every_variant() {
         for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
-            let config = AppConfig { quality_tier: tier, ..AppConfig::default() };
+            let config = AppConfig {
+                quality_tier: tier,
+                ..AppConfig::default()
+            };
             let parsed: AppConfig =
                 toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
             assert_eq!(parsed.quality_tier, tier);
@@ -898,7 +915,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let path = dir.join("config.toml");
 
-        let config = AppConfig { quality_tier: tier, ..AppConfig::default() };
+        let config = AppConfig {
+            quality_tier: tier,
+            ..AppConfig::default()
+        };
         save_config_to(&config, &path);
         assert_eq!(load_config_from(&path).quality_tier, tier);
 

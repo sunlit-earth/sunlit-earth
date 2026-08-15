@@ -125,7 +125,11 @@ fn resolve_poll_interval(raw: Option<&str>) -> Duration {
     match value.trim().parse::<u64>() {
         Ok(secs) if secs > 0 => Duration::from_secs(secs),
         _ => {
-            warn!(value, env = ENV_POLL_SECS, "invalid poll interval, using default");
+            warn!(
+                value,
+                env = ENV_POLL_SECS,
+                "invalid poll interval, using default"
+            );
             POLL_INTERVAL
         }
     }
@@ -283,10 +287,7 @@ impl CloudUpdater {
 
     /// One freshness check, download, decode, and post cycle.
     pub fn poll_once(&mut self) -> PollOutcome {
-        let known_etag = self
-            .cached_meta
-            .as_ref()
-            .and_then(|m| m.etag.as_deref());
+        let known_etag = self.cached_meta.as_ref().and_then(|m| m.etag.as_deref());
         let start = std::time::Instant::now();
         let fetched = match self.source.fetch_if_changed(known_etag) {
             Ok(Some(image)) => image,
@@ -322,7 +323,11 @@ impl CloudUpdater {
 
         match decode_cloud_jpeg(&fetched.bytes) {
             Ok(img) => {
-                info!(width = img.width, height = img.height, "decoded cloud image");
+                info!(
+                    width = img.width,
+                    height = img.height,
+                    "decoded cloud image"
+                );
                 crate::memory::log_memory_usage("after cloud decode");
                 self.post(img);
                 PollOutcome::Updated
@@ -379,17 +384,13 @@ mod tests {
         let dir = std::env::temp_dir()
             .join("sunlit_earth_test_cloud_meta_mkdir")
             .join("nested");
-        let _ = fs::remove_dir_all(
-            std::env::temp_dir().join("sunlit_earth_test_cloud_meta_mkdir"),
-        );
+        let _ = fs::remove_dir_all(std::env::temp_dir().join("sunlit_earth_test_cloud_meta_mkdir"));
         let path = dir.join("meta.toml");
 
         save_cache_meta(&CacheMeta::default(), &path);
         assert!(path.exists());
 
-        let _ = fs::remove_dir_all(
-            std::env::temp_dir().join("sunlit_earth_test_cloud_meta_mkdir"),
-        );
+        let _ = fs::remove_dir_all(std::env::temp_dir().join("sunlit_earth_test_cloud_meta_mkdir"));
     }
 
     #[test]
@@ -484,7 +485,11 @@ mod tests {
     #[test]
     fn resolve_cache_dir_without_override_ends_in_app_folder() {
         if let Some(dir) = resolve_cache_dir(None) {
-            assert!(dir.ends_with("SunlitEarth"), "unexpected cache dir: {}", dir.display());
+            assert!(
+                dir.ends_with("SunlitEarth"),
+                "unexpected cache dir: {}",
+                dir.display()
+            );
         }
     }
 
@@ -552,7 +557,8 @@ mod tests {
         }
 
         fn publish(&self) {
-            self.version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.version
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn fetches(&self) -> u64 {
@@ -561,10 +567,7 @@ mod tests {
     }
 
     impl CloudSource for ScriptedSource {
-        fn fetch_if_changed(
-            &self,
-            known_etag: Option<&str>,
-        ) -> Result<Option<CloudImage>, String> {
+        fn fetch_if_changed(&self, known_etag: Option<&str>) -> Result<Option<CloudImage>, String> {
             if self
                 .failures
                 .fetch_update(
@@ -576,11 +579,15 @@ mod tests {
             {
                 return Err("scripted transport failure".to_owned());
             }
-            let current = format!("v{}", self.version.load(std::sync::atomic::Ordering::SeqCst));
+            let current = format!(
+                "v{}",
+                self.version.load(std::sync::atomic::Ordering::SeqCst)
+            );
             if known_etag == Some(current.as_str()) {
                 return Ok(None);
             }
-            self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.fetches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Some(CloudImage {
                 bytes: self.jpeg.clone(),
                 etag: Some(current),
@@ -656,7 +663,11 @@ mod tests {
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
         assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
         assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
-        assert_eq!(source.fetches(), 1, "only the changed version is downloaded");
+        assert_eq!(
+            source.fetches(),
+            1,
+            "only the changed version is downloaded"
+        );
     }
 
     #[test]

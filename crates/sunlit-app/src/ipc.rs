@@ -70,11 +70,7 @@ pub fn spawn_ipc_listener(
 }
 
 /// Parse and dispatch a single IPC command via `invoke_from_event_loop`.
-fn dispatch_command(
-    cmd: &str,
-    window_weak: &slint::Weak<crate::MainWindow>,
-    engine: &EngineLink,
-) {
+fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, engine: &EngineLink) {
     match cmd {
         "quit" => {
             debug!("ipc: received quit command, dispatching to event loop");

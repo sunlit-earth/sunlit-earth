@@ -169,12 +169,20 @@ impl SceneParams {
     /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
     /// the draw call entirely.
     pub fn effective_rayleigh_intensity(&self) -> f32 {
-        if self.atmo_enabled { self.rayleigh_intensity } else { 0.0 }
+        if self.atmo_enabled {
+            self.rayleigh_intensity
+        } else {
+            0.0
+        }
     }
 
     /// Nightglow intensity after the atmosphere master switch.
     pub fn effective_nightglow_intensity(&self) -> f32 {
-        if self.atmo_enabled { self.nightglow_intensity } else { 0.0 }
+        if self.atmo_enabled {
+            self.nightglow_intensity
+        } else {
+            0.0
+        }
     }
 
     /// Quantized snapshot used for dirty checking.
@@ -373,15 +381,27 @@ mod tests {
 
     #[test]
     fn sub_threshold_change_compares_equal() {
-        let a = SceneParams { terminator_width: 0.150_1, ..params() };
-        let b = SceneParams { terminator_width: 0.150_4, ..params() };
+        let a = SceneParams {
+            terminator_width: 0.150_1,
+            ..params()
+        };
+        let b = SceneParams {
+            terminator_width: 0.150_4,
+            ..params()
+        };
         assert_eq!(a.digest(), b.digest());
     }
 
     #[test]
     fn at_threshold_change_compares_different() {
-        let a = SceneParams { terminator_width: 0.150, ..params() };
-        let b = SceneParams { terminator_width: 0.151, ..params() };
+        let a = SceneParams {
+            terminator_width: 0.150,
+            ..params()
+        };
+        let b = SceneParams {
+            terminator_width: 0.151,
+            ..params()
+        };
         assert_ne!(a.digest(), b.digest());
     }
 
@@ -398,47 +418,270 @@ mod tests {
     fn every_shader_parameter_triggers_dirty() {
         let base = params();
         let mutations: Vec<(&str, SceneParams)> = vec![
-            ("longitude", SceneParams { camera: CameraParams { longitude: 11.0, ..base.camera }, ..base }),
-            ("latitude", SceneParams { camera: CameraParams { latitude: 21.0, ..base.camera }, ..base }),
-            ("zoom", SceneParams { camera: CameraParams { zoom: 0.4, ..base.camera }, ..base }),
-            ("offset_x", SceneParams { camera: CameraParams { offset_x: 0.5, ..base.camera }, ..base }),
-            ("offset_y", SceneParams { camera: CameraParams { offset_y: 0.5, ..base.camera }, ..base }),
-            ("tilt", SceneParams { camera: CameraParams { tilt_deg: 45.0, ..base.camera }, ..base }),
-            ("yaw", SceneParams { camera: CameraParams { yaw_deg: 30.0, ..base.camera }, ..base }),
-            ("pitch", SceneParams { camera: CameraParams { pitch_deg: 30.0, ..base.camera }, ..base }),
-            ("texture_index", SceneParams { texture_index: 1, ..base }),
-            ("sample_count", SceneParams { sample_count: 2, ..base }),
-            ("terminator_width", SceneParams { terminator_width: 0.25, ..base }),
-            ("diffuse_shading", SceneParams { diffuse_shading: !base.diffuse_shading, ..base }),
-            ("diffuse_floor", SceneParams { diffuse_floor: 0.2, ..base }),
-            ("diffuse_ramp", SceneParams { diffuse_ramp: 0.7, ..base }),
-            ("spec_shininess", SceneParams { spec_shininess: 200.0, ..base }),
-            ("spec_intensity", SceneParams { spec_intensity: 0.5, ..base }),
-            ("fresnel_mix", SceneParams { fresnel_mix: 0.6, ..base }),
-            ("fresnel_exp", SceneParams { fresnel_exp: 6.0, ..base }),
-            ("cloud_opacity", SceneParams { cloud_opacity: 0.5, ..base }),
-            ("cloud_floor", SceneParams { cloud_floor: 0.3, ..base }),
-            ("cloud_gamma", SceneParams { cloud_gamma: 0.5, ..base }),
-            ("atmo_enabled", SceneParams { atmo_enabled: !base.atmo_enabled, ..base }),
-            ("rayleigh_intensity", SceneParams { rayleigh_intensity: 0.9, ..base }),
-            ("rayleigh_sharpness", SceneParams { rayleigh_sharpness: 60.0, ..base }),
-            ("rayleigh_haze", SceneParams { rayleigh_haze: 0.9, ..base }),
-            ("nightglow_intensity", SceneParams { nightglow_intensity: 0.5, ..base }),
-            ("nightglow_falloff", SceneParams { nightglow_falloff: 6.0, ..base }),
-            ("nightglow_balance", SceneParams { nightglow_balance: 0.8, ..base }),
-            ("day_gamma", SceneParams { day_gamma: 1.8, ..base }),
-            ("day_saturation", SceneParams { day_saturation: 0.8, ..base }),
-            ("night_gamma", SceneParams { night_gamma: 1.5, ..base }),
-            ("night_saturation", SceneParams { night_saturation: 0.5, ..base }),
+            (
+                "longitude",
+                SceneParams {
+                    camera: CameraParams {
+                        longitude: 11.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "latitude",
+                SceneParams {
+                    camera: CameraParams {
+                        latitude: 21.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "zoom",
+                SceneParams {
+                    camera: CameraParams {
+                        zoom: 0.4,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "offset_x",
+                SceneParams {
+                    camera: CameraParams {
+                        offset_x: 0.5,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "offset_y",
+                SceneParams {
+                    camera: CameraParams {
+                        offset_y: 0.5,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "tilt",
+                SceneParams {
+                    camera: CameraParams {
+                        tilt_deg: 45.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "yaw",
+                SceneParams {
+                    camera: CameraParams {
+                        yaw_deg: 30.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "pitch",
+                SceneParams {
+                    camera: CameraParams {
+                        pitch_deg: 30.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "texture_index",
+                SceneParams {
+                    texture_index: 1,
+                    ..base
+                },
+            ),
+            (
+                "sample_count",
+                SceneParams {
+                    sample_count: 2,
+                    ..base
+                },
+            ),
+            (
+                "terminator_width",
+                SceneParams {
+                    terminator_width: 0.25,
+                    ..base
+                },
+            ),
+            (
+                "diffuse_shading",
+                SceneParams {
+                    diffuse_shading: !base.diffuse_shading,
+                    ..base
+                },
+            ),
+            (
+                "diffuse_floor",
+                SceneParams {
+                    diffuse_floor: 0.2,
+                    ..base
+                },
+            ),
+            (
+                "diffuse_ramp",
+                SceneParams {
+                    diffuse_ramp: 0.7,
+                    ..base
+                },
+            ),
+            (
+                "spec_shininess",
+                SceneParams {
+                    spec_shininess: 200.0,
+                    ..base
+                },
+            ),
+            (
+                "spec_intensity",
+                SceneParams {
+                    spec_intensity: 0.5,
+                    ..base
+                },
+            ),
+            (
+                "fresnel_mix",
+                SceneParams {
+                    fresnel_mix: 0.6,
+                    ..base
+                },
+            ),
+            (
+                "fresnel_exp",
+                SceneParams {
+                    fresnel_exp: 6.0,
+                    ..base
+                },
+            ),
+            (
+                "cloud_opacity",
+                SceneParams {
+                    cloud_opacity: 0.5,
+                    ..base
+                },
+            ),
+            (
+                "cloud_floor",
+                SceneParams {
+                    cloud_floor: 0.3,
+                    ..base
+                },
+            ),
+            (
+                "cloud_gamma",
+                SceneParams {
+                    cloud_gamma: 0.5,
+                    ..base
+                },
+            ),
+            (
+                "atmo_enabled",
+                SceneParams {
+                    atmo_enabled: !base.atmo_enabled,
+                    ..base
+                },
+            ),
+            (
+                "rayleigh_intensity",
+                SceneParams {
+                    rayleigh_intensity: 0.9,
+                    ..base
+                },
+            ),
+            (
+                "rayleigh_sharpness",
+                SceneParams {
+                    rayleigh_sharpness: 60.0,
+                    ..base
+                },
+            ),
+            (
+                "rayleigh_haze",
+                SceneParams {
+                    rayleigh_haze: 0.9,
+                    ..base
+                },
+            ),
+            (
+                "nightglow_intensity",
+                SceneParams {
+                    nightglow_intensity: 0.5,
+                    ..base
+                },
+            ),
+            (
+                "nightglow_falloff",
+                SceneParams {
+                    nightglow_falloff: 6.0,
+                    ..base
+                },
+            ),
+            (
+                "nightglow_balance",
+                SceneParams {
+                    nightglow_balance: 0.8,
+                    ..base
+                },
+            ),
+            (
+                "day_gamma",
+                SceneParams {
+                    day_gamma: 1.8,
+                    ..base
+                },
+            ),
+            (
+                "day_saturation",
+                SceneParams {
+                    day_saturation: 0.8,
+                    ..base
+                },
+            ),
+            (
+                "night_gamma",
+                SceneParams {
+                    night_gamma: 1.5,
+                    ..base
+                },
+            ),
+            (
+                "night_saturation",
+                SceneParams {
+                    night_saturation: 0.5,
+                    ..base
+                },
+            ),
         ];
         for (name, mutated) in mutations {
-            assert_ne!(base.digest(), mutated.digest(), "{name} must trigger a redraw");
+            assert_ne!(
+                base.digest(),
+                mutated.digest(),
+                "{name} must trigger a redraw"
+            );
         }
     }
 
     #[test]
     fn disabling_the_atmosphere_zeroes_both_shells() {
-        let off = SceneParams { atmo_enabled: false, ..params() };
+        let off = SceneParams {
+            atmo_enabled: false,
+            ..params()
+        };
         assert_relative_eq!(off.effective_rayleigh_intensity(), 0.0);
         assert_relative_eq!(off.effective_nightglow_intensity(), 0.0);
         assert_eq!(off.digest().rayleigh_intensity, 0);
@@ -449,7 +692,10 @@ mod tests {
     fn datetime_is_not_part_of_the_digest() {
         let a = params();
         let b = SceneParams {
-            datetime: DateTimeInput { custom_hour: 3.0, ..a.datetime },
+            datetime: DateTimeInput {
+                custom_hour: 3.0,
+                ..a.datetime
+            },
             ..a
         };
         assert_ne!(a, b, "the params themselves differ");
@@ -476,9 +722,16 @@ mod tests {
     #[test]
     fn gamma_slider_monotonic() {
         #[allow(clippy::cast_precision_loss)]
-        let values: Vec<f32> = (0..=10).map(|i| gamma_slider_to_value(i as f32 / 10.0)).collect();
+        let values: Vec<f32> = (0..=10)
+            .map(|i| gamma_slider_to_value(i as f32 / 10.0))
+            .collect();
         for pair in values.windows(2) {
-            assert!(pair[1] > pair[0], "expected {:.3} > {:.3}", pair[1], pair[0]);
+            assert!(
+                pair[1] > pair[0],
+                "expected {:.3} > {:.3}",
+                pair[1],
+                pair[0]
+            );
         }
     }
 

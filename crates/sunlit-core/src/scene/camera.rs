@@ -34,23 +34,104 @@ impl Default for CameraParams {
 /// Blue Marble, Earthrise.
 pub const PRESETS: [CameraParams; 9] = [
     // 0: Europe (distance 3.2)
-    CameraParams { longitude: 11.0, latitude: 24.0, zoom: 0.19, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 30.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: 11.0,
+        latitude: 24.0,
+        zoom: 0.19,
+        tilt_deg: 0.0,
+        yaw_deg: 0.0,
+        pitch_deg: 30.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 1: N. America
-    CameraParams { longitude: -102.0, latitude: 32.0, zoom: 0.3, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.28 },
+    CameraParams {
+        longitude: -102.0,
+        latitude: 32.0,
+        zoom: 0.3,
+        tilt_deg: 0.0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.28,
+    },
     // 2: S. America
-    CameraParams { longitude: -60.0, latitude: -20.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: -60.0,
+        latitude: -20.0,
+        zoom: 0.35,
+        tilt_deg: 0.0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 3: Africa
-    CameraParams { longitude: 20.0, latitude: -10.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: 20.0,
+        latitude: -10.0,
+        zoom: 0.35,
+        tilt_deg: 0.0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 4: Asia
-    CameraParams { longitude: 90.0, latitude: 24.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: 90.0,
+        latitude: 24.0,
+        zoom: 0.35,
+        tilt_deg: 0.0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 5: Oceania
-    CameraParams { longitude: 147.0, latitude: -5.0, zoom: 0.22, tilt_deg: -155.0, yaw_deg: 0.0, pitch_deg: -26.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: 147.0,
+        latitude: -5.0,
+        zoom: 0.22,
+        tilt_deg: -155.0,
+        yaw_deg: 0.0,
+        pitch_deg: -26.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 6: Pacific
-    CameraParams { longitude: -150.0, latitude: -20.0, zoom: 0.35, tilt_deg: 0.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: -150.0,
+        latitude: -20.0,
+        zoom: 0.35,
+        tilt_deg: 0.0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 7: Blue Marble
-    CameraParams { longitude: 37.4, latitude: -26.3, zoom: 0.35, tilt_deg: -176.0, yaw_deg: 0.0, pitch_deg: 0.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: 37.4,
+        latitude: -26.3,
+        zoom: 0.35,
+        tilt_deg: -176.0,
+        yaw_deg: 0.0,
+        pitch_deg: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
     // 8: Earthrise
-    CameraParams { longitude: -12.0, latitude: 4.0, zoom: 0.75, tilt_deg: -116.0, yaw_deg: 0.0, pitch_deg: 45.0, offset_x: 0.0, offset_y: 0.0 },
+    CameraParams {
+        longitude: -12.0,
+        latitude: 4.0,
+        zoom: 0.75,
+        tilt_deg: -116.0,
+        yaw_deg: 0.0,
+        pitch_deg: 45.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+    },
 ];
 
 /// Minimum camera distance (closest zoom).
@@ -207,7 +288,10 @@ mod tests {
             assert!(
                 distances[i] > distances[i - 1],
                 "distance at t={} ({}) should be > distance at t={} ({})",
-                t_values[i], distances[i], t_values[i - 1], distances[i - 1]
+                t_values[i],
+                distances[i],
+                t_values[i - 1],
+                distances[i - 1]
             );
         }
     }
@@ -235,7 +319,11 @@ mod tests {
         cam_b.offset_y = 0.0;
         let mvp_a = cam_a.mvp_matrix(16.0 / 9.0);
         let mvp_b = cam_b.mvp_matrix(16.0 / 9.0);
-        assert_relative_eq!(mvp_a.to_cols_array().as_slice(), mvp_b.to_cols_array().as_slice(), epsilon = 1e-6);
+        assert_relative_eq!(
+            mvp_a.to_cols_array().as_slice(),
+            mvp_b.to_cols_array().as_slice(),
+            epsilon = 1e-6
+        );
     }
 
     #[test]
@@ -255,7 +343,8 @@ mod tests {
         assert!(
             clip_yes.x < clip_no.x,
             "clip_yes.x ({}) should be < clip_no.x ({})",
-            clip_yes.x, clip_no.x
+            clip_yes.x,
+            clip_no.x
         );
     }
 
@@ -268,7 +357,11 @@ mod tests {
         cam_b.pitch_deg = 0.0;
         let view_a = cam_a.view_matrix();
         let view_b = cam_b.view_matrix();
-        assert_relative_eq!(view_a.to_cols_array().as_slice(), view_b.to_cols_array().as_slice(), epsilon = 1e-6);
+        assert_relative_eq!(
+            view_a.to_cols_array().as_slice(),
+            view_b.to_cols_array().as_slice(),
+            epsilon = 1e-6
+        );
     }
 
     #[test]
@@ -285,7 +378,8 @@ mod tests {
         assert!(
             v_no.y * v_yes.y < 0.0,
             "Y should flip: no_tilt.y={}, tilt_180.y={}",
-            v_no.y, v_yes.y
+            v_no.y,
+            v_yes.y
         );
     }
 
@@ -295,7 +389,10 @@ mod tests {
             let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
             cam.tilt_deg = tilt;
             let det = cam.view_matrix().determinant();
-            assert!(det.abs() > 0.5, "Determinant should be non-zero for tilt={tilt}");
+            assert!(
+                det.abs() > 0.5,
+                "Determinant should be non-zero for tilt={tilt}"
+            );
         }
     }
 
@@ -306,7 +403,11 @@ mod tests {
         cam_360.tilt_deg = 360.0;
         let v_0 = cam_0.view_matrix();
         let v_360 = cam_360.view_matrix();
-        assert_relative_eq!(v_0.to_cols_array().as_slice(), v_360.to_cols_array().as_slice(), epsilon = 1e-4);
+        assert_relative_eq!(
+            v_0.to_cols_array().as_slice(),
+            v_360.to_cols_array().as_slice(),
+            epsilon = 1e-4
+        );
     }
 
     #[test]
@@ -338,7 +439,8 @@ mod tests {
         assert!(
             v_yes.y.abs() < v_no.y.abs(),
             "Pitched camera should center the point in Y: no_pitch.y={}, pitch_30.y={}",
-            v_no.y, v_yes.y
+            v_no.y,
+            v_yes.y
         );
     }
 
@@ -358,7 +460,8 @@ mod tests {
         assert!(
             v_yes.x.abs() < v_no.x.abs(),
             "Yawed camera should center the point in X: no_yaw.x={}, yaw_30.x={}",
-            v_no.x, v_yes.x
+            v_no.x,
+            v_yes.x
         );
     }
 
@@ -382,7 +485,8 @@ mod tests {
         assert!(
             (v_yes.y - v_no.y).abs() > 0.1,
             "pitch=90 should shift view direction significantly: no_pitch.y={}, pitch_90.y={}",
-            v_no.y, v_yes.y
+            v_no.y,
+            v_yes.y
         );
 
         // The un-pitched camera's view of offset_point should have meaningful Y component

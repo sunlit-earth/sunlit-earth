@@ -138,7 +138,10 @@ mod tests {
         // x=15 -> lon_deg=15 (minor), y=60 -> lat_deg=60 (minor)
         // This pixel is at a grid line intersection.
         let color = pixel_rgb(&pixels, 360, 15, 60);
-        assert_eq!(color, GRID_WHITE, "15-degree grid line should be GRID_WHITE");
+        assert_eq!(
+            color, GRID_WHITE,
+            "15-degree grid line should be GRID_WHITE"
+        );
     }
 
     #[test]

@@ -40,10 +40,7 @@ pub fn apply_globe_drag(
     let sin_t = tilt_rad.sin();
 
     // Rotate the (dx, dy) vector by -tilt to undo the screen-space rotation
-    let delta = [
-        dx * cos_t + dy * sin_t,
-        -dx * sin_t + dy * cos_t,
-    ];
+    let delta = [dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t];
 
     // Scale sensitivity proportionally to camera distance
     let degrees_per_px = 0.3 * zoom_to_distance(zoom) / 8.0;
@@ -63,13 +60,7 @@ pub fn apply_globe_drag(
 /// :param dy: vertical mouse delta in pixels
 /// :returns: new `(offset_x, offset_y)` tuple, clamped to `[-3.0, 3.0]`
 #[must_use]
-pub fn apply_frame_drag(
-    offset_x: f32,
-    offset_y: f32,
-    zoom: f32,
-    dx: f32,
-    dy: f32,
-) -> (f32, f32) {
+pub fn apply_frame_drag(offset_x: f32, offset_y: f32, zoom: f32, dx: f32, dy: f32) -> (f32, f32) {
     let sensitivity = 0.002 * zoom_to_distance(zoom) / 8.0;
     let new_x = (offset_x - dx * sensitivity).clamp(-3.0, 3.0);
     let new_y = (offset_y + dy * sensitivity).clamp(-3.0, 3.0);
@@ -211,7 +202,10 @@ mod tests {
         // Start near 180, drag to push past it
         let (lon, _lat) = apply_globe_drag(179.0, 0.0, 0.0, 0.5, -100.0, 0.0);
         // Should wrap around to negative side
-        assert!(lon >= -180.0 && lon < 180.0, "longitude should be in [-180, 180), got {lon}");
+        assert!(
+            lon >= -180.0 && lon < 180.0,
+            "longitude should be in [-180, 180), got {lon}"
+        );
     }
 
     #[test]

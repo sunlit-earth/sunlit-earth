@@ -23,7 +23,9 @@ use sunlit_core::params::SceneParams;
 static GPU_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn gpu_lock() -> MutexGuard<'static, ()> {
-    GPU_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    GPU_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// One simulated step. Auto-refresh fires once per step.
@@ -209,7 +211,9 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
             wait_until("the cloud download", || cloud.fetches() >= expected_fetches);
         }
 
-        if step % (STEPS / 8) == 0 && let Some(bytes) = private_bytes() {
+        if step % (STEPS / 8) == 0
+            && let Some(bytes) = private_bytes()
+        {
             samples.push((step, bytes));
         }
         if step == WARMUP_STEPS {

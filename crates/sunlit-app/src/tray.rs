@@ -64,8 +64,8 @@ pub fn create_icon() -> slint::Image {
 /// instance to start. `None` means an instance is already running, and the
 /// caller is expected to exit.
 pub fn acquire_single_instance(mutex_name: &str) -> Option<single_instance::SingleInstance> {
-    let instance =
-        single_instance::SingleInstance::new(mutex_name).expect("failed to create single-instance mutex");
+    let instance = single_instance::SingleInstance::new(mutex_name)
+        .expect("failed to create single-instance mutex");
     instance.is_single().then_some(instance)
 }
 

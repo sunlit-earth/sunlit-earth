@@ -121,8 +121,18 @@ mod tests {
 
     #[test]
     fn shift_4px_two_rows_independent() {
-        let row1 = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]];
-        let row2 = [[17, 18, 19, 20], [21, 22, 23, 24], [25, 26, 27, 28], [29, 30, 31, 32]];
+        let row1 = [
+            [1, 2, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, 12],
+            [13, 14, 15, 16],
+        ];
+        let row2 = [
+            [17, 18, 19, 20],
+            [21, 22, 23, 24],
+            [25, 26, 27, 28],
+            [29, 30, 31, 32],
+        ];
         let mut buf = pixels_from(&[row1.as_slice(), row2.as_slice()].concat());
         shift_horizontal(&mut buf, 4, 2);
         // Row 0: rotate_right by 3 -> [B, C, D, A]
@@ -148,7 +158,9 @@ mod tests {
     #[test]
     fn shift_8px_single_row() {
         // 8 pixels, shift by 6 (3/4 of 8)
-        let px: Vec<[u8; 4]> = (0..8).map(|i| [i * 10, i * 10 + 1, i * 10 + 2, 255]).collect();
+        let px: Vec<[u8; 4]> = (0..8)
+            .map(|i| [i * 10, i * 10 + 1, i * 10 + 2, 255])
+            .collect();
         let mut buf = pixels_from(&px);
         shift_horizontal(&mut buf, 8, 1);
         // rotate_right by 6 means first 2 pixels move to end

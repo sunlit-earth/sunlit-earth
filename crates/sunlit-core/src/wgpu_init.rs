@@ -114,18 +114,41 @@ mod tests {
 
     #[test]
     fn discrete_gpu_ranks_best() {
-        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::IntegratedGpu));
-        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::VirtualGpu));
-        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::Other));
-        assert!(adapter_type_rank(wgpu::DeviceType::DiscreteGpu) < adapter_type_rank(wgpu::DeviceType::Cpu));
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
+                < adapter_type_rank(wgpu::DeviceType::IntegratedGpu)
+        );
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
+                < adapter_type_rank(wgpu::DeviceType::VirtualGpu)
+        );
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
+                < adapter_type_rank(wgpu::DeviceType::Other)
+        );
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
+                < adapter_type_rank(wgpu::DeviceType::Cpu)
+        );
     }
 
     #[test]
     fn cpu_ranks_worst() {
-        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::DiscreteGpu));
-        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::IntegratedGpu));
-        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::VirtualGpu));
-        assert!(adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::Other));
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::Cpu)
+                > adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
+        );
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::Cpu)
+                > adapter_type_rank(wgpu::DeviceType::IntegratedGpu)
+        );
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::Cpu)
+                > adapter_type_rank(wgpu::DeviceType::VirtualGpu)
+        );
+        assert!(
+            adapter_type_rank(wgpu::DeviceType::Cpu) > adapter_type_rank(wgpu::DeviceType::Other)
+        );
     }
 
     #[test]

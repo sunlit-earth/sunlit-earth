@@ -213,12 +213,7 @@ impl EngineHandle {
     }
 
     /// Render a PNG at `width` x `height` and block until it is written.
-    pub fn render_to_file(
-        &self,
-        path: PathBuf,
-        width: u32,
-        height: u32,
-    ) -> Result<(), String> {
+    pub fn render_to_file(&self, path: PathBuf, width: u32, height: u32) -> Result<(), String> {
         let (reply, replies) = bounded(1);
         self.tx
             .send(EngineCommand::RenderToFile {
@@ -427,7 +422,10 @@ impl Engine {
         } = config;
 
         let gpu = crate::wgpu_init::init(force_software);
-        let _ = ready.send((gpu.adapter_info.clone(), gpu.supported_sample_counts.clone()));
+        let _ = ready.send((
+            gpu.adapter_info.clone(),
+            gpu.supported_sample_counts.clone(),
+        ));
         crate::memory::log_memory_usage("engine: after wgpu init");
 
         // Slots: grid + one per texture path + clouds.
@@ -599,7 +597,11 @@ impl Engine {
                 } else {
                     self.auto_refresh = None;
                 }
-                debug!(enabled, interval_secs = interval.as_secs(), "auto-refresh changed");
+                debug!(
+                    enabled,
+                    interval_secs = interval.as_secs(),
+                    "auto-refresh changed"
+                );
             }
             EngineCommand::Poke => {
                 // A poke means a producer has something waiting, so bring the
@@ -741,9 +743,9 @@ impl Engine {
 
     /// Render at the sink's native resolution and hand the pixels over.
     fn publish_wallpaper(&mut self) {
-        let result = self.render_wallpaper_pixels().and_then(|(pixels, w, h)| {
-            self.wallpaper.publish(&pixels, w, h)
-        });
+        let result = self
+            .render_wallpaper_pixels()
+            .and_then(|(pixels, w, h)| self.wallpaper.publish(&pixels, w, h));
         if let Err(e) = &result {
             error!(error = %e, "wallpaper update failed");
         }
@@ -769,7 +771,12 @@ impl Engine {
         self.renderer.set_sun_direction(sun_dir);
     }
 
-    fn render_to_file(&mut self, path: &std::path::Path, width: u32, height: u32) -> Result<(), String> {
+    fn render_to_file(
+        &mut self,
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
         self.prepare_export();
         let pixels = self.renderer.export_image(width, height)?;
         save_png(path, width, height, &pixels)
@@ -884,11 +891,17 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 }
 
 /// Encode RGBA8 pixels as PNG and write them to `path`.
-pub fn save_png(path: &std::path::Path, width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
+pub fn save_png(
+    path: &std::path::Path,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<(), String> {
     use image::{ImageBuffer, Rgba};
     let img: ImageBuffer<Rgba<u8>, _> = ImageBuffer::from_raw(width, height, pixels.to_vec())
         .ok_or_else(|| "pixel buffer size mismatch".to_owned())?;
-    img.save(path).map_err(|e| format!("failed to save PNG: {e}"))
+    img.save(path)
+        .map_err(|e| format!("failed to save PNG: {e}"))
 }
 
 #[cfg(test)]

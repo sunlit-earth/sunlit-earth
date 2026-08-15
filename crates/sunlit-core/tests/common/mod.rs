@@ -36,13 +36,11 @@ pub fn create_gpu_context(force_software: bool) -> GpuContext {
                 })
                 .await
                 .or_else(|_| {
-                    pollster::block_on(instance.request_adapter(
-                        &wgpu::RequestAdapterOptions {
-                            compatible_surface: None,
-                            force_fallback_adapter: true,
-                            ..Default::default()
-                        },
-                    ))
+                    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        compatible_surface: None,
+                        force_fallback_adapter: true,
+                        ..Default::default()
+                    }))
                 })
                 .expect("no wgpu adapter available (tried hardware and software)")
         };
@@ -58,13 +56,17 @@ pub fn create_gpu_context(force_software: bool) -> GpuContext {
 
 /// Global shared GPU context for tests (hardware preferred, software fallback).
 #[allow(dead_code)]
-pub static GPU: LazyLock<Mutex<GpuContext>> = LazyLock::new(|| {
-    Mutex::new(create_gpu_context(false))
-});
+pub static GPU: LazyLock<Mutex<GpuContext>> =
+    LazyLock::new(|| Mutex::new(create_gpu_context(false)));
 
 #[allow(dead_code)]
 /// Read back a GPU buffer's contents as a `Vec<u8>`.
-pub fn read_buffer(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Buffer, size: u64) -> Vec<u8> {
+pub fn read_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    size: u64,
+) -> Vec<u8> {
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("staging"),
         size,

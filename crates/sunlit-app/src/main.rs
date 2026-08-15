@@ -145,7 +145,9 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
 
     let base_filter = match cli_level {
         Some(level) => EnvFilter::new(level),
-        None => EnvFilter::from_default_env().add_directive("info".parse().expect("valid directive")),
+        None => {
+            EnvFilter::from_default_env().add_directive("info".parse().expect("valid directive"))
+        }
     };
 
     let env_filter = base_filter
@@ -197,11 +199,7 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
 /// Resolve the day and night texture paths from the textures directory.
 fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBuf>> {
     let dir = texture_loader::resolve_textures_dir(cli_dir);
-    let pick = |name: &str| {
-        dir.as_ref()
-            .map(|d| d.join(name))
-            .filter(|p| p.exists())
-    };
+    let pick = |name: &str| dir.as_ref().map(|d| d.join(name)).filter(|p| p.exists());
     let paths = vec![pick("world.topo.200405.jxl"), pick("BlackMarble_2016.jxl")];
     info!(textures_dir = ?dir, day = ?paths[0], night = ?paths[1], "resolved texture paths");
     paths
@@ -433,10 +431,8 @@ fn run_app(
     window.set_renderer_info(engine.adapter_info().into());
 
     let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
-    let (aa_labels, aa_counts, _) = renderer::build_aa_options(
-        engine.supported_sample_counts(),
-        quality.max_sample_count(),
-    );
+    let (aa_labels, aa_counts, _) =
+        renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
 
     init_ui(&window, config, &link);
@@ -444,11 +440,12 @@ fn run_app(
     // The tray icon is a top-level Slint component of its own; it must exist
     // before the auto-refresh callback so the two views of that setting can be
     // kept in step.
-    let tray = use_tray
-        .then(|| std::rc::Rc::new(sunlit_earth::tray::create_tray(&window, &link)));
+    let tray = use_tray.then(|| std::rc::Rc::new(sunlit_earth::tray::create_tray(&window, &link)));
     register_auto_refresh_callback(&window, &link, config, tray.clone());
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
-        window.window().set_position(slint::PhysicalPosition::new(x, y));
+        window
+            .window()
+            .set_position(slint::PhysicalPosition::new(x, y));
         window.window().set_size(slint::PhysicalSize::new(w, h));
     }
     debug!("loaded config from disk");
@@ -563,7 +560,7 @@ fn run_app(
 /// creating a new console window when launched from Explorer.
 #[cfg(windows)]
 fn attach_parent_console() {
-    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
     // SAFETY: AttachConsole is a well-documented Win32 function with no
     // preconditions. It returns FALSE (harmlessly) when no parent console
@@ -599,12 +596,19 @@ fn main() -> ExitCode {
     // Load config: from --config path if the render subcommand specifies one,
     // otherwise from the user's saved config on disk.
     let config = match &cli.command {
-        Some(Commands::Render { config: Some(path), .. }) => config::load_config_from(path),
+        Some(Commands::Render {
+            config: Some(path), ..
+        }) => config::load_config_from(path),
         _ => config::load_config(),
     };
 
     match &cli.command {
-        Some(Commands::Render { output, width, height, .. }) => {
+        Some(Commands::Render {
+            output,
+            width,
+            height,
+            ..
+        }) => {
             let (output, width, height) = (output.clone(), *width, *height);
             run_render(&cli, &config, &output, width, height)
         }

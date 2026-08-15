@@ -68,7 +68,10 @@ mod tests {
 
     #[test]
     fn scene_parameter_change_triggers_dirty() {
-        let changed = SceneParams { cloud_opacity: 0.1, ..SceneParams::default() };
+        let changed = SceneParams {
+            cloud_opacity: 0.1,
+            ..SceneParams::default()
+        };
         assert_ne!(
             state(1920, 1080, SUN),
             build_frame_state(&changed, 1920, 1080, SUN)

@@ -16,7 +16,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 use sunlit_core::assets::cloud_fetcher;
 use sunlit_core::assets::cloud_source::HttpCloudSource;
 use sunlit_core::assets::texture_loader;
-use sunlit_core::config::{self, AppConfig};
+use sunlit_core::config::{self, AppConfig, QualityTier};
 use sunlit_core::engine::clock::SystemClock;
 use sunlit_core::engine::wallpaper_sink::SystemWallpaper;
 use sunlit_core::engine::{self, EngineCommand, EngineConfig, EngineHandle};
@@ -40,6 +40,12 @@ struct Cli {
     /// Force software rendering (CPU-based, no GPU required)
     #[arg(long)]
     software_rendering: bool,
+
+    /// Quality tier, overriding the saved config [possible values: low, medium, high]
+    ///
+    /// Debug builds default to low, release builds to high.
+    #[arg(long, value_enum)]
+    quality: Option<Quality>,
 
     /// Path to the textures directory
     #[arg(long)]
@@ -65,6 +71,25 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+/// CLI mirror of `QualityTier`, so clap owns the parsing and core stays free
+/// of a clap dependency.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Quality {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<Quality> for QualityTier {
+    fn from(value: Quality) -> Self {
+        match value {
+            Quality::Low => Self::Low,
+            Quality::Medium => Self::Medium,
+            Quality::High => Self::High,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -189,13 +214,16 @@ fn engine_config(
     preview_size: (u32, u32),
     preview_enabled: bool,
 ) -> EngineConfig {
+    let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
+    info!(?quality, "quality tier");
+
     // Skip cloud fetching entirely when SUNLIT_EARTH_NO_CLOUDS is set; e2e
     // tests use it to keep the network out of the picture.
     let cloud = if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_ok() {
         info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
         None
     } else {
-        let url = cloud_fetcher::cloud_url();
+        let url = cloud_fetcher::cloud_url(quality);
         info!(url = %url, "cloud source configured");
         Some(Arc::new(HttpCloudSource::new(url)) as Arc<_>)
     };
@@ -206,6 +234,7 @@ fn engine_config(
         preview_size,
         preview_enabled,
         params: SceneParams::from_config(config),
+        quality,
         clock: Arc::new(SystemClock::new()),
         cloud,
         cloud_poll_interval: cloud_fetcher::poll_interval(),
@@ -262,10 +291,10 @@ fn run_render(
 
 /// Set up the UI models and register every callback.
 fn init_ui(window: &MainWindow, config: &AppConfig, link: &EngineLink) {
-    let aa_labels: Vec<slint::SharedString> = renderer::build_aa_options(link.aa_counts())
-        .0
-        .into_iter()
-        .map(slint::SharedString::from)
+    let aa_labels: Vec<slint::SharedString> = link
+        .aa_labels()
+        .iter()
+        .map(|label| slint::SharedString::from(label.as_str()))
         .collect();
     window.set_aa_options(slint::ModelRc::new(slint::VecModel::from(aa_labels)));
 
@@ -402,10 +431,12 @@ fn run_app(
     let engine: EngineHandle = engine::start(engine_config);
     window.set_renderer_info(engine.adapter_info().into());
 
-    let link = EngineLink::new(
-        engine.sender(),
-        renderer::build_aa_options(engine.supported_sample_counts()).1,
+    let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
+    let (aa_labels, aa_counts, _) = renderer::build_aa_options(
+        engine.supported_sample_counts(),
+        quality.max_sample_count(),
     );
+    let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
 
     init_ui(&window, config, &link);
     register_auto_refresh_callback(&window, &link, config, use_tray);

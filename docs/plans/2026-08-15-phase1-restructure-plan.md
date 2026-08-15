@@ -37,7 +37,7 @@ Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scen
 - [x] New engine integration tests pass headlessly on the software adapter
 - [ ] Mock-clock soak test: 14 simulated days of cloud updates and auto-refresh in under a minute, bounded private bytes
 - [ ] Golden-image test with tolerance, plus contact-sheet artifact job in CI
-- [ ] Quality tiers exist; dev/test default is low; release default unchanged in output quality
+- [x] Quality tiers exist; dev/test default is low; release default unchanged in output quality
 - [ ] Slint 1.17: tray via `SystemTrayIcon`, `tray.rs` message pump deleted; teardown without `process::exit(0)` attempted and outcome documented
 - [ ] `cargo clippy` clean; CLAUDE.md rewritten for the new layout
 
@@ -280,3 +280,21 @@ tests four times in a row plus two full suite runs, all exit code 0 with no pani
 
 Verification: `cargo test` 332 pass, clippy no new warnings, full e2e suite 8 pass in 42 seconds
 (including the Phase 0 regression test, unchanged).
+
+### Step 6: quality tiers
+
+`QualityTier` (low, medium, high) lives in `config` and is persisted with the rest of the settings,
+overridable per run with `--quality`. It caps three things: the MSAA sample count (1, 4,
+unlimited), the preview width (1280, 1920, unlimited, aspect ratio preserved), and which cloud
+image variant is downloaded (2048x1024, 4096x2048, 8192x4096, all published upstream already). The
+default is low in debug builds and high in release, and `EngineConfig::headless` pins low so tests
+never depend on the build profile.
+
+The sample-count cap is applied by filtering the anti-aliasing combo box options rather than by
+silently clamping inside the renderer, so the UI never offers a setting the tier would ignore. The
+cloud URL composes with the Phase 0 environment override, and the override wins: a test pointing
+at a local stub is not second-guessed by the tier.
+
+Verification: `cargo test` 344 pass, clippy no new warnings, full e2e suite 8 pass. The e2e render
+test now runs at the low tier (debug build) and its pixel assertions still hold, which is the
+evidence that dropping MSAA does not change the image where it matters.

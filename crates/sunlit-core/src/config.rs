@@ -6,6 +6,68 @@ use tracing::warn;
 
 use crate::scene::camera::CameraParams;
 
+/// How much the app is allowed to spend on looking good.
+///
+/// The point of the tiers is that the cheap one is the default while
+/// developing and testing: an 8x MSAA 4K preview plus an 8K cloud download is
+/// not what anyone wants on every `cargo run`, and it used to be exactly what
+/// they got. Release builds still default to the full-quality path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QualityTier {
+    Low,
+    Medium,
+    High,
+}
+
+impl QualityTier {
+    /// Low while developing, high in a shipped binary.
+    pub fn default_for_build() -> Self {
+        if cfg!(debug_assertions) {
+            Self::Low
+        } else {
+            Self::High
+        }
+    }
+
+    /// Upper bound on the MSAA sample count. The UI's anti-aliasing options are
+    /// filtered by this, so the combo box never offers something the tier will
+    /// silently ignore.
+    pub fn max_sample_count(self) -> u32 {
+        match self {
+            Self::Low => 1,
+            Self::Medium => 4,
+            Self::High => u32::MAX,
+        }
+    }
+
+    /// Upper bound on the preview width in physical pixels. The height follows
+    /// from the aspect ratio.
+    pub fn max_preview_width(self) -> u32 {
+        match self {
+            Self::Low => 1280,
+            Self::Medium => 1920,
+            Self::High => u32::MAX,
+        }
+    }
+
+    /// Which cloud image variant to download. The upstream service publishes
+    /// all three, so the low tier costs no new asset work.
+    pub fn cloud_size(self) -> (u32, u32) {
+        match self {
+            Self::Low => (2048, 1024),
+            Self::Medium => (4096, 2048),
+            Self::High => (8192, 4096),
+        }
+    }
+}
+
+impl Default for QualityTier {
+    fn default() -> Self {
+        Self::default_for_build()
+    }
+}
+
 /// Top-level config file structure, producing a `[sunlit.earth]` table in TOML.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -45,6 +107,8 @@ pub struct AppConfig {
     // Rendering
     pub texture_index: i32,
     pub sample_count: u32,
+    /// How much work the renderer and the asset pipeline are allowed to do.
+    pub quality_tier: QualityTier,
 
     // Lighting
     pub terminator_width: f32,
@@ -113,6 +177,7 @@ impl Default for AppConfig {
             offset_y: cam.offset_y,
             texture_index: 3,
             sample_count: 8,
+            quality_tier: QualityTier::default_for_build(),
             terminator_width: 0.1,
             diffuse_shading: true,
             diffuse_floor: 0.70,
@@ -435,6 +500,7 @@ mod tests {
             offset_y: -0.2,
             texture_index: 1,
             sample_count: 4,
+            quality_tier: QualityTier::Medium,
             terminator_width: 0.2,
             diffuse_shading: false,
             diffuse_floor: 0.75,
@@ -557,6 +623,7 @@ mod tests {
             offset_y: -0.3,
             texture_index: 2,
             sample_count: 4,
+            quality_tier: QualityTier::Low,
             terminator_width: 0.15,
             diffuse_shading: false,
             diffuse_floor: 0.8,
@@ -756,6 +823,75 @@ mod tests {
     }
 
     // --- Step 2.5: find_sample_count_index ---
+
+    // --- quality tiers ---
+
+    #[test]
+    fn tier_caps_are_ordered() {
+        let tiers = [QualityTier::Low, QualityTier::Medium, QualityTier::High];
+        for pair in tiers.windows(2) {
+            assert!(
+                pair[0].max_sample_count() < pair[1].max_sample_count(),
+                "sample cap should grow with the tier"
+            );
+            assert!(
+                pair[0].max_preview_width() < pair[1].max_preview_width(),
+                "preview cap should grow with the tier"
+            );
+            assert!(
+                pair[0].cloud_size().0 < pair[1].cloud_size().0,
+                "cloud image should grow with the tier"
+            );
+        }
+    }
+
+    #[test]
+    fn low_tier_disables_msaa() {
+        assert_eq!(QualityTier::Low.max_sample_count(), 1);
+    }
+
+    #[test]
+    fn build_default_is_low_in_debug_and_high_in_release() {
+        let expected = if cfg!(debug_assertions) {
+            QualityTier::Low
+        } else {
+            QualityTier::High
+        };
+        assert_eq!(QualityTier::default_for_build(), expected);
+        assert_eq!(AppConfig::default().quality_tier, expected);
+    }
+
+    #[test]
+    fn quality_tier_serializes_lowercase() {
+        let config = AppConfig {
+            quality_tier: QualityTier::Medium,
+            ..AppConfig::default()
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            toml_str.contains("quality_tier = \"medium\""),
+            "unexpected serialization:
+{toml_str}"
+        );
+    }
+
+    #[test]
+    fn quality_tier_round_trips_for_every_variant() {
+        for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+            let config = AppConfig { quality_tier: tier, ..AppConfig::default() };
+            let parsed: AppConfig =
+                toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+            assert_eq!(parsed.quality_tier, tier);
+        }
+    }
+
+    #[test]
+    fn missing_quality_tier_falls_back_to_the_build_default() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_eq!(config.quality_tier, QualityTier::default_for_build());
+    }
+
+    // --- find_sample_count_index ---
 
     #[test]
     fn find_sample_count_exact_match() {

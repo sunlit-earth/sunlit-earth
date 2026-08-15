@@ -18,6 +18,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::config::QualityTier;
+
 use super::cloud_source::{CloudSource, HttpCloudSource};
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
 use super::texture_loader::{self, DecodedImage};
@@ -32,7 +34,10 @@ pub fn no_notify() -> NotifyFn {
     Arc::new(|| {})
 }
 
-const CLOUD_URL: &str = "https://clouds.matteason.co.uk/images/8192x4096/clouds.jpg";
+/// Base of the upstream cloud service. The path segment before `clouds.jpg`
+/// selects the resolution variant, which is how the quality tiers get a
+/// cheaper download without any new asset work.
+const CLOUD_URL_TEMPLATE: &str = "https://clouds.matteason.co.uk/images/{size}/clouds.jpg";
 const POLL_INTERVAL: Duration = Duration::from_secs(3600);
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
@@ -51,14 +56,20 @@ struct CacheMeta {
     last_modified: Option<String>,
 }
 
-/// Resolve the cloud image URL from an optional environment override.
-fn resolve_cloud_url(raw: Option<&str>) -> String {
-    raw.map_or_else(|| CLOUD_URL.to_owned(), ToOwned::to_owned)
+/// The upstream URL for a quality tier's image variant.
+fn tier_cloud_url(tier: QualityTier) -> String {
+    let (w, h) = tier.cloud_size();
+    CLOUD_URL_TEMPLATE.replace("{size}", &format!("{w}x{h}"))
 }
 
-/// The configured cloud image URL, honoring `SUNLIT_EARTH_CLOUD_URL`.
-pub fn cloud_url() -> String {
-    resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref())
+/// Resolve the cloud image URL: the environment override wins over the tier.
+fn resolve_cloud_url(raw: Option<&str>, tier: QualityTier) -> String {
+    raw.map_or_else(|| tier_cloud_url(tier), ToOwned::to_owned)
+}
+
+/// The configured cloud image URL for `tier`, honoring `SUNLIT_EARTH_CLOUD_URL`.
+pub fn cloud_url(tier: QualityTier) -> String {
+    resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref(), tier)
 }
 
 /// Resolve the poll interval from an optional environment override.
@@ -297,8 +308,13 @@ impl CloudUpdater {
 ///
 /// On the background thread: polls for updates on the configured interval,
 /// downloading a fresh image only when the remote has changed.
-pub fn spawn_cloud_fetcher(mailbox: TextureMailbox, notify: NotifyFn, clouds_slot: usize) {
-    let url = cloud_url();
+pub fn spawn_cloud_fetcher(
+    mailbox: TextureMailbox,
+    notify: NotifyFn,
+    clouds_slot: usize,
+    tier: QualityTier,
+) {
+    let url = cloud_url(tier);
     let interval = poll_interval();
     info!(
         url = %url,
@@ -426,16 +442,28 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cloud_url_without_override_uses_constant() {
-        assert_eq!(resolve_cloud_url(None), CLOUD_URL);
+    fn cloud_url_follows_the_quality_tier() {
+        assert!(tier_cloud_url(QualityTier::Low).contains("2048x1024"));
+        assert!(tier_cloud_url(QualityTier::Medium).contains("4096x2048"));
+        assert!(tier_cloud_url(QualityTier::High).contains("8192x4096"));
     }
 
     #[test]
-    fn resolve_cloud_url_with_override() {
+    fn resolve_cloud_url_without_override_uses_the_tier() {
         assert_eq!(
-            resolve_cloud_url(Some("http://127.0.0.1:8080/clouds.jpg")),
-            "http://127.0.0.1:8080/clouds.jpg"
+            resolve_cloud_url(None, QualityTier::Low),
+            tier_cloud_url(QualityTier::Low)
         );
+    }
+
+    #[test]
+    fn environment_override_wins_over_the_tier() {
+        for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+            assert_eq!(
+                resolve_cloud_url(Some("http://127.0.0.1:8080/clouds.jpg"), tier),
+                "http://127.0.0.1:8080/clouds.jpg"
+            );
+        }
     }
 
     #[test]

@@ -38,15 +38,21 @@ struct PreviewMailbox {
 #[derive(Clone)]
 pub struct EngineLink {
     tx: Sender<EngineCommand>,
+    aa_labels: Arc<Vec<String>>,
     aa_counts: Arc<Vec<u32>>,
 }
 
 impl EngineLink {
-    pub fn new(tx: Sender<EngineCommand>, aa_counts: Vec<u32>) -> Self {
+    pub fn new(tx: Sender<EngineCommand>, aa_labels: Vec<String>, aa_counts: Vec<u32>) -> Self {
         Self {
             tx,
+            aa_labels: Arc::new(aa_labels),
             aa_counts: Arc::new(aa_counts),
         }
+    }
+
+    pub fn aa_labels(&self) -> &[String] {
+        &self.aa_labels
     }
 
     pub fn aa_counts(&self) -> &[u32] {

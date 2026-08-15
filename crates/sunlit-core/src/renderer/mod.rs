@@ -52,12 +52,16 @@ pub const TEXTURE_LABELS: [&str; 4] = ["Grid", "Day", "Night", "Day/Night Blend"
 
 /// Build the anti-aliasing option labels and find the default index
 /// (preferring 8x MSAA).
-pub fn build_aa_options(supported: &[u32]) -> (Vec<String>, Vec<u32>, i32) {
+///
+/// `max_samples` is the quality tier's cap. Filtering here rather than
+/// clamping inside the renderer keeps the combo box honest: it never offers a
+/// setting the tier would silently ignore.
+pub fn build_aa_options(supported: &[u32], max_samples: u32) -> (Vec<String>, Vec<u32>, i32) {
     let mut labels = vec!["None".to_owned()];
     let mut counts = vec![1];
 
     for &sc in supported {
-        if sc > 1 {
+        if sc > 1 && sc <= max_samples {
             labels.push(format!("MSAA {sc}\u{d7}"));
             counts.push(sc);
         }
@@ -421,7 +425,7 @@ mod tests {
 
     #[test]
     fn aa_options_single_sample() {
-        let (labels, counts, default) = build_aa_options(&[1]);
+        let (labels, counts, default) = build_aa_options(&[1], u32::MAX);
         assert_eq!(labels, ["None"]);
         assert_eq!(counts, [1]);
         assert_eq!(default, 0);
@@ -429,7 +433,7 @@ mod tests {
 
     #[test]
     fn aa_options_full_range() {
-        let (labels, counts, default) = build_aa_options(&[1, 2, 4, 8]);
+        let (labels, counts, default) = build_aa_options(&[1, 2, 4, 8], u32::MAX);
         assert_eq!(labels, ["None", "MSAA 2\u{d7}", "MSAA 4\u{d7}", "MSAA 8\u{d7}"]);
         assert_eq!(counts, [1, 2, 4, 8]);
         assert_eq!(default, 3); // index of 8x
@@ -437,7 +441,7 @@ mod tests {
 
     #[test]
     fn aa_options_no_8x_falls_back_to_highest() {
-        let (labels, counts, default) = build_aa_options(&[1, 2, 4]);
+        let (labels, counts, default) = build_aa_options(&[1, 2, 4], u32::MAX);
         assert_eq!(labels, ["None", "MSAA 2\u{d7}", "MSAA 4\u{d7}"]);
         assert_eq!(counts, [1, 2, 4]);
         assert_eq!(default, 2); // last entry
@@ -445,7 +449,7 @@ mod tests {
 
     #[test]
     fn aa_options_skip_intermediates() {
-        let (labels, counts, default) = build_aa_options(&[1, 8]);
+        let (labels, counts, default) = build_aa_options(&[1, 8], u32::MAX);
         assert_eq!(labels, ["None", "MSAA 8\u{d7}"]);
         assert_eq!(counts, [1, 8]);
         assert_eq!(default, 1); // index of 8x
@@ -453,10 +457,21 @@ mod tests {
 
     #[test]
     fn aa_options_empty_input() {
-        let (labels, counts, default) = build_aa_options(&[]);
+        let (labels, counts, default) = build_aa_options(&[], u32::MAX);
         assert_eq!(labels, ["None"]);
         assert_eq!(counts, [1]);
         assert_eq!(default, 0);
+    }
+
+    #[test]
+    fn aa_options_respect_the_tier_cap() {
+        let (labels, counts, default) = build_aa_options(&[1, 2, 4, 8], 1);
+        assert_eq!(labels, ["None"], "the low tier offers no multisampling");
+        assert_eq!(counts, [1]);
+        assert_eq!(default, 0);
+
+        let (_, counts, _) = build_aa_options(&[1, 2, 4, 8], 4);
+        assert_eq!(counts, [1, 2, 4], "the medium tier stops at 4x");
     }
 
     // -----------------------------------------------------------------------

@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 use crate::assets::cloud_fetcher::{CloudUpdater, PollOutcome};
 use crate::assets::cloud_source::CloudSource;
 use crate::assets::mailbox::TextureMailbox;
+use crate::config::QualityTier;
 use crate::params::SceneParams;
 use crate::renderer::{
     CLOUDS_SLOT, RenderOutcome, Renderer, RendererConfig, quantize_to_granularity,
@@ -109,6 +110,9 @@ pub struct EngineConfig {
     pub preview_enabled: bool,
     /// Initial scene parameters.
     pub params: SceneParams,
+    /// Caps the preview size and the MSAA sample count, and selects the cloud
+    /// image variant.
+    pub quality: QualityTier,
     pub clock: Arc<dyn Clock>,
     /// `None` disables cloud fetching entirely (the `SUNLIT_EARTH_NO_CLOUDS`
     /// case, and the default for tests that do not care about clouds).
@@ -137,6 +141,8 @@ impl EngineConfig {
             preview_size,
             preview_enabled: true,
             params: SceneParams::default(),
+            // Tests always run at the cheap tier, whatever the build profile.
+            quality: QualityTier::Low,
             clock: Arc::new(SystemClock::new()),
             cloud: None,
             cloud_poll_interval: Duration::from_secs(3600),
@@ -307,6 +313,7 @@ struct Engine {
     wallpaper: Arc<dyn WallpaperSink>,
     renderer: Renderer,
     params: SceneParams,
+    quality: QualityTier,
     preview: PreviewState,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
@@ -350,7 +357,8 @@ impl Engine {
             texture_paths,
             preview_size,
             preview_enabled,
-            params,
+            mut params,
+            quality,
             clock,
             cloud,
             cloud_poll_interval,
@@ -376,7 +384,8 @@ impl Engine {
             let _ = poke_tx.send(EngineCommand::Poke);
         });
 
-        let (width, height) = quantize_to_granularity(preview_size.0, preview_size.1);
+        params.sample_count = params.sample_count.min(quality.max_sample_count());
+        let (width, height) = preview_target_size(preview_size, quality);
         let renderer = Renderer::new(
             gpu.device,
             gpu.queue,
@@ -409,6 +418,7 @@ impl Engine {
             wallpaper,
             renderer,
             params,
+            quality,
             preview: PreviewState {
                 enabled: preview_enabled,
                 owed: false,
@@ -473,10 +483,14 @@ impl Engine {
         match cmd {
             EngineCommand::UpdateParams(params) => {
                 self.params = *params;
+                self.params.sample_count = self
+                    .params
+                    .sample_count
+                    .min(self.quality.max_sample_count());
                 self.dirty = true;
             }
             EngineCommand::SetPreviewSize(w, h) => {
-                let (qw, qh) = quantize_to_granularity(w, h);
+                let (qw, qh) = preview_target_size((w, h), self.quality);
                 if (qw, qh) != self.renderer.size() {
                     self.renderer.resize(qw, qh);
                     self.dirty = true;
@@ -720,6 +734,20 @@ fn spawn_cloud_worker(
     worker
 }
 
+/// Clamp a requested preview size to the tier's cap, preserving the aspect
+/// ratio, then quantize it to the renderer's texture granularity.
+fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32) {
+    let (mut w, mut h) = requested;
+    let max_w = quality.max_preview_width();
+    if w > max_w && w > 0 {
+        h = ((u64::from(h) * u64::from(max_w)) / u64::from(w))
+            .try_into()
+            .unwrap_or(max_w);
+        w = max_w;
+    }
+    quantize_to_granularity(w, h)
+}
+
 /// Encode RGBA8 pixels as PNG and write them to `path`.
 pub fn save_png(path: &std::path::Path, width: u32, height: u32, pixels: &[u8]) -> Result<(), String> {
     use image::{ImageBuffer, Rgba};
@@ -759,6 +787,40 @@ mod tests {
         s.set_interval(Duration::from_secs(60), Duration::from_secs(30));
         assert!(!s.due(Duration::from_secs(89)));
         assert!(s.due(Duration::from_secs(90)));
+    }
+
+    #[test]
+    fn preview_size_passes_through_below_the_cap() {
+        assert_eq!(
+            preview_target_size((1024, 640), QualityTier::Low),
+            quantize_to_granularity(1024, 640)
+        );
+    }
+
+    #[test]
+    fn preview_size_is_capped_at_the_low_tier() {
+        let (w, h) = preview_target_size((3840, 2160), QualityTier::Low);
+        assert!(w <= QualityTier::Low.max_preview_width());
+        // 3840x2160 scaled to 1280 wide is 720 high, quantized to 704.
+        assert_eq!((w, h), (1280, 704));
+    }
+
+    #[test]
+    fn preview_size_cap_grows_with_the_tier() {
+        let low = preview_target_size((3840, 2160), QualityTier::Low);
+        let medium = preview_target_size((3840, 2160), QualityTier::Medium);
+        let high = preview_target_size((3840, 2160), QualityTier::High);
+        assert!(low.0 < medium.0);
+        assert!(medium.0 < high.0);
+        assert_eq!(high, quantize_to_granularity(3840, 2160));
+    }
+
+    #[test]
+    fn preview_size_cap_preserves_the_aspect_ratio() {
+        let (w, h) = preview_target_size((2560, 1440), QualityTier::Low);
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = f64::from(w) / f64::from(h);
+        assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
     }
 
     #[test]

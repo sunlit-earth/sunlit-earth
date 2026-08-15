@@ -414,6 +414,8 @@ mod tests {
     /// Every field that reaches the shader must make the digest differ.
     /// Written as a table so adding a parameter without wiring the dirty check
     /// is a test failure rather than a stale-frame bug.
+    /// The length is the table, one row per shader parameter.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn every_shader_parameter_triggers_dirty() {
         let base = params();

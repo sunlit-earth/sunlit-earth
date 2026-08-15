@@ -9,7 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # RUSTFLAGS: "-D warnings"
+  # Warnings fail the build. Cargo passes --cap-lints allow to registry
+  # dependencies, so this only gates code in this workspace.
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   # Formatting is OS-independent, so it runs once rather than per matrix entry.

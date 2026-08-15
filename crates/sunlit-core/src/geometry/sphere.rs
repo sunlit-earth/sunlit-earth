@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn indices_in_range() {
         let mesh = generate_uv_sphere(16, 32);
-        let vertex_count = mesh.vertices.len() as u32;
+        let vertex_count = u32::try_from(mesh.vertices.len()).expect("mesh fits in u32 indices");
         for &idx in &mesh.indices {
             assert!(
                 idx < vertex_count,

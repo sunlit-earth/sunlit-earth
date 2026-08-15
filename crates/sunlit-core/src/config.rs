@@ -760,30 +760,36 @@ mod tests {
 
     #[test]
     fn validated_geometry_none_when_partial() {
-        let mut config = AppConfig::default();
-        config.window_x = Some(100);
-        config.window_y = Some(200);
-        // width and height still None
+        let config = AppConfig {
+            window_x: Some(100),
+            window_y: Some(200),
+            // width and height still None
+            ..AppConfig::default()
+        };
         assert!(validated_window_geometry(&config).is_none());
     }
 
     #[test]
     fn validated_geometry_none_when_zero_size() {
-        let mut config = AppConfig::default();
-        config.window_x = Some(100);
-        config.window_y = Some(200);
-        config.window_width = Some(0);
-        config.window_height = Some(600);
+        let config = AppConfig {
+            window_x: Some(100),
+            window_y: Some(200),
+            window_width: Some(0),
+            window_height: Some(600),
+            ..AppConfig::default()
+        };
         assert!(validated_window_geometry(&config).is_none());
     }
 
     #[test]
     fn validated_geometry_accepts_on_screen() {
-        let mut config = AppConfig::default();
-        config.window_x = Some(100);
-        config.window_y = Some(100);
-        config.window_width = Some(800);
-        config.window_height = Some(600);
+        let config = AppConfig {
+            window_x: Some(100),
+            window_y: Some(100),
+            window_width: Some(800),
+            window_height: Some(600),
+            ..AppConfig::default()
+        };
         // On a machine with at least one monitor, (100, 100) should be on-screen
         let result = validated_window_geometry(&config);
         assert!(result.is_some());
@@ -792,11 +798,13 @@ mod tests {
 
     #[test]
     fn validated_geometry_rejects_off_screen() {
-        let mut config = AppConfig::default();
-        config.window_x = Some(-50000);
-        config.window_y = Some(-50000);
-        config.window_width = Some(800);
-        config.window_height = Some(600);
+        let config = AppConfig {
+            window_x: Some(-50000),
+            window_y: Some(-50000),
+            window_width: Some(800),
+            window_height: Some(600),
+            ..AppConfig::default()
+        };
         assert!(validated_window_geometry(&config).is_none());
     }
 
@@ -813,11 +821,13 @@ mod tests {
 
     #[test]
     fn serde_window_geometry_round_trip() {
-        let mut config = AppConfig::default();
-        config.window_x = Some(100);
-        config.window_y = Some(200);
-        config.window_width = Some(1920);
-        config.window_height = Some(1080);
+        let config = AppConfig {
+            window_x: Some(100),
+            window_y: Some(200),
+            window_width: Some(1920),
+            window_height: Some(1080),
+            ..AppConfig::default()
+        };
         let file = ConfigFile {
             sunlit: SunlitSection { earth: config },
         };

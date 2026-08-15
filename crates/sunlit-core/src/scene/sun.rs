@@ -316,7 +316,7 @@ mod tests {
         assert_relative_eq!(a.z, b.z, epsilon = 1e-5);
     }
 
-    /// `compute_sun_direction` clamps day_of_year 0 to 1.
+    /// `compute_sun_direction` clamps `day_of_year` 0 to 1.
     #[test]
     fn compute_sun_direction_clamps_doy_zero() {
         let dt = DateTimeInput {

@@ -48,11 +48,11 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        if let Some(mut child) = self.child.take()
+            && child.try_wait().ok().flatten().is_none()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

@@ -409,16 +409,16 @@ mod tests {
                 let max = days_in_year(y);
                 let doy_clamped = doy.min(max);
                 let (month, day) = day_of_year_to_month_day(doy_clamped, y);
-                prop_assert!(month >= 1 && month <= 12, "month out of range: {month}");
-                prop_assert!(day >= 1 && day <= 31, "day out of range: {day}");
+                prop_assert!((1..=12).contains(&month), "month out of range: {month}");
+                prop_assert!((1..=31).contains(&day), "day out of range: {day}");
             }
 
             #[test]
             fn hms_in_range(h in 0.0f32..24.0) {
                 let (hour, minute, second) = hour_float_to_hms(h);
-                prop_assert!(hour >= 0 && hour < 24, "hour out of range: {hour}");
-                prop_assert!(minute >= 0 && minute < 60, "minute out of range: {minute}");
-                prop_assert!(second >= 0.0 && second < 60.0, "second out of range: {second}");
+                prop_assert!((0..24).contains(&hour), "hour out of range: {hour}");
+                prop_assert!((0..60).contains(&minute), "minute out of range: {minute}");
+                prop_assert!((0.0..60.0).contains(&second), "second out of range: {second}");
             }
 
             #[test]

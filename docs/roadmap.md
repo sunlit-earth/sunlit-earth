@@ -40,7 +40,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 ## CI and distribution
 
 - [x] CI pipeline: GitHub Actions workflows for building, testing, and linting on Windows. GPU integration tests run on the software adapter. Release workflow builds and publishes Windows binaries on version tags.
-- [ ] CI lint gates: the codebase-wide reformat landed in Phase 2 and the `fmt` job in `ci.yml` is enabled again. `RUSTFLAGS: "-D warnings"` is still commented out pending the warning cleanup in the same phase.
+- [x] CI lint gates: the codebase-wide reformat and the warning cleanup landed in Phase 2, so `ci.yml` runs a `fmt` job again and sets `RUSTFLAGS: "-D warnings"`. Clippy stays a local command: its artifacts do not share the test cache and running it in CI would force a full recompile.
 - [ ] Cross-platform release builds: produce binaries for Windows, Linux, and macOS from CI. Publish as GitHub release artifacts.
 
 ## Bugs and polish

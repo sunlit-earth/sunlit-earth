@@ -636,7 +636,7 @@ mod tests {
         fn zoom_range_proptest(t in 0.0_f32..=1.0) {
             let d = zoom_to_distance(t);
             proptest::prop_assert!(
-                d >= ZOOM_DISTANCE_MIN && d <= ZOOM_DISTANCE_MAX,
+                (ZOOM_DISTANCE_MIN..=ZOOM_DISTANCE_MAX).contains(&d),
                 "zoom_to_distance({t}) = {d}, expected in [{}, {}]",
                 ZOOM_DISTANCE_MIN, ZOOM_DISTANCE_MAX
             );

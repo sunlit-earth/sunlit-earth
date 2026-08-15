@@ -203,7 +203,7 @@ mod tests {
         let (lon, _lat) = apply_globe_drag(179.0, 0.0, 0.0, 0.5, -100.0, 0.0);
         // Should wrap around to negative side
         assert!(
-            lon >= -180.0 && lon < 180.0,
+            (-180.0..180.0).contains(&lon),
             "longitude should be in [-180, 180), got {lon}"
         );
     }
@@ -394,8 +394,8 @@ mod tests {
                 dy in -500.0f32..500.0,
             ) {
                 let (new_x, new_y) = apply_frame_drag(ox, oy, zoom, dx, dy);
-                prop_assert!(new_x >= -3.0 && new_x <= 3.0, "offset_x {new_x} out of range");
-                prop_assert!(new_y >= -3.0 && new_y <= 3.0, "offset_y {new_y} out of range");
+                prop_assert!((-3.0..=3.0).contains(&new_x), "offset_x {new_x} out of range");
+                prop_assert!((-3.0..=3.0).contains(&new_y), "offset_y {new_y} out of range");
             }
 
             #[test]
@@ -406,8 +406,8 @@ mod tests {
                 dy in -500.0f32..500.0,
             ) {
                 let (new_yaw, new_pitch) = apply_orient_drag(yaw, pitch, dx, dy);
-                prop_assert!(new_yaw >= -90.0 && new_yaw <= 90.0, "yaw {new_yaw} out of range");
-                prop_assert!(new_pitch >= -90.0 && new_pitch <= 90.0, "pitch {new_pitch} out of range");
+                prop_assert!((-90.0..=90.0).contains(&new_yaw), "yaw {new_yaw} out of range");
+                prop_assert!((-90.0..=90.0).contains(&new_pitch), "pitch {new_pitch} out of range");
             }
         }
     }

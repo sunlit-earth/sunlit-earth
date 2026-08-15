@@ -728,6 +728,9 @@ fn main() {
 }
 ";
 
+// One assertion per uniform field: splitting it would only hide which field
+// moved.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn uniform_buffer_field_offsets_match_wgsl() {
     let ctx = RENDER_CTX.lock().unwrap();
@@ -1266,6 +1269,9 @@ fn fresnel_diffuse_shift_absent_at_night() {
 // Cloud pipeline tests
 // ---------------------------------------------------------------------------
 
+// A full pipeline set-up followed by its assertions; the parts are not
+// meaningful on their own.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn cloud_pipeline_renders_with_alpha() {
     let ctx = RENDER_CTX.lock().unwrap();

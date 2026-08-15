@@ -360,8 +360,31 @@ pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
 }
 
 /// Read all persisted settings from the window's current UI state.
+///
+/// This is a read-modify-write against what is on disk, not a fresh
+/// `AppConfig::default()`. Not every persisted setting has a widget: the
+/// quality tier does not, and starting from the defaults meant that clicking
+/// "Set as Wallpaper" in a debug build wrote `quality_tier = "low"` over a
+/// release install's `"high"`, permanently. Anything the UI does not manage
+/// has to survive a save untouched, and the only way to guarantee that as
+/// fields are added is to start from the stored config rather than enumerate
+/// what to preserve.
+///
+/// Reading from disk also means a `--quality` override is not persisted, which
+/// is the intended behavior for a per-run flag.
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
+    read_config_from_window_onto(window, aa_counts, config::load_config())
+}
+
+/// The testable half of [`read_config_from_window`]: overwrite the UI-managed
+/// fields of `stored` and leave everything else alone.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+pub fn read_config_from_window_onto(
+    window: &MainWindow,
+    aa_counts: &[u32],
+    stored: AppConfig,
+) -> AppConfig {
     let pos = window.window().position();
     let size = window.window().size();
 
@@ -372,7 +395,7 @@ pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppCon
         window_y: Some(pos.y),
         window_width: Some(size.width),
         window_height: Some(size.height),
-        ..AppConfig::default()
+        ..stored
     };
     read_params_from_window(window, aa_counts).write_to_config(&mut config);
     config

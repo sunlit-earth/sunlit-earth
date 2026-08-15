@@ -886,6 +886,26 @@ mod tests {
     }
 
     #[test]
+    fn quality_tier_survives_a_file_round_trip() {
+        // Pick a tier that is not this build's default, so a regression that
+        // resets the field cannot pass by accident.
+        let tier = if QualityTier::default_for_build() == QualityTier::High {
+            QualityTier::Low
+        } else {
+            QualityTier::High
+        };
+        let dir = std::env::temp_dir().join("sunlit_earth_test_tier_file_roundtrip");
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+
+        let config = AppConfig { quality_tier: tier, ..AppConfig::default() };
+        save_config_to(&config, &path);
+        assert_eq!(load_config_from(&path).quality_tier, tier);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn missing_quality_tier_falls_back_to_the_build_default() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_eq!(config.quality_tier, QualityTier::default_for_build());

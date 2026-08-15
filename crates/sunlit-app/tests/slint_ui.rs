@@ -361,3 +361,41 @@ fn test_atmosphere_sliders_visible_when_enabled() {
         "rayleigh intensity slider should be in the tree when atmosphere is enabled"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Config save round-trip
+// ---------------------------------------------------------------------------
+
+/// Settings without a widget must survive a save.
+///
+/// `quality_tier` is the current example: it is persisted but has no control in
+/// the window, and building the saved config from `AppConfig::default()` meant
+/// every "Set as Wallpaper" in a debug build overwrote a release install's
+/// `high` with `low`.
+#[test]
+fn test_save_preserves_settings_without_a_widget() {
+    use sunlit_core::config::{AppConfig, QualityTier};
+
+    let window = create_window();
+    window.set_camera_longitude(42.0);
+    window.set_cloud_opacity(0.25);
+
+    for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+        let stored = AppConfig {
+            quality_tier: tier,
+            ..AppConfig::default()
+        };
+        let saved = sunlit_earth::ui_callbacks::read_config_from_window_onto(
+            &window,
+            &[1, 2, 4, 8],
+            stored,
+        );
+        assert_eq!(
+            saved.quality_tier, tier,
+            "a save must not rewrite the stored quality tier"
+        );
+        // The UI-managed fields must still be taken from the window.
+        assert!((saved.longitude - 42.0).abs() < f32::EPSILON);
+        assert!((saved.cloud_opacity - 0.25).abs() < f32::EPSILON);
+    }
+}

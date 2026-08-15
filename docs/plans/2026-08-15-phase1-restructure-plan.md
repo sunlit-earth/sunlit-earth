@@ -333,7 +333,8 @@ Verification: `cargo test` 332 pass, clippy no new warnings, full e2e suite 8 pa
 ### Step 6: quality tiers
 
 `QualityTier` (low, medium, high) lives in `config` and is persisted with the rest of the settings,
-overridable per run with `--quality`. It caps three things: the MSAA sample count (1, 4,
+overridable per run with `--quality`. (Persistence was in fact broken as first written and was fixed
+in review; see Post-review fixes below.) It caps three things: the MSAA sample count (1, 4,
 unlimited), the preview width (1280, 1920, unlimited, aspect ratio preserved), and which cloud
 image variant is downloaded (2048x1024, 4096x2048, 8192x4096, all published upstream already). The
 default is low in debug builds and high in release, and `EngineConfig::headless` pins low so tests

@@ -175,7 +175,10 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 
 ### Resource-flow rules (from the retrospective, section 8.2)
 
-- No unbounded queue crosses a thread boundary. Every channel is bounded or latest-value, and the choice is written down at the declaration site. Both existing crossings are mailboxes: decoded textures in core, preview frames in the app.
+- Every queue crossing a thread boundary is bounded, latest-value, or unbounded with the reasoning written down at the declaration site. There are three crossings today:
+  1. **Decoded textures** (`assets::mailbox`, core): latest-value, one slot per texture. This is the Phase 0 fix.
+  2. **Preview frames** (`engine_client`, app): latest-value, one slot, with a single pending wake-up so the UI thread cannot accumulate frame buffers either.
+  3. **Engine commands** (`engine::start`, both directions): unbounded, deliberately. The consumer is unconditional and runs at most 50 ms apart, the producers are human-rate, and the payloads carry no pixels (`command_payload_is_small` pins that). A bounded channel would either block the UI thread against a mid-export engine or drop an `UpdateParams` that might be the last one. The full argument is a comment on the channel itself; keep it honest if any of those premises change.
 - Decoded pixel buffers are never parked in queues, caches, or long-lived structs.
 - Every background producer names its consumer and the condition under which the consumer runs. If that condition is not "always", the design is wrong.
 

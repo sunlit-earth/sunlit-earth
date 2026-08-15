@@ -268,6 +268,28 @@ fn join_engine(thread: Option<JoinHandle<()>>) {
 /// Blocks until the GPU device exists, so the returned handle can report the
 /// adapter and the supported sample counts without another round trip.
 pub fn start(config: EngineConfig) -> EngineHandle {
+    // Unbounded, deliberately, and this is the reasoning the resource-flow rule
+    // asks for at the declaration site:
+    //
+    // - The consumer is unconditional. The engine loop drains this channel dry
+    //   on every iteration and iterations are at most `TICK` (50 ms) apart. It
+    //   is not gated on a window, a client, or visibility, which is exactly the
+    //   property the Phase 0 leak lacked.
+    // - The producers are human-rate: UI callbacks during a drag (about 60/s),
+    //   the viewport poll (5/s), the cloud worker (a few per hour), IPC (rare).
+    // - The payloads are small and carry no pixel data. `EngineCommand` is a
+    //   few dozen bytes (`command_payload_is_small` pins this), because
+    //   `UpdateParams` boxes its `SceneParams` and the frame-carrying direction
+    //   is the other way, through the event callback.
+    // - The worst case is therefore a backlog for as long as one blocking
+    //   operation takes: a 4K wallpaper export or an 8K mip upload, one to two
+    //   seconds, so a couple of hundred entries and single-digit kilobytes.
+    //
+    // A bound was considered and rejected: a blocking `send` from the UI thread
+    // would deadlock against an engine that is mid-export, and a non-blocking
+    // `try_send` that drops `UpdateParams` can drop the *last* one, leaving the
+    // window and the engine permanently disagreeing. Neither failure is better
+    // than the bounded growth above.
     let (tx, rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
 
@@ -911,6 +933,18 @@ mod tests {
         #[allow(clippy::cast_precision_loss)]
         let ratio = f64::from(w) / f64::from(h);
         assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
+    }
+
+    /// The unbounded-channel justification at the `start` declaration rests on
+    /// commands being small. A command that carried pixels would turn a
+    /// backlog into the exact failure Phase 0 removed.
+    #[test]
+    fn command_payload_is_small() {
+        let size = std::mem::size_of::<EngineCommand>();
+        assert!(
+            size <= 64,
+            "EngineCommand grew to {size} bytes; if that is a buffer, revisit              the unbounded channel justification in `start`"
+        );
     }
 
     #[test]

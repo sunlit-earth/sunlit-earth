@@ -1,9 +1,8 @@
 //! Cloud texture caching, decoding, and polling.
 //!
 //! A [`CloudUpdater`] owns the on-disk cache and turns a [`CloudSource`] into
-//! decoded frames parked in the texture mailbox. The engine drives it on its own
-//! schedule; `spawn_cloud_fetcher` is the standalone-thread wrapper the Slint
-//! shell used before the engine existed.
+//! decoded frames parked in the texture mailbox. The engine drives it from its
+//! own worker thread on its own schedule.
 //!
 //! Three values can be overridden through the environment so tests can point
 //! the fetcher at a local stub server without touching the real cache:
@@ -20,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::config::QualityTier;
 
-use super::cloud_source::{CloudSource, HttpCloudSource};
+use super::cloud_source::CloudSource;
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
 use super::texture_loader::{self, DecodedImage};
 
@@ -39,8 +38,11 @@ pub fn no_notify() -> NotifyFn {
 /// cheaper download without any new asset work.
 const CLOUD_URL_TEMPLATE: &str = "https://clouds.matteason.co.uk/images/{size}/clouds.jpg";
 const POLL_INTERVAL: Duration = Duration::from_secs(3600);
-const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+/// First delay after a failed poll. Doubles up to [`MAX_RETRY_DELAY`].
+pub const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
+/// Ceiling for the retry backoff, so a service outage does not turn into an
+/// hourly poll that misses the recovery by 59 minutes.
+pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
 
 /// Environment variable overriding the cloud image URL.
 const ENV_CLOUD_URL: &str = "SUNLIT_EARTH_CLOUD_URL";
@@ -299,61 +301,6 @@ impl CloudUpdater {
         });
         (self.notify)();
     }
-}
-
-/// Spawn the standalone background cloud fetcher thread.
-///
-/// On the calling thread: loads the cached JPEG (if it exists), decodes it,
-/// and posts it to the texture mailbox so clouds appear on the first frame.
-///
-/// On the background thread: polls for updates on the configured interval,
-/// downloading a fresh image only when the remote has changed.
-pub fn spawn_cloud_fetcher(
-    mailbox: TextureMailbox,
-    notify: NotifyFn,
-    clouds_slot: usize,
-    tier: QualityTier,
-) {
-    let url = cloud_url(tier);
-    let interval = poll_interval();
-    info!(
-        url = %url,
-        poll_secs = interval.as_secs(),
-        cache_dir = ?cache_dir(),
-        "cloud fetcher configuration"
-    );
-
-    let mut updater = CloudUpdater::new(
-        Arc::new(HttpCloudSource::new(url)),
-        mailbox,
-        notify,
-        clouds_slot,
-        cache_dir(),
-    );
-    updater.post_cached();
-
-    std::thread::spawn(move || {
-        let mut retry_delay = INITIAL_RETRY_DELAY;
-        loop {
-            match updater.poll_once() {
-                PollOutcome::Updated | PollOutcome::Unchanged => {
-                    retry_delay = INITIAL_RETRY_DELAY;
-                }
-                PollOutcome::Failed => {
-                    warn!(
-                        retry_delay_secs = retry_delay.as_secs(),
-                        "cloud poll failed, retrying"
-                    );
-                    std::thread::sleep(retry_delay);
-                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
-                    continue;
-                }
-            }
-
-            crate::memory::log_memory_usage("cloud fetcher idle");
-            std::thread::sleep(interval);
-        }
-    });
 }
 
 #[cfg(test)]

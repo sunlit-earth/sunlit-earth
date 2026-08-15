@@ -7,7 +7,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows (`SystemParametersInfoW` via `windows-sys`) implemented; Linux and macOS later.
 - [ ] Periodic re-rendering: timer-driven scheduler that re-renders every N minutes so the terminator tracks the sun. Update interval should be user-configurable.
 - [x] System tray icon: minimize to tray on window close with "Open" / "Exit" context menu, single-instance enforcement, `--windowed` flag for original close-exits behavior (Windows only).
-- [ ] System tray extended features: add "Render Now" tray menu item. Support headless/daemon mode without the GUI window.
+- [x] System tray extended features: "Refresh Now" and a checkable "Auto-refresh" entry are in the tray menu, and the engine runs headlessly with no window at all (the `render` subcommand creates no window and no Slint backend). A long-running daemon mode with no settings window is still open.
 - [x] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
 - [ ] Wallpaper setting on Linux and macOS: extend the wallpaper setter to support GNOME/KDE (`gsettings`/DBus), X11/Wayland, and macOS (`osascript`/`NSWorkspace`).
 - [ ] Multi-monitor support: detect monitor layout and resolution, render appropriately sized wallpapers for each display.
@@ -21,7 +21,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Atmosphere glow / Airglow: three physically-motivated layers (Rayleigh scattering, orange nightglow, green nightglow) with separate controls.
 - [x] Cloud overlay: semi-transparent cloud layer from near-real-time satellite data. Requires researching data sources (GOES/Himawari composites, etc.) and building a download + caching pipeline.
 - [ ] Make clouds less intense over land, since our cloud data sources have a bias towards creating a haze of clouds over land.
-- [ ] Memory budget management: MSAA 8x at 4K uses 600+ MB in render textures (see [notes.md](notes.md)). Auto-reduce MSAA or cap resolution based on available memory.
+- [ ] Memory budget management: MSAA 8x at 4K uses 600+ MB in render textures (see [notes.md](notes.md)). Auto-reduce MSAA or cap resolution based on available memory. Partly addressed by the Phase 1 quality tiers, which cap the sample count and the preview width per tier (low, medium, high) and default to low in debug builds; what remains is choosing the tier from the memory actually available rather than from the build profile.
 - [ ] Star field: astronomically correct background stars.
 - [ ] Moon: rendered at correct position and phase.
 - [ ] Visible planets: at correct positions.
@@ -46,7 +46,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 ## Bugs and polish
 
 - [ ] Memory leak in tray mode: decoded 8K cloud textures (~134 MB each) accumulate in the unbounded texture channel because the only consumer (`process_decoded_textures`) runs in `BeforeRendering`, which stops firing while the window is hidden. Observed: 7.3 GB RSS after 10 days. Analysis in [retrospective-2026-08.md](retrospective-2026-08.md) section 4.1. **Fix landed** (`TextureMailbox` plus a 5-second drain timer, see [plans/2026-08-15-phase0-memory-leak-plan.md](plans/2026-08-15-phase0-memory-leak-plan.md)): the e2e regression test `test_hidden_window_cloud_updates_do_not_grow_memory` went from 120.4 MiB to 1.8 MiB of private-bytes growth across 15 hidden cloud updates. Left unchecked pending the multi-day validation in retrospective section 8.2.
-- [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but mipmap generation and GPU upload (`create_mipmapped_texture`) run on the UI thread inside `BeforeRendering`; the cached cloud JPEG is also decoded synchronously on the main thread at startup. See retrospective section 4.2.
+- [x] Non-blocking texture loading: the main window used to be unresponsive while textures loaded, because mipmap generation and GPU upload ran on the UI thread inside `BeforeRendering` and the cached cloud JPEG was decoded synchronously at startup. Resolved by the Phase 1 restructure ([plans/2026-08-15-phase1-restructure-plan.md](plans/2026-08-15-phase1-restructure-plan.md)): decode and mip generation happen on engine-owned threads, and the UI thread only copies finished pixel buffers into a `slint::Image`.
 - [x] Diffuse shading banding on JPEG wallpapers: fixed by switching the wallpaper export format from TIFF to PNG. Windows preserves PNG wallpapers losslessly (no JPEG transcode), eliminating the banding artifact.
 - [x] Refactor `main()`: extract mouse math into `mouse_math.rs` (with unit tests and proptests), UI callback registration into `ui_callbacks.rs`, and initialization into sub-functions. Removed `clippy::too_many_lines` suppression.
 - [ ] Automated slint UI testing

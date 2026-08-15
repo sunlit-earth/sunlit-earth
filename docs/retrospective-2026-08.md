@@ -232,7 +232,7 @@ Phase 0, stop the bleeding, with proof (Windows only, ships as 0.1.1). The repro
 3. The fix: per-slot latest-value mailboxes with replacement semantics, drained by an event-loop timer that runs regardless of window visibility and processes updates, so wallpaper exports keep getting fresh clouds. Optional hardening: carry compressed bytes or a cache-file notification instead of decoded pixels to shrink the parked worst case.
 4. Production memory telemetry that survives release builds: periodic samples to a small metrics file plus a warn-level budget alert; manual verification on the real binary per section 8.2.
 
-Phase 1, the restructure (section 7), with nothing else mixed in:
+Phase 1, the restructure (section 7), with nothing else mixed in. **Implemented**; see `plans/2026-08-15-phase1-restructure-plan.md` for the step-by-step record and the measurements. All four items landed, including the descopeable Slint 1.17 upgrade and the `SystemTrayIcon` replacement. The `process::exit(0)` and `mem::forget` teardown hacks are gone: with the engine owning the wgpu device, Slint holds no wgpu object and there is no cross-library destruction order to get wrong.
 1. Extract `sunlit-core`: engine owns its thread and resources, `SceneParams` unification, injected clock and asset sources; retire the thread-local and the exit hacks.
 2. The tests the restructure enables, as its acceptance criteria: mock-clock soak test (14 simulated days in seconds), engine integration tests, golden-image + contact-sheet job on the existing Windows CI (WARP).
 3. Low quality tier as the default for dev and tests (config plus small texture variants; the cloud service already publishes them).
@@ -264,6 +264,6 @@ The open questions from the first version of this document, now answered. What r
 
 **Still open** (small, deferred to the phases where they matter):
 
-- Does the `process::exit(0)` teardown workaround remain necessary on Slint 1.17 / wgpu 29? Test during the Phase 1 upgrade.
+- ~~Does the `process::exit(0)` teardown workaround remain necessary on Slint 1.17 / wgpu 29?~~ Answered in Phase 1: no. The workaround was removed on Slint 1.17 with wgpu 28, and the reason it is no longer needed is structural rather than a version fix. Slint no longer receives a wgpu device at all (the `unstable-wgpu-28` feature is gone), so the thread-local destruction ordering between Slint's backend state and wgpu's `Queue::drop` cannot arise. The wgpu 29 bump is now independent of the Slint version and is not needed.
 - Does our render pipeline pass on the macOS paravirtual GPU? One probe job in Phase 2.
 - Which StatusNotifier setup the Linux VM image needs for tray e2e (GNOME plus extension vs KDE)? Decide when Linux tray work starts, after Phase 3.

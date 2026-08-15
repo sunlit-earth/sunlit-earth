@@ -6,160 +6,198 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This project is in its early stages and will continue to evolve with frequent breaking changes. Keep this CLAUDE.md up to date as the codebase changes.
 
-Project vision, technical decisions, and implementation plans are documented in `docs/` — see `docs/README.md` for an overview.
+Project vision, technical decisions, and implementation plans are documented in `docs/`; see `docs/README.md` for an overview. `docs/retrospective-2026-08.md` explains why the architecture looks the way it does; read section 7 before changing the engine or the crate split.
 
 ## Build Commands
 
 ```bash
-cargo build                # Debug build
-cargo build --release      # Release build (LTO, stripped)
-cargo test                 # Run all tests
-cargo test camera          # Run tests in a single module
-cargo test --test shading  # Run GPU shader integration tests only
-cargo test --test render_pipeline  # Run render pipeline GPU tests only
-cargo test --test e2e -- --ignored # Run desktop e2e tests (spawns real windows, ~45 s)
-cargo clippy               # Lint (pedantic enabled, see Cargo.toml for allows)
-cargo run                  # Run the app
+cargo build                        # Debug build (whole workspace)
+cargo build --release              # Release build (LTO, stripped)
+cargo test                         # Run all tests in the workspace
+cargo test -p sunlit-core          # Core only
+cargo test -p sunlit-core --test engine   # Engine integration tests
+cargo test -p sunlit-core --test soak     # Mock-clock soak test (14 simulated days)
+cargo test -p sunlit-core --test golden   # Golden images + contact sheet
+cargo test --test e2e -- --ignored # Desktop e2e suite (needs a real desktop and GPU)
+cargo clippy --all-targets         # Lint (pedantic enabled, see Cargo.toml for allows)
+cargo run                          # Run the app
 cargo run -- --software-rendering  # Force CPU rendering
-cargo llvm-cov --html      # Generate HTML coverage report (target/llvm-cov/html/)
-cargo llvm-cov --lcov      # Generate LCOV coverage report (for CI)
+cargo run -- --quality high        # Override the quality tier for one run
+cargo llvm-cov --html              # HTML coverage report (target/llvm-cov/html/)
+
+SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden  # Regenerate goldens
 ```
+
+## Workspace Layout
+
+```
+sunlit-earth/
+  crates/
+    sunlit-core/     # headless: no Slint, no window, no event loop
+      shaders/       # WGSL, included at compile time by renderer/gpu_setup.rs
+      src/assets/    # texture loading, cloud source + updater, texture mailbox
+      src/engine/    # the engine thread, injectable clock, wallpaper sink
+      src/geometry/  # sphere mesh, procedural grid texture
+      src/renderer/  # wgpu pipeline, offscreen render, readback
+      src/scene/     # camera, sun (astronomy FFI), datetime
+      src/config.rs  # AppConfig, QualityTier, persistence
+      src/params.rs  # SceneParams, ParamsDigest, gamma slider mapping
+      tests/         # engine, soak, golden, shading, render_pipeline
+    sunlit-app/      # Slint shell: window, tray, IPC, config bridge
+      ui/main.slint  # MainWindow and TrayIcon
+      tests/         # e2e (desktop-gated), slint_ui
+  textures/          # local 8K JXL assets, not part of the build
+```
+
+The package inside `crates/sunlit-app` is still named `sunlit-earth`, so the binary, `CARGO_BIN_EXE_sunlit-earth`, and `target/release/sunlit-earth.exe` in the release workflow are unchanged by the directory name.
 
 ## Architecture
 
-Sunlit Earth is a desktop app that renders a 3D Earth using wgpu and displays it in a Slint window, intended to be set as a wallpaper.
+The organizing principle is **headless first**. The engine runs to completion with no window at all; the settings window is one optional client. Hiding the window removes a client, it does not half-suspend the machinery. This is what removed the tray-mode memory leak class, made soak tests possible, and retired the teardown hacks.
 
-**Render-to-texture pipeline:** wgpu renders the scene to an offscreen texture, which is converted to a Slint `Image` via `Image::try_from(Texture)` and displayed in the UI. This is not a traditional swap-chain render — the GPU output flows through Slint's image component.
+### The engine (`sunlit_core::engine`)
 
-**Rendering lifecycle** is driven by Slint's `set_rendering_notifier()` callback:
-- `RenderingSetup` — create GPU resources (pipeline, buffers, textures)
-- `BeforeRendering` — compute camera matrix and sun direction, render sphere with day/night blending, convert texture to image
-- `RenderingTeardown` — drop GPU resources
-- A 2-minute periodic Slint timer triggers automatic redraws so the terminator moves with the sun
+One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the schedule. Clients send `EngineCommand`s and receive `EngineEvent`s.
 
-**GPU resources** are stored in a `thread_local! { RefCell<Option<GpuResources>> }` in `renderer/mod.rs` because the rendering notifier callback requires `'static` lifetime.
+- **Commands**: `UpdateParams`, `SetPreviewSize`, `SetPreviewEnabled`, `RenderWallpaperNow`, `RenderToFile`, `ExportPixels`, `SetAutoRefresh`, `Poke`, `Shutdown`.
+- **Events**: `PreviewFrame { rgba, width, height }`, `TexturesReady`, `WallpaperSet(Result)`, `Status(String)`.
+- **The loop never sleeps on wall time to decide what is due.** It blocks on the command channel with a 50 ms timeout and, on each wake, asks `clock.elapsed()` what is due: the texture drain (5 s), the sun-position refresh (120 s), the cloud poll, the memory metrics sample (600 s), and the auto-refresh export. `Schedule::due` recomputes its deadline from `now` rather than accumulating, so a long stall produces one run and not a burst of catch-up runs.
+- **Injected `Clock`.** `SystemClock` in production, `MockClock` in tests. `MockClock` advances UTC too, so simulated days really do rotate the Earth. This is what makes 14 simulated days run in 13 seconds.
+- **Injected `CloudSource`.** `HttpCloudSource` in production, fixtures in tests. A dedicated cloud worker thread does network I/O and JPEG decoding and never touches the GPU; it parks frames in the mailbox and pokes the engine, which uploads on its own schedule. A poll skipped because the worker is busy retries on the next tick.
+- **Injected `WallpaperSink`.** `SystemWallpaper` writes a PNG and calls the Win32 API; `CountingSink` lets the soak test run for simulated weeks without touching the desktop.
+- **Preview frames are pixel buffers**, not shared GPU textures. The engine reads its offscreen target back and hands over RGBA bytes; the app wraps them in `slint::Image::from_rgba8`. Slint therefore needs no wgpu feature and shares no device, which is why teardown is ordinary drop order.
 
-**Texture delivery** goes through `TextureMailbox` (`renderer/textures.rs`), a shared `Arc<Mutex<Vec<Option<DecodedTextureMessage>>>>` with one slot per texture. Background decode threads (file loads and the cloud fetcher) `post()` with replacement semantics: a newer frame for a slot overwrites the parked one, so at most one decoded frame per slot is ever held. It has two consumers: `BeforeRendering`, and a 5-second repeated Slint timer in `run_event_loop` calling `renderer::drain_texture_updates()`. The timer exists because `BeforeRendering` stops firing when the window is hidden to the tray; without it, decoded frames would pile up (this was the 7.3 GB leak) and clouds would freeze at whatever was current when the window was last visible. Because either consumer can drain a message, `GpuResources.texture_dirty` (set on upload, taken by `BeforeRendering`) rather than the drain's return value decides whether the frame must be re-rendered. Producers still call `upgrade_in_event_loop(request_redraw)` so a visible window updates promptly instead of waiting for the timer.
+### Parameters (`sunlit_core::params`)
 
-**Key modules:**
-- `lib.rs` — crate root, module declarations, `slint::include_modules!()` macro invocation, and `env_override()`, the single definition of how a value-carrying `SUNLIT_EARTH_*` knob decides that it is unset
-- `main.rs` — thin binary entry point and orchestrator: CLI (clap), logging initialization (`init_logging()`), window creation, config loading, then delegates to helper functions: `init_ui_models()` sets up ComboBox models and registers callbacks via `ui_callbacks`, `init_texture_system()` creates the `TextureMailbox` and wires up the rendering notifier and cloud fetcher, `run_event_loop()` handles timers (sun position every 2 min, texture drain every 5 s, memory watchdog every 10 min, plus the auto-refresh scheduler), startup mode branching, IPC thread spawning, and shutdown. All modes use `run_event_loop_until_quit()`. CLI flags: `--mode <tray|window>` (default: tray) selects startup mode, `--tray-start <visible|hidden>` (default: visible, tray mode only) controls initial window visibility, `--ipc-socket <name>` spawns a background IPC listener thread for external control. Three startup modes: **tray mode** (default on Windows) minimizes to system tray on close with single-instance enforcement using `CloseRequestResponse::HideWindow`, **windowed mode** (`--mode window`) uses original close-exits behavior, **render mode** (`render` subcommand) renders to PNG and exits. Config is saved only when "Set as Wallpaper" is clicked (no auto-save timer); in tray mode, window geometry is also saved when the window is hidden.
-- `scene/` — scene-level abstractions:
-  - `scene/camera.rs` — `CameraParams` struct grouping all camera parameters; `OrbitalCamera` with offset, tilt, yaw, pitch; exponential zoom mapping (`zoom_to_distance`/`distance_to_zoom`); orbital camera: (longitude, latitude, distance) -> MVP matrix with post-view rotations and post-projection offset
-  - `scene/sun.rs` — safe wrapper around Astronomy Engine FFI for sun position computation (right ascension, declination, sidereal time -> renderer coordinate frame); `sun_direction_at()` for custom date/time
-  - `scene/datetime.rs` — pure conversion functions for custom date/time UI: leap year, day-of-year to month/day, hour decomposition, year range; no FFI or side effects
-- `geometry/` — mesh and procedural texture generation:
-  - `geometry/sphere.rs` — parametric UV sphere mesh generation (64x64, position + UV only)
-  - `geometry/grid_texture.rs` — procedural equirectangular grid texture (2048x1024) with CPU-computed mipmaps
-- `renderer/` — GPU pipeline, frame rendering, dirty-checking, split into focused submodules:
-  - `renderer/mod.rs` — public API (`setup_rendering_notifier`, `drain_texture_updates`, `build_aa_options`, `export_wallpaper_image`), rendering callback dispatcher, `GpuResources` struct, `quantize_to_granularity`, constants, thread-local `GPU_RESOURCES`
-  - `renderer/frame.rs` — `FrameState` struct and `build_frame_state()` for dirty-check comparison
-  - `renderer/render_pass.rs` — render pass encoding, uniform writes, texture-to-Slint-image conversion, `read_texture_rgba8` GPU-to-CPU pixel readback
-  - `renderer/texture_routing.rs` — blend mode detection, texture load spawning, loading indicator text
-  - `renderer/gpu_setup.rs` — `create_gpu_resources()`, `create_pipeline()`, `create_render_textures()`, MSAA/resize rebuild functions
-  - `renderer/textures.rs` — `TextureSlot`, `TextureMailbox`, texture loading/decoding, composite bind group, `create_mipmapped_texture()`, `downsample_2x()`
-  - `renderer/uniforms.rs` — `Uniforms` struct (192 bytes) with `#[repr(C)]`, compile-time size assertion. Includes color correction fields (day_gamma, day_saturation, night_gamma, night_saturation at offsets 128-143), cloud fields (cloud_sphere_radius, cloud_opacity, cloud_floor, cloud_gamma at offsets 144-159), and atmosphere fields (rayleigh_intensity, rayleigh_falloff, nightglow_intensity, nightglow_falloff, nightglow_balance, rayleigh_radius, nightglow_orange_radius, nightglow_green_radius at offsets 160-191).
-- `ipc.rs` — opt-in IPC control channel via `interprocess` local sockets. When `--ipc-socket <name>` is passed, `spawn_ipc_listener()` creates a background thread that accepts connections and dispatches single-line commands: `quit` (triggers `slint::quit_event_loop()`), `show-window` / `hide-window` (controls main window visibility), `export-test` (small GPU export, signals success or failure), `query-memory` (replies `SIGNAL:memory rss_bytes=<n> peak_rss_bytes=<n> private_bytes=<n>`). Window commands hop to the event loop via `invoke_from_event_loop`; `query-memory` is answered on the listener thread because `GetProcessMemoryInfo` is process-wide. Fire-and-forget protocol apart from the `SIGNAL:` lines printed on stdout. Used by e2e tests for graceful shutdown, window control, and memory assertions.
-- `cloud_fetcher.rs` — background cloud texture fetcher: downloads 8K equirectangular cloud JPEG from matteason/live-cloud-maps, caches to `%LOCALAPPDATA%\SunlitEarth\clouds_cache.jpg` with ETag metadata, polls for updates every 60 minutes using HEAD + `If-None-Match` freshness checks, decodes JPEG and posts decoded pixels to the renderer's `TextureMailbox`. Three test knobs, read once at fetcher startup and falling back to the compiled-in values: `SUNLIT_EARTH_CLOUD_URL`, `SUNLIT_EARTH_CLOUD_POLL_SECS` (positive integer seconds; anything else logs a `warn!` and falls back), `SUNLIT_EARTH_CACHE_DIR`.
-- `memory.rs` — process-level memory tracking: `snapshot()` reads working set, peak working set, and private bytes via `GetProcessMemoryInfo`, `log_memory_usage()` emits structured `debug!` events at key allocation points, `record_metrics_sample()` appends a CSV line to `%LOCALAPPDATA%\SunlitEarth\memory-metrics.csv` (`unix_ts,rss_bytes,peak_rss_bytes,private_bytes`, rotated to `.csv.old` past 1 MiB, directory overridable via `SUNLIT_EARTH_METRICS_DIR`) and emits a `warn!` when private bytes exceed `PRIVATE_BYTES_BUDGET` (2 GiB). Rows carry no process identity, so anything that writes to the real file is indistinguishable from a production sample; that is why every test spawn redirects the directory. The CSV exists because release builds compile out `debug!` and `info!`, so `warn!` and the file are the only telemetry a shipped binary produces.
-- `mouse_math.rs` — pure functions for mouse interaction math (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; fully unit-tested with `proptest` invariants.
-- `texture_loader.rs` — generic equirectangular texture loading (JXL via jxl-oxide hook, with coordinate transforms)
-- `ui_callbacks.rs` — UI callback registration grouped into `register_mouse_callbacks()`, `register_change_callbacks()`, and `register_action_callbacks()`. Also contains config-to-window bridge functions (`apply_config_to_window`, `read_config_from_window`, `update_datetime_labels`), `defer_combobox_indices` (deduplicates a pattern used at startup/reset/load-defaults), `save_render_png`, and `do_set_wallpaper`.
-- `tray.rs` — system tray icon with context menu (Open/Exit), single-instance enforcement via OS mutex, background thread with Win32 message pump (`cfg(windows)` only). Programmatic 32x32 Earth-like icon generation.
-- `wallpaper.rs` — Windows-only wallpaper export (`cfg(windows)`): monitor resolution detection via `EnumDisplayMonitors`/`GetMonitorInfoW`, PNG save via `image` crate, wallpaper application via `SystemParametersInfoW` (`windows-sys`)
-- `wgpu_init.rs` — manual adapter selection (discrete > integrated > CPU), device creation, `adapter_type_rank()` for testable GPU preference ordering
+`SceneParams` is the single description of what to draw: camera, texture selection, sample count, lighting, clouds, atmosphere, color correction, and the datetime input. There are exactly two translation points:
 
-**Environment knobs** come in two kinds, and the distinction matters because it decides what an empty string does.
+1. `ui_callbacks::read_params_from_window` / `apply_params_to_window` in the app.
+2. `renderer::render_pass::write_uniforms` in core.
 
-*Value knobs* go through `env_override()` in `lib.rs`, which treats unset and blank alike, so an empty string falls back to the compiled-in default: `SUNLIT_EARTH_CLOUD_URL`, `SUNLIT_EARTH_CLOUD_POLL_SECS` (positive integer seconds), `SUNLIT_EARTH_CACHE_DIR` (cloud cache directory), `SUNLIT_EARTH_CONFIG` (config file path), `SUNLIT_EARTH_METRICS_DIR` (memory metrics directory), plus `SUNLIT_EARTH_TEXTURES` (textures directory, resolved by `texture_loader::resolve_textures_dir` alongside `--textures-dir`) and `RUST_LOG`.
+Adding a shader parameter means: the `.slint` property and slider, the `AppConfig` field, `SceneParams` + its `ParamsDigest`, `Uniforms`, and the WGSL. The bridge functions and the dirty check follow from the struct. `params.rs` has a table-driven test that walks every parameter and asserts it changes the digest, so forgetting the dirty check is a test failure rather than a stale-frame bug.
 
-*Presence flags* are checked with `is_err()` / `is_ok()` and activate on **any** value, including the empty string: `SUNLIT_EARTH_NO_CLOUDS` (skip the cloud fetcher) and `SUNLIT_EARTH_SYNC_LOG` (synchronous stderr logging). Setting either to `""` or `0` still turns it on; unset it to turn it off.
+`ParamsDigest` is the quantized snapshot used for dirty checking: camera floats compare exactly, everything else is rounded to integer thousandths. `datetime` is deliberately not in the digest; what the shader consumes is the sun direction derived from it, and `FrameState` compares that separately along with the render size.
 
-The e2e tests pass `SUNLIT_EARTH_CONFIG` and `SUNLIT_EARTH_METRICS_DIR` on every spawn so no test writes into the developer's `%LOCALAPPDATA%\SunlitEarth`. Without the first, a test run replaces the desktop wallpaper whenever auto-refresh is enabled in the real config; without the second, every spawned process appends rows to the memory metrics CSV and contaminates the soak data it exists to collect.
+### The renderer (`sunlit_core::renderer`)
 
-**Shader:** Split into two files concatenated at load time by `renderer/gpu_setup.rs`:
-- `shaders/blend.wgsl` — pure `blend_fragment()` function: day/night blending with diffuse shading and per-channel `min(night, day)` clamp. Also contains `apply_gamma()` and `adjust_saturation()` helper functions for per-texture color correction.
-- `shaders/sphere.wgsl` — vertex transform, texture sampling, uniforms; calls `blend_fragment()`. Single-texture mode uses `terminator_width < 0` as sentinel. `schlick_fresnel()` computes Schlick approximation of water Fresnel reflectance, used for both specular modulation and diffuse color shift on ocean pixels. Color correction (gamma, saturation) is applied per-texture after sampling but before blending and shading. `fs_cloud` applies cloud floor and gamma uniforms for real-time contrast tuning: floor removes thin clouds below a threshold, gamma adjusts midtone contrast via power curve. Three concentric atmosphere shells with additive blending, each a separate vertex/fragment entry point pair: `vs_rayleigh`/`fs_rayleigh` (blue Rayleigh scattering on the day-side limb with orange at the terminator, radius ~1.003), `vs_nightglow_orange`/`fs_nightglow_orange` (sodium D + FeO orange nightglow strongest near the terminator, radius ~1.014), `vs_nightglow_green`/`fs_nightglow_green` (OI 557.7nm green nightglow strongest at midnight, radius ~1.015). Both nightglow shells include latitude modulation enhanced near +/-23 degrees. Draw order: Earth, Rayleigh, Nightglow Orange, Nightglow Green, Clouds.
+`Renderer` owns every GPU object and renders offscreen into its own texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`). It knows nothing about windows. Key methods: `render(&SceneParams, sun_dir) -> RenderOutcome`, `resize`, `drain_texture_updates`, `export_image`, `read_preview_pixels`, `textures_ready`, `loading_text`.
 
-**UI:** `ui/main.slint` — resizable split layout with controls panel wrapped in a `ScrollView`. The top-level controls (always visible) are: "Set as Wallpaper" button, wallpaper status text, "Load Defaults" and "Reset" buttons side by side, and a 3x3 `GridLayout` of camera preset buttons (Europe, N. America, S. America, Africa, Asia, Oceania, Pacific, Blue Marble, Earthrise). Below these is a collapsible "Advanced" toggle (`advanced-open` property, starts closed) containing nine `GroupBox` sections: Camera Position (Longitude, Latitude, Zoom), Camera Orientation (Tilt, Yaw, Pitch), Framing (Offset X, Offset Y), Date / Time (Custom checkbox, Hour slider, Day slider, Year ComboBox), Clouds (Opacity, Floor, Gamma), Atmosphere (Enable checkbox, Rayleigh sub-section with Intensity, Sharpness, and Haze sliders, Nightglow sub-section with Intensity, Balance, and Falloff sliders), Lighting (Terminator Width, Diffuse checkbox + Floor + Ramp, Shininess, Glint, Fresnel Mix, Fresnel Extent), Color Correction (Day Gamma, Day Saturation, Night Gamma, Night Saturation), Rendering (Texture, Anti-Aliasing), and renderer info text at the bottom. Camera properties are `in-out` (bidirectional) with `<=>` slider bindings so Rust can write values back from mouse events. A `TouchArea` overlay in `image-container` handles mouse drag (globe rotation) and scroll (zoom). The Atmosphere and Date / Time sub-controls collapse when their respective checkboxes are unchecked. Callbacks: `apply-preset(int)` sets camera from the `PRESETS` array, `load-defaults()` restores all settings to `AppConfig::default()` without saving, `reset()` reloads config from disk. The only way to persist config is clicking "Set as Wallpaper" (which saves config then applies the wallpaper).
+Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass` (uniform encoding, pass encoding, `Overlays::select`, `read_texture_rgba8`), `textures` (slots, mailbox draining, mipmapped upload, `downsample_2x`), `texture_routing` (which bind group and blend mode), `frame` (`FrameState` dirty check), `uniforms` (the 192-byte `#[repr(C)]` struct).
 
-**Wallpaper export pipeline:** The "Set as Wallpaper" button renders the current scene at the primary monitor's native resolution using temporary GPU textures with `COPY_SRC` usage (distinct from the preview textures which use `TEXTURE_BINDING`). Pixels are read back via a staging buffer with 256-byte row alignment, encoded as PNG (fast compression), saved to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applied via Win32 `SystemParametersInfoW`. The export reuses the existing pipeline and bind groups but creates fresh textures at the target resolution that are dropped after the export completes. PNG is used instead of TIFF because Windows preserves PNG wallpapers losslessly, whereas TIFF wallpapers are JPEG-transcoded at 85% quality, causing visible banding in smooth gradients.
+### The app (`sunlit-app`)
 
-**Notable dependencies beyond wgpu/slint:**
-- `astronomy-engine-bindings` — C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
-- `image` — PNG/JPEG encoding/decoding for wallpaper export (via `png` feature) and cloud image decoding (via `jpeg` feature)
-- `time` — UTC time decomposition for astronomy calculations
-- `tracing` / `tracing-subscriber` / `tracing-appender` — structured logging with `max_level_debug` (debug builds) and `release_max_level_warn` (release builds); `EnvFilter` respects `RUST_LOG`; non-blocking stderr writer with `FmtSpan::CLOSE` for automatic span timing
-- `ureq` — HTTP client for cloud texture fetching (with `rustls` TLS backend)
-- `interprocess` — cross-platform local socket IPC (namespaced sockets: abstract namespace on Linux, `\\.\pipe\` on Windows). Used for opt-in control channel (`--ipc-socket`)
-- `tray-icon` — system tray icon with context menu (`cfg(windows)` only); re-exports `muda` as `tray_icon::menu`
-- `single-instance` — OS-level mutex for single-instance enforcement (`cfg(windows)` only)
-- `windows-sys` — Win32 FFI for wallpaper export, memory tracking, and tray message pump (`cfg(windows)` only): `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo`, `GetMessageW`
+- `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand.
+- `engine_client.rs`: `EngineLink` (send commands, push window state as `SceneParams`) and `event_forwarder` (engine events to the window). Preview frames cross the thread boundary through a latest-value mailbox with a single pending wake-up: the newest frame replaces the parked one and only one `invoke_from_event_loop` closure is ever in flight.
+- `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
+- `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test` and `query-memory` are answered on the listener thread, so they work while the event loop is idle.
+- `tray.rs`: the procedurally generated 32x32 icon, the tray callback wiring, and single-instance enforcement. The tray icon itself is a `SystemTrayIcon` component in `ui/main.slint`, so Slint owns the platform integration.
+- `mouse_math.rs`: pure functions for mouse interaction (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; unit-tested with `proptest` invariants.
+
+### UI (`ui/main.slint`)
+
+`MainWindow`: resizable split layout, controls panel in a `ScrollView`. Top-level controls are "Set as Wallpaper", "Load Defaults" and "Reset", and a 3x3 grid of camera presets. Below is a collapsible "Advanced" section with `GroupBox`es for Camera Position, Camera Orientation, Framing, Date / Time, Clouds, Atmosphere, Lighting, Color Correction, and Rendering. Camera properties are `in-out` with `<=>` slider bindings. A `TouchArea` over the image handles drag and scroll.
+
+`TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
+
+### Quality tiers
+
+`QualityTier` (low, medium, high) is persisted in the config and overridable with `--quality`. It caps the MSAA sample count (1, 4, unlimited), the preview width (1280, 1920, unlimited, aspect preserved), and selects the cloud image variant (2048x1024, 4096x2048, 8192x4096). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile. The sample cap is applied by filtering the anti-aliasing combo box, not by silently clamping in the renderer.
+
+### Shaders
+
+`shaders/blend.wgsl` and `shaders/sphere.wgsl` are concatenated at load time by `renderer/gpu_setup.rs`.
+
+- `blend.wgsl`: `blend_fragment()` (day/night blending with diffuse shading and a per-channel `min(night, day)` clamp), plus `apply_gamma()` and `adjust_saturation()`.
+- `sphere.wgsl`: vertex transform, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). Draw order: Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green.
+
+### Wallpaper export
+
+The engine renders at the sink's native resolution using temporary GPU textures with `COPY_SRC`, reads them back through a staging buffer with 256-byte row alignment, encodes PNG, saves to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applies it with `SystemParametersInfoW`. PNG rather than TIFF because Windows preserves PNG wallpapers losslessly; TIFF wallpapers are JPEG-transcoded at 85% quality and band visibly in smooth gradients.
+
+### Environment knobs
+
+All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_override`, which treats unset and blank the same.
+
+| Variable | Effect |
+|---|---|
+| `SUNLIT_EARTH_CLOUD_URL` | Overrides the cloud image URL. Wins over the quality tier. |
+| `SUNLIT_EARTH_CLOUD_POLL_SECS` | Overrides the poll interval. |
+| `SUNLIT_EARTH_CACHE_DIR` | Overrides the cloud cache directory. |
+| `SUNLIT_EARTH_CONFIG` | Overrides the config file path. |
+| `SUNLIT_EARTH_METRICS_DIR` | Overrides the memory metrics directory. |
+| `SUNLIT_EARTH_TEXTURES` | Overrides the textures directory. |
+| `SUNLIT_EARTH_NO_CLOUDS` | Presence-only: disables cloud fetching entirely. |
+| `SUNLIT_EARTH_SYNC_LOG` | Presence-only: synchronous stderr logging (for e2e). |
+| `SUNLIT_EARTH_UPDATE_GOLDEN` | Presence-only: regenerate golden references. |
+| `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
+
+### Notable dependencies
+
+- `astronomy-engine-bindings`: C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
+- `image`: PNG/JPEG encode and decode. `jxl-oxide`: the JPEG XL decoding hook
+- `time`: UTC decomposition for astronomy
+- `tracing` / `tracing-subscriber` / `tracing-appender`: `max_level_trace` with `release_max_level_warn`; `EnvFilter` respects `RUST_LOG`; non-blocking stderr writer with `FmtSpan::CLOSE`
+- `ureq` (rustls): cloud fetching. `crossbeam-channel`: engine command and reply channels
+- `interprocess`: local socket IPC. `single-instance`: the OS mutex (app only)
+- `windows-sys`: Win32 FFI, `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo` in core; `AttachConsole` in the app
 
 ## Testing
 
-### Coverage
+### Layers
 
-Coverage targets by module type:
-- **90-100%**: Pure functions (`build_aa_options`, `quantize_to_granularity`, `adapter_type_rank`, `downsample_2x`, `shift_horizontal`)
-- **80-90%**: Business logic with extracted pure functions (`build_frame_state`, `grid_texture::generate`)
-- **20-40%**: GPU pipeline code (tested indirectly via integration tests)
-- **<20%**: `main.rs` / UI glue (not unit-testable without Slint test backend)
-- **Overall target**: 60-70%
+| Layer | Where | What |
+|---|---|---|
+| Unit + property | both crates | pure functions, `proptest` invariants |
+| Engine integration | `sunlit-core/tests/engine.rs` | real engine, real GPU, headless |
+| Soak | `sunlit-core/tests/soak.rs` | mock clock, fixture cloud, 14 simulated days |
+| Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance |
+| GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU |
+| UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` |
+| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d |
 
 ### Conventions
 
-- **Test behavior, not constants**: Tests verify that the application behaves correctly (invariants, math, pipelines), not that a constant has a specific value. Changing a preset or default should not cause test failures.
-- **Float comparisons**: Use `approx::assert_relative_eq!` (not raw epsilon patterns). `tests/shading.rs` is an exception — its GPU tolerance pattern predates this convention and works well as-is.
-- **GPU integration tests**: Assert behavioral invariants (monotonicity, bounds, visibility), not pixel-exact values, due to cross-hardware float variance.
-- **GPU device sharing**: Use `LazyLock<Mutex<GpuContext>>` to share a single device across parallel test threads. Per-test device creation crashes on Windows.
-- **Shared GPU helpers**: `tests/common/mod.rs` provides `GpuContext`, `create_gpu_context()`, `read_buffer()`, and `read_texture_rgba8()`.
-- **Property-based testing**: `proptest` for invariants of pure functions (output size, identity after N applications).
-- **Desktop e2e tests** (`tests/e2e.rs`, all `#[ignore]` and `#[serial]`): spawn the real binary, drive it over `--ipc-socket`, and assert on `SIGNAL:` lines from stdout plus tracing output on stderr. Every spawn passes `SUNLIT_EARTH_CONFIG` so the tests never touch the developer's settings or wallpaper. `test_hidden_window_cloud_updates_do_not_grow_memory` is the memory-leak regression guard: it serves fixture cloud JPEGs from a hand-rolled `TcpListener` stub with rotating ETags, hides the window over IPC, publishes 15 updates, and asserts private-bytes growth stays bounded. It asserts on private bytes rather than RSS because working-set trimming can hide heap growth from RSS.
+- **Test behavior, not constants.** Changing a preset or a default must not break a test.
+- **Float comparisons**: `approx::assert_relative_eq!`. `tests/shading.rs` predates this and keeps its own GPU tolerance pattern.
+- **GPU tests assert invariants** (monotonicity, bounds, visibility), not exact pixels, because of cross-adapter float variance.
+- **One GPU device at a time.** Per-test device creation crashes on Windows. Shader tests share a device through `LazyLock<Mutex<GpuContext>>`; engine, soak, and golden tests each hold a `GPU_SERIAL` mutex for the lifetime of their engine.
+- **Golden images** force the software adapter so a developer machine and a CI runner compare against the same references. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
+- **Soak measurements** take their baseline after warm-up (the first cloud texture and wgpu's allocator pools are a one-off ~85 MiB); the assertion is on the remaining simulated days.
 
-### Dev-Dependencies
+### Resource-flow rules (from the retrospective, section 8.2)
 
-```toml
-[dev-dependencies]
-approx = "0.5"   # assert_relative_eq! for float comparisons
-proptest = "1"    # property-based testing for pure functions
-```
+- No unbounded queue crosses a thread boundary. Every channel is bounded or latest-value, and the choice is written down at the declaration site. Both existing crossings are mailboxes: decoded textures in core, preview frames in the app.
+- Decoded pixel buffers are never parked in queues, caches, or long-lived structs.
+- Every background producer names its consumer and the condition under which the consumer runs. If that condition is not "always", the design is wrong.
 
 ## Workflow
 
-- Always run `cargo test` and `cargo clippy` after making code changes to catch regressions and lint issues before presenting work
-- Do not commit or push without explicit user approval. Wait for explicit user confirmation that a change works before committing.
-- Git worktrees must be created in the `.worktrees/` folder at the repo root
-- Keep `docs/roadmap.md` up to date when implementing features — check off completed items and add new entries as needed
+- Always run `cargo test` and `cargo clippy --all-targets` after making changes.
+- Do not commit or push without explicit user approval. Wait for explicit confirmation that a change works before committing.
+- Git worktrees go in `.worktrees/` at the repo root.
+- Keep `docs/roadmap.md` up to date when implementing features.
 
 ## CI/CD
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **`ci.yml`** -- Runs on every push to `main` and every PR targeting `main`. One job:
-  - `test` (Windows): `cargo test --locked` -- full test suite including GPU integration tests on the software adapter
-  - `fmt` is commented out pending a codebase-wide reformat (see `docs/notes.md`)
-- **`release.yml`** -- Runs on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds an optimized binary with `cargo build --release --locked`, packages it as a zip, and creates a GitHub Release with auto-generated notes.
+- **`ci.yml`**: on every push to `main` and every PR targeting `main`. One `test` job on Windows: `cargo test --locked` across the workspace, then uploads `target/contact-sheet.png` as an artifact. `fmt` is commented out pending a codebase-wide reformat (see `docs/notes.md`).
+- **`release.yml`**: on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds `cargo build --release --locked`, zips `target/release/sunlit-earth.exe`, and creates a GitHub Release.
 
-Key CI details:
-- LLVM 19 is pinned explicitly on all Windows jobs via `KyleMayes/install-llvm-action@v2` to avoid runner-image Clang version instability
-- `LIBCLANG_PATH` is set to `$LLVM_PATH/lib` so bindgen can find `libclang.dll`
-- `RUSTFLAGS: "-D warnings"` is commented out pending a lint cleanup (see `docs/roadmap.md`)
-- All `cargo` commands use `--locked` for reproducible builds from `Cargo.lock`
-- GPU integration tests use the wgpu software adapter on CI runners (no hardware GPU available)
-- Clippy is run locally only, not in CI (cargo clippy artifacts are incompatible with cargo test cache, causing full recompilation)
-- Release uses a separate cache (`shared-key: release-windows`) because release artifacts differ from debug
+Key details:
+
+- LLVM 19 is pinned on all Windows jobs via `KyleMayes/install-llvm-action@v2`; `LIBCLANG_PATH` is set to `$LLVM_PATH/lib` so bindgen finds `libclang.dll`.
+- `RUSTFLAGS: "-D warnings"` is commented out pending a lint cleanup.
+- All `cargo` commands use `--locked`. `Cargo.lock` lives at the workspace root.
+- GPU tests run on the software adapter on CI runners.
+- Clippy runs locally only (its artifacts are incompatible with the test cache and force full recompilation).
 
 ## Key Constraints
 
-- `unsafe_code = "deny"` in Cargo.toml — use `deny` not `forbid` because Slint macros internally need unsafe. `sun.rs` and `wallpaper.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments.
-- No unbounded channel crosses a thread boundary. Every producer/consumer boundary is bounded or latest-value, and the choice is justified at the declaration site. Every background producer must name its consumer and the condition under which the consumer runs; if that condition is not "always", the design is wrong. These rules come from the 7.3 GB tray-mode leak, see `docs/retrospective-2026-08.md` sections 4.1 and 8.2.
-- Target rule: decoded pixel buffers should not be parked in queues, caches, or long-lived structs, only compressed bytes or GPU textures. One accepted exception today: `TextureMailbox` parks at most one decoded frame per slot. That is bounded rather than a leak, and the drain timer empties it within 5 seconds in every case except `--tray-start hidden` with the window never shown, where `GPU_RESOURCES` is `None` and one frame per slot (about 134 MB for 8K clouds) stays parked until the window is first shown. Carrying compressed bytes instead is documented as optional hardening in `docs/plans/2026-08-15-phase0-memory-leak-plan.md` (Fix Design). Do not add new exceptions without the same kind of write-up.
-- Slint version pinned to `~1.15` with `unstable-wgpu-28` feature — this is the integration point between Slint and wgpu 28
-- Render texture size is quantized to 64px boundaries to reduce GPU texture churn during window resize
-- Dirty-checking via `FrameState` compares (longitude, latitude, zoom, offset_x, offset_y, tilt, yaw, pitch, sample_count, texture_index, dimensions, sun_direction, terminator_width, diffuse_shading, diffuse_floor, diffuse_ramp, spec_shininess, spec_intensity, fresnel_mix, fresnel_exp, cloud_opacity, cloud_floor, cloud_gamma, day_gamma, day_saturation, night_gamma, night_saturation, rayleigh_intensity, rayleigh_falloff, nightglow_intensity, nightglow_falloff, nightglow_balance) to skip redundant renders. Float values are quantized to integer thousandths for stable comparison.
-- Zoom slider is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance(t)` and `distance_to_zoom(d)` in `scene/camera.rs`.
-- Grid texture uses 16x anisotropic filtering with trilinear mipmaps
-- WGSL `vec3<f32>` has 16-byte alignment in storage buffers — Rust `#[repr(C)]` structs must include explicit `_pad: f32` after every `[f32; 3]` field to match layout
-- GPU integration tests (`tests/shading.rs`, `tests/render_pipeline.rs`) run the real WGSL on the GPU — use `LazyLock<Mutex<...>>` to share the device across parallel test threads (per-test device creation crashes on Windows)
-- LF line endings globally
+- `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `wallpaper.rs`, `config.rs`, `memory.rs`, and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments.
+- Slint is pinned to `~1.17` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
+- Render texture size is quantized to 64px boundaries to reduce GPU texture churn during resize, and then capped by the quality tier.
+- Zoom is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
+- The grid texture uses 16x anisotropic filtering with trilinear mipmaps.
+- WGSL `vec3<f32>` has 16-byte alignment, so `#[repr(C)]` structs need an explicit `_pad: f32` after every `[f32; 3]` field. `uniforms.rs` has a compile-time size assertion.
+- LF line endings globally.

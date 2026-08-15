@@ -15,7 +15,6 @@ use slint::ComponentHandle;
 use tracing::info;
 
 use sunlit_core::engine::{EngineCommand, EngineEvent};
-use sunlit_core::params::SceneParams;
 
 use crate::MainWindow;
 
@@ -92,11 +91,6 @@ impl EngineLink {
         window.set_zoom_display_distance(sunlit_core::scene::camera::zoom_to_distance(
             params.camera.zoom,
         ));
-        self.send(EngineCommand::UpdateParams(Box::new(params)));
-    }
-
-    /// Push explicit parameters (used at startup, before any callback fires).
-    pub fn push(&self, params: SceneParams) {
         self.send(EngineCommand::UpdateParams(Box::new(params)));
     }
 }

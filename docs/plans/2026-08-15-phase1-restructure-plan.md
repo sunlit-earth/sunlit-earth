@@ -39,7 +39,7 @@ Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scen
 - [x] Golden-image test with tolerance, plus contact-sheet artifact job in CI
 - [x] Quality tiers exist; dev/test default is low; release default unchanged in output quality
 - [x] Slint 1.17: tray via `SystemTrayIcon`, `tray.rs` message pump deleted; teardown without `process::exit(0)` attempted and outcome documented
-- [ ] `cargo clippy` clean; CLAUDE.md rewritten for the new layout
+- [x] `cargo clippy` no new warnings (the pre-existing pedantic debt is untouched, see Results); CLAUDE.md rewritten for the new layout
 
 ## Implementation Steps
 
@@ -136,11 +136,60 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 - [x] Step 5: app switched, old path deleted
 - [x] Steps 6-7: tiers + new test layers
 - [x] Step 8: Slint 1.17 + tray (or descoped with findings)
-- [ ] Step 9: docs + CI
+- [x] Step 9: docs + CI
 
 ## Deviations
 
 Recorded as they happened, smallest change that kept the plan's intent.
+
+1. **Step 4 split into two commits, and the old path was not kept in dual operation.** The plan
+   allowed for this ("if dual operation is more work than it saves"). Moving the renderer to core
+   while also keeping a working app-side renderer would have meant maintaining two copies of it.
+   Instead 4a moved the renderer to core and left the app's rendering notifier driving it through
+   the new API, so behavior was unchanged and the tree stayed green; 4b built the engine beside
+   that; Step 5 switched the app over and deleted the notifier.
+
+2. **`TextureMailbox` moved to core in Step 2, not Step 4.** The plan kept the renderer (and with
+   it the mailbox) app-side until Step 4, but `cloud_fetcher` moved to core in Step 2 and needs the
+   mailbox. It went along, into `assets::mailbox`, and the app re-exported it so call sites did not
+   change.
+
+3. **`build_aa_options` changed signature twice.** It returned `Vec<slint::SharedString>`, so it had
+   to become `Vec<String>` to move to core (Step 4a), and gained a `max_samples` cap in Step 6 so
+   the anti-aliasing combo box never offers a setting the quality tier would ignore.
+
+4. **`scene::sun::compute_sun_direction_at` added.** The engine's injected clock has to reach the
+   astronomy path, or a mock clock advancing fourteen days would leave the sun where it was.
+   `compute_sun_direction` now delegates to it with the real clock, so existing callers are
+   unaffected.
+
+5. **`enforce_single_instance` became `acquire_single_instance` and no longer exits in place.** The
+   e2e single-instance test started failing because the "another instance is already running" line
+   was lost in the non-blocking writer's buffer when `process::exit(0)` ran immediately after it.
+   The check moved into `main`, which returns instead, so the logging guard drops and flushes. It
+   also now runs before the window and the GPU device exist, which is where it belonged anyway.
+
+6. **Viewport resizes are polled every 200 ms rather than event-driven.** Slint exposes the preview
+   size as an `out property` with no size-changed callback bindable from Rust here. The poll sends
+   `SetPreviewSize` only when the value changes, and the engine quantizes it, so a drag produces a
+   handful of commands.
+
+7. **The preview stays enabled while the window is hidden.** `SetPreviewEnabled` exists and the
+   `render` subcommand uses it, but the windowed app does not turn the preview off on hide. The
+   engine only renders when something changed, so a hidden window costs one readback per sun tick
+   (two minutes) rather than per frame, and leaving it on keeps the show/hide path free of an
+   ordering dependency between the visibility change and the next frame.
+
+8. **The quality tier does not yet skip the 8K textures.** The plan's low tier says "skip the 8K JXL
+   textures unless explicitly selected", but the only Earth textures that exist are those 8K files,
+   and the texture combo box *is* the explicit selection, so the rule would be a no-op. The tier
+   caps MSAA, the preview size, and the cloud variant today; smaller Earth textures belong with the
+   offline asset pipeline in retrospective section 9.
+
+9. **The soak test's wall-clock bound is 120 seconds, not 60.** It runs in 12.5 seconds on the
+   development desktop; the headroom is for the software adapter on CI, where 672 exports and 112
+   JPEG decodes are considerably slower. The assertion exists to catch "the compression stopped
+   working", not to benchmark.
 
 ## Results
 
@@ -376,3 +425,43 @@ Verification: `cargo test` 352 pass, clippy no new warnings, full e2e suite 8 pa
 e2e tests exercise the new code path (they run `--mode tray`, which now constructs and shows the
 Slint tray) but drive the app over IPC rather than through the tray menu, so whether the icon
 renders correctly and the menu entries look right still needs a human eye.
+
+### Step 9: docs and CI
+
+CLAUDE.md rewritten for the workspace: layout, the engine and its injected clock, source, and sink,
+the two `SceneParams` translation points, the renderer API, the app modules, quality tiers, the
+shader entry points and their real draw order (the old file had clouds drawn last; they are drawn
+first, before the atmosphere shells), a table of every `SUNLIT_EARTH_*` knob, the test layers with
+their commands, and the resource-flow rules from retrospective section 8.2.
+
+CI already ran `cargo test --locked` from the workspace root, which covers both crates including
+the engine, soak, and golden suites; the added step uploads `target/contact-sheet.png` as an
+artifact. `release.yml` needed no change: the package is still named `sunlit-earth`, so
+`target/release/sunlit-earth.exe` is still where the zip step looks. `Cargo.lock` stays at the
+workspace root and `--locked` keeps working.
+
+Roadmap: "non-blocking texture loading" checked off (decode and mip generation are on
+engine-owned threads now), "system tray extended features" checked off apart from a true daemon
+mode, and the memory-budget entry now points at the quality tiers for the part they cover.
+Retrospective: Phase 1 marked implemented, and the open question about the `process::exit(0)`
+workaround answered.
+
+Two pieces of cleanup landed here as well. `cloud_fetcher::spawn_cloud_fetcher`, the
+standalone-thread wrapper, became dead once the engine owned the cloud worker and was deleted
+along with `Renderer::device`, `queue`, `sample_count`, and `EngineLink::push`. Deleting it
+exposed a regression: the old fetcher retried a failed download with exponential backoff from 15
+seconds up to 5 minutes, while the engine's worker just waited out the next poll, which in
+production is an hour. The worker now carries that backoff itself and bails out if the engine
+disconnects while it is sleeping.
+
+`cargo build --release --locked` was run end to end (4m20s, 27 MB binary at
+`target/release/sunlit-earth.exe`) to confirm the release workflow's path assumption still holds.
+
+### Final state
+
+`cargo test`: 352 tests pass (250 core unit, 10 engine, 6 golden, 19 render_pipeline, 12 shading,
+1 soak, 38 app unit, 16 slint_ui), plus 8 desktop e2e tests behind `--ignored`.
+`cargo clippy --all-targets`: 21 warnings, every one of them a pre-existing pedantic lint that was
+already present before this work (`manual RangeInclusive::contains` in the scene math, field
+assignment after `Default::default()` in the config tests, two long functions in
+`render_pipeline.rs`, and three casts). No new warnings were introduced at any step.

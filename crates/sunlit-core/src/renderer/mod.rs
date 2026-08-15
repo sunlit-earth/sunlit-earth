@@ -187,14 +187,6 @@ impl Renderer {
         gpu_setup::create_renderer(device, queue, config)
     }
 
-    pub fn device(&self) -> &wgpu::Device {
-        &self.device
-    }
-
-    pub fn queue(&self) -> &wgpu::Queue {
-        &self.queue
-    }
-
     /// The offscreen color target holding the most recent frame.
     pub fn preview_texture(&self) -> &wgpu::Texture {
         &self.render_texture
@@ -202,10 +194,6 @@ impl Renderer {
 
     pub fn size(&self) -> (u32, u32) {
         (self.render_width, self.render_height)
-    }
-
-    pub fn sample_count(&self) -> u32 {
-        self.sample_count
     }
 
     /// Whether a frame has ever been drawn into the preview texture.

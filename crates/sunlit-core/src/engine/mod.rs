@@ -18,7 +18,9 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 use tracing::{debug, error, info, warn};
 
-use crate::assets::cloud_fetcher::{CloudUpdater, PollOutcome};
+use crate::assets::cloud_fetcher::{
+    CloudUpdater, INITIAL_RETRY_DELAY, MAX_RETRY_DELAY, PollOutcome,
+};
 use crate::assets::cloud_source::CloudSource;
 use crate::assets::mailbox::TextureMailbox;
 use crate::config::QualityTier;
@@ -715,10 +717,29 @@ fn spawn_cloud_worker(
             // Show whatever is on disk before touching the network.
             updater.post_cached();
             while rx.recv().is_ok() {
-                match updater.poll_once() {
-                    PollOutcome::Updated => debug!("cloud frame updated"),
-                    PollOutcome::Unchanged => {}
-                    PollOutcome::Failed => warn!("cloud poll failed"),
+                // Retry a failed poll with exponential backoff rather than
+                // waiting out the whole poll interval, which in production is
+                // an hour: a thirty-second outage should not cost an hour of
+                // stale clouds. The engine's own requests are dropped while
+                // this runs (the worker is busy) and retried on the next tick.
+                let mut delay = INITIAL_RETRY_DELAY;
+                loop {
+                    match updater.poll_once() {
+                        PollOutcome::Updated => {
+                            debug!("cloud frame updated");
+                            break;
+                        }
+                        PollOutcome::Unchanged => break,
+                        PollOutcome::Failed => {
+                            warn!(retry_delay_secs = delay.as_secs(), "cloud poll failed, retrying");
+                            std::thread::sleep(delay);
+                            delay = (delay * 2).min(MAX_RETRY_DELAY);
+                            // Give up if the engine went away while we slept.
+                            if matches!(rx.try_recv(), Err(TryRecvError::Disconnected)) {
+                                return;
+                            }
+                        }
+                    }
                 }
                 worker_busy.store(false, Ordering::SeqCst);
             }

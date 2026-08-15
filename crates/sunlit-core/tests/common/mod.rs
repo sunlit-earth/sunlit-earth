@@ -93,4 +93,4 @@ pub fn read_buffer(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Bu
 }
 
 #[allow(unused_imports)]
-pub use sunlit_earth::renderer::read_texture_rgba8;
+pub use sunlit_core::renderer::read_texture_rgba8;

@@ -1,14 +1,12 @@
 use std::sync::mpsc;
 
-use slint::Image;
-
-use sunlit_core::params::{
+use crate::params::{
     CLOUD_SPHERE_RADIUS, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS, RAYLEIGH_RADIUS,
     SceneParams,
 };
-use sunlit_core::scene::camera::{OrbitalCamera, zoom_to_distance};
+use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
 
-use super::GpuResources;
+use super::Renderer;
 use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: the sun direction
@@ -217,15 +215,15 @@ pub(super) fn encode_and_submit(
     queue.submit(std::iter::once(encoder.finish()));
 }
 
-/// Encode and submit the preview render pass, returning the Slint Image.
+/// Encode and submit the preview render pass into the renderer's own texture.
 #[allow(clippy::cast_precision_loss)]
 #[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
 pub(super) fn execute_render_pass(
-    res: &GpuResources,
+    res: &Renderer,
     params: &SceneParams,
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
-) -> Image {
+) {
     let aspect = res.render_width as f32 / res.render_height as f32;
 
     write_uniforms(&res.queue, &res.uniform_buffer, params, aspect, inputs);
@@ -259,9 +257,6 @@ pub(super) fn execute_render_pass(
         overlays.cloud.0,
         overlays.cloud.1,
     );
-
-    Image::try_from(res.render_texture.clone())
-        .expect("Failed to convert wgpu texture to Slint image")
 }
 
 /// Which optional overlay shells to draw for a frame, and with which bind
@@ -279,7 +274,7 @@ impl<'a> Overlays<'a> {
     /// ignore the texture bindings). Clouds need their own, and only exist once
     /// the cloud texture has been uploaded.
     pub fn select(
-        res: &'a GpuResources,
+        res: &'a Renderer,
         params: &SceneParams,
         bind_group: &'a wgpu::BindGroup,
     ) -> Self {

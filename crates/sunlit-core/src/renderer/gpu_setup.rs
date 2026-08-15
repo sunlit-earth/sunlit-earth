@@ -1,33 +1,31 @@
-use std::path::PathBuf;
-
 use tracing::debug;
 use wgpu::util::DeviceExt;
 
-use sunlit_core::geometry::grid_texture;
-use sunlit_core::geometry::sphere::{self, Vertex};
-use crate::MainWindow;
-
-use sunlit_core::assets::mailbox::TextureMailbox;
+use crate::geometry::grid_texture;
+use crate::geometry::sphere::{self, Vertex};
 
 use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
-use super::GpuResources;
+use super::{Renderer, RendererConfig};
 
 const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 #[tracing::instrument(skip_all, fields(width, height, sample_count))]
-pub(super) fn create_gpu_resources(
+pub(super) fn create_renderer(
     device: wgpu::Device,
     queue: wgpu::Queue,
-    sample_count: u32,
-    width: u32,
-    height: u32,
-    texture_paths: &[Option<PathBuf>],
-    texture_mailbox: TextureMailbox,
-    window_weak: slint::Weak<MainWindow>,
-) -> GpuResources {
+    config: RendererConfig,
+) -> Renderer {
+    let RendererConfig {
+        sample_count,
+        width,
+        height,
+        texture_paths,
+        mailbox: texture_mailbox,
+        notify,
+    } = config;
     // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
 
@@ -171,7 +169,7 @@ pub(super) fn create_gpu_resources(
         source_path: None,
         loading: false,
     }];
-    for path in texture_paths {
+    for path in &texture_paths {
         texture_slots.push(TextureSlot {
             bind_group: None,
             source_path: path.clone(),
@@ -216,9 +214,9 @@ pub(super) fn create_gpu_resources(
     let nightglow_orange_pipeline = create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let nightglow_green_pipeline = create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
-    sunlit_core::memory::log_memory_usage("after GPU resource creation");
+    crate::memory::log_memory_usage("after GPU resource creation");
 
-    GpuResources {
+    Renderer {
         pipeline,
         vertex_buffer,
         index_buffer,
@@ -246,7 +244,7 @@ pub(super) fn create_gpu_resources(
         queue,
         texture_mailbox,
         texture_dirty: false,
-        window_weak,
+        notify,
         dummy_texture_view,
         composite_bind_group: None,
         day_texture_view: None,
@@ -583,7 +581,7 @@ pub(super) fn create_render_textures(
 }
 
 /// Rebuild the pipeline and MSAA textures when sample count changes.
-pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) {
+pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
     debug!("rebuilding MSAA resources");
     replace_render_textures(res, res.render_width, res.render_height, sample_count);
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
@@ -599,7 +597,7 @@ pub(super) fn rebuild_msaa_resources(res: &mut GpuResources, sample_count: u32) 
 }
 
 /// Rebuild all size-dependent textures when viewport dimensions change.
-pub(super) fn rebuild_render_textures(res: &mut GpuResources, width: u32, height: u32) {
+pub(super) fn rebuild_render_textures(res: &mut Renderer, width: u32, height: u32) {
     debug!(width, height, "rebuilding render textures");
     replace_render_textures(res, width, height, res.sample_count);
     res.render_width = width;
@@ -608,7 +606,7 @@ pub(super) fn rebuild_render_textures(res: &mut GpuResources, width: u32, height
 
 /// Replace all size/sample-dependent textures, dropping MSAA views first
 /// so wgpu can reclaim memory before allocating new ones.
-fn replace_render_textures(res: &mut GpuResources, width: u32, height: u32, sample_count: u32) {
+fn replace_render_textures(res: &mut Renderer, width: u32, height: u32, sample_count: u32) {
     res.msaa_texture_view = None;
     res.msaa_depth_view = None;
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =

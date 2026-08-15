@@ -1,4 +1,4 @@
-use sunlit_core::params::{ParamsDigest, SceneParams, quantize_direction};
+use crate::params::{ParamsDigest, SceneParams, quantize_direction};
 
 /// Snapshot of everything that affects the rendered image.
 ///

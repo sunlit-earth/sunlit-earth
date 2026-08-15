@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
-use slint::ComponentHandle;
 use tracing::{error, info};
 
-use sunlit_core::assets::mailbox::DecodedTextureMessage;
-use sunlit_core::assets::texture_loader;
+use crate::assets::mailbox::DecodedTextureMessage;
+use crate::assets::texture_loader;
 
 /// Descriptor for a texture that can be loaded on demand.
 pub(super) struct TextureSlot {
@@ -22,7 +21,7 @@ pub(super) struct TextureSlot {
 /// Sets `texture_dirty` and returns `true` if at least one decoded texture was
 /// processed, signaling that a re-render is needed even if the frame state
 /// hasn't changed.
-pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
+pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
     let messages = res.texture_mailbox.take_all();
     let received_any = !messages.is_empty();
     res.texture_dirty |= received_any;
@@ -40,7 +39,7 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
                 // Flush staging buffers so they don't accumulate across textures
                 let _ = res.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
                 info!(slot = msg.slot_index, "GPU texture created");
-                sunlit_core::memory::log_memory_usage("after texture upload");
+                crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
                 let bind_group = create_bind_group(
                     &res.device,
@@ -78,7 +77,7 @@ pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
 }
 
 /// Create the composite bind group if both day and night texture views are available.
-pub(super) fn maybe_create_composite_bind_group(res: &mut super::GpuResources) {
+pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
     if let (Some(day_view), Some(night_view)) =
         (&res.day_texture_view, &res.night_texture_view)
     {
@@ -95,7 +94,7 @@ pub(super) fn maybe_create_composite_bind_group(res: &mut super::GpuResources) {
 }
 
 /// Create the cloud bind group if the cloud texture view is available.
-pub(super) fn maybe_create_cloud_bind_group(res: &mut super::GpuResources) {
+pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
     if let Some(cloud_view) = &res.cloud_texture_view {
         res.cloud_bind_group = Some(create_bind_group(
             &res.device,
@@ -111,7 +110,7 @@ pub(super) fn maybe_create_cloud_bind_group(res: &mut super::GpuResources) {
 
 /// Spawn a background thread to decode the texture for `slot_index` if
 /// it is not already loaded or in flight.
-pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index: usize) {
+pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: usize) {
     let slot = &res.texture_slots[slot_index];
 
     // Already loaded, already loading, or no source path — nothing to do
@@ -126,7 +125,7 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index
     res.texture_slots[slot_index].loading = true;
 
     let mailbox = res.texture_mailbox.clone();
-    let window_weak = res.window_weak.clone();
+    let notify = std::sync::Arc::clone(&res.notify);
 
     std::thread::spawn(move || {
         texture_loader::register_jxl_hook();
@@ -140,25 +139,21 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index
                     elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
                     "decoded texture"
                 );
-                sunlit_core::memory::log_memory_usage("after texture decode");
+                crate::memory::log_memory_usage("after texture decode");
                 Ok(img)
             }
             Err(e) => Err(e),
         };
 
-        // Park the result for the UI thread to pick up
+        // Park the result for the consumer to pick up, then wake it
         mailbox.post(DecodedTextureMessage { slot_index, result });
-
-        // Wake the event loop so BeforeRendering fires and picks up the result
-        let _ = window_weak.upgrade_in_event_loop(|win| {
-            win.window().request_redraw();
-        });
+        notify();
     });
 }
 
 /// Determine which texture slot to render with: the requested slot if loaded,
 /// otherwise `last_rendered_index` as a fallback.
-pub(super) fn resolve_render_index(res: &mut super::GpuResources, slot_index: usize) -> usize {
+pub(super) fn resolve_render_index(res: &mut super::Renderer, slot_index: usize) -> usize {
     if res.texture_slots[slot_index].bind_group.is_some() {
         res.last_rendered_index = slot_index;
         slot_index
@@ -199,7 +194,7 @@ pub(super) fn create_mipmapped_texture(
 
     // Upload mip level 0
     upload_mip(queue, &texture, 0, width, height, &rgba_pixels);
-    sunlit_core::memory::log_memory_usage("mipmap: after level 0 upload");
+    crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
     // Generate subsequent mip levels by box-filtering the previous level.
     // We take ownership of the pixel buffer to avoid cloning 128 MB for 8K textures.
@@ -212,7 +207,7 @@ pub(super) fn create_mipmapped_texture(
         h = (h / 2).max(1);
         upload_mip(queue, &texture, level, w, h, &pixels);
     }
-    sunlit_core::memory::log_memory_usage("mipmap: after all levels");
+    crate::memory::log_memory_usage("mipmap: after all levels");
 
     texture
 }

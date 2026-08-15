@@ -12,12 +12,12 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use sunlit_core::config;
-use sunlit_earth::renderer;
-use sunlit_core::scene::datetime;
 use sunlit_core::assets::texture_loader;
+use sunlit_core::config;
+use sunlit_core::scene::datetime;
 use sunlit_core::wgpu_init;
 use sunlit_earth::MainWindow;
+use sunlit_earth::renderer;
 
 /// Sunlit Earth: get a realistic 3D view of Earth as seen from space and set it as your wallpaper
 #[derive(Parser)]
@@ -167,20 +167,19 @@ fn init_ui_models(
     // Set up AA options from supported sample counts
     let (aa_labels, aa_counts, _aa_default) =
         renderer::build_aa_options(supported_sample_counts);
-    let aa_model: slint::VecModel<slint::SharedString> = aa_labels.into();
-    window.set_aa_options(slint::ModelRc::new(aa_model));
+    let aa_model: Vec<slint::SharedString> =
+        aa_labels.into_iter().map(slint::SharedString::from).collect();
+    window.set_aa_options(slint::ModelRc::new(slint::VecModel::from(aa_model)));
 
     // Register JXL decoding hook before any image loading
     texture_loader::register_jxl_hook();
     debug!("registered JXL decoding hook");
 
     // Set up texture options — always show all four
-    let labels: Vec<slint::SharedString> = vec![
-        "Grid".into(),
-        "Day".into(),
-        "Night".into(),
-        "Day/Night Blend".into(),
-    ];
+    let labels: Vec<slint::SharedString> = renderer::TEXTURE_LABELS
+        .iter()
+        .map(|name| slint::SharedString::from(*name))
+        .collect();
     window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
 
     // Set up year ComboBox options (current year +/- 10)
@@ -220,7 +219,7 @@ fn init_texture_system(
 ) -> Arc<AtomicBool> {
     // Create the texture mailbox so both the renderer and the cloud fetcher
     // can share it. Slots: grid + one per texture path + clouds.
-    let mailbox = renderer::TextureMailbox::new(texture_paths.len() + 2);
+    let mailbox = renderer::Mailbox::new(texture_paths.len() + 2);
 
     let textures_ready = Arc::new(AtomicBool::new(false));
 
@@ -292,11 +291,14 @@ fn run_event_loop(
     // and clouds would freeze at whatever was current when the window was last
     // visible.
     let drain_timer = slint::Timer::default();
-    drain_timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_secs(5),
-        renderer::drain_texture_updates,
-    );
+    {
+        let ww = window.as_weak();
+        drain_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(5),
+            move || renderer::drain_texture_updates(&ww),
+        );
+    }
 
     // Memory watchdog (every 10 minutes). Appends a sample to
     // %LOCALAPPDATA%\SunlitEarth\memory-metrics.csv and warns past the budget.

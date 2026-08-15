@@ -209,8 +209,9 @@ pub fn append_metrics_sample(path: &Path, snap: &MemorySnapshot) {
 /// Take a sample, write it to the metrics file, and warn when private memory
 /// exceeds `PRIVATE_BYTES_BUDGET`.
 ///
-/// Called by the watchdog timer in `main.rs`. Does nothing on platforms
-/// without a memory snapshot implementation.
+/// Called from the engine's metrics schedule (once at startup, then every ten
+/// minutes). Does nothing on platforms without a memory snapshot
+/// implementation.
 pub fn record_metrics_sample() {
     let Some(snap) = snapshot() else {
         return;

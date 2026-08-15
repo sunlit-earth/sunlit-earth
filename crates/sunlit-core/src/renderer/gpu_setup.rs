@@ -8,6 +8,13 @@ use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
 use super::{Renderer, RendererConfig};
 
+/// Usage flags for the offscreen preview target. `TEXTURE_BINDING` lets a
+/// client bind it directly (the Slint shell does), `COPY_SRC` lets the engine
+/// read it back into a pixel buffer.
+const PREVIEW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
+    .union(wgpu::TextureUsages::TEXTURE_BINDING)
+    .union(wgpu::TextureUsages::COPY_SRC);
+
 const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
@@ -205,7 +212,7 @@ pub(super) fn create_renderer(
             width,
             height,
             sample_count,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            PREVIEW_USAGE,
         );
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
@@ -615,7 +622,7 @@ fn replace_render_textures(res: &mut Renderer, width: u32, height: u32, sample_c
             width,
             height,
             sample_count,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            PREVIEW_USAGE,
         );
     res.render_texture = render_texture;
     res.depth_texture = depth_texture;

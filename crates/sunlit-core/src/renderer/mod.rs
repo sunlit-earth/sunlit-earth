@@ -204,6 +204,11 @@ impl Renderer {
         self.sample_count
     }
 
+    /// Whether a frame has ever been drawn into the preview texture.
+    pub fn has_frame(&self) -> bool {
+        self.last_state.is_some()
+    }
+
     /// Resize the offscreen targets. The caller is expected to have quantized
     /// the size already; identical sizes are a no-op.
     pub fn resize(&mut self, width: u32, height: u32) {

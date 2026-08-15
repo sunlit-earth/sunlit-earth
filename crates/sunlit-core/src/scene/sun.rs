@@ -142,13 +142,29 @@ pub struct DateTimeInput {
 /// and the wallpaper scheduler timer.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn compute_sun_direction(dt: &DateTimeInput) -> Vec3 {
+    compute_sun_direction_at(dt, time::OffsetDateTime::now_utc())
+}
+
+/// Compute the sun direction for datetime parameters at a given "now".
+///
+/// The engine passes its injected clock's reading here, so a mock clock that
+/// jumps fourteen days really does rotate the Earth fourteen times.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn compute_sun_direction_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> Vec3 {
     if dt.use_custom {
         let doy = dt.custom_day_of_year.max(1);
         let (month, day) = super::datetime::day_of_year_to_month_day(doy, dt.custom_year);
         let (h, m, s) = super::datetime::hour_float_to_hms(dt.custom_hour);
         sun_direction_at(dt.custom_year, i32::from(month), i32::from(day), h, m, s)
     } else {
-        sun_direction_now()
+        sun_direction_at(
+            now_utc.year(),
+            i32::from(u8::from(now_utc.month())),
+            i32::from(now_utc.day()),
+            i32::from(now_utc.hour()),
+            i32::from(now_utc.minute()),
+            f64::from(now_utc.second()),
+        )
     }
 }
 

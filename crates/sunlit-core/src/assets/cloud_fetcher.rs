@@ -1,8 +1,9 @@
-//! Background cloud texture fetcher.
+//! Cloud texture caching, decoding, and polling.
 //!
-//! Downloads an 8K equirectangular cloud JPEG from the matteason/live-cloud-maps
-//! service, caches it to disk, and polls for updates every 60 minutes using
-//! HEAD + `ETag` freshness checks.
+//! A [`CloudUpdater`] owns the on-disk cache and turns a [`CloudSource`] into
+//! decoded frames parked in the texture mailbox. The engine drives it on its own
+//! schedule; `spawn_cloud_fetcher` is the standalone-thread wrapper the Slint
+//! shell used before the engine existed.
 //!
 //! Three values can be overridden through the environment so tests can point
 //! the fetcher at a local stub server without touching the real cache:
@@ -17,12 +18,19 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use super::cloud_source::{CloudSource, HttpCloudSource};
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
 use super::texture_loader::{self, DecodedImage};
 
-/// Callback the fetcher invokes after posting a new frame, so a UI client can
-/// nudge itself into redrawing. Headless callers pass a no-op.
+/// Callback invoked after a new frame has been posted, so a client that only
+/// works on demand knows there is something waiting. Headless callers that poll
+/// on their own schedule pass a no-op.
 pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
+
+/// A notify callback that does nothing.
+pub fn no_notify() -> NotifyFn {
+    Arc::new(|| {})
+}
 
 const CLOUD_URL: &str = "https://clouds.matteason.co.uk/images/8192x4096/clouds.jpg";
 const POLL_INTERVAL: Duration = Duration::from_secs(3600);
@@ -48,6 +56,11 @@ fn resolve_cloud_url(raw: Option<&str>) -> String {
     raw.map_or_else(|| CLOUD_URL.to_owned(), ToOwned::to_owned)
 }
 
+/// The configured cloud image URL, honoring `SUNLIT_EARTH_CLOUD_URL`.
+pub fn cloud_url() -> String {
+    resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref())
+}
+
 /// Resolve the poll interval from an optional environment override.
 ///
 /// Values that do not parse as a positive number of seconds are ignored
@@ -65,6 +78,11 @@ fn resolve_poll_interval(raw: Option<&str>) -> Duration {
     }
 }
 
+/// The configured poll interval, honoring `SUNLIT_EARTH_CLOUD_POLL_SECS`.
+pub fn poll_interval() -> Duration {
+    resolve_poll_interval(crate::env_override(ENV_POLL_SECS).as_deref())
+}
+
 /// Resolve the cloud cache directory from an optional environment override.
 fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
     match raw {
@@ -73,16 +91,9 @@ fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
     }
 }
 
-fn cache_dir() -> Option<PathBuf> {
+/// The configured cache directory, honoring `SUNLIT_EARTH_CACHE_DIR`.
+pub fn cache_dir() -> Option<PathBuf> {
     resolve_cache_dir(crate::env_override(ENV_CACHE_DIR).as_deref())
-}
-
-fn cache_image_path() -> Option<PathBuf> {
-    Some(cache_dir()?.join("clouds_cache.jpg"))
-}
-
-fn cache_meta_path() -> Option<PathBuf> {
-    Some(cache_dir()?.join("clouds_cache_meta.toml"))
 }
 
 fn load_cache_meta(path: &Path) -> Option<CacheMeta> {
@@ -117,63 +128,6 @@ fn save_cache_meta(meta: &CacheMeta, path: &Path) {
     }
 }
 
-/// Check if the remote cloud image has changed using HEAD + `If-None-Match`.
-///
-/// Returns `Ok(true)` if unchanged (304), `Ok(false)` if new content is
-/// available (200), or `Err` on transport/server errors.
-#[tracing::instrument(skip(agent), fields(etag = %etag))]
-fn check_freshness(agent: &ureq::Agent, url: &str, etag: &str) -> Result<bool, String> {
-    let response = agent
-        .head(url)
-        .header("If-None-Match", etag)
-        .call()
-        .map_err(|e| format!("Cloud freshness check failed: {e}"))?;
-
-    if response.status().as_u16() == 304 {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
-/// Download the cloud image unconditionally.
-///
-/// Returns the raw JPEG bytes and extracted cache metadata (`ETag`, Last-Modified).
-#[tracing::instrument(skip(agent), fields(url = %url))]
-fn download_image(agent: &ureq::Agent, url: &str) -> Result<(Vec<u8>, CacheMeta), String> {
-    let mut response = agent
-        .get(url)
-        .call()
-        .map_err(|e| format!("Cloud download failed: {e}"))?;
-
-    let etag = response
-        .headers()
-        .get("ETag")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-    let last_modified = response
-        .headers()
-        .get("Last-Modified")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-
-    // 8K cloud JPEG can be ~15 MB, raise the default 10 MB limit
-    let body = response
-        .body_mut()
-        .with_config()
-        .limit(50 * 1024 * 1024)
-        .read_to_vec()
-        .map_err(|e| format!("Failed to read cloud image body: {e}"))?;
-
-    Ok((
-        body,
-        CacheMeta {
-            etag,
-            last_modified,
-        },
-    ))
-}
-
 /// Decode a JPEG cloud image from raw bytes into RGBA8 pixel data.
 ///
 /// Applies the same transforms as equirectangular texture loading:
@@ -197,34 +151,59 @@ fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
     })
 }
 
-/// Spawn the background cloud fetcher thread.
-///
-/// On the calling thread: loads the cached JPEG (if it exists), decodes it,
-/// and posts it to the texture mailbox so clouds appear on the first frame.
-///
-/// On the background thread: polls for updates every 60 minutes using HEAD +
-/// `ETag`, downloading a fresh image only when the remote has changed.
-#[allow(clippy::too_many_lines)]
-pub fn spawn_cloud_fetcher(mailbox: TextureMailbox, notify: NotifyFn, clouds_slot: usize) {
-    let image_path = cache_image_path();
-    let meta_path = cache_meta_path();
-    let cloud_url = resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref());
-    let poll_interval = resolve_poll_interval(crate::env_override(ENV_POLL_SECS).as_deref());
-    info!(
-        url = %cloud_url,
-        poll_secs = poll_interval.as_secs(),
-        cache_dir = ?cache_dir(),
-        "cloud fetcher configuration"
-    );
+/// What one call to [`CloudUpdater::poll_once`] achieved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PollOutcome {
+    /// A new frame was decoded and posted to the mailbox.
+    Updated,
+    /// The source reported no change.
+    Unchanged,
+    /// The fetch or the decode failed; the caller decides about backoff.
+    Failed,
+}
 
-    // Load cached image synchronously so clouds appear on the first frame
-    let mut cached_meta = meta_path
-        .as_ref()
-        .and_then(|p| load_cache_meta(p));
+/// Turns a [`CloudSource`] into decoded frames in the texture mailbox, keeping
+/// the on-disk cache in step.
+pub struct CloudUpdater {
+    source: Arc<dyn CloudSource>,
+    mailbox: TextureMailbox,
+    notify: NotifyFn,
+    slot: usize,
+    image_path: Option<PathBuf>,
+    meta_path: Option<PathBuf>,
+    cached_meta: Option<CacheMeta>,
+}
 
-    if let Some(ref path) = image_path
-        && path.exists()
-    {
+impl CloudUpdater {
+    /// Build an updater against `source`, caching into `cache_dir` (skipped
+    /// entirely when `None`).
+    pub fn new(
+        source: Arc<dyn CloudSource>,
+        mailbox: TextureMailbox,
+        notify: NotifyFn,
+        slot: usize,
+        cache_dir: Option<PathBuf>,
+    ) -> Self {
+        let image_path = cache_dir.as_ref().map(|d| d.join("clouds_cache.jpg"));
+        let meta_path = cache_dir.map(|d| d.join("clouds_cache_meta.toml"));
+        let cached_meta = meta_path.as_ref().and_then(|p| load_cache_meta(p));
+        Self {
+            source,
+            mailbox,
+            notify,
+            slot,
+            image_path,
+            meta_path,
+            cached_meta,
+        }
+    }
+
+    /// Decode the cached image, if any, and post it so clouds appear without
+    /// waiting for the network.
+    pub fn post_cached(&self) -> bool {
+        let Some(path) = self.image_path.as_ref().filter(|p| p.exists()) else {
+            return false;
+        };
         match fs::read(path) {
             Ok(bytes) => match decode_cloud_jpeg(&bytes) {
                 Ok(img) => {
@@ -234,115 +213,129 @@ pub fn spawn_cloud_fetcher(mailbox: TextureMailbox, notify: NotifyFn, clouds_slo
                         path = %path.display(),
                         "loaded cached cloud image"
                     );
-                    mailbox.post(DecodedTextureMessage {
-                        slot_index: clouds_slot,
-                        result: Ok(img),
-                    });
-                    notify();
+                    self.post(img);
+                    true
                 }
-                Err(e) => warn!(error = %e, "cached cloud image decode failed"),
+                Err(e) => {
+                    warn!(error = %e, "cached cloud image decode failed");
+                    false
+                }
             },
-            Err(e) => warn!(error = %e, "could not read cached cloud image"),
+            Err(e) => {
+                warn!(error = %e, "could not read cached cloud image");
+                false
+            }
         }
     }
 
-    // Background thread for network I/O
-    let mailbox_bg = mailbox;
-    let notify_bg = notify;
+    /// One freshness check, download, decode, and post cycle.
+    pub fn poll_once(&mut self) -> PollOutcome {
+        let known_etag = self
+            .cached_meta
+            .as_ref()
+            .and_then(|m| m.etag.as_deref());
+        let start = std::time::Instant::now();
+        let fetched = match self.source.fetch_if_changed(known_etag) {
+            Ok(Some(image)) => image,
+            Ok(None) => return PollOutcome::Unchanged,
+            Err(e) => {
+                warn!(error = %e, "cloud fetch failed");
+                return PollOutcome::Failed;
+            }
+        };
+
+        info!(
+            bytes = fetched.bytes.len(),
+            elapsed_secs = format_args!("{:.1}", start.elapsed().as_secs_f64()),
+            "downloaded cloud image"
+        );
+
+        if let Some(path) = &self.image_path {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(e) = fs::write(path, &fetched.bytes) {
+                warn!(error = %e, "could not cache cloud image");
+            }
+        }
+        let meta = CacheMeta {
+            etag: fetched.etag,
+            last_modified: fetched.last_modified,
+        };
+        if let Some(path) = &self.meta_path {
+            save_cache_meta(&meta, path);
+        }
+        self.cached_meta = Some(meta);
+
+        match decode_cloud_jpeg(&fetched.bytes) {
+            Ok(img) => {
+                info!(width = img.width, height = img.height, "decoded cloud image");
+                crate::memory::log_memory_usage("after cloud decode");
+                self.post(img);
+                PollOutcome::Updated
+            }
+            Err(e) => {
+                warn!(error = %e, "cloud image decode failed");
+                PollOutcome::Failed
+            }
+        }
+    }
+
+    fn post(&self, img: DecodedImage) {
+        self.mailbox.post(DecodedTextureMessage {
+            slot_index: self.slot,
+            result: Ok(img),
+        });
+        (self.notify)();
+    }
+}
+
+/// Spawn the standalone background cloud fetcher thread.
+///
+/// On the calling thread: loads the cached JPEG (if it exists), decodes it,
+/// and posts it to the texture mailbox so clouds appear on the first frame.
+///
+/// On the background thread: polls for updates on the configured interval,
+/// downloading a fresh image only when the remote has changed.
+pub fn spawn_cloud_fetcher(mailbox: TextureMailbox, notify: NotifyFn, clouds_slot: usize) {
+    let url = cloud_url();
+    let interval = poll_interval();
+    info!(
+        url = %url,
+        poll_secs = interval.as_secs(),
+        cache_dir = ?cache_dir(),
+        "cloud fetcher configuration"
+    );
+
+    let mut updater = CloudUpdater::new(
+        Arc::new(HttpCloudSource::new(url)),
+        mailbox,
+        notify,
+        clouds_slot,
+        cache_dir(),
+    );
+    updater.post_cached();
+
     std::thread::spawn(move || {
-        let user_agent = format!("sunlit.earth/{}", env!("CARGO_PKG_VERSION"));
-        let agent = ureq::Agent::config_builder()
-            .user_agent(&user_agent)
-            .build()
-            .new_agent();
         let mut retry_delay = INITIAL_RETRY_DELAY;
-
         loop {
-            let should_download = match &cached_meta {
-                Some(meta) if meta.etag.is_some() => {
-                    let etag = meta.etag.as_ref().unwrap();
-                    match check_freshness(&agent, &cloud_url, etag) {
-                        Ok(true) => {
-                            info!("cloud image unchanged (304 Not Modified)");
-                            false
-                        }
-                        Ok(false) => {
-                            info!("cloud image has changed, downloading");
-                            true
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "cloud freshness check failed");
-                            false
-                        }
-                    }
+            match updater.poll_once() {
+                PollOutcome::Updated | PollOutcome::Unchanged => {
+                    retry_delay = INITIAL_RETRY_DELAY;
                 }
-                _ => {
-                    info!("no cached cloud ETag, downloading");
-                    true
-                }
-            };
-
-            if should_download {
-                let start = std::time::Instant::now();
-                match download_image(&agent, &cloud_url) {
-                    Ok((bytes, meta)) => {
-                        let elapsed = start.elapsed().as_secs_f64();
-                        info!(
-                            bytes = bytes.len(),
-                            elapsed_secs = format_args!("{elapsed:.1}"),
-                            "downloaded cloud image"
-                        );
-
-                        // Save to cache
-                        if let Some(ref path) = image_path {
-                            if let Some(parent) = path.parent() {
-                                let _ = fs::create_dir_all(parent);
-                            }
-                            if let Err(e) = fs::write(path, &bytes) {
-                                warn!(error = %e, "could not cache cloud image");
-                            }
-                        }
-                        if let Some(ref path) = meta_path {
-                            save_cache_meta(&meta, path);
-                        }
-                        cached_meta = Some(meta);
-
-                        // Decode and send
-                        match decode_cloud_jpeg(&bytes) {
-                            Ok(img) => {
-                                info!(
-                                    width = img.width,
-                                    height = img.height,
-                                    "decoded cloud image"
-                                );
-                                crate::memory::log_memory_usage("after cloud decode");
-                                mailbox_bg.post(DecodedTextureMessage {
-                                    slot_index: clouds_slot,
-                                    result: Ok(img),
-                                });
-                                notify_bg();
-                            }
-                            Err(e) => warn!(error = %e, "cloud image decode failed"),
-                        }
-
-                        // Reset backoff on success
-                        retry_delay = INITIAL_RETRY_DELAY;
-                    }
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            retry_delay_secs = retry_delay.as_secs(),
-                            "cloud download failed, retrying"
-                        );
-                        std::thread::sleep(retry_delay);
-                        retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
-                        continue;
-                    }
+                PollOutcome::Failed => {
+                    warn!(
+                        retry_delay_secs = retry_delay.as_secs(),
+                        "cloud poll failed, retrying"
+                    );
+                    std::thread::sleep(retry_delay);
+                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
+                    continue;
                 }
             }
 
             crate::memory::log_memory_usage("cloud fetcher idle");
-            std::thread::sleep(poll_interval);
+            std::thread::sleep(interval);
         }
     });
 }
@@ -502,5 +495,165 @@ mod tests {
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.pixels.len(), 2 * 2 * 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // CloudUpdater against a scripted source
+    // -----------------------------------------------------------------------
+
+    /// A source that serves a fixed image and flips its `ETag` on demand, so the
+    /// updater's freshness logic can be tested without a server.
+    struct ScriptedSource {
+        jpeg: Vec<u8>,
+        version: std::sync::atomic::AtomicU64,
+        fetches: std::sync::atomic::AtomicU64,
+    }
+
+    impl ScriptedSource {
+        fn new() -> Self {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                4,
+                2,
+                image::Rgba([200, 200, 200, 255]),
+            ))
+            .into_rgb8();
+            img.write_to(&mut buf, image::ImageFormat::Jpeg)
+                .expect("encode fixture");
+            Self {
+                jpeg: buf.into_inner(),
+                version: std::sync::atomic::AtomicU64::new(1),
+                fetches: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+
+        fn publish(&self) {
+            self.version.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn fetches(&self) -> u64 {
+            self.fetches.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl CloudSource for ScriptedSource {
+        fn fetch_if_changed(
+            &self,
+            known_etag: Option<&str>,
+        ) -> Result<Option<CloudImage>, String> {
+            let current = format!("v{}", self.version.load(std::sync::atomic::Ordering::SeqCst));
+            if known_etag == Some(current.as_str()) {
+                return Ok(None);
+            }
+            self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(CloudImage {
+                bytes: self.jpeg.clone(),
+                etag: Some(current),
+                last_modified: None,
+            }))
+        }
+
+        fn describe(&self) -> String {
+            "scripted".to_owned()
+        }
+    }
+
+    use super::super::cloud_source::CloudImage;
+
+    fn updater_for(source: Arc<ScriptedSource>, mailbox: &TextureMailbox) -> CloudUpdater {
+        CloudUpdater::new(source, mailbox.clone(), no_notify(), 3, None)
+    }
+
+    #[test]
+    fn updater_posts_a_frame_on_first_poll() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        let posted = mailbox.take_all();
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].slot_index, 3);
+    }
+
+    #[test]
+    fn updater_skips_unchanged_sources() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
+        assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
+        assert_eq!(source.fetches(), 1, "only the changed version is downloaded");
+    }
+
+    #[test]
+    fn updater_picks_up_a_new_publication() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        updater.poll_once();
+        source.publish();
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        assert_eq!(source.fetches(), 2);
+    }
+
+    #[test]
+    fn updater_notifies_after_posting() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let notify: NotifyFn = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let mut updater = CloudUpdater::new(source, mailbox, notify, 3, None);
+
+        updater.poll_once();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn updater_without_a_cache_dir_posts_nothing_from_disk() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let updater = updater_for(source, &mailbox);
+        assert!(!updater.post_cached());
+        assert!(mailbox.take_all().is_empty());
+    }
+
+    #[test]
+    fn updater_round_trips_through_the_disk_cache() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_cloud_updater_cache");
+        let _ = fs::remove_dir_all(&dir);
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+
+        let mut first = CloudUpdater::new(
+            Arc::clone(&source) as Arc<dyn CloudSource>,
+            mailbox.clone(),
+            no_notify(),
+            3,
+            Some(dir.clone()),
+        );
+        first.poll_once();
+        mailbox.take_all();
+
+        // A fresh updater reads the ETag back and does not re-download.
+        let mut second = CloudUpdater::new(
+            Arc::clone(&source) as Arc<dyn CloudSource>,
+            mailbox.clone(),
+            no_notify(),
+            3,
+            Some(dir.clone()),
+        );
+        assert_eq!(second.poll_once(), PollOutcome::Unchanged);
+        assert_eq!(source.fetches(), 1);
+        assert!(second.post_cached(), "the cached JPEG should decode");
+        assert_eq!(mailbox.take_all().len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

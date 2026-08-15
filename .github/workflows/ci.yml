@@ -52,3 +52,93 @@ jobs:
           name: contact-sheet
           path: target/contact-sheet.png
           if-no-files-found: warn
+
+  # TEMPORARY, Phase 2 step 4. There is no macOS hardware to develop against, so
+  # this job is how the port is verified at all: it answers whether the
+  # workspace compiles, and whether our specific pipeline (MSAA, mipmapped
+  # textures, buffer readback) runs on the paravirtual Metal GPU the hosted
+  # runners expose. That is the open question from retrospective section 11.
+  #
+  # Every step after the build runs with `if: always()` so one run reports on
+  # every layer instead of stopping at the first failure. A failing step still
+  # fails the job.
+  #
+  # Deleted in step 5, when macOS joins the matrix.
+  macos-probe:
+    name: macOS probe (temporary)
+    runs-on: macos-latest
+    env:
+      # The render smoke step runs the real binary, which records metrics and
+      # reads the user config. Point both at the workspace so nothing lands in
+      # ~/Library/Application Support.
+      SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/probe-metrics
+      SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/probe-config.toml
+      SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/probe-cache
+      SUNLIT_EARTH_NO_CLOUDS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # bindgen needs libclang for astronomy-engine-bindings. Xcode ships one;
+      # point at it only if it is where we expect, so a layout change degrades
+      # to clang-sys's own search rather than to a bogus path.
+      - name: Point bindgen at Xcode's libclang
+        run: |
+          LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if [ -f "$LIB/libclang.dylib" ]; then
+            echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
+            echo "using $LIB"
+          else
+            echo "no libclang at $LIB, leaving clang-sys to find it"
+          fi
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-macos
+      - name: Build
+        run: cargo build --workspace --locked
+        shell: bash
+      - name: Unit tests
+        if: always()
+        run: cargo test --workspace --lib --bins --locked
+        shell: bash
+      # Prints the selected adapter, which is the actual question this job
+      # exists to answer, and doubles as the headless render smoke test.
+      - name: Render smoke test and adapter report
+        if: always()
+        run: |
+          cargo run --locked -p sunlit-earth -- --log-level debug \
+            render --output probe.png --width 640 --height 360
+          ls -l probe.png
+        shell: bash
+      - name: Engine integration tests
+        if: always()
+        run: cargo test -p sunlit-core --test engine --locked
+        shell: bash
+      - name: GPU shader tests
+        if: always()
+        run: cargo test -p sunlit-core --test shading --test render_pipeline --locked
+        shell: bash
+      # --nocapture so the private-bytes samples reach the log: the Windows
+      # bounds were calibrated on a different allocator and this is how we find
+      # out whether they hold here.
+      - name: Soak test
+        if: always()
+        run: cargo test -p sunlit-core --test soak --locked -- --nocapture
+        shell: bash
+      - name: Golden images
+        if: always()
+        run: cargo test -p sunlit-core --test golden --locked -- --nocapture
+        shell: bash
+      - name: Slint UI tests
+        if: always()
+        run: cargo test -p sunlit-earth --test slint_ui --locked
+        shell: bash
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-probe
+          path: |
+            probe.png
+            target/contact-sheet.png
+          if-no-files-found: warn

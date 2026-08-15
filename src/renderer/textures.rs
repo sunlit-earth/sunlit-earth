@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use slint::ComponentHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::texture_loader;
 
@@ -46,11 +46,21 @@ impl TextureMailbox {
     }
 
     /// Park a message in its slot, replacing anything not yet consumed.
+    ///
+    /// The slot count is fixed at construction, so an out-of-range index is a
+    /// producer bug. The message is dropped with a `warn!` rather than growing
+    /// the mailbox, which would turn that bug into an index-out-of-bounds panic
+    /// on the UI thread when `process_decoded_textures` indexes `texture_slots`.
     pub fn post(&self, msg: DecodedTextureMessage) {
         let index = msg.slot_index;
         let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
         if index >= slots.len() {
-            slots.resize_with(index + 1, || None);
+            warn!(
+                slot = index,
+                slot_count = slots.len(),
+                "texture mailbox slot out of range, dropping message"
+            );
+            return;
         }
         slots[index] = Some(msg);
     }
@@ -361,6 +371,83 @@ fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // TextureMailbox
+    // -----------------------------------------------------------------------
+
+    /// A message carrying a 1x1 image tagged with `width` so tests can tell
+    /// successive posts to the same slot apart.
+    fn message(slot_index: usize, width: u32) -> DecodedTextureMessage {
+        DecodedTextureMessage {
+            slot_index,
+            result: Ok(texture_loader::DecodedImage {
+                pixels: vec![0; 4],
+                width,
+                height: 1,
+            }),
+        }
+    }
+
+    /// Extract the tag written by `message`.
+    fn tag(msg: &DecodedTextureMessage) -> u32 {
+        msg.result.as_ref().expect("test messages are Ok").width
+    }
+
+    #[test]
+    fn mailbox_take_all_empties_the_mailbox() {
+        let mailbox = TextureMailbox::new(4);
+        mailbox.post(message(0, 1));
+        mailbox.post(message(3, 2));
+
+        let mut taken = mailbox.take_all();
+        taken.sort_by_key(|m| m.slot_index);
+        assert_eq!(taken.len(), 2);
+        assert_eq!(taken[0].slot_index, 0);
+        assert_eq!(taken[1].slot_index, 3);
+
+        assert!(mailbox.take_all().is_empty(), "second take should find nothing");
+    }
+
+    #[test]
+    fn mailbox_replaces_unconsumed_message_in_same_slot() {
+        let mailbox = TextureMailbox::new(4);
+        for tag_value in 1..=5 {
+            mailbox.post(message(2, tag_value));
+        }
+
+        let taken = mailbox.take_all();
+        assert_eq!(taken.len(), 1, "only the newest frame per slot is kept");
+        assert_eq!(tag(&taken[0]), 5, "the newest frame must win");
+    }
+
+    #[test]
+    fn mailbox_keeps_one_message_per_slot_independently() {
+        let mailbox = TextureMailbox::new(4);
+        mailbox.post(message(0, 1));
+        mailbox.post(message(1, 1));
+        mailbox.post(message(0, 2));
+
+        let mut taken = mailbox.take_all();
+        taken.sort_by_key(|m| m.slot_index);
+        assert_eq!(taken.len(), 2);
+        assert_eq!(tag(&taken[0]), 2, "slot 0 keeps the newer frame");
+        assert_eq!(tag(&taken[1]), 1, "slot 1 is untouched");
+    }
+
+    #[test]
+    fn mailbox_drops_out_of_range_slot_instead_of_growing() {
+        let mailbox = TextureMailbox::new(2);
+        mailbox.post(message(7, 1));
+
+        assert!(
+            mailbox.take_all().is_empty(),
+            "an out-of-range post must be dropped, not parked"
+        );
+        // The mailbox must still accept valid slots afterwards.
+        mailbox.post(message(1, 1));
+        assert_eq!(mailbox.take_all().len(), 1);
+    }
 
     // -----------------------------------------------------------------------
     // downsample_2x

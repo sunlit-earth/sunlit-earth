@@ -40,13 +40,6 @@ struct CacheMeta {
     last_modified: Option<String>,
 }
 
-/// Read an environment override, treating unset and blank values as absent.
-fn env_override(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-}
-
 /// Resolve the cloud image URL from an optional environment override.
 fn resolve_cloud_url(raw: Option<&str>) -> String {
     raw.map_or_else(|| CLOUD_URL.to_owned(), ToOwned::to_owned)
@@ -78,7 +71,7 @@ fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    resolve_cache_dir(env_override(ENV_CACHE_DIR).as_deref())
+    resolve_cache_dir(crate::env_override(ENV_CACHE_DIR).as_deref())
 }
 
 fn cache_image_path() -> Option<PathBuf> {
@@ -216,8 +209,8 @@ pub fn spawn_cloud_fetcher(
 ) {
     let image_path = cache_image_path();
     let meta_path = cache_meta_path();
-    let cloud_url = resolve_cloud_url(env_override(ENV_CLOUD_URL).as_deref());
-    let poll_interval = resolve_poll_interval(env_override(ENV_POLL_SECS).as_deref());
+    let cloud_url = resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref());
+    let poll_interval = resolve_poll_interval(crate::env_override(ENV_POLL_SECS).as_deref());
     info!(
         url = %cloud_url,
         poll_secs = poll_interval.as_secs(),

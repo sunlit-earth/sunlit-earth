@@ -149,6 +149,9 @@ impl Default for AppConfig {
     }
 }
 
+/// Environment variable overriding the config file location.
+const ENV_CONFIG: &str = "SUNLIT_EARTH_CONFIG";
+
 /// Returns the path to the config file.
 ///
 /// On Windows this resolves to `%LOCALAPPDATA%\SunlitEarth\config.toml`.
@@ -156,13 +159,15 @@ impl Default for AppConfig {
 /// the developer's real settings. Returns `None` if the platform's local data
 /// directory cannot be determined.
 pub fn config_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var("SUNLIT_EARTH_CONFIG")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return Some(PathBuf::from(path));
+    config_path_from(crate::env_override(ENV_CONFIG).as_deref())
+}
+
+/// Resolve the config file path from an optional environment override.
+fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
+    match env_path {
+        Some(path) => Some(PathBuf::from(path)),
+        None => Some(dirs::data_local_dir()?.join("SunlitEarth").join("config.toml")),
     }
-    Some(dirs::data_local_dir()?.join("SunlitEarth").join("config.toml"))
 }
 
 /// Load the app configuration from disk.
@@ -328,6 +333,27 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+
+    // --- config_path resolution ---
+
+    #[test]
+    fn config_path_with_override_uses_that_file() {
+        let path = config_path_from(Some("C:/tmp/sunlit/custom.toml"))
+            .expect("override should resolve");
+        assert_eq!(path, PathBuf::from("C:/tmp/sunlit/custom.toml"));
+    }
+
+    #[test]
+    fn config_path_without_override_uses_app_folder() {
+        if let Some(path) = config_path_from(None) {
+            assert!(path.ends_with("config.toml"), "unexpected path: {}", path.display());
+            assert!(
+                path.parent().is_some_and(|p| p.ends_with("SunlitEarth")),
+                "expected the app folder, got {}",
+                path.display()
+            );
+        }
+    }
 
     // --- Step 2.1: AppConfig defaults and serde ---
 

@@ -124,16 +124,45 @@ fn cleanup_temp_dir(dir: &Path) {
     let _ = fs::remove_dir_all(dir);
 }
 
+/// RAII guard that removes a temp directory on drop, including when the test
+/// panics part-way through. Mirrors `ChildGuard`, for filesystem state.
+struct TempDirGuard {
+    path: PathBuf,
+}
+
+impl TempDirGuard {
+    fn new() -> Self {
+        Self { path: create_temp_dir() }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        cleanup_temp_dir(&self.path);
+    }
+}
+
+/// Scratch directory for state a spawned binary would otherwise write into the
+/// developer's `%LOCALAPPDATA%\SunlitEarth`.
+///
+/// Without this redirection the tests read the real settings (and, when
+/// auto-refresh is enabled there, replace the desktop wallpaper of the machine
+/// running them) and append rows to the real memory metrics CSV, contaminating
+/// the soak data that file exists to collect.
+fn isolated_state_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("sunlit_earth_e2e_state");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
 /// A throwaway config path, passed to every spawned binary via
 /// `SUNLIT_EARTH_CONFIG`.
-///
-/// Without it the tests read the developer's real settings from
-/// `%LOCALAPPDATA%\SunlitEarth` and, when auto-refresh is enabled there,
-/// replace the desktop wallpaper of the machine running the tests.
 fn isolated_config_path() -> PathBuf {
-    let dir = std::env::temp_dir().join("sunlit_earth_e2e_config");
-    let _ = fs::create_dir_all(&dir);
-    dir.join(format!(
+    isolated_state_dir().join(format!(
         "config_{}_{}.toml",
         std::process::id(),
         SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -527,14 +556,23 @@ fn spawn_cloud_stub(jpeg: Vec<u8>) -> (u16, Arc<StubState>) {
 }
 
 /// Handle a single stub request, then close the connection.
+///
+/// Any connection that does not deliver a complete request within the read
+/// timeout is abandoned rather than blocking the accept loop; a stray local
+/// connection (a port scanner, say) would otherwise wedge the server and hang
+/// the test.
 fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
     const INM: &str = "if-none-match:";
+    const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+    if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
+        return;
+    }
     let Ok(peek) = stream.try_clone() else { return };
     let mut reader = BufReader::new(peek);
 
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+    if !matches!(reader.read_line(&mut request_line), Ok(n) if n > 0) {
         return;
     }
     let method = request_line.split_whitespace().next().unwrap_or_default().to_owned();
@@ -542,8 +580,10 @@ fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
     let mut if_none_match: Option<String> = None;
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header).unwrap_or(0) == 0 {
-            break;
+        match reader.read_line(&mut header) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return,
         }
         if header.trim().is_empty() {
             break;
@@ -632,15 +672,17 @@ fn test_binary_exists() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_render_and_exit() {
-    // 1. Create a temp directory and output path.
-    let temp_dir = create_temp_dir();
-    let output_path = temp_dir.join("render.png");
+    // 1. Create a temp directory and output path. RAII so a failing assertion
+    //    below still cleans the directory up.
+    let temp_dir = TempDirGuard::new();
+    let output_path = temp_dir.path().join("render.png");
     let config_path = format!("{}/tests/fixtures/e2e_config.toml", env!("CARGO_MANIFEST_DIR"));
 
     // 2. Spawn the binary with the render subcommand.
     let child = Command::new(BINARY)
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
         .args([
             "--log-level",
             "debug",
@@ -774,8 +816,6 @@ fn test_render_and_exit() {
         );
     }
 
-    // 11. Clean up.
-    cleanup_temp_dir(&temp_dir);
 }
 
 #[test]
@@ -789,6 +829,7 @@ fn test_tray_mode_ipc_lifecycle() {
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
                 "--log-level", "debug",
                 "--tray-start", "hidden",
@@ -868,6 +909,7 @@ fn test_windowed_mode_graceful_shutdown() {
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
                 "--mode", "window",
                 "--log-level", "debug",
@@ -929,6 +971,7 @@ fn test_single_instance_second_exits() {
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
                 "--log-level", "debug",
                 "--ipc-socket", &socket_name,
@@ -953,6 +996,7 @@ fn test_single_instance_second_exits() {
     let instance_b = Command::new(BINARY)
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
         .args(["--log-level", "debug", "--ipc-socket", &socket_name])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1004,6 +1048,7 @@ fn test_tray_hide_show_cycle() {
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
                 "--log-level", "debug",
                 "--tray-start", "visible",
@@ -1070,6 +1115,7 @@ fn test_gpu_persistence_after_hide() {
         Command::new(BINARY)
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .args([
                 "--log-level", "debug",
                 "--tray-start", "visible",
@@ -1142,9 +1188,10 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     const SETTLE: Duration = Duration::from_secs(8);
 
     let socket_name = unique_socket_name();
-    let temp_dir = create_temp_dir();
-    let cache_dir = temp_dir.join("cache");
-    let textures_dir = temp_dir.join("textures");
+    // RAII so a failing assertion below still cleans the directory up.
+    let temp_dir = TempDirGuard::new();
+    let cache_dir = temp_dir.path().join("cache");
+    let textures_dir = temp_dir.path().join("textures");
     fs::create_dir_all(&cache_dir).expect("failed to create stub cache dir");
     fs::create_dir_all(&textures_dir).expect("failed to create empty textures dir");
 
@@ -1157,6 +1204,7 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     let mut guard = ChildGuard::new(
         Command::new(BINARY)
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .env("SUNLIT_EARTH_SYNC_LOG", "1")
             .env("SUNLIT_EARTH_CLOUD_URL", format!("http://127.0.0.1:{port}/clouds.jpg"))
             .env("SUNLIT_EARTH_CLOUD_POLL_SECS", "1")
@@ -1271,6 +1319,4 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
-
-    cleanup_temp_dir(&temp_dir);
 }

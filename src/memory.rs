@@ -25,6 +25,12 @@ const METRICS_MAX_BYTES: u64 = 1024 * 1024;
 /// Column header written when a metrics file is created.
 const METRICS_HEADER: &str = "unix_ts,rss_bytes,peak_rss_bytes,private_bytes\n";
 
+/// File name of the metrics CSV inside the metrics directory.
+const METRICS_FILE_NAME: &str = "memory-metrics.csv";
+
+/// Environment variable overriding the directory holding the metrics CSV.
+const ENV_METRICS_DIR: &str = "SUNLIT_EARTH_METRICS_DIR";
+
 /// Snapshot of process memory counters.
 pub struct MemorySnapshot {
     /// Current resident set size (working set) in bytes.
@@ -115,13 +121,24 @@ pub fn log_memory_usage(context: &str) {
 /// Returns the path of the memory metrics CSV.
 ///
 /// On Windows this resolves to `%LOCALAPPDATA%\SunlitEarth\memory-metrics.csv`.
-/// Returns `None` if the platform's local data directory cannot be determined.
+/// `SUNLIT_EARTH_METRICS_DIR` overrides the directory so tests do not append to
+/// the samples a real installation is accumulating; without it, every
+/// test-spawned process pollutes the soak data. Returns `None` if the
+/// platform's local data directory cannot be determined.
 pub fn metrics_path() -> Option<PathBuf> {
-    Some(
-        dirs::data_local_dir()?
-            .join("SunlitEarth")
-            .join("memory-metrics.csv"),
-    )
+    metrics_path_from(crate::env_override(ENV_METRICS_DIR).as_deref())
+}
+
+/// Resolve the metrics CSV path from an optional environment override.
+fn metrics_path_from(env_dir: Option<&str>) -> Option<PathBuf> {
+    match env_dir {
+        Some(dir) => Some(PathBuf::from(dir).join(METRICS_FILE_NAME)),
+        None => Some(
+            dirs::data_local_dir()?
+                .join("SunlitEarth")
+                .join(METRICS_FILE_NAME),
+        ),
+    }
 }
 
 /// Seconds since the Unix epoch, or 0 if the clock is before it.
@@ -231,6 +248,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sunlit_earth_test_metrics_{name}"));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn metrics_path_with_override_uses_that_directory() {
+        let path = metrics_path_from(Some("C:/tmp/sunlit")).expect("override should resolve");
+        assert_eq!(path, PathBuf::from("C:/tmp/sunlit").join(METRICS_FILE_NAME));
+    }
+
+    #[test]
+    fn metrics_path_without_override_uses_app_folder() {
+        if let Some(path) = metrics_path_from(None) {
+            assert!(path.ends_with(METRICS_FILE_NAME), "unexpected path: {}", path.display());
+            assert!(
+                path.parent().is_some_and(|p| p.ends_with("SunlitEarth")),
+                "expected the app folder, got {}",
+                path.display()
+            );
+        }
     }
 
     #[test]

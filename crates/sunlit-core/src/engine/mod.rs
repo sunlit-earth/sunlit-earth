@@ -552,8 +552,11 @@ impl Engine {
 
         if let Some(cloud) = &mut self.cloud
             && cloud.schedule.due(now)
+            && !cloud.request()
         {
-            cloud.request();
+            // The worker was still busy with the previous poll. Retry on the
+            // next tick rather than waiting out another whole interval.
+            cloud.schedule.next = now;
         }
 
         // Live time keeps moving even when nothing else changes, so the
@@ -673,15 +676,17 @@ impl Engine {
 }
 
 impl CloudWorker {
-    /// Ask the worker for one poll, unless it is still busy with the last one.
-    fn request(&self) {
+    /// Ask the worker for one poll. Returns `false` when the worker is still
+    /// busy with the previous one, so the caller can retry soon.
+    fn request(&self) -> bool {
         if self.busy.swap(true, Ordering::SeqCst) {
-            debug!("cloud poll skipped: previous poll still running");
-            return;
+            return false;
         }
         if self.tx.send(()).is_err() {
             self.busy.store(false, Ordering::SeqCst);
+            return false;
         }
+        true
     }
 }
 

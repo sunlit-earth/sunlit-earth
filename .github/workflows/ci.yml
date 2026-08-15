@@ -41,3 +41,12 @@ jobs:
           add-rust-environment-hash-key: false
       - run: cargo test --locked
         shell: bash
+      # The contact sheet renders every camera preset into one image. It is
+      # not asserted on; it exists so a human can glance at a shading change.
+      - name: Upload contact sheet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contact-sheet
+          path: target/contact-sheet.png
+          if-no-files-found: warn

@@ -35,8 +35,8 @@ Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scen
 - [x] Phase 0 regression test passes unchanged (black box), and the whole Phase 0 surface keeps working: all `SUNLIT_EARTH_*` env knobs, the `query-memory` IPC command, the memory metrics CSV, and the drain-while-hidden semantics (the Phase 0 mailbox and drain timer become engine-internal, but the observable behavior is identical)
 - [x] Existing e2e suite passes (adapted only where paths or startup logs changed)
 - [x] New engine integration tests pass headlessly on the software adapter
-- [ ] Mock-clock soak test: 14 simulated days of cloud updates and auto-refresh in under a minute, bounded private bytes
-- [ ] Golden-image test with tolerance, plus contact-sheet artifact job in CI
+- [x] Mock-clock soak test: 14 simulated days of cloud updates and auto-refresh in under a minute, bounded private bytes
+- [x] Golden-image test with tolerance, plus contact-sheet artifact job in CI
 - [x] Quality tiers exist; dev/test default is low; release default unchanged in output quality
 - [ ] Slint 1.17: tray via `SystemTrayIcon`, `tray.rs` message pump deleted; teardown without `process::exit(0)` attempted and outcome documented
 - [ ] `cargo clippy` clean; CLAUDE.md rewritten for the new layout
@@ -134,7 +134,7 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 - [x] Steps 1-2: workspace + core extraction
 - [x] Steps 3-4: SceneParams + engine
 - [x] Step 5: app switched, old path deleted
-- [ ] Steps 6-7: tiers + new test layers
+- [x] Steps 6-7: tiers + new test layers
 - [ ] Step 8: Slint 1.17 + tray (or descoped with findings)
 - [ ] Step 9: docs + CI
 
@@ -298,3 +298,54 @@ at a local stub is not second-guessed by the tier.
 Verification: `cargo test` 344 pass, clippy no new warnings, full e2e suite 8 pass. The e2e render
 test now runs at the low tier (debug build) and its pixel assertions still hold, which is the
 evidence that dropping MSAA does not change the image where it matters.
+
+### Step 7: the new test layers
+
+**Engine integration tests** (`crates/sunlit-core/tests/engine.rs`, 10 tests) landed with the
+engine in Step 4b and gained a texture-swap case here. They cover the first frame, dirty-check
+suppression, resize quantization, preview toggling, render-to-file with and without a preview,
+wallpaper publishing through a stub sink, and the textures-ready event.
+
+**Mock-clock soak** (`crates/sunlit-core/tests/soak.rs`). 14 simulated days: 672 wallpaper exports
+(one per simulated 30 minutes) and 112 cloud publications (one per simulated 3 hours) against a
+fixture `CloudSource` and a `CountingSink`, with the preview disabled, which is the hidden-window
+scenario the old architecture stopped servicing. Result on the development desktop:
+
+```
+14 simulated days in 12.5s: 672 exports, 113 cloud fetches (of 112 publications)
+private bytes: startup 304.0 MiB, after warm-up 388.5 MiB (+84.4),
+               end 388.4 MiB (+0.0 over 12 simulated days)
+```
+
+The samples printed every 84 steps are flat to within 1 MiB from step 84 to step 672, so the
+baseline is taken after warm-up and the assertion is on the remaining 12 simulated days (limit
+16 MiB, two decoded frames). Warm-up itself, about 84 MiB, is the first cloud texture, its mip
+chain, and wgpu's allocator pools, and gets its own generous ceiling so a gross regression there
+is still caught. For scale: the unfixed Phase 0 behavior would have parked one decoded 2048x1024
+frame per update, about 900 MiB across this run.
+
+The soak test found one real defect: a cloud poll skipped because the worker was still busy used
+to wait out a whole interval before retrying. It now retries on the next tick.
+
+**Golden images** (`crates/sunlit-core/tests/golden.rs`), four cases at 512x256 with the
+procedural grid texture and the software adapter forced, so a developer machine with a discrete
+GPU and a CI runner with WARP compare against the same references. Tolerance is a mean channel
+difference under 2/255 plus at most 1% of pixels differing by more than 24. Regenerate with
+`SUNLIT_EARTH_UPDATE_GOLDEN=1`. The four references total 284 KB.
+
+A fifth test asserts that every pair of references is distinguishable under that tolerance, which
+is what keeps the others from being vacuous. It immediately earned its place: the first attempt at
+a night-side case compared equal to the daytime one, because the grid texture renders in
+single-texture mode where the shader takes the `terminator_width < 0` path and ignores the sun
+entirely. Only the atmosphere shells are sun-dependent without real textures, so the cases became
+default, strong Rayleigh, strong nightglow at midnight, and a close-up. The base camera also had
+to be zoomed in: at the default zoom the globe is small enough that limb effects land on a handful
+of pixels and no tolerance can separate them from noise. Day/night shading itself stays covered by
+`tests/shading.rs` and `tests/render_pipeline.rs`, which run the blend function on the GPU
+directly.
+
+**Contact sheet**: all nine camera presets rendered into one PNG at `target/contact-sheet.png`,
+uploaded by CI as an artifact. It asserts nothing; it exists so a human can glance at a shading
+change.
+
+Verification: `cargo test` 352 pass, clippy no new warnings.

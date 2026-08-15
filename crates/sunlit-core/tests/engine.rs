@@ -244,6 +244,25 @@ fn wallpaper_now_publishes_one_frame_at_the_sink_size() {
 }
 
 #[test]
+fn switching_texture_mode_produces_a_new_frame() {
+    let harness = Harness::start(|_| {});
+    harness.next_frame();
+    harness.drained_frame(Duration::from_millis(300));
+
+    // Slot 1 has no file behind it in this configuration, so the renderer
+    // falls back to the grid. The frame still has to be re-rendered: the
+    // selection is part of the dirty check, and a client that switched modes
+    // is waiting for a picture either way.
+    let swapped = SceneParams {
+        texture_index: 1,
+        ..test_params()
+    };
+    harness.engine.send(EngineCommand::UpdateParams(Box::new(swapped)));
+    let (rgba, width, height) = harness.next_frame();
+    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+}
+
+#[test]
 fn textures_ready_fires_for_the_procedural_grid() {
     let harness = Harness::start(|_| {});
     let deadline = std::time::Instant::now() + TIMEOUT;

@@ -27,61 +27,73 @@ jobs:
         shell: bash
 
   test:
-    name: Test
-    runs-on: windows-latest
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every OS reports. A Linux failure that cancels the macOS job costs a
+      # whole round trip to learn something the same run already knew.
+      fail-fast: false
+      matrix:
+        include:
+          # `cache` is spelled out rather than derived from `os` so the Windows
+          # job keeps the key it had before the matrix and stays warm.
+          - name: Linux
+            os: ubuntu-latest
+            cache: linux
+            # Nothing in the suite opens a window today: the Slint UI tests use
+            # the testing backend and the desktop e2e suite is #[ignore]d. The
+            # display is here so that the first windowed test to arrive runs
+            # without a CI change. `xvfb-run -a` does propagate the exit status
+            # (verified), so a failing suite still fails the job.
+            wrap: xvfb-run -a
+          - name: Windows
+            os: windows-latest
+            cache: windows
+            wrap: ""
+          - name: macOS
+            os: macos-latest
+            cache: macos
+            wrap: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      # --- per-OS setup ------------------------------------------------------
+
+      # Slint's documented Linux build dependencies, mesa's Vulkan software
+      # driver (lavapipe, which is what the GPU tests run on here), and Xvfb.
+      # Installed explicitly rather than relied on from the runner image, which
+      # is free to drop any of them.
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libclang-dev \
+            mesa-vulkan-drivers \
+            xvfb
+        shell: bash
+
+      # bindgen needs libclang for astronomy-engine-bindings. Windows has no
+      # system one, so it is installed and pinned.
       - uses: KyleMayes/install-llvm-action@v2
+        if: matrix.os == 'windows-latest'
         with:
           version: "19"
       - name: Set LIBCLANG_PATH
+        if: matrix.os == 'windows-latest'
         run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
         shell: bash
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-windows
-      - run: cargo test --locked
-        shell: bash
-      # The contact sheet renders every camera preset into one image. It is
-      # not asserted on; it exists so a human can glance at a shading change.
-      - name: Upload contact sheet
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: contact-sheet
-          path: target/contact-sheet.png
-          if-no-files-found: warn
 
-  # TEMPORARY, Phase 2 step 4. There is no macOS hardware to develop against, so
-  # this job is how the port is verified at all: it answers whether the
-  # workspace compiles, and whether our specific pipeline (MSAA, mipmapped
-  # textures, buffer readback) runs on the paravirtual Metal GPU the hosted
-  # runners expose. That is the open question from retrospective section 11.
-  #
-  # Every step after the build runs with `if: always()` so one run reports on
-  # every layer instead of stopping at the first failure. A failing step still
-  # fails the job.
-  #
-  # Deleted in step 5, when macOS joins the matrix.
-  macos-probe:
-    name: macOS probe (temporary)
-    runs-on: macos-latest
-    env:
-      # The render smoke step runs the real binary, which records metrics and
-      # reads the user config. Point both at the workspace so nothing lands in
-      # ~/Library/Application Support.
-      SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/probe-metrics
-      SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/probe-config.toml
-      SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/probe-cache
-      SUNLIT_EARTH_NO_CLOUDS: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      # bindgen needs libclang for astronomy-engine-bindings. Xcode ships one;
-      # point at it only if it is where we expect, so a layout change degrades
-      # to clang-sys's own search rather than to a bogus path.
+      # Xcode ships a libclang. Point at it only if it is where we expect, so a
+      # layout change degrades to clang-sys's own search rather than to a path
+      # that does not exist.
       - name: Point bindgen at Xcode's libclang
+        if: matrix.os == 'macos-latest'
         run: |
           LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
           if [ -f "$LIB/libclang.dylib" ]; then
@@ -91,54 +103,64 @@ jobs:
             echo "no libclang at $LIB, leaving clang-sys to find it"
           fi
         shell: bash
+
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-macos
-      - name: Build
-        run: cargo build --workspace --locked
+          shared-key: ci-${{ matrix.cache }}
+
+      # --- the suite ---------------------------------------------------------
+
+      - name: Test
+        run: ${{ matrix.wrap }} cargo test --locked
         shell: bash
-      - name: Unit tests
-        if: always()
-        run: cargo test --workspace --lib --bins --locked
-        shell: bash
-      # Prints the selected adapter, which is the actual question this job
-      # exists to answer, and doubles as the headless render smoke test.
-      - name: Render smoke test and adapter report
-        if: always()
+
+      # The headless render path is the useful cross-platform mode today, and
+      # the one place all three OSes are asked to produce a real image end to
+      # end. Deliberately not wrapped in xvfb on Linux: `run_render` claims to
+      # need no window, no Slint backend and no event loop, and running it with
+      # no DISPLAY at all is what makes that claim a tested one rather than a
+      # comment.
+      - name: Render smoke test
+        env:
+          # The real binary records metrics and reads the user config. Keep both
+          # in the workspace so nothing lands in the runner's app data.
+          SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/smoke-metrics
+          SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/smoke-config.toml
+          SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/smoke-cache
+          SUNLIT_EARTH_NO_CLOUDS: "1"
+          # An empty directory, on purpose. `textures/**` is Git LFS and
+          # `actions/checkout` does not fetch it, so the working tree holds
+          # pointer files that look like textures and fail to decode as JXL.
+          # The engine then waits two minutes for a `TexturesReady` that cannot
+          # arrive (see the roadmap entry on `Renderer::textures_ready`), and
+          # the log fills with decode errors that mean nothing. Pointing at an
+          # empty directory says what we actually want: render without the 8K
+          # assets, on the procedural grid, and tell us whether the pipeline
+          # and the PNG encoder work on this OS. Turning on LFS here would
+          # exercise the decode too, at the cost of making every run on every
+          # OS spend LFS bandwidth quota.
+          SUNLIT_EARTH_TEXTURES: ${{ github.workspace }}/smoke-textures
         run: |
-          cargo run --locked -p sunlit-earth -- --log-level debug \
-            render --output probe.png --width 640 --height 360
-          ls -l probe.png
+          mkdir -p smoke-textures
+          cargo run --locked -p sunlit-earth -- \
+            render --output render-smoke.png --width 640 --height 360
+          size=$(wc -c < render-smoke.png)
+          echo "render-smoke.png is $size bytes"
+          if [ "$size" -lt 1000 ]; then
+            echo "that is too small to be a 640x360 render"
+            exit 1
+          fi
         shell: bash
-      - name: Engine integration tests
-        if: always()
-        run: cargo test -p sunlit-core --test engine --locked
-        shell: bash
-      - name: GPU shader tests
-        if: always()
-        run: cargo test -p sunlit-core --test shading --test render_pipeline --locked
-        shell: bash
-      # --nocapture so the private-bytes samples reach the log: the Windows
-      # bounds were calibrated on a different allocator and this is how we find
-      # out whether they hold here.
-      - name: Soak test
-        if: always()
-        run: cargo test -p sunlit-core --test soak --locked -- --nocapture
-        shell: bash
-      - name: Golden images
-        if: always()
-        run: cargo test -p sunlit-core --test golden --locked -- --nocapture
-        shell: bash
-      - name: Slint UI tests
-        if: always()
-        run: cargo test -p sunlit-earth --test slint_ui --locked
-        shell: bash
-      - name: Upload probe artifacts
+
+      # The contact sheet renders every camera preset into one image. It is not
+      # asserted on; it exists so a human can glance at a shading change. Per OS,
+      # because the three adapters are exactly what it is worth comparing.
+      - name: Upload images
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-probe
+          name: images-${{ matrix.name }}
           path: |
-            probe.png
             target/contact-sheet.png
+            render-smoke.png
           if-no-files-found: warn

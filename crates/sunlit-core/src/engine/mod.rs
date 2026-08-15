@@ -131,11 +131,16 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// A minimal headless configuration: system clock, no clouds, no
-    /// auto-refresh, events dropped on the floor.
+    /// A minimal headless configuration: software adapter, system clock, no
+    /// clouds, no auto-refresh, events dropped on the floor.
+    ///
+    /// The software adapter is the default here so the test suite behaves the
+    /// same on a developer machine with a discrete GPU as it does on CI, where
+    /// WARP is all there is. A test that passes only on one of the two is worse
+    /// than no test.
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
-            force_software: false,
+            force_software: true,
             // Two file-backed slots (day, night) so the slot layout matches
             // production even when no texture files are present.
             texture_paths: vec![None, None],

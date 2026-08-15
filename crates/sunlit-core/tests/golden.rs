@@ -36,7 +36,9 @@ const OUTLIER_THRESHOLD: u8 = 24;
 /// several concurrently crashes on Windows.
 static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     let mut config = EngineConfig::headless((WIDTH, HEIGHT));
-    // Force WARP so the references are adapter-independent in practice.
+    // Force WARP so the references are adapter-independent in practice. This
+    // matches the `headless` default but is stated explicitly, because the
+    // correctness of the checked-in references depends on it.
     config.force_software = true;
     config.preview_enabled = false;
     config.params = base_params();

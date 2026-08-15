@@ -235,8 +235,12 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
         "expected at least {expected_fetches} cloud downloads, got {fetches}"
     );
     // The point is compression, not a benchmark: 14 days in two minutes is
-    // still a ratio of about 10 000 to 1. The development desktop does it in
-    // 13 seconds; the headroom is for the software adapter on CI.
+    // still a ratio of about 10 000 to 1. Measured on the development desktop:
+    // 12.5 s on the discrete GPU, 50 s on the software adapter (which is what
+    // this test uses, so that it behaves the same here as on CI). The margin
+    // to this bound is about 2.4x, so a much slower runner could make it
+    // flaky; if that happens, halving the export cadence is the lever, not
+    // raising the bound.
     assert!(
         elapsed < Duration::from_secs(120),
         "14 simulated days took {:.1}s, which defeats the purpose",

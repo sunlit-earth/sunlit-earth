@@ -67,6 +67,16 @@ impl EngineLink {
         self.tx.clone()
     }
 
+    /// Tell the engine whether anyone is looking at the preview.
+    ///
+    /// A hidden window costs a full readback plus a `SharedPixelBuffer` copy
+    /// on every sun tick otherwise, which at the High tier is a 4K frame every
+    /// two minutes for nothing. The engine keeps rendering either way, because
+    /// the wallpaper export depends on it; only the delivery stops.
+    pub fn set_preview_enabled(&self, enabled: bool) {
+        self.send(EngineCommand::SetPreviewEnabled(enabled));
+    }
+
     /// Render `width` x `height` pixels on the engine thread and wait for them.
     pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, String> {
         let (reply, replies) = crossbeam_channel::bounded(1);

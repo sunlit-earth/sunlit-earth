@@ -180,6 +180,39 @@ fn disabling_the_preview_stops_frames_without_stopping_the_engine() {
 }
 
 #[test]
+fn enabling_the_preview_before_any_frame_exists_still_delivers_one() {
+    // The window can be hidden before the engine has drawn anything, which is
+    // what `--tray-start hidden` does. Showing it later must produce a frame:
+    // the owed-frame debt has to survive a tick where there is nothing to pay
+    // it with yet.
+    let harness = Harness::start(|config| config.preview_enabled = false);
+    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
+    let (rgba, width, height) = harness.next_frame();
+    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+    assert!(has_lit_pixels(&rgba));
+}
+
+#[test]
+fn re_enabling_the_preview_resends_the_current_frame_unchanged() {
+    // Hide, change nothing, show again. The dirty check would suppress a
+    // re-render, so the frame has to come from the texture that is already
+    // there or the window stays blank until the user touches a control.
+    let harness = Harness::start(|_| {});
+    harness.next_frame();
+    harness.drained_frame(Duration::from_millis(300));
+
+    harness.engine.send(EngineCommand::SetPreviewEnabled(false));
+    assert!(
+        harness.drained_frame(Duration::from_millis(300)).is_none(),
+        "no frames while the preview is off"
+    );
+
+    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
+    let (rgba, _, _) = harness.next_frame();
+    assert!(has_lit_pixels(&rgba));
+}
+
+#[test]
 fn render_to_file_writes_a_png_at_the_requested_size() {
     let harness = Harness::start(|_| {});
     let dir = std::env::temp_dir().join("sunlit_earth_test_engine_render_to_file");

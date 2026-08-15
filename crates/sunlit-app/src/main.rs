@@ -491,6 +491,7 @@ fn run_app(
     // - Windowed: quit the event loop (app exits)
     if use_tray {
         let window_weak = window.as_weak();
+        let engine_link = link.clone();
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
                 let size = win.window().size();
@@ -499,6 +500,9 @@ fn run_app(
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_core::memory::log_memory_usage("after window hidden");
+            // Slint does the hiding for us, so the engine has to be told
+            // separately that nobody is looking any more.
+            engine_link.set_preview_enabled(false);
             slint::CloseRequestResponse::HideWindow
         });
     } else {
@@ -522,11 +526,13 @@ fn run_app(
     // before run_event_loop_until_quit() causes the loop to exit immediately.
     if use_tray && matches!(tray_start, TrayStart::Hidden) {
         let ww = window.as_weak();
+        let engine_link = link.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
             if let Some(win) = ww.upgrade() {
                 debug!("hiding window for --tray-start hidden (deferred)");
                 win.hide().ok();
             }
+            engine_link.set_preview_enabled(false);
             println!("SIGNAL:window_hidden_deferred");
         });
     }

@@ -79,24 +79,29 @@ pub fn create_tray(window: &MainWindow, engine: &EngineLink) -> TrayIcon {
     tray.set_auto_refresh_enabled(window.get_auto_refresh_enabled());
 
     let window_weak = window.as_weak();
+    let engine_link = engine.clone();
     tray.on_open_window(move || {
         if let Some(win) = window_weak.upgrade() {
             debug!("tray: showing window");
             sunlit_core::memory::log_memory_usage("after window shown");
             win.show().ok();
+            engine_link.set_preview_enabled(true);
         }
     });
 
     let window_weak = window.as_weak();
+    let engine_link = engine.clone();
     tray.on_toggle_window(move || {
         if let Some(win) = window_weak.upgrade() {
             if win.window().is_visible() {
                 debug!("tray: hiding window (icon clicked)");
                 win.hide().ok();
+                engine_link.set_preview_enabled(false);
             } else {
                 debug!("tray: showing window (icon clicked)");
                 sunlit_core::memory::log_memory_usage("after window shown");
                 win.show().ok();
+                engine_link.set_preview_enabled(true);
             }
         }
     });

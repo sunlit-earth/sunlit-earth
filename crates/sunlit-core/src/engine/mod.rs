@@ -646,10 +646,18 @@ impl Engine {
 
         let emitted = self.render_if_dirty();
         if self.preview.enabled && self.preview.owed {
-            if !emitted && self.renderer.has_frame() {
+            if emitted {
+                self.preview.owed = false;
+            } else if self.renderer.has_frame() {
+                // Nothing changed while the preview was off, so re-send the
+                // frame that is already in the texture. A window that was
+                // hidden and shown again would otherwise show nothing until
+                // the user touched a control.
                 self.emit_preview();
+                self.preview.owed = false;
             }
-            self.preview.owed = false;
+            // If no frame exists yet the debt stands: the first render will
+            // pay it.
         }
     }
 

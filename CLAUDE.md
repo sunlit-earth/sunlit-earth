@@ -65,6 +65,7 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 - **Injected `Clock`.** `SystemClock` in production, `MockClock` in tests. `MockClock` advances UTC too, so simulated days really do rotate the Earth. This is what makes 14 simulated days run in 13 seconds.
 - **Injected `CloudSource`.** `HttpCloudSource` in production, fixtures in tests. A dedicated cloud worker thread does network I/O and JPEG decoding and never touches the GPU; it parks frames in the mailbox and pokes the engine, which uploads on its own schedule. A poll skipped because the worker is busy retries on the next tick.
 - **Injected `WallpaperSink`.** `SystemWallpaper` writes a PNG and calls the Win32 API; `CountingSink` lets the soak test run for simulated weeks without touching the desktop.
+- **The preview follows window visibility.** The app sends `SetPreviewEnabled(false)` on every hide and `(true)` on every show, so a hidden window costs no readback. The engine keeps rendering regardless (the wallpaper export depends on it); only delivery stops. Re-showing pays back an "owed" frame from the existing texture, since the dirty check would otherwise suppress a re-render and leave the window blank.
 - **Preview frames are pixel buffers**, not shared GPU textures. The engine reads its offscreen target back and hands over RGBA bytes; the app wraps them in `slint::Image::from_rgba8`. Slint therefore needs no wgpu feature and shares no device, which is why teardown is ordinary drop order.
 
 ### Parameters (`sunlit_core::params`)

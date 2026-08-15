@@ -87,11 +87,13 @@ fn dispatch_command(
         "show-window" => {
             debug!("ipc: received show-window command");
             let ww = window_weak.clone();
+            let engine = engine.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("ipc: showing window");
                     win.show().ok();
                 }
+                engine.set_preview_enabled(true);
                 signal("window_shown");
             })
             .ok();
@@ -99,11 +101,13 @@ fn dispatch_command(
         "hide-window" => {
             debug!("ipc: received hide-window command");
             let ww = window_weak.clone();
+            let engine = engine.clone();
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("ipc: hiding window");
                     win.hide().ok();
                 }
+                engine.set_preview_enabled(false);
                 signal("window_hidden");
             })
             .ok();

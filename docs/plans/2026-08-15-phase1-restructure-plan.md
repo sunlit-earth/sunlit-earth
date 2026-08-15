@@ -174,11 +174,15 @@ Recorded as they happened, smallest change that kept the plan's intent.
    `SetPreviewSize` only when the value changes, and the engine quantizes it, so a drag produces a
    handful of commands.
 
-7. **The preview stays enabled while the window is hidden.** `SetPreviewEnabled` exists and the
-   `render` subcommand uses it, but the windowed app does not turn the preview off on hide. The
-   engine only renders when something changed, so a hidden window costs one readback per sun tick
-   (two minutes) rather than per frame, and leaving it on keeps the show/hide path free of an
-   ordering dependency between the visibility change and the next frame.
+7. **The preview stayed enabled while the window was hidden** (corrected in review). As first
+   written the windowed app never sent `SetPreviewEnabled`, so the command was reachable only
+   through the `preview_enabled` field of `EngineConfig`, which is what the `render` subcommand
+   sets. That left a hidden High-tier window doing a full 4K readback and `SharedPixelBuffer` copy
+   on every sun tick for nobody. The app now sends `SetPreviewEnabled(false)` on every hide (IPC,
+   tray toggle, the close handler, and the deferred `--tray-start hidden`) and `(true)` on every
+   show. The engine's owed-frame logic delivers a frame on re-show, and it had to be hardened
+   first: the debt was being cleared even when there was no frame to pay it with, which is exactly
+   the `--tray-start hidden` case.
 
 8. **The quality tier does not yet skip the 8K textures.** The plan's low tier says "skip the 8K JXL
    textures unless explicitly selected", but the only Earth textures that exist are those 8K files,

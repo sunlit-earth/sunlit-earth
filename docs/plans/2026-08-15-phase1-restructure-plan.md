@@ -514,9 +514,14 @@ the lever is halving the export cadence rather than raising the bound.
 
 ### Final state
 
-`cargo test`: 384 tests pass (272 core unit, 14 engine, 6 golden, 19 render_pipeline, 12 shading,
-1 soak, 38 app unit, 17 slint_ui, 5 app doc-free binaries), plus 8 desktop e2e tests behind
-`--ignored`.
+`cargo test`: 371 tests pass (264 core unit, 14 engine, 6 golden, 19 render_pipeline, 12 shading,
+1 soak, 38 app unit, 17 slint_ui), plus 8 desktop e2e tests behind `--ignored`.
+
+Post-review verification, all on the development desktop: full suite green; `cargo clippy
+--all-targets` 21 warnings, unchanged from the pre-Phase-1 baseline; full e2e suite 8 pass in 42 s
+including the hide and show tests that now exercise `SetPreviewEnabled`; soak run twice on the
+software adapter at 49.8 s and 49.6 s with 1.6 MiB and 1.1 MiB of growth after warm-up; golden
+suite 6 pass with every pair of references still distinguishable.
 `cargo clippy --all-targets`: 21 warnings, every one of them a pre-existing pedantic lint that was
 already present before this work (`manual RangeInclusive::contains` in the scene math, field
 assignment after `Default::default()` in the config tests, two long functions in

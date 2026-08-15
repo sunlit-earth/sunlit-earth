@@ -16,7 +16,16 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 /// Soft budget for committed private memory. Crossing it emits a `warn!`.
-pub const PRIVATE_BYTES_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+///
+/// 3 GiB, not 2: decoding the two 8K JXL textures at the High tier pushes
+/// private bytes to about 2.43 GiB transiently at startup (observed in a
+/// release build), so a 2 GiB budget warned about normal operation. A warning
+/// that fires every launch is a warning nobody reads.
+///
+/// This is a single number for every tier, which is the crude version. A
+/// budget derived from the tier (the Low tier never goes near this) belongs
+/// with the texture-tier work in retrospective section 9.
+pub const PRIVATE_BYTES_BUDGET: u64 = 3 * 1024 * 1024 * 1024;
 
 /// Size at which the metrics file is rotated, roughly 145 days of samples at
 /// the watchdog cadence.

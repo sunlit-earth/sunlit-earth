@@ -462,11 +462,63 @@ disconnects while it is sleeping.
 `cargo build --release --locked` was run end to end (4m20s, 27 MB binary at
 `target/release/sunlit-earth.exe`) to confirm the release workflow's path assumption still holds.
 
+### Post-review fixes
+
+A validation pass found three major issues and six minor ones. All were fixed on this branch.
+
+**Sample counts were never validated against the adapter.** The quality tier capped them, but the
+High tier (the release default) caps nothing, so a config asking for an unsupported count reached
+`create_render_textures` and killed the engine thread with a wgpu validation error. The symptom was
+the nastiest kind: the window came up, IPC answered, quit exited 0, and no frame ever appeared.
+`renderer::resolve_sample_count` now takes the highest supported count at most the requested one,
+and the engine applies it in `Engine::new` and on every `UpdateParams`, warning once per distinct
+request. The engine is the single source of truth here, because a bare number in `SceneParams` can
+come from a config file or a combo box index saved on a machine with a different GPU, neither of
+which passes through the UI's option list. Two engine tests cover it, deliberately at the High tier:
+at the Low tier the cap masks the bug and the tests prove nothing. Verified red (with the reported
+validation error) against a stubbed-out resolver.
+
+A related gap: an engine thread that died was silent. `EngineHandle::send` now logs at error level
+when the channel is dead, and the join reports the panic payload.
+
+**The quality tier was not persisted.** `read_config_from_window` built the saved config from
+`AppConfig::default()`, so every save overwrote `quality_tier` with the build default: a debug-build
+save permanently downgraded a release install to low. Saves are now a read-modify-write against the
+stored config. Enumerating fields to preserve would rot on the next non-UI setting, so the
+UI-managed fields are written onto what is on disk instead. A side effect that is desirable:
+`--quality` stays a per-run flag rather than being written back.
+
+**The engine command channel was unbounded** while the docs claimed every crossing was a mailbox.
+Kept unbounded, with the argument now attached to the declaration: an unconditional consumer that
+drains every 50 ms, human-rate producers, and payloads that carry no pixels (pinned by a test on
+`size_of::<EngineCommand>()`). A bound was considered and rejected in writing: a blocking send from
+the UI thread deadlocks against a mid-export engine, and a `try_send` that drops `UpdateParams` can
+drop the last one and leave the window and the engine permanently disagreeing. CLAUDE.md now names
+all three crossings honestly.
+
+The minor fixes: a test for the cloud worker's failure path (backoff extracted into `RetryBackoff`
+so its schedule is testable without sleeping through it, plus a scripted source that fails on
+demand); the cloud schedule no longer drags its deadline back and forth while the worker is busy;
+`WgpuContext` lost its dead `instance` and `adapter` fields and two stale doc comments were
+corrected; `SetPreviewEnabled` is now actually wired to window visibility, which required hardening
+the owed-frame logic first (it cleared the debt even when there was no frame to pay it with, the
+`--tray-start hidden` case exactly); `EngineConfig::headless` forces the software adapter so tests
+behave the same locally as on CI; and `PRIVATE_BYTES_BUDGET` went from 2 GiB to 3 GiB, because the
+observed 2.43 GiB startup peak at the High tier made the old budget warn about normal operation. A
+tier-aware budget belongs with the future texture-tier work.
+
+Cost of moving the tests onto the software adapter, measured on the development desktop: the engine
+suite goes from 9 s to 16 s, and the soak from 12.5 s to 50 s against its 120 s bound. That is a
+2.4x margin, thin enough that a much slower CI runner could make it flaky; the note in the test says
+the lever is halving the export cadence rather than raising the bound.
+
 ### Final state
 
-`cargo test`: 352 tests pass (250 core unit, 10 engine, 6 golden, 19 render_pipeline, 12 shading,
-1 soak, 38 app unit, 16 slint_ui), plus 8 desktop e2e tests behind `--ignored`.
+`cargo test`: 384 tests pass (272 core unit, 14 engine, 6 golden, 19 render_pipeline, 12 shading,
+1 soak, 38 app unit, 17 slint_ui, 5 app doc-free binaries), plus 8 desktop e2e tests behind
+`--ignored`.
 `cargo clippy --all-targets`: 21 warnings, every one of them a pre-existing pedantic lint that was
 already present before this work (`manual RangeInclusive::contains` in the scene math, field
 assignment after `Default::default()` in the config tests, two long functions in
-`render_pipeline.rs`, and three casts). No new warnings were introduced at any step.
+`render_pipeline.rs`, and three casts). No new warnings were introduced at any step, including the
+review fixes.

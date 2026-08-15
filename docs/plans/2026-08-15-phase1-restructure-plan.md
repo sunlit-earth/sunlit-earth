@@ -130,7 +130,7 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 
 ## Status
 
-- [ ] Plan approved
+- [x] Plan approved
 - [ ] Steps 1-2: workspace + core extraction
 - [ ] Steps 3-4: SceneParams + engine
 - [ ] Step 5: app switched, old path deleted
@@ -138,6 +138,29 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 - [ ] Step 8: Slint 1.17 + tray (or descoped with findings)
 - [ ] Step 9: docs + CI
 
+## Deviations
+
+Recorded as they happened, smallest change that kept the plan's intent.
+
 ## Results
 
-To be filled in during implementation: teardown outcome (exit hack removable or not), soak test numbers, golden baseline notes, deviations.
+Progress log, filled in as each step lands.
+
+### Baseline before Step 1
+
+`cargo test`: 319 tests pass (272 lib, 19 render_pipeline, 12 shading, 16 slint_ui), 8 e2e ignored.
+`cargo clippy --all-targets`: 33 warnings, all pre-existing pedantic lints. Full e2e suite passes
+in 43 seconds on the development desktop.
+
+### Step 1: workspace scaffolding
+
+The whole package moved to `crates/sunlit-app` with `git mv`, keeping `name = "sunlit-earth"` so
+the binary path, `CARGO_BIN_EXE_sunlit-earth`, and the release workflow's `target/release/
+sunlit-earth.exe` all stay valid. The root manifest became a virtual workspace with
+`resolver = "3"`, shared `[workspace.dependencies]`, and shared `[workspace.lints]`. `textures/`
+stayed at the repo root: the e2e-spawned binary no longer finds it through the cwd-relative lookup
+(cwd is now the crate directory) but the walk-up from the executable in `target/debug` still does.
+`Cargo.lock` did not change, so `--locked` keeps working. No workflow file needed edits.
+
+Verification: `cargo test` 319 pass, `cargo clippy --all-targets` 33 warnings (unchanged),
+`cargo test --test e2e -- --ignored` 8 pass in 43 seconds.

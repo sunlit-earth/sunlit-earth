@@ -1,12 +1,15 @@
-[package]
-name = "sunlit-earth"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "A desktop application that renders a realistic 3D view of Earth as seen from space and sets it as the wallpaper"
 license = "GPL-3.0-or-later"
 
-[dependencies]
+[workspace.dependencies]
 slint = { version = "~1.15", features = ["unstable-wgpu-28"] }
+slint-build = "~1.15"
 wgpu = "28"
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
@@ -28,31 +31,17 @@ tray-icon = "0.21"
 single-instance = "0.3"
 interprocess = "2"
 crossbeam-channel = "0.5"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_Foundation",
-    "Win32_System_ProcessStatus",
-    "Win32_System_Threading",
-    "Win32_System_Console",
-] }
+windows-sys = "0.59"
 winreg = "0.56"
 
-[dev-dependencies]
+# dev-dependencies
 approx = "0.5"
 proptest = "1"
 serial_test = "3"
 i-slint-backend-testing = "=1.15.1"
-image = { version = "0.25.8", default-features = false, features = ["png"] }
 regex-lite = "0.1"
-interprocess = "2"
 
-[build-dependencies]
-slint-build = "~1.15"
-
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 # Pedantic includes some noisy lints — suppress the ones that aren't useful
@@ -61,7 +50,7 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "deny"
 
 [profile.dev.package."*"]

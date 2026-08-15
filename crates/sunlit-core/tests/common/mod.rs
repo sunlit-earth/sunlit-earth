@@ -13,7 +13,28 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
 }
 
+/// Whether this platform exposes a software adapter at all.
+///
+/// Windows has WARP and Linux has lavapipe. Metal has neither: wgpu reports it
+/// as `no_fallback_backends: METAL`, so on macOS the honest answer is that
+/// there is nothing to ask for, and a test that needs one has to say so rather
+/// than fail.
+#[allow(dead_code)]
+pub fn software_adapter_available() -> bool {
+    pollster::block_on(sunlit_core::wgpu_init::instance().request_adapter(
+        &wgpu::RequestAdapterOptions {
+            compatible_surface: None,
+            force_fallback_adapter: true,
+            ..Default::default()
+        },
+    ))
+    .is_ok()
+}
+
 /// Create a GPU context, optionally forcing the software adapter.
+///
+/// Panics when `force_software` is set on a platform that has none; call
+/// `software_adapter_available` first if that is a possibility.
 ///
 /// The instance comes from `sunlit_core::wgpu_init::instance` rather than from
 /// a fresh `wgpu::Instance`: there is one per process, and dropping the last

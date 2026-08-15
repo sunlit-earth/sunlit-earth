@@ -545,6 +545,27 @@ fn never_below_min_across_color_range() {
 
 #[test]
 fn software_adapter_produces_correct_results() {
+    // Metal exposes no software adapter (wgpu: `no_fallback_backends: METAL`),
+    // so on macOS there is no second implementation to cross-check against and
+    // this case has nothing to run. That is a property of the platform, not a
+    // reason to stop checking the platforms that do have one, so the absence is
+    // only tolerated on macOS: on Windows (WARP) and Linux (lavapipe) a missing
+    // software adapter means the environment is broken and this fails.
+    //
+    // The case exists so a developer on a discrete GPU can trust a CI result
+    // produced on a software rasterizer. Where CI is itself the hardware
+    // adapter, the other cases in this file already cover that adapter.
+    let available = common::software_adapter_available();
+    assert!(
+        available || cfg!(target_os = "macos"),
+        "no software adapter: Windows has WARP and Linux has lavapipe, so this is a \
+         broken environment rather than a platform without one"
+    );
+    if !available {
+        eprintln!("no software adapter on this platform, skipping");
+        return;
+    }
+
     let gpu = create_blend_context(true);
 
     // Run a representative subset: ocean + NYC sweeps

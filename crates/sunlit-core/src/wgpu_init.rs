@@ -9,15 +9,18 @@ use tracing::{info, warn};
 /// one `dlclose`s the Vulkan loader. Mesa registers pthread TLS destructors
 /// that outlive that unload, so the next thread to exit calls a destructor
 /// pointer into an unmapped page and the process dies with SIGSEGV inside
-/// `__nptl_deallocate_tsd`. That reproduced on lavapipe as an intermittent
-/// crash in every one of the engine integration tests, at the moment the
-/// engine thread was joined.
+/// `__nptl_deallocate_tsd`. On lavapipe that killed the engine integration
+/// tests at the moment the engine thread was joined: every time under
+/// `cargo test`, and intermittently when a single test was run on its own,
+/// which is the signature of a destructor list that only sometimes has an
+/// entry to walk.
 ///
 /// Keeping the instance in a `static` fixes it by construction: the loader is
 /// never unloaded, because the instance is never dropped. It also stops the
 /// suite from opening one Vulkan instance per engine, which was wasteful
 /// regardless of the crash. Windows never showed this because unloading the
-/// D3D12 runtime is safe; the bug was always there, only the platform was not.
+/// D3D12 runtime is safe; the defect was always in the code, only the platform
+/// was forgiving.
 static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
 
 /// The process's wgpu instance, created on first use.
@@ -118,7 +121,7 @@ pub fn init(force_software: bool) -> WgpuContext {
 ///
 /// Software rasterizers are keyed by name rather than by backend, because the
 /// backend is the wrong granularity for them: two CPU implementations can sit
-/// behind the same backend (lavapipe and SwiftShader are both Vulkan) and there
+/// behind the same backend (lavapipe and `SwiftShader` are both Vulkan) and there
 /// is no reason to expect their pixels to match. Hardware adapters are keyed by
 /// backend, which is the right granularity there: what moves the pixels is the
 /// shader translation target and the driver, and one directory per vendor and

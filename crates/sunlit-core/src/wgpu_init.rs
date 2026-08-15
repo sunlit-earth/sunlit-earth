@@ -1,9 +1,15 @@
-use slint::wgpu_28::WGPUConfiguration;
 use tracing::{info, warn};
 
 /// Result of initializing wgpu manually.
+///
+/// The instance and adapter are returned alongside the device and queue because
+/// the Slint shell still needs them to build a `WGPUConfiguration::Manual`. This
+/// crate deliberately knows nothing about that type.
 pub struct WgpuContext {
-    pub config: WGPUConfiguration,
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
     pub adapter_info: String,
     /// Supported MSAA sample counts for the color format (always includes 1).
     pub supported_sample_counts: Vec<u32>,
@@ -51,12 +57,10 @@ pub fn init(force_software: bool) -> WgpuContext {
         .supported_sample_counts();
 
     WgpuContext {
-        config: WGPUConfiguration::Manual {
-            instance,
-            adapter: adapter.clone(),
-            device,
-            queue,
-        },
+        instance,
+        adapter: adapter.clone(),
+        device,
+        queue,
         adapter_info,
         supported_sample_counts,
     }

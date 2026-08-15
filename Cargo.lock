@@ -5820,6 +5820,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "sunlit-core"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "astronomy-engine-bindings",
+ "bytemuck",
+ "crossbeam-channel",
+ "dirs",
+ "glam",
+ "image",
+ "jxl-oxide",
+ "pollster",
+ "proptest",
+ "serde",
+ "time",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "ureq",
+ "wgpu",
+ "windows-sys 0.59.0",
+ "winreg",
+]
+
+[[package]]
 name = "sunlit-earth"
 version = "0.1.0"
 dependencies = [
@@ -5843,6 +5867,7 @@ dependencies = [
  "single-instance",
  "slint",
  "slint-build",
+ "sunlit-core",
  "time",
  "toml 0.9.12+spec-1.1.0",
  "tracing",

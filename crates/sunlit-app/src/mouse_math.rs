@@ -3,7 +3,7 @@
 //! These functions are extracted from the mouse callback closures in `main.rs`
 //! so they can be unit-tested independently of the Slint UI.
 
-use crate::scene::camera::zoom_to_distance;
+use sunlit_core::scene::camera::zoom_to_distance;
 
 /// Wrap a longitude value into the `[-180, 180)` range.
 #[must_use]

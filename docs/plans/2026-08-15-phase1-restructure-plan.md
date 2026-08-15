@@ -131,7 +131,7 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 ## Status
 
 - [x] Plan approved
-- [ ] Steps 1-2: workspace + core extraction
+- [x] Steps 1-2: workspace + core extraction
 - [ ] Steps 3-4: SceneParams + engine
 - [ ] Step 5: app switched, old path deleted
 - [ ] Steps 6-7: tiers + new test layers
@@ -164,3 +164,25 @@ stayed at the repo root: the e2e-spawned binary no longer finds it through the c
 
 Verification: `cargo test` 319 pass, `cargo clippy --all-targets` 33 warnings (unchanged),
 `cargo test --test e2e -- --ignored` 8 pass in 43 seconds.
+
+### Step 2: sunlit-core extracted
+
+`crates/sunlit-core` now owns `config`, `memory`, `wallpaper`, `wgpu_init`, `scene/`, `geometry/`,
+and a new `assets/` module holding `texture_loader`, `cloud_fetcher`, and `mailbox`. It has no
+Slint dependency. Three decoupling changes were needed:
+
+- `wgpu_init::WgpuContext` no longer carries a `slint::wgpu_28::WGPUConfiguration`. It returns the
+  instance, adapter, device, and queue, and the app assembles `WGPUConfiguration::Manual` itself.
+  Step 5 deletes that assembly.
+- `cloud_fetcher::spawn_cloud_fetcher` takes `NotifyFn = Arc<dyn Fn() + Send + Sync>` instead of a
+  `slint::Weak<MainWindow>`. The app passes a closure that hops onto the event loop and requests a
+  redraw, so the observable behavior is unchanged.
+- `TextureMailbox` and `DecodedTextureMessage` moved from `renderer/textures.rs` to
+  `assets::mailbox` with their four unit tests, because the cloud fetcher needs them and the
+  renderer is still app-side. `renderer` re-exports both, so `renderer::TextureMailbox` still
+  resolves for existing call sites.
+
+Verification: `cargo test` 319 pass (181 core, 91 app, 19 render_pipeline, 12 shading, 16
+slint_ui), `cargo clippy --all-targets` 31 warnings, all present in the Step 1 baseline (the count
+dropped because lib and lib-test no longer double-report the same lints across one crate).
+Full e2e suite 8 pass in 43 seconds.

@@ -63,7 +63,7 @@ pub(crate) struct FrameState {
 /// milliradians/thousandths for stable dirty-check comparison.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 pub(crate) fn build_frame_state(
-    camera: &crate::scene::camera::CameraParams,
+    camera: &sunlit_core::scene::camera::CameraParams,
     sample_count: u32,
     texture_index: i32,
     render_width: u32,
@@ -136,7 +136,7 @@ pub(crate) fn build_frame_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::camera::CameraParams;
+    use sunlit_core::scene::camera::CameraParams;
 
     /// Helper: build a camera params with typical values.
     fn default_camera() -> CameraParams {

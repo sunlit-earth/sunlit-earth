@@ -3,11 +3,13 @@ use std::path::PathBuf;
 use tracing::debug;
 use wgpu::util::DeviceExt;
 
-use crate::geometry::grid_texture;
-use crate::geometry::sphere::{self, Vertex};
+use sunlit_core::geometry::grid_texture;
+use sunlit_core::geometry::sphere::{self, Vertex};
 use crate::MainWindow;
 
-use super::textures::{TextureMailbox, TextureSlot, create_bind_group, create_mipmapped_texture};
+use sunlit_core::assets::mailbox::TextureMailbox;
+
+use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
 use super::GpuResources;
 
@@ -214,7 +216,7 @@ pub(super) fn create_gpu_resources(
     let nightglow_orange_pipeline = create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let nightglow_green_pipeline = create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
 
-    crate::memory::log_memory_usage("after GPU resource creation");
+    sunlit_core::memory::log_memory_usage("after GPU resource creation");
 
     GpuResources {
         pipeline,

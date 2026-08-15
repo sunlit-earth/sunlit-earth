@@ -122,7 +122,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
             debug!("ipc: received query-memory command");
             // Answered on this thread: GetProcessMemoryInfo is process-wide,
             // so the reply is correct even when the event loop is idle or busy.
-            match crate::memory::snapshot() {
+            match sunlit_core::memory::snapshot() {
                 Some(snap) => signal(&format!(
                     "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
                     snap.rss_bytes, snap.peak_rss_bytes, snap.private_bytes

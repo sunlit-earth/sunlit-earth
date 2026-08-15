@@ -195,7 +195,7 @@ fn test_load_defaults_fires_callback() {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let defaults = sunlit_earth::config::AppConfig::default();
+        let defaults = sunlit_core::config::AppConfig::default();
         win.set_camera_longitude(defaults.longitude);
         win.set_camera_latitude(defaults.latitude);
         win.set_camera_zoom(defaults.zoom);
@@ -221,7 +221,7 @@ fn test_load_defaults_fires_callback() {
     buttons[0].invoke_accessible_default_action();
 
     // Verify the callback restored the default longitude
-    let defaults = sunlit_earth::config::AppConfig::default();
+    let defaults = sunlit_core::config::AppConfig::default();
     approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
 }
 
@@ -234,7 +234,7 @@ fn test_load_defaults_resets_multiple_properties() {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let defaults = sunlit_earth::config::AppConfig::default();
+        let defaults = sunlit_core::config::AppConfig::default();
         win.set_camera_longitude(defaults.longitude);
         win.set_camera_latitude(defaults.latitude);
         win.set_camera_zoom(defaults.zoom);
@@ -258,7 +258,7 @@ fn test_load_defaults_resets_multiple_properties() {
     buttons[0].invoke_accessible_default_action();
 
     // Verify all properties reset to defaults
-    let defaults = sunlit_earth::config::AppConfig::default();
+    let defaults = sunlit_core::config::AppConfig::default();
     approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
     approx::assert_relative_eq!(window.get_camera_zoom(), defaults.zoom);
     assert_eq!(window.get_diffuse_shading(), defaults.diffuse_shading);

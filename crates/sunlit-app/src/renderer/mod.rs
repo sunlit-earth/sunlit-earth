@@ -6,7 +6,7 @@ mod textures;
 pub(crate) mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
-pub use textures::{DecodedTextureMessage, TextureMailbox};
+pub use sunlit_core::assets::mailbox::{DecodedTextureMessage, TextureMailbox};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,8 +16,8 @@ use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 use tracing::{debug, error, info, trace};
 
 use crate::MainWindow;
-use crate::scene::camera::{CameraParams, zoom_to_distance};
-use crate::scene::sun;
+use sunlit_core::scene::camera::{CameraParams, zoom_to_distance};
+use sunlit_core::scene::sun;
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
@@ -219,7 +219,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
                 (None, None)
             };
 
-        crate::memory::log_memory_usage("wallpaper: before render");
+        sunlit_core::memory::log_memory_usage("wallpaper: before render");
         render_pass::encode_and_submit(
             &res.device,
             &res.queue,
@@ -239,7 +239,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             cloud_bg,
         );
 
-        crate::memory::log_memory_usage("wallpaper: before pixel readback");
+        sunlit_core::memory::log_memory_usage("wallpaper: before pixel readback");
         let pixels = render_pass::read_texture_rgba8(
             &res.device,
             &res.queue,
@@ -247,7 +247,7 @@ pub fn export_wallpaper_image(target_width: u32, target_height: u32) -> Result<V
             target_width,
             target_height,
         );
-        crate::memory::log_memory_usage("wallpaper: after pixel readback");
+        sunlit_core::memory::log_memory_usage("wallpaper: after pixel readback");
         Ok(pixels)
     })
 }

@@ -6,13 +6,13 @@
 use slint::ComponentHandle;
 use tracing::info;
 
-use crate::config::{self, AppConfig};
+use sunlit_core::config::{self, AppConfig};
 use crate::mouse_math;
 use crate::renderer::{self, gamma_slider_to_value, gamma_value_to_slider};
-use crate::scene::camera::PRESETS;
-use crate::scene::datetime;
+use sunlit_core::scene::camera::PRESETS;
+use sunlit_core::scene::datetime;
 #[cfg(windows)]
-use crate::wallpaper;
+use sunlit_core::wallpaper;
 use crate::MainWindow;
 
 /// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
@@ -289,13 +289,13 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
 ///
 /// This is the thin UI-reading layer — the actual computation lives in
 /// `scene::sun::compute_sun_direction()`.
-pub fn read_datetime_input(window: &MainWindow) -> crate::scene::sun::DateTimeInput {
-    crate::scene::sun::DateTimeInput {
+pub fn read_datetime_input(window: &MainWindow) -> sunlit_core::scene::sun::DateTimeInput {
+    sunlit_core::scene::sun::DateTimeInput {
         use_custom: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         custom_day_of_year: window.get_custom_day_of_year() as u16,
-        custom_year: window.get_custom_year_index() + crate::scene::datetime::base_year(),
+        custom_year: window.get_custom_year_index() + sunlit_core::scene::datetime::base_year(),
     }
 }
 
@@ -398,6 +398,6 @@ pub fn do_set_wallpaper() -> Result<(), String> {
     let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
     wallpaper::set_wallpaper(&path)?;
     info!(path = %path.display(), "wallpaper set successfully");
-    crate::memory::log_memory_usage("after wallpaper set");
+    sunlit_core::memory::log_memory_usage("after wallpaper set");
     Ok(())
 }

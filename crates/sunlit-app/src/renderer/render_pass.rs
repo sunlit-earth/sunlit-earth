@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use slint::Image;
 
-use crate::scene::camera::{CameraParams, OrbitalCamera, zoom_to_distance};
+use sunlit_core::scene::camera::{CameraParams, OrbitalCamera, zoom_to_distance};
 
 use super::GpuResources;
 use super::frame::FrameState;

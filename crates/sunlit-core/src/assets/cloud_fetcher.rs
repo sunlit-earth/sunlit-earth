@@ -11,15 +11,18 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use slint::ComponentHandle;
 use tracing::{info, warn};
 
-use crate::renderer::{DecodedTextureMessage, TextureMailbox};
-use crate::texture_loader::{self, DecodedImage};
-use crate::MainWindow;
+use super::mailbox::{DecodedTextureMessage, TextureMailbox};
+use super::texture_loader::{self, DecodedImage};
+
+/// Callback the fetcher invokes after posting a new frame, so a UI client can
+/// nudge itself into redrawing. Headless callers pass a no-op.
+pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
 
 const CLOUD_URL: &str = "https://clouds.matteason.co.uk/images/8192x4096/clouds.jpg";
 const POLL_INTERVAL: Duration = Duration::from_secs(3600);
@@ -202,11 +205,7 @@ fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
 /// On the background thread: polls for updates every 60 minutes using HEAD +
 /// `ETag`, downloading a fresh image only when the remote has changed.
 #[allow(clippy::too_many_lines)]
-pub fn spawn_cloud_fetcher(
-    mailbox: TextureMailbox,
-    window_weak: slint::Weak<MainWindow>,
-    clouds_slot: usize,
-) {
+pub fn spawn_cloud_fetcher(mailbox: TextureMailbox, notify: NotifyFn, clouds_slot: usize) {
     let image_path = cache_image_path();
     let meta_path = cache_meta_path();
     let cloud_url = resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref());
@@ -239,10 +238,7 @@ pub fn spawn_cloud_fetcher(
                         slot_index: clouds_slot,
                         result: Ok(img),
                     });
-                    let ww = window_weak.clone();
-                    let _ = ww.upgrade_in_event_loop(|win| {
-                        win.window().request_redraw();
-                    });
+                    notify();
                 }
                 Err(e) => warn!(error = %e, "cached cloud image decode failed"),
             },
@@ -252,7 +248,7 @@ pub fn spawn_cloud_fetcher(
 
     // Background thread for network I/O
     let mailbox_bg = mailbox;
-    let window_weak_bg = window_weak;
+    let notify_bg = notify;
     std::thread::spawn(move || {
         let user_agent = format!("sunlit.earth/{}", env!("CARGO_PKG_VERSION"));
         let agent = ureq::Agent::config_builder()
@@ -324,10 +320,7 @@ pub fn spawn_cloud_fetcher(
                                     slot_index: clouds_slot,
                                     result: Ok(img),
                                 });
-                                let ww = window_weak_bg.clone();
-                                let _ = ww.upgrade_in_event_loop(|win| {
-                                    win.window().request_redraw();
-                                });
+                                notify_bg();
                             }
                             Err(e) => warn!(error = %e, "cloud image decode failed"),
                         }

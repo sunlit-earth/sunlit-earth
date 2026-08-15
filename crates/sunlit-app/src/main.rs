@@ -12,11 +12,11 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use sunlit_earth::config;
+use sunlit_core::config;
 use sunlit_earth::renderer;
-use sunlit_earth::scene::datetime;
-use sunlit_earth::texture_loader;
-use sunlit_earth::wgpu_init;
+use sunlit_core::scene::datetime;
+use sunlit_core::assets::texture_loader;
+use sunlit_core::wgpu_init;
 use sunlit_earth::MainWindow;
 
 /// Sunlit Earth: get a realistic 3D view of Earth as seen from space and set it as your wallpaper
@@ -236,11 +236,15 @@ fn init_texture_system(
     // Skip when SUNLIT_EARTH_NO_CLOUDS is set — used by e2e tests to
     // avoid network access.
     if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_err() {
-        sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
-            mailbox,
-            window.as_weak(),
-            3,
-        );
+        // The fetcher is headless; it nudges this client through a callback
+        // that hops onto the Slint event loop and requests a redraw.
+        let window_weak = window.as_weak();
+        let notify: sunlit_core::assets::cloud_fetcher::NotifyFn = Arc::new(move || {
+            let _ = window_weak.upgrade_in_event_loop(|win| {
+                win.window().request_redraw();
+            });
+        });
+        sunlit_core::assets::cloud_fetcher::spawn_cloud_fetcher(mailbox, notify, 3);
         info!("spawned cloud fetcher background thread");
     } else {
         info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
@@ -276,7 +280,7 @@ fn run_event_loop(
         std::time::Duration::from_secs(120),
         move || {
             if let Some(win) = window_weak.upgrade() {
-                sunlit_earth::memory::log_memory_usage("sun timer tick");
+                sunlit_core::memory::log_memory_usage("sun timer tick");
                 win.window().request_redraw();
             }
         },
@@ -299,12 +303,12 @@ fn run_event_loop(
     // Release builds compile out debug and info logging, so this is the only
     // memory telemetry a shipped binary produces. One sample is written up
     // front so every run leaves a startup baseline to compare later ones with.
-    sunlit_earth::memory::record_metrics_sample();
+    sunlit_core::memory::record_metrics_sample();
     let memory_timer = slint::Timer::default();
     memory_timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_secs(600),
-        sunlit_earth::memory::record_metrics_sample,
+        sunlit_core::memory::record_metrics_sample,
     );
 
     let is_render = cli_command.is_some();
@@ -325,7 +329,7 @@ fn run_event_loop(
                     // Refresh sun direction so the export uses the current time,
                     // even when BeforeRendering hasn't fired (window hidden to tray).
                     let dt = sunlit_earth::ui_callbacks::read_datetime_input(&win);
-                    let sun_dir = sunlit_earth::scene::sun::compute_sun_direction(&dt);
+                    let sun_dir = sunlit_core::scene::sun::compute_sun_direction(&dt);
                     sunlit_earth::renderer::update_sun_direction(sun_dir);
 
                     info!("auto-refresh: updating wallpaper");
@@ -370,7 +374,7 @@ fn run_event_loop(
                             && win.get_auto_refresh_enabled()
                         {
                             let dt = sunlit_earth::ui_callbacks::read_datetime_input(&win);
-                            let sun_dir = sunlit_earth::scene::sun::compute_sun_direction(&dt);
+                            let sun_dir = sunlit_core::scene::sun::compute_sun_direction(&dt);
                             sunlit_earth::renderer::update_sun_direction(sun_dir);
 
                             info!("auto-refresh: updating wallpaper");
@@ -487,7 +491,7 @@ fn run_event_loop(
                 config::save_window_geometry(pos.x, pos.y, size.width, size.height);
             }
             debug!("main window hidden (minimized to tray)");
-            sunlit_earth::memory::log_memory_usage("after window hidden");
+            sunlit_core::memory::log_memory_usage("after window hidden");
             slint::CloseRequestResponse::HideWindow
         });
     } else if !is_render {
@@ -534,7 +538,7 @@ fn run_event_loop(
     slint::run_event_loop_until_quit().expect("Failed to run event loop");
     info!("event loop exited");
 
-    sunlit_earth::memory::log_memory_usage("before exit");
+    sunlit_core::memory::log_memory_usage("before exit");
 
     // Intentionally leak timers — their Slint destructors can crash after
     // quit_event_loop() because the backend may be partially torn down.
@@ -596,16 +600,23 @@ fn main() {
     );
 
     let wgpu_context = wgpu_init::init(cli.software_rendering);
-    sunlit_earth::memory::log_memory_usage("after wgpu init");
+    sunlit_core::memory::log_memory_usage("after wgpu init");
 
+    // Hand the core's device to Slint so the preview stays a zero-copy
+    // texture. Step 5 replaces this with the engine's own device.
     slint::BackendSelector::new()
-        .require_wgpu_28(wgpu_context.config)
+        .require_wgpu_28(slint::wgpu_28::WGPUConfiguration::Manual {
+            instance: wgpu_context.instance,
+            adapter: wgpu_context.adapter,
+            device: wgpu_context.device,
+            queue: wgpu_context.queue,
+        })
         .select()
         .expect("Failed to select wgpu backend");
 
     let window = MainWindow::new().expect("Failed to create window");
     window.set_renderer_info(wgpu_context.adapter_info.into());
-    sunlit_earth::memory::log_memory_usage("after window creation");
+    sunlit_core::memory::log_memory_usage("after window creation");
 
     // Load config: from --config path if render subcommand specifies one,
     // otherwise from the user's saved config on disk.

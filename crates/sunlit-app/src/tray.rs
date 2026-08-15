@@ -174,7 +174,7 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("tray: showing window");
-                    crate::memory::log_memory_usage("after window shown");
+                    sunlit_core::memory::log_memory_usage("after window shown");
                     win.show().ok();
                 }
             })
@@ -229,7 +229,7 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
                         win.hide().ok();
                     } else {
                         debug!("tray: showing window (left-click)");
-                        crate::memory::log_memory_usage("after window shown");
+                        sunlit_core::memory::log_memory_usage("after window shown");
                         win.show().ok();
                     }
                 }

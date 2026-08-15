@@ -9,6 +9,7 @@ license.workspace = true
 description = "A desktop application that renders a realistic 3D view of Earth as seen from space and sets it as the wallpaper"
 
 [dependencies]
+sunlit-core = { path = "../sunlit-core" }
 slint.workspace = true
 wgpu.workspace = true
 glam.workspace = true

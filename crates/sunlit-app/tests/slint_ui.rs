@@ -388,7 +388,7 @@ fn test_save_preserves_settings_without_a_widget() {
         let saved = sunlit_earth::ui_callbacks::read_config_from_window_onto(
             &window,
             &[1, 2, 4, 8],
-            stored,
+            &stored,
         );
         assert_eq!(
             saved.quality_tier, tier,

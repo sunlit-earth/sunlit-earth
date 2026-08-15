@@ -374,7 +374,7 @@ pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
 /// is the intended behavior for a per-run flag.
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
-    read_config_from_window_onto(window, aa_counts, config::load_config())
+    read_config_from_window_onto(window, aa_counts, &config::load_config())
 }
 
 /// The testable half of [`read_config_from_window`]: overwrite the UI-managed
@@ -383,7 +383,7 @@ pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppCon
 pub fn read_config_from_window_onto(
     window: &MainWindow,
     aa_counts: &[u32],
-    stored: AppConfig,
+    stored: &AppConfig,
 ) -> AppConfig {
     let pos = window.window().position();
     let size = window.window().size();
@@ -395,7 +395,7 @@ pub fn read_config_from_window_onto(
         window_y: Some(pos.y),
         window_width: Some(size.width),
         window_height: Some(size.height),
-        ..stored
+        ..stored.clone()
     };
     read_params_from_window(window, aa_counts).write_to_config(&mut config);
     config

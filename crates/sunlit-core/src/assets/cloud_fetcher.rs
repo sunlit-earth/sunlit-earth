@@ -39,10 +39,50 @@ pub fn no_notify() -> NotifyFn {
 const CLOUD_URL_TEMPLATE: &str = "https://clouds.matteason.co.uk/images/{size}/clouds.jpg";
 const POLL_INTERVAL: Duration = Duration::from_secs(3600);
 /// First delay after a failed poll. Doubles up to [`MAX_RETRY_DELAY`].
-pub const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
+const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
 /// Ceiling for the retry backoff, so a service outage does not turn into an
 /// hourly poll that misses the recovery by 59 minutes.
-pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+
+/// Exponential backoff for failed cloud polls.
+///
+/// Split out from the worker loop so the schedule can be tested without
+/// actually sleeping through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryBackoff {
+    delay: Duration,
+}
+
+impl RetryBackoff {
+    pub fn new() -> Self {
+        Self {
+            delay: INITIAL_RETRY_DELAY,
+        }
+    }
+
+    /// How long to wait before the next attempt.
+    pub fn delay(&self) -> Duration {
+        self.delay
+    }
+
+    /// Record a failure and return how long to wait before retrying.
+    pub fn fail(&mut self) -> Duration {
+        let current = self.delay;
+        self.delay = (self.delay * 2).min(MAX_RETRY_DELAY);
+        current
+    }
+
+    /// Record a success, so the next outage starts from the short delay again.
+    pub fn reset(&mut self) {
+        self.delay = INITIAL_RETRY_DELAY;
+    }
+}
+
+impl Default for RetryBackoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Environment variable overriding the cloud image URL.
 const ENV_CLOUD_URL: &str = "SUNLIT_EARTH_CLOUD_URL";
@@ -482,6 +522,8 @@ mod tests {
         jpeg: Vec<u8>,
         version: std::sync::atomic::AtomicU64,
         fetches: std::sync::atomic::AtomicU64,
+        /// Number of upcoming calls that report a transport error.
+        failures: std::sync::atomic::AtomicU64,
     }
 
     impl ScriptedSource {
@@ -499,7 +541,14 @@ mod tests {
                 jpeg: buf.into_inner(),
                 version: std::sync::atomic::AtomicU64::new(1),
                 fetches: std::sync::atomic::AtomicU64::new(0),
+                failures: std::sync::atomic::AtomicU64::new(0),
             }
+        }
+
+        /// Make the next `count` calls fail, as an offline service would.
+        fn fail_next(&self, count: u64) {
+            self.failures
+                .store(count, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn publish(&self) {
@@ -516,6 +565,17 @@ mod tests {
             &self,
             known_etag: Option<&str>,
         ) -> Result<Option<CloudImage>, String> {
+            if self
+                .failures
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| (n > 0).then(|| n - 1),
+                )
+                .is_ok()
+            {
+                return Err("scripted transport failure".to_owned());
+            }
             let current = format!("v{}", self.version.load(std::sync::atomic::Ordering::SeqCst));
             if known_etag == Some(current.as_str()) {
                 return Ok(None);
@@ -538,6 +598,42 @@ mod tests {
     fn updater_for(source: Arc<ScriptedSource>, mailbox: &TextureMailbox) -> CloudUpdater {
         CloudUpdater::new(source, mailbox.clone(), no_notify(), 3, None)
     }
+
+    // -----------------------------------------------------------------------
+    // RetryBackoff
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn backoff_starts_short_and_doubles() {
+        let mut backoff = RetryBackoff::new();
+        assert_eq!(backoff.fail(), INITIAL_RETRY_DELAY);
+        assert_eq!(backoff.fail(), INITIAL_RETRY_DELAY * 2);
+        assert_eq!(backoff.fail(), INITIAL_RETRY_DELAY * 4);
+    }
+
+    #[test]
+    fn backoff_saturates_at_the_ceiling() {
+        let mut backoff = RetryBackoff::new();
+        for _ in 0..20 {
+            backoff.fail();
+        }
+        assert_eq!(backoff.delay(), MAX_RETRY_DELAY);
+        assert_eq!(backoff.fail(), MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn backoff_resets_after_a_success() {
+        let mut backoff = RetryBackoff::new();
+        backoff.fail();
+        backoff.fail();
+        assert_ne!(backoff.delay(), INITIAL_RETRY_DELAY);
+        backoff.reset();
+        assert_eq!(backoff.delay(), INITIAL_RETRY_DELAY);
+    }
+
+    // -----------------------------------------------------------------------
+    // CloudUpdater
+    // -----------------------------------------------------------------------
 
     #[test]
     fn updater_posts_a_frame_on_first_poll() {
@@ -573,6 +669,48 @@ mod tests {
         source.publish();
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
         assert_eq!(source.fetches(), 2);
+    }
+
+    #[test]
+    fn updater_reports_failure_and_recovers() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+        let mut backoff = RetryBackoff::new();
+
+        // Two failed attempts, each backing off further, then a success that
+        // resets the schedule. This is the loop the cloud worker runs, minus
+        // the sleeping.
+        source.fail_next(2);
+        assert_eq!(updater.poll_once(), PollOutcome::Failed);
+        let first = backoff.fail();
+        assert_eq!(updater.poll_once(), PollOutcome::Failed);
+        let second = backoff.fail();
+        assert!(second > first, "the second retry must wait longer");
+        assert!(
+            mailbox.take_all().is_empty(),
+            "a failed poll must not post a frame"
+        );
+
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        backoff.reset();
+        assert_eq!(backoff.delay(), INITIAL_RETRY_DELAY);
+        assert_eq!(mailbox.take_all().len(), 1, "the recovery posts a frame");
+    }
+
+    #[test]
+    fn updater_failure_does_not_poison_the_cached_etag() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        // Succeed once, then fail: the stored ETag must still be the one that
+        // worked, so the next successful poll can still short-circuit on 304.
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+        source.fail_next(1);
+        assert_eq!(updater.poll_once(), PollOutcome::Failed);
+        assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
     }
 
     #[test]

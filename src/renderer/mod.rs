@@ -6,11 +6,10 @@ mod textures;
 pub(crate) mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
-pub use textures::DecodedTextureMessage;
+pub use textures::{DecodedTextureMessage, TextureMailbox};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
@@ -285,11 +284,14 @@ struct GpuResources {
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Sender end of the channel for completed texture decodes.
-    /// Cloned into each background decode thread.
-    texture_tx: mpsc::Sender<DecodedTextureMessage>,
-    /// Receiver end of the channel, polled via `try_recv()` in `BeforeRendering`.
-    texture_rx: mpsc::Receiver<DecodedTextureMessage>,
+    /// Latest-value mailbox for completed texture decodes. Cloned into each
+    /// background decode thread and drained by `process_decoded_textures`.
+    texture_mailbox: TextureMailbox,
+    /// Set when a decoded texture was uploaded since the last render, cleared
+    /// by `BeforeRendering`. The drain timer can consume a message before
+    /// `BeforeRendering` sees it, so the flag rather than the drain's own
+    /// return value decides whether the frame must be re-rendered.
+    texture_dirty: bool,
     /// Weak reference to the main window, used by background threads to
     /// trigger a redraw via `upgrade_in_event_loop`.
     window_weak: slint::Weak<MainWindow>,
@@ -328,12 +330,10 @@ pub fn setup_rendering_notifier(
     window: &MainWindow,
     aa_counts: Vec<u32>,
     texture_paths: Vec<Option<PathBuf>>,
-    texture_tx: mpsc::Sender<textures::DecodedTextureMessage>,
-    texture_rx: mpsc::Receiver<textures::DecodedTextureMessage>,
+    texture_mailbox: TextureMailbox,
     textures_ready: Arc<AtomicBool>,
 ) {
     let window_weak = window.as_weak();
-    let texture_rx = std::cell::RefCell::new(Some(texture_rx));
 
     window
         .window()
@@ -344,12 +344,39 @@ pub fn setup_rendering_notifier(
                 &window_weak,
                 &aa_counts,
                 &texture_paths,
-                &texture_tx,
-                &texture_rx,
+                &texture_mailbox,
                 &textures_ready,
             );
         })
         .expect("Failed to set rendering notifier — is the wgpu backend active?");
+}
+
+/// Process decoded textures parked in the mailbox, independent of whether the
+/// window is visible.
+///
+/// `BeforeRendering` stops firing once the window is hidden to the tray, so a
+/// repeated timer on the event loop calls this to keep uploading decoded
+/// textures to the GPU. Must run on the main thread, the same thread as
+/// `GPU_RESOURCES`. A redraw is requested only when something was processed and
+/// the window is visible; it is issued after the borrow is released so that a
+/// synchronous repaint cannot re-enter `GPU_RESOURCES`.
+pub fn drain_texture_updates() {
+    let window_weak = GPU_RESOURCES.with(|r| {
+        let mut borrow = r.borrow_mut();
+        let res = borrow.as_mut()?;
+        if process_decoded_textures(res) {
+            Some(res.window_weak.clone())
+        } else {
+            None
+        }
+    });
+
+    if let Some(ww) = window_weak
+        && let Some(win) = ww.upgrade()
+        && win.window().is_visible()
+    {
+        win.window().request_redraw();
+    }
 }
 
 // Persistent state across rendering callbacks, stored in a thread-local.
@@ -379,8 +406,7 @@ fn rendering_callback(
     window_weak: &slint::Weak<MainWindow>,
     aa_counts: &[u32],
     texture_paths: &[Option<PathBuf>],
-    texture_tx: &mpsc::Sender<textures::DecodedTextureMessage>,
-    texture_rx: &std::cell::RefCell<Option<mpsc::Receiver<textures::DecodedTextureMessage>>>,
+    texture_mailbox: &TextureMailbox,
     textures_ready: &Arc<AtomicBool>,
 ) {
     match state {
@@ -398,10 +424,6 @@ fn rendering_callback(
                         let (w, h) = quantized_viewport_size(&win);
                         (lookup_sample_count(&win, aa_counts), w, h)
                     });
-            let rx = texture_rx
-                .borrow_mut()
-                .take()
-                .expect("texture_rx should only be taken once during RenderingSetup");
             let resources = create_gpu_resources(
                 device.clone(),
                 queue.clone(),
@@ -409,8 +431,7 @@ fn rendering_callback(
                 width,
                 height,
                 texture_paths,
-                texture_tx.clone(),
-                rx,
+                texture_mailbox.clone(),
                 window_weak.clone(),
             );
             GPU_RESOURCES.with(|r| {
@@ -428,8 +449,10 @@ fn rendering_callback(
                     return;
                 };
 
-                // Phase 1: Collect completed background texture decodes
-                let received_any = process_decoded_textures(res);
+                // Phase 1: Collect completed background texture decodes.
+                // The flag also covers uploads done by the drain timer.
+                process_decoded_textures(res);
+                let received_any = std::mem::take(&mut res.texture_dirty);
 
                 // Check if sample count changed
                 let desired = lookup_sample_count(&win, aa_counts);

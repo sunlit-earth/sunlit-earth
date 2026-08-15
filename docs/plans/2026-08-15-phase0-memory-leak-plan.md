@@ -158,7 +158,7 @@ All changes are in `src/cloud_fetcher.rs`, `src/ipc.rs`, `src/renderer/textures.
 - [x] Plan approved
 - [x] Steps 1-2: test knobs and query-memory landed
 - [x] Step 3: regression test red against unfixed code (record below)
-- [ ] Step 4: fix landed, regression test green
+- [x] Step 4: fix landed, regression test green
 - [ ] Step 5: telemetry landed
 - [ ] Steps 6-7: docs, multi-day validation, 0.1.1
 
@@ -178,7 +178,13 @@ Recorded as they happened, smallest change that kept the plan's intent.
    quits, and asserts afterwards. A failing run then leaves a gracefully exited process and a
    complete log rather than one killed by `ChildGuard`. The private-bytes assertion is still the
    first assertion, so it is what a regression reports.
-3. **Step 3, "processed while hidden" measurement.** Counting `GPU texture created` lines from
+3. **Step 4, extra `texture_dirty` flag on `GpuResources`.** With two consumers, the drain timer
+   can take a message before `BeforeRendering` sees it. `process_decoded_textures` then returns
+   `false` on the next frame and the dirty check skips the render, so a freshly uploaded texture
+   would not be displayed until some other parameter changed. The flag is set whenever a texture
+   is uploaded and taken by `BeforeRendering`, so the re-render happens no matter which consumer
+   drained the mailbox.
+4. **Step 3, "processed while hidden" measurement.** Counting `GPU texture created` lines from
    the hide onwards is wrong: `show-window` drains everything that was parked, so the burst that
    arrives at the end of the test lands inside the counted range and the unfixed code appears to
    have processed all 15 updates while hidden. The count is taken between a cursor set after the
@@ -208,7 +214,26 @@ window is hidden, which is the leak.
 
 ### Green run (fixed code)
 
-To be filled in during Step 4: observed private-bytes growth across 15 updates while hidden, plus confirmation that GPU texture creation happened between hide and show.
+Same command and machine, immediately after the mailbox and drain timer landed:
+
+```
+baseline: rss=240.8 MiB private=340.5 MiB
+after 15 hidden cloud updates: rss=242.5 MiB private=342.3 MiB peak_rss=270.5 MiB
+growth: private=1.8 MiB rss=1.7 MiB (limit 40 MiB), GPU textures created while hidden: 4
+ok
+```
+
+Private-bytes growth drops from 120.4 MiB to 1.8 MiB, a 67x reduction, and stays well under one
+decoded frame. A second run inside the full suite reported 2.0 MiB, so the result is stable.
+
+The four GPU textures created between hide and show are the mailbox working as designed, not
+updates being lost. The drain timer runs every 5 seconds while the 15 updates arrive over about
+24 seconds, so each drain finds only the newest frame parked in the cloud slot and the
+intermediate ones have already been replaced. Every drain uploads the most recent cloud image,
+which is the only one that matters. Peak RSS also drops from 373.4 MiB to 270.5 MiB, because
+the 15 parked frames are no longer processed in one burst when the window is shown again.
+
+Full suite: `cargo test --test e2e -- --ignored` passes all 8 tests in 43 seconds.
 
 ### Multi-day validation
 

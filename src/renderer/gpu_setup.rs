@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 use tracing::debug;
 use wgpu::util::DeviceExt;
@@ -8,7 +7,7 @@ use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 use crate::MainWindow;
 
-use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
+use super::textures::{TextureMailbox, TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
 use super::GpuResources;
 
@@ -24,8 +23,7 @@ pub(super) fn create_gpu_resources(
     width: u32,
     height: u32,
     texture_paths: &[Option<PathBuf>],
-    texture_tx: mpsc::Sender<super::textures::DecodedTextureMessage>,
-    texture_rx: mpsc::Receiver<super::textures::DecodedTextureMessage>,
+    texture_mailbox: TextureMailbox,
     window_weak: slint::Weak<MainWindow>,
 ) -> GpuResources {
     // Generate sphere mesh
@@ -243,8 +241,8 @@ pub(super) fn create_gpu_resources(
         pipeline_layout,
         device,
         queue,
-        texture_tx,
-        texture_rx,
+        texture_mailbox,
+        texture_dirty: false,
         window_weak,
         dummy_texture_view,
         composite_bind_group: None,

@@ -11,14 +11,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use slint::ComponentHandle;
 use tracing::{info, warn};
 
-use crate::renderer::DecodedTextureMessage;
+use crate::renderer::{DecodedTextureMessage, TextureMailbox};
 use crate::texture_loader::{self, DecodedImage};
 use crate::MainWindow;
 
@@ -205,13 +204,13 @@ fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
 /// Spawn the background cloud fetcher thread.
 ///
 /// On the calling thread: loads the cached JPEG (if it exists), decodes it,
-/// and sends it via the texture channel so clouds appear on the first frame.
+/// and posts it to the texture mailbox so clouds appear on the first frame.
 ///
 /// On the background thread: polls for updates every 60 minutes using HEAD +
 /// `ETag`, downloading a fresh image only when the remote has changed.
 #[allow(clippy::too_many_lines)]
 pub fn spawn_cloud_fetcher(
-    tx: mpsc::Sender<DecodedTextureMessage>,
+    mailbox: TextureMailbox,
     window_weak: slint::Weak<MainWindow>,
     clouds_slot: usize,
 ) {
@@ -243,7 +242,7 @@ pub fn spawn_cloud_fetcher(
                         path = %path.display(),
                         "loaded cached cloud image"
                     );
-                    let _ = tx.send(DecodedTextureMessage {
+                    mailbox.post(DecodedTextureMessage {
                         slot_index: clouds_slot,
                         result: Ok(img),
                     });
@@ -259,7 +258,7 @@ pub fn spawn_cloud_fetcher(
     }
 
     // Background thread for network I/O
-    let tx_bg = tx;
+    let mailbox_bg = mailbox;
     let window_weak_bg = window_weak;
     std::thread::spawn(move || {
         let user_agent = format!("sunlit.earth/{}", env!("CARGO_PKG_VERSION"));
@@ -328,7 +327,7 @@ pub fn spawn_cloud_fetcher(
                                     "decoded cloud image"
                                 );
                                 crate::memory::log_memory_usage("after cloud decode");
-                                let _ = tx_bg.send(DecodedTextureMessage {
+                                mailbox_bg.post(DecodedTextureMessage {
                                     slot_index: clouds_slot,
                                     result: Ok(img),
                                 });

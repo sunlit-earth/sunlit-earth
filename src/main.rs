@@ -210,7 +210,7 @@ fn init_ui_models(
     (aa_counts, base_year)
 }
 
-/// Set up the rendering notifier, texture channels, and cloud fetcher.
+/// Set up the rendering notifier, texture mailbox, and cloud fetcher.
 ///
 /// Returns `textures_ready` for the render timer to poll.
 fn init_texture_system(
@@ -218,9 +218,9 @@ fn init_texture_system(
     aa_counts: Vec<u32>,
     texture_paths: Vec<Option<PathBuf>>,
 ) -> Arc<AtomicBool> {
-    // Create the texture channel so both the renderer and the cloud fetcher can share it
-    let (texture_tx, texture_rx) =
-        std::sync::mpsc::channel::<sunlit_earth::renderer::DecodedTextureMessage>();
+    // Create the texture mailbox so both the renderer and the cloud fetcher
+    // can share it. Slots: grid + one per texture path + clouds.
+    let mailbox = renderer::TextureMailbox::new(texture_paths.len() + 2);
 
     let textures_ready = Arc::new(AtomicBool::new(false));
 
@@ -228,8 +228,7 @@ fn init_texture_system(
         window,
         aa_counts,
         texture_paths,
-        texture_tx.clone(),
-        texture_rx,
+        mailbox.clone(),
         Arc::clone(&textures_ready),
     );
 
@@ -238,7 +237,7 @@ fn init_texture_system(
     // avoid network access.
     if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_err() {
         sunlit_earth::cloud_fetcher::spawn_cloud_fetcher(
-            texture_tx,
+            mailbox,
             window.as_weak(),
             3,
         );
@@ -281,6 +280,18 @@ fn run_event_loop(
                 win.window().request_redraw();
             }
         },
+    );
+
+    // Periodic timer to upload decoded textures to the GPU (every 5 seconds).
+    // BeforeRendering stops firing while the window is hidden to the tray, so
+    // without this timer decoded cloud frames would stay parked in the mailbox
+    // and clouds would freeze at whatever was current when the window was last
+    // visible.
+    let drain_timer = slint::Timer::default();
+    drain_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(5),
+        renderer::drain_texture_updates,
     );
 
     let is_render = cli_command.is_some();
@@ -515,6 +526,7 @@ fn run_event_loop(
     // Intentionally leak timers — their Slint destructors can crash after
     // quit_event_loop() because the backend may be partially torn down.
     std::mem::forget(sun_timer);
+    std::mem::forget(drain_timer);
     std::mem::forget(render_timer);
 
     debug!("exiting");

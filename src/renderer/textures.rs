@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use slint::ComponentHandle;
 use tracing::{error, info};
@@ -21,15 +22,57 @@ pub struct DecodedTextureMessage {
     pub result: Result<texture_loader::DecodedImage, String>,
 }
 
-/// Drain the channel for completed background texture decodes and create
+/// Latest-value mailbox carrying decoded textures from background threads to
+/// the renderer, one slot per texture.
+///
+/// This replaces the unbounded channel that used to hold decoded pixel buffers:
+/// only the most recent frame per slot is ever useful, so `post` overwrites the
+/// parked message instead of queueing behind it. Parked memory is therefore
+/// capped at one decoded frame per slot no matter how long the consumer stalls,
+/// which is what the window being hidden to the tray does to it.
+#[derive(Clone)]
+pub struct TextureMailbox {
+    slots: Arc<Mutex<Vec<Option<DecodedTextureMessage>>>>,
+}
+
+impl TextureMailbox {
+    /// Create a mailbox with `slot_count` empty slots.
+    pub fn new(slot_count: usize) -> Self {
+        Self {
+            slots: Arc::new(Mutex::new(
+                std::iter::repeat_with(|| None).take(slot_count).collect(),
+            )),
+        }
+    }
+
+    /// Park a message in its slot, replacing anything not yet consumed.
+    pub fn post(&self, msg: DecodedTextureMessage) {
+        let index = msg.slot_index;
+        let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
+        if index >= slots.len() {
+            slots.resize_with(index + 1, || None);
+        }
+        slots[index] = Some(msg);
+    }
+
+    /// Take every parked message, leaving the mailbox empty.
+    fn take_all(&self) -> Vec<DecodedTextureMessage> {
+        let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
+        slots.iter_mut().filter_map(Option::take).collect()
+    }
+}
+
+/// Drain the mailbox of completed background texture decodes and create
 /// GPU resources (mipmapped texture + bind group) for each one.
 ///
-/// Returns `true` if at least one decoded texture was processed, signaling
-/// that a re-render is needed even if the frame state hasn't changed.
+/// Sets `texture_dirty` and returns `true` if at least one decoded texture was
+/// processed, signaling that a re-render is needed even if the frame state
+/// hasn't changed.
 pub(super) fn process_decoded_textures(res: &mut super::GpuResources) -> bool {
-    let mut received_any = false;
-    while let Ok(msg) = res.texture_rx.try_recv() {
-        received_any = true;
+    let messages = res.texture_mailbox.take_all();
+    let received_any = !messages.is_empty();
+    res.texture_dirty |= received_any;
+    for msg in messages {
         match msg.result {
             Ok(img) => {
                 let tex = create_mipmapped_texture(
@@ -128,7 +171,7 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index
         .expect("checked above");
     res.texture_slots[slot_index].loading = true;
 
-    let tx = res.texture_tx.clone();
+    let mailbox = res.texture_mailbox.clone();
     let window_weak = res.window_weak.clone();
 
     std::thread::spawn(move || {
@@ -149,8 +192,8 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::GpuResources, slot_index
             Err(e) => Err(e),
         };
 
-        // Send the result to the UI thread; ignore errors (receiver dropped on teardown)
-        let _ = tx.send(DecodedTextureMessage { slot_index, result });
+        // Park the result for the UI thread to pick up
+        mailbox.post(DecodedTextureMessage { slot_index, result });
 
         // Wake the event loop so BeforeRendering fires and picks up the result
         let _ = window_weak.upgrade_in_event_loop(|win| {

@@ -265,9 +265,26 @@ fn run_render(
         }
     });
 
+    // Waiting for `TexturesReady` only makes sense if there is a texture file
+    // to wait for. A slot with no path never gets a bind group and so never
+    // reports ready, which turns the wait below into a guaranteed two-minute
+    // stall ending in an error about a problem that does not exist. The frame
+    // is the same either way: the scene falls back to the procedural grid.
+    //
+    // This covers a missing file, not a broken one. A texture that fails to
+    // decode leaves the slot in the same terminal state and still hangs the
+    // wait; that is a gap in `Renderer::textures_ready` itself, affecting every
+    // client rather than only this one, and it is on the roadmap as its own
+    // fix rather than patched around here.
+    let have_textures = engine_config.texture_paths.iter().any(Option::is_some);
+
     let engine = engine::start(engine_config);
-    if ready_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT).is_err() {
-        error!("textures were not ready within the timeout, rendering anyway");
+    if have_textures {
+        if ready_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT).is_err() {
+            error!("textures were not ready within the timeout, rendering anyway");
+        }
+    } else {
+        info!("no texture files found, rendering the procedural grid");
     }
 
     let status = match engine.render_to_file(output.to_path_buf(), width, height) {

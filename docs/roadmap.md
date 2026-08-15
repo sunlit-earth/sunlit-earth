@@ -4,12 +4,12 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 ## Wallpaper app
 
-- [x] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows (`SystemParametersInfoW` via `windows-sys`) implemented; Linux and macOS later.
+- [x] Wallpaper export and setting: save rendered frame to an image file and set it as the desktop wallpaper via OS APIs. Windows (`SystemParametersInfoW` via `windows-sys`) implemented. Off Windows the sink returns a plain "not supported on this platform yet" that the status line shows; the headless `render` subcommand is the cross-platform mode today.
 - [ ] Periodic re-rendering: timer-driven scheduler that re-renders every N minutes so the terminator tracks the sun. Update interval should be user-configurable.
 - [x] System tray icon: minimize to tray on window close with "Open" / "Exit" context menu, single-instance enforcement, `--windowed` flag for original close-exits behavior (Windows only).
 - [x] System tray extended features: "Refresh Now" and a checkable "Auto-refresh" entry are in the tray menu, and the engine runs headlessly with no window at all (the `render` subcommand creates no window and no Slint backend). A long-running daemon mode with no settings window is still open.
 - [x] Configuration persistence: save and load settings (camera position, update interval, rendering options) between launches.
-- [ ] Wallpaper setting on Linux and macOS: extend the wallpaper setter to support GNOME/KDE (`gsettings`/DBus), X11/Wayland, and macOS (`osascript`/`NSWorkspace`).
+- [ ] Wallpaper setting on Linux and macOS: extend the wallpaper setter to support GNOME/KDE (`gsettings`/DBus), X11/Wayland, and macOS (`osascript`/`NSWorkspace`). Each setter brings the native display query with it, which also replaces two placeholders Phase 2 left behind: the 2560x1440 default in `wallpaper_sink` and the coordinate-range window-position check in `config`.
 - [ ] Multi-monitor support: detect monitor layout and resolution, render appropriately sized wallpapers for each display.
 
 ## Rendering
@@ -41,7 +41,9 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 - [x] CI pipeline: GitHub Actions workflows for building, testing, and linting on Windows. GPU integration tests run on the software adapter. Release workflow builds and publishes Windows binaries on version tags.
 - [x] CI lint gates: the codebase-wide reformat and the warning cleanup landed in Phase 2, so `ci.yml` runs a `fmt` job again and sets `RUSTFLAGS: "-D warnings"`. Clippy stays a local command: its artifacts do not share the test cache and running it in CI would force a full recompile.
-- [ ] Cross-platform release builds: produce binaries for Windows, Linux, and macOS from CI. Publish as GitHub release artifacts.
+- [x] Cross-platform build and test: the workspace builds, tests, and renders headlessly on Linux (lavapipe) and macOS (Metal), and CI is a three-OS matrix. Phase 2, see [plans/2026-08-15-phase2-cross-platform-plan.md](plans/2026-08-15-phase2-cross-platform-plan.md).
+- [ ] Cross-platform release builds: `release.yml` still builds Windows only. Produce binaries for Linux and macOS too and publish them as GitHub release artifacts.
+- [ ] Golden references on macOS: the `metal` reference set is generated through `golden.yml`, which needs the workflow on the default branch before it can be dispatched. Until it exists the golden test skips on macOS.
 
 ## Bugs and polish
 
@@ -50,3 +52,4 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Diffuse shading banding on JPEG wallpapers: fixed by switching the wallpaper export format from TIFF to PNG. Windows preserves PNG wallpapers losslessly (no JPEG transcode), eliminating the banding artifact.
 - [x] Refactor `main()`: extract mouse math into `mouse_math.rs` (with unit tests and proptests), UI callback registration into `ui_callbacks.rs`, and initialization into sub-functions. Removed `clippy::too_many_lines` suppression.
 - [ ] Automated slint UI testing
+- [ ] `Renderer::textures_ready` never becomes true when a texture is missing or fails to decode, so `TexturesReady` is an event that cannot arrive and every client waiting on it waits forever. A failed decode clears `source_path` so it is not retried, which leaves the slot in exactly the state an unconfigured slot is in: no bind group, no path, not loading. Both are terminal and both should read as ready. Blend mode additionally requires `composite_bind_group`, which can never be built if either texture is absent, so that condition needs the same treatment. Surfaced in Phase 2 by CI, where `textures/**` is Git LFS and `actions/checkout` leaves pointer files that fail to decode as JXL; `run_render` has a local guard for the missing-file half, and the smoke step points at an empty textures directory to keep CI deterministic. The general fix belongs with the asset-pipeline work.

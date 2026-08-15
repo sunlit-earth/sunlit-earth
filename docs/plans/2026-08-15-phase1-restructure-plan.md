@@ -344,8 +344,10 @@ image variant is downloaded (2048x1024, 4096x2048, 8192x4096, all published upst
 default is low in debug builds and high in release, and `EngineConfig::headless` pins low so tests
 never depend on the build profile.
 
-The sample-count cap is applied by filtering the anti-aliasing combo box options rather than by
-silently clamping inside the renderer, so the UI never offers a setting the tier would ignore. The
+The sample-count cap is applied in two layers: the anti-aliasing combo box only offers counts the
+tier allows, and since the post-review fixes the engine also resolves every requested count against
+the adapter's supported list (see Post-review fixes below; this paragraph originally claimed the
+combo box filter was the only layer, which left config-supplied counts unvalidated). The
 cloud URL composes with the Phase 0 environment override, and the override wins: a test pointing
 at a local stub is not second-guessed by the tier.
 

@@ -959,14 +959,18 @@ mod tests {
     }
 
     /// The unbounded-channel justification at the `start` declaration rests on
-    /// commands being small. A command that carried pixels would turn a
-    /// backlog into the exact failure Phase 0 removed.
+    /// commands being small. This pin catches inline-size regressions such as
+    /// un-boxing `SceneParams` (about 200 bytes). It cannot catch a variant
+    /// that carries a heap buffer (`Vec<u8>` is 24 bytes inline), so a command
+    /// that transported pixels would pass; the review guard for that is the
+    /// justification comment itself, which any such variant must update.
     #[test]
     fn command_payload_is_small() {
         let size = std::mem::size_of::<EngineCommand>();
         assert!(
             size <= 64,
-            "EngineCommand grew to {size} bytes; if that is a buffer, revisit              the unbounded channel justification in `start`"
+            "EngineCommand grew to {size} bytes inline; revisit the unbounded \
+             channel justification in `start`"
         );
     }
 

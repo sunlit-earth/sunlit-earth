@@ -27,11 +27,17 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 }
 
 /// One simulated step. Auto-refresh fires once per step.
-const STEP: Duration = Duration::from_secs(30 * 60);
-/// 14 simulated days at one step per 30 minutes.
-const STEPS: u64 = 14 * 24 * 2;
+///
+/// One hour rather than 30 minutes: halving the step count keeps all 112
+/// cloud publications (where the memory assertion's power comes from) while
+/// shaving wall-clock time. Measured effect was modest (about 10%), because
+/// the per-step cost is dominated by the render and the engine wake-up, not
+/// the export itself.
+const STEP: Duration = Duration::from_secs(60 * 60);
+/// 14 simulated days at one step per hour.
+const STEPS: u64 = 14 * 24;
 /// The upstream cloud service publishes every three hours.
-const STEPS_PER_CLOUD_UPDATE: u64 = 6;
+const STEPS_PER_CLOUD_UPDATE: u64 = 3;
 /// Fixture cloud image size: large enough that a leaked frame (8 MiB decoded)
 /// would dominate the noise, small enough to decode hundreds of times.
 const CLOUD_WIDTH: u32 = 2048;
@@ -228,19 +234,21 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
     assert_eq!(
         exports,
         usize::try_from(STEPS).expect("steps fit in usize"),
-        "one wallpaper export per simulated 30 minutes"
+        "one wallpaper export per simulated hour"
     );
     assert!(
         fetches >= expected_fetches,
         "expected at least {expected_fetches} cloud downloads, got {fetches}"
     );
     // The point is compression, not a benchmark: 14 days in two minutes is
-    // still a ratio of about 10 000 to 1. Measured on the development desktop:
-    // 12.5 s on the discrete GPU, 50 s on the software adapter (which is what
-    // this test uses, so that it behaves the same here as on CI). The margin
-    // to this bound is about 2.4x, so a much slower runner could make it
-    // flaky; if that happens, halving the export cadence is the lever, not
-    // raising the bound.
+    // still a ratio of about 10 000 to 1. Measured on the development desktop
+    // on the software adapter (which is what this test uses, so that it
+    // behaves the same here as on CI): 49.8 s at the original 30-minute step,
+    // 44.6 s at the hourly step used now, so the margin to the bound is about
+    // 2.7x. The per-step cost is dominated by the render and the engine
+    // wake-up rather than the export. If a slower runner trips this, reduce
+    // STEPS (fewer simulated days, proportionally fewer publications) or
+    // shrink the render sizes; do not raise the bound.
     assert!(
         elapsed < Duration::from_secs(120),
         "14 simulated days took {:.1}s, which defeats the purpose",
@@ -260,7 +268,7 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
     };
     let warmup = baseline.saturating_sub(startup);
     let growth = end.saturating_sub(baseline);
-    let soaked_days = (STEPS - WARMUP_STEPS) / 48;
+    let soaked_days = (STEPS - WARMUP_STEPS) / 24;
     println!(
         "private bytes: startup {:.1} MiB, after warm-up {:.1} MiB (+{:.1}), \
          end {:.1} MiB (+{:.1} over {soaked_days} simulated days)",

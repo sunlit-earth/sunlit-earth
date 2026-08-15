@@ -1208,7 +1208,7 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     send_ipc_command(&socket_name, "export-test");
     stdout_watcher.wait_for_signal("export_test_ok", Duration::from_secs(30));
 
-    // 8. Close the log window covering the hidden phase, then show again and
+    // 8. Close the log range covering the hidden phase, then show again and
     //    shut down cleanly before asserting, so a failing run still produces a
     //    complete log instead of a killed process. Showing the window drains
     //    everything that was parked, so the cursor must be taken before it.

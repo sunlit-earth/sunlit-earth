@@ -67,14 +67,10 @@ pub fn create_icon() -> Icon {
 ///
 /// If another instance is already running, this function logs a message
 /// and exits the process with code 0.
-pub fn enforce_single_instance(mutex_name: &str) -> single_instance::SingleInstance {
+pub fn acquire_single_instance(mutex_name: &str) -> Option<single_instance::SingleInstance> {
     let instance =
         single_instance::SingleInstance::new(mutex_name).expect("failed to create single-instance mutex");
-    if !instance.is_single() {
-        info!("another instance is already running, exiting");
-        std::process::exit(0);
-    }
-    instance
+    instance.is_single().then_some(instance)
 }
 
 /// Notify the tray thread to sync its "Auto-refresh" checkmark with the
@@ -98,13 +94,17 @@ pub fn sync_tray_auto_refresh(_enabled: bool) {}
 /// lives entirely on the spawned thread.
 ///
 /// `window_weak` is a weak reference to the main Slint window, used
-/// to show/hide the window from tray menu actions. Returns a
-/// `JoinHandle` for the tray thread (caller should keep it alive).
-pub fn spawn_tray_thread(window_weak: slint::Weak<crate::MainWindow>) -> std::thread::JoinHandle<()> {
+/// to show/hide the window from tray menu actions. `engine` carries the
+/// "Refresh Now" request to the engine thread. Returns a `JoinHandle` for the
+/// tray thread (caller should keep it alive).
+pub fn spawn_tray_thread(
+    window_weak: slint::Weak<crate::MainWindow>,
+    engine: crate::engine_client::EngineLink,
+) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("tray-icon".into())
         .spawn(move || {
-            run_tray_event_loop(window_weak);
+            run_tray_event_loop(window_weak, engine);
         })
         .expect("failed to spawn tray-icon thread")
 }
@@ -112,7 +112,10 @@ pub fn spawn_tray_thread(window_weak: slint::Weak<crate::MainWindow>) -> std::th
 /// Create the tray icon, register event handlers, and run the Win32
 /// message pump. This function blocks until the message pump exits.
 #[allow(clippy::too_many_lines)]
-fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
+fn run_tray_event_loop(
+    window_weak: slint::Weak<crate::MainWindow>,
+    engine: crate::engine_client::EngineLink,
+) {
     use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
     use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
@@ -180,15 +183,8 @@ fn run_tray_event_loop(window_weak: slint::Weak<crate::MainWindow>) {
             })
             .ok();
         } else if event.id == refresh_id {
-            debug!("tray: Refresh Now clicked, dispatching to event loop");
-            slint::invoke_from_event_loop(move || {
-                info!("tray: refreshing wallpaper");
-                #[cfg(windows)]
-                if let Err(e) = crate::ui_callbacks::do_set_wallpaper() {
-                    tracing::error!("tray: refresh failed: {e}");
-                }
-            })
-            .ok();
+            info!("tray: refreshing wallpaper");
+            engine.send(sunlit_core::engine::EngineCommand::RenderWallpaperNow);
         } else if event.id == auto_refresh_id {
             // CheckMenuItem auto-toggles its visual state on click.
             // Flip our mirror AtomicBool to match.

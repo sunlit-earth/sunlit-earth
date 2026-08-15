@@ -8,7 +8,9 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-slint = { version = "~1.15", features = ["unstable-wgpu-28"] }
+# The app no longer shares its wgpu device with Slint, so the unstable wgpu
+# feature (and with it the coupling between the Slint and wgpu versions) is gone.
+slint = "~1.15"
 slint-build = "~1.15"
 wgpu = "28"
 glam = "0.30"

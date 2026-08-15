@@ -11,19 +11,8 @@ description = "A desktop application that renders a realistic 3D view of Earth a
 [dependencies]
 sunlit-core = { path = "../sunlit-core" }
 slint.workspace = true
-wgpu.workspace = true
-glam.workspace = true
-bytemuck.workspace = true
 clap.workspace = true
-pollster.workspace = true
-image.workspace = true
-ureq.workspace = true
-jxl-oxide.workspace = true
-astronomy-engine-bindings.workspace = true
 time.workspace = true
-serde.workspace = true
-toml.workspace = true
-dirs.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
@@ -42,7 +31,6 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Threading",
     "Win32_System_Console",
 ] }
-winreg.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

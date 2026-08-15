@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use slint::ComponentHandle;
@@ -12,12 +13,25 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
+use sunlit_core::assets::cloud_fetcher;
+use sunlit_core::assets::cloud_source::HttpCloudSource;
 use sunlit_core::assets::texture_loader;
-use sunlit_core::config;
+use sunlit_core::config::{self, AppConfig};
+use sunlit_core::engine::clock::SystemClock;
+use sunlit_core::engine::wallpaper_sink::SystemWallpaper;
+use sunlit_core::engine::{self, EngineCommand, EngineConfig, EngineHandle};
+use sunlit_core::params::SceneParams;
+use sunlit_core::renderer;
 use sunlit_core::scene::datetime;
-use sunlit_core::wgpu_init;
 use sunlit_earth::MainWindow;
-use sunlit_earth::renderer;
+use sunlit_earth::engine_client::{self, EngineLink};
+use sunlit_earth::ui_callbacks;
+
+/// How long the render subcommand waits for textures before exporting anyway.
+const RENDER_TEXTURE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often the app checks whether the preview viewport changed size.
+const VIEWPORT_POLL: Duration = Duration::from_millis(200);
 
 /// Sunlit Earth: get a realistic 3D view of Earth as seen from space and set it as your wallpaper
 #[derive(Parser)]
@@ -155,335 +169,288 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
     }
 }
 
-/// Set up UI `ComboBox` models, apply initial config, and register callbacks.
-///
-/// Returns `(aa_counts, base_year)` needed by later initialization steps.
-fn init_ui_models(
-    window: &MainWindow,
-    config: &config::AppConfig,
-    supported_sample_counts: &[u32],
-    textures_dir: Option<&std::path::Path>,
-) -> (Vec<u32>, i32) {
-    // Set up AA options from supported sample counts
-    let (aa_labels, aa_counts, _aa_default) =
-        renderer::build_aa_options(supported_sample_counts);
-    let aa_model: Vec<slint::SharedString> =
-        aa_labels.into_iter().map(slint::SharedString::from).collect();
-    window.set_aa_options(slint::ModelRc::new(slint::VecModel::from(aa_model)));
+/// Resolve the day and night texture paths from the textures directory.
+fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBuf>> {
+    let dir = texture_loader::resolve_textures_dir(cli_dir);
+    let pick = |name: &str| {
+        dir.as_ref()
+            .map(|d| d.join(name))
+            .filter(|p| p.exists())
+    };
+    let paths = vec![pick("world.topo.200405.jxl"), pick("BlackMarble_2016.jxl")];
+    info!(textures_dir = ?dir, day = ?paths[0], night = ?paths[1], "resolved texture paths");
+    paths
+}
 
-    // Register JXL decoding hook before any image loading
+/// Build the engine configuration shared by every startup mode.
+fn engine_config(
+    cli: &Cli,
+    config: &AppConfig,
+    preview_size: (u32, u32),
+    preview_enabled: bool,
+) -> EngineConfig {
+    // Skip cloud fetching entirely when SUNLIT_EARTH_NO_CLOUDS is set; e2e
+    // tests use it to keep the network out of the picture.
+    let cloud = if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_ok() {
+        info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
+        None
+    } else {
+        let url = cloud_fetcher::cloud_url();
+        info!(url = %url, "cloud source configured");
+        Some(Arc::new(HttpCloudSource::new(url)) as Arc<_>)
+    };
+
+    EngineConfig {
+        force_software: cli.software_rendering,
+        texture_paths: resolve_texture_paths(cli.textures_dir.as_deref()),
+        preview_size,
+        preview_enabled,
+        params: SceneParams::from_config(config),
+        clock: Arc::new(SystemClock::new()),
+        cloud,
+        cloud_poll_interval: cloud_fetcher::poll_interval(),
+        cloud_cache_dir: cloud_fetcher::cache_dir(),
+        auto_refresh: config.auto_refresh_enabled.then(|| {
+            Duration::from_secs(u64::from(config.auto_refresh_interval_minutes.max(1)) * 60)
+        }),
+        wallpaper: Arc::new(SystemWallpaper),
+        on_event: Arc::new(|_| {}),
+        record_metrics: true,
+    }
+}
+
+/// The `render` subcommand: no window, no Slint backend, no event loop.
+fn run_render(
+    cli: &Cli,
+    config: &AppConfig,
+    output: &std::path::Path,
+    width: u32,
+    height: u32,
+) -> ExitCode {
+    debug!("startup mode: render");
     texture_loader::register_jxl_hook();
-    debug!("registered JXL decoding hook");
 
-    // Set up texture options — always show all four
-    let labels: Vec<slint::SharedString> = renderer::TEXTURE_LABELS
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<()>(1);
+    let mut engine_config = engine_config(cli, config, (width, height), false);
+    engine_config.on_event = Arc::new(move |event| {
+        if matches!(event, engine::EngineEvent::TexturesReady) {
+            let _ = ready_tx.try_send(());
+        }
+    });
+
+    let engine = engine::start(engine_config);
+    if ready_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT).is_err() {
+        error!("textures were not ready within the timeout, rendering anyway");
+    }
+
+    let status = match engine.render_to_file(output.to_path_buf(), width, height) {
+        Ok(()) => {
+            info!("render saved to {}", output.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            error!("render failed: {e}");
+            ExitCode::FAILURE
+        }
+    };
+
+    sunlit_core::memory::log_memory_usage("before exit");
+    engine.shutdown();
+    debug!("exiting");
+    status
+}
+
+/// Set up the UI models and register every callback.
+fn init_ui(window: &MainWindow, config: &AppConfig, link: &EngineLink) {
+    let aa_labels: Vec<slint::SharedString> = renderer::build_aa_options(link.aa_counts())
+        .0
+        .into_iter()
+        .map(slint::SharedString::from)
+        .collect();
+    window.set_aa_options(slint::ModelRc::new(slint::VecModel::from(aa_labels)));
+
+    let texture_labels: Vec<slint::SharedString> = renderer::TEXTURE_LABELS
         .iter()
         .map(|name| slint::SharedString::from(*name))
         .collect();
-    window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(labels)));
+    window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(texture_labels)));
 
-    // Set up year ComboBox options (current year +/- 10)
     let (base_year, end_year) = datetime::year_range();
-    let year_labels: Vec<slint::SharedString> =
-        (base_year..=end_year).map(|y| slint::SharedString::from(y.to_string())).collect();
+    let year_labels: Vec<slint::SharedString> = (base_year..=end_year)
+        .map(|y| slint::SharedString::from(y.to_string()))
+        .collect();
     window.set_year_options(slint::ModelRc::new(slint::VecModel::from(year_labels)));
 
-    // Defer setting ComboBox indices so they apply after Slint processes model changes
-    let config_aa_index = config::find_sample_count_index(&aa_counts, config.sample_count);
-    sunlit_earth::ui_callbacks::defer_combobox_indices(
-        &window.as_weak(),
-        config_aa_index,
-        config.texture_index,
-    );
+    ui_callbacks::apply_config_to_window(window, config);
+    let config_aa_index = config::find_sample_count_index(link.aa_counts(), config.sample_count);
+    ui_callbacks::defer_combobox_indices(&window.as_weak(), config_aa_index, config.texture_index);
 
-    // Register all UI callbacks
-    sunlit_earth::ui_callbacks::register_change_callbacks(window, base_year);
-    sunlit_earth::ui_callbacks::register_mouse_callbacks(window);
-    sunlit_earth::ui_callbacks::register_action_callbacks(window, &aa_counts);
-
-    // Log resolved texture paths (need textures_dir for logging only at this point)
-    if let Some(dir) = textures_dir {
-        debug!(?dir, "textures directory resolved");
-    }
-
-    (aa_counts, base_year)
+    ui_callbacks::register_change_callbacks(window, base_year, link);
+    ui_callbacks::register_mouse_callbacks(window, link);
+    ui_callbacks::register_action_callbacks(window, link);
 }
 
-/// Set up the rendering notifier, texture mailbox, and cloud fetcher.
-///
-/// Returns `textures_ready` for the render timer to poll.
-fn init_texture_system(
+/// Wire the auto-refresh checkbox to the engine's scheduler and the tray mark.
+fn register_auto_refresh_callback(
     window: &MainWindow,
-    aa_counts: Vec<u32>,
-    texture_paths: Vec<Option<PathBuf>>,
-) -> Arc<AtomicBool> {
-    // Create the texture mailbox so both the renderer and the cloud fetcher
-    // can share it. Slots: grid + one per texture path + clouds.
-    let mailbox = renderer::Mailbox::new(texture_paths.len() + 2);
+    link: &EngineLink,
+    config: &AppConfig,
+    use_tray: bool,
+) {
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    let prev_enabled = std::cell::Cell::new(config.auto_refresh_enabled);
+    window.on_auto_refresh_changed(move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let enabled = win.get_auto_refresh_enabled();
+        let was_enabled = prev_enabled.replace(enabled);
 
-    let textures_ready = Arc::new(AtomicBool::new(false));
+        if use_tray {
+            sunlit_earth::tray::sync_tray_auto_refresh(enabled);
+        }
 
-    renderer::setup_rendering_notifier(
-        window,
-        aa_counts,
-        texture_paths,
-        mailbox.clone(),
-        Arc::clone(&textures_ready),
-    );
-
-    // Spawn the background cloud fetcher (slot index 3 = CLOUDS_SLOT).
-    // Skip when SUNLIT_EARTH_NO_CLOUDS is set — used by e2e tests to
-    // avoid network access.
-    if std::env::var("SUNLIT_EARTH_NO_CLOUDS").is_err() {
-        // The fetcher is headless; it nudges this client through a callback
-        // that hops onto the Slint event loop and requests a redraw.
-        let window_weak = window.as_weak();
-        let notify: sunlit_core::assets::cloud_fetcher::NotifyFn = Arc::new(move || {
-            let _ = window_weak.upgrade_in_event_loop(|win| {
-                win.window().request_redraw();
-            });
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let interval_secs = u64::from(win.get_auto_refresh_interval().max(1.0) as u32) * 60;
+        engine.send(EngineCommand::SetAutoRefresh {
+            enabled,
+            interval: Duration::from_secs(interval_secs),
         });
-        sunlit_core::assets::cloud_fetcher::spawn_cloud_fetcher(mailbox, notify, 3);
-        info!("spawned cloud fetcher background thread");
-    } else {
-        info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
-    }
 
-    textures_ready
+        // Refresh immediately when toggling on (not on slider change)
+        if enabled && !was_enabled {
+            info!("auto-refresh: immediate refresh on enable");
+            engine.push_params(&win);
+            engine.send(EngineCommand::RenderWallpaperNow);
+        }
+
+        config::save_config(&ui_callbacks::read_config_from_window(
+            &win,
+            engine.aa_counts(),
+        ));
+    });
 }
 
-/// Run the event loop with timers, tray setup, and shutdown logic.
+/// Poll the preview viewport size and tell the engine when it changes.
 ///
-/// Uses `run_event_loop_until_quit()` for all modes. This keeps the event loop
-/// alive even when all windows are hidden (tray mode), and returns cleanly
-/// after `quit_event_loop()` is called.
-///
-/// Terminates via `process::exit(0)` to avoid a wgpu thread-local destruction
-/// ordering panic (see comment at end of function).
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines, clippy::too_many_arguments)]
-fn run_event_loop(
-    window: MainWindow,
-    cli_command: Option<Commands>,
-    mode: Mode,
-    tray_start: TrayStart,
-    ipc_socket: Option<String>,
-    textures_ready: Arc<AtomicBool>,
-    config: &config::AppConfig,
-    aa_counts: &[u32],
-) -> ! {
-    // Periodic timer to update the sun position (every 2 minutes)
+/// Slint has no size-changed callback we can bind from Rust here, and polling
+/// a pair of properties every 200 ms is far cheaper than any alternative. The
+/// engine quantizes the value, so this sends at most one command per real
+/// resize step.
+fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer {
+    let timer = slint::Timer::default();
     let window_weak = window.as_weak();
-    let sun_timer = slint::Timer::default();
-    sun_timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_secs(120),
-        move || {
-            if let Some(win) = window_weak.upgrade() {
-                sunlit_core::memory::log_memory_usage("sun timer tick");
-                win.window().request_redraw();
-            }
-        },
+    let engine = link.clone();
+    let last = std::cell::Cell::new((0u32, 0u32));
+    timer.start(slint::TimerMode::Repeated, VIEWPORT_POLL, move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let size = {
+            let scale = win.window().scale_factor();
+            (
+                (win.get_viewport_width() * scale) as u32,
+                (win.get_viewport_height() * scale) as u32,
+            )
+        };
+        if size != last.get() && size.0 > 0 && size.1 > 0 {
+            last.set(size);
+            engine.send(EngineCommand::SetPreviewSize(size.0, size.1));
+        }
+    });
+    timer
+}
+
+/// Run the windowed or tray-mode application.
+///
+/// `instance_guard` holds the single-instance mutex in tray mode; it is
+/// acquired in `main` so a second instance can exit before creating a window
+/// or a GPU device.
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+fn run_app(
+    cli: Cli,
+    config: &AppConfig,
+    instance_guard: Option<single_instance::SingleInstance>,
+) -> ExitCode {
+    texture_loader::register_jxl_hook();
+    debug!("registered JXL decoding hook");
+
+    let use_tray = matches!(cli.mode, Mode::Tray);
+    let tray_start = cli.tray_start;
+    let ipc_socket = cli.ipc_socket.clone();
+
+    let window = MainWindow::new().expect("Failed to create window");
+    sunlit_core::memory::log_memory_usage("after window creation");
+
+    // The engine event callback needs the window; the UI callbacks need the
+    // engine. Break the cycle by building the callback first and moving it
+    // into the config.
+    let auto_refresh_at_startup = config.auto_refresh_enabled;
+    let startup_refresh_done = Arc::new(AtomicBool::new(!auto_refresh_at_startup));
+    let refresh_flag = Arc::clone(&startup_refresh_done);
+    let (refresh_tx, refresh_rx) = crossbeam_channel::bounded::<()>(1);
+    let on_event = engine_client::event_forwarder(&window, move || {
+        if !refresh_flag.swap(true, Ordering::SeqCst) {
+            let _ = refresh_tx.try_send(());
+        }
+    });
+
+    let mut engine_config = engine_config(&cli, config, (800, 600), true);
+    engine_config.on_event = on_event;
+    let engine: EngineHandle = engine::start(engine_config);
+    window.set_renderer_info(engine.adapter_info().into());
+
+    let link = EngineLink::new(
+        engine.sender(),
+        renderer::build_aa_options(engine.supported_sample_counts()).1,
     );
 
-    // Periodic timer to upload decoded textures to the GPU (every 5 seconds).
-    // BeforeRendering stops firing while the window is hidden to the tray, so
-    // without this timer decoded cloud frames would stay parked in the mailbox
-    // and clouds would freeze at whatever was current when the window was last
-    // visible.
-    let drain_timer = slint::Timer::default();
-    {
-        let ww = window.as_weak();
-        drain_timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_secs(5),
-            move || renderer::drain_texture_updates(&ww),
-        );
+    init_ui(&window, config, &link);
+    register_auto_refresh_callback(&window, &link, config, use_tray);
+    if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
+        window.window().set_position(slint::PhysicalPosition::new(x, y));
+        window.window().set_size(slint::PhysicalSize::new(w, h));
     }
+    debug!("loaded config from disk");
 
-    // Memory watchdog (every 10 minutes). Appends a sample to
-    // %LOCALAPPDATA%\SunlitEarth\memory-metrics.csv and warns past the budget.
-    // Release builds compile out debug and info logging, so this is the only
-    // memory telemetry a shipped binary produces. One sample is written up
-    // front so every run leaves a startup baseline to compare later ones with.
-    sunlit_core::memory::record_metrics_sample();
-    let memory_timer = slint::Timer::default();
-    memory_timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_secs(600),
-        sunlit_core::memory::record_metrics_sample,
-    );
+    // The engine started from the config; push once more so anything the UI
+    // clamped on the way in (day-of-year, year index) reaches it too.
+    link.push_params(&window);
 
-    let is_render = cli_command.is_some();
-    let use_tray = !is_render && matches!(mode, Mode::Tray);
+    let viewport_timer = start_viewport_timer(&window, &link);
 
-    // --- Auto-refresh scheduler timer ---
-    let scheduler_timer = Rc::new(slint::Timer::default());
-    if config.auto_refresh_enabled {
-        let interval_secs = u64::from(config.auto_refresh_interval_minutes) * 60;
-        let ww = window.as_weak();
-        scheduler_timer.start(
+    // When auto-refresh is on at startup, the first wallpaper update waits for
+    // the textures rather than firing against the grid placeholder.
+    let startup_refresh_timer = std::rc::Rc::new(slint::Timer::default());
+    if auto_refresh_at_startup {
+        let engine_link = link.clone();
+        let timer = std::rc::Rc::clone(&startup_refresh_timer);
+        startup_refresh_timer.start(
             slint::TimerMode::Repeated,
-            std::time::Duration::from_secs(interval_secs),
+            Duration::from_millis(200),
             move || {
-                if let Some(win) = ww.upgrade()
-                    && win.get_auto_refresh_enabled()
-                {
-                    // Refresh sun direction so the export uses the current time,
-                    // even when BeforeRendering hasn't fired (window hidden to tray).
-                    let dt = sunlit_earth::ui_callbacks::read_datetime_input(&win);
-                    let sun_dir = sunlit_core::scene::sun::compute_sun_direction(&dt);
-                    sunlit_earth::renderer::update_sun_direction(sun_dir);
-
-                    info!("auto-refresh: updating wallpaper");
-                    #[cfg(windows)]
-                    if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
-                        error!("auto-refresh failed: {e}");
-                    }
-                }
-            },
-        );
-        debug!(interval_minutes = config.auto_refresh_interval_minutes, "auto-refresh timer started");
-    }
-
-    // Wire auto-refresh-changed callback to restart/stop the scheduler timer.
-    // Also syncs the tray checkmark and refreshes immediately on enable.
-    {
-        let timer = Rc::clone(&scheduler_timer);
-        let window_weak = window.as_weak();
-        let aa_counts = aa_counts.to_vec();
-        let prev_enabled = std::cell::Cell::new(config.auto_refresh_enabled);
-        window.on_auto_refresh_changed(move || {
-            let Some(win) = window_weak.upgrade() else {
-                return;
-            };
-            let enabled = win.get_auto_refresh_enabled();
-            let was_enabled = prev_enabled.replace(enabled);
-
-            // Sync tray checkmark with UI state
-            if use_tray {
-                sunlit_earth::tray::sync_tray_auto_refresh(enabled);
-            }
-
-            if enabled {
-                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                let interval_secs = u64::from(win.get_auto_refresh_interval().max(1.0) as u32) * 60;
-                let ww = window_weak.clone();
-                timer.start(
-                    slint::TimerMode::Repeated,
-                    std::time::Duration::from_secs(interval_secs),
-                    move || {
-                        if let Some(win) = ww.upgrade()
-                            && win.get_auto_refresh_enabled()
-                        {
-                            let dt = sunlit_earth::ui_callbacks::read_datetime_input(&win);
-                            let sun_dir = sunlit_core::scene::sun::compute_sun_direction(&dt);
-                            sunlit_earth::renderer::update_sun_direction(sun_dir);
-
-                            info!("auto-refresh: updating wallpaper");
-                            #[cfg(windows)]
-                            if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
-                                error!("auto-refresh failed: {e}");
-                            }
-                        }
-                    },
-                );
-                debug!(interval_secs, "auto-refresh timer restarted");
-
-                // Refresh immediately when toggling on (not on slider change)
-                if !was_enabled {
-                    info!("auto-refresh: immediate refresh on enable");
-                    #[cfg(windows)]
-                    if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
-                        error!("auto-refresh immediate refresh failed: {e}");
-                    }
-                }
-            } else {
-                timer.stop();
-                debug!("auto-refresh timer stopped");
-            }
-            config::save_config(
-                &sunlit_earth::ui_callbacks::read_config_from_window(&win, &aa_counts),
-            );
-        });
-    }
-
-    // When auto-refresh is enabled at startup, update wallpaper after first frame
-    if config.auto_refresh_enabled {
-        let textures_ready_startup = Arc::clone(&textures_ready);
-        let startup_timer = Rc::new(slint::Timer::default());
-        let startup_timer_clone = Rc::clone(&startup_timer);
-        startup_timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(200),
-            move || {
-                if textures_ready_startup.load(Ordering::Relaxed) {
+                if refresh_rx.try_recv().is_ok() {
                     info!("auto-refresh: initial wallpaper update on startup");
-                    #[cfg(windows)]
-                    if let Err(e) = sunlit_earth::ui_callbacks::do_set_wallpaper() {
-                        error!("auto-refresh initial update failed: {e}");
-                    }
-                    startup_timer_clone.stop();
+                    engine_link.send(EngineCommand::RenderWallpaperNow);
+                    timer.stop();
                 }
             },
         );
-        // startup_timer stays alive via the Rc in the closure
     }
 
-    // When the `render` subcommand is used, register a timer that polls the
-    // texture-readiness flag and saves a rendered image when ready.
-    let render_timer = if let Some(Commands::Render { output, width, height, .. }) = cli_command {
-        let output_path = output;
-        let render_width = width;
-        let render_height = height;
-        let textures_ready = Arc::clone(&textures_ready);
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(200),
-            move || {
-                if textures_ready.load(Ordering::Relaxed) {
-                    match renderer::export_wallpaper_image(render_width, render_height) {
-                        Ok(pixels) => {
-                            if let Err(e) = sunlit_earth::ui_callbacks::save_render_png(&output_path, render_width, render_height, &pixels) {
-                                error!("render failed: {e}");
-                            } else {
-                                info!("render saved to {}", output_path.display());
-                            }
-                        }
-                        Err(e) => error!("render export failed: {e}"),
-                    }
-                    slint::quit_event_loop().ok();
-                }
-            },
-        );
-        Some(timer)
-    } else {
-        None
-    };
-
-    if is_render {
-        debug!("startup mode: render");
-    } else if use_tray {
+    if use_tray {
         debug!("startup mode: tray");
     } else {
         debug!("startup mode: windowed");
     }
 
-    // Single-instance enforcement (tray mode only).
-    let _instance_guard = if use_tray {
-        let mutex_name = match &ipc_socket {
-            Some(name) => format!("sunlit-earth-{name}"),
-            None => "sunlit-earth-app".to_string(),
-        };
-        Some(sunlit_earth::tray::enforce_single_instance(&mutex_name))
-    } else {
-        None
-    };
+    let _instance_guard = instance_guard;
 
     // Close handler depends on mode:
     // - Tray: save geometry, hide window (stays in tray)
     // - Windowed: quit the event loop (app exits)
-    // - Render: no close handler (render timer calls quit_event_loop)
     if use_tray {
         let window_weak = window.as_weak();
         window.window().on_close_requested(move || {
@@ -496,7 +463,7 @@ fn run_event_loop(
             sunlit_core::memory::log_memory_usage("after window hidden");
             slint::CloseRequestResponse::HideWindow
         });
-    } else if !is_render {
+    } else {
         window.window().on_close_requested(|| {
             debug!("window closed, quitting event loop");
             slint::quit_event_loop().ok();
@@ -507,19 +474,17 @@ fn run_event_loop(
     // Spawn tray thread (tray mode only).
     let _tray_handle = if use_tray {
         info!("spawning tray thread");
-        Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak()))
+        Some(sunlit_earth::tray::spawn_tray_thread(window.as_weak(), link.clone()))
     } else {
         None
     };
 
     // Spawn IPC listener if --ipc-socket was provided.
-    // Commands are dispatched directly via invoke_from_event_loop.
     let _ipc_handle = ipc_socket.map(|name| {
         info!("spawning IPC listener on {name}");
-        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak())
+        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak(), link.clone())
     });
 
-    // Show the window and enter the event loop.
     window.show().expect("Failed to show window");
 
     // In tray mode with --tray-start hidden, defer the hide to a zero-duration
@@ -527,7 +492,7 @@ fn run_event_loop(
     // before run_event_loop_until_quit() causes the loop to exit immediately.
     if use_tray && matches!(tray_start, TrayStart::Hidden) {
         let ww = window.as_weak();
-        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        slint::Timer::single_shot(Duration::ZERO, move || {
             if let Some(win) = ww.upgrade() {
                 debug!("hiding window for --tray-start hidden (deferred)");
                 win.hide().ok();
@@ -542,24 +507,16 @@ fn run_event_loop(
 
     sunlit_core::memory::log_memory_usage("before exit");
 
-    // Intentionally leak timers — their Slint destructors can crash after
-    // quit_event_loop() because the backend may be partially torn down.
-    std::mem::forget(sun_timer);
-    std::mem::forget(drain_timer);
-    std::mem::forget(memory_timer);
-    std::mem::forget(render_timer);
+    // The engine owns the GPU device, so shutting it down here is an ordinary
+    // join on a worker thread. Slint holds no wgpu objects any more, which is
+    // what retired the process::exit(0) that used to dodge a thread-local
+    // destruction panic in wgpu's Queue::drop.
+    engine.shutdown();
+    drop(viewport_timer);
+    drop(startup_refresh_timer);
 
     debug!("exiting");
-
-    // Exit immediately to skip thread-local destructor ordering.
-    // With WGPUConfiguration::Manual, the wgpu device lives in Slint's
-    // thread-local backend state. During normal process exit, Rust destroys
-    // thread-locals in arbitrary order. wgpu's Queue::drop accesses its own
-    // LockTrace thread-local, which may already be destroyed, causing a
-    // panic ("cannot access a Thread Local Storage value during or after
-    // destruction"). This does not happen with WGPUConfiguration::Automatic
-    // because Slint controls the destruction order internally.
-    std::process::exit(0);
+    ExitCode::SUCCESS
 }
 
 /// Attach to the parent process's console so that stdout/stderr work when
@@ -578,17 +535,18 @@ fn attach_parent_console() {
     let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
 }
 
-fn main() {
+fn main() -> ExitCode {
     #[cfg(windows)]
     attach_parent_console();
 
     let cli = Cli::parse();
     let _guard = init_logging(cli.log_level.as_deref());
     info!("sunlit earth v{}", env!("CARGO_PKG_VERSION"));
+
     // Validate: --tray-start hidden only makes sense with --mode tray
     if matches!(cli.tray_start, TrayStart::Hidden) && matches!(cli.mode, Mode::Window) {
         eprintln!("error: --tray-start hidden is only valid with --mode tray");
-        std::process::exit(2);
+        return ExitCode::from(2);
     }
 
     debug!(
@@ -601,59 +559,37 @@ fn main() {
         "parsed CLI arguments"
     );
 
-    let wgpu_context = wgpu_init::init(cli.software_rendering);
-    sunlit_core::memory::log_memory_usage("after wgpu init");
-
-    // Hand the core's device to Slint so the preview stays a zero-copy
-    // texture. Step 5 replaces this with the engine's own device.
-    slint::BackendSelector::new()
-        .require_wgpu_28(slint::wgpu_28::WGPUConfiguration::Manual {
-            instance: wgpu_context.instance,
-            adapter: wgpu_context.adapter,
-            device: wgpu_context.device,
-            queue: wgpu_context.queue,
-        })
-        .select()
-        .expect("Failed to select wgpu backend");
-
-    let window = MainWindow::new().expect("Failed to create window");
-    window.set_renderer_info(wgpu_context.adapter_info.into());
-    sunlit_core::memory::log_memory_usage("after window creation");
-
-    // Load config: from --config path if render subcommand specifies one,
+    // Load config: from --config path if the render subcommand specifies one,
     // otherwise from the user's saved config on disk.
     let config = match &cli.command {
         Some(Commands::Render { config: Some(path), .. }) => config::load_config_from(path),
         _ => config::load_config(),
     };
-    sunlit_earth::ui_callbacks::apply_config_to_window(&window, &config);
-    if let Some((x, y, w, h)) = config::validated_window_geometry(&config) {
-        window.window().set_position(slint::PhysicalPosition::new(x, y));
-        window.window().set_size(slint::PhysicalSize::new(w, h));
+
+    match &cli.command {
+        Some(Commands::Render { output, width, height, .. }) => {
+            let (output, width, height) = (output.clone(), *width, *height);
+            run_render(&cli, &config, &output, width, height)
+        }
+        None => {
+            // Single-instance enforcement (tray mode only), before the window
+            // and the GPU device exist. Returning from `main` rather than
+            // exiting in place drops the logging guard, which is what flushes
+            // the message below to stderr.
+            let instance_guard = if matches!(cli.mode, Mode::Tray) {
+                let mutex_name = match &cli.ipc_socket {
+                    Some(name) => format!("sunlit-earth-{name}"),
+                    None => "sunlit-earth-app".to_string(),
+                };
+                let Some(guard) = sunlit_earth::tray::acquire_single_instance(&mutex_name) else {
+                    info!("another instance is already running, exiting");
+                    return ExitCode::SUCCESS;
+                };
+                Some(guard)
+            } else {
+                None
+            };
+            run_app(cli, &config, instance_guard)
+        }
     }
-    debug!("loaded config from disk");
-
-    // Resolve texture paths for JXL files (loaded lazily when selected)
-    let textures_dir = texture_loader::resolve_textures_dir(cli.textures_dir.as_deref());
-    let day_path = textures_dir
-        .as_ref()
-        .map(|d| d.join("world.topo.200405.jxl"))
-        .filter(|p| p.exists());
-    let night_path = textures_dir
-        .as_ref()
-        .map(|d| d.join("BlackMarble_2016.jxl"))
-        .filter(|p| p.exists());
-    let texture_paths = vec![day_path, night_path];
-    info!(textures_dir = ?textures_dir, day = ?texture_paths[0], night = ?texture_paths[1], "resolved texture paths");
-
-    let (aa_counts, _base_year) = init_ui_models(
-        &window,
-        &config,
-        &wgpu_context.supported_sample_counts,
-        textures_dir.as_deref(),
-    );
-
-    let textures_ready = init_texture_system(&window, aa_counts.clone(), texture_paths);
-
-    run_event_loop(window, cli.command, cli.mode, cli.tray_start, cli.ipc_socket, textures_ready, &config, &aa_counts);
 }

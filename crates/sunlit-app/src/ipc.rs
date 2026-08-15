@@ -18,6 +18,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 
+use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
@@ -30,6 +31,7 @@ use tracing::{debug, info, warn};
 pub fn spawn_ipc_listener(
     socket_name: &str,
     window_weak: slint::Weak<crate::MainWindow>,
+    engine: EngineLink,
 ) -> std::thread::JoinHandle<()> {
     let name = socket_name
         .to_ns_name::<GenericNamespaced>()
@@ -56,7 +58,7 @@ pub fn spawn_ipc_listener(
                         }
                         let cmd = line.trim().to_owned();
                         drop(reader);
-                        dispatch_command(&cmd, &window_weak);
+                        dispatch_command(&cmd, &window_weak, &engine);
                     }
                     Err(e) => {
                         warn!("ipc accept error: {e}");
@@ -68,7 +70,11 @@ pub fn spawn_ipc_listener(
 }
 
 /// Parse and dispatch a single IPC command via `invoke_from_event_loop`.
-fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
+fn dispatch_command(
+    cmd: &str,
+    window_weak: &slint::Weak<crate::MainWindow>,
+    engine: &EngineLink,
+) {
     match cmd {
         "quit" => {
             debug!("ipc: received quit command, dispatching to event loop");
@@ -104,19 +110,19 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
         }
         "export-test" => {
             debug!("ipc: received export-test command");
-            slint::invoke_from_event_loop(move || {
-                match crate::renderer::export_wallpaper_image(64, 64) {
-                    Ok(_) => {
-                        debug!("ipc: export-test succeeded");
-                        signal("export_test_ok");
-                    }
-                    Err(e) => {
-                        debug!("ipc: export-test failed: {e}");
-                        signal("export_test_failed");
-                    }
+            // Answered on this thread: the engine owns the GPU and replies on
+            // its own channel, so the probe works while the window is hidden
+            // and the Slint event loop has nothing to do.
+            match engine.export_pixels(64, 64) {
+                Ok(_) => {
+                    debug!("ipc: export-test succeeded");
+                    signal("export_test_ok");
                 }
-            })
-            .ok();
+                Err(e) => {
+                    debug!("ipc: export-test failed: {e}");
+                    signal("export_test_failed");
+                }
+            }
         }
         "query-memory" => {
             debug!("ipc: received query-memory command");

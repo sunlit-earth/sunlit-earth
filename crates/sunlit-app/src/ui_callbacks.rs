@@ -4,24 +4,23 @@
 //! functions for applying/reading config to/from the window.
 
 use slint::ComponentHandle;
-use tracing::info;
 
 use crate::MainWindow;
+use crate::engine_client::EngineLink;
 use crate::mouse_math;
-use crate::renderer;
 use sunlit_core::config::{self, AppConfig};
+use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
 use sunlit_core::scene::sun::DateTimeInput;
-#[cfg(windows)]
-use sunlit_core::wallpaper;
 
 /// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
 /// tilt drag, scroll zoom, and preset application.
-pub fn register_mouse_callbacks(window: &MainWindow) {
+pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
     // Left-drag callback: rotate the globe (tilt-corrected)
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_mouse_drag_globe(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -36,11 +35,12 @@ pub fn register_mouse_callbacks(window: &MainWindow) {
         );
         win.set_camera_longitude(lon);
         win.set_camera_latitude(lat);
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 
     // Right-drag callback: adjust framing (offset X/Y)
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_mouse_drag_frame(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -54,11 +54,12 @@ pub fn register_mouse_callbacks(window: &MainWindow) {
         );
         win.set_camera_offset_x(new_x);
         win.set_camera_offset_y(new_y);
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 
     // Middle-drag callback: adjust pitch and yaw
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_mouse_drag_orient(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -71,31 +72,34 @@ pub fn register_mouse_callbacks(window: &MainWindow) {
         );
         win.set_camera_yaw(new_yaw);
         win.set_camera_pitch(new_pitch);
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 
     // Left+right drag callback: adjust tilt (horizontal only)
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_mouse_drag_tilt(move |dx, _dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
         win.set_camera_tilt(mouse_math::apply_tilt_drag(win.get_camera_tilt(), dx));
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 
     // Mouse scroll callback: zoom in/out
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_mouse_scroll(move |delta| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
         win.set_camera_zoom(mouse_math::apply_zoom_scroll(win.get_camera_zoom(), delta));
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 
     // Apply-preset callback: set camera parameters from the PRESETS array
     let window_weak = window.as_weak();
+    let engine = link.clone();
     #[allow(clippy::cast_sign_loss)]
     window.on_apply_preset(move |index| {
         let Some(win) = window_weak.upgrade() else {
@@ -112,23 +116,25 @@ pub fn register_mouse_callbacks(window: &MainWindow) {
         win.set_camera_tilt(preset.tilt_deg);
         win.set_camera_yaw(preset.yaw_deg);
         win.set_camera_pitch(preset.pitch_deg);
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 }
 
-/// Register slider/combobox change callbacks that trigger redraws.
-pub fn register_change_callbacks(window: &MainWindow, base_year: i32) {
-    // Request a redraw whenever sliders change
+/// Register slider and combo box change callbacks. Each one pushes the whole
+/// scene to the engine, which decides whether anything actually changed.
+pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &EngineLink) {
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
             update_datetime_labels(&win, base_year);
-            win.window().request_redraw();
+            engine.push_params(&win);
         }
     });
 
     // When "Override date/time" is toggled on, initialize sliders to current UTC time
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_datetime_override_toggled(move || {
         if let Some(win) = window_weak.upgrade() {
             if win.get_use_custom_datetime() {
@@ -140,48 +146,46 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32) {
                 win.set_custom_year_index(now.year() - base_year);
             }
             update_datetime_labels(&win, base_year);
-            win.window().request_redraw();
+            engine.push_params(&win);
         }
     });
 
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_msaa_changed(move || {
         if let Some(win) = window_weak.upgrade() {
-            win.window().request_redraw();
+            engine.push_params(&win);
         }
     });
 
     let window_weak = window.as_weak();
+    let engine = link.clone();
     window.on_texture_changed(move || {
         if let Some(win) = window_weak.upgrade() {
-            win.window().request_redraw();
+            engine.push_params(&win);
         }
     });
 }
 
 /// Register action callbacks: set wallpaper, load defaults, reset.
-pub fn register_action_callbacks(window: &MainWindow, aa_counts: &[u32]) {
-    // "Set as Wallpaper" button: save config, then apply wallpaper.
+pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
+    // "Set as Wallpaper" button: save config, then ask the engine to export.
     {
         let window_weak = window.as_weak();
-        let aa_counts_for_save = aa_counts.to_vec();
+        let engine = link.clone();
         window.on_set_wallpaper(move || {
             let Some(win) = window_weak.upgrade() else {
                 return;
             };
-            config::save_config(&read_config_from_window(&win, &aa_counts_for_save));
-            #[cfg(windows)]
-            if let Err(e) = do_set_wallpaper() {
-                tracing::error!("Failed to set wallpaper: {e}");
-            }
-            #[cfg(not(windows))]
-            tracing::warn!("Wallpaper export is not supported on this platform");
+            config::save_config(&read_config_from_window(&win, engine.aa_counts()));
+            engine.push_params(&win);
+            engine.send(EngineCommand::RenderWallpaperNow);
         });
     }
 
     // Load-defaults callback: restore all settings to AppConfig::default() without saving
     let window_weak = window.as_weak();
-    let aa_counts_for_defaults = aa_counts.to_vec();
+    let engine = link.clone();
     window.on_load_defaults(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -190,14 +194,14 @@ pub fn register_action_callbacks(window: &MainWindow, aa_counts: &[u32]) {
         apply_config_to_window(&win, &defaults);
 
         let default_aa_index =
-            config::find_sample_count_index(&aa_counts_for_defaults, defaults.sample_count);
+            config::find_sample_count_index(engine.aa_counts(), defaults.sample_count);
         defer_combobox_indices(&win.as_weak(), default_aa_index, defaults.texture_index);
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 
     // Reset callback: reload config from disk and restore UI to last-saved state
     let window_weak = window.as_weak();
-    let aa_counts_for_reset = aa_counts.to_vec();
+    let engine = link.clone();
     window.on_reset(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -206,9 +210,9 @@ pub fn register_action_callbacks(window: &MainWindow, aa_counts: &[u32]) {
         apply_config_to_window(&win, &loaded);
 
         let loaded_aa_index =
-            config::find_sample_count_index(&aa_counts_for_reset, loaded.sample_count);
+            config::find_sample_count_index(engine.aa_counts(), loaded.sample_count);
         defer_combobox_indices(&win.as_weak(), loaded_aa_index, loaded.texture_index);
-        win.window().request_redraw();
+        engine.push_params(&win);
     });
 }
 
@@ -394,32 +398,4 @@ pub fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     let doy = window.get_custom_day_of_year() as u16;
     let doy = doy.max(1);
     window.set_day_label(datetime::month_day_label(doy, year).into());
-}
-
-/// Encode RGBA8 pixels as PNG and write to the given path.
-pub fn save_render_png(
-    path: &std::path::Path,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-) -> Result<(), String> {
-    use image::{ImageBuffer, Rgba};
-    let img: ImageBuffer<Rgba<u8>, _> =
-        ImageBuffer::from_raw(width, height, pixels.to_vec())
-            .ok_or_else(|| "pixel buffer size mismatch".to_owned())?;
-    img.save(path).map_err(|e| format!("failed to save PNG: {e}"))
-}
-
-/// Render the current scene at the primary monitor's resolution, save as PNG,
-/// and set it as the Windows desktop wallpaper.
-#[cfg(windows)]
-pub fn do_set_wallpaper() -> Result<(), String> {
-    info!("starting wallpaper export");
-    let (width, height) = wallpaper::get_primary_monitor_resolution()?;
-    let pixels = renderer::export_wallpaper_image(width, height)?;
-    let path = wallpaper::save_wallpaper_image(&pixels, width, height)?;
-    wallpaper::set_wallpaper(&path)?;
-    info!(path = %path.display(), "wallpaper set successfully");
-    sunlit_core::memory::log_memory_usage("after wallpaper set");
-    Ok(())
 }

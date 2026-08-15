@@ -30,11 +30,11 @@ Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scen
 
 ## Success Criteria
 
-- [ ] Workspace builds; `cargo test` green at every step boundary (commit per step)
-- [ ] `render` subcommand produces a PNG with no window and no Slint backend involvement
-- [ ] Phase 0 regression test passes unchanged (black box), and the whole Phase 0 surface keeps working: all `SUNLIT_EARTH_*` env knobs, the `query-memory` IPC command, the memory metrics CSV, and the drain-while-hidden semantics (the Phase 0 mailbox and drain timer become engine-internal, but the observable behavior is identical)
-- [ ] Existing e2e suite passes (adapted only where paths or startup logs changed)
-- [ ] New engine integration tests pass headlessly on the software adapter
+- [x] Workspace builds; `cargo test` green at every step boundary (commit per step)
+- [x] `render` subcommand produces a PNG with no window and no Slint backend involvement
+- [x] Phase 0 regression test passes unchanged (black box), and the whole Phase 0 surface keeps working: all `SUNLIT_EARTH_*` env knobs, the `query-memory` IPC command, the memory metrics CSV, and the drain-while-hidden semantics (the Phase 0 mailbox and drain timer become engine-internal, but the observable behavior is identical)
+- [x] Existing e2e suite passes (adapted only where paths or startup logs changed)
+- [x] New engine integration tests pass headlessly on the software adapter
 - [ ] Mock-clock soak test: 14 simulated days of cloud updates and auto-refresh in under a minute, bounded private bytes
 - [ ] Golden-image test with tolerance, plus contact-sheet artifact job in CI
 - [ ] Quality tiers exist; dev/test default is low; release default unchanged in output quality
@@ -132,8 +132,8 @@ Every step is a separate commit on `feat/phase1-restructure`, stacked on the Pha
 
 - [x] Plan approved
 - [x] Steps 1-2: workspace + core extraction
-- [ ] Steps 3-4: SceneParams + engine
-- [ ] Step 5: app switched, old path deleted
+- [x] Steps 3-4: SceneParams + engine
+- [x] Step 5: app switched, old path deleted
 - [ ] Steps 6-7: tiers + new test layers
 - [ ] Step 8: Slint 1.17 + tray (or descoped with findings)
 - [ ] Step 9: docs + CI
@@ -208,3 +208,75 @@ check now fails a test instead of producing stale frames.
 
 Verification: `cargo test` 304 pass (196 core, 61 app, 19 render_pipeline, 12 shading, 16
 slint_ui), `cargo clippy --all-targets` 21 warnings, all pre-existing kinds. Full e2e suite 8 pass.
+
+### Step 4: the renderer moves to core, the engine appears
+
+Landed as two commits.
+
+**4a, the renderer.** `GpuResources` became `sunlit_core::renderer::Renderer` with methods instead
+of free functions reaching into a thread-local. It renders into its own offscreen texture (now
+carrying `COPY_SRC` as well as `TEXTURE_BINDING`, so both binding it and reading it back work) and
+returns a `RenderOutcome` rather than a `slint::Image`. Background decode threads wake their
+consumer through the same `NotifyFn` the cloud fetcher uses. The shaders and the two GPU
+integration suites moved with it. The app kept a thin `renderer` module holding the Slint
+rendering notifier and the thread-local, so nothing changed behaviorally at this point.
+
+**4b, the engine.** `sunlit_core::engine` blocks on its command channel with a 50 ms timeout and
+computes due work from `clock.elapsed()` on every wake (D2). Cloud fetching went behind
+`CloudSource` (D3) with `HttpCloudSource` for production, and `CloudUpdater` owns the disk cache and
+the decode. Wallpaper publishing went behind `WallpaperSink` so tests never repaint the desktop.
+A dedicated cloud worker thread does network I/O and JPEG decoding and never touches the GPU; it
+pokes the engine, which uploads on its own schedule.
+
+Two design details worth recording:
+
+- `Schedule::due` recomputes its deadline from `now` instead of accumulating. Without that, one
+  jump of a simulated day would fire 17 280 catch-up drains rather than one. There is a test for it.
+- Re-enabling the preview has to deliver a frame even though the scene did not change, so
+  `PreviewState` tracks "owed" separately from "enabled". A window that was hidden and shown again
+  would otherwise sit on a stale image until the user touched something.
+
+Verification: `cargo test` 313 pass including nine new engine integration tests, clippy has no new
+warnings, full e2e suite 8 pass.
+
+### Step 5: the app switched to the engine, the old path deleted
+
+`main.rs` no longer calls `wgpu_init` or `BackendSelector::require_wgpu_28`, and the `slint`
+dependency lost the `unstable-wgpu-28` feature, which also let the app crate drop `wgpu`, `glam`,
+`bytemuck`, `pollster`, `ureq`, `jxl-oxide`, `astronomy-engine-bindings`, `serde`, `toml`, `dirs`,
+`image`, and `winreg` from its manifest. The app is now Slint, clap, tracing, the tray, IPC, and
+`sunlit-core`.
+
+Preview frames cross the thread boundary through a latest-value mailbox with a single pending
+wake-up: the engine parks the newest frame and queues one `invoke_from_event_loop` closure, which
+takes whatever is parked. Queueing 2 MB buffers is precisely the failure mode Phase 0 removed from
+the texture path, so it is not reintroduced for frames.
+
+The `render` subcommand is fully headless: no window, no Slint backend, no event loop. It starts
+the engine with `preview_enabled: false`, waits for `TexturesReady`, calls `render_to_file`, and
+returns an exit code.
+
+The sun timer, drain timer, memory watchdog, and both copies of the auto-refresh timer body are
+gone from `main.rs`; all four are engine schedules now. What remains in the app is the viewport
+size poll (200 ms, sends `SetPreviewSize` only when the quantized size changes) and the one-shot
+startup wallpaper refresh.
+
+Two e2e adaptations were needed, both because behavior moved rather than changed:
+
+- `first frame rendered` is now logged by the engine (the render subcommand has no window to
+  render into), while `SIGNAL:first_frame_rendered` is still printed by the app when it displays
+  its first preview frame.
+- `enforce_single_instance` became `acquire_single_instance` and no longer calls `process::exit`
+  itself. The check moved into `main`, before the window and the GPU device exist, and the
+  "already running" path returns from `main` so the logging guard drops and flushes the message.
+  Exiting in place lost it to the non-blocking writer's buffer.
+
+**Teardown outcome: the hacks are gone.** `process::exit(0)` and all four `std::mem::forget` calls
+were removed. `main` returns `ExitCode`, the engine is shut down with an ordinary thread join, and
+the timers are dropped normally. The wgpu thread-local destruction panic does not reproduce,
+which is the expected result of D1: Slint no longer holds any wgpu object, so there is no
+cross-library destruction order to get wrong. Verified by running the three shutdown-sensitive e2e
+tests four times in a row plus two full suite runs, all exit code 0 with no panic on stderr.
+
+Verification: `cargo test` 332 pass, clippy no new warnings, full e2e suite 8 pass in 42 seconds
+(including the Phase 0 regression test, unchanged).

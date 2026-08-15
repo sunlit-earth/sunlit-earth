@@ -64,6 +64,14 @@ pub enum EngineCommand {
         height: u32,
         reply: Sender<Result<(), String>>,
     },
+    /// Render at an explicit size and hand the raw pixels back. Used by the
+    /// e2e `export-test` probe, which checks that the GPU path still works
+    /// while the window is hidden.
+    ExportPixels {
+        width: u32,
+        height: u32,
+        reply: Sender<Result<Vec<u8>, String>>,
+    },
     /// Turn the unattended wallpaper refresh on or off.
     SetAutoRefresh { enabled: bool, interval: Duration },
     /// Re-evaluate the schedule now. Tests send this after advancing a mock
@@ -171,6 +179,21 @@ impl EngineHandle {
     /// MSAA sample counts the adapter supports for the render format.
     pub fn supported_sample_counts(&self) -> &[u32] {
         &self.supported_sample_counts
+    }
+
+    /// Render `width` x `height` pixels and block until they are ready.
+    pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, String> {
+        let (reply, replies) = bounded(1);
+        self.tx
+            .send(EngineCommand::ExportPixels {
+                width,
+                height,
+                reply,
+            })
+            .map_err(|_| "engine has stopped".to_owned())?;
+        replies
+            .recv()
+            .map_err(|_| "engine stopped before answering".to_owned())?
     }
 
     /// Render a PNG at `width` x `height` and block until it is written.
@@ -475,6 +498,14 @@ impl Engine {
                 let result = self.render_to_file(&path, width, height);
                 let _ = reply.send(result);
             }
+            EngineCommand::ExportPixels {
+                width,
+                height,
+                reply,
+            } => {
+                self.prepare_export();
+                let _ = reply.send(self.renderer.export_image(width, height));
+            }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
                 let now = self.clock.elapsed();
                 if enabled {
@@ -487,7 +518,11 @@ impl Engine {
                 }
                 debug!(enabled, interval_secs = interval.as_secs(), "auto-refresh changed");
             }
-            EngineCommand::Poke => {}
+            EngineCommand::Poke => {
+                // A poke means a producer has something waiting, so bring the
+                // next drain forward instead of sitting out the interval.
+                self.drain.next = Duration::ZERO;
+            }
             EngineCommand::Shutdown => return false,
         }
         true
@@ -548,6 +583,9 @@ impl Engine {
         let sun_dir = self.sun_direction();
         let outcome = self.renderer.render(&self.params, sun_dir);
         self.dirty = false;
+        if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
+            info!("first frame rendered");
+        }
 
         let status = self.renderer.loading_text(self.params.texture_index);
         if status != self.last_status {

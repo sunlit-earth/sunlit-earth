@@ -77,6 +77,33 @@ pub fn build_aa_options(supported: &[u32], max_samples: u32) -> (Vec<String>, Ve
     (labels, counts, default_index)
 }
 
+/// Resolve a requested MSAA sample count against what the adapter supports and
+/// what the quality tier allows.
+///
+/// A sample count the adapter does not support is not a warning inside wgpu, it
+/// is a validation error that kills whichever thread creates the texture, so
+/// this has to happen before any render target is built. The rule mirrors the
+/// combo box: take the highest supported count that is at most the requested
+/// one, and if the request is below everything on offer, take the lowest thing
+/// on offer instead. `1` is always a valid answer.
+pub fn resolve_sample_count(requested: u32, supported: &[u32], max_samples: u32) -> u32 {
+    let allowed: Vec<u32> = supported
+        .iter()
+        .copied()
+        .filter(|&c| c >= 1 && c <= max_samples)
+        .collect();
+    if allowed.is_empty() {
+        return 1;
+    }
+    allowed
+        .iter()
+        .copied()
+        .filter(|&c| c <= requested)
+        .max()
+        .or_else(|| allowed.iter().copied().min())
+        .unwrap_or(1)
+}
+
 /// Quantize width and height to the nearest multiple of `SIZE_GRANULARITY`,
 /// with a minimum of one granularity unit in each dimension.
 pub fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
@@ -460,6 +487,70 @@ mod tests {
 
         let (_, counts, _) = build_aa_options(&[1, 2, 4, 8], 4);
         assert_eq!(counts, [1, 2, 4], "the medium tier stops at 4x");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_sample_count
+    // -----------------------------------------------------------------------
+
+    /// What a typical desktop adapter reports for `Rgba8Unorm`.
+    const FULL: [u32; 4] = [1, 2, 4, 8];
+
+    #[test]
+    fn supported_request_is_honored() {
+        assert_eq!(resolve_sample_count(4, &FULL, u32::MAX), 4);
+        assert_eq!(resolve_sample_count(8, &FULL, u32::MAX), 8);
+        assert_eq!(resolve_sample_count(1, &FULL, u32::MAX), 1);
+    }
+
+    #[test]
+    fn unsupported_request_falls_back_to_the_next_lower_option() {
+        // The config asking for something absurd must not reach wgpu.
+        assert_eq!(resolve_sample_count(64, &FULL, u32::MAX), 8);
+        assert_eq!(resolve_sample_count(3, &FULL, u32::MAX), 2);
+        assert_eq!(resolve_sample_count(0, &FULL, u32::MAX), 1);
+    }
+
+    #[test]
+    fn adapter_without_8x_never_yields_8x() {
+        assert_eq!(resolve_sample_count(8, &[1, 2, 4], u32::MAX), 4);
+        assert_eq!(resolve_sample_count(8, &[1], u32::MAX), 1);
+    }
+
+    #[test]
+    fn tier_cap_applies_on_top_of_adapter_support() {
+        assert_eq!(resolve_sample_count(8, &FULL, 1), 1);
+        assert_eq!(resolve_sample_count(8, &FULL, 4), 4);
+        assert_eq!(resolve_sample_count(2, &FULL, 4), 2);
+    }
+
+    #[test]
+    fn a_request_below_everything_offered_takes_the_lowest_option() {
+        // An adapter that does not list 1x is not something we have seen, but
+        // returning 0 or the request unchanged would be a validation error.
+        assert_eq!(resolve_sample_count(1, &[4, 8], u32::MAX), 4);
+    }
+
+    #[test]
+    fn an_empty_or_fully_filtered_list_still_yields_a_valid_count() {
+        assert_eq!(resolve_sample_count(8, &[], u32::MAX), 1);
+        assert_eq!(resolve_sample_count(8, &[4, 8], 2), 1);
+    }
+
+    #[test]
+    fn every_resolution_is_actually_supported() {
+        for supported in [vec![1], vec![1, 4], FULL.to_vec(), vec![1, 2, 4, 8, 16]] {
+            for requested in [0, 1, 2, 3, 4, 7, 8, 16, 64, u32::MAX] {
+                for cap in [1, 4, u32::MAX] {
+                    let resolved = resolve_sample_count(requested, &supported, cap);
+                    assert!(
+                        supported.contains(&resolved) || resolved == 1,
+                        "resolved {resolved} is not in {supported:?} \
+                         (requested {requested}, cap {cap})"
+                    );
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

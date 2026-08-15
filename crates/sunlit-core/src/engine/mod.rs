@@ -27,6 +27,7 @@ use crate::config::QualityTier;
 use crate::params::SceneParams;
 use crate::renderer::{
     CLOUDS_SLOT, RenderOutcome, Renderer, RendererConfig, quantize_to_granularity,
+    resolve_sample_count,
 };
 use crate::scene::sun;
 
@@ -166,11 +167,15 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
-    /// Send a command. Fails silently once the engine has stopped, because
-    /// every caller here is a best-effort UI notification.
+    /// Send a command.
+    ///
+    /// A dead channel means the engine thread is gone, which during normal
+    /// operation only happens after `Shutdown`. Anywhere else it means the
+    /// thread died, and the app would otherwise sit there with a window that
+    /// never updates and no explanation, so this is logged at error level.
     pub fn send(&self, cmd: EngineCommand) {
         if self.tx.send(cmd).is_err() {
-            debug!("engine command dropped: the engine has stopped");
+            error!("engine command dropped: the engine thread is no longer running");
         }
     }
 
@@ -227,19 +232,34 @@ impl EngineHandle {
 
     /// Stop the engine and wait for its thread.
     pub fn shutdown(mut self) {
-        self.send(EngineCommand::Shutdown);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.tx.send(EngineCommand::Shutdown);
+        join_engine(self.thread.take());
     }
 }
 
 impl Drop for EngineHandle {
     fn drop(&mut self) {
         let _ = self.tx.send(EngineCommand::Shutdown);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        join_engine(self.thread.take());
+    }
+}
+
+/// Join the engine thread, reporting a panic rather than swallowing it.
+///
+/// A panicking engine thread is the one failure that leaves the app looking
+/// alive (the window is up, IPC answers) while nothing renders, so it must not
+/// be silent.
+fn join_engine(thread: Option<JoinHandle<()>>) {
+    let Some(thread) = thread else {
+        return;
+    };
+    if let Err(payload) = thread.join() {
+        let reason = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic payload".to_owned());
+        error!(reason, "the engine thread panicked");
     }
 }
 
@@ -316,6 +336,12 @@ struct Engine {
     renderer: Renderer,
     params: SceneParams,
     quality: QualityTier,
+    /// MSAA sample counts the adapter supports for the render format. Every
+    /// requested count is resolved against this before it can reach wgpu.
+    supported_sample_counts: Vec<u32>,
+    /// The last count a client asked for, so the clamp is logged when the
+    /// request changes rather than on every slider tick.
+    requested_sample_count: u32,
     preview: PreviewState,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
@@ -386,7 +412,20 @@ impl Engine {
             let _ = poke_tx.send(EngineCommand::Poke);
         });
 
-        params.sample_count = params.sample_count.min(quality.max_sample_count());
+        let requested_sample_count = params.sample_count;
+        params.sample_count = resolve_sample_count(
+            requested_sample_count,
+            &gpu.supported_sample_counts,
+            quality.max_sample_count(),
+        );
+        if params.sample_count != requested_sample_count {
+            warn!(
+                requested = requested_sample_count,
+                using = params.sample_count,
+                supported = ?gpu.supported_sample_counts,
+                "MSAA sample count is not available, falling back"
+            );
+        }
         let (width, height) = preview_target_size(preview_size, quality);
         let renderer = Renderer::new(
             gpu.device,
@@ -421,6 +460,8 @@ impl Engine {
             renderer,
             params,
             quality,
+            supported_sample_counts: gpu.supported_sample_counts,
+            requested_sample_count,
             preview: PreviewState {
                 enabled: preview_enabled,
                 owed: false,
@@ -485,10 +526,7 @@ impl Engine {
         match cmd {
             EngineCommand::UpdateParams(params) => {
                 self.params = *params;
-                self.params.sample_count = self
-                    .params
-                    .sample_count
-                    .min(self.quality.max_sample_count());
+                self.resolve_requested_sample_count();
                 self.dirty = true;
             }
             EngineCommand::SetPreviewSize(w, h) => {
@@ -587,6 +625,32 @@ impl Engine {
             }
             self.preview.owed = false;
         }
+    }
+
+    /// Replace the requested MSAA count with one the adapter and the tier both
+    /// allow, warning once per distinct request.
+    ///
+    /// This is the single place a sample count becomes real: a config file, a
+    /// combo box built against a different adapter, or a stale saved setting
+    /// all funnel through here rather than into `create_render_textures`, where
+    /// an unsupported count is a wgpu validation error that kills this thread.
+    fn resolve_requested_sample_count(&mut self) {
+        let requested = self.params.sample_count;
+        let resolved = resolve_sample_count(
+            requested,
+            &self.supported_sample_counts,
+            self.quality.max_sample_count(),
+        );
+        if resolved != requested && requested != self.requested_sample_count {
+            warn!(
+                requested,
+                using = resolved,
+                supported = ?self.supported_sample_counts,
+                "MSAA sample count is not available, falling back"
+            );
+        }
+        self.requested_sample_count = requested;
+        self.params.sample_count = resolved;
     }
 
     /// The sun direction for the current parameters and clock reading.

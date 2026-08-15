@@ -14,6 +14,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
+use sunlit_core::config::QualityTier;
 use sunlit_core::engine::wallpaper_sink::CountingSink;
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent, EngineHandle};
 use sunlit_core::params::SceneParams;
@@ -260,6 +261,47 @@ fn switching_texture_mode_produces_a_new_frame() {
     harness.engine.send(EngineCommand::UpdateParams(Box::new(swapped)));
     let (rgba, width, height) = harness.next_frame();
     assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+}
+
+#[test]
+fn an_unsupported_sample_count_still_renders() {
+    // A saved config, or a combo box index built against a different adapter,
+    // can ask for a sample count this GPU does not offer. Before the engine
+    // resolved it against the adapter, that reached create_render_textures and
+    // killed the engine thread with a wgpu validation error: the window came
+    // up, IPC answered, and no frame ever arrived.
+    let harness = Harness::start(|config| {
+        // The High tier deliberately does not cap the sample count, so the
+        // adapter's own support list is the only thing between this config and
+        // create_render_textures.
+        config.quality = QualityTier::High;
+        config.params = SceneParams {
+            sample_count: 64,
+            ..test_params()
+        };
+    });
+    let (rgba, width, height) = harness.next_frame();
+    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+    assert!(has_lit_pixels(&rgba));
+}
+
+#[test]
+fn an_unsupported_sample_count_arriving_later_still_renders() {
+    let harness = Harness::start(|config| config.quality = QualityTier::High);
+    harness.next_frame();
+    harness.drained_frame(Duration::from_millis(300));
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+            sample_count: 64,
+            // Change something visible too, so the frame is not suppressed by
+            // the dirty check once the count resolves back to what it was.
+            cloud_opacity: 0.1,
+            ..test_params()
+        })));
+    let (rgba, _, _) = harness.next_frame();
+    assert!(has_lit_pixels(&rgba));
 }
 
 #[test]

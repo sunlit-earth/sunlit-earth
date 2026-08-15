@@ -101,7 +101,16 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 
 ### Quality tiers
 
-`QualityTier` (low, medium, high) is persisted in the config and overridable with `--quality`. It caps the MSAA sample count (1, 4, unlimited), the preview width (1280, 1920, unlimited, aspect preserved), and selects the cloud image variant (2048x1024, 4096x2048, 8192x4096). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile. The sample cap is applied by filtering the anti-aliasing combo box, not by silently clamping in the renderer.
+`QualityTier` (low, medium, high) is persisted in the config and overridable with `--quality`. It caps the MSAA sample count (1, 4, unlimited), the preview width (1280, 1920, unlimited, aspect preserved), and selects the cloud image variant (2048x1024, 4096x2048, 8192x4096). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile.
+
+### Sample counts
+
+An MSAA sample count the adapter does not support is not a warning inside wgpu, it is a validation error that kills whichever thread builds the render target. Two layers guard it, and they are not redundant:
+
+1. **The combo box** is built by `renderer::build_aa_options(adapter_supported, tier_cap)`, so the UI only ever offers counts that are both supported and within the tier.
+2. **The engine resolves every requested count** through `renderer::resolve_sample_count` in `Engine::new` and again on every `UpdateParams`, and logs a `warn!` when it has to fall back. This is the single source of truth, and it is the one that matters: a config file, a hand-edited value, or a combo box index saved on a machine with a different GPU all arrive as a bare number in `SceneParams` and never go through the combo box.
+
+The rule is "the highest supported count at most the requested one, otherwise the lowest on offer". `tests/engine.rs` starts an engine at the High tier (which does not cap) with `sample_count = 64` and asserts a frame still arrives.
 
 ### Shaders
 

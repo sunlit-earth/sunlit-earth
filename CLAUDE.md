@@ -194,7 +194,7 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 
 Two GitHub Actions workflows in `.github/workflows/`:
 
-- **`ci.yml`**: on every push to `main` and every PR targeting `main`. One `test` job on Windows: `cargo test --locked` across the workspace, then uploads `target/contact-sheet.png` as an artifact. `fmt` is commented out pending a codebase-wide reformat (see `docs/notes.md`).
+- **`ci.yml`**: on every push to `main` and every PR regardless of its base branch (stacked PRs target other PR branches). One `test` job on Windows: `cargo test --locked` across the workspace, then uploads `target/contact-sheet.png` as an artifact. `fmt` is commented out pending a codebase-wide reformat (see `docs/notes.md`).
 - **`release.yml`**: on semver tag pushes (`v[0-9]+.[0-9]+.[0-9]+`). Builds `cargo build --release --locked`, zips `target/release/sunlit-earth.exe`, and creates a GitHub Release.
 
 Key details:

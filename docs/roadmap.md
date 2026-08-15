@@ -45,7 +45,8 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 
 ## Bugs and polish
 
-- [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but something still blocks the UI thread.
+- [ ] Memory leak in tray mode: decoded 8K cloud textures (~134 MB each) accumulate in the unbounded texture channel because the only consumer (`process_decoded_textures`) runs in `BeforeRendering`, which stops firing while the window is hidden. Observed: 7.3 GB RSS after 10 days. Analysis and fix plan in [retrospective-2026-08.md](retrospective-2026-08.md), section 4.1 and Phase 0.
+- [ ] Non-blocking texture loading: the main window is unresponsive while textures load (can't move or resize). Texture decoding runs on a background thread, but mipmap generation and GPU upload (`create_mipmapped_texture`) run on the UI thread inside `BeforeRendering`; the cached cloud JPEG is also decoded synchronously on the main thread at startup. See retrospective section 4.2.
 - [x] Diffuse shading banding on JPEG wallpapers: fixed by switching the wallpaper export format from TIFF to PNG. Windows preserves PNG wallpapers losslessly (no JPEG transcode), eliminating the banding artifact.
 - [x] Refactor `main()`: extract mouse math into `mouse_math.rs` (with unit tests and proptests), UI callback registration into `ui_callbacks.rs`, and initialization into sub-functions. Removed `clippy::too_many_lines` suppression.
 - [ ] Automated slint UI testing

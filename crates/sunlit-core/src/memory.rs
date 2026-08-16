@@ -14,6 +14,11 @@
 //! | `peak_rss_bytes` | `PeakWorkingSetSize` | `VmHWM` | `resident_size_peak` |
 //! | `private_bytes` | `PrivateUsage` | `Private_Clean` + `Private_Dirty` | `phys_footprint` |
 //!
+//! The Linux private row is what `/proc/self/smaps_rollup` reports, which
+//! arrived in Linux 4.14 and can be absent under a hardened kernel. Where it
+//! is, `VmRSS` stands in (an upper bound, since it also counts shared pages)
+//! and the fallback says so in the log once per process.
+//!
 //! The numbers are close cousins rather than the same quantity, so compare
 //! them within one OS and not across. What every column does share is the
 //! property the tests depend on: parking a decoded frame makes it go up.
@@ -129,17 +134,33 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 #[cfg(target_os = "linux")]
 pub fn snapshot() -> Option<MemorySnapshot> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
-    let rss_bytes = parse_status_kib(&status, "VmRSS")?;
-    let peak_rss_bytes = parse_status_kib(&status, "VmHWM")?;
+    let rss_bytes = parse_status_bytes(&status, "VmRSS")?;
+    // VmHWM is the field most likely to be the one a restricted or unusual
+    // /proc omits while still reporting VmRSS, and taking the whole snapshot
+    // down over it would silence every assertion that reads the other two
+    // fields. The current RSS is a true lower bound on the peak, so degrading
+    // to it keeps the peak column honest in the direction that matters.
+    let peak_rss_bytes = parse_status_bytes(&status, "VmHWM").unwrap_or(rss_bytes);
 
     // smaps_rollup arrived in Linux 4.14. Where it is missing (or unreadable
     // under a hardened kernel) RSS is the honest stand-in: it is an upper bound
     // on the private total, so the soak test's growth assertion stays valid,
-    // it just also counts shared pages.
+    // it just also counts shared pages. Say so once, because a private column
+    // that is quietly measuring something else is worth knowing about when
+    // reading the metrics CSV afterwards.
     let private_bytes = fs::read_to_string("/proc/self/smaps_rollup")
         .ok()
-        .and_then(|rollup| parse_private_kib(&rollup))
-        .unwrap_or(rss_bytes);
+        .and_then(|rollup| parse_private_bytes(&rollup))
+        .unwrap_or_else(|| {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    "/proc/self/smaps_rollup is unreadable; reporting VmRSS as private \
+                     bytes, which also counts pages shared with other processes"
+                );
+            });
+            rss_bytes
+        });
 
     Some(MemorySnapshot {
         rss_bytes,
@@ -150,10 +171,15 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 
 /// Read one `Key:   1234 kB` line out of a `/proc` file and return it in bytes.
 ///
+/// The unit is checked rather than assumed. Every field this reads is
+/// documented in kibibytes, so the check should never fire; if a kernel ever
+/// reported one of them in anything else, the alternative to failing here is
+/// silently multiplying it by 1024.
+///
 /// Compiled on Linux and in every test build, so the parsing is covered by the
 /// unit tests on the development machine rather than only on the Linux runner.
 #[cfg(any(target_os = "linux", test))]
-fn parse_status_kib(text: &str, key: &str) -> Option<u64> {
+fn parse_status_bytes(text: &str, key: &str) -> Option<u64> {
     for line in text.lines() {
         let Some(rest) = line.strip_prefix(key) else {
             continue;
@@ -162,8 +188,12 @@ fn parse_status_kib(text: &str, key: &str) -> Option<u64> {
         let Some(rest) = rest.strip_prefix(':') else {
             continue;
         };
-        let value: u64 = rest.split_whitespace().next()?.parse().ok()?;
-        return Some(value * 1024);
+        let mut fields = rest.split_whitespace();
+        let value: u64 = fields.next()?.parse().ok()?;
+        if fields.next()? != "kB" {
+            return None;
+        }
+        return value.checked_mul(1024);
     }
     None
 }
@@ -174,10 +204,10 @@ fn parse_status_kib(text: &str, key: &str) -> Option<u64> {
 /// anyone else". Swapped-out private pages are not included; a runner that is
 /// swapping has bigger problems than this counter.
 #[cfg(any(target_os = "linux", test))]
-fn parse_private_kib(rollup: &str) -> Option<u64> {
-    let clean = parse_status_kib(rollup, "Private_Clean")?;
-    let dirty = parse_status_kib(rollup, "Private_Dirty")?;
-    Some(clean + dirty)
+fn parse_private_bytes(rollup: &str) -> Option<u64> {
+    let clean = parse_status_bytes(rollup, "Private_Clean")?;
+    let dirty = parse_status_bytes(rollup, "Private_Dirty")?;
+    clean.checked_add(dirty)
 }
 
 /// macOS: `task_info(TASK_VM_INFO)`.
@@ -188,6 +218,8 @@ fn parse_private_kib(rollup: &str) -> Option<u64> {
 /// and excludes pages shared with other processes.
 #[cfg(target_os = "macos")]
 pub fn snapshot() -> Option<MemorySnapshot> {
+    use std::mem::offset_of;
+
     use mach2::kern_return::KERN_SUCCESS;
     use mach2::message::mach_msg_type_number_t;
     use mach2::task::task_info;
@@ -225,6 +257,22 @@ pub fn snapshot() -> Option<MemorySnapshot> {
         return None;
     }
 
+    // The kernel writes back how much it filled, and a kernel that filled less
+    // than the fields read below would leave them reading zero out of the
+    // zeroed struct: a plausible-looking number rather than an error.
+    // `phys_footprint` has been in revision 1 since 10.11, so this should never
+    // fire; the point is what happens if it ever does. The offsets are taken
+    // per field rather than assuming `phys_footprint` sits last of the three,
+    // since that ordering is exactly the sort of assumption this guards.
+    let filled_bytes = usize::try_from(count).ok()? * size_of::<natural_t>();
+    let needed_bytes = offset_of!(task_vm_info, resident_size)
+        .max(offset_of!(task_vm_info, resident_size_peak))
+        .max(offset_of!(task_vm_info, phys_footprint))
+        + size_of::<u64>();
+    if filled_bytes < needed_bytes {
+        return None;
+    }
+
     // `task_vm_info` is `repr(packed(4))`, so these are field reads by value
     // rather than references into the struct.
     Some(MemorySnapshot {
@@ -242,8 +290,18 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 /// Log the current process memory at `debug` level with structured fields.
 ///
 /// The `context` parameter describes the checkpoint (e.g. "after wgpu init").
+///
+/// The level check comes first because `debug!` compiling out does not compile
+/// out the measurement behind it. This is called from about seventeen places,
+/// three of them per wallpaper export and one per cloud decode, and on Linux
+/// each call walks the page tables through `/proc/self/smaps_rollup`.
+/// `enabled!` folds to a constant when the level is compiled out
+/// (`release_max_level_warn`), so release builds drop the whole body.
 #[allow(clippy::cast_precision_loss)]
 pub fn log_memory_usage(context: &str) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
     if let Some(snap) = snapshot() {
         let rss_mb = snap.rss_bytes as f64 / (1024.0 * 1024.0);
         let peak_rss_mb = snap.peak_rss_bytes as f64 / (1024.0 * 1024.0);
@@ -533,32 +591,39 @@ mod tests {
     #[test]
     fn status_parser_reads_kibibytes_as_bytes() {
         let status = "Name:\tsunlit-earth\nVmHWM:\t  204800 kB\nVmRSS:\t   102400 kB\n";
-        assert_eq!(parse_status_kib(status, "VmRSS"), Some(102_400 * 1024));
-        assert_eq!(parse_status_kib(status, "VmHWM"), Some(204_800 * 1024));
+        assert_eq!(parse_status_bytes(status, "VmRSS"), Some(102_400 * 1024));
+        assert_eq!(parse_status_bytes(status, "VmHWM"), Some(204_800 * 1024));
     }
 
     #[test]
     fn status_parser_returns_none_for_a_missing_key() {
         let status = "VmRSS:\t 100 kB\n";
-        assert_eq!(parse_status_kib(status, "VmSwap"), None);
+        assert_eq!(parse_status_bytes(status, "VmSwap"), None);
     }
 
     /// `VmRSS` must not be satisfied by a longer key that starts the same way.
     #[test]
     fn status_parser_requires_the_whole_key() {
         let status = "VmRSSExtra:\t 999 kB\nVmRSS:\t 100 kB\n";
-        assert_eq!(parse_status_kib(status, "VmRSS"), Some(100 * 1024));
+        assert_eq!(parse_status_bytes(status, "VmRSS"), Some(100 * 1024));
+    }
+
+    /// The scale factor is only correct if the value really is in kibibytes.
+    #[test]
+    fn status_parser_requires_the_kilobyte_unit() {
+        assert_eq!(parse_status_bytes("Threads:\t 8\n", "Threads"), None);
+        assert_eq!(parse_status_bytes("VmRSS:\t 100 MB\n", "VmRSS"), None);
     }
 
     #[test]
     fn rollup_parser_sums_clean_and_dirty() {
         let rollup = "Rss:\t 4096 kB\nPrivate_Clean:\t 256 kB\nPrivate_Dirty:\t 1024 kB\n";
-        assert_eq!(parse_private_kib(rollup), Some((256 + 1024) * 1024));
+        assert_eq!(parse_private_bytes(rollup), Some((256 + 1024) * 1024));
     }
 
     #[test]
     fn rollup_parser_returns_none_when_a_field_is_absent() {
-        assert_eq!(parse_private_kib("Private_Clean:\t 256 kB\n"), None);
+        assert_eq!(parse_private_bytes("Private_Clean:\t 256 kB\n"), None);
     }
 
     #[test]

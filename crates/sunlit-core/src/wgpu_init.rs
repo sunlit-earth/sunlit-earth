@@ -30,7 +30,12 @@ static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
 /// instead, so the invariant in `INSTANCE` holds for the whole process rather
 /// than only for the engine.
 pub fn instance() -> &'static wgpu::Instance {
-    INSTANCE.get_or_init(|| wgpu::Instance::new(&wgpu::InstanceDescriptor::default()))
+    INSTANCE.get_or_init(|| {
+        // The one call site. `clippy.toml` disallows the method everywhere so
+        // that a second one has to be written on purpose.
+        #[allow(clippy::disallowed_methods)]
+        wgpu::Instance::new(&wgpu::InstanceDescriptor::default())
+    })
 }
 
 /// Result of initializing wgpu manually.
@@ -108,16 +113,21 @@ pub fn init(force_software: bool) -> WgpuContext {
 /// Short, filesystem-safe slug naming the implementation behind an adapter.
 ///
 /// Golden references live one directory per adapter, and this names the
-/// directory. The reason is margin, not raw incompatibility: measured on the
-/// four reference scenes, WARP and lavapipe agree to a mean channel difference
-/// of 0.19 to 0.86 with 0.001% to 0.42% outliers, against a tolerance of 2.0
-/// and 1%. One shared set would therefore pass today, but it would spend up to
-/// 43% of the mean budget on the difference between two correct rasterizers,
-/// leaving a regression that large able to hide on one platform while failing
-/// on the other. Per-adapter references give each platform the whole tolerance
-/// to spend on detecting real change. Metal is a further step away (a different
-/// shader translation target and an actual GPU rather than a CPU rasterizer)
-/// and has not been measured yet.
+/// directory. The reason is margin, not raw incompatibility. Measured on the
+/// four reference scenes, each against WARP, with a tolerance of mean 2.0 and
+/// 1% outliers: lavapipe agrees to a mean channel difference of 0.19 to 0.86
+/// with 0.001% to 0.42% outliers, and the paravirtual Metal device on a
+/// `macos-latest` runner to 0.008 to 0.18 with at most 0.008% outliers. One
+/// shared set would therefore pass on all three today, but it would spend up to
+/// 43% of the mean budget on the difference between two correct
+/// implementations, leaving a regression that large able to hide on one
+/// platform while failing on another. Per-adapter references give each platform
+/// the whole tolerance to spend on detecting real change.
+///
+/// The ordering in those numbers was not the expected one: the two CPU
+/// rasterizers are the pair that disagree most, and Metal, which is both a
+/// different shader translation target and an actual GPU, lands about five
+/// times closer to WARP than lavapipe does.
 ///
 /// Software rasterizers are keyed by name rather than by backend, because the
 /// backend is the wrong granularity for them: two CPU implementations can sit
@@ -126,6 +136,14 @@ pub fn init(force_software: bool) -> WgpuContext {
 /// backend, which is the right granularity there: what moves the pixels is the
 /// shader translation target and the driver, and one directory per vendor and
 /// model would produce a reference set nobody could regenerate.
+///
+/// The Mesa match is deliberately backend-blind and that is a known coarseness:
+/// "llvmpipe" is the name reported by both Mesa's Vulkan software driver
+/// (lavapipe) and its GL one, so the two would share the `lavapipe` directory
+/// despite translating shaders to different targets. Nothing generates
+/// references through the GL path today, because the tests force the software
+/// adapter and CI installs `mesa-vulkan-drivers`; if something ever does, the
+/// GL case needs the backend appended to its key.
 pub fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
     let lower = name.to_lowercase();
 
@@ -143,7 +161,10 @@ pub fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
         return "swiftshader".to_owned();
     }
 
-    format!("{backend:?}").to_lowercase()
+    // `to_str` rather than the `Debug` output: wgpu documents these strings
+    // ("vulkan", "metal", "dx12", "gl"), while `Debug` carries no stability
+    // guarantee at all, and a directory name is a thing this repository commits.
+    backend.to_str().to_owned()
 }
 
 /// Rank a GPU device type for adapter selection priority.
@@ -229,6 +250,11 @@ mod tests {
             adapter_key("NVIDIA GeForce RTX 4080", wgpu::Backend::Vulkan),
             "vulkan"
         );
+        // The ordinary Windows case, and the one with a digit in its key.
+        assert_eq!(
+            adapter_key("NVIDIA GeForce RTX 4080", wgpu::Backend::Dx12),
+            "dx12"
+        );
     }
 
     /// The key names a directory, so it has to survive being one.
@@ -239,11 +265,16 @@ mod tests {
             ("Microsoft Basic Render Driver", wgpu::Backend::Dx12),
             ("Apple Paravirtual device", wgpu::Backend::Metal),
             ("Intel(R) Arc(tm) A770", wgpu::Backend::Vulkan),
+            // Hardware on D3D12, which is what most Windows machines report and
+            // the reason digits are allowed below: its key is "dx12".
+            ("AMD Radeon RX 7900 XTX", wgpu::Backend::Dx12),
+            ("Mesa Intel(R) UHD Graphics", wgpu::Backend::Gl),
         ] {
             let key = adapter_key(name, backend);
             assert!(!key.is_empty(), "{name} produced an empty key");
             assert!(
-                key.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                key.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
                 "{name} produced {key}, which is not a plain directory name"
             );
         }

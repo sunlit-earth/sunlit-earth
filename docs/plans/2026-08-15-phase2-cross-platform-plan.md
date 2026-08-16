@@ -107,7 +107,9 @@ Against the success criteria:
 4. `memory::snapshot()` returns `Some` everywhere: yes, asserted by `snapshot_returns_some_on_every_supported_platform`.
 5. References for at least WARP and lavapipe: exceeded, all three exist.
 6. No new unconditional `unsafe`: yes, the one new FFI site is a scoped allow with a `// SAFETY:` comment.
-7. Windows runtime close to baseline: yes, 20 m 16 s against a 44 m 18 s cold first run.
+7. Windows runtime close to baseline: yes, 5 m 48 s with every cache warm (run 31916389451). The cold and part-warm figures, and what the first warm measurement cost before the smoke step was fixed, are in the CI runtimes table below.
+
+An independent review of the implementation round raised three major findings and a list of minor ones, all of which were fixed on this branch. The three major ones were that the golden suite skipped silently where it should have failed (twice over: a missing directory, and a missing case that blessed itself on the second run), that the soak test could still skip its memory assertion on a platform whose counters work, and that the warm CI-runtime table below cited a run whose Windows job took 13 m 35 s rather than the 5 m 48 s it reported. The fixes that changed a decision or a documented behavior are Deviations 9 to 13.
 
 ## Deviations
 
@@ -126,6 +128,16 @@ Against the success criteria:
 7. **The `textures_ready` defect is recorded rather than fixed.** Finding it was a side effect of the phase (CI checks out Git LFS pointers, which decode-fail and leave the slot in the same terminal state an unconfigured slot is in), but it is an asset-lifecycle bug that behaves identically on Windows, and fixing it properly means reasoning about the blend-mode composite bind group and the settings window together. Phase 2 takes the two scoped pieces it needs: `run_render` no longer waits when there is no texture file at all, and the CI smoke step points at an empty textures directory so it is deterministic and does not spend two minutes per OS waiting for an event that cannot arrive. The general fix is on the roadmap with the diagnosis written out.
 
 8. **The Metal references came from a temporary step in `ci.yml`, not from `golden.yml`.** GitHub only registers a `workflow_dispatch` workflow once it is on the default branch, so the regeneration workflow this phase adds cannot be dispatched from the branch that adds it. The set was produced by a temporary matrix step that ran the golden test with `SUNLIT_EARTH_UPDATE_GOLDEN=1` and uploaded the directory as an artifact, which was then reviewed, committed, and the step removed. The step deliberately ran *after* the normal test step so the committed references were still compared first and a genuine mismatch could not hide behind the regeneration; the artifact confirmed this by shipping the `warp` and `lavapipe` directories byte-identical to the committed ones.
+
+9. **`Cargo.lock` was re-resolved further than `mach2`.** Adding the macOS dependency re-ran resolution, and four duplicate font crates collapsed with it: `font-types` 0.10.1, `read-fonts` 0.35.0 and `skrifa` 0.37.0 are gone, and `swash` now resolves `skrifa` to 0.42.1 through the same range that already satisfied everything else in the tree. Legal, and green on all three OSes, but it does change the font-shaping code compiled into the Windows binary, which the Stakes line ("nothing here changes Windows behavior for existing users") did not anticipate. Slint draws this app's few labels and nothing measures glyph metrics, and the alternative is pinning duplicate copies of three crates to avoid a change nobody can see. Recorded rather than reverted.
+
+10. **Decision 5's "keeps its existing skip-when-missing behavior" is now narrower.** A missing reference directory skipped, which is indistinguishable from a pass: the macOS probe's golden leg was green while comparing nothing, and any drift in `adapter_key` output would have deleted the suite on that platform the same silent way. The test now carries `GENERATED_ADAPTERS`, the adapters this repository ships references for. An adapter on the list whose directory is missing fails; only one that has genuinely never been generated skips. What decision 5 wanted (a new platform lands before its references exist) is intact; what is gone is the same path swallowing a regression.
+
+11. **A missing single reference no longer writes into the tracked tree.** It wrote the render to the reference path and failed once, so the next run compared the file against itself and passed: a case could bless itself by being run twice. The render now goes under `CARGO_TARGET_TMPDIR` for review and the case fails every run until someone regenerates deliberately.
+
+12. **`SystemWallpaper` refuses through a new `check_supported` before anything is rendered.** Decision 3 asked for a clean "unsupported" error, and decision 4's 2560x1440 default then turned `target_size` from an error into a success, which moved the refusal to `publish`: after a native-resolution render and a roughly 14 MB readback, on platforms whose only adapter is a CPU rasterizer. The trait gained a cheap up-front check that defaults to `Ok`, restoring the early failure while keeping the documented placeholder size.
+
+13. **Decision 7 calls the e2e suite "Windows-gated", which it never was.** It is `#[ignore]`d and carries no `cfg`, so it compiles on all three OSes and runs on none of them in CI. The wording was wrong rather than the code: compiling it everywhere is free coverage of the IPC and process plumbing per OS, and a `cfg(windows)` added to match the sentence would have removed that. Corrected in CLAUDE.md instead.
 
 ## Results
 
@@ -150,6 +162,8 @@ Same test, same limits: growth under 16 MiB, warm-up under 192 MiB. No per-OS ca
 | Private at startup | 531.1 MiB | 195.5 MiB | 67.9 MiB |
 | Warm-up allocation | +87.6 MiB | +12.2 MiB | +0.0 MiB |
 | Growth over 12 simulated days | +2.1 MiB | +0.0 MiB | +1.8 MiB |
+
+The three columns do not come from the same place, which matters for reading them. Windows was measured locally on the development desktop against WARP, Linux locally in WSL against lavapipe, and macOS in CI, from the temporary probe job in run 31912759965, which ran the soak test with `--nocapture`. The matrix jobs could not have supplied any of them at the time: libtest discards the output of a test that passes, and the soak test passes. The test step now runs with `--show-output`, so from here on every matrix run carries all three profiles.
 
 The absolute figures differ by up to a factor of eight, which is the counters rather than the program: Windows `PrivateUsage` charges committed-but-not-resident pages, Linux `Private_Clean + Private_Dirty` counts only resident private pages, and macOS `phys_footprint` is a ledger that compression and reclaim can move downward. macOS in fact ends warm-up *below* its startup figure, which is why its warm-up column reads +0.0: the saturating subtraction floors it. The growth row is what the test asserts on, and it is flat on all three.
 
@@ -178,7 +192,7 @@ Worth recording because it contradicts the assumption behind decision 5. Every a
 
 ### CI runtimes
 
-Run 31914066981 was the first run of the three-OS matrix and run 31915731976 the first with every cache warm; both green on all four jobs.
+Run 31914066981 was the first run of the three-OS matrix, and the Cold column comes from it. Run 31915731976 was the first with every cache warm, but its Windows job took 13 m 35 s for the reason described below; the Warm column is run 31916389451, the first one after that was fixed. All three were green on all four jobs.
 
 | Job | Cold total | Warm total | Warm `cargo test` | Warm smoke |
 |---|---|---|---|---|
@@ -191,7 +205,13 @@ Criterion 7 is met: Windows is under six minutes warm. The fully cold first run 
 
 The warm figures above are the second measurement, and the first one is why measuring mattered. Warm Windows initially came out at 13 m 35 s, of which the render smoke step was 7 m 17 s and none of that was rendering: `cargo test` builds binaries under the test profile (the e2e suite needs one through `CARGO_BIN_EXE`) and `cargo run` then rebuilt and relinked the same executable under `dev`. Running the binary the test step already produced took the step to 2 seconds and the job to 5 m 48 s. It is also a slightly better test, since it exercises the artifact the suite built rather than a second copy of it.
 
-Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix).
+Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix), runs 31916389451 and 31916659213 (the last two of the implementation round).
+
+### A coverage gap this phase leaves open
+
+No CI job on any OS decodes a real JXL texture. `textures/**` is Git LFS, `actions/checkout` does not fetch it, and the smoke step now points at an empty directory on purpose, so every OS renders the procedural grid and the 8K asset path is exercised nowhere. That is the region the known `textures_ready` defect lives in, which is why it was found by reading a CI log rather than by a red test.
+
+Enabling `lfs: true` would close it at the cost of pulling the assets on every run on every OS, against a shared bandwidth quota, for a decode that is not platform-specific. The cheaper shape is a small committed JXL fixture exercising the decode path without the 8K assets, which belongs with the asset-pipeline work rather than here. Recorded on the roadmap next to the `textures_ready` entry.
 
 ### macOS probe
 

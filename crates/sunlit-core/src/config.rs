@@ -367,14 +367,18 @@ fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
 /// size and scale factor but nothing about the display behind it, so the exact
 /// answer Win32 gives is not available here.
 ///
-/// What is available is the range a window position can take at all. X11's core
-/// protocol carries window coordinates as `INT16`, and the Windows virtual
-/// screen is bounded the same way by GDI, so a saved position outside
-/// -32768..=32767 cannot name a place any window can be. Rejecting those is
-/// coarser than the Win32 check (a position inside the range but on a monitor
-/// that has since been unplugged still passes here) but it is the part that
-/// matters most: it stops a config carried from a large multi-monitor desk to a
-/// laptop from restoring a window into nowhere, with no way to get it back.
+/// What is available is a sanity range. X11's core protocol carries window
+/// coordinates as `INT16`, so on that display server -32768..=32767 is the
+/// whole of what a position can express; Wayland and macOS impose no such
+/// limit, but a coordinate outside it is far outside any desktop either way.
+/// The bound is chosen for being the one platform-defined number in the
+/// neighbourhood, not because every platform enforces it.
+///
+/// This is much coarser than the Win32 check (a position inside the range but
+/// on a monitor that has since been unplugged still passes here) but it is the
+/// part that matters most: it stops a config carried from a large multi-monitor
+/// desk to a laptop from restoring a window into nowhere, with no way to get it
+/// back.
 ///
 /// The precise per-monitor check arrives on each platform with that platform's
 /// windowing work; see the wallpaper entries in `docs/roadmap.md`.

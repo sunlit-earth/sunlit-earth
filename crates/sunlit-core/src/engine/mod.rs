@@ -768,6 +768,10 @@ impl Engine {
     }
 
     fn render_wallpaper_pixels(&mut self) -> Result<(Vec<u8>, u32, u32), String> {
+        // Before the size query and the render, not after: off Windows this is
+        // the whole answer, and asking the sink afterwards would mean paying
+        // for a native-resolution render and its readback to learn it.
+        self.wallpaper.check_supported()?;
         let (width, height) = self.wallpaper.target_size()?;
         self.prepare_export();
         let pixels = self.renderer.export_image(width, height)?;

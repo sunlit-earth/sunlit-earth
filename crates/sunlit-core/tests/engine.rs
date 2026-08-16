@@ -292,6 +292,86 @@ fn wallpaper_now_publishes_one_frame_at_the_sink_size() {
     assert_eq!(sink.count(), 1);
 }
 
+/// A sink that refuses up front, and records anything asked of it afterwards.
+///
+/// This is the shape of `SystemWallpaper` off Windows, which cannot be
+/// exercised directly on the machine this suite usually runs on. What matters
+/// is not only that the export fails but that it fails before the expensive
+/// part: `target_size` is the engine's first step towards a native-resolution
+/// render and a readback of the whole image, so a count of zero there is the
+/// assertion that nothing was rendered.
+struct RefusingSink {
+    size_queries: std::sync::atomic::AtomicUsize,
+    publishes: std::sync::atomic::AtomicUsize,
+}
+
+impl RefusingSink {
+    const REASON: &'static str = "this sink refuses on purpose";
+
+    fn new() -> Self {
+        Self {
+            size_queries: std::sync::atomic::AtomicUsize::new(0),
+            publishes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn size_queries(&self) -> usize {
+        self.size_queries.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn publishes(&self) -> usize {
+        self.publishes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl sunlit_core::engine::wallpaper_sink::WallpaperSink for RefusingSink {
+    fn check_supported(&self) -> Result<(), String> {
+        Err(Self::REASON.to_owned())
+    }
+
+    fn target_size(&self) -> Result<(u32, u32), String> {
+        self.size_queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok((320, 192))
+    }
+
+    fn publish(&self, _pixels: &[u8], _width: u32, _height: u32) -> Result<(), String> {
+        self.publishes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_sink_that_cannot_publish_is_never_asked_to_render() {
+    let sink = Arc::new(RefusingSink::new());
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(move |config| config.wallpaper = sink_for_config);
+    harness.next_frame();
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut reported = None;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        if let EngineEvent::WallpaperSet(result) = event {
+            reported = Some(result.expect_err("a refusing sink cannot succeed"));
+            break;
+        }
+    }
+    assert_eq!(
+        reported.as_deref(),
+        Some(RefusingSink::REASON),
+        "the sink's own reason should reach the client unchanged"
+    );
+    assert_eq!(
+        sink.size_queries(),
+        0,
+        "the engine asked for a render size from a sink that had already refused"
+    );
+    assert_eq!(sink.publishes(), 0);
+}
+
 #[test]
 fn switching_texture_mode_produces_a_new_frame() {
     let harness = Harness::start(|_| {});

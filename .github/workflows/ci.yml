@@ -6,6 +6,11 @@ on:
   # No base-branch filter: stacked PRs target other PR branches, not main.
   pull_request:
 
+# Read-only. Nothing here writes to the repository, and a workflow that runs on
+# every pull request should not be able to.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -110,8 +115,13 @@ jobs:
 
       # --- the suite ---------------------------------------------------------
 
+      # --show-output because several tests report numbers that are only
+      # interesting when they pass: the soak test's per-OS memory profile, and
+      # the golden suite's adapter key. libtest discards the output of a passing
+      # test otherwise, which is how a golden run that compared nothing looked
+      # exactly like one that compared everything.
       - name: Test
-        run: ${{ matrix.wrap }} cargo test --locked
+        run: ${{ matrix.wrap }} cargo test --locked -- --show-output
         shell: bash
 
       # The headless render path is the useful cross-platform mode today, and
@@ -141,6 +151,7 @@ jobs:
           # OS spend LFS bandwidth quota.
           SUNLIT_EARTH_TEXTURES: ${{ github.workspace }}/smoke-textures
         run: |
+          set -euo pipefail
           mkdir -p smoke-textures
           # The binary the test step already built, rather than `cargo run`.
           # `cargo test` builds bins under the test profile (the e2e suite needs
@@ -149,16 +160,27 @@ jobs:
           # executable. Running the artifact the suite produced is both faster
           # and a slightly better test.
           BIN=target/debug/sunlit-earth
-          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          # An `if` rather than `[ -f x ] && BIN=...`, which would evaluate to
+          # false on the three OSes without an .exe and fail the step under
+          # `set -e` the moment it became the last statement in the block.
+          if [ -f "$BIN.exe" ]; then
+            BIN="$BIN.exe"
+          fi
           if [ ! -x "$BIN" ]; then
             echo "expected the test step to have built $BIN"
             exit 1
           fi
           "$BIN" render --output render-smoke.png --width 640 --height 360
-          size=$(wc -c < render-smoke.png)
-          echo "render-smoke.png is $size bytes"
-          if [ "$size" -lt 1000 ]; then
-            echo "that is too small to be a 640x360 render"
+          # Assert what was asked for: a PNG that is 640x360. A byte count only
+          # says the file is not empty, and the failure this guards against is a
+          # render that silently came out at the wrong size or was not an image
+          # at all. The first 24 bytes of a PNG are the signature, the IHDR
+          # length and tag, then width and height as big-endian u32s.
+          header=$(od -An -v -tx1 -N24 render-smoke.png | tr -d ' \n')
+          expected="89504e470d0a1a0a0000000d494844520000028000000168"
+          echo "render-smoke.png header: $header ($(wc -c < render-smoke.png) bytes)"
+          if [ "$header" != "$expected" ]; then
+            echo "expected a 640x360 PNG, whose first 24 bytes are $expected"
             exit 1
           fi
         shell: bash

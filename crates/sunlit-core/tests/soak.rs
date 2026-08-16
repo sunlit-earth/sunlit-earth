@@ -123,6 +123,15 @@ impl CloudSource for FixtureCloud {
     }
 }
 
+/// Whether `memory::snapshot` has an implementation for this platform.
+///
+/// Mirrors the cfg on `memory::snapshot` itself. It is the difference between
+/// "this platform cannot answer" and "this platform failed to answer", and only
+/// the first of those may skip the growth assertion.
+fn memory_counters_supported() -> bool {
+    cfg!(any(windows, target_os = "linux", target_os = "macos"))
+}
+
 fn private_bytes() -> Option<u64> {
     sunlit_core::memory::snapshot().map(|s| s.private_bytes)
 }
@@ -266,9 +275,24 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
         println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
     }
 
-    let (Some(startup), Some(baseline), Some(end)) = (startup, baseline, end) else {
-        eprintln!("no memory counters on this platform, skipping the growth assertion");
-        return;
+    let (startup, baseline, end) = match (startup, baseline, end) {
+        (Some(startup), Some(baseline), Some(end)) => (startup, baseline, end),
+        // Three independent reads feed this, and any one of them coming back
+        // empty used to disable the assertion for the whole run while every
+        // other assertion stayed green. On a platform `memory::snapshot`
+        // implements, a missing sample is a broken counter and not a reason to
+        // stop testing: it fails here, the way the software-adapter test fails
+        // when the adapter it queried for should have been there.
+        (startup, baseline, end) => {
+            assert!(
+                !memory_counters_supported(),
+                "memory counters are implemented on this platform but a sample was \
+                 missing (startup {startup:?}, baseline {baseline:?}, end {end:?}); \
+                 the growth assertion must not be skipped here"
+            );
+            eprintln!("no memory counters on this platform, skipping the growth assertion");
+            return;
+        }
     };
     let warmup = baseline.saturating_sub(startup);
     let growth = end.saturating_sub(baseline);

@@ -182,14 +182,14 @@ Run 31914066981 was the first run of the three-OS matrix and run 31915731976 the
 
 | Job | Cold total | Warm total | Warm `cargo test` | Warm smoke |
 |---|---|---|---|---|
-| Windows | 20 m 16 s (partly warm) | 13 m 35 s | 4 m 54 s | 7 m 17 s |
-| macOS | 18 m 23 s | 1 m 53 s | 1 m 5 s | 17 s |
-| Linux | 30 m 25 s | 3 m 9 s | 1 m 50 s | 23 s |
-| Format (Ubuntu) | 12 s | 11 s | n/a | n/a |
+| Windows | 20 m 16 s (partly warm) | 5 m 48 s | 4 m 11 s | 2 s |
+| macOS | 18 m 23 s | 1 m 28 s | 53 s | 1 s |
+| Linux | 30 m 25 s | 2 m 59 s | 1 m 53 s | under 1 s |
+| Format (Ubuntu) | 12 s | 14 s | n/a | n/a |
 
-The fully cold first run of the PR took 44 m 18 s on Windows alone. Actions caches are scoped per merge ref, so the first run on any new PR pays that; it is not a regression. Three runs on this branch paid it only because they were pushed inside the first one's build window.
+Criterion 7 is met: Windows is under six minutes warm. The fully cold first run of the PR took 44 m 18 s on Windows alone, which is what the first run on any new PR costs because Actions caches are scoped per merge ref; three runs on this branch paid it only because they were pushed inside the first one's build window.
 
-The 7 m 17 s Windows smoke figure is what a measurement is for. None of it is rendering, which takes under a second: `cargo test` builds binaries under the test profile (the e2e suite needs one through `CARGO_BIN_EXE`), and `cargo run` then rebuilt and relinked the same executable under `dev`. The step now runs the binary the test step already produced, which removes the rebuild and is a slightly better test besides, since it exercises the artifact the suite built. Windows warm should land near 6 minutes as a result, with the other two near a minute and a half.
+The warm figures above are the second measurement, and the first one is why measuring mattered. Warm Windows initially came out at 13 m 35 s, of which the render smoke step was 7 m 17 s and none of that was rendering: `cargo test` builds binaries under the test profile (the e2e suite needs one through `CARGO_BIN_EXE`) and `cargo run` then rebuilt and relinked the same executable under `dev`. Running the binary the test step already produced took the step to 2 seconds and the job to 5 m 48 s. It is also a slightly better test, since it exercises the artifact the suite built rather than a second copy of it.
 
 Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix).
 

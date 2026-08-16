@@ -142,8 +142,19 @@ jobs:
           SUNLIT_EARTH_TEXTURES: ${{ github.workspace }}/smoke-textures
         run: |
           mkdir -p smoke-textures
-          cargo run --locked -p sunlit-earth -- \
-            render --output render-smoke.png --width 640 --height 360
+          # The binary the test step already built, rather than `cargo run`.
+          # `cargo test` builds bins under the test profile (the e2e suite needs
+          # one via CARGO_BIN_EXE), and `cargo run` would build them again under
+          # dev: 7 minutes of relinking on Windows to produce the same
+          # executable. Running the artifact the suite produced is both faster
+          # and a slightly better test.
+          BIN=target/debug/sunlit-earth
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          if [ ! -x "$BIN" ]; then
+            echo "expected the test step to have built $BIN"
+            exit 1
+          fi
+          "$BIN" render --output render-smoke.png --width 640 --height 360
           size=$(wc -c < render-smoke.png)
           echo "render-smoke.png is $size bytes"
           if [ "$size" -lt 1000 ]; then

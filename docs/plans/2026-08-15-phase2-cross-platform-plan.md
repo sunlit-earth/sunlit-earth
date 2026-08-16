@@ -103,7 +103,7 @@ Against the success criteria:
 
 1. CI green on all three OSes with both gates enabled: yes.
 2. `cargo test` passes on Linux and macOS with the soak assertions live: yes, and no per-OS calibration was needed.
-3. `render` produces a PNG on all three in CI: yes, 70452 bytes on Windows, 70590 on Linux, 69672 on macOS.
+3. `render` produces a PNG on all three in CI: yes, from the matrix run, 70452 bytes on Windows (WARP), 70590 on Linux (lavapipe), 69639 on macOS (Metal), each logging "no texture files found, rendering the procedural grid".
 4. `memory::snapshot()` returns `Some` everywhere: yes, asserted by `snapshot_returns_some_on_every_supported_platform`.
 5. References for at least WARP and lavapipe: exceeded, all three exist.
 6. No new unconditional `unsafe`: yes, the one new FFI site is a scoped allow with a `// SAFETY:` comment.
@@ -178,18 +178,18 @@ Worth recording because it contradicts the assumption behind decision 5. Every a
 
 ### CI runtimes
 
-Run 31914066981, the first run of the three-OS matrix, green on all four jobs.
+Run 31914066981 was the first run of the three-OS matrix and run 31915731976 the first with every cache warm; both green on all four jobs.
 
-| Job | Total | `cargo test` | Render smoke | Cache state |
+| Job | Cold total | Warm total | Warm `cargo test` | Warm smoke |
 |---|---|---|---|---|
-| Windows | 20 m 16 s | 8 m 56 s | 6 m 53 s | partly warm |
-| macOS | 18 m 23 s | 15 m 54 s | 1 m 42 s | cold |
-| Linux | 30 m 25 s | 26 m 14 s | 3 m 7 s | cold |
-| Format (Ubuntu) | 12 s | n/a | n/a | none needed |
+| Windows | 20 m 16 s (partly warm) | 13 m 35 s | 4 m 54 s | 7 m 17 s |
+| macOS | 18 m 23 s | 1 m 53 s | 1 m 5 s | 17 s |
+| Linux | 30 m 25 s | 3 m 9 s | 1 m 50 s | 23 s |
+| Format (Ubuntu) | 12 s | 11 s | n/a | n/a |
 
-Success criterion 7 is met with room to spare: the Windows job went from 44 m 18 s on the first (fully cold) run of the PR to 20 m 16 s here, on a cache that was only partly warm because adding `mach2` changed `Cargo.lock` and forced a prefix-match restore. Earlier runs on this branch took 48 m 4 s and 37 m 30 s only because they were pushed inside the first one's build window and so also started cold. Actions caches are scoped per merge ref, so the first run on any new PR pays this; it is not a regression.
+The fully cold first run of the PR took 44 m 18 s on Windows alone. Actions caches are scoped per merge ref, so the first run on any new PR pays that; it is not a regression. Three runs on this branch paid it only because they were pushed inside the first one's build window.
 
-The render smoke step is dominated by `cargo run` rebuilding the binary in the dev profile after `cargo test` built the test profile, not by the render, which takes under a second. It is the price of asking a real binary rather than a test harness to produce the image.
+The 7 m 17 s Windows smoke figure is what a measurement is for. None of it is rendering, which takes under a second: `cargo test` builds binaries under the test profile (the e2e suite needs one through `CARGO_BIN_EXE`), and `cargo run` then rebuilt and relinked the same executable under `dev`. The step now runs the binary the test step already produced, which removes the rebuild and is a slightly better test besides, since it exercises the artifact the suite built. Windows warm should land near 6 minutes as a result, with the other two near a minute and a half.
 
 Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix).
 

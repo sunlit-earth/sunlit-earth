@@ -3,8 +3,9 @@ name: Regenerate golden references
 # Manual only. Golden references are supposed to change when a human decided
 # they should, so nothing here runs on a push.
 #
-# Pick an OS, run it, download the `golden-<adapter>` artifact, and commit the
-# directory it contains under `crates/sunlit-core/tests/golden/`. Look at the
+# Pick an OS, run it, download the `golden-<adapter>` artifact, and commit its
+# contents (the PNGs are the artifact root, there is no wrapping folder) into
+# `crates/sunlit-core/tests/golden/<adapter>/`. Look at the
 # images first: a golden test that is regenerated without being reviewed is a
 # test that asserts whatever the code currently does.
 #

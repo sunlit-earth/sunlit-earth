@@ -165,6 +165,8 @@ Same test, same limits: growth under 16 MiB, warm-up under 192 MiB. No per-OS ca
 
 The three columns do not come from the same place, which matters for reading them. Windows was measured locally on the development desktop against WARP, Linux locally in WSL against lavapipe, and macOS in CI, from the temporary probe job in run 31912759965, which ran the soak test with `--nocapture`. The matrix jobs could not have supplied any of them at the time: libtest discards the output of a test that passes, and the soak test passes. The test step now runs with `--show-output`, so from here on every matrix run carries all three profiles.
 
+Run 31918813371 is the first where all three came from one place, and it holds: growth over the 12 simulated days after warm-up was +0.0 MiB on Linux, +2.3 MiB on macOS and +3.2 MiB on Windows, against the same 16 MiB limit. The startup and warm-up figures move with the machine (Windows started at 430.7 MiB on the runner against 531.1 MiB on the development desktop), which is the reason the growth row is the one the test asserts on.
+
 The absolute figures differ by up to a factor of eight, which is the counters rather than the program: Windows `PrivateUsage` charges committed-but-not-resident pages, Linux `Private_Clean + Private_Dirty` counts only resident private pages, and macOS `phys_footprint` is a ledger that compression and reclaim can move downward. macOS in fact ends warm-up *below* its startup figure, which is why its warm-up column reads +0.0: the saturating subtraction floors it. The growth row is what the test asserts on, and it is flat on all three.
 
 ### Golden references, per adapter
@@ -205,7 +207,9 @@ Criterion 7 is met: Windows is under six minutes warm. The fully cold first run 
 
 The warm figures above are the second measurement, and the first one is why measuring mattered. Warm Windows initially came out at 13 m 35 s, of which the render smoke step was 7 m 17 s and none of that was rendering: `cargo test` builds binaries under the test profile (the e2e suite needs one through `CARGO_BIN_EXE`) and `cargo run` then rebuilt and relinked the same executable under `dev`. Running the binary the test step already produced took the step to 2 seconds and the job to 5 m 48 s. It is also a slightly better test, since it exercises the artifact the suite built rather than a second copy of it.
 
-Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix), runs 31916389451 and 31916659213 (the last two of the implementation round).
+Green in CI: run 31911197718 (step 1), run 31911787852 (step 2), run 31914066981 (the matrix), runs 31916389451 and 31916659213 (the last two of the implementation round), run 31918813371 (the review fix round).
+
+That last run is also the first where the golden suite's adapter key is visible per OS rather than captured and thrown away: `lavapipe`, `metal` and `warp`, all three on `GENERATED_ADAPTERS`, so all three compared references rather than skipping.
 
 ### A coverage gap this phase leaves open
 

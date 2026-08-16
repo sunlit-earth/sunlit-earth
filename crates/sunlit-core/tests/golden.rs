@@ -17,10 +17,14 @@
 //! difference between two correct rasterizers; the measurement and the argument
 //! are on `adapter_key`.
 //!
-//! An adapter with no directory at all skips rather than fails, which is what
-//! lets the CI matrix land before every reference set has been generated; a
-//! directory that exists but is missing one case still fails, because that
-//! means a case was added without regenerating.
+//! An adapter this repository has never generated references for skips rather
+//! than fails, which is what lets a new platform land before its reference set
+//! exists. Which adapters those are is not inferred from the filesystem but
+//! listed in `GENERATED_ADAPTERS`, so a known adapter whose directory has gone
+//! missing fails instead of quietly testing nothing. A directory that exists
+//! but is missing one case fails too, every time it runs: the render is written
+//! somewhere untracked for review and never into the tracked tree, so blessing
+//! a new case stays a deliberate act.
 //!
 //! Regenerate with `SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core
 //! --test golden`, on a machine using the adapter you are generating for.
@@ -45,6 +49,41 @@ const MEAN_TOLERANCE: f64 = 2.0;
 const OUTLIER_FRACTION: f64 = 0.01;
 /// Per-channel difference that makes a pixel an outlier.
 const OUTLIER_THRESHOLD: u8 = 24;
+
+/// Adapter keys this repository ships reference sets for.
+///
+/// This list is what separates "no references have ever been generated for this
+/// adapter" from "the references went missing". Without it both look identical
+/// from inside the test, and the second one passes: that already happened
+/// during Phase 2, when the macOS probe's golden leg was green while comparing
+/// nothing. Any drift in `adapter_key` output (a Mesa driver that renames
+/// itself, a different macOS device name, a renamed backend) would otherwise
+/// delete the golden suite on that platform without a single red test.
+///
+/// Adding a reference directory means adding its key here.
+const GENERATED_ADAPTERS: &[&str] = &["warp", "lavapipe", "metal"];
+
+/// Marker line naming the adapter this run compared against.
+///
+/// Printed unconditionally by every case, because a skip is invisible in a
+/// passing run otherwise: libtest captures the output of tests that pass, which
+/// is why CI runs the suite with `--show-output`. `golden.yml` also reads this
+/// line to learn which reference directory it just regenerated.
+fn announce_adapter(adapter_key: &str) {
+    println!("golden adapter key: {adapter_key}");
+}
+
+/// Whether an adapter with no reference directory is allowed to skip.
+fn assert_directory_may_be_absent(adapter_key: &str, dir: &Path) {
+    assert!(
+        !GENERATED_ADAPTERS.contains(&adapter_key),
+        "adapter {adapter_key} is one this repository ships golden references for, \
+         but {} does not exist. Either the references were lost, or `adapter_key` \
+         now reports something different for this adapter. Do not silence this by \
+         regenerating blindly: work out which of the two happened first.",
+        dir.display()
+    );
+}
 
 /// One engine, shared by every case: it owns a wgpu device, and creating
 /// several concurrently crashes on Windows.
@@ -108,12 +147,21 @@ fn check_golden(name: &str, params: &SceneParams) {
         .expect("the engine should be able to export");
     drop(engine);
 
+    announce_adapter(&adapter_key);
     let dir = golden_dir(&adapter_key);
     let path = dir.join(format!("{name}.png"));
 
-    // A missing directory means this adapter has no reference set yet, which
-    // is a known state rather than a failure; see the module docs.
-    if !updating() && !dir.exists() {
+    if updating() {
+        std::fs::create_dir_all(&dir).expect("create golden directory");
+        sunlit_core::engine::save_png(&path, WIDTH, HEIGHT, &pixels).expect("write golden");
+        return;
+    }
+
+    // A missing directory means this adapter has no reference set yet, which is
+    // a known state rather than a failure, but only for an adapter that is not
+    // on the list; see `GENERATED_ADAPTERS`.
+    if !dir.exists() {
+        assert_directory_may_be_absent(&adapter_key, &dir);
         eprintln!(
             "no golden references for adapter {adapter_key} yet ({}); \
              generate them with SUNLIT_EARTH_UPDATE_GOLDEN=1, skipping",
@@ -122,16 +170,27 @@ fn check_golden(name: &str, params: &SceneParams) {
         return;
     }
 
-    if updating() || !path.exists() {
-        std::fs::create_dir_all(&dir).expect("create golden directory");
-        sunlit_core::engine::save_png(&path, WIDTH, HEIGHT, &pixels).expect("write golden");
-        assert!(
-            updating(),
-            "golden reference {name} was missing and has been created at {}; \
-             review it and re-run",
-            path.display()
+    if !path.exists() {
+        // Write the render where a human can look at it, and deliberately not
+        // into the tracked tree. A file written to `path` here would be
+        // compared against itself on the next run and pass, so a missing case
+        // would fail exactly once and then bless itself. Under
+        // CARGO_TARGET_TMPDIR it stays a diagnostic, and this case keeps
+        // failing until someone regenerates on purpose.
+        let review = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("golden-missing")
+            .join(&adapter_key);
+        std::fs::create_dir_all(&review).expect("create the review directory");
+        let review_path = review.join(format!("{name}.png"));
+        sunlit_core::engine::save_png(&review_path, WIDTH, HEIGHT, &pixels)
+            .expect("write the review image");
+        panic!(
+            "golden reference {name} is missing at {}. This run's render is at {} \
+             for review; bless it with SUNLIT_EARTH_UPDATE_GOLDEN=1 once you have \
+             looked at it.",
+            path.display(),
+            review_path.display()
         );
-        return;
     }
 
     let reference = image::open(&path)
@@ -293,14 +352,24 @@ fn every_golden_case_is_distinguishable() {
         return;
     }
     let adapter_key = engine().adapter_key().to_owned();
+    announce_adapter(&adapter_key);
+    let dir = golden_dir(&adapter_key);
+    if !dir.exists() {
+        assert_directory_may_be_absent(&adapter_key, &dir);
+        eprintln!("golden references for {adapter_key} not generated yet, skipping");
+        return;
+    }
+
     let names = ["default", "nightglow", "rayleigh", "close_up"];
     let mut images = Vec::new();
     for name in names {
-        let path = golden_dir(&adapter_key).join(format!("{name}.png"));
-        if !path.exists() {
-            eprintln!("golden references for {adapter_key} not generated yet, skipping");
-            return;
-        }
+        let path = dir.join(format!("{name}.png"));
+        assert!(
+            path.exists(),
+            "golden reference {} is missing while the rest of the {adapter_key} set \
+             is present; the case that owns it reports the same thing",
+            path.display()
+        );
         images.push(image::open(&path).expect("read golden").to_rgba8());
     }
 

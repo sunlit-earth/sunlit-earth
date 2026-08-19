@@ -21,14 +21,19 @@ mod doctor;
 mod facts;
 mod hash;
 mod inventory;
+mod job;
 mod manifest;
+mod provider;
+mod qmp;
 mod runner;
 mod setup;
+mod ssh;
 mod state;
 mod status;
 mod store;
 mod target;
 mod util;
+mod vm;
 mod windows_media;
 
 use std::process::ExitCode;
@@ -71,6 +76,29 @@ enum VmCommand {
     /// Prepare this host. Elevated on Windows; reports what needs a restart or
     /// a relogin but never performs one.
     Setup,
+    /// Boot an interactive guest without running any tests.
+    Up {
+        target: Target,
+        /// Boot even though the image's evaluation licence has expired.
+        #[arg(long)]
+        allow_expired_image: bool,
+    },
+    /// Open a shell in the running guest, or run one command in it.
+    Ssh {
+        target: Target,
+        /// A command to run instead of an interactive shell.
+        #[arg(trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    /// Open the running guest's desktop.
+    View { target: Target },
+    /// Boot, run a trivial job through the guest contract, collect it, destroy.
+    Smoke {
+        target: Target,
+        /// Leave the VM running afterwards.
+        #[arg(long)]
+        keep: bool,
+    },
     /// List the images, media, overlays, and VMs the xtask owns.
     Status,
     /// Tear down run state, and with `--purge` the golden images too.
@@ -111,8 +139,17 @@ fn main() -> ExitCode {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { target } => build_image::run(&runner, target),
             VmCommand::Setup => run_setup(&runner),
-            VmCommand::Status => run_status(),
-            VmCommand::Destroy { target, purge } => run_destroy(target.into(), purge),
+            VmCommand::Up {
+                target,
+                allow_expired_image,
+            } => vm::up(&runner, target, allow_expired_image),
+            VmCommand::Ssh { target, command } => vm::ssh(&runner, target, &command),
+            VmCommand::View { target } => vm::view(&runner, target),
+            VmCommand::Smoke { target, keep } => vm::smoke(&runner, target, keep),
+            VmCommand::Status => vm::status(&runner),
+            VmCommand::Destroy { target, purge } => {
+                vm::destroy_command(&runner, target.into(), purge)
+            }
         },
     };
 
@@ -123,32 +160,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn run_status() -> Result<u8, String> {
-    let store = store::store()?;
-    let inventory = inventory::scan(&store);
-    print!("{}", status::render(&inventory, util::now_unix()));
-    Ok(0)
-}
-
-fn run_destroy(selection: destroy::Selection, purge: bool) -> Result<u8, String> {
-    let store = store::store()?;
-    let inventory = inventory::scan(&store);
-    let plan = destroy::plan(&store, &inventory, selection, purge);
-    print!("{}", plan.render());
-    if plan.is_empty() {
-        return Ok(0);
-    }
-    let outcome = destroy::execute(&plan, &|state| {
-        Err(format!(
-            "no provider is wired up for {} yet, so the VM was not stopped; \
-             delete its overlay by hand if it is not running",
-            state.provider
-        ))
-    });
-    print!("{}", destroy::render_outcome(&outcome, purge));
-    Ok(u8::from(!outcome.problems.is_empty()))
 }
 
 fn run_setup(runner: &dyn runner::Runner) -> Result<u8, String> {

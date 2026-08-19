@@ -46,6 +46,10 @@ impl Selection {
 pub struct DeleteItem {
     pub path: PathBuf,
     pub bytes: u64,
+    /// The target whose VM holds this file, when one does. A file belonging to
+    /// a VM that could not be stopped is not deleted, so this is what connects
+    /// the two halves of a destroy.
+    pub target: Option<Target>,
 }
 
 /// What a destroy would do, decided before anything is touched.
@@ -124,11 +128,15 @@ pub fn plan(
     let mut dirs = Vec::new();
     let mut refused = Vec::new();
 
-    let take = |file: &FileInfo, files: &mut Vec<DeleteItem>, refused: &mut Vec<String>| {
+    let take = |file: &FileInfo,
+                owner: Option<Target>,
+                files: &mut Vec<DeleteItem>,
+                refused: &mut Vec<String>| {
         if store.contains(&file.path) {
             files.push(DeleteItem {
                 path: file.path.clone(),
                 bytes: file.bytes,
+                target: owner,
             });
         } else {
             refused.push(format!(
@@ -161,19 +169,25 @@ pub fn plan(
         }
 
         for file in &entry.run_files {
-            take(file, &mut files, &mut refused);
+            take(file, Some(target), &mut files, &mut refused);
         }
         dirs.push(store.run_dir(target));
 
         if purge {
+            // Images and build leftovers are not held open by a running VM,
+            // but they are still that target's, so a VM that would not stop
+            // keeps them too: a half-purged target is a state nothing can
+            // recover from, and `vm status` would report the image as missing
+            // while the VM still ran from it.
             for file in entry.images.iter().chain(entry.build_files.iter()) {
-                take(file, &mut files, &mut refused);
+                take(file, Some(target), &mut files, &mut refused);
             }
             let manifest = store.manifest(target);
             if let Some(bytes) = entry.manifest_bytes {
                 files.push(DeleteItem {
                     path: manifest,
                     bytes,
+                    target: Some(target),
                 });
             }
             dirs.push(store.image_dir(target));
@@ -188,7 +202,7 @@ pub fn plan(
         let media_in_scope = selection.includes(Target::Windows);
         if media_in_scope {
             for file in &inventory.iso {
-                take(file, &mut files, &mut refused);
+                take(file, None, &mut files, &mut refused);
             }
             dirs.push(store.iso_dir());
         }
@@ -207,8 +221,12 @@ pub fn plan(
 /// What a destroy actually managed to do.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct DestroyOutcome {
+    /// VMs that were actually running and were stopped.
     pub stopped: usize,
     pub deleted: usize,
+    /// Files deliberately not deleted, because the VM holding them would not
+    /// stop.
+    pub skipped: usize,
     pub bytes_freed: u64,
     pub problems: Vec<String>,
 }
@@ -216,27 +234,46 @@ pub struct DestroyOutcome {
 /// Carry out a plan.
 ///
 /// `stop` is supplied by the caller so this half is testable and so the
-/// provider layer stays where it belongs. VMs are stopped before their overlays
-/// are deleted, because a running hypervisor holds the file open.
+/// provider layer stays where it belongs.
+///
+/// A VM is stopped before its files are deleted, because a running hypervisor
+/// holds them open. If that stop fails, the target's files are left alone: the
+/// alternative is unlinking the disk of a VM that is still running, which
+/// destroys a guest mid-write and, with `--purge`, takes the golden image with
+/// it. A destroy that reports a problem and leaves everything in place can be
+/// retried; one that half-succeeded cannot.
 pub fn execute(
     plan: &DestroyPlan,
-    stop: &dyn Fn(&RunState) -> Result<(), String>,
+    stop: &dyn Fn(&RunState) -> Result<crate::provider::Stopped, String>,
 ) -> DestroyOutcome {
     let mut outcome = DestroyOutcome {
         problems: plan.refused.clone(),
         ..DestroyOutcome::default()
     };
+    let mut held_back: Vec<Target> = Vec::new();
 
     for vm in &plan.vms {
         match stop(vm) {
-            Ok(()) => outcome.stopped += 1,
-            Err(e) => outcome
-                .problems
-                .push(format!("could not stop {}: {e}", vm.vm_name)),
+            Ok(crate::provider::Stopped::Stopped) => outcome.stopped += 1,
+            Ok(crate::provider::Stopped::WasNotRunning) => {}
+            Err(e) => {
+                outcome
+                    .problems
+                    .push(format!("could not stop {}: {e}", vm.vm_name));
+                if let Some(target) = Target::ALL.into_iter().find(|t| t.slug() == vm.target) {
+                    held_back.push(target);
+                }
+            }
         }
     }
 
     for file in &plan.files {
+        if let Some(target) = file.target
+            && held_back.contains(&target)
+        {
+            outcome.skipped += 1;
+            continue;
+        }
         match std::fs::remove_file(&file.path) {
             Ok(()) => {
                 outcome.deleted += 1;
@@ -247,6 +284,14 @@ pub fn execute(
                 .problems
                 .push(format!("could not delete {}: {e}", file.path.display())),
         }
+    }
+
+    if outcome.skipped > 0 {
+        outcome.problems.push(format!(
+            "{} left in place because the VM holding them would not stop; \
+             nothing was deleted for that target",
+            crate::util::count(outcome.skipped, "file")
+        ));
     }
 
     for dir in &plan.dirs {
@@ -437,13 +482,74 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_that_will_not_stop_keeps_its_files() {
+        // The alternative is unlinking the disk of a running VM, and with
+        // --purge the golden image with it. A destroy that changed nothing can
+        // be retried; one that half-succeeded cannot.
+        let inv = inventory(vec![with_run_state(Target::Linux)]);
+        let plan = plan(&store(), &inv, Selection::One(Target::Linux), true);
+        assert!(!plan.files.is_empty());
+
+        let outcome = execute(&plan, &|_| Err("the hypervisor said no".to_owned()));
+        assert_eq!(outcome.deleted, 0);
+        assert_eq!(outcome.skipped, plan.files.len());
+        assert!(
+            outcome.problems.iter().any(|p| p.contains("left in place")),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn one_targets_failure_does_not_hold_back_another() {
+        let inv = inventory(vec![
+            with_run_state(Target::Windows),
+            with_run_state(Target::Linux),
+        ]);
+        let plan = plan(&store(), &inv, Selection::All, false);
+        let outcome = execute(&plan, &|state| {
+            if state.target == "windows" {
+                Err("stuck".to_owned())
+            } else {
+                Ok(crate::provider::Stopped::Stopped)
+            }
+        });
+        assert_eq!(outcome.stopped, 1);
+        // Two files per target; only the Windows ones are held back.
+        assert_eq!(outcome.skipped, 2);
+    }
+
+    #[test]
+    fn shared_media_is_not_held_back_by_a_targets_failure() {
+        // The ISO belongs to no VM, so nothing is holding it open.
+        let mut inv = inventory(vec![with_run_state(Target::Windows)]);
+        inv.iso = vec![FileInfo::new("/srv/vm/iso/win.iso", 1024, BUILT)];
+        let plan = plan(&store(), &inv, Selection::One(Target::Windows), true);
+        let outcome = execute(&plan, &|_| Err("stuck".to_owned()));
+        let iso = plan
+            .files
+            .iter()
+            .find(|f| f.path.to_string_lossy().contains("win.iso"))
+            .expect("the iso is in the plan");
+        assert_eq!(iso.target, None);
+        assert!(outcome.skipped < plan.files.len());
+    }
+
+    #[test]
+    fn a_vm_that_was_not_running_is_not_counted_as_stopped() {
+        let inv = inventory(vec![with_run_state(Target::Linux)]);
+        let plan = plan(&store(), &inv, Selection::One(Target::Linux), false);
+        let outcome = execute(&plan, &|_| Ok(crate::provider::Stopped::WasNotRunning));
+        assert_eq!(outcome.stopped, 0);
+        assert_eq!(outcome.skipped, 0);
+        assert!(render_outcome(&outcome, false).contains("stopped 0 VMs"));
+    }
+
+    #[test]
     fn execution_reports_what_it_could_not_stop() {
         let inv = inventory(vec![with_run_state(Target::Linux)]);
         let plan = plan(&store(), &inv, Selection::One(Target::Linux), false);
         let outcome = execute(&plan, &|_| Err("the hypervisor said no".to_owned()));
         assert_eq!(outcome.stopped, 0);
-        // The files do not exist in this fabricated store, which is not a
-        // problem: a destroy that finds nothing to delete has still succeeded.
         assert_eq!(outcome.deleted, 0);
         assert_eq!(outcome.bytes_freed, 0);
         assert!(outcome.problems[0].contains("the hypervisor said no"));
@@ -454,6 +560,7 @@ mod tests {
         let outcome = DestroyOutcome {
             stopped: 1,
             deleted: 3,
+            skipped: 0,
             bytes_freed: 1024 * 1024,
             problems: Vec::new(),
         };

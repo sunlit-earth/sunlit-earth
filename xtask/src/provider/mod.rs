@@ -33,6 +33,16 @@ use crate::util;
 pub const GUEST_ROOT_LINUX: &str = "/var/lib/sunlit-e2e";
 pub const GUEST_ROOT_WINDOWS: &str = r"C:\sunlit-e2e";
 
+/// What a destroy actually had to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    /// A running VM was stopped.
+    Stopped,
+    /// There was nothing running, though there may have been something
+    /// registered to remove.
+    WasNotRunning,
+}
+
 /// One hypervisor, driven.
 pub trait Provider {
     fn kind(&self) -> ProviderKind;
@@ -44,8 +54,11 @@ pub trait Provider {
     /// Boot it, filling in how to reach it.
     fn start(&self, state: &mut RunState) -> Result<(), String>;
 
-    /// Stop it and delete the overlay and the state file.
-    fn destroy(&self, state: &RunState) -> Result<(), String>;
+    /// Stop it and unregister it, if there is anything to stop.
+    ///
+    /// Returning `Ok` is the caller's licence to delete the overlay, so an
+    /// error here has to mean "the VM may still be running" and nothing else.
+    fn destroy(&self, state: &RunState) -> Result<Stopped, String>;
 
     /// Whether the VM is alive right now.
     fn is_running(&self, state: &RunState) -> bool;

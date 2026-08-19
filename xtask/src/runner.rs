@@ -144,11 +144,14 @@ pub trait Runner {
     /// Locate an executable on `PATH`.
     fn which(&self, program: &str) -> Option<PathBuf>;
 
-    /// Whether a process with this id is still running.
-    fn process_alive(&self, pid: u32) -> bool;
+    /// What the process with this id is, or `None` if there is no such
+    /// process. Identity, not just liveness: process ids are reused, and
+    /// everything downstream of this is about to kill something.
+    fn process_identity(&self, pid: u32) -> Option<ProcessIdentity>;
 
-    /// Ask a process to end, forcefully if need be.
-    fn terminate(&self, pid: u32) -> io::Result<()>;
+    /// Ask a process to end, forcefully if need be. An error here means the
+    /// process may still be running.
+    fn terminate(&self, pid: u32) -> Result<(), String>;
 }
 
 /// The real implementation: `std::process`.
@@ -221,12 +224,7 @@ impl Runner for RealRunner {
                 // The first line of a VM log is the exact invocation that
                 // produced it, which is the thing anyone debugging a guest that
                 // will not boot asks for first.
-                writeln!(
-                    out,
-                    "{}
-",
-                    cmd.display()
-                )?;
+                writeln!(out, "{}", cmd.display())?;
                 let err = out.try_clone()?;
                 command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
             }
@@ -247,24 +245,40 @@ impl Runner for RealRunner {
         )
     }
 
-    fn process_alive(&self, pid: u32) -> bool {
+    fn process_identity(&self, pid: u32) -> Option<ProcessIdentity> {
         if cfg!(target_os = "linux") {
-            return Path::new(&format!("/proc/{pid}")).exists();
+            // Two file reads, no subprocess. `comm` is truncated to 15
+            // characters, which `image_matches` accounts for; `cmdline` is
+            // NUL-separated and carries the arguments the VM was named with.
+            let image = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()?
+                .trim()
+                .to_owned();
+            let command_line = std::fs::read(format!("/proc/{pid}/cmdline"))
+                .ok()
+                .map(|raw| String::from_utf8_lossy(&raw).replace(char::from(0), " "));
+            return Some(ProcessIdentity {
+                image,
+                command_line,
+            });
         }
         if cfg!(windows) {
             let cmd = Cmd::new("tasklist").args([
                 "/FI".to_owned(),
                 format!("PID eq {pid}"),
                 "/NH".to_owned(),
+                "/FO".to_owned(),
+                "CSV".to_owned(),
             ]);
             return self
                 .capture(&cmd)
-                .is_ok_and(|out| tasklist_reports_alive(&out.stdout, pid));
+                .ok()
+                .and_then(|out| parse_tasklist_csv(&out.stdout, pid));
         }
-        false
+        None
     }
 
-    fn terminate(&self, pid: u32) -> io::Result<()> {
+    fn terminate(&self, pid: u32) -> Result<(), String> {
         let cmd = if cfg!(windows) {
             Cmd::new("taskkill").args([
                 "/PID".to_owned(),
@@ -275,23 +289,75 @@ impl Runner for RealRunner {
         } else {
             Cmd::new("kill").args(["-TERM".to_owned(), pid.to_string()])
         };
-        self.capture(&cmd).map(|_| ())
+        let out = self
+            .capture(&cmd)
+            .map_err(|e| format!("cannot run {}: {e}", cmd.program))?;
+        if out.success() {
+            return Ok(());
+        }
+        // A kill that failed is the case that matters: the caller is about to
+        // delete the file the process still has open.
+        Err(format!(
+            "{} exited {:?}: {}",
+            cmd.program,
+            out.code,
+            if out.stderr.trim().is_empty() {
+                out.stdout.trim()
+            } else {
+                out.stderr.trim()
+            }
+        ))
     }
 }
 
-/// Decide whether `tasklist /FI "PID eq N" /NH` found the process.
+/// What a process is, for deciding whether it is ours.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    /// The executable name. Truncated to 15 characters on Linux, and carrying
+    /// the `.exe` suffix on Windows.
+    pub image: String,
+    /// The full command line where it is cheap to get, which is Linux only.
+    pub command_line: Option<String>,
+}
+
+/// Whether a process image is the one expected.
 ///
-/// A miss is not an error exit; it is the sentence "INFO: No tasks are running
-/// which match the specified criteria." on stdout, so the pid has to be looked
-/// for rather than the exit code trusted.
-pub fn tasklist_reports_alive(stdout: &str, pid: u32) -> bool {
-    let needle = pid.to_string();
-    stdout.lines().any(|line| {
-        !line.trim_start().starts_with("INFO:")
-            && line
-                .split_whitespace()
-                .any(|token| token.trim_matches(',') == needle)
-    })
+/// Handles the two ways the name arrives differently from how it was spelled:
+/// Windows appends `.exe`, and Linux's `comm` is truncated to 15 characters,
+/// so `qemu-system-x86_64` arrives as `qemu-system-x86`.
+pub fn image_matches(found: &str, expected: &str) -> bool {
+    let found = found.trim();
+    let found = found.strip_suffix(".exe").unwrap_or(found);
+    if found.eq_ignore_ascii_case(expected) {
+        return true;
+    }
+    // A truncated name has to be a prefix, and a short one is not evidence.
+    found.len() >= 15 && expected.len() > found.len() && expected.starts_with(found)
+}
+
+/// Read the image name out of `tasklist /NH /FO CSV`, which quotes every
+/// field: `"qemu-system-x86_64.exe","4242","Console","1","1,234 K"`.
+///
+/// The CSV form is used rather than the default table because a process whose
+/// name is longer than the column truncates in the table and a memory figure
+/// with thousands separators makes whitespace splitting unreliable.
+pub fn parse_tasklist_csv(stdout: &str, pid: u32) -> Option<ProcessIdentity> {
+    let wanted = pid.to_string();
+    for line in stdout.lines() {
+        let fields: Vec<&str> = line.split("\",\"").collect();
+        if fields.len() < 2 {
+            continue;
+        }
+        let image = fields[0].trim_start_matches('"').trim();
+        let found_pid = fields[1].trim_matches('"').trim();
+        if found_pid == wanted && !image.is_empty() {
+            return Some(ProcessIdentity {
+                image: image.to_owned(),
+                command_line: None,
+            });
+        }
+    }
+    None
 }
 
 /// Resolve `program` against a `PATH` string, applying Windows' `PATHEXT`.
@@ -417,7 +483,7 @@ pub mod fake {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use super::{Cmd, CommandOutput, Runner};
+    use super::{Cmd, CommandOutput, ProcessIdentity, Runner};
     use std::io;
     use std::path::{Path, PathBuf};
 
@@ -425,7 +491,8 @@ pub mod fake {
     pub struct FakeRunner {
         responses: Vec<(String, CommandOutput)>,
         tools: HashMap<String, PathBuf>,
-        alive: Vec<u32>,
+        processes: HashMap<u32, ProcessIdentity>,
+        processes_after_terminate: RefCell<HashMap<u32, ProcessIdentity>>,
         pub calls: RefCell<Vec<String>>,
         pub spawned: RefCell<Vec<String>>,
         pub terminated: RefCell<Vec<u32>>,
@@ -450,9 +517,17 @@ pub mod fake {
             self
         }
 
+        /// A running process with this id, image, and command line.
         #[must_use]
-        pub fn with_live_process(mut self, pid: u32) -> Self {
-            self.alive.push(pid);
+        pub fn with_process(mut self, pid: u32, image: &str, command_line: Option<&str>) -> Self {
+            let identity = ProcessIdentity {
+                image: image.to_owned(),
+                command_line: command_line.map(str::to_owned),
+            };
+            self.processes.insert(pid, identity.clone());
+            self.processes_after_terminate
+                .borrow_mut()
+                .insert(pid, identity);
             self
         }
 
@@ -497,12 +572,13 @@ pub mod fake {
             self.tools.get(program).cloned()
         }
 
-        fn process_alive(&self, pid: u32) -> bool {
-            self.alive.contains(&pid)
+        fn process_identity(&self, pid: u32) -> Option<ProcessIdentity> {
+            self.processes.get(&pid).cloned()
         }
 
-        fn terminate(&self, pid: u32) -> io::Result<()> {
+        fn terminate(&self, pid: u32) -> Result<(), String> {
             self.terminated.borrow_mut().push(pid);
+            self.processes_after_terminate.borrow_mut().remove(&pid);
             Ok(())
         }
     }
@@ -530,24 +606,52 @@ mod tests {
     }
 
     #[test]
-    fn tasklist_output_is_read_by_pid_not_by_exit_code() {
-        let miss = "INFO: No tasks are running which match the specified criteria.";
-        assert!(!tasklist_reports_alive(miss, 4242));
-        let hit = "qemu-system-x86_64.exe          4242 Console                    1  1,234,567 K";
-        assert!(tasklist_reports_alive(hit, 4242));
-        assert!(!tasklist_reports_alive(hit, 42));
-        assert!(!tasklist_reports_alive("", 4242));
+    fn a_process_identity_is_read_out_of_the_csv_form_of_tasklist() {
+        let hit = "\"qemu-system-x86_64.exe\",\"4242\",\"Console\",\"1\",\"1,234,567 K\"";
+        let identity = parse_tasklist_csv(hit, 4242).expect("found");
+        assert_eq!(identity.image, "qemu-system-x86_64.exe");
+        assert_eq!(identity.command_line, None);
+        assert_eq!(parse_tasklist_csv(hit, 42), None);
     }
 
     #[test]
-    fn tasklist_ignores_a_pid_that_only_appears_inside_another_number() {
-        let other = "qemu-system-x86_64.exe         42425 Console                    1  1,234 K";
-        assert!(!tasklist_reports_alive(other, 4242));
+    fn a_tasklist_miss_is_not_a_process() {
+        // A miss is not an error exit; it is a sentence on stdout, so the exit
+        // code cannot be trusted and the pid has to be looked for.
+        let miss = "INFO: No tasks are running which match the specified criteria.";
+        assert_eq!(parse_tasklist_csv(miss, 4242), None);
+        assert_eq!(parse_tasklist_csv("", 4242), None);
     }
 
-    // Windows path semantics: off Windows, `Path` treats a drive-qualified
-    // path as a single component, and this code only ever runs on a
-    // Windows host anyway.
+    #[test]
+    fn a_pid_that_only_appears_inside_another_number_is_not_a_match() {
+        let other = "\"qemu-system-x86_64.exe\",\"42425\",\"Console\",\"1\",\"1,234 K\"";
+        assert_eq!(parse_tasklist_csv(other, 4242), None);
+    }
+
+    #[test]
+    fn an_image_name_matches_through_both_ways_it_is_spelled_differently() {
+        assert!(image_matches("qemu-system-x86_64", "qemu-system-x86_64"));
+        // Windows appends the extension.
+        assert!(image_matches(
+            "qemu-system-x86_64.exe",
+            "qemu-system-x86_64"
+        ));
+        // Linux truncates /proc/<pid>/comm to 15 characters.
+        assert!(image_matches("qemu-system-x86", "qemu-system-x86_64"));
+        assert!(image_matches(
+            " qemu-system-x86 
+",
+            "qemu-system-x86_64"
+        ));
+
+        assert!(!image_matches("bash", "qemu-system-x86_64"));
+        assert!(!image_matches("qemu-img", "qemu-system-x86_64"));
+        // A short prefix is not evidence of a truncated name.
+        assert!(!image_matches("qemu", "qemu-system-x86_64"));
+        assert!(!image_matches("", "qemu-system-x86_64"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn path_lookup_applies_pathext_on_windows() {

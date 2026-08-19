@@ -1067,7 +1067,8 @@ fn test_single_instance_second_exits() {
     if !TRAY_SUPPORTED {
         skip_case(
             "test_single_instance_second_exits",
-            "the app takes the single-instance mutex in tray mode only, so there              is nothing to enforce on a platform without a tray",
+            "the app takes the single-instance mutex in tray mode only, so there \
+             is nothing to enforce on a platform without a tray",
         );
         return;
     }

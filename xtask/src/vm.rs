@@ -77,7 +77,7 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
             "no {target} golden image yet. `cargo xtask vm build-image {target}` builds one."
         )),
         ImageCondition::Corrupt { detail } => Err(format!(
-            "the {target} golden image does not match its manifest: {detail}
+            "the {target} golden image does not match its manifest: {detail}. \
              `cargo xtask vm build-image {target}` rebuilds it."
         )),
         // Everything else returned above, where `blocks_boot` said so.
@@ -293,13 +293,12 @@ pub fn destroy_command(
     if plan.is_empty() {
         return Ok(0);
     }
+    // Asked unconditionally. Whether there is anything to stop is the
+    // provider's question to answer, and answering it here by consulting
+    // `is_running` first is what let a registered but powered-off Hyper-V VM
+    // keep its registration while its disk was deleted out from under it.
     let outcome = destroy::execute(&plan, &|state| {
-        let provider = provider::for_state(runner, &store, state)?;
-        if provider.is_running(state) {
-            provider.destroy(state)
-        } else {
-            Ok(())
-        }
+        provider::for_state(runner, &store, state)?.destroy(state)
     });
     print!("{}", destroy::render_outcome(&outcome, purge));
     Ok(u8::from(!outcome.problems.is_empty()))

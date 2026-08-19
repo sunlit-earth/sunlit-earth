@@ -5,7 +5,9 @@
 //! run on top of a hypervisor the doctor has already checked for.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use crate::provider::Stopped;
 use crate::qmp;
 use crate::runner::{Cmd, Runner};
 use crate::ssh::SshTarget;
@@ -28,6 +30,47 @@ pub fn vnc_port(display: u16) -> u16 {
 
 /// The account the golden images create.
 pub const GUEST_USER: &str = "tester";
+
+/// The process a QEMU guest of ours is.
+pub const QEMU_IMAGE: &str = "qemu-system-x86_64";
+
+/// How long to wait for QEMU to be gone after being asked to stop.
+pub const QUIT_GRACE: Duration = Duration::from_secs(20);
+
+/// Whether the process a state file points at is still the one it recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ownership {
+    /// The recorded process is running and is ours.
+    Ours,
+    /// Nothing is running under that id.
+    Gone,
+    /// Something is running under that id, and it is not ours. Process ids are
+    /// reused, so this is the ordinary consequence of a stale state file on a
+    /// busy machine, not an exotic case.
+    Foreign(String),
+}
+
+/// Decide whether an identity is the QEMU this VM started.
+///
+/// The image name is the cheap half and is all Windows offers. Where the
+/// command line is available it is checked too, because two QEMU processes on
+/// one host are far more likely than two processes sharing a pid, and the VM
+/// name is on the command line precisely so it can be recognized.
+pub fn classify(identity: Option<&crate::runner::ProcessIdentity>, vm_name: &str) -> Ownership {
+    let Some(identity) = identity else {
+        return Ownership::Gone;
+    };
+    if !crate::runner::image_matches(&identity.image, QEMU_IMAGE) {
+        return Ownership::Foreign(identity.image.clone());
+    }
+    match &identity.command_line {
+        Some(line) if !line.contains(vm_name) => Ownership::Foreign(format!(
+            "{} running something else ({line})",
+            identity.image
+        )),
+        _ => Ownership::Ours,
+    }
+}
 
 /// Memory and processor count per guest.
 pub fn resources_for(target: Target) -> (u32, u32) {
@@ -163,7 +206,8 @@ impl Launch {
                     && !DRIVE_INTERFACES.contains(&value)
                 {
                     return Err(format!(
-                        "the drive interface '{value}' is not one QEMU accepts                          ({}); this is a bug in the xtask, not in the host",
+                        "the drive interface '{value}' is not one QEMU accepts \
+                         ({}); this is a bug in the xtask, not in the host",
                         DRIVE_INTERFACES.join(", ")
                     ));
                 }
@@ -186,6 +230,40 @@ impl<'a> QemuProvider<'a> {
             runner,
             store,
             host,
+        }
+    }
+
+    /// What the recorded process is now.
+    fn ownership(&self, state: &RunState) -> Ownership {
+        let Some(pid) = state.pid else {
+            return Ownership::Gone;
+        };
+        classify(self.runner.process_identity(pid).as_ref(), &state.vm_name)
+    }
+
+    /// The target a state file names, defaulting to the Linux one only so the
+    /// message-building path cannot panic on a corrupt file.
+    fn target_of(state: &RunState) -> Target {
+        Target::ALL
+            .into_iter()
+            .find(|t| t.slug() == state.target)
+            .unwrap_or(Target::Linux)
+    }
+
+    /// Poll until the process is gone, up to `grace`.
+    fn wait_for_exit(&self, state: &RunState, grace: Duration) -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            if matches!(
+                self.ownership(state),
+                Ownership::Gone | Ownership::Foreign(_)
+            ) {
+                return true;
+            }
+            if start.elapsed() >= grace {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
 
@@ -321,32 +399,50 @@ impl crate::provider::Provider for QemuProvider<'_> {
         Ok(())
     }
 
-    fn destroy(&self, state: &RunState) -> Result<(), String> {
+    fn destroy(&self, state: &RunState) -> Result<Stopped, String> {
+        let Some(pid) = state.pid else {
+            return Ok(Stopped::WasNotRunning);
+        };
+        match self.ownership(state) {
+            Ownership::Gone => return Ok(Stopped::WasNotRunning),
+            // Refusing here is the point of asking. The caller deletes the
+            // overlay after a successful stop, and killing a stranger's
+            // process tree because a pid was reused is the one failure this
+            // command must not have.
+            Ownership::Foreign(found) => {
+                return Err(format!(
+                    "pid {pid} is now {found}, not this VM's QEMU; the process id \
+                     was reused, so nothing was stopped and nothing was deleted. \
+                     Remove {} by hand once you are sure it is idle.",
+                    self.store.state_file(Self::target_of(state)).display()
+                ));
+            }
+            Ownership::Ours => {}
+        }
+
         // QMP first, so QEMU closes the overlay before it is deleted. Killing
         // the process works too, but leaves the qcow2 needing a repair pass
         // that nobody will ever run on a file about to be removed.
-        let mut problems = Vec::new();
         if let Some(port) = state.qmp_port
-            && self.is_running(state)
-            && let Err(e) = qmp::execute(port, "quit")
+            && qmp::execute(port, "quit").is_ok()
+            && self.wait_for_exit(state, QUIT_GRACE)
         {
-            problems.push(e);
+            return Ok(Stopped::Stopped);
         }
-        if let Some(pid) = state.pid
-            && self.runner.process_alive(pid)
-            && let Err(e) = self.runner.terminate(pid)
-        {
-            problems.push(format!("cannot terminate pid {pid}: {e}"));
-        }
-        if problems.is_empty() {
-            Ok(())
+        self.runner
+            .terminate(pid)
+            .map_err(|e| format!("cannot terminate pid {pid}: {e}"))?;
+        if self.wait_for_exit(state, QUIT_GRACE) {
+            Ok(Stopped::Stopped)
         } else {
-            Err(problems.join("; "))
+            Err(format!(
+                "pid {pid} is still running after being asked and then told to stop"
+            ))
         }
     }
 
     fn is_running(&self, state: &RunState) -> bool {
-        state.pid.is_some_and(|pid| self.runner.process_alive(pid))
+        matches!(self.ownership(state), Ownership::Ours)
     }
 
     fn view(&self, state: &RunState) -> Result<String, String> {
@@ -410,7 +506,11 @@ mod tests {
     #[test]
     fn a_qemu_guest_is_running_only_while_its_own_process_is() {
         let store = Store::new("/srv/vm");
-        let runner = FakeRunner::new().with_live_process(4242);
+        let runner = FakeRunner::new().with_process(
+            4242,
+            "qemu-system-x86_64",
+            Some("qemu-system-x86_64 -name sunlit-e2e-linux -m 4096"),
+        );
         let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
         let mut state = RunState::new(
             Target::Linux,
@@ -426,6 +526,87 @@ mod tests {
         assert!(!provider.is_running(&state));
         state.pid = Some(4242);
         assert!(provider.is_running(&state));
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_mistaken_for_our_vm() {
+        // Process ids are reused. Everything downstream of this check kills a
+        // process tree, so being wrong here means killing a stranger's.
+        assert_eq!(classify(None, "sunlit-e2e-linux"), Ownership::Gone);
+
+        let editor = crate::runner::ProcessIdentity {
+            image: "vim".to_owned(),
+            command_line: Some("vim notes.txt".to_owned()),
+        };
+        assert_eq!(
+            classify(Some(&editor), "sunlit-e2e-linux"),
+            Ownership::Foreign("vim".to_owned())
+        );
+
+        // Another QEMU, but not this VM's: the name is on the command line so
+        // that this case is distinguishable.
+        let other_vm = crate::runner::ProcessIdentity {
+            image: "qemu-system-x86".to_owned(),
+            command_line: Some("qemu-system-x86_64 -name someone-elses-vm".to_owned()),
+        };
+        assert!(matches!(
+            classify(Some(&other_vm), "sunlit-e2e-linux"),
+            Ownership::Foreign(_)
+        ));
+
+        let ours = crate::runner::ProcessIdentity {
+            image: "qemu-system-x86".to_owned(),
+            command_line: Some("qemu-system-x86_64 -name sunlit-e2e-linux".to_owned()),
+        };
+        assert_eq!(classify(Some(&ours), "sunlit-e2e-linux"), Ownership::Ours);
+    }
+
+    #[test]
+    fn without_a_command_line_the_image_name_is_the_whole_answer() {
+        // Windows gives no command line cheaply, so a matching image name is
+        // as far as the check goes there.
+        let windows = crate::runner::ProcessIdentity {
+            image: "qemu-system-x86_64.exe".to_owned(),
+            command_line: None,
+        };
+        assert_eq!(
+            classify(Some(&windows), "sunlit-e2e-windows"),
+            Ownership::Ours
+        );
+    }
+
+    #[test]
+    fn destroying_a_reused_pid_refuses_rather_than_killing_it() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new().with_process(4242, "postgres", Some("postgres -D /data"));
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = RunState::new(
+            Target::Linux,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        );
+        state.pid = Some(4242);
+        let err = provider.destroy(&state).unwrap_err();
+        assert!(err.contains("was reused"), "{err}");
+        assert!(runner.terminated.borrow().is_empty(), "it killed something");
+    }
+
+    #[test]
+    fn destroying_a_vm_that_is_already_gone_is_not_a_stop() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = RunState::new(
+            Target::Linux,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        );
+        state.pid = Some(4242);
+        assert_eq!(provider.destroy(&state), Ok(Stopped::WasNotRunning));
     }
 
     #[test]

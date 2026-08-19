@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::provider::Stopped;
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
 use crate::ssh::SshTarget;
 use crate::state::{RunState, StartReason};
@@ -166,10 +167,13 @@ impl<'a> HypervProvider<'a> {
         }
     }
 
-    fn state_of(&self, name: &str) -> Option<String> {
-        self.run_script(&state_script(name))
-            .ok()
-            .and_then(|out| parse_state(&out))
+    /// The VM's state, `None` if it is not registered.
+    ///
+    /// The error is kept rather than swallowed: "the cmdlets did not work"
+    /// and "there is no such VM" are the same answer to `is_running` and very
+    /// different answers to "may I delete this disk now".
+    fn query_state(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(parse_state(&self.run_script(&state_script(name))?))
     }
 
     /// Poll until the guest reports a usable address.
@@ -242,13 +246,37 @@ impl crate::provider::Provider for HypervProvider<'_> {
         Ok(())
     }
 
-    fn destroy(&self, state: &RunState) -> Result<(), String> {
+    fn destroy(&self, state: &RunState) -> Result<Stopped, String> {
+        // Asked unconditionally, not only when the VM is running. An Off,
+        // Saved, or Paused guest is still registered and still holds its
+        // differencing disk, and a host where these cmdlets fail at all (no
+        // Hyper-V Administrators membership, say) reports every VM as not
+        // running. Deleting the disk of a VM that was never unregistered
+        // leaves a broken VM that neither status nor destroy can see again.
+        let before = self.query_state(&state.vm_name)?;
+        if before.is_none() {
+            return Ok(Stopped::WasNotRunning);
+        }
         self.run_script(&destroy_script(&state.vm_name))?;
-        Ok(())
+
+        // Confirm rather than assume: the script tolerates a missing VM, so
+        // its success alone does not prove this one is gone.
+        if self.query_state(&state.vm_name)?.is_some() {
+            return Err(format!(
+                "{} is still registered after Remove-VM",
+                state.vm_name
+            ));
+        }
+        Ok(match before.as_deref() {
+            Some("Off") | None => Stopped::WasNotRunning,
+            Some(_) => Stopped::Stopped,
+        })
     }
 
     fn is_running(&self, state: &RunState) -> bool {
-        self.state_of(&state.vm_name)
+        self.query_state(&state.vm_name)
+            .ok()
+            .flatten()
             .is_some_and(|state| state.eq_ignore_ascii_case("Running"))
     }
 

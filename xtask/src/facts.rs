@@ -242,6 +242,11 @@ try {
 } | ConvertTo-Json -Compress
 "#;
 
+/// The probe script with the store path filled in.
+pub fn windows_probe_script(store_root: &Path) -> String {
+    WINDOWS_PROBE.replace("__STORE__", &ps_quote(store_root))
+}
+
 /// Gather everything about the host.
 pub fn collect(runner: &dyn Runner, host: HostOs, store_root: &Path) -> HostFacts {
     let mut facts = HostFacts {
@@ -267,7 +272,7 @@ pub fn collect(runner: &dyn Runner, host: HostOs, store_root: &Path) -> HostFact
                 "vmconnect".to_owned(),
                 resolve_tool(runner, "vmconnect", host),
             );
-            let script = WINDOWS_PROBE.replace("__STORE__", &ps_quote(store_root));
+            let script = windows_probe_script(store_root);
             match runner.capture(&powershell(&script)) {
                 Ok(output) if output.success() => match parse_windows_facts(output.trimmed()) {
                     Ok((windows, free)) => {

@@ -30,6 +30,8 @@ mod manifest;
 mod provider;
 mod qmp;
 mod runner;
+#[cfg(test)]
+mod script_syntax;
 mod setup;
 mod ssh;
 mod state;

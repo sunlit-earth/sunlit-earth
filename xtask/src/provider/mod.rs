@@ -5,6 +5,7 @@
 //! everything that speaks to the guest rather than to the hypervisor is a
 //! default method here, implemented once over SSH.
 
+pub mod hyperv;
 pub mod qemu;
 
 use std::path::Path;
@@ -123,10 +124,10 @@ pub fn for_target<'a>(
     let host = HostOs::current();
     let kind =
         crate::target::resolve_provider(host, target, util::env_var(PROVIDER_ENV).as_deref())?;
-    match kind {
-        ProviderKind::Qemu => Ok(Box::new(qemu::QemuProvider::new(runner, store, host))),
-        ProviderKind::HyperV => Err(HYPERV_PENDING.to_owned()),
-    }
+    Ok(match kind {
+        ProviderKind::Qemu => Box::new(qemu::QemuProvider::new(runner, store, host)),
+        ProviderKind::HyperV => Box::new(hyperv::HypervProvider::new(runner, store, host)),
+    })
 }
 
 /// Override for the provider matrix, mostly so a Windows host can be pushed
@@ -148,7 +149,9 @@ pub fn for_state<'a>(
     let host = HostOs::current();
     match state.provider_kind() {
         Some(ProviderKind::Qemu) => Ok(Box::new(qemu::QemuProvider::new(runner, store, host))),
-        Some(ProviderKind::HyperV) => Err(HYPERV_PENDING.to_owned()),
+        Some(ProviderKind::HyperV) => {
+            Ok(Box::new(hyperv::HypervProvider::new(runner, store, host)))
+        }
         None => Err(format!(
             "the state file names an unknown provider '{}'",
             state.provider

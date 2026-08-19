@@ -28,10 +28,12 @@ cargo xtask e2e --target linux
 |---|---|---|---|
 | Hypervisor | Hyper-V | QEMU | none |
 | Host it runs from | Windows only | Windows or Linux | any |
-| Cases | all 8 | 6 of 8 | all 8 |
+| Cases | all 9 | 6 of 9 | 8 of 9 |
 | GPU | WARP | lavapipe | the real one |
 
 The Windows guest needs a Windows host, because its binaries have to be built somewhere and a Linux host has no toolchain for Windows executables. `e2e --target windows` says so and stops before creating anything.
+
+The Windows guest runs a ninth case the others do not: it sets a real desktop wallpaper. That case is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the guest job sets, so running the suite on your own desktop leaves your wallpaper alone and says so.
 
 The Linux guest skips the two cases that need a tray icon. One of them is the tray-start-hidden lifecycle; the other is single-instance enforcement, which the app performs in tray mode only, so on a platform without a tray there is nothing for it to enforce. Both print why they skipped. Linux tray support waits on the StatusNotifier work that comes after this phase.
 
@@ -90,6 +92,10 @@ The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Wi
 
 **A guest boots but never becomes reachable.** `vm view` shows its console. For a QEMU guest the console is a VNC server on `127.0.0.1:5900` that is always running, so a viewer can attach at any moment, including in the middle of a wedged boot.
 
-**A run leaves a VM behind.** `vm status` finds it; `vm destroy <target>` removes it. The orchestrator writes its state file as soon as the VM exists, so a crash mid-run leaves something to clean up rather than an orphan nothing knows about.
+**A run leaves a VM behind.** `vm status` finds it; `vm destroy <target>` removes it. The orchestrator writes its state file as soon as the VM exists, so a crash mid-run leaves something to clean up rather than an orphan nothing knows about, and any failure after a boot either destroys the guest or prints exactly what is still running and how to reach it.
+
+**`vm destroy` says it could not stop something and deleted nothing.** That is deliberate. A VM whose stop failed keeps its files, because unlinking the disk of a running guest destroys it mid-write and, with `--purge`, takes the golden image too. Fix whatever stopped it, then run the destroy again: nothing was half-done, so it is safe to repeat.
+
+**`vm destroy` says a process id was reused.** The VM's process is gone and something unrelated now has its id, so nothing was stopped and nothing was deleted. Delete the state file it names once you are sure nothing of yours is running.
 
 **A test fails in the guest but passes on the desktop.** The results are pulled back to the image store and the path is printed at the end of the run: `output.log` is the suite's own output and `artifacts/` is whatever it wrote. `e2e --target <t> --keep` leaves the VM up so you can look at it from the inside.

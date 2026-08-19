@@ -133,7 +133,7 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 - `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand.
 - `engine_client.rs`: `EngineLink` (send commands, push window state as `SceneParams`) and `event_forwarder` (engine events to the window). Preview frames cross the thread boundary through a latest-value mailbox with a single pending wake-up: the newest frame replaces the parked one and only one `invoke_from_event_loop` closure is ever in flight.
 - `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
-- `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test` and `query-memory` are answered on the listener thread, so they work while the event loop is idle.
+- `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`, `set-wallpaper`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test` and `query-memory` are answered on the listener thread, so they work while the event loop is idle.
 - `tray.rs`: the procedurally generated 32x32 icon, the tray callback wiring, and single-instance enforcement. The tray icon itself is a `SystemTrayIcon` component in `ui/main.slint`, so Slint owns the platform integration.
 - `mouse_math.rs`: pure functions for mouse interaction (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; unit-tested with `proptest` invariants.
 
@@ -216,7 +216,7 @@ Windows is the platform that ships. Linux and macOS build, test, and render head
 | `render` subcommand | yes | yes | yes |
 | Settings window | yes | untested | untested |
 | Set the desktop wallpaper | yes | no | no |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop or in a local VM | yes, in a local VM (6 of 8 cases) | compiles, unrun |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (8 of 9 cases) or in a local VM (all 9) | yes, in a local VM (6 of 9 cases) | compiles, unrun |
 
 Per-OS implementations live in three places, each behind a `cfg` and each documented where it sits:
 
@@ -226,7 +226,7 @@ Per-OS implementations live in three places, each behind a `cfg` and each docume
 
 The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes (which is free coverage for the IPC and process plumbing) and never runs in CI, because hosted runners have no interactive desktop. It runs on the developer's desktop with `cargo e2e`, and in a local VM with `cargo xtask e2e --target <windows|linux>`; see `docs/vm-setup.md`.
 
-Two cases inside it are gated at runtime rather than by `cfg`, following the same convention as `software_adapter_produces_correct_results`: the tray-start-hidden lifecycle and single-instance enforcement need a tray icon, which the app has on Windows only, and single-instance is additionally tray-mode-only in the product. Both print why they skipped. Two more cases pick their startup mode by the same capability, running windowed where there is no tray, which tests the same thing minus the icon. macOS has no VM story: it stays on hosted runners.
+Three cases inside it are gated at runtime rather than by `cfg`, following the same convention as `software_adapter_produces_correct_results`. The tray-start-hidden lifecycle and single-instance enforcement need a tray icon, which the app has on Windows only, and single-instance is additionally tray-mode-only in the product. `test_set_wallpaper` sets a real desktop wallpaper, so it is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the generated Windows guest job sets; it asks `SystemWallpaper::check_supported` for the capability itself and asserts that answer matches the platform, so a Windows regression fails rather than skips. All three print why they skipped. Two further cases pick their startup mode by the tray capability, running windowed where there is no tray, which tests the same thing minus the icon. macOS has no VM story: it stays on hosted runners.
 
 ## Testing
 

@@ -757,10 +757,6 @@ mod tests {
         assert!(!LinuxFacts::default().in_kvm_group());
     }
 
-    // Windows path semantics: off Windows, `Path` treats a drive-qualified
-    // path as a single component, and this code only ever runs on a
-    // Windows host anyway.
-    #[cfg(windows)]
     #[test]
     fn packer_picks_the_first_of_its_own_order_that_is_present() {
         // Packer tries its list in its order, not the host's preference, so
@@ -782,6 +778,10 @@ mod tests {
         );
     }
 
+    // Windows path semantics: off Windows, `Path` treats a drive-qualified
+    // path as a single component, and this code only ever runs on a
+    // Windows host anyway.
+    #[cfg(windows)]
     #[test]
     fn windows_tool_fallbacks_cover_the_winget_qemu_install_location() {
         let candidates = fallback_candidates("qemu-system-x86_64", HostOs::Windows);

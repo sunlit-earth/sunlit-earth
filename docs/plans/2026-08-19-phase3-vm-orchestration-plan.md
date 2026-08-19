@@ -141,7 +141,7 @@ Everything is additive: the `xtask/` crate, the `vm/` directory, and the docs ca
 
 ## Status
 
-Implemented on `feat/phase3-vm-orchestration` (PR #25). All eight steps are written, and everything that can be verified without booting a VM is verified. An independent validation round then found 10 major and 13 minor defects, all of which were fixed on the branch; the ones that changed a documented behavior are Deviations 2 and 11 to 15, and Deviation 4 was corrected.
+Implemented on `feat/phase3-vm-orchestration` (PR #25). All eight steps are written, and everything that can be verified without booting a VM is verified. Two independent validation rounds then found 14 major and 32 minor defects between them, all of which were fixed on the branch; the ones that changed a documented behavior are Deviations 2 and 11 to 17, and Deviation 4 was corrected. The second round is worth its own note below, because two of its four majors were remainders of the first round's own fixes.
 
 - Step 1, xtask scaffold, doctor, setup: done. `vm doctor`, `vm setup`, `vm status`, and `vm destroy` including its file-backed half.
 - Step 2, Linux golden image: done. Template, cloud-init seed, three provisioner scripts, and `vm build-image`.
@@ -224,6 +224,14 @@ Three were worse in kind, because they would have worked most of the time. `vm d
 The remaining three were silent-wrong-answer defects: an image whose manifest was missing skipped the expiry gate entirely, a host with virtualization switched off in the BIOS was told forever that a restart was pending, and a failure after a boot left the VM running with nothing said about it.
 
 The pattern worth keeping is that all ten are boundary defects rather than logic defects, and the tests written for this phase are almost all logic tests. The three checks that did earn their place are the ones shaped like the failures: parsing every generated `PowerShell` script with `PowerShell`'s own parser, running `bash -n` over the guest scripts, and validating the QEMU command line against the list of interfaces QEMU accepts before spawning it. That last one now exists because the validator found what it would have caught.
+
+### What the second validation round found
+
+Four majors, and the shape of them is the lesson. Two were remainders of the first round's own fixes: the guard against deleting a disk whose VM would not stop was added to `destroy` and not to the boot path, which does the same thing to clear stale state, and the rule that no failure may leave a guest running silently was applied to every path after `boot` returned and to none of the four inside it. A fix that establishes a rule has to be carried to every place the rule applies, and neither of those was.
+
+The third was a divergence between two files that nothing connected: the Windows image is installed with an e1000 network card and the runtime attached virtio-net to both guests, so the guest would have booted with no driver, no network, and a ten-minute SSH timeout. The fourth was a dependency nobody had noticed acquiring: moving the unattend file from a floppy to a CD, which q35 forced, changed Packer from needing no external tool to needing one of four, and no layer checked for it.
+
+Both of those last two are now pinned by tests that read the templates and compare them against the orchestrator, which is the same technique that caught the earlier boundary defects: where two artifacts have to agree and only a convention connects them, a test has to read both.
 
 ### What building it without being able to run it found
 

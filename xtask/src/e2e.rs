@@ -272,21 +272,49 @@ mod tests {
 
     #[test]
     fn no_job_script_depends_on_the_working_directory_it_is_run_from() {
+        // Every path the job hands the guest, not just the binary: the
+        // fixtures path is read by the render case, and the harness path is
+        // what the shell executes. Any one of them being relative resolves
+        // differently depending on where the guest's runner starts it.
         for target in Target::ALL {
             let script = job_script(target, &paths(target));
+            let mut checked = 0;
+
             for line in script.lines() {
-                let Some(rest) = line
-                    .strip_prefix("set SUNLIT_EARTH_BIN=")
-                    .or_else(|| line.strip_prefix("export SUNLIT_EARTH_BIN="))
-                else {
-                    continue;
-                };
-                let value = rest.trim_matches('\'');
-                assert!(
-                    value.starts_with('/') || value.starts_with("C:"),
-                    "{target}: {value} is relative"
-                );
+                let line = line.trim();
+                for prefix in [
+                    "set SUNLIT_EARTH_BIN=",
+                    "export SUNLIT_EARTH_BIN=",
+                    "set SUNLIT_EARTH_E2E_FIXTURES=",
+                    "export SUNLIT_EARTH_E2E_FIXTURES=",
+                ] {
+                    let Some(rest) = line.strip_prefix(prefix) else {
+                        continue;
+                    };
+                    let value = rest.trim_matches('\'');
+                    assert!(
+                        value.starts_with('/') || value.starts_with("C:"),
+                        "{target}: {prefix}{value} is relative"
+                    );
+                    checked += 1;
+                }
             }
+            assert_eq!(checked, 2, "{target}: not both paths were checked");
+
+            // The harness itself is invoked by path, and that path is
+            // absolute too.
+            let invocation = script
+                .lines()
+                .find(|line| line.contains("--ignored"))
+                .unwrap_or_else(|| panic!("{target}: nothing runs the harness"));
+            let invocation = invocation
+                .trim()
+                .trim_start_matches('"')
+                .trim_start_matches('\'');
+            assert!(
+                invocation.starts_with('/') || invocation.starts_with("C:"),
+                "{target}: the harness is invoked as {invocation}"
+            );
         }
     }
 

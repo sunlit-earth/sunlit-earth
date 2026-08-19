@@ -1,1 +1,5 @@
 textures/** filter=lfs diff=lfs merge=lfs -text
+
+# Batch files are consumed by cmd.exe, whose parser mishandles LF-only
+# parenthesized blocks. Everything else in this repo is LF.
+vm/windows/scripts/*.cmd text eol=crlf

@@ -51,14 +51,13 @@ fn all_scripts() -> Vec<(String, String)> {
     // The scripts that ship in the repo and run inside the guest. A typo in
     // one of these surfaces forty minutes into a Windows image build, which is
     // the most expensive place in this phase to find one.
-    for name in ["bootstrap.ps1", "finalize.ps1"] {
-        let path = crate::store::repo_root()
-            .join("vm")
-            .join("windows")
-            .join("scripts")
-            .join(name);
+    //
+    // Enumerated rather than listed: a list is a thing to forget to add to,
+    // and the cost of forgetting is a script that is never checked.
+    for path in windows_guest_scripts("ps1") {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
         scripts.push((format!("guest: {name}"), text));
     }
 
@@ -68,20 +67,36 @@ fn all_scripts() -> Vec<(String, String)> {
     scripts
 }
 
+/// The guest-side scripts of one kind that ship in `vm/windows/scripts`.
+fn windows_guest_scripts(extension: &str) -> Vec<std::path::PathBuf> {
+    scripts_in(
+        &crate::store::repo_root()
+            .join("vm")
+            .join("windows")
+            .join("scripts"),
+        extension,
+    )
+}
+
+/// Every file with the given extension in a directory, sorted.
+fn scripts_in(dir: &std::path::Path, extension: &str) -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == extension))
+        .collect();
+    out.sort();
+    out
+}
+
 /// The shell scripts the Linux image build runs.
 fn linux_guest_scripts() -> Vec<std::path::PathBuf> {
     let dir = crate::store::repo_root()
         .join("vm")
         .join("linux")
         .join("scripts");
-    let mut out: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == "sh"))
-        .collect();
-    out.sort();
-    out
+    scripts_in(&dir, "sh")
 }
 
 #[cfg(windows)]
@@ -133,6 +148,36 @@ fn check(scripts: &[(String, String)]) -> crate::runner::CommandOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_batch_file_the_windows_guest_runs_is_usable() {
+        // There is no parser to borrow for a batch file, so this checks the
+        // two things that actually go wrong with one. `cmd.exe` mishandles
+        // LF-only parenthesized blocks, and both of these have one, so they
+        // carry CRLF (enforced in .gitattributes) while everything else in the
+        // repo is LF.
+        let scripts = windows_guest_scripts("cmd");
+        assert!(
+            scripts.len() >= 2,
+            "only {} batch files found",
+            scripts.len()
+        );
+        for script in scripts {
+            let bytes = std::fs::read(&script).expect("readable");
+            let text = String::from_utf8(bytes).expect("a batch file is text");
+            assert!(!text.trim().is_empty(), "{} is empty", script.display());
+            let lone_lf = text
+                .char_indices()
+                .filter(|&(i, c)| c == '\n' && (i == 0 || !text[..i].ends_with('\r')))
+                .count();
+            assert_eq!(
+                lone_lf,
+                0,
+                "{} has {lone_lf} LF-only line endings; cmd.exe needs CRLF",
+                script.display()
+            );
+        }
+    }
 
     #[test]
     fn every_shell_script_the_linux_build_runs_parses() {

@@ -24,9 +24,54 @@ foreach ($path in @("$root\run-job.cmd", "$root\session-ready.cmd", "$root\bin",
 # The job task has to run in the console session. A task that ended up with
 # any other logon type would run invisibly and every windowed test would fail
 # in a way that looks like the product's fault.
-$principal = (Get-ScheduledTask -TaskName 'sunlit-e2e-job').Principal
-if ($principal.LogonType -ne 'Interactive') {
-    $problems += "the job task has logon type $($principal.LogonType), not Interactive"
+#
+# Looked up with -ErrorAction SilentlyContinue: without it, the missing-task
+# case that the loop above is here to report would instead throw out of this
+# script and lose every other problem with it.
+$job = Get-ScheduledTask -TaskName 'sunlit-e2e-job' -ErrorAction SilentlyContinue
+if ($job -and $job.Principal.LogonType -ne 'Interactive') {
+    $problems += "the job task has logon type $($job.Principal.LogonType), not Interactive"
+}
+
+Write-Output '== ensuring a boot path that survives the hypervisor change'
+# This image is installed under OVMF and then booted on Hyper-V generation 2.
+# The boot entry Windows Setup wrote lives in OVMF's own NVMe-backed variable
+# store, which Hyper-V has no equivalent of and never sees, and
+# `Set-VMFirmware -FirstBootDevice` names a disk rather than a loader. What
+# both firmwares agree on is the removable-media fallback path: if
+# \EFI\Boot\bootx64.efi exists on the EFI system partition, UEFI will boot it
+# without any variable at all.
+#
+# So the ESP gets an explicit bcdboot pass and, if Setup did not leave the
+# fallback loader behind, a copy of the boot manager under that name. Neither
+# step can be exercised without a real build; this is the standard mitigation
+# and it is recorded as unverified in the plan.
+$espMounted = $false
+try {
+    if (-not (Test-Path 'S:\')) {
+        mountvol S: /S
+        $espMounted = $true
+    }
+    bcdboot C:\Windows /s S: /f UEFI | Out-Null
+    $fallbackDir = 'S:\EFI\Boot'
+    $fallback = Join-Path $fallbackDir 'bootx64.efi'
+    $bootManager = 'S:\EFI\Microsoft\Boot\bootmgfw.efi'
+    if (-not (Test-Path $fallback)) {
+        if (Test-Path $bootManager) {
+            New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
+            Copy-Item $bootManager $fallback -Force
+            Write-Output "copied the boot manager to $fallback"
+        } else {
+            $problems += 'no boot manager on the EFI system partition to fall back to'
+        }
+    }
+    if (-not (Test-Path $fallback)) {
+        $problems += 'no \EFI\Boot\bootx64.efi, so this image may not boot on Hyper-V'
+    }
+} catch {
+    $problems += "could not prepare the EFI system partition: $_"
+} finally {
+    if ($espMounted) { mountvol S: /D }
 }
 
 if ($problems.Count -gt 0) {

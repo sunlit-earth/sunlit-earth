@@ -20,8 +20,13 @@ try {
     foreach ($dir in @("$root\bin", "$root\results", "$root\results\artifacts", "$root\fixtures")) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
     }
-    Copy-Item 'A:\run-job.cmd' "$root\run-job.cmd" -Force
-    Copy-Item 'A:\session-ready.cmd' "$root\session-ready.cmd" -Force
+    # The media is a CD, whose drive letter is not fixed. $PSScriptRoot is
+    # wherever this script was started from, and everything the bootstrap needs
+    # sits beside it, so nothing has to guess a letter.
+    $media = $PSScriptRoot
+    Write-Output "media: $media"
+    Copy-Item (Join-Path $media 'run-job.cmd') "$root\run-job.cmd" -Force
+    Copy-Item (Join-Path $media 'session-ready.cmd') "$root\session-ready.cmd" -Force
 
     Step 'openssh server'
     # The capability is present in the image and only has to be turned on, so
@@ -36,7 +41,7 @@ try {
     # one instead, and it refuses to read it at all unless the ACL is limited
     # to Administrators and SYSTEM.
     $adminKeys = "$env:ProgramData\ssh\administrators_authorized_keys"
-    Copy-Item 'A:\authorized_keys' $adminKeys -Force
+    Copy-Item (Join-Path $media 'authorized_keys') $adminKeys -Force
     icacls $adminKeys /inheritance:r | Out-Null
     icacls $adminKeys /grant 'Administrators:F' | Out-Null
     icacls $adminKeys /grant 'SYSTEM:F' | Out-Null

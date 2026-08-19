@@ -51,11 +51,28 @@ pub fn vga_for(target: Target) -> &'static str {
     }
 }
 
-/// The disk interface, for the same reason as the display.
-pub fn disk_interface_for(target: Target) -> &'static str {
+/// The interfaces `-drive if=` accepts. Anything else is rejected at startup,
+/// and QEMU exits before it has a console to say so on.
+pub const DRIVE_INTERFACES: [&str; 9] = [
+    "none", "ide", "scsi", "sd", "mtd", "floppy", "pflash", "virtio", "xen",
+];
+
+/// The device model the guest's disk is attached through.
+///
+/// The disk is attached in two parts, a backing `-drive if=none` and a
+/// `-device` that references it by id. That is the explicit form, it works the
+/// same for both guests, and it avoids the trap that `if=` looks like a
+/// free-form field and is not: `if=ahci` is not one of the nine values QEMU
+/// accepts, and the machine exits at startup rather than booting.
+///
+/// q35 has no legacy IDE controller. Its only IDE-family controller is the
+/// built-in ICH9 AHCI one, which is where an `ide-hd` device lands and which a
+/// stock Windows install has an in-box driver for. The bus is left to QEMU:
+/// there is exactly one to choose from, and naming it adds a way to be wrong.
+pub fn disk_device_for(target: Target) -> &'static str {
     match target {
-        Target::Windows => "ahci",
-        Target::Linux => "virtio",
+        Target::Windows => "ide-hd",
+        Target::Linux => "virtio-blk-pci",
     }
 }
 
@@ -91,10 +108,11 @@ impl Launch {
             self.cpus.to_string(),
             "-drive".into(),
             format!(
-                "file={},if={},format=qcow2",
-                self.overlay.display(),
-                disk_interface_for(self.target)
+                "file={},if=none,id=hd0,format=qcow2",
+                self.overlay.display()
             ),
+            "-device".into(),
+            format!("{},drive=hd0", disk_device_for(self.target)),
             "-netdev".into(),
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", self.ssh_port),
             "-device".into(),
@@ -129,6 +147,29 @@ impl Launch {
             ));
         }
         args
+    }
+
+    /// Check the command line before spawning it.
+    ///
+    /// QEMU rejects an unknown `-drive if=` at startup, and `start` detaches
+    /// the process with its output going to a log file, so the rejection would
+    /// otherwise surface ten minutes later as an SSH timeout with the reason
+    /// sitting in a file nobody was told to read. This turns that into an
+    /// error before anything is spawned.
+    pub fn validate(&self) -> Result<(), String> {
+        for arg in self.args() {
+            for field in arg.split(',') {
+                if let Some(value) = field.strip_prefix("if=")
+                    && !DRIVE_INTERFACES.contains(&value)
+                {
+                    return Err(format!(
+                        "the drive interface '{value}' is not one QEMU accepts                          ({}); this is a bug in the xtask, not in the host",
+                        DRIVE_INTERFACES.join(", ")
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -266,6 +307,7 @@ impl crate::provider::Provider for QemuProvider<'_> {
             .ok_or_else(|| format!("unknown target '{}'", state.target))?;
         let binary = self.qemu_binary()?;
         let launch = self.launch_for(target, state.overlay.clone());
+        launch.validate()?;
         let log = self.store.vm_log(target);
         let pid = self
             .runner
@@ -422,11 +464,61 @@ mod tests {
     #[test]
     fn the_windows_guest_gets_devices_it_has_drivers_for() {
         assert_eq!(vga_for(Target::Windows), "std");
-        assert_eq!(disk_interface_for(Target::Windows), "ahci");
         assert_eq!(vga_for(Target::Linux), "virtio");
-        assert_eq!(disk_interface_for(Target::Linux), "virtio");
-        assert!(joined(Target::Windows).contains("if=ahci"));
-        assert!(joined(Target::Linux).contains("if=virtio"));
+        // ide-hd lands on q35's built-in AHCI controller, which Windows has an
+        // in-box driver for; virtio-blk needs one the Linux guest has and
+        // Windows does not.
+        assert!(
+            joined(Target::Windows).contains("-device ide-hd,drive=hd0"),
+            "{}",
+            joined(Target::Windows)
+        );
+        assert!(
+            joined(Target::Linux).contains("-device virtio-blk-pci,drive=hd0"),
+            "{}",
+            joined(Target::Linux)
+        );
+        for target in Target::ALL {
+            assert!(joined(target).contains("if=none,id=hd0"), "{target}");
+        }
+    }
+
+    #[test]
+    fn a_bad_drive_interface_is_refused_before_anything_is_spawned() {
+        let mut broken = launch(Target::Windows);
+        broken.overlay = PathBuf::from("/srv/vm/o.qcow2,if=ahci");
+        let err = broken.validate().unwrap_err();
+        assert!(err.contains("'ahci' is not one QEMU accepts"), "{err}");
+        assert!(launch(Target::Linux).validate().is_ok());
+    }
+
+    #[test]
+    fn every_drive_uses_an_interface_qemu_accepts() {
+        // `if=` is not free-form. An unaccepted value makes QEMU exit at
+        // startup, and because the process is detached with its output in a
+        // log, that surfaces ten minutes later as an SSH timeout.
+        let mut with_firmware = launch(Target::Windows);
+        with_firmware.firmware = Some(crate::firmware::Firmware {
+            code: PathBuf::from("/fw/code.fd"),
+            vars: PathBuf::from("/fw/vars.fd"),
+        });
+        for launch in [
+            launch(Target::Linux),
+            launch(Target::Windows),
+            with_firmware,
+        ] {
+            for arg in launch.args() {
+                for field in arg.split(',') {
+                    let Some(value) = field.strip_prefix("if=") else {
+                        continue;
+                    };
+                    assert!(
+                        DRIVE_INTERFACES.contains(&value),
+                        "if={value} is not one of {DRIVE_INTERFACES:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

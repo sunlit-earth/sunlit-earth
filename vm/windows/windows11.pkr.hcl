@@ -128,17 +128,22 @@ source "qemu" "windows" {
   efi_firmware_code = var.efi_firmware_code
   efi_firmware_vars = var.efi_firmware_vars
 
-  # Windows Setup searches removable media for Autounattend.xml, and a virtual
-  # floppy is the one medium it has always searched. The same floppy carries
-  # everything the first-logon script needs, including the public key.
-  floppy_files = [
+  # Windows Setup searches the root of every removable drive for
+  # Autounattend.xml, CD-ROMs included, so a secondary CD carries it along with
+  # everything the first-logon script needs.
+  #
+  # Not a floppy: q35 has no floppy controller, and Packer's -fda would make
+  # QEMU exit at startup rather than boot. The marker file is how the bootstrap
+  # command finds this CD without knowing which letter it was given.
+  cd_files = [
     "${path.root}/autounattend/Autounattend.xml",
     "${path.root}/scripts/bootstrap.ps1",
     "${path.root}/scripts/run-job.cmd",
     "${path.root}/scripts/session-ready.cmd",
   ]
-  floppy_content = {
-    "authorized_keys" = var.ssh_public_key
+  cd_content = {
+    "authorized_keys"       = var.ssh_public_key
+    "sunlit-e2e-media.marker" = "sunlit-e2e"
   }
 
   # "Press any key to boot from CD or DVD" waits about five seconds and then

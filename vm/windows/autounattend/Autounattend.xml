@@ -215,11 +215,18 @@
         </Password>
       </AutoLogon>
 
+      <!--
+        The media is a CD rather than a floppy, because the q35 machine this is
+        built on has no floppy controller. A CD's drive letter is not fixed, so
+        the command walks the drives looking for the marker file that
+        identifies ours and hands the bootstrap script its own full path;
+        everything else the bootstrap needs sits beside it.
+      -->
       <FirstLogonCommands>
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
           <Description>sunlit-e2e bootstrap</Description>
-          <CommandLine>powershell.exe -NoProfile -ExecutionPolicy Bypass -File A:\bootstrap.ps1</CommandLine>
+          <CommandLine>cmd.exe /c "for %i in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %i:\sunlit-e2e-media.marker powershell.exe -NoProfile -ExecutionPolicy Bypass -File %i:\bootstrap.ps1"</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>

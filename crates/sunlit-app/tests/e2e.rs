@@ -23,8 +23,70 @@ use serial_test::serial;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// The compiled binary path, resolved by Cargo at build time.
-const BINARY: &str = env!("CARGO_BIN_EXE_sunlit-earth");
+/// The binary under test.
+///
+/// `CARGO_BIN_EXE_sunlit-earth` is resolved by Cargo at build time, which makes
+/// it a path on the machine that compiled the suite. That is the right answer
+/// on a developer desktop and the wrong one inside a VM, where the test binary
+/// was built on the host and copied in. `SUNLIT_EARTH_BIN` is what the VM
+/// orchestrator sets; without it nothing changes.
+fn binary() -> PathBuf {
+    std::env::var_os("SUNLIT_EARTH_BIN").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_sunlit-earth")),
+        PathBuf::from,
+    )
+}
+
+/// A file from `tests/fixtures/`.
+///
+/// `CARGO_MANIFEST_DIR` has the same problem as `CARGO_BIN_EXE`: it is a
+/// compile-time path into a source tree the guest does not have.
+fn fixture(name: &str) -> PathBuf {
+    std::env::var_os("SUNLIT_EARTH_E2E_FIXTURES")
+        .map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests")
+                    .join("fixtures")
+            },
+            PathBuf::from,
+        )
+        .join(name)
+}
+
+/// Whether this platform gives the app a working tray icon.
+///
+/// Unlike the wallpaper setter, which answers for itself at runtime through
+/// `SystemWallpaper::check_supported`, there is nothing to ask about the tray:
+/// it is Slint's `SystemTrayIcon`, and whether it has a backend is a property
+/// of the platform rather than of the running system. Windows is where it
+/// ships. Linux needs the `StatusNotifier` work that retrospective section 10
+/// defers until after the VM phase, and the app has no macOS tray either.
+///
+/// Cases below split three ways on this. Ones that exercise the tray itself
+/// skip where there is none; ones that merely need a window and a hide-and-show
+/// cycle run windowed instead, which tests the same thing minus the icon; the
+/// rest do not care.
+const TRAY_SUPPORTED: bool = cfg!(target_os = "windows");
+
+/// Startup arguments for a case that needs a window and an IPC-driven
+/// hide-and-show cycle, but not the tray icon itself.
+fn lifecycle_mode_args() -> [&'static str; 2] {
+    if TRAY_SUPPORTED {
+        ["--tray-start", "visible"]
+    } else {
+        ["--mode", "window"]
+    }
+}
+
+/// Announce that a case is not running here.
+///
+/// The suite is `#[ignore]`d and has no skip mechanism of its own, so a case
+/// that returns early passes. Printing why is what stops that from being
+/// indistinguishable from passing for the right reason.
+fn skip_case(case: &str, why: &str) {
+    println!("skipping {case}: {why}");
+}
 
 /// RAII guard that kills a child process on drop if it hasn't exited yet.
 ///
@@ -696,10 +758,11 @@ fn wait_for_downloads(stub: &StubState, target: u64, timeout: Duration) {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_binary_exists() {
-    let path = Path::new(BINARY);
+    let path = binary();
     assert!(
         path.exists(),
-        "binary not found at {BINARY} — was the project built?"
+        "binary not found at {} — was the project built?",
+        path.display()
     );
 }
 
@@ -711,13 +774,10 @@ fn test_render_and_exit() {
     //    below still cleans the directory up.
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
-    let config_path = format!(
-        "{}/tests/fixtures/e2e_config.toml",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let config_path = fixture("e2e_config.toml");
 
     // 2. Spawn the binary with the render subcommand.
-    let child = Command::new(BINARY)
+    let child = Command::new(binary())
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
@@ -732,7 +792,7 @@ fn test_render_and_exit() {
             "--height",
             "800",
             "--config",
-            &config_path,
+            config_path.to_str().expect("non-UTF-8 fixture path"),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -855,11 +915,18 @@ fn test_render_and_exit() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_tray_mode_ipc_lifecycle() {
+    if !TRAY_SUPPORTED {
+        skip_case(
+            "test_tray_mode_ipc_lifecycle",
+            "--tray-start hidden needs tray mode, and this platform has no tray",
+        );
+        return;
+    }
     let socket_name = unique_socket_name();
 
     // 1. Spawn the binary in tray mode with window hidden and IPC enabled.
     let mut guard = ChildGuard::new(
-        Command::new(BINARY)
+        Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
@@ -939,7 +1006,7 @@ fn test_windowed_mode_graceful_shutdown() {
 
     // 1. Spawn in windowed mode with IPC enabled.
     let mut guard = ChildGuard::new(
-        Command::new(BINARY)
+        Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
@@ -997,11 +1064,18 @@ fn test_windowed_mode_graceful_shutdown() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_single_instance_second_exits() {
+    if !TRAY_SUPPORTED {
+        skip_case(
+            "test_single_instance_second_exits",
+            "the app takes the single-instance mutex in tray mode only, so there              is nothing to enforce on a platform without a tray",
+        );
+        return;
+    }
     let socket_name = unique_socket_name();
 
     // 1. Spawn instance A in tray mode with IPC (acquires the single-instance mutex).
     let mut guard_a = ChildGuard::new(
-        Command::new(BINARY)
+        Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
@@ -1023,7 +1097,7 @@ fn test_single_instance_second_exits() {
     // 3. Spawn instance B with the SAME ipc-socket name so it uses the
     //    same scoped mutex as A (otherwise it checks the default mutex
     //    which may conflict with a real running instance).
-    let instance_b = Command::new(BINARY)
+    let instance_b = Command::new(binary())
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
@@ -1075,18 +1149,13 @@ fn test_tray_hide_show_cycle() {
 
     // 1. Spawn the binary in tray mode with IPC enabled.
     let mut guard = ChildGuard::new(
-        Command::new(BINARY)
+        Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
-            .args([
-                "--log-level",
-                "debug",
-                "--tray-start",
-                "visible",
-                "--ipc-socket",
-                &socket_name,
-            ])
+            .args(["--log-level", "debug"])
+            .args(lifecycle_mode_args())
+            .args(["--ipc-socket", &socket_name])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1142,18 +1211,13 @@ fn test_gpu_persistence_after_hide() {
 
     // 1. Spawn in tray mode with visible window and IPC enabled.
     let mut guard = ChildGuard::new(
-        Command::new(BINARY)
+        Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
-            .args([
-                "--log-level",
-                "debug",
-                "--tray-start",
-                "visible",
-                "--ipc-socket",
-                &socket_name,
-            ])
+            .args(["--log-level", "debug"])
+            .args(lifecycle_mode_args())
+            .args(["--ipc-socket", &socket_name])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1232,7 +1296,7 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     //    The empty textures directory leaves the JXL slots unloaded, so cloud
     //    frames are the only large allocations in flight.
     let mut guard = ChildGuard::new(
-        Command::new(BINARY)
+        Command::new(binary())
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
             .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .env("SUNLIT_EARTH_SYNC_LOG", "1")

@@ -15,9 +15,12 @@
 // providers in steps 3 and 7. Removed once every step is in.
 #![allow(dead_code)]
 
+mod artifacts;
 mod build_image;
+mod cargo_json;
 mod destroy;
 mod doctor;
+mod e2e;
 mod facts;
 mod hash;
 mod inventory;
@@ -60,6 +63,18 @@ enum Command {
     Vm {
         #[command(subcommand)]
         command: VmCommand,
+    },
+    /// Run the desktop end-to-end suite, here or in a guest.
+    E2e {
+        /// Where to run it.
+        #[arg(long, default_value = "host")]
+        target: e2e::Where,
+        /// Leave the VM running afterwards for inspection.
+        #[arg(long)]
+        keep: bool,
+        /// Run even though the image's evaluation licence has expired.
+        #[arg(long)]
+        allow_expired_image: bool,
     },
 }
 
@@ -135,6 +150,11 @@ fn main() -> ExitCode {
     let runner = RealRunner;
 
     let result = match cli.command {
+        Command::E2e {
+            target,
+            keep,
+            allow_expired_image,
+        } => e2e::run(&runner, target, keep, allow_expired_image),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { target } => build_image::run(&runner, target),

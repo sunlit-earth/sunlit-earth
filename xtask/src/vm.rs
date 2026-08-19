@@ -194,6 +194,9 @@ pub fn lifecycle_explainer(target: Target) -> String {
 pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8, String> {
     let store = store::store()?;
     let session = boot(runner, &store, target, StartReason::Up, allow_expired)?;
+    // Decision 14: an interactive guest carries the current binaries, exactly
+    // as a test run would, so `vm up` and `e2e --keep` land in the same place.
+    crate::artifacts::stage(runner, &store, &session)?;
     println!("{}", lifecycle_explainer(session.target));
     Ok(0)
 }

@@ -8,13 +8,13 @@
 
 use std::fmt::Write as _;
 
-use crate::facts::{
+use crate::host::facts::{
     FEATURE_HYPERV, FEATURE_WHPX, FeatureState, HYPERV_ADMINS_SID, HostFacts, WINDOWS_QEMU_DIRS,
     WSL_DISTRO,
 };
+use crate::provider::target::HostOs;
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
 use crate::store::Store;
-use crate::target::HostOs;
 
 /// The winget package identifiers, verified against the community repository on
 /// 2026-08-19. Note the lowercase `c` in `Hashicorp`: the manifest folder is
@@ -306,8 +306,7 @@ pub fn linux_plan(inputs: &SetupInputs, store: &Store) -> Vec<Step> {
         if iso_present {
             "already installed".to_owned()
         } else {
-            "Packer shells out to xorriso to build the CD each template hands its guest"
-                .to_owned()
+            "Packer shells out to xorriso to build the CD each template hands its guest".to_owned()
         },
     ));
 
@@ -531,7 +530,7 @@ pub fn elevation_message() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{LinuxFacts, WindowsFacts, WslDistro};
+    use crate::host::facts::{LinuxFacts, WindowsFacts, WslDistro};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -734,7 +733,7 @@ mod tests {
         assert!(script.contains("su - \"$build_user\""), "{script}");
         assert!(script.contains("rustup.rs"), "{script}");
         // The build command names no user, so it runs as the default one.
-        let build = crate::artifacts::wsl_build_command(WSL_DISTRO, "/mnt/c/x");
+        let build = crate::guest::artifacts::wsl_build_command(WSL_DISTRO, "/mnt/c/x");
         assert!(
             !build.args.iter().any(|a| a == "--user"),
             "{:?}",

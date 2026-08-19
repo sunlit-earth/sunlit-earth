@@ -6,16 +6,16 @@
 
 use std::time::Duration;
 
-use crate::destroy::{self, Selection};
-use crate::inventory::{self, ImageCondition};
-use crate::job;
-use crate::manifest::EvalState;
+use crate::commands::destroy::{self, Selection};
+use crate::commands::status;
+use crate::guest::job;
+use crate::provider::target::Target;
 use crate::provider::{self, Provider};
 use crate::runner::Runner;
-use crate::state::{RunState, StartReason};
-use crate::status;
+use crate::store::inventory::{self, ImageCondition};
+use crate::store::manifest::EvalState;
+use crate::store::state::{RunState, StartReason};
 use crate::store::{self, Store};
-use crate::target::Target;
 use crate::util;
 
 /// How long a cold boot may take before the SSH server answers.
@@ -352,12 +352,12 @@ pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8
     let store = store::store()?;
     // Asked before anything is created: a guest with no binaries to put in it
     // is worse than a refusal.
-    crate::artifacts::check_can_build(crate::target::HostOs::current(), target)?;
+    crate::guest::artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
 
     let session = boot(runner, &store, target, StartReason::Up, allow_expired)?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
-    if let Err(e) = crate::artifacts::stage(runner, &store, &session) {
+    if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
         // Keep the guest: `vm up` is for looking at one, and a guest that
         // booted is still worth having even if the binaries did not arrive.
         println!("{}", after_failure(&session, &store, true));
@@ -386,7 +386,7 @@ pub fn ssh(runner: &dyn Runner, target: Target, extra: &[String]) -> Result<u8, 
     } else {
         Some(extra.join(" "))
     };
-    let cmd = crate::ssh::ssh_command(
+    let cmd = crate::guest::ssh::ssh_command(
         &provider.ssh_target(&state),
         remote.as_deref(),
         provider.windows_host(),
@@ -554,7 +554,7 @@ pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::eval_state;
+    use crate::store::manifest::eval_state;
     use crate::util::SECS_PER_DAY;
 
     #[test]

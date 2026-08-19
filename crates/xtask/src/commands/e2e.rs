@@ -8,14 +8,14 @@ use std::time::Duration;
 
 use clap::ValueEnum;
 
-use crate::artifacts::{self, GuestPaths};
-use crate::job;
+use crate::commands::vm;
+use crate::guest::artifacts::{self, GuestPaths};
+use crate::guest::job;
 use crate::provider;
+use crate::provider::target::Target;
 use crate::runner::{Cmd, Runner};
-use crate::state::StartReason;
 use crate::store;
-use crate::target::Target;
-use crate::vm;
+use crate::store::state::StartReason;
 
 /// Where to run the suite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -141,7 +141,7 @@ fn run_in_guest(
     // for every cell, which is not the same as this host being able to produce
     // the binaries to put in one, and finding that out after a boot means a
     // guest running with nothing to run in it.
-    artifacts::check_can_build(crate::target::HostOs::current(), target)?;
+    artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
 
     let session = vm::boot(runner, &store, target, StartReason::Run, allow_expired)?;
 

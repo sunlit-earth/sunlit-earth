@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::target::{ProviderKind, Target, VM_NAME_PREFIX};
+use crate::provider::target::{ProviderKind, Target, VM_NAME_PREFIX};
 
 pub const STATE_VERSION: u32 = 1;
 

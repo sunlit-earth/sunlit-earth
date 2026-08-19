@@ -5,9 +5,15 @@
 //! Every path the xtask reads or writes is derived here, which is also what
 //! lets `vm destroy` prove that a path it is about to delete belongs to it.
 
+pub mod hash;
+pub mod inventory;
+pub mod manifest;
+pub mod state;
+pub mod windows_media;
+
 use std::path::{Path, PathBuf};
 
-use crate::target::Target;
+use crate::provider::target::Target;
 use crate::util;
 
 /// Environment override for the image store.

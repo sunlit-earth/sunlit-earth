@@ -8,10 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use crate::manifest::{Currency, EvalState, Manifest};
-use crate::state::RunState;
+use crate::provider::target::Target;
 use crate::store::Store;
-use crate::target::Target;
+use crate::store::manifest::{Currency, EvalState, Manifest};
+use crate::store::state::RunState;
 
 /// One file found in the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,9 +339,9 @@ pub fn scan(store: &Store) -> Inventory {
             Err(e) => entry.state_error = Some(format!("cannot read the state file: {e}")),
         }
 
-        entry.template_hash = crate::hash::read_tree(&crate::store::template_dir(target))
+        entry.template_hash = crate::store::hash::read_tree(&crate::store::template_dir(target))
             .ok()
-            .map(|files| crate::hash::template_hash(&files));
+            .map(|files| crate::store::hash::template_hash(&files));
 
         inventory.targets.push(entry);
     }
@@ -410,8 +410,8 @@ pub mod fixtures {
     //! Fabricated inventories, which is how everything downstream is tested.
 
     use super::{FileInfo, Inventory, TargetInventory};
-    use crate::manifest::{ImageRecord, Manifest};
-    use crate::target::Target;
+    use crate::provider::target::Target;
+    use crate::store::manifest::{ImageRecord, Manifest};
     use crate::util::SECS_PER_DAY;
 
     /// The build time every fixture uses, so ages are easy to reason about.
@@ -474,8 +474,8 @@ pub mod fixtures {
 mod tests {
     use super::fixtures::{BUILT, TEMPLATE, healthy};
     use super::*;
-    use crate::state::StartReason;
-    use crate::target::ProviderKind;
+    use crate::provider::target::ProviderKind;
+    use crate::store::state::StartReason;
     use crate::util::SECS_PER_DAY;
 
     #[test]
@@ -617,7 +617,7 @@ mod tests {
         );
         assert!(
             ImageCondition::Expired {
-                state: crate::manifest::eval_state(0, 200 * SECS_PER_DAY)
+                state: crate::store::manifest::eval_state(0, 200 * SECS_PER_DAY)
             }
             .blocks_boot()
         );

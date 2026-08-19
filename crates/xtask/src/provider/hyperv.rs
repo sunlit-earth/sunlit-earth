@@ -11,12 +11,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::guest::ssh::SshTarget;
 use crate::provider::Stopped;
+use crate::provider::target::{HostOs, ProviderKind, Target};
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
-use crate::ssh::SshTarget;
-use crate::state::{RunState, StartReason};
 use crate::store::Store;
-use crate::target::{HostOs, ProviderKind, Target};
+use crate::store::state::{RunState, StartReason};
 use crate::util;
 
 /// The virtual switch every client Windows has out of the box. It NATs the
@@ -300,7 +300,7 @@ impl crate::provider::Provider for HypervProvider<'_> {
     }
 
     fn view(&self, state: &RunState) -> Result<String, String> {
-        let viewer = crate::facts::resolve_tool(self.runner, "vmconnect", self.host)
+        let viewer = crate::host::facts::resolve_tool(self.runner, "vmconnect", self.host)
             .unwrap_or_else(|| PathBuf::from("vmconnect.exe"));
         self.runner
             .spawn(

@@ -7,13 +7,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::guest::ssh::SshTarget;
 use crate::provider::Stopped;
-use crate::qmp;
+use crate::provider::qmp;
+use crate::provider::target::{HostOs, ProviderKind, Target};
 use crate::runner::{Cmd, Runner};
-use crate::ssh::SshTarget;
-use crate::state::{RunState, StartReason};
 use crate::store::Store;
-use crate::target::{HostOs, ProviderKind, Target};
+use crate::store::state::{RunState, StartReason};
 use crate::util;
 
 /// One VM at a time (plan decision 7), so the ports are fixed rather than
@@ -160,7 +160,7 @@ pub struct Launch {
     ///
     /// The copy is still per-VM, because the firmware writes to it during
     /// boot and two VMs sharing one store is a corruption waiting to happen.
-    pub firmware: Option<crate::firmware::Firmware>,
+    pub firmware: Option<crate::provider::firmware::Firmware>,
 }
 
 impl Launch {
@@ -294,13 +294,13 @@ impl<'a> QemuProvider<'a> {
     }
 
     fn qemu_binary(&self) -> Result<PathBuf, String> {
-        crate::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host).ok_or_else(|| {
-            "qemu-system-x86_64 is not available; run `cargo xtask vm doctor`".to_owned()
-        })
+        crate::host::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host).ok_or_else(
+            || "qemu-system-x86_64 is not available; run `cargo xtask vm doctor`".to_owned(),
+        )
     }
 
     fn qemu_img(&self) -> Result<PathBuf, String> {
-        crate::facts::resolve_tool(self.runner, "qemu-img", self.host)
+        crate::host::facts::resolve_tool(self.runner, "qemu-img", self.host)
             .ok_or_else(|| "qemu-img is not available; run `cargo xtask vm doctor`".to_owned())
     }
 
@@ -318,7 +318,7 @@ impl<'a> QemuProvider<'a> {
             target,
             memory_mb,
             cpus,
-            accelerator: crate::build_image::accelerator_for(self.host).to_owned(),
+            accelerator: crate::commands::build_image::accelerator_for(self.host).to_owned(),
             ssh_port: SSH_PORT,
             qmp_port: QMP_PORT,
             vnc_display: VNC_DISPLAY,
@@ -329,16 +329,16 @@ impl<'a> QemuProvider<'a> {
     /// Copy the firmware's variables store into the run directory, so each VM
     /// writes its boot entries into its own throwaway copy rather than into the
     /// shared one the host installed.
-    fn per_vm_firmware(&self, target: Target) -> Option<crate::firmware::Firmware> {
-        let binary = crate::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host);
-        let found = crate::firmware::locate(self.host, binary.as_deref())?;
+    fn per_vm_firmware(&self, target: Target) -> Option<crate::provider::firmware::Firmware> {
+        let binary = crate::host::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host);
+        let found = crate::provider::firmware::locate(self.host, binary.as_deref())?;
         let copy = self.store.run_dir(target).join("efi-vars.fd");
         if std::fs::create_dir_all(self.store.run_dir(target)).is_err()
             || std::fs::copy(&found.vars, &copy).is_err()
         {
             return Some(found);
         }
-        Some(crate::firmware::Firmware {
+        Some(crate::provider::firmware::Firmware {
             code: found.code,
             vars: copy,
         })
@@ -476,7 +476,7 @@ impl crate::provider::Provider for QemuProvider<'_> {
             .vnc
             .clone()
             .unwrap_or_else(|| format!("127.0.0.1:{}", vnc_port(VNC_DISPLAY)));
-        for viewer in crate::facts::VNC_VIEWERS {
+        for viewer in crate::host::facts::VNC_VIEWERS {
             if let Some(path) = self.runner.which(viewer) {
                 self.runner
                     .spawn(&Cmd::new(path.to_string_lossy()).arg(address.clone()), None)
@@ -736,7 +736,7 @@ mod tests {
         // startup, and because the process is detached with its output in a
         // log, that surfaces ten minutes later as an SSH timeout.
         let mut with_firmware = launch(Target::Windows);
-        with_firmware.firmware = Some(crate::firmware::Firmware {
+        with_firmware.firmware = Some(crate::provider::firmware::Firmware {
             code: PathBuf::from("/fw/code.fd"),
             vars: PathBuf::from("/fw/vars.fd"),
         });
@@ -770,7 +770,7 @@ mod tests {
     fn firmware_is_passed_only_when_there_is_some() {
         assert!(!joined(Target::Linux).contains("pflash"));
         let mut with_firmware = launch(Target::Windows);
-        with_firmware.firmware = Some(crate::firmware::Firmware {
+        with_firmware.firmware = Some(crate::provider::firmware::Firmware {
             code: PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd"),
             vars: PathBuf::from("/srv/vm/run/windows/efi-vars.fd"),
         });
@@ -831,8 +831,8 @@ mod template_agreement {
     //! convention connected the two sides, so this reads the templates.
 
     use super::{disk_device_for, nic_device_for, vga_for};
+    use crate::provider::target::Target;
     use crate::store::template_dir;
-    use crate::target::Target;
 
     fn template(target: Target) -> String {
         let dir = template_dir(target);

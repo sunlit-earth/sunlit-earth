@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::provider::target::HostOs;
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
-use crate::target::HostOs;
 
 /// Tools every flow needs, whichever guest is being driven: both golden images
 /// are built with Packer's QEMU builder, and every guest is reached over SSH.

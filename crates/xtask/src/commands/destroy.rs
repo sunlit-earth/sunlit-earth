@@ -12,10 +12,10 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use crate::inventory::{FileInfo, Inventory};
-use crate::state::RunState;
+use crate::provider::target::Target;
 use crate::store::Store;
-use crate::target::Target;
+use crate::store::inventory::{FileInfo, Inventory};
+use crate::store::state::RunState;
 use crate::util::format_bytes;
 
 /// Which targets a destroy applies to.
@@ -381,15 +381,15 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::inventory::fixtures::{BUILT, empty, healthy, inventory};
-    use crate::state::StartReason;
-    use crate::target::ProviderKind;
+    use crate::provider::target::ProviderKind;
+    use crate::store::inventory::fixtures::{BUILT, empty, healthy, inventory};
+    use crate::store::state::StartReason;
 
     fn store() -> Store {
         Store::new("/srv/vm")
     }
 
-    fn with_run_state(target: Target) -> crate::inventory::TargetInventory {
+    fn with_run_state(target: Target) -> crate::store::inventory::TargetInventory {
         let mut entry = healthy(target);
         entry.run_files = vec![
             FileInfo::new(

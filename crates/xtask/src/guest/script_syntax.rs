@@ -18,14 +18,14 @@ use crate::runner::{encode_command, powershell};
 /// Every script the crate can produce, with a name to report it under.
 #[cfg(windows)]
 fn all_scripts() -> Vec<(String, String)> {
-    use crate::facts::{FEATURE_HYPERV, WINDOWS_QEMU_DIRS};
+    use crate::commands::setup::{SetupInputs, windows_plan};
+    use crate::host::facts::{FEATURE_HYPERV, WINDOWS_QEMU_DIRS};
     use crate::provider::hyperv;
-    use crate::setup::{SetupInputs, windows_plan};
     use crate::store::Store;
 
     let mut scripts = Vec::new();
 
-    let probe = crate::facts::windows_probe_script(std::path::Path::new(r"C:\vm store"));
+    let probe = crate::host::facts::windows_probe_script(std::path::Path::new(r"C:\vm store"));
     scripts.push(("host probe".to_owned(), probe));
 
     let store = Store::new(r"C:\vm store");

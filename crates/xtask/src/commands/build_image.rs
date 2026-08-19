@@ -7,11 +7,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::hash;
-use crate::manifest::{ImageRecord, Manifest};
+use crate::provider::target::{HostOs, Target};
 use crate::runner::{Cmd, Runner};
+use crate::store::hash;
+use crate::store::manifest::{ImageRecord, Manifest};
 use crate::store::{self, Store};
-use crate::target::{HostOs, Target};
 use crate::util;
 
 /// The QEMU accelerator to ask Packer for.
@@ -58,7 +58,7 @@ pub fn plan(
     store: &Store,
     target: Target,
     accelerator: &str,
-    firmware: Option<&crate::firmware::Firmware>,
+    firmware: Option<&crate::provider::firmware::Firmware>,
 ) -> BuildPlan {
     let build_dir = store.build_dir(target);
     let mut vars = vec![
@@ -181,7 +181,7 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         return Err("images are built on a Windows or Linux host".to_owned());
     }
     for tool in ["packer", "qemu-system-x86_64", "qemu-img", "ssh-keygen"] {
-        if crate::facts::resolve_tool(runner, tool, host).is_none() {
+        if crate::host::facts::resolve_tool(runner, tool, host).is_none() {
             return Err(format!(
                 "{tool} is not available; run `cargo xtask vm doctor` for the whole list"
             ));
@@ -192,31 +192,31 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     // shelling out to one of these. Without one it fails immediately, several
     // seconds into a command that otherwise takes an hour, with an error about
     // a tool nothing here has ever mentioned.
-    let iso_tools: Vec<&str> = crate::facts::PACKER_ISO_TOOLS
+    let iso_tools: Vec<&str> = crate::host::facts::PACKER_ISO_TOOLS
         .into_iter()
         .filter(|tool| runner.which(tool).is_some())
         .collect();
-    let Some(iso_tool) = crate::facts::packer_iso_tool(&iso_tools) else {
+    let Some(iso_tool) = crate::host::facts::packer_iso_tool(&iso_tools) else {
         return Err(format!(
             "no ISO builder on PATH, and Packer needs one to make the CD this \
              template hands the guest. It looks for {}. \
              `cargo xtask vm setup` installs one.",
-            crate::facts::PACKER_ISO_TOOLS.join(", ")
+            crate::host::facts::PACKER_ISO_TOOLS.join(", ")
         ));
     };
 
     let public_key = ensure_ssh_key(runner, &store)?;
     if target == Target::Windows {
-        crate::windows_media::ensure_iso(runner, &store)?;
+        crate::store::windows_media::ensure_iso(runner, &store)?;
     }
 
     let accelerator = accelerator_for(host);
     // Windows 11 needs UEFI, and Packer's own defaults for it are Linux paths.
     let firmware = if target == Target::Windows {
-        let binary = crate::facts::resolve_tool(runner, "qemu-system-x86_64", host);
+        let binary = crate::host::facts::resolve_tool(runner, "qemu-system-x86_64", host);
         Some(
-            crate::firmware::locate(host, binary.as_deref())
-                .ok_or_else(|| crate::firmware::missing_message(host))?,
+            crate::provider::firmware::locate(host, binary.as_deref())
+                .ok_or_else(|| crate::provider::firmware::missing_message(host))?,
         )
     } else {
         None
@@ -356,7 +356,7 @@ fn finish(
     if target.has_eval_expiry() {
         println!(
             "  the evaluation clock started now and runs {} days",
-            crate::manifest::EVAL_TOTAL_DAYS
+            crate::store::manifest::EVAL_TOTAL_DAYS
         );
     }
     println!("`cargo xtask vm status` lists it; `cargo xtask e2e --target {target}` uses it.");
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn only_the_windows_plan_carries_an_iso_path() {
-        let firmware = crate::firmware::Firmware {
+        let firmware = crate::provider::firmware::Firmware {
             code: PathBuf::from("/fw/code.fd"),
             vars: PathBuf::from("/fw/vars.fd"),
         };

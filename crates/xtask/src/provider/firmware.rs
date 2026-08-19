@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::target::HostOs;
+use crate::provider::target::HostOs;
 
 /// The two halves of an OVMF installation.
 ///

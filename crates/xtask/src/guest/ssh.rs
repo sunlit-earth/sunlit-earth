@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::runner::{Cmd, CommandOutput, Runner};
-use crate::state::RunState;
+use crate::store::state::RunState;
 
 /// How often to retry while waiting.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);

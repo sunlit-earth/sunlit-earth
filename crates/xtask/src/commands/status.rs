@@ -6,9 +6,9 @@
 
 use std::fmt::Write as _;
 
-use crate::inventory::{Inventory, TargetInventory};
-use crate::state::RunState;
-use crate::target::Target;
+use crate::provider::target::Target;
+use crate::store::inventory::{Inventory, TargetInventory};
+use crate::store::state::RunState;
 use crate::util::{format_bytes, format_unix_utc};
 
 /// Render the whole inventory.
@@ -232,10 +232,10 @@ fn running_vm(target: Target, state: &RunState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inventory::FileInfo;
-    use crate::inventory::fixtures::{BUILT, empty, healthy, inventory};
-    use crate::state::StartReason;
-    use crate::target::ProviderKind;
+    use crate::provider::target::ProviderKind;
+    use crate::store::inventory::FileInfo;
+    use crate::store::inventory::fixtures::{BUILT, empty, healthy, inventory};
+    use crate::store::state::StartReason;
     use crate::util::SECS_PER_DAY;
 
     fn now() -> u64 {

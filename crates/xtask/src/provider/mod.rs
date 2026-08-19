@@ -5,17 +5,20 @@
 //! everything that speaks to the guest rather than to the hypervisor is a
 //! default method here, implemented once over SSH.
 
+pub mod firmware;
 pub mod hyperv;
 pub mod qemu;
+pub mod qmp;
+pub mod target;
 
 use std::path::Path;
 use std::time::Duration;
 
+use crate::guest::ssh::{self, SshTarget};
+use crate::provider::target::{HostOs, ProviderKind, Target};
 use crate::runner::{CommandOutput, Runner};
-use crate::ssh::{self, SshTarget};
-use crate::state::{RunState, StartReason};
 use crate::store::Store;
-use crate::target::{HostOs, ProviderKind, Target};
+use crate::store::state::{RunState, StartReason};
 use crate::util;
 
 /// Where the guest keeps everything, on both operating systems.
@@ -143,8 +146,11 @@ pub fn for_target<'a>(
     target: Target,
 ) -> Result<Box<dyn Provider + 'a>, String> {
     let host = HostOs::current();
-    let kind =
-        crate::target::resolve_provider(host, target, util::env_var(PROVIDER_ENV).as_deref())?;
+    let kind = crate::provider::target::resolve_provider(
+        host,
+        target,
+        util::env_var(PROVIDER_ENV).as_deref(),
+    )?;
     Ok(match kind {
         ProviderKind::Qemu => Box::new(qemu::QemuProvider::new(runner, store, host)),
         ProviderKind::HyperV => Box::new(hyperv::HypervProvider::new(runner, store, host)),
@@ -294,7 +300,7 @@ mod tests {
             .expect("the Windows session marker");
         assert!(ready.contains(r"%ROOT%\ready"), "{ready}");
         assert!(
-            crate::job::session_ready_command(Target::Windows)
+            crate::guest::job::session_ready_command(Target::Windows)
                 .contains(&format!(r"{GUEST_ROOT_WINDOWS}\ready")),
             "the orchestrator polls a different marker path than the guest writes"
         );

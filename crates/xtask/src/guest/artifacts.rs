@@ -7,12 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cargo_json::{self, Artifact};
+use crate::commands::vm::Session;
+use crate::guest::cargo_json::{self, Artifact};
 use crate::provider;
+use crate::provider::target::{HostOs, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store::{self, Store};
-use crate::target::{HostOs, Target};
-use crate::vm::Session;
 
 /// The Cargo package and test target the suite lives in.
 pub const PACKAGE: &str = "sunlit-earth";
@@ -177,7 +177,7 @@ fn build_in_wsl(
     repo: &Path,
     fixtures: PathBuf,
 ) -> Result<HostArtifacts, String> {
-    let distro = crate::facts::WSL_DISTRO;
+    let distro = crate::host::facts::WSL_DISTRO;
     let repo_wsl = wslpath(runner, distro, "-u", &repo.to_string_lossy())?;
 
     println!("building the e2e suite for the linux guest in {distro} (a few minutes if cold)");

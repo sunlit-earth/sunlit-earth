@@ -11,12 +11,12 @@
 
 use std::fmt::Write as _;
 
-use crate::facts::{
+use crate::host::facts::{
     FEATURE_HYPERV, FEATURE_WHPX, FeatureState, HostFacts, REQUIRED_TOOLS, WSL_DISTRO,
 };
-use crate::inventory::{ImageCondition, Inventory};
+use crate::provider::target::{HostOs, Target};
 use crate::runner::Runner;
-use crate::target::{HostOs, Target};
+use crate::store::inventory::{ImageCondition, Inventory};
 use crate::util::{self, format_bytes};
 
 /// Below this, nothing will fit and the doctor says so.
@@ -199,7 +199,7 @@ fn windows_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
 }
 
 /// Can this host run a hypervisor at all, and is one running?
-fn windows_hypervisor_checks(windows: &crate::facts::WindowsFacts, checks: &mut Vec<Check>) {
+fn windows_hypervisor_checks(windows: &crate::host::facts::WindowsFacts, checks: &mut Vec<Check>) {
     checks.push(if windows.edition_supports_hyperv() {
         Check::new("windows edition", Status::Pass, "supports Hyper-V")
     } else {
@@ -268,7 +268,7 @@ fn windows_hypervisor_checks(windows: &crate::facts::WindowsFacts, checks: &mut 
 
 /// Is the management service there, can this session drive it, and is the WSL
 /// distribution that builds the Linux guest's binaries in place?
-fn windows_access_checks(windows: &crate::facts::WindowsFacts, checks: &mut Vec<Check>) {
+fn windows_access_checks(windows: &crate::host::facts::WindowsFacts, checks: &mut Vec<Check>) {
     checks.push(
         match (
             windows.feature(FEATURE_HYPERV),
@@ -380,7 +380,7 @@ fn tool_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
             Status::Fail,
             format!(
                 "none of {} is on PATH",
-                crate::facts::PACKER_ISO_TOOLS.join(", ")
+                crate::host::facts::PACKER_ISO_TOOLS.join(", ")
             ),
         )
         .hint(iso_builder_hint(facts.os())),
@@ -410,7 +410,7 @@ fn iso_builder_hint(host: HostOs) -> String {
     match host {
         HostOs::Windows => format!(
             "`cargo xtask vm setup` installs it (winget package {})",
-            crate::setup::WINGET_OSCDIMG
+            crate::commands::setup::WINGET_OSCDIMG
         ),
         _ => "`cargo xtask vm setup` installs xorriso".to_owned(),
     }
@@ -492,8 +492,8 @@ fn image_checks(inventory: &Inventory, now_unix: u64, checks: &mut Vec<Check>) {
 /// Collect, evaluate, print. Returns the process exit code.
 pub fn run(runner: &dyn Runner) -> Result<u8, String> {
     let store = crate::store::store()?;
-    let facts = crate::facts::collect(runner, HostOs::current(), store.root());
-    let inventory = crate::inventory::scan(&store);
+    let facts = crate::host::facts::collect(runner, HostOs::current(), store.root());
+    let inventory = crate::store::inventory::scan(&store);
     let report = evaluate(&facts, &inventory, util::now_unix());
 
     println!("host checks for the sunlit-earth VM suite");
@@ -507,8 +507,8 @@ pub fn run(runner: &dyn Runner) -> Result<u8, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facts::{LinuxFacts, WindowsFacts, WslDistro};
-    use crate::inventory::fixtures::{BUILT, empty, healthy, inventory};
+    use crate::host::facts::{LinuxFacts, WindowsFacts, WslDistro};
+    use crate::store::inventory::fixtures::{BUILT, empty, healthy, inventory};
     use crate::util::SECS_PER_DAY;
     use std::collections::BTreeMap;
     use std::path::PathBuf;

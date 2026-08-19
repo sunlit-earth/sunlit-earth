@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::target::Target;
+use crate::provider::target::Target;
 use crate::util;
 
 /// Bumped when a field changes meaning rather than merely appearing.

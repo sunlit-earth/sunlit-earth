@@ -14,8 +14,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::provider::Provider;
-use crate::state::RunState;
-use crate::target::Target;
+use crate::provider::target::Target;
+use crate::store::state::RunState;
 
 /// How often to ask the guest whether the job has finished.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);

@@ -10,39 +10,22 @@
 //! `runner::Runner`, and everything that decides something is a pure function
 //! over data, so the decisions are unit-tested without a hypervisor.
 
-mod artifacts;
-mod build_image;
-mod cargo_json;
-mod destroy;
-mod doctor;
-mod e2e;
-mod facts;
-mod firmware;
-mod hash;
-mod inventory;
-mod job;
-mod manifest;
+mod commands;
+mod guest;
+mod host;
 mod provider;
-mod qmp;
 mod runner;
-#[cfg(test)]
-mod script_syntax;
-mod setup;
-mod ssh;
-mod state;
-mod status;
 mod store;
-mod target;
 mod util;
-mod vm;
-mod windows_media;
 
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+use crate::commands::{build_image, destroy, doctor, e2e, setup, vm};
+use crate::host::facts;
+use crate::provider::target::{HostOs, Target};
 use crate::runner::RealRunner;
-use crate::target::{HostOs, Target};
 
 #[derive(Parser)]
 #[command(

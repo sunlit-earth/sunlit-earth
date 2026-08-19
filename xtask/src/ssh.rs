@@ -82,6 +82,19 @@ pub fn ssh_command(target: &SshTarget, remote: Option<&str>, windows_host: bool)
     Cmd::new("ssh").args(args)
 }
 
+/// Normalize a remote path for `scp`.
+///
+/// The remote half of an `scp` argument is handled by a shell on the far side,
+/// and on a Windows guest that shell is `cmd.exe`. Backslashes survive some
+/// paths through it and not others. Windows accepts forward slashes in a path
+/// everywhere it accepts backslashes, and a Linux guest path has no
+/// backslashes to convert, so this is safe in both directions and removes the
+/// question. Paths that go into a command the guest runs keep their native
+/// separators; only the `scp` argument is converted.
+pub fn scp_remote_path(remote: &str) -> String {
+    remote.replace('\\', "/")
+}
+
 /// `scp [options] -P port <local> user@host:<remote>`.
 ///
 /// `scp` spells the port `-P` where `ssh` spells it `-p`, which is the kind of
@@ -92,7 +105,11 @@ pub fn scp_to_command(target: &SshTarget, local: &Path, remote: &str, windows_ho
     args.push(target.port.to_string());
     args.push("-r".to_owned());
     args.push(local.to_string_lossy().into_owned());
-    args.push(format!("{}:{remote}", target.destination()));
+    args.push(format!(
+        "{}:{}",
+        target.destination(),
+        scp_remote_path(remote)
+    ));
     Cmd::new("scp").args(args)
 }
 
@@ -102,7 +119,11 @@ pub fn scp_from_command(target: &SshTarget, remote: &str, local: &Path, windows_
     args.push("-P".to_owned());
     args.push(target.port.to_string());
     args.push("-r".to_owned());
-    args.push(format!("{}:{remote}", target.destination()));
+    args.push(format!(
+        "{}:{}",
+        target.destination(),
+        scp_remote_path(remote)
+    ));
     args.push(local.to_string_lossy().into_owned());
     Cmd::new("scp").args(args)
 }
@@ -226,6 +247,25 @@ mod tests {
         assert_eq!(from.args.last().map(String::as_str), Some("/tmp/out"));
         let remote = from.args.len() - 2;
         assert_eq!(from.args[remote], "tester@127.0.0.1:sunlit-e2e/results");
+    }
+
+    #[test]
+    fn a_windows_guest_path_reaches_scp_with_forward_slashes() {
+        // The remote half of an scp argument goes through cmd.exe on a Windows
+        // guest, which does not handle backslashes there reliably.
+        assert_eq!(scp_remote_path(r"C:\sunlit-e2e\bin"), "C:/sunlit-e2e/bin");
+        assert_eq!(scp_remote_path("sunlit-e2e/results"), "sunlit-e2e/results");
+
+        let cmd = scp_to_command(
+            &target(),
+            Path::new("/tmp/app"),
+            r"C:\sunlit-e2e\bin",
+            false,
+        );
+        assert_eq!(
+            cmd.args.last().map(String::as_str),
+            Some("tester@127.0.0.1:C:/sunlit-e2e/bin")
+        );
     }
 
     #[test]

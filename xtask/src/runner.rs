@@ -491,8 +491,10 @@ pub mod fake {
     pub struct FakeRunner {
         responses: Vec<(String, CommandOutput)>,
         tools: HashMap<String, PathBuf>,
-        processes: HashMap<u32, ProcessIdentity>,
-        processes_after_terminate: RefCell<HashMap<u32, ProcessIdentity>>,
+        /// Behind a `RefCell` because `terminate` removes from it: a process
+        /// that was killed and is still reported as running would make the
+        /// teardown path untestable, which is the path that deletes disks.
+        processes: RefCell<HashMap<u32, ProcessIdentity>>,
         pub calls: RefCell<Vec<String>>,
         pub spawned: RefCell<Vec<String>>,
         pub terminated: RefCell<Vec<u32>>,
@@ -519,15 +521,12 @@ pub mod fake {
 
         /// A running process with this id, image, and command line.
         #[must_use]
-        pub fn with_process(mut self, pid: u32, image: &str, command_line: Option<&str>) -> Self {
+        pub fn with_process(self, pid: u32, image: &str, command_line: Option<&str>) -> Self {
             let identity = ProcessIdentity {
                 image: image.to_owned(),
                 command_line: command_line.map(str::to_owned),
             };
-            self.processes.insert(pid, identity.clone());
-            self.processes_after_terminate
-                .borrow_mut()
-                .insert(pid, identity);
+            self.processes.borrow_mut().insert(pid, identity);
             self
         }
 
@@ -573,12 +572,12 @@ pub mod fake {
         }
 
         fn process_identity(&self, pid: u32) -> Option<ProcessIdentity> {
-            self.processes.get(&pid).cloned()
+            self.processes.borrow().get(&pid).cloned()
         }
 
         fn terminate(&self, pid: u32) -> Result<(), String> {
             self.terminated.borrow_mut().push(pid);
-            self.processes_after_terminate.borrow_mut().remove(&pid);
+            self.processes.borrow_mut().remove(&pid);
             Ok(())
         }
     }

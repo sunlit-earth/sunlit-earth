@@ -206,10 +206,15 @@ pub fn plan(
         // Installation media is shared, so it only goes when the target that
         // consumes it does. The Windows evaluation ISO is the only cached
         // download; the Ubuntu cloud image is fetched into the build directory.
-        let media_in_scope = selection.includes(Target::Windows);
-        if media_in_scope {
+        // Attributed to Windows rather than to nothing. It is only ever
+        // deleted when Windows is in scope, so a Windows teardown that failed
+        // has to keep it too: otherwise a destroy that reported "nothing was
+        // deleted for that target" would have quietly removed the 6.6 GB
+        // download the rebuild needs, and the guide's promise that a failed
+        // destroy is safe to repeat would be false.
+        if selection.includes(Target::Windows) {
             for file in &inventory.iso {
-                take(file, None, &mut files, &mut refused);
+                take(file, Some(Target::Windows), &mut files, &mut refused);
             }
             dirs.push(store.iso_dir());
         }
@@ -257,7 +262,9 @@ pub fn execute(
         problems: plan.refused.clone(),
         ..DestroyOutcome::default()
     };
-    let mut held_back: Vec<Target> = Vec::new();
+    // Target, and why it was held back: the two are reported together,
+    // because "a file survived" without the reason is not actionable.
+    let mut held_back: Vec<(Target, String)> = Vec::new();
 
     for vm in &plan.vms {
         match stop(vm) {
@@ -268,7 +275,7 @@ pub fn execute(
                     .problems
                     .push(format!("could not stop {}: {e}", vm.vm_name));
                 if let Some(target) = Target::ALL.into_iter().find(|t| t.slug() == vm.target) {
-                    held_back.push(target);
+                    held_back.push((target, format!("{} would not stop", vm.vm_name)));
                 }
             }
         }
@@ -276,7 +283,7 @@ pub fn execute(
 
     for file in &plan.files {
         if let Some(target) = file.target
-            && held_back.contains(&target)
+            && held_back.iter().any(|(held, _)| *held == target)
         {
             outcome.skipped += 1;
             continue;
@@ -297,17 +304,30 @@ pub fn execute(
                 // that outlives its manifest cannot be dated, and dating it is
                 // how the evaluation clock is read.
                 if let Some(target) = file.target {
-                    held_back.push(target);
+                    held_back.push((
+                        target,
+                        format!("{} could not be deleted", file.path.display()),
+                    ));
                 }
             }
         }
     }
 
-    if outcome.skipped > 0 {
+    // Reported per target and by the reason that target was held back. Under
+    // `all` a single sentence naming neither is unusable: it says something
+    // survived without saying what, or why, or which of two targets it was.
+    for (target, reason) in &held_back {
+        let count = plan
+            .files
+            .iter()
+            .filter(|f| f.target == Some(*target))
+            .count();
+        if count == 0 {
+            continue;
+        }
         outcome.problems.push(format!(
-            "{} left in place because the VM holding them would not stop; \
-             nothing was deleted for that target",
-            crate::util::count(outcome.skipped, "file")
+            "{target}: {} left in place because {reason}",
+            crate::util::count(count, "file")
         ));
     }
 
@@ -330,10 +350,19 @@ pub fn render_outcome(outcome: &DestroyOutcome, purge: bool) -> String {
         crate::util::count(outcome.deleted, "file"),
         format_bytes(outcome.bytes_freed)
     );
-    if purge {
+    // What was asked for is not what happened: a purge that held everything
+    // back still deleted nothing, and saying the images are gone when they are
+    // sitting there is how someone ends up rebuilding an image they still have.
+    if purge && outcome.skipped == 0 && outcome.deleted > 0 {
         let _ = writeln!(
             out,
             "the golden images are gone; `cargo xtask vm build-image <target>` rebuilds them"
+        );
+    } else if purge && outcome.skipped > 0 {
+        let _ = writeln!(
+            out,
+            "some images were kept, listed below; nothing was half-deleted, so \
+             running this again once the problem is fixed is safe"
         );
     } else if outcome.deleted > 0 || outcome.stopped > 0 {
         let _ = writeln!(
@@ -560,19 +589,25 @@ mod tests {
     }
 
     #[test]
-    fn shared_media_is_not_held_back_by_a_targets_failure() {
-        // The ISO belongs to no VM, so nothing is holding it open.
+    fn the_cached_iso_is_held_back_with_the_target_that_consumes_it() {
+        // It is only ever deleted when Windows is in scope, so a Windows
+        // teardown that failed has to keep it: deleting the 6.6 GB download a
+        // rebuild needs, while reporting that nothing was deleted for that
+        // target, is the opposite of the "safe to repeat" the guide promises.
         let mut inv = inventory(vec![with_run_state(Target::Windows)]);
         inv.iso = vec![FileInfo::new("/srv/vm/iso/win.iso", 1024, BUILT)];
         let plan = plan(&store(), &inv, Selection::One(Target::Windows), true);
-        let outcome = execute(&plan, &|_| Err("stuck".to_owned()));
+
         let iso = plan
             .files
             .iter()
             .find(|f| f.path.to_string_lossy().contains("win.iso"))
             .expect("the iso is in the plan");
-        assert_eq!(iso.target, None);
-        assert!(outcome.skipped < plan.files.len());
+        assert_eq!(iso.target, Some(Target::Windows));
+
+        let outcome = execute(&plan, &|_| Err("stuck".to_owned()));
+        assert_eq!(outcome.deleted, 0);
+        assert_eq!(outcome.skipped, plan.files.len());
     }
 
     #[test]

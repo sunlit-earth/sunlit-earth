@@ -267,17 +267,36 @@ impl crate::provider::Provider for HypervProvider<'_> {
                 state.vm_name
             ));
         }
-        Ok(match before.as_deref() {
-            Some("Off") | None => Stopped::WasNotRunning,
-            Some(_) => Stopped::Stopped,
+        // `before` is known to be Some here, and the state names come back
+        // from PowerShell in whatever case it feels like, two lines from
+        // another comparison that already allows for that.
+        Ok(match before {
+            Some(ref state) if state.eq_ignore_ascii_case("Off") => Stopped::WasNotRunning,
+            _ => Stopped::Stopped,
         })
     }
 
+    /// Whether the VM is running right now.
+    ///
+    /// A failed query answers `false`, which is the only thing a boolean can
+    /// say, and is why nothing that deletes anything is allowed to ask this:
+    /// `destroy` uses `query_state` so that "the cmdlets did not work" stays
+    /// distinguishable from "there is no such VM". The callers here are
+    /// `vm ssh`, `vm view`, `vm status`, and the one-VM-at-a-time check, all
+    /// of which either report it or refuse, so a false negative costs a
+    /// message rather than a disk.
     fn is_running(&self, state: &RunState) -> bool {
-        self.query_state(&state.vm_name)
-            .ok()
-            .flatten()
-            .is_some_and(|state| state.eq_ignore_ascii_case("Running"))
+        match self.query_state(&state.vm_name) {
+            Ok(Some(state)) => state.eq_ignore_ascii_case("Running"),
+            Ok(None) => false,
+            Err(e) => {
+                eprintln!(
+                    "warning: cannot tell whether {} is running: {e}",
+                    state.vm_name
+                );
+                false
+            }
+        }
     }
 
     fn view(&self, state: &RunState) -> Result<String, String> {

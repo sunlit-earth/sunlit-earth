@@ -608,6 +608,37 @@ mod tests {
     }
 
     #[test]
+    fn destroying_a_running_guest_stops_it_and_reports_that_it_did() {
+        // The path that licenses the caller to delete the overlay. Without a
+        // test it was covered only by a fake-runner field nothing read.
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new().with_process(
+            4242,
+            "qemu-system-x86_64",
+            Some("qemu-system-x86_64 -name sunlit-e2e-linux"),
+        );
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = RunState::new(
+            Target::Linux,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        );
+        state.pid = Some(4242);
+        // No QMP port, so the teardown goes straight to terminating rather
+        // than opening a socket to whatever happens to be on 4444 here.
+        state.qmp_port = None;
+
+        assert!(provider.is_running(&state));
+        assert_eq!(provider.destroy(&state), Ok(Stopped::Stopped));
+        assert_eq!(*runner.terminated.borrow(), vec![4242]);
+        // Gone afterwards, which is what `wait_for_exit` had to observe for
+        // the destroy to report success at all.
+        assert!(!provider.is_running(&state));
+    }
+
+    #[test]
     fn destroying_a_vm_that_is_already_gone_is_not_a_stop() {
         let store = Store::new("/srv/vm");
         let runner = FakeRunner::new();

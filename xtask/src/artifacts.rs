@@ -358,9 +358,9 @@ mod tests {
     #[test]
     fn guest_paths_follow_each_operating_systems_separator() {
         let linux = guest_paths(Target::Linux, "sunlit-earth", "e2e-1a2b");
-        assert_eq!(linux.app, "sunlit-e2e/bin/sunlit-earth");
-        assert_eq!(linux.harness, "sunlit-e2e/bin/e2e-1a2b");
-        assert_eq!(linux.fixtures, "sunlit-e2e/fixtures");
+        assert_eq!(linux.app, "/var/lib/sunlit-e2e/bin/sunlit-earth");
+        assert_eq!(linux.harness, "/var/lib/sunlit-e2e/bin/e2e-1a2b");
+        assert_eq!(linux.fixtures, "/var/lib/sunlit-e2e/fixtures");
 
         let windows = guest_paths(Target::Windows, "sunlit-earth.exe", "e2e-1a2b.exe");
         assert_eq!(windows.app, r"C:\sunlit-e2e\bin\sunlit-earth.exe");

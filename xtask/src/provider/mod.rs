@@ -19,7 +19,18 @@ use crate::target::{HostOs, ProviderKind, Target};
 use crate::util;
 
 /// Where the guest keeps everything, on both operating systems.
-pub const GUEST_ROOT_LINUX: &str = "sunlit-e2e";
+///
+/// Both are absolute, and both are absolute for the same reason: every path
+/// that crosses into the guest is used twice, once as an `scp` destination and
+/// once inside a script the guest runs, and those two have different working
+/// directories. A relative path resolves differently in each, which is not a
+/// bug that announces itself: it surfaces as the test harness exiting 127.
+///
+/// The Linux root deliberately sits outside the home directory as well, so
+/// that it does not depend on what the account is called or where its home
+/// ended up. `the_guest_roots_match_the_shipped_runners` pins each constant against
+/// the script in `vm/` that has to agree with it.
+pub const GUEST_ROOT_LINUX: &str = "/var/lib/sunlit-e2e";
 pub const GUEST_ROOT_WINDOWS: &str = r"C:\sunlit-e2e";
 
 /// One hypervisor, driven.
@@ -181,18 +192,47 @@ mod tests {
 
     #[test]
     fn guest_paths_use_each_operating_systems_separator() {
-        assert_eq!(guest_root(Target::Linux), "sunlit-e2e");
+        assert_eq!(guest_root(Target::Linux), "/var/lib/sunlit-e2e");
         assert_eq!(guest_root(Target::Windows), r"C:\sunlit-e2e");
-        assert_eq!(guest_results(Target::Linux), "sunlit-e2e/results");
+        assert_eq!(guest_results(Target::Linux), "/var/lib/sunlit-e2e/results");
         assert_eq!(guest_results(Target::Windows), r"C:\sunlit-e2e\results");
-        assert_eq!(guest_bin(Target::Linux), "sunlit-e2e/bin");
+        assert_eq!(guest_bin(Target::Linux), "/var/lib/sunlit-e2e/bin");
         assert_eq!(guest_bin(Target::Windows), r"C:\sunlit-e2e\bin");
     }
 
     #[test]
-    fn the_linux_guest_paths_are_relative_to_the_home_directory() {
-        // scp with a relative remote path lands in the login directory, which
-        // is where the session marker and the job runner both look.
-        assert!(!guest_root(Target::Linux).starts_with('/'));
+    fn every_guest_path_is_absolute() {
+        // The same path is used twice: as an scp destination and inside a
+        // script the guest runs. Those two do not share a working directory,
+        // so a relative path resolves differently in each.
+        assert!(guest_root(Target::Linux).starts_with('/'));
+        assert!(guest_results(Target::Linux).starts_with('/'));
+        assert!(guest_bin(Target::Linux).starts_with('/'));
+        assert!(guest_root(Target::Windows).starts_with("C:"));
+        assert!(guest_results(Target::Windows).starts_with("C:"));
+        assert!(guest_bin(Target::Windows).starts_with("C:"));
+    }
+
+    /// The orchestrator and the scripts baked into the images have to name the
+    /// same directory. Nothing else connects them, so a rename on either side
+    /// would otherwise be found by a guest that boots and then fails to run
+    /// anything.
+    #[test]
+    fn the_guest_roots_match_the_shipped_runners() {
+        let repo = crate::store::repo_root();
+
+        let linux = std::fs::read_to_string(repo.join("vm/linux/scripts/guest-contract.sh"))
+            .expect("the Linux guest contract script");
+        assert!(
+            linux.contains(&format!("SUNLIT_E2E_ROOT:-{GUEST_ROOT_LINUX}")),
+            "the Linux runner does not default to {GUEST_ROOT_LINUX}"
+        );
+
+        let windows = std::fs::read_to_string(repo.join("vm/windows/scripts/run-job.cmd"))
+            .expect("the Windows job runner");
+        assert!(
+            windows.contains(&format!("set ROOT={GUEST_ROOT_WINDOWS}")),
+            "the Windows runner does not use {GUEST_ROOT_WINDOWS}"
+        );
     }
 }

@@ -17,6 +17,13 @@ chown "${TEST_USER}:${TEST_USER}" "${home}/.config/gnome-initial-setup-done"
 # on every single boot.
 touch /etc/cloud/cloud-init.disabled
 
+# The marker is written at logon. Shipping one inside the image would tell the
+# orchestrator a desktop exists before the guest had finished booting.
+rm -f /var/lib/sunlit-e2e/ready /var/lib/sunlit-e2e/job.sh
+rm -rf /var/lib/sunlit-e2e/results
+install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 \
+  /var/lib/sunlit-e2e/results /var/lib/sunlit-e2e/results/artifacts
+
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -f /etc/ssh/ssh_host_*

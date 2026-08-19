@@ -225,20 +225,42 @@ mod tests {
     #[test]
     fn the_linux_job_points_the_harness_at_the_copied_binary() {
         let script = job_script(Target::Linux, &paths(Target::Linux));
+        // Absolute, so the paths do not depend on the working directory the
+        // guest's job runner happens to use.
         assert!(
-            script.contains("SUNLIT_EARTH_BIN='sunlit-e2e/bin/sunlit-earth'"),
+            script.contains("SUNLIT_EARTH_BIN='/var/lib/sunlit-e2e/bin/sunlit-earth'"),
             "{script}"
         );
         assert!(
-            script.contains("SUNLIT_EARTH_E2E_FIXTURES='sunlit-e2e/fixtures'"),
+            script.contains("SUNLIT_EARTH_E2E_FIXTURES='/var/lib/sunlit-e2e/fixtures'"),
             "{script}"
         );
         assert!(
-            script.contains("'sunlit-e2e/bin/e2e-1a2b' --ignored"),
+            script.contains("'/var/lib/sunlit-e2e/bin/e2e-1a2b' --ignored"),
             "{script}"
         );
         assert!(script.contains("--test-threads=1"), "{script}");
         assert!(script.starts_with("#!/usr/bin/env bash"), "{script}");
+    }
+
+    #[test]
+    fn no_job_script_depends_on_the_working_directory_it_is_run_from() {
+        for target in Target::ALL {
+            let script = job_script(target, &paths(target));
+            for line in script.lines() {
+                let Some(rest) = line
+                    .strip_prefix("set SUNLIT_EARTH_BIN=")
+                    .or_else(|| line.strip_prefix("export SUNLIT_EARTH_BIN="))
+                else {
+                    continue;
+                };
+                let value = rest.trim_matches('\'');
+                assert!(
+                    value.starts_with('/') || value.starts_with("C:"),
+                    "{target}: {value} is relative"
+                );
+            }
+        }
     }
 
     #[test]
@@ -254,8 +276,21 @@ mod tests {
             "{script}"
         );
         assert!(script.contains("exit /b %ERRORLEVEL%"), "{script}");
-        // cmd.exe needs its line endings, unlike everything else here.
+        // cmd.exe needs its line endings, unlike everything else here, and
+        // they reach the guest unchanged: `job::run` writes the script
+        // verbatim rather than normalizing it.
         assert!(script.contains("\r\n"), "{script}");
+    }
+
+    #[test]
+    fn each_job_script_carries_the_line_endings_its_shell_expects() {
+        let linux = job_script(Target::Linux, &paths(Target::Linux));
+        assert!(
+            !linux.contains('\r'),
+            "a shell script with CRLF fails to run"
+        );
+        let windows = job_script(Target::Windows, &paths(Target::Windows));
+        assert!(windows.contains("\r\n"), "{windows}");
     }
 
     #[test]

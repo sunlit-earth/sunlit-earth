@@ -228,25 +228,33 @@ mod tests {
 
     #[test]
     fn scp_spells_the_port_with_a_capital_p_in_both_directions() {
-        let to = scp_to_command(&target(), Path::new("/tmp/app"), "sunlit-e2e/bin/", false);
+        let to = scp_to_command(
+            &target(),
+            Path::new("/tmp/app"),
+            "/var/lib/sunlit-e2e/bin/",
+            false,
+        );
         assert_eq!(to.program, "scp");
         assert!(to.args.contains(&"-P".to_owned()), "{:?}", to.args);
         assert!(!to.args.contains(&"-p".to_owned()), "{:?}", to.args);
         assert_eq!(
             to.args.last().map(String::as_str),
-            Some("tester@127.0.0.1:sunlit-e2e/bin/")
+            Some("tester@127.0.0.1:/var/lib/sunlit-e2e/bin/")
         );
 
         let from = scp_from_command(
             &target(),
-            "sunlit-e2e/results",
+            "/var/lib/sunlit-e2e/results",
             Path::new("/tmp/out"),
             false,
         );
         assert!(from.args.contains(&"-P".to_owned()));
         assert_eq!(from.args.last().map(String::as_str), Some("/tmp/out"));
         let remote = from.args.len() - 2;
-        assert_eq!(from.args[remote], "tester@127.0.0.1:sunlit-e2e/results");
+        assert_eq!(
+            from.args[remote],
+            "tester@127.0.0.1:/var/lib/sunlit-e2e/results"
+        );
     }
 
     #[test]
@@ -254,7 +262,10 @@ mod tests {
         // The remote half of an scp argument goes through cmd.exe on a Windows
         // guest, which does not handle backslashes there reliably.
         assert_eq!(scp_remote_path(r"C:\sunlit-e2e\bin"), "C:/sunlit-e2e/bin");
-        assert_eq!(scp_remote_path("sunlit-e2e/results"), "sunlit-e2e/results");
+        assert_eq!(
+            scp_remote_path("/var/lib/sunlit-e2e/results"),
+            "/var/lib/sunlit-e2e/results"
+        );
 
         let cmd = scp_to_command(
             &target(),

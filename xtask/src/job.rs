@@ -144,10 +144,11 @@ pub fn run(
     std::fs::create_dir_all(local_scratch)
         .map_err(|e| format!("cannot create {}: {e}", local_scratch.display()))?;
     let local = local_scratch.join(job_file(target));
-    // LF endings even for the Windows job: cmd.exe copes, and writing bytes
-    // that depend on the host would make the guest's behavior depend on it too.
-    std::fs::write(&local, script.replace("\r\n", "\n"))
-        .map_err(|e| format!("cannot write the job script: {e}"))?;
+    // Written verbatim. The line endings belong to whoever built the script,
+    // because they are part of what the guest's shell will accept: `cmd.exe`
+    // wants CRLF and `sh` wants LF, and rewriting them here would silently
+    // undo a choice made where the difference is understood.
+    std::fs::write(&local, script).map_err(|e| format!("cannot write the job script: {e}"))?;
 
     provider.copy_in(state, &local, &job_destination(target))?;
 
@@ -224,7 +225,7 @@ mod tests {
         assert_eq!(job_file(Target::Windows), "job.cmd");
         assert_eq!(job_file(Target::Linux), "job.sh");
         assert_eq!(job_destination(Target::Windows), r"C:\sunlit-e2e\job.cmd");
-        assert_eq!(job_destination(Target::Linux), "sunlit-e2e/job.sh");
+        assert_eq!(job_destination(Target::Linux), "/var/lib/sunlit-e2e/job.sh");
     }
 
     #[test]

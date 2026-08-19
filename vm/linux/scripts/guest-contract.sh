@@ -5,12 +5,17 @@
 # The protocol is the same on both guests. The job writes `output.log` and
 # `artifacts/`, and `exit_code.txt` last, so the file appearing is what tells
 # the orchestrator the run is over.
+#
+# The root is an absolute path outside any home directory, and it has to match
+# `GUEST_ROOT_LINUX` in xtask/src/provider/mod.rs, which a unit test pins. Both
+# sides need the same answer because every path that crosses into the guest is
+# used twice, once as an scp destination and once inside this script, and those
+# two do not share a working directory.
 set -euxo pipefail
 
-home="$(getent passwd "${TEST_USER}" | cut -d: -f6)"
-root="${home}/sunlit-e2e"
+root=/var/lib/sunlit-e2e
 install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 \
-  "${root}" "${root}/bin" "${root}/results" "${root}/results/artifacts"
+  "${root}" "${root}/bin" "${root}/fixtures" "${root}/results" "${root}/results/artifacts"
 
 # Written by the desktop session at logon. Two jobs: it is the marker that says
 # a desktop now exists, and it carries the session's environment out to
@@ -18,7 +23,7 @@ install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 \
 cat > /usr/local/bin/sunlit-e2e-session-ready <<'EOF'
 #!/bin/sh
 set -e
-root="${HOME}/sunlit-e2e"
+root=/var/lib/sunlit-e2e
 mkdir -p "${root}/results/artifacts" "${root}/bin"
 # An SSH-launched process runs as the same user but with no X credentials of
 # its own; this is what lets it open a window on the running session.
@@ -47,10 +52,13 @@ EOF
 # The runner itself always exits 0: its exit code answers "did the job get
 # started", and the job's own answer is in exit_code.txt. Conflating the two
 # is how a failed launch gets reported as a failed test suite.
+#
+# The job runs with the root as its working directory, but nothing depends on
+# that: every path the orchestrator writes into job.sh is absolute.
 cat > /usr/local/bin/sunlit-e2e-run-job <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-root="${SUNLIT_E2E_ROOT:-${HOME}/sunlit-e2e}"
+root="${SUNLIT_E2E_ROOT:-/var/lib/sunlit-e2e}"
 results="${root}/results"
 
 rm -rf "${results}"
@@ -63,6 +71,7 @@ if [ -f "${root}/session.env" ]; then
   set +a
 fi
 export DISPLAY="${DISPLAY:-:0}"
+export SUNLIT_E2E_ROOT="${root}"
 export SUNLIT_E2E_RESULTS="${results}"
 export SUNLIT_E2E_ARTIFACTS="${results}/artifacts"
 
@@ -73,7 +82,7 @@ if [ ! -f "${root}/job.sh" ]; then
 fi
 
 chmod +x "${root}/job.sh" || true
-( cd "${root}" && ./job.sh ) > "${results}/output.log" 2>&1
+( cd "${root}" && "${root}/job.sh" ) > "${results}/output.log" 2>&1
 code=$?
 printf '%s\n' "${code}" > "${results}/exit_code.txt"
 exit 0

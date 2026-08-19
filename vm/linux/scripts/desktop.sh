@@ -13,7 +13,8 @@ systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || t
 apt-get update
 apt-get install -y --no-install-recommends \
   gdm3 gnome-session gnome-shell gnome-terminal gnome-settings-daemon \
-  xserver-xorg xserver-xorg-core xinit dbus-x11 x11-xserver-utils xauth \
+  xserver-xorg xserver-xorg-core xinit dbus-x11 xauth \
+  x11-xserver-utils x11-utils \
   mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools \
   libfontconfig1 libxkbcommon0 libxcb-shape0 libxcb-xfixes0 \
   fonts-dejavu-core openssh-server ca-certificates

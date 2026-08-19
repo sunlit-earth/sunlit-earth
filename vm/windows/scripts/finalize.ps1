@@ -46,32 +46,58 @@ Write-Output '== ensuring a boot path that survives the hypervisor change'
 # fallback loader behind, a copy of the boot manager under that name. Neither
 # step can be exercised without a real build; this is the standard mitigation
 # and it is recorded as unverified in the plan.
-$espMounted = $false
-try {
-    if (-not (Test-Path 'S:\')) {
-        mountvol S: /S
-        $espMounted = $true
+# A free letter, not a hardcoded S:. `Test-Path 'S:'` answers "something is
+# mounted at S:", which is not the same as "S: is the EFI system partition",
+# and on a machine where it is a data drive this would have run bcdboot
+# against it.
+$esp = $null
+foreach ($letter in @('S', 'T', 'U', 'V', 'W', 'X', 'Y')) {
+    if (-not (Test-Path "${letter}:\")) {
+        $esp = $letter
+        break
     }
-    bcdboot C:\Windows /s S: /f UEFI | Out-Null
-    $fallbackDir = 'S:\EFI\Boot'
-    $fallback = Join-Path $fallbackDir 'bootx64.efi'
-    $bootManager = 'S:\EFI\Microsoft\Boot\bootmgfw.efi'
-    if (-not (Test-Path $fallback)) {
-        if (Test-Path $bootManager) {
-            New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
-            Copy-Item $bootManager $fallback -Force
-            Write-Output "copied the boot manager to $fallback"
+}
+
+if (-not $esp) {
+    $problems += 'no free drive letter to mount the EFI system partition on'
+} else {
+    $espMounted = $false
+    try {
+        # mountvol and bcdboot are native executables: they do not throw, so
+        # $ErrorActionPreference does nothing for them and the exit code is the
+        # only thing that reports a failure.
+        mountvol "${esp}:" /S
+        if ($LASTEXITCODE -ne 0) {
+            $problems += "mountvol ${esp}: /S failed with exit code $LASTEXITCODE"
         } else {
-            $problems += 'no boot manager on the EFI system partition to fall back to'
+            $espMounted = $true
+            bcdboot C:\Windows /s "${esp}:" /f UEFI | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $problems += "bcdboot failed with exit code $LASTEXITCODE"
+            }
+
+            $fallbackDir = "${esp}:\EFI\Boot"
+            $fallback = Join-Path $fallbackDir 'bootx64.efi'
+            $bootManager = "${esp}:\EFI\Microsoft\Bootootmgfw.efi"
+            if (-not (Test-Path $fallback)) {
+                if (Test-Path $bootManager) {
+                    New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
+                    Copy-Item $bootManager $fallback -Force
+                    Write-Output "copied the boot manager to $fallback"
+                } else {
+                    $problems += 'no boot manager on the EFI system partition to fall back to'
+                }
+            }
+            if (-not (Test-Path $fallback)) {
+                $problems += 'no fallback loader at EFI\Boot\bootx64.efi, so this image would not boot'
+            }
         }
+    } catch {
+        $problems += "could not prepare the EFI system partition: $_"
+    } finally {
+        # Only if it was actually mounted here.
+        if ($espMounted) { mountvol "${esp}:" /D }
     }
-    if (-not (Test-Path $fallback)) {
-        $problems += 'no \EFI\Boot\bootx64.efi, so this image may not boot on Hyper-V'
-    }
-} catch {
-    $problems += "could not prepare the EFI system partition: $_"
-} finally {
-    if ($espMounted) { mountvol S: /D }
 }
 
 if ($problems.Count -gt 0) {

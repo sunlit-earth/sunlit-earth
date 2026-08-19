@@ -146,8 +146,20 @@ pub struct Launch {
     pub qmp_port: u16,
     pub vnc_display: u16,
     /// UEFI firmware, which the Windows guest requires and the Linux cloud
-    /// image does not need. The variables half must be a per-VM copy: the
-    /// firmware writes the boot entry Windows Setup created into it.
+    /// image does not need.
+    ///
+    /// The variables half is a per-VM copy of the host's pristine store, and
+    /// it is worth being clear that it does not carry Windows Setup's boot
+    /// entry: the store Setup wrote lives in Packer's output directory and is
+    /// deleted with it once the image has been moved out. So a guest starts
+    /// with blank NVRAM every time, and what makes it boot is the fallback
+    /// loader at `\EFI\Boot\bootx64.efi` that the image's finalize step puts
+    /// on the EFI system partition. That fallback is load-bearing here exactly
+    /// as it is on `Hyper-V`, which is convenient: one mechanism covers both
+    /// providers rather than each having its own.
+    ///
+    /// The copy is still per-VM, because the firmware writes to it during
+    /// boot and two VMs sharing one store is a corruption waiting to happen.
     pub firmware: Option<crate::firmware::Firmware>,
 }
 
@@ -770,7 +782,8 @@ mod tests {
             "{text}"
         );
         // The writable half is the per-VM copy, never the host's own: the
-        // firmware writes the boot entry Windows Setup created into it.
+        // firmware writes to it during boot, and two VMs sharing one store
+        // corrupt each other's.
         assert!(
             text.contains("if=pflash,format=raw,unit=1,file=/srv/vm/run/windows/efi-vars.fd"),
             "{text}"

@@ -230,22 +230,72 @@ mod tests {
     /// same directory. Nothing else connects them, so a rename on either side
     /// would otherwise be found by a guest that boots and then fails to run
     /// anything.
+    ///
+    /// Every spelling is pinned, not one per file: the Linux root appears in
+    /// the `install -d` that creates the scp destinations, in the session
+    /// marker that writes `session.env`, and in the job runner's default, and
+    /// a rename that missed any one of them would still break a run.
     #[test]
     fn the_guest_roots_match_the_shipped_runners() {
         let repo = crate::store::repo_root();
 
         let linux = std::fs::read_to_string(repo.join("vm/linux/scripts/guest-contract.sh"))
             .expect("the Linux guest contract script");
+        // The runner's default, the directory creation, and the session
+        // marker's own copy of the path.
+        for expected in [
+            format!("SUNLIT_E2E_ROOT:-{GUEST_ROOT_LINUX}"),
+            format!(
+                "root={GUEST_ROOT_LINUX}
+"
+            ),
+        ] {
+            assert!(
+                linux.contains(&expected),
+                "the Linux guest contract does not contain {expected:?}"
+            );
+        }
+        // Both scripts it writes set the root, and both must agree.
+        assert_eq!(
+            linux.matches(&format!("root={GUEST_ROOT_LINUX}")).count()
+                + linux
+                    .matches(&format!("SUNLIT_E2E_ROOT:-{GUEST_ROOT_LINUX}"))
+                    .count(),
+            3,
+            "the Linux root is spelled a different number of times than expected;              every spelling has to be {GUEST_ROOT_LINUX}"
+        );
+        // Nothing may still reach for a home-relative path.
         assert!(
-            linux.contains(&format!("SUNLIT_E2E_ROOT:-{GUEST_ROOT_LINUX}")),
-            "the Linux runner does not default to {GUEST_ROOT_LINUX}"
+            !linux.contains("$HOME/sunlit-e2e"),
+            "a home-relative path survives in the Linux guest contract"
         );
 
-        let windows = std::fs::read_to_string(repo.join("vm/windows/scripts/run-job.cmd"))
-            .expect("the Windows job runner");
+        let finalize = std::fs::read_to_string(repo.join("vm/linux/scripts/finalize.sh"))
+            .expect("the Linux finalize script");
         assert!(
-            windows.contains(&format!("set ROOT={GUEST_ROOT_WINDOWS}")),
-            "the Windows runner does not use {GUEST_ROOT_WINDOWS}"
+            finalize.contains(GUEST_ROOT_LINUX),
+            "finalize.sh clears a different directory than the contract creates"
+        );
+
+        for name in ["run-job.cmd", "session-ready.cmd"] {
+            let script = std::fs::read_to_string(repo.join("vm/windows/scripts").join(name))
+                .unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
+            assert!(
+                script.contains(&format!("set ROOT={GUEST_ROOT_WINDOWS}")),
+                "{name} does not use {GUEST_ROOT_WINDOWS}"
+            );
+        }
+
+        // The marker `job.rs` polls for is written by the session-ready
+        // script, so the two have to agree on its name as well as its
+        // directory.
+        let ready = std::fs::read_to_string(repo.join("vm/windows/scripts/session-ready.cmd"))
+            .expect("the Windows session marker");
+        assert!(ready.contains(r"%ROOT%\ready"), "{ready}");
+        assert!(
+            crate::job::session_ready_command(Target::Windows)
+                .contains(&format!(r"{GUEST_ROOT_WINDOWS}\ready")),
+            "the orchestrator polls a different marker path than the guest writes"
         );
     }
 }

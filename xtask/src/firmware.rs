@@ -11,10 +11,16 @@ use crate::target::HostOs;
 
 /// The two halves of an OVMF installation.
 ///
-/// The code half is read-only and shared. The variables half is per-VM: it is
-/// where the firmware stores its boot entries, and Windows Setup writes one.
-/// Booting with a shared or absent variables store is how an installed Windows
-/// ends up with no boot entry to find.
+/// The code half is read-only and shared. The variables half is per-VM,
+/// because the firmware writes to it while booting and two VMs sharing one
+/// store corrupt each other's.
+///
+/// What it does not carry is Windows Setup's boot entry: the store Setup wrote
+/// belongs to Packer's output directory and goes when that is cleaned up, so
+/// every guest starts with blank NVRAM. Booting works anyway because the
+/// image's finalize step puts a fallback loader at `\EFI\Boot\bootx64.efi`,
+/// which is the path UEFI tries when no variable names one. `Hyper-V` depends
+/// on the same fallback for the same reason, so one mechanism covers both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Firmware {
     pub code: PathBuf,

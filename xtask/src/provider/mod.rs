@@ -22,9 +22,6 @@ use crate::util;
 pub const GUEST_ROOT_LINUX: &str = "sunlit-e2e";
 pub const GUEST_ROOT_WINDOWS: &str = r"C:\sunlit-e2e";
 
-/// How long to wait for the desktop session after SSH answers.
-pub const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
-
 /// One hypervisor, driven.
 pub trait Provider {
     fn kind(&self) -> ProviderKind;
@@ -133,11 +130,6 @@ pub fn for_target<'a>(
 /// Override for the provider matrix, mostly so a Windows host can be pushed
 /// onto QEMU for the Windows guest.
 pub const PROVIDER_ENV: &str = "SUNLIT_EARTH_VM_PROVIDER";
-
-/// Until the `Hyper-V` provider lands, a Windows host can still drive the
-/// Windows guest by taking the Linux host's route through QEMU.
-const HYPERV_PENDING: &str = "the Hyper-V provider is not implemented yet; set \
-     SUNLIT_EARTH_VM_PROVIDER=qemu to drive the Windows guest through QEMU instead";
 
 /// The provider that matches an existing state file, so `vm destroy` tears down
 /// what actually exists rather than what the matrix would create today.

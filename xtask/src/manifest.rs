@@ -87,13 +87,14 @@ impl Manifest {
         serde_json::from_str(text).map_err(|e| format!("malformed manifest: {e}"))
     }
 
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
-    }
-
     /// The record for one file, by name.
+    #[cfg(test)]
     pub fn record(&self, file: &str) -> Option<&ImageRecord> {
         self.images.iter().find(|r| r.file == file)
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
     }
 
     /// Whether the image was built from the template tree currently in the

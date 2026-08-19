@@ -10,10 +10,6 @@ use std::time::{Duration, Instant};
 use crate::runner::{Cmd, CommandOutput, Runner};
 use crate::state::RunState;
 
-/// How long to wait for a guest's SSH server after the VM starts. A Windows
-/// guest under WHPX takes minutes on a cold boot.
-pub const READY_TIMEOUT: Duration = Duration::from_secs(600);
-
 /// How often to retry while waiting.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 

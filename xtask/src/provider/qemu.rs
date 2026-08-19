@@ -342,6 +342,8 @@ impl crate::provider::Provider for QemuProvider<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::Provider as _;
+    use crate::runner::fake::FakeRunner;
 
     fn launch(target: Target) -> Launch {
         let (memory_mb, cpus) = resources_for(target);
@@ -361,6 +363,27 @@ mod tests {
 
     fn joined(target: Target) -> String {
         launch(target).args().join(" ")
+    }
+
+    #[test]
+    fn a_qemu_guest_is_running_only_while_its_own_process_is() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new().with_live_process(4242);
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = RunState::new(
+            Target::Linux,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        );
+        // No pid recorded: a state file written before the process started.
+        assert!(!provider.is_running(&state));
+        // A pid that is not ours any more.
+        state.pid = Some(1);
+        assert!(!provider.is_running(&state));
+        state.pid = Some(4242);
+        assert!(provider.is_running(&state));
     }
 
     #[test]

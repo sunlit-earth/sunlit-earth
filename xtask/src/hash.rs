@@ -18,26 +18,26 @@ use std::path::{Path, PathBuf};
 /// Read buffer for streaming a multi-gigabyte image through the hasher.
 const CHUNK: usize = 1 << 20;
 
-/// Hash a byte slice into the `crc32:` form the manifest stores.
-pub fn checksum_bytes(data: &[u8]) -> String {
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(data);
-    format!("crc32:{:08x}", hasher.finalize())
-}
-
-/// Stream a file through the hasher without holding it in memory.
-pub fn checksum_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
+/// Hash a stream into the `crc32:` form the manifest stores.
+///
+/// Takes a reader rather than a path so the format can be checked against a
+/// known value without a file on disk.
+pub fn checksum_reader(mut reader: impl Read) -> io::Result<String> {
     let mut hasher = crc32fast::Hasher::new();
     let mut buf = vec![0_u8; CHUNK];
     loop {
-        let read = file.read(&mut buf)?;
+        let read = reader.read(&mut buf)?;
         if read == 0 {
             break;
         }
         hasher.update(&buf[..read]);
     }
     Ok(format!("crc32:{:08x}", hasher.finalize()))
+}
+
+/// Stream a file through the hasher without holding it in memory.
+pub fn checksum_file(path: &Path) -> io::Result<String> {
+    checksum_reader(File::open(path)?)
 }
 
 /// Content hash of a template tree, as `(relative path, contents)` pairs.
@@ -122,8 +122,12 @@ mod tests {
 
     #[test]
     fn checksums_are_stable_and_tagged() {
-        assert_eq!(checksum_bytes(b""), "crc32:00000000");
-        assert_eq!(checksum_bytes(b"123456789"), "crc32:cbf43926");
+        // The check value every CRC-32 implementation agrees on.
+        assert_eq!(checksum_reader(&b""[..]).unwrap(), "crc32:00000000");
+        assert_eq!(
+            checksum_reader(&b"123456789"[..]).unwrap(),
+            "crc32:cbf43926"
+        );
     }
 
     #[test]

@@ -10,11 +10,6 @@
 //! `runner::Runner`, and everything that decides something is a pure function
 //! over data, so the decisions are unit-tested without a hypervisor.
 
-// Temporary while the phase lands step by step: the store paths, the provider
-// matrix, and the state fields are written in step 1 and first used by the
-// providers in steps 3 and 7. Removed once every step is in.
-#![allow(dead_code)]
-
 mod artifacts;
 mod build_image;
 mod cargo_json;

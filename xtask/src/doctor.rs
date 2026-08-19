@@ -92,6 +92,7 @@ impl Report {
 
     /// Find a check by name, which is how the tests assert on one line without
     /// depending on the order of the rest.
+    #[cfg(test)]
     pub fn get(&self, name: &str) -> Option<&Check> {
         self.checks.iter().find(|c| c.name == name)
     }

@@ -22,6 +22,9 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
+    /// Test constructors: production code only ever receives these from a
+    /// process.
+    #[cfg(test)]
     pub fn ok(stdout: impl Into<String>) -> Self {
         Self {
             code: Some(0),
@@ -30,6 +33,7 @@ impl CommandOutput {
         }
     }
 
+    #[cfg(test)]
     pub fn failed(code: i32, stderr: impl Into<String>) -> Self {
         Self {
             code: Some(code),
@@ -97,6 +101,11 @@ impl Cmd {
         self
     }
 
+    /// Data for the child's stdin, which the real runner pipes in.
+    ///
+    /// Only tests build one today. The field itself is production code: it is
+    /// what carries a payload too large for a command line.
+    #[cfg(test)]
     #[must_use]
     pub fn stdin(mut self, text: impl Into<String>) -> Self {
         self.stdin = Some(text.into());
@@ -208,7 +217,16 @@ impl Runner for RealRunner {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                let out = std::fs::File::create(path)?;
+                let mut out = std::fs::File::create(path)?;
+                // The first line of a VM log is the exact invocation that
+                // produced it, which is the thing anyone debugging a guest that
+                // will not boot asks for first.
+                writeln!(
+                    out,
+                    "{}
+",
+                    cmd.display()
+                )?;
                 let err = out.try_clone()?;
                 command.stdout(Stdio::from(out)).stderr(Stdio::from(err));
             }
@@ -501,6 +519,17 @@ mod tests {
     }
 
     #[test]
+    fn stdin_is_data_rather_than_part_of_the_command() {
+        // The distinction matters: a payload too large for a command line goes
+        // here instead, and nothing about it is parsed as code.
+        let cmd = Cmd::new("powershell.exe")
+            .arg("-Command")
+            .stdin("a payload");
+        assert_eq!(cmd.stdin.as_deref(), Some("a payload"));
+        assert!(!cmd.display().contains("a payload"), "{}", cmd.display());
+    }
+
+    #[test]
     fn tasklist_output_is_read_by_pid_not_by_exit_code() {
         let miss = "INFO: No tasks are running which match the specified criteria.";
         assert!(!tasklist_reports_alive(miss, 4242));
@@ -516,6 +545,10 @@ mod tests {
         assert!(!tasklist_reports_alive(other, 4242));
     }
 
+    // Windows path semantics: off Windows, `Path` treats a drive-qualified
+    // path as a single component, and this code only ever runs on a
+    // Windows host anyway.
+    #[cfg(windows)]
     #[test]
     fn path_lookup_applies_pathext_on_windows() {
         let exists = |p: &Path| {
@@ -570,6 +603,10 @@ mod tests {
         );
     }
 
+    // Windows path semantics: off Windows, `Path` treats a drive-qualified
+    // path as a single component, and this code only ever runs on a
+    // Windows host anyway.
+    #[cfg(windows)]
     #[test]
     fn path_lookup_survives_empty_and_quoted_entries() {
         let exists = |p: &Path| p == Path::new(r"C:\Program Files\qemu\qemu-img.exe");

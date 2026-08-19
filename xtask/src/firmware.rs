@@ -88,6 +88,10 @@ pub fn missing_message(host: HostOs) -> String {
 mod tests {
     use super::*;
 
+    // Windows path semantics: off Windows, `Path` treats a drive-qualified
+    // path as a single component, and this code only ever runs on a
+    // Windows host anyway.
+    #[cfg(windows)]
     #[test]
     fn the_search_starts_beside_the_qemu_binary() {
         let candidates = candidates(

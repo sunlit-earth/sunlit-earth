@@ -97,6 +97,14 @@ impl DestroyPlan {
                 format_bytes(file.bytes)
             );
         }
+        if !self.files.is_empty() {
+            let _ = writeln!(
+                out,
+                "that frees {} across {}",
+                format_bytes(self.bytes()),
+                crate::util::count(self.files.len(), "file")
+            );
+        }
         for refusal in &self.refused {
             let _ = writeln!(out, "skipped: {refusal}");
         }

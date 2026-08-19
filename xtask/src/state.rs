@@ -112,11 +112,6 @@ impl RunState {
         self.vm_name.starts_with(VM_NAME_PREFIX)
             && Target::ALL.iter().any(|t| t.slug() == self.target)
     }
-
-    /// `user@host` for the `ssh` command line.
-    pub fn ssh_destination(&self) -> String {
-        format!("{}@{}", self.ssh_user, self.ssh_host)
-    }
 }
 
 #[cfg(test)]
@@ -146,7 +141,6 @@ mod tests {
         let parsed = RunState::from_json(&state.to_json()).expect("round trip");
         assert_eq!(parsed, state);
         assert_eq!(parsed.provider_kind(), Some(ProviderKind::Qemu));
-        assert_eq!(parsed.ssh_destination(), "tester@127.0.0.1");
     }
 
     #[test]

@@ -55,7 +55,18 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
     let Some(entry) = inventory.for_target(target) else {
         return Err(format!("nothing is known about the {target} image"));
     };
-    match entry.condition(util::now_unix()) {
+    let condition = entry.condition(util::now_unix());
+    if !condition.blocks_boot() {
+        if let ImageCondition::Stale { .. } = condition {
+            println!(
+                "warning: the {target} image is stale: {}",
+                condition.detail()
+            );
+            println!("it still runs; `cargo xtask vm build-image {target}` brings it up to date");
+        }
+        return Ok(());
+    }
+    match condition {
         ImageCondition::Expired { state } if allow_expired => {
             println!("warning: {}", state.summary());
             println!("proceeding because --allow-expired-image was given");
@@ -66,18 +77,14 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
             "no {target} golden image yet. `cargo xtask vm build-image {target}` builds one."
         )),
         ImageCondition::Corrupt { detail } => Err(format!(
-            "the {target} golden image does not match its manifest: {detail}\n\
+            "the {target} golden image does not match its manifest: {detail}
              `cargo xtask vm build-image {target}` rebuilds it."
         )),
-        other => {
-            if let ImageCondition::Stale { .. } = other {
-                println!("warning: the {target} image is stale: {}", other.detail());
-                println!(
-                    "it still runs; `cargo xtask vm build-image {target}` brings it up to date"
-                );
-            }
-            Ok(())
-        }
+        // Everything else returned above, where `blocks_boot` said so.
+        other => Err(format!(
+            "the {target} image is not usable: {}",
+            other.detail()
+        )),
     }
 }
 

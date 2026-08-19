@@ -141,4 +141,66 @@ Everything is additive: the `xtask/` crate, the `vm/` directory, and the docs ca
 
 ## Status
 
-Planned 2026-08-19. Not started. Results (image build times, VM run times, per-guest pass counts) to be recorded here during implementation.
+Implemented on `feat/phase3-vm-orchestration` (PR #25). All eight steps are written, and everything that can be verified without booting a VM is verified.
+
+- Step 1, xtask scaffold, doctor, setup: done. `vm doctor`, `vm setup`, `vm status`, and `vm destroy` including its file-backed half.
+- Step 2, Linux golden image: done. Template, cloud-init seed, three provisioner scripts, and `vm build-image`.
+- Step 3, QEMU provider and the guest-contract smoke: done, including `vm ssh`, `vm up`, `vm view`, and `vm smoke`.
+- Step 4, harness portability: done and verified. `cargo e2e` on the development desktop: 8 passed, unchanged.
+- Step 5, `e2e --target linux`: done. The WSL build half is verified against the real distribution; the guest half awaits an image.
+- Step 6, Windows golden image: done. Template, autounattend, bootstrap, job runner, session marker, and the VHDX conversion.
+- Step 7, Hyper-V provider: done, plus the expiry gate and `--allow-expired-image`.
+- Step 8, docs: done. `docs/vm-setup.md`, CLAUDE.md, the roadmap, and this document.
+
+**What is not verified.** No VM has been booted and no image has been built. This session was not permitted to change the machine, install anything, or start a hypervisor, so every command that does one of those (`vm setup`, `vm build-image`, `vm up`, `vm smoke`, `e2e --target windows|linux`) is written and unit-tested but never executed. Criteria 2 to 6 and 9 to 10 are therefore pending a live run; criteria 1, 7, and 8 are met.
+
+The substitute is a test suite that exercises the decisions rather than the plumbing: 225 unit tests on Windows and 217 on Linux, covering the doctor evaluation against fabricated hosts, the expiry and currency math, the inventory and destroy selection, every command line the providers build, the cargo-message parsing, the state-file handling, and the job protocol. Two of them are worth naming because they substitute for execution rather than for a fixture: every generated PowerShell script is parsed by PowerShell's own parser, and every Linux guest script by `bash -n`. Both run in the normal `cargo test`.
+
+Against the success criteria:
+
+1. `cargo xtask vm doctor` runs unelevated and changes nothing: yes, verified on the development desktop. It correctly reported Hyper-V and the Windows Hypervisor Platform enabled, a running hypervisor, the WSL distribution present, QEMU and Packer absent, this session not in the Hyper-V Administrators group, and both images missing. The fabricated-host cases (missing feature, everything present, missing image, stale image, corrupt image, expired image, Home edition, pending restart) are unit tests.
+2. `vm setup` to doctor-green: not run, and not runnable here. The plan is a pure function of the host facts, so "running it twice is a no-op the second time" is a unit test rather than a claim, and "no step reboots or logs anyone out" is another.
+3. `vm build-image`: not run.
+4. `e2e --target windows`: not run. See Deviations 2 for what criterion 4's "including the wallpaper set" turns out to mean.
+5. `e2e --target linux`: not run. The host half of it is: the WSL build produces exactly the two artifacts the selection logic looks for, with the JSON shape the parser expects.
+6. Expiry: the math, the bands, and the help text are unit-tested at the day boundaries; the boot gate is wired to them. Not exercised against a real expired image.
+7. `cargo e2e` unchanged on the development desktop: yes, 8 passed. `cargo xtask e2e --target host` is the same suite through the xtask and was run once at the end of the phase.
+8. `docs/vm-setup.md`: yes.
+9. `vm view` on both providers: not run. `vm view` with nothing running reports that and points at `vm up`, which was verified.
+10. `vm status` and `vm destroy`: verified in the nothing-built state, where status reports an empty store and destroy reports nothing to do. The built and running states are unit-tested against fabricated inventories.
+
+## Deviations
+
+1. **The `Hyper-V` provider does not use `Get-VMNetworkAdapter` alone; it filters what that returns.** The plan names the cmdlet, which is what supplies the address. What it does not say is that a booting guest reports link-local IPv6 addresses and a 169.254 address for a while before it has a usable one, so taking the first address it offers connects to nothing. The provider waits for a real IPv4 address instead, which is a unit-tested function over a fabricated address list.
+
+2. **There is no wallpaper-setting case in the e2e suite, so criterion 4's "including the wallpaper set" cannot be met by running it.** The suite's eight cases cover launch, render, tray lifecycle, single instance, hide and show, GPU persistence after hide, and the hidden-window memory regression. None of them calls `SystemParametersInfoW`; `test_gpu_persistence_after_hide` is a gate test for the wallpaper scheduler, which is presumably what the criterion was reaching for. Adding such a case was out of scope for this phase, which is allowed to change the harness in two named ways and nothing else, and a case that replaces the developer's desktop wallpaper when run with `cargo e2e` would need an opt-in of its own. The VM is exactly the right place for it: recorded here as the next thing to add, gated on an environment variable the VM job sets.
+
+3. **Decision 11's Linux subset includes single-instance enforcement, and it skips instead.** The app takes the single-instance mutex in tray mode only (`main.rs`, `matches!(cli.mode, Mode::Tray)`), so on a platform without a tray there is nothing for the case to enforce and running it windowed would assert nothing. Making it run would mean changing what the product does, which this phase does not do. The Linux guest therefore runs six of the eight cases rather than seven.
+
+4. **The Windows guest is installed with an IDE disk and an e1000 NIC, not virtio.** Decision 10 and retrospective 8.3 both call for virtio drivers pre-installed. Virtio means shipping the virtio-win ISO and injecting storage drivers during setup, and an injection that silently does not take leaves the installer sitting at "no drives were found" with nothing to ask. Windows has in-box drivers for both devices chosen, so the install cannot fail that way. The cost is throughput in the one cell of the provider matrix this does not otherwise exercise, the Windows guest on a Linux host; on a Windows host the guest runs on `Hyper-V`, whose synthetic devices are in-box too. Adding virtio later is a template change, which the currency model then reports as a stale image.
+
+5. **`PowerShell` scripts travel base64-encoded rather than on stdin.** Not a plan decision, but worth recording because it was discovered the expensive way. `powershell -Command -` reads stdin the way a console reads typing: a multi-line script came back with no output, no error, and exit code 0, because a script read that way does not set an exit code when it dies. `-EncodedCommand` parses the script as a script and reports a real exit code. The related trap is the console encoding line, which throws when the process has no console attached, which is exactly the case when the xtask is started by a tool rather than from a terminal.
+
+6. **Paths passed into WSL are converted to forward slashes.** `wsl.exe` marshals the Windows command line into a Linux argv and treats a backslash as an escape while doing it, so `C:\Workspace` arrives as `C:Workspace` and `wslpath` fails on a path that looked correct going in. Measured on this machine with WSL 2.7.11: forward slashes and doubled backslashes both work, single backslashes do not.
+
+7. **The doctor verifies image sizes rather than checksums on every run.** Decision 4 asks it to distinguish corrupt images. Re-reading tens of gigabytes to answer a question that a size comparison already answers would make the doctor a minute-long command, and truncation, the failure that actually happens when a build or a copy is interrupted, changes the size. The manifest still records a checksum for a deliberate verification.
+
+8. **The checksum is CRC-32, not a cryptographic digest.** The plan says "a hashing crate for checksums" without naming one. The question being answered is "did this file get truncated or clobbered", not "did someone substitute it", and the answer has to be computable over tens of gigabytes. `crc32fast` was already in the dependency tree.
+
+9. **The Linux image installs its desktop from provisioner scripts, not from cloud-init.** Step 2 says "cloud-init installs the desktop". cloud-init runs before Packer connects, so a failure in it surfaces as an SSH timeout with the reason buried in a guest log. The seed is kept to creating the test user with the SSH key, and everything after that runs as a Packer provisioner where a failure names itself in the build output.
+
+10. **`vm smoke` is a command the plan does not list.** Step 3 asks for the guest-contract smoke as code, and decision 1 fixes the command surface. Rather than bury it, it is `cargo xtask vm smoke <target>`: boot, run a trivial job through the contract, collect the results, destroy. Keeping it addressable is what makes it usable for the calibration step 3 describes, and a failure there means the plumbing where a failure in `e2e` means the product.
+
+## Results
+
+To be recorded on the first live run: image build times, warm VM run times, and per-guest pass counts. Nothing in this section can be filled in from a session that was not permitted to boot a VM, and inventing plausible numbers would be worse than leaving it empty.
+
+### What building it without being able to run it found
+
+Three defects that a live run would have found slowly, found instead by testing the boundary rather than the behavior:
+
+- `powershell -Command -` silently produced nothing for a multi-line script, with exit code 0. Found by running the doctor on this machine and getting a report with every host fact at its default.
+- `Write-Output "STATE={0}" -f $vm.State` is not `PowerShell`: `-f` is a string operator, not a parameter of `Write-Output`. Found by the script parse check, which was written for exactly this class of mistake.
+- `wsl.exe` eats single backslashes in the arguments it marshals. Found by running the real WSL build flow rather than trusting the command it produced.
+
+The general lesson is the one the retrospective already draws in section 5: the parts that cannot be run are the parts that need a way to be checked, and the check has to be of the same kind as the failure. A unit test over fabricated PowerShell output would not have caught any of these three, because all three are about the boundary rather than about the logic on either side of it.

@@ -31,6 +31,25 @@ cargo llvm-cov --html              # HTML coverage report (target/llvm-cov/html/
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden  # Regenerate goldens for this machine's adapter
 ```
 
+### VM orchestration (`cargo xtask`)
+
+The desktop e2e suite runs in local VMs instead of taking over the developer's desktop. `docs/vm-setup.md` is the human guide; the design is in `docs/plans/2026-08-19-phase3-vm-orchestration-plan.md`.
+
+```bash
+cargo xtask vm doctor              # Unelevated, read-only: can this host run the VM suite?
+cargo xtask vm setup               # The one command that changes the host. Elevated on Windows.
+cargo xtask vm build-image <windows|linux>   # Packer, then a manifest. Tens of minutes.
+cargo xtask vm up <target>         # An interactive guest, with the current binaries in it
+cargo xtask vm ssh <target>        # A shell in the running guest
+cargo xtask vm view <target>       # Its desktop (vmconnect for Hyper-V, VNC for QEMU)
+cargo xtask vm smoke <target>      # Boot, run a trivial job through the guest contract, destroy
+cargo xtask vm status              # Images, media, overlays, running VMs, disk footprint
+cargo xtask vm destroy <windows|linux|all> [--purge]
+cargo xtask e2e --target <host|windows|linux> [--keep] [--allow-expired-image]
+```
+
+`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
+
 CI sets `RUSTFLAGS: "-D warnings"`, so a warning is a build failure there. `cargo clippy --all-targets` locally is what keeps that true; clippy is not run in CI because its artifacts do not share the test cache and would force a full recompile.
 
 ### Building on Linux from Windows
@@ -67,6 +86,10 @@ sunlit-earth/
       ui/main.slint  # MainWindow and TrayIcon
       tests/         # e2e (desktop-gated), slint_ui
   textures/          # local 8K JXL assets, not part of the build
+  vm/                # Packer templates and guest assets for the test VMs
+    linux/           # Ubuntu 22.04, GNOME on Xorg, cloud-init seed
+    windows/         # Windows 11 Enterprise eval, autounattend, bootstrap
+  xtask/             # developer tooling: VM orchestration for the desktop e2e suite
 ```
 
 The package inside `crates/sunlit-app` is still named `sunlit-earth`, so the binary, `CARGO_BIN_EXE_sunlit-earth`, and `target/release/sunlit-earth.exe` in the release workflow are unchanged by the directory name.
@@ -161,6 +184,15 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 | `SUNLIT_EARTH_UPDATE_GOLDEN` | Presence-only: regenerate golden references. |
 | `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
 
+The e2e harness and the xtask read four more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
+
+| Variable | Effect |
+|---|---|
+| `SUNLIT_EARTH_BIN` | The app binary the e2e suite spawns. Falls back to the compile-time `CARGO_BIN_EXE` path, which is wrong inside a guest. |
+| `SUNLIT_EARTH_E2E_FIXTURES` | The e2e fixtures directory, for the same reason. |
+| `SUNLIT_EARTH_VM_DIR` | The image store. Defaults to `%LOCALAPPDATA%\SunlitEarth\vm` or `~/.local/share/SunlitEarth/vm`. |
+| `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. |
+
 ### Notable dependencies
 
 - `astronomy-engine-bindings`: C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
@@ -183,7 +215,7 @@ Windows is the platform that ships. Linux and macOS build, test, and render head
 | `render` subcommand | yes | yes | yes |
 | Settings window | yes | untested | untested |
 | Set the desktop wallpaper | yes | no | no |
-| Desktop e2e (`tests/e2e.rs`) | yes, local only | compiles, unrun | compiles, unrun |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop or in a local VM | yes, in a local VM (6 of 8 cases) | compiles, unrun |
 
 Per-OS implementations live in three places, each behind a `cfg` and each documented where it sits:
 
@@ -191,7 +223,9 @@ Per-OS implementations live in three places, each behind a `cfg` and each docume
 - `engine::wallpaper_sink::SystemWallpaper`: off Windows, `check_supported` returns "not supported on this platform yet" before anything is rendered, `publish` returns the same string if it is reached anyway, and `target_size` returns a documented 2560x1440. Not a stub that pretends to succeed, and not a refusal that arrives after a full-resolution render and readback.
 - `config::is_position_on_screen`: Win32 monitor enumeration on Windows; elsewhere a coordinate-range sanity check against X11's INT16 window-position range, which is the coarse portable half of the same question.
 
-The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes (which is free coverage for the IPC and process plumbing) and is run by hand on Windows with `cargo e2e`. Hosted runners have no interactive desktop, and the VM story is Phase 3.
+The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes (which is free coverage for the IPC and process plumbing) and never runs in CI, because hosted runners have no interactive desktop. It runs on the developer's desktop with `cargo e2e`, and in a local VM with `cargo xtask e2e --target <windows|linux>`; see `docs/vm-setup.md`.
+
+Two cases inside it are gated at runtime rather than by `cfg`, following the same convention as `software_adapter_produces_correct_results`: the tray-start-hidden lifecycle and single-instance enforcement need a tray icon, which the app has on Windows only, and single-instance is additionally tray-mode-only in the product. Both print why they skipped. Two more cases pick their startup mode by the same capability, running windowed where there is no tray, which tests the same thing minus the icon. macOS has no VM story: it stays on hosted runners.
 
 ## Testing
 
@@ -205,7 +239,8 @@ The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three
 | Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance | all three, per-adapter references |
 | GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU | all three |
 | UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` | all three |
-| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | built everywhere, run on Windows by hand |
+| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux>` in a VM |
+| VM orchestration | `xtask/src/**` | pure decision logic against fabricated hosts, no VM | all three |
 
 ### Conventions
 

@@ -89,14 +89,6 @@ impl TargetInventory {
         self.image_bytes() + self.build_bytes() + self.run_bytes()
     }
 
-    /// Whether there is anything at all for this target.
-    pub fn is_empty(&self) -> bool {
-        self.images.is_empty()
-            && self.run_files.is_empty()
-            && self.build_files.is_empty()
-            && self.state.is_none()
-    }
-
     /// The single most important thing to say about this target's image.
     ///
     /// The order is deliberate: a missing image makes every other question
@@ -266,6 +258,7 @@ impl Inventory {
     }
 
     /// Every VM that has a state file, whether or not it is still alive.
+    #[cfg(test)]
     pub fn recorded_vms(&self) -> Vec<&RunState> {
         self.targets
             .iter()
@@ -601,7 +594,6 @@ mod tests {
         assert_eq!(entry.image_bytes(), 20 * 1024 * 1024 * 1024);
         assert_eq!(entry.run_bytes(), 3 * 1024 * 1024 + 512);
         assert_eq!(entry.total_bytes(), entry.image_bytes() + entry.run_bytes());
-        assert!(!entry.is_empty());
     }
 
     #[test]

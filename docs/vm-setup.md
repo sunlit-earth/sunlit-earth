@@ -14,7 +14,7 @@ cargo xtask vm build-image linux
 cargo xtask e2e --target linux
 ```
 
-`vm setup` is the only command that changes the machine. It enables Hyper-V and the Windows Hypervisor Platform, installs QEMU and Packer, adds you to the Hyper-V Administrators group, registers the WSL distribution the Linux guest's binaries are built in, and generates the SSH key pair both guests trust. It never reboots and never signs you out: it reports what needs one and stops. Running it twice is a no-op the second time.
+`vm setup` is the only command that changes the machine. It enables Hyper-V and the Windows Hypervisor Platform, installs QEMU, Packer, and an ISO builder, adds you to the Hyper-V Administrators group, registers the WSL distribution the Linux guest's binaries are built in, and generates the SSH key pair both guests trust. It never reboots and never signs you out: it reports what needs one and stops. Running it twice is a no-op the second time.
 
 `vm doctor` is the opposite: unelevated, read-only, and the single place that answers "can this host run the suite". It prints a line per check and exits nonzero if any of them failed. Warnings are things that block one target or one convenience; failures block everything.
 
@@ -85,6 +85,8 @@ The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Wi
 **The doctor says you are not in the Hyper-V Administrators group, but setup added you.** Group membership reaches your token at logon, not before. Sign out and back in.
 
 **QEMU is installed but the doctor cannot find it.** The winget package installs to `C:\Program Files\qemu` and does not touch `PATH`. The doctor looks there anyway, so this should not happen; if it does, add that directory to `PATH` yourself or re-run `vm setup`, which has a step for exactly this.
+
+**A build fails immediately with "could not find a supported CD ISO creation command".** Each template hands its guest a small CD, the Linux one carrying its cloud-init seed and the Windows one its unattend file, and Packer builds that CD by shelling out. It looks for xorriso, mkisofs, hdiutil, or oscdimg, in that order, and nothing else. `vm setup` installs one (the winget package `Microsoft.OSCDIMG` on Windows, `xorriso` on Linux) and `vm doctor` reports which one Packer will pick. Both `vm doctor` and `vm build-image` check for it before anything starts.
 
 **The ISO download fails.** Microsoft publishes the evaluation behind a registration form and documents no direct link, so this is expected to break from time to time. The command prints the Evaluation Center page and the exact path to save the file at; download it by hand and run `vm build-image windows` again.
 

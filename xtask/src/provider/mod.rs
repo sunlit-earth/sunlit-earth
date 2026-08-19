@@ -262,7 +262,8 @@ mod tests {
                     .matches(&format!("SUNLIT_E2E_ROOT:-{GUEST_ROOT_LINUX}"))
                     .count(),
             3,
-            "the Linux root is spelled a different number of times than expected;              every spelling has to be {GUEST_ROOT_LINUX}"
+            "the Linux root is spelled a different number of times than expected; \
+             every spelling has to be {GUEST_ROOT_LINUX}"
         );
         // Nothing may still reach for a home-relative path.
         assert!(

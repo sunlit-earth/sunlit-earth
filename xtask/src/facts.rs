@@ -25,6 +25,21 @@ pub const REQUIRED_TOOLS: [&str; 6] = [
     "ssh-keygen",
 ];
 
+/// The ISO-building tools Packer will look for, in the order it tries them.
+///
+/// `cd_files` and `cd_content` are not built in Go: Packer's `StepCreateCD`
+/// resolves one of these on `PATH` and shells out to it, and if none is there
+/// the build fails immediately with "could not find a supported CD ISO
+/// creation command". Both templates use `cd_content`, the Linux one for its
+/// cloud-init seed and the Windows one for the unattend file, so this is a
+/// hard requirement for building either image.
+///
+/// The list and its order are from `multistep/commonsteps/step_create_cdrom.go`
+/// in `packer-plugin-sdk`, read on 2026-08-20. `floppy_files` needs none of
+/// them, being pure Go, which is why this dependency arrived with the move to
+/// a CD that q35's missing floppy controller forced.
+pub const PACKER_ISO_TOOLS: [&str; 4] = ["xorriso", "mkisofs", "hdiutil", "oscdimg"];
+
 /// VNC clients tried in order for `vm view` of a QEMU guest. Absence is a
 /// warning, never a failure: the address is printed instead.
 pub const VNC_VIEWERS: [&str; 5] = [
@@ -55,6 +70,17 @@ pub const FEATURE_WHPX: &str = "HypervisorPlatform";
 /// The WSL distribution the Linux guest's binaries are built in. It matches the
 /// guest's base image so glibc agrees.
 pub const WSL_DISTRO: &str = "Ubuntu-22.04";
+
+/// Which of the ISO builders Packer would pick from those present.
+///
+/// Packer tries its own order rather than a host-preferred one, so the answer
+/// to "will the build work" is whether any is present, and the answer to
+/// "which one will run" is the first of Packer's list that is.
+pub fn packer_iso_tool<'a>(available: &[&'a str]) -> Option<&'a str> {
+    PACKER_ISO_TOOLS
+        .iter()
+        .find_map(|wanted| available.iter().find(|found| *found == wanted).copied())
+}
 
 /// `Win32_OptionalFeature.InstallState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +195,8 @@ pub struct HostFacts {
     /// Tool name to resolved path, `None` when it was not found.
     pub tools: BTreeMap<String, Option<PathBuf>>,
     pub vnc_viewer: Option<PathBuf>,
+    /// The ISO builders on `PATH`, of the ones Packer knows how to drive.
+    pub iso_tools: Vec<String>,
     /// Free space where the image store lives, or the nearest existing parent.
     pub free_bytes: Option<u64>,
     /// Why the host probe failed, when it did. Every other field is then at its
@@ -183,6 +211,18 @@ impl HostFacts {
 
     pub fn tool(&self, name: &str) -> Option<&Path> {
         self.tools.get(name).and_then(Option::as_deref)
+    }
+
+    /// The ISO builder Packer would use, if any is present.
+    pub fn iso_tool(&self) -> Option<&str> {
+        let available: Vec<&str> = self.iso_tools.iter().map(String::as_str).collect();
+        packer_iso_tool(&available).map(|found| {
+            PACKER_ISO_TOOLS
+                .iter()
+                .find(|known| **known == found)
+                .copied()
+                .unwrap_or(found)
+        })
     }
 }
 
@@ -265,6 +305,14 @@ pub fn collect(runner: &dyn Runner, host: HostOs, store_root: &Path) -> HostFact
     facts.vnc_viewer = VNC_VIEWERS
         .iter()
         .find_map(|viewer| resolve_tool(runner, viewer, host));
+
+    // Packer resolves these on PATH itself, so a fallback location would not
+    // help it: only a real PATH hit counts here.
+    facts.iso_tools = PACKER_ISO_TOOLS
+        .iter()
+        .filter(|tool| runner.which(tool).is_some())
+        .map(|tool| (*tool).to_owned())
+        .collect();
 
     match host {
         HostOs::Windows => {
@@ -713,6 +761,27 @@ mod tests {
     // path as a single component, and this code only ever runs on a
     // Windows host anyway.
     #[cfg(windows)]
+    #[test]
+    fn packer_picks_the_first_of_its_own_order_that_is_present() {
+        // Packer tries its list in its order, not the host's preference, so
+        // "which one will run" is not "which one was found first".
+        assert_eq!(packer_iso_tool(&["oscdimg", "xorriso"]), Some("xorriso"));
+        assert_eq!(packer_iso_tool(&["mkisofs", "oscdimg"]), Some("mkisofs"));
+        assert_eq!(packer_iso_tool(&["oscdimg"]), Some("oscdimg"));
+        assert_eq!(packer_iso_tool(&[]), None);
+        assert_eq!(packer_iso_tool(&["genisoimage"]), None);
+    }
+
+    #[test]
+    fn the_iso_tool_list_is_the_one_packer_looks_for() {
+        // From packer-plugin-sdk's step_create_cdrom.go. Order matters: it is
+        // what decides which tool runs on a host that has several.
+        assert_eq!(
+            PACKER_ISO_TOOLS,
+            ["xorriso", "mkisofs", "hdiutil", "oscdimg"]
+        );
+    }
+
     #[test]
     fn windows_tool_fallbacks_cover_the_winget_qemu_install_location() {
         let candidates = fallback_candidates("qemu-system-x86_64", HostOs::Windows);

@@ -45,7 +45,7 @@ Write-Output '== ensuring a boot path that survives the hypervisor change'
 # So the ESP gets an explicit bcdboot pass and, if Setup did not leave the
 # fallback loader behind, a copy of the boot manager under that name. Neither
 # step can be exercised without a real build; this is the standard mitigation
-# and it is recorded as unverified in the plan.
+# and Deviation 16 in the phase 3 plan records it and its unverified status.
 # A free letter, not a hardcoded S:. `Test-Path 'S:'` answers "something is
 # mounted at S:", which is not the same as "S: is the EFI system partition",
 # and on a machine where it is a data drive this would have run bcdboot

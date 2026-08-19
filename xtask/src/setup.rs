@@ -22,6 +22,24 @@ use crate::target::HostOs;
 pub const WINGET_QEMU: &str = "SoftwareFreedomConservancy.QEMU";
 pub const WINGET_PACKER: &str = "Hashicorp.Packer";
 
+/// The ISO builder, for Packer's `cd_content`.
+///
+/// Verified against the live winget source on 2026-08-20: a portable package,
+/// one 140 KB executable pulled hash-pinned from Microsoft's public symbol
+/// server, declaring `oscdimg` as its command so winget links it onto `PATH`.
+/// That is the tool Packer looks for last but the only one of its four with a
+/// one-command install on Windows: there is no winget package for xorriso or
+/// mkisofs, `hdiutil` is macOS only, and the other route to `oscdimg` is the
+/// Windows ADK, which is several gigabytes for the same binary and does not
+/// put it on `PATH` afterwards.
+///
+/// Two caveats worth knowing rather than discovering. The manifest is a
+/// community submission rather than a Microsoft-published package, and the
+/// binary is proprietary with no clear standalone redistribution grant, so it
+/// is reasonable for a developer to install and not something to vendor. On
+/// Linux the equivalent is xorriso, which every distribution packages.
+pub const WINGET_OSCDIMG: &str = "Microsoft.OSCDIMG";
+
 /// Build dependencies for the Linux guest's binaries, matching the list in
 /// CLAUDE.md. `mesa-vulkan-drivers` supplies lavapipe, which is the adapter the
 /// GPU tests use.
@@ -173,6 +191,23 @@ fn windows_tool_steps(inputs: &SetupInputs) -> Vec<Step> {
         .relogin(),
     );
 
+    // Packer shells out to build the small CD each template hands its guest,
+    // and fails at once if it cannot find a tool for it.
+    let iso_present = inputs.facts.iso_tool().is_some();
+    steps.push(Step::new(
+        "iso builder",
+        format!(
+            "winget install --id {WINGET_OSCDIMG} --exact --silent \
+             --accept-package-agreements --accept-source-agreements"
+        ),
+        !iso_present,
+        if iso_present {
+            "already installed".to_owned()
+        } else {
+            format!("winget package {WINGET_OSCDIMG}, a 140 KB portable oscdimg")
+        },
+    ));
+
     let packer_present = facts.tool("packer").is_some();
     steps.push(Step::new(
         "packer",
@@ -263,6 +298,19 @@ pub fn linux_plan(inputs: &SetupInputs, store: &Store) -> Vec<Step> {
 
     let qemu_present =
         facts.tool("qemu-system-x86_64").is_some() && facts.tool("qemu-img").is_some();
+    let iso_present = inputs.facts.iso_tool().is_some();
+    steps.push(Step::new(
+        "iso builder",
+        "sudo apt-get update && sudo apt-get install -y xorriso".to_owned(),
+        !iso_present,
+        if iso_present {
+            "already installed".to_owned()
+        } else {
+            "Packer shells out to xorriso to build the CD each template hands              its guest"
+                .to_owned()
+        },
+    ));
+
     steps.push(Step::new(
         "qemu",
         "sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils".to_owned(),
@@ -530,6 +578,7 @@ mod tests {
                 .tools
                 .insert(tool.to_owned(), Some(PathBuf::from("C:/bin")));
         }
+        inputs.facts.iso_tools = vec!["oscdimg".to_owned()];
         inputs.wsl_ready = true;
         inputs.ssh_key_present = true;
         inputs
@@ -547,6 +596,7 @@ mod tests {
                 "hypervisor platform",
                 "qemu",
                 "qemu on PATH",
+                "iso builder",
                 "packer",
                 "hyper-v administrators",
                 "wsl distro",
@@ -586,6 +636,7 @@ mod tests {
                 .tools
                 .insert(tool.to_owned(), Some(PathBuf::from("/usr/bin")));
         }
+        inputs.facts.iso_tools = vec!["xorriso".to_owned()];
         let steps = linux_plan(&inputs, &store());
         assert!(steps.iter().all(|s| !s.needed), "{steps:#?}");
     }

@@ -1,7 +1,8 @@
 # First-logon bootstrap for the Windows golden image.
 #
-# Run once, by FirstLogonCommands in the unattend file, from the floppy the
-# Packer build attaches. Everything it sets up has to survive into every
+# Run once, by FirstLogonCommands in the unattend file, from the CD the Packer
+# build attaches. Not a floppy: the q35 machine this is built on has no floppy
+# controller. Everything it sets up has to survive into every
 # throwaway overlay booted from the finished image.
 #
 # It is deliberately noisy: its transcript is the only record of what happened

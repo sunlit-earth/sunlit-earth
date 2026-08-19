@@ -6,7 +6,7 @@ Build the `cargo xtask` layer that runs the desktop e2e suite in local virtual m
 
 ## Stakes Classification
 
-Low for the product, medium for the schedule. Everything new is developer tooling: an xtask crate, Packer templates, and documentation. The only changes inside the existing crates are two test-harness adjustments (a binary-path override and per-capability gating of e2e cases), neither of which ships in the binary. The real risks are external dependencies (evaluation ISO availability, package manager contents) and time, not user-facing regressions.
+Low for the product, medium for the schedule. Almost everything new is developer tooling: an xtask crate, Packer templates, and documentation. Inside the existing crates there are three test-harness adjustments (a binary-path override, a fixtures-path override, and per-capability gating of e2e cases) and, added later for the wallpaper case, one `set-wallpaper` IPC command with a signal for its outcome. That last one does ship in the binary, alongside the `export-test` and `query-memory` commands that already existed for the same suite, and it is reachable only when `--ipc-socket` is passed. The real risks are external dependencies (evaluation ISO availability, package manager contents) and time, not user-facing regressions.
 
 ## Research
 
@@ -137,7 +137,7 @@ Write `docs/vm-setup.md` (the one-page guide), including the interactive-testing
 
 ## Rollback Strategy
 
-Everything is additive: the `xtask/` crate, the `vm/` directory, and the docs can be deleted without touching the product. The two harness changes (binary override, capability gating) are small standalone commits, revertible independently; neither alters what ships. No CI workflow, config format, or persisted data changes in this phase.
+Everything is additive: the `xtask/` crate, the `vm/` directory, and the docs can be deleted without touching the product. The harness changes (binary override, fixtures override, capability gating) are small standalone commits, revertible independently, and none of them alters what ships. The one change that does ship is the `set-wallpaper` IPC command and its signal, which is a separate commit and is inert unless `--ipc-socket` is passed; reverting it costs the wallpaper e2e case and nothing else. No CI workflow, config format, or persisted data changes in this phase.
 
 ## Status
 
@@ -200,6 +200,16 @@ Against the success criteria:
 14. **An image with no usable manifest does not boot, for the Windows target.** Decision 5 covers an expired evaluation. It does not cover the case where the evaluation age cannot be read at all, which is what a missing or unparseable manifest means, and which was reachable through a partially failed purge. Not booting is the consistent answer: the whole point of the expiry gate is that an unknown-age Windows guest produces flaky runs rather than clean failures, and "unknown" is exactly what this state is. The Linux image has no evaluation clock, so the same state is only a warning there. The purge that could produce it now deletes the manifest after everything it describes and stops at the first failure.
 
 15. **A Linux host cannot run the Windows guest, though the provider matrix has a hypervisor for it.** Retrospective 8.3's matrix answers which hypervisor would drive each guest, and QEMU can certainly run the Windows image on Linux. What a Linux host cannot do is produce the binaries to put in it: that would need mingw-w64 or a Windows SDK, a second target triple, and a second set of link-time problems, for the one cell a Windows host already covers natively. The cell is refused before anything is created rather than left to fail after a boot, and the guide says which host each guest needs.
+
+16. **The Windows image is made bootable through the removable-media fallback path, and this is unverified.** Nothing in the plan says how an image installed under OVMF comes to boot on `Hyper-V` generation 2, and the answer is not automatic: the boot entry Windows Setup writes lives in the firmware's variable store, OVMF's copy of that belongs to Packer's output directory and is deleted with it, and `Hyper-V` never sees it in any case. `Set-VMFirmware -FirstBootDevice` names a disk, not a loader. What both firmwares do agree on is `\EFI\Bootootx64.efi`, the path UEFI tries when no variable names one, so the image's finalize step mounts the EFI system partition, runs `bcdboot C:\Windows /s <esp> /f UEFI`, and copies the boot manager to that fallback path if Setup did not leave one there. It fails the build if the file is still absent afterwards.
+
+    The same fallback is what makes the image boot under QEMU, because each run gets a pristine copy of the host's variable store rather than anything Setup wrote, so its NVRAM is blank too. One mechanism covers both providers, which is a better position than the per-provider one the code's comments used to describe, but none of it has been executed: this is the standard mitigation, and its status is a parse check and a reading of the documentation. It is the single most likely remaining cause of a Windows guest that builds and then does not boot.
+
+17. **Building either image needs an ISO builder on `PATH`, which is a fifth external tool the plan does not mention.** Packer's `cd_files` and `cd_content` are not implemented in Go: `StepCreateCD` resolves one of xorriso, mkisofs, hdiutil, or oscdimg on `PATH`, in that order, and shells out to it. Both templates use `cd_content`, the Linux one for its cloud-init seed and the Windows one for its unattend file, so without one of those tools neither image can be built, and the failure arrives seconds into a command that otherwise takes an hour.
+
+    It is now in the doctor, in the build's preflight, and in `vm setup`. On Linux that is xorriso, which every distribution packages. On Windows the choice is `Microsoft.OSCDIMG`, a winget package that is a single 140 KB portable executable pulled hash-pinned from Microsoft's public symbol server and linked onto `PATH` by winget: it is the tool Packer tries last, but the only one of the four with a one-command install there, since no winget package provides xorriso or mkisofs and the other route to oscdimg is the Windows ADK, several gigabytes for the same binary and no `PATH` entry afterwards. Two things about that package are worth knowing rather than discovering: its manifest is a community submission rather than a Microsoft-published one, and the binary is proprietary with no clear standalone redistribution grant, which makes it reasonable for a developer to install and not something to vendor.
+
+    This arrived with the move from a floppy to a CD, which q35's missing floppy controller forced (Deviation, MAJOR 6 of the first validation round). Packer's floppy support is pure Go and needs no external tool, so the original template had no such dependency.
 
 ## Results
 

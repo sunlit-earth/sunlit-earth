@@ -188,6 +188,23 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         }
     }
 
+    // Both templates hand their guest a small CD, and Packer builds it by
+    // shelling out to one of these. Without one it fails immediately, several
+    // seconds into a command that otherwise takes an hour, with an error about
+    // a tool nothing here has ever mentioned.
+    let iso_tools: Vec<&str> = crate::facts::PACKER_ISO_TOOLS
+        .into_iter()
+        .filter(|tool| runner.which(tool).is_some())
+        .collect();
+    let Some(iso_tool) = crate::facts::packer_iso_tool(&iso_tools) else {
+        return Err(format!(
+            "no ISO builder on PATH, and Packer needs one to make the CD this \
+             template hands the guest. It looks for {}. \
+             `cargo xtask vm setup` installs one.",
+            crate::facts::PACKER_ISO_TOOLS.join(", ")
+        ));
+    };
+
     let public_key = ensure_ssh_key(runner, &store)?;
     if target == Target::Windows {
         crate::windows_media::ensure_iso(runner, &store)?;
@@ -226,6 +243,7 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         );
 
     println!("building the {target} golden image with {version}");
+    println!("  cd images: {iso_tool}");
     println!("  templates: {}", plan.template_dir.display());
     println!("  output:    {}", plan.output_dir.display());
     println!("  this takes tens of minutes and downloads several gigabytes");

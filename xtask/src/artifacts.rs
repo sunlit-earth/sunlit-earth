@@ -112,7 +112,8 @@ pub fn check_can_build(host: HostOs, target: Target) -> Result<bool, String> {
         // guest runs.
         (HostOs::Windows, Target::Linux) => Ok(false),
         (HostOs::Linux, Target::Windows) => Err(
-            "the Windows guest's binaries cannot be built on a Linux host, so              `--target windows` needs a Windows host. The Linux guest works here."
+            "the Windows guest's binaries cannot be built on a Linux host, so \
+             `--target windows` needs a Windows host. The Linux guest works here."
                 .to_owned(),
         ),
         _ => Err(format!(

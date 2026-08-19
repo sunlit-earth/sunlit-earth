@@ -242,10 +242,12 @@ fn windows_hypervisor_checks(windows: &crate::facts::WindowsFacts, checks: &mut 
         Check::new(
             "hypervisor running",
             Status::Fail,
-            "no hypervisor is running, and the firmware reports hardware              virtualization disabled",
+            "no hypervisor is running, and the firmware reports hardware \
+             virtualization disabled",
         )
         .hint(
-            "enable VT-x (Intel) or SVM / AMD-V (AMD) in the firmware setup;              no amount of restarting will start a hypervisor without it",
+            "enable VT-x (Intel) or SVM / AMD-V (AMD) in the firmware setup; \
+             no amount of restarting will start a hypervisor without it",
         )
     } else if hyperv == FeatureState::Enabled {
         Check::new(
@@ -364,6 +366,26 @@ fn tool_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
         });
     }
 
+    // Packer shells out for this and fails at once without it, and it is
+    // needed for both images: each template hands its guest a small CD, the
+    // Linux one its cloud-init seed and the Windows one its unattend file.
+    checks.push(match facts.iso_tool() {
+        Some(tool) => Check::new(
+            "iso builder",
+            Status::Pass,
+            format!("{tool}, which is the one Packer will use"),
+        ),
+        None => Check::new(
+            "iso builder",
+            Status::Fail,
+            format!(
+                "none of {} is on PATH",
+                crate::facts::PACKER_ISO_TOOLS.join(", ")
+            ),
+        )
+        .hint(iso_builder_hint(facts.os())),
+    });
+
     checks.push(match &facts.vnc_viewer {
         Some(path) => Check::new("vnc viewer", Status::Pass, path.display().to_string()),
         None => Check::new("vnc viewer", Status::Warn, "none found").hint(
@@ -380,6 +402,17 @@ fn tool_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
                  management tools",
             ),
         });
+    }
+}
+
+/// Where an ISO builder comes from on this host.
+fn iso_builder_hint(host: HostOs) -> String {
+    match host {
+        HostOs::Windows => format!(
+            "`cargo xtask vm setup` installs it (winget package {})",
+            crate::setup::WINGET_OSCDIMG
+        ),
+        _ => "`cargo xtask vm setup` installs xorriso".to_owned(),
     }
 }
 
@@ -522,6 +555,7 @@ mod tests {
             }),
             tools,
             vnc_viewer: Some(PathBuf::from("C:/bin/vncviewer.exe")),
+            iso_tools: vec!["oscdimg".to_owned()],
             free_bytes: Some(500 * 1024 * 1024 * 1024),
             ..HostFacts::default()
         }
@@ -546,6 +580,7 @@ mod tests {
             }),
             tools,
             vnc_viewer: Some(PathBuf::from("/usr/bin/vncviewer")),
+            iso_tools: vec!["xorriso".to_owned()],
             free_bytes: Some(500 * 1024 * 1024 * 1024),
             ..HostFacts::default()
         }
@@ -725,6 +760,35 @@ mod tests {
         let check = report.get("qemu-img").expect("checked");
         assert_eq!(check.status, Status::Fail);
         assert!(check.hint.as_ref().unwrap().contains("PATH"));
+    }
+
+    #[test]
+    fn a_host_with_no_iso_builder_fails_because_no_image_can_be_built() {
+        // Packer shells out for the CD each template hands its guest and fails
+        // at once without a tool for it, so this stops both builds, not one.
+        let mut facts = good_windows();
+        facts.iso_tools.clear();
+        let report = evaluate(&facts, &built_images(), now());
+        let check = report.get("iso builder").expect("checked");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.detail.contains("xorriso"), "{check:?}");
+        assert!(
+            check.hint.as_ref().unwrap().contains("Microsoft.OSCDIMG"),
+            "{check:?}"
+        );
+        assert!(report.failed());
+    }
+
+    #[test]
+    fn the_iso_builder_check_names_the_one_packer_will_pick() {
+        // Packer tries its own order, not the host's, so a machine with two
+        // installed has to be told which one is going to run.
+        let mut facts = good_linux();
+        facts.iso_tools = vec!["mkisofs".to_owned(), "xorriso".to_owned()];
+        let report = evaluate(&facts, &built_images(), now());
+        let check = report.get("iso builder").expect("checked");
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.detail.starts_with("xorriso"), "{check:?}");
     }
 
     #[test]

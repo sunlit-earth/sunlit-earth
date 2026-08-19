@@ -1,5 +1,8 @@
 [alias]
-e2e = "test --test e2e -- --ignored"
+# The same arguments `cargo xtask e2e --target host` passes, so that the two
+# really are one command: the suite is #[serial] anyway, and --nocapture is
+# what makes the skip reasons and the memory figures visible.
+e2e = "test --test e2e -- --ignored --test-threads=1 --nocapture"
 # Unit tests only: skips the integration targets in tests/ (engine, soak,
 # golden, shading, render_pipeline, slint_ui) and doc tests. CI runs everything.
 unit = "test --workspace --lib --bins"

@@ -19,7 +19,7 @@ cargo test -p sunlit-core          # Core only
 cargo test -p sunlit-core --test engine   # Engine integration tests
 cargo test -p sunlit-core --test soak     # Mock-clock soak test (14 simulated days)
 cargo test -p sunlit-core --test golden   # Golden images + contact sheet
-cargo e2e                          # Desktop e2e suite, alias for `cargo test --test e2e -- --ignored` (needs a real desktop and GPU)
+cargo e2e                          # Desktop e2e suite, alias for `cargo test --test e2e -- --ignored --test-threads=1 --nocapture` (needs a real desktop and GPU)
 cargo fmt --check                  # Format gate (CI runs this)
 cargo clippy --all-targets         # Lint (pedantic enabled, see Cargo.toml for allows)
 cargo run                          # Run the app
@@ -184,12 +184,13 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 | `SUNLIT_EARTH_UPDATE_GOLDEN` | Presence-only: regenerate golden references. |
 | `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
 
-The e2e harness and the xtask read five more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
+The e2e harness and the xtask read six more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
 
 | Variable | Effect |
 |---|---|
 | `SUNLIT_EARTH_BIN` | The app binary the e2e suite spawns. Falls back to the compile-time `CARGO_BIN_EXE` path, which is wrong inside a guest. |
 | `SUNLIT_EARTH_E2E_FIXTURES` | The e2e fixtures directory, for the same reason. |
+| `SUNLIT_EARTH_E2E_WALLPAPER` | Presence-only: lets `test_set_wallpaper` run. Only the generated Windows guest job sets it, because the case replaces the desktop wallpaper of whatever machine runs it. |
 | `SUNLIT_EARTH_VM_DIR` | The image store. Defaults to `%LOCALAPPDATA%\SunlitEarth\vm` or `~/.local/share/SunlitEarth/vm`. |
 | `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. |
 | `SUNLIT_EARTH_REPO` | The repository root, for running the xtask binary from outside its checkout. Defaults to the compile-time location of the crate. |

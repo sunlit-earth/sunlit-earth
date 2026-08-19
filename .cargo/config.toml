@@ -3,3 +3,5 @@ e2e = "test --test e2e -- --ignored"
 # Unit tests only: skips the integration targets in tests/ (engine, soak,
 # golden, shading, render_pipeline, slint_ui) and doc tests. CI runs everything.
 unit = "test --workspace --lib --bins"
+# Developer tooling: VM orchestration for the desktop e2e suite.
+xtask = "run -p xtask --"

@@ -1,0 +1,21 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true, features = ["formatting"] }
+dirs = { workspace = true }
+# CRC-32 rather than a cryptographic digest: the question a checksum answers
+# here is "did this multi-gigabyte file get truncated or clobbered", not "did
+# someone substitute it", and the doctor has to be able to answer it without
+# reading tens of gigabytes at 500 MB/s. See `checksum` in `hash.rs`.
+crc32fast = { workspace = true }
+
+[lints]
+workspace = true

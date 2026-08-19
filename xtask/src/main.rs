@@ -15,6 +15,7 @@
 // providers in steps 3 and 7. Removed once every step is in.
 #![allow(dead_code)]
 
+mod build_image;
 mod destroy;
 mod doctor;
 mod facts;
@@ -28,6 +29,7 @@ mod status;
 mod store;
 mod target;
 mod util;
+mod windows_media;
 
 use std::process::ExitCode;
 
@@ -61,6 +63,11 @@ enum VmCommand {
     /// Check whether this host can run the VM suite. Unelevated, changes
     /// nothing.
     Doctor,
+    /// Build a golden image from the templates in `vm/<target>/`.
+    BuildImage {
+        /// Which guest to build.
+        target: Target,
+    },
     /// Prepare this host. Elevated on Windows; reports what needs a restart or
     /// a relogin but never performs one.
     Setup,
@@ -102,6 +109,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
+            VmCommand::BuildImage { target } => build_image::run(&runner, target),
             VmCommand::Setup => run_setup(&runner),
             VmCommand::Status => run_status(),
             VmCommand::Destroy { target, purge } => run_destroy(target.into(), purge),

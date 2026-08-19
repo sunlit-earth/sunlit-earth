@@ -1,0 +1,22 @@
+#cloud-config
+# The NoCloud seed for the Linux golden image. Its whole job is to create the
+# test user with our SSH key so Packer can connect; the desktop and the guest
+# contract are installed by the provisioner scripts, where failures are visible.
+hostname: sunlit-e2e-linux
+users:
+  - name: ${test_user}
+    shell: /bin/bash
+    groups: [sudo, video, render, audio]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: false
+    plain_text_passwd: ${test_password}
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# Key only. Nothing reaches this guest except from the host it runs on.
+ssh_pwauth: false
+
+# The provisioner scripts run their own apt update, and doing it twice doubles
+# the slowest part of the build.
+package_update: false
+package_upgrade: false

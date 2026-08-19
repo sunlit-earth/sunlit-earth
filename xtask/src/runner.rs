@@ -360,10 +360,7 @@ pub fn powershell(script: &str) -> Cmd {
 
 /// Encode a script the way `-EncodedCommand` expects: UTF-16LE, then base64.
 pub fn encode_command(script: &str) -> String {
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64(&utf16)
 }
 

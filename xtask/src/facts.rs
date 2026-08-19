@@ -316,7 +316,7 @@ pub fn collect(runner: &dyn Runner, host: HostOs, store_root: &Path) -> HostFact
 
 /// Find a tool, falling back to the places a package manager is known to put it
 /// without putting it on `PATH`.
-fn resolve_tool(runner: &dyn Runner, tool: &str, host: HostOs) -> Option<PathBuf> {
+pub fn resolve_tool(runner: &dyn Runner, tool: &str, host: HostOs) -> Option<PathBuf> {
     if let Some(path) = runner.which(tool) {
         return Some(path);
     }

@@ -306,7 +306,7 @@ pub fn linux_plan(inputs: &SetupInputs, store: &Store) -> Vec<Step> {
         if iso_present {
             "already installed".to_owned()
         } else {
-            "Packer shells out to xorriso to build the CD each template hands              its guest"
+            "Packer shells out to xorriso to build the CD each template hands its guest"
                 .to_owned()
         },
     ));

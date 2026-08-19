@@ -174,13 +174,16 @@ pub fn store() -> Result<Store, String> {
 }
 
 /// The repository root, from the compile-time location of this crate.
+///
+/// The crate lives at `crates/xtask`, so the root is two levels up.
 pub fn repo_root() -> PathBuf {
     if let Some(dir) = util::env_var(REPO_ENV) {
         return PathBuf::from(dir);
     }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest
-        .parent()
+        .ancestors()
+        .nth(2)
         .map_or_else(|| manifest.to_path_buf(), Path::to_path_buf)
 }
 

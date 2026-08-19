@@ -1,8 +1,6 @@
 [workspace]
 resolver = "3"
-# The glob covers the product crates; `xtask` is developer tooling at the repo
-# root and has to be listed explicitly.
-members = ["crates/*", "xtask"]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"

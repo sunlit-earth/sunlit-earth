@@ -7,7 +7,7 @@
 # the orchestrator the run is over.
 #
 # The root is an absolute path outside any home directory, and it has to match
-# `GUEST_ROOT_LINUX` in xtask/src/provider/mod.rs, which a unit test pins. Both
+# `GUEST_ROOT_LINUX` in crates/xtask/src/provider/mod.rs, which a unit test pins. Both
 # sides need the same answer because every path that crosses into the guest is
 # used twice, once as an scp destination and once inside this script, and those
 # two do not share a working directory.

@@ -85,11 +85,11 @@ sunlit-earth/
     sunlit-app/      # Slint shell: window, tray, IPC, config bridge
       ui/main.slint  # MainWindow and TrayIcon
       tests/         # e2e (desktop-gated), slint_ui
+    xtask/           # developer tooling: VM orchestration for the desktop e2e suite
   textures/          # local 8K JXL assets, not part of the build
   vm/                # Packer templates and guest assets for the test VMs
     linux/           # Ubuntu 22.04, GNOME on Xorg, cloud-init seed
     windows/         # Windows 11 Enterprise eval, autounattend, bootstrap
-  xtask/             # developer tooling: VM orchestration for the desktop e2e suite
 ```
 
 The package inside `crates/sunlit-app` is still named `sunlit-earth`, so the binary, `CARGO_BIN_EXE_sunlit-earth`, and `target/release/sunlit-earth.exe` in the release workflow are unchanged by the directory name.
@@ -242,7 +242,7 @@ Three cases inside it are gated at runtime rather than by `cfg`, following the s
 | GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU | all three |
 | UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` | all three |
 | Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux>` in a VM |
-| VM orchestration | `xtask/src/**` | pure decision logic against fabricated hosts, no VM | all three |
+| VM orchestration | `crates/xtask/src/**` | pure decision logic against fabricated hosts, no VM | all three |
 
 ### Conventions
 

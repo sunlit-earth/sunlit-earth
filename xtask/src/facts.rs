@@ -80,7 +80,7 @@ impl FeatureState {
             Self::Enabled => "enabled",
             Self::Disabled => "disabled",
             Self::Absent => "not available on this edition",
-            Self::Unknown => "unknown",
+            Self::Unknown => "could not be determined",
         }
     }
 }
@@ -204,7 +204,10 @@ $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 $pairs = @()
 foreach ($name in @('Microsoft-Hyper-V-All','HypervisorPlatform')) {
   $feature = Get-CimInstance -ClassName Win32_OptionalFeature -Filter "Name='$name'" -ErrorAction SilentlyContinue
-  $state = if ($feature) { [int]$feature.InstallState } else { 3 }
+  # 4 is Unknown. A query that returned nothing means the question could not
+  # be answered, which is a different thing from the feature not existing on
+  # this edition, and reporting it as absent sent people to buy Windows Pro.
+  $state = if ($feature) { [int]$feature.InstallState } else { 4 }
   $pairs += "$name=$state"
 }
 
@@ -591,6 +594,19 @@ mod tests {
         assert!(!facts.hypervisor_present);
         assert_eq!(free, None);
         assert!(facts.wsl_distros.is_empty());
+    }
+
+    #[test]
+    fn a_feature_query_that_failed_is_unknown_rather_than_absent() {
+        // "absent" reads as "this edition of Windows cannot do it", which
+        // sends someone to buy a different one. A query that did not answer
+        // says only that.
+        let (facts, _) =
+            parse_windows_facts(r#"{"features": "Microsoft-Hyper-V-All=4;HypervisorPlatform=1"}"#)
+                .expect("valid");
+        assert_eq!(facts.feature(FEATURE_HYPERV), FeatureState::Unknown);
+        assert_eq!(FeatureState::Unknown.label(), "could not be determined");
+        assert!(!FeatureState::Unknown.label().contains("edition"));
     }
 
     #[test]

@@ -15,6 +15,8 @@
 //! - `hide-window` — hides the main window
 //! - `export-test` — attempts a small GPU export, signals success/failure
 //! - `query-memory` — reports the current process memory counters
+//! - `set-wallpaper` — renders and publishes the wallpaper, signalling the
+//!   outcome once the engine reports it
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -124,6 +126,15 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
                 }
             }
         }
+        "set-wallpaper" => {
+            debug!("ipc: received set-wallpaper command");
+            // Fire and forget: the engine renders at the sink's native
+            // resolution and publishes, then reports on its own channel. The
+            // `wallpaper_set` or `wallpaper_failed` signal comes from the event
+            // forwarder when that reply arrives, so a test waits for the
+            // outcome rather than for this command to return.
+            engine.send(sunlit_core::engine::EngineCommand::RenderWallpaperNow);
+        }
         "query-memory" => {
             debug!("ipc: received query-memory command");
             // Answered on this thread: GetProcessMemoryInfo is process-wide,
@@ -143,7 +154,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
     }
 }
 
-fn signal(name: &str) {
+pub(crate) fn signal(name: &str) {
     let msg = format!("SIGNAL:{name}\n");
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();

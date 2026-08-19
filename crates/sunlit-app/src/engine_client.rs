@@ -160,8 +160,14 @@ pub fn event_forwarder(
             });
         }
         EngineEvent::TexturesReady => on_textures_ready(),
-        EngineEvent::WallpaperSet(Ok(())) => info!("wallpaper updated"),
-        EngineEvent::WallpaperSet(Err(e)) => tracing::error!("wallpaper update failed: {e}"),
+        EngineEvent::WallpaperSet(Ok(())) => {
+            info!("wallpaper updated");
+            crate::ipc::signal("wallpaper_set");
+        }
+        EngineEvent::WallpaperSet(Err(e)) => {
+            tracing::error!("wallpaper update failed: {e}");
+            crate::ipc::signal("wallpaper_failed");
+        }
     })
 }
 

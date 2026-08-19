@@ -184,7 +184,7 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 | `SUNLIT_EARTH_UPDATE_GOLDEN` | Presence-only: regenerate golden references. |
 | `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
 
-The e2e harness and the xtask read four more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
+The e2e harness and the xtask read five more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
 
 | Variable | Effect |
 |---|---|
@@ -192,6 +192,7 @@ The e2e harness and the xtask read four more. They do not go through `env_overri
 | `SUNLIT_EARTH_E2E_FIXTURES` | The e2e fixtures directory, for the same reason. |
 | `SUNLIT_EARTH_VM_DIR` | The image store. Defaults to `%LOCALAPPDATA%\SunlitEarth\vm` or `~/.local/share/SunlitEarth/vm`. |
 | `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. |
+| `SUNLIT_EARTH_REPO` | The repository root, for running the xtask binary from outside its checkout. Defaults to the compile-time location of the crate. |
 
 ### Notable dependencies
 

@@ -342,16 +342,25 @@ fn ssh_key_step(inputs: &SetupInputs, store: &Store, host: HostOs) -> Step {
 
 /// The script that provisions the WSL distribution, run as root inside it.
 pub fn wsl_provision_script() -> String {
+    // Runs as root, because apt needs it. The toolchain does not: the build
+    // runs as the distribution's default user, and a rustup installed under
+    // /root is unreadable to them, so it would be installed and then not
+    // found. The default user is the uid 1000 account WSL creates; asking for
+    // it by uid avoids depending on what it was named or on whether sudo
+    // prompts for a password.
     format!(
         "set -e\n\
          export DEBIAN_FRONTEND=noninteractive\n\
          apt-get update\n\
          apt-get install -y curl {LINUX_BUILD_DEPS}\n\
-         if ! command -v cargo >/dev/null 2>&1; then\n  \
-         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path\n  \
-         ln -sf \"$HOME/.cargo/bin/cargo\" /usr/local/bin/cargo\n  \
-         ln -sf \"$HOME/.cargo/bin/rustc\" /usr/local/bin/rustc\n\
-         fi\n"
+         build_user=\"$(getent passwd 1000 | cut -d: -f1)\"\n\
+         if [ -z \"$build_user\" ]; then\n  \
+         echo 'no uid 1000 account in this distribution' >&2\n  \
+         exit 1\n\
+         fi\n\
+         echo \"installing the toolchain for $build_user\"\n\
+         su - \"$build_user\" -c 'command -v cargo >/dev/null 2>&1 || curl \
+         --proto \"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'\n"
     )
 }
 
@@ -662,6 +671,24 @@ mod tests {
             "the guest binaries need a toolchain"
         );
         assert!(script.contains("DEBIAN_FRONTEND=noninteractive"));
+    }
+
+    #[test]
+    fn provisioning_installs_the_toolchain_for_the_account_that_builds() {
+        // Three places have to agree on which WSL account matters: this one
+        // installs the toolchain, `wsl_ready` probes for it, and
+        // `artifacts::wsl_build_command` uses it. Only apt needs root.
+        let script = wsl_provision_script();
+        assert!(script.contains("getent passwd 1000"), "{script}");
+        assert!(script.contains("su - \"$build_user\""), "{script}");
+        assert!(script.contains("rustup.rs"), "{script}");
+        // The build command names no user, so it runs as the default one.
+        let build = crate::artifacts::wsl_build_command(WSL_DISTRO, "/mnt/c/x");
+        assert!(
+            !build.args.iter().any(|a| a == "--user"),
+            "{:?}",
+            build.args
+        );
     }
 
     #[test]

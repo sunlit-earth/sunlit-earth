@@ -56,6 +56,10 @@ pub fn job_timeout(target: Target) -> Duration {
 /// `--test-threads=1` on top of the suite's own `#[serial]` attributes: a guest
 /// has one desktop session, and two windowed tests sharing it is not a race
 /// worth having.
+///
+/// The Windows job opts the wallpaper case in. That case replaces the desktop
+/// wallpaper of whatever machine runs it, which is the whole reason it is
+/// opt-in: a throwaway guest is the one place where doing so costs nothing.
 pub fn job_script(target: Target, paths: &GuestPaths) -> String {
     match target {
         Target::Linux => format!(
@@ -73,6 +77,7 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
             "@echo off\r\n\
              set SUNLIT_EARTH_BIN={app}\r\n\
              set SUNLIT_EARTH_E2E_FIXTURES={fixtures}\r\n\
+             set SUNLIT_EARTH_E2E_WALLPAPER=1\r\n\
              set RUST_BACKTRACE=1\r\n\
              \"{harness}\" --ignored --test-threads=1 --nocapture\r\n\
              exit /b %ERRORLEVEL%\r\n",
@@ -302,6 +307,20 @@ mod tests {
         // they reach the guest unchanged: `job::run` writes the script
         // verbatim rather than normalizing it.
         assert!(script.contains("\r\n"), "{script}");
+    }
+
+    #[test]
+    fn only_the_windows_job_opts_into_replacing_the_wallpaper() {
+        // The Linux guest cannot set a wallpaper, and a developer's desktop
+        // must not have one set behind their back, so the guest that can is
+        // the one place it is switched on.
+        let windows = job_script(Target::Windows, &paths(Target::Windows));
+        assert!(
+            windows.contains("set SUNLIT_EARTH_E2E_WALLPAPER=1"),
+            "{windows}"
+        );
+        let linux = job_script(Target::Linux, &paths(Target::Linux));
+        assert!(!linux.contains("SUNLIT_EARTH_E2E_WALLPAPER"), "{linux}");
     }
 
     #[test]

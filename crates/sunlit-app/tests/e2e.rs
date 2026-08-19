@@ -79,6 +79,23 @@ fn lifecycle_mode_args() -> [&'static str; 2] {
     }
 }
 
+/// Whether this platform can set the desktop wallpaper.
+///
+/// Unlike the tray, this one answers for itself: `SystemWallpaper` reports
+/// whether it has anywhere to publish to, which is the same query the engine
+/// makes before it renders anything.
+fn wallpaper_supported() -> bool {
+    use sunlit_core::engine::wallpaper_sink::{SystemWallpaper, WallpaperSink};
+    SystemWallpaper.check_supported().is_ok()
+}
+
+/// Whether this run is allowed to replace the desktop wallpaper.
+///
+/// Off by default, and deliberately not tied to the platform: the case is
+/// harmless in a throwaway VM and rude on a developer's desktop, and those are
+/// the same Windows. The VM job sets this; nothing else does.
+const WALLPAPER_OPT_IN: &str = "SUNLIT_EARTH_E2E_WALLPAPER";
+
 /// Announce that a case is not running here.
 ///
 /// The suite is `#[ignore]`d and has no skip mechanism of its own, so a case
@@ -1418,6 +1435,100 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         output.status
     );
 
+    for line in stderr_watcher.lines() {
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
+    }
+}
+
+/// Verify that the app renders and publishes a real desktop wallpaper.
+///
+/// This is the one case that changes something outside the process, which is
+/// why it is opt-in rather than platform-gated: it is harmless in a throwaway
+/// VM and rude on a developer's desktop, and those are the same Windows. The
+/// VM job sets `SUNLIT_EARTH_E2E_WALLPAPER`; nothing else does, so a plain
+/// `cargo e2e` skips it and says so.
+///
+/// What it exercises is the whole path the "Set as Wallpaper" button uses:
+/// render at the sink's native resolution, read back, encode a PNG, and hand
+/// it to the OS. The engine reports the outcome on its own channel, so the
+/// signal waited for here is the completion rather than the request.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_set_wallpaper() {
+    // `check_supported` is the product's own answer, checked against the
+    // platform it is running on: absence is expected off Windows and would be
+    // a regression on it, so the two are compared rather than one of them
+    // being trusted.
+    assert_eq!(
+        wallpaper_supported(),
+        cfg!(target_os = "windows"),
+        "the wallpaper sink disagrees with the platform it is running on"
+    );
+    if !wallpaper_supported() {
+        skip_case(
+            "test_set_wallpaper",
+            "the wallpaper sink reports no platform support here",
+        );
+        return;
+    }
+    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+        skip_case(
+            "test_set_wallpaper",
+            "this case replaces the desktop wallpaper, so it runs only where \
+             that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+
+    let socket_name = unique_socket_name();
+    let mut guard = ChildGuard::new(
+        Command::new(binary())
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+            .args(["--log-level", "debug"])
+            .args(lifecycle_mode_args())
+            .args(["--ipc-socket", &socket_name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+    let stdout_watcher = StdoutWatcher::new(child);
+    let stderr_watcher = StderrWatcher::new(child);
+
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
+
+    // The full-resolution render, readback, and PNG encode take longer than a
+    // preview frame, and on a software adapter in a VM longer again.
+    send_ipc_command(&socket_name, "set-wallpaper");
+    let line = stdout_watcher.wait_for_signal_line_from(
+        "wallpaper_",
+        stdout_watcher.line_count().saturating_sub(1),
+        Duration::from_secs(120),
+    );
+    assert!(
+        line.contains("wallpaper_set"),
+        "the engine reported a failure instead: {line}"
+    );
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
+    );
+
+    let stderr = stderr_watcher.lines().join("\n");
+    assert!(
+        stderr.contains("wallpaper updated"),
+        "stderr missing 'wallpaper updated':\n{stderr}"
+    );
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }

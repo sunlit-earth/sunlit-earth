@@ -236,11 +236,13 @@ fn wsl_ready(runner: &dyn runner::Runner, windows: &facts::WindowsFacts) -> bool
     if windows.distro(facts::WSL_DISTRO).is_none() {
         return false;
     }
+    // Probed as the account that will do the building, which is the
+    // distribution's default user, not root. Asking root whether cargo is
+    // available answers a question nobody has: root is not who runs the build,
+    // and the two accounts have separate toolchains and separate PATHs.
     let probe = runner::Cmd::new("wsl.exe").args([
         "-d",
         facts::WSL_DISTRO,
-        "--user",
-        "root",
         "--",
         "bash",
         "-lc",

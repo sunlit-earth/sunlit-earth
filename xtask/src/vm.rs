@@ -76,6 +76,15 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
         ImageCondition::Missing => Err(format!(
             "no {target} golden image yet. `cargo xtask vm build-image {target}` builds one."
         )),
+        ImageCondition::Unmanifested { detail, .. } => Err(format!(
+            "the {target} image has no usable manifest: {detail}.\n\n\
+             The manifest is where the build timestamp lives, and that is the \
+             only record of when the evaluation licence started running. \
+             Without it there is no telling an image with two months left from \
+             one that will start shutting itself down mid-run, which is the \
+             failure this check exists to prevent.\n\n\
+             Rebuild it: cargo xtask vm build-image {target}"
+        )),
         ImageCondition::Corrupt { detail } => Err(format!(
             "the {target} golden image does not match its manifest: {detail}. \
              `cargo xtask vm build-image {target}` rebuilds it."

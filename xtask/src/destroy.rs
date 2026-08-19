@@ -182,6 +182,13 @@ pub fn plan(
             for file in entry.images.iter().chain(entry.build_files.iter()) {
                 take(file, Some(target), &mut files, &mut refused);
             }
+            // The manifest goes last, and `execute` stops at a target's first
+            // failure, so the two orderings that a partial purge can leave
+            // behind are "images gone, manifest still there", which reads as
+            // missing and is correct, and "nothing deleted at all". The order
+            // that must not happen is the manifest going first, which would
+            // leave images nobody can date: that is the state a boot now
+            // refuses on.
             let manifest = store.manifest(target);
             if let Some(bytes) = entry.manifest_bytes {
                 files.push(DeleteItem {
@@ -280,9 +287,19 @@ pub fn execute(
                 outcome.bytes_freed += file.bytes;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => outcome
-                .problems
-                .push(format!("could not delete {}: {e}", file.path.display())),
+            Err(e) => {
+                outcome
+                    .problems
+                    .push(format!("could not delete {}: {e}", file.path.display()));
+                // Stop at the first failure for this target. The files are
+                // ordered so that the manifest goes last, which only helps if
+                // a failure before it stops it from going at all: an image
+                // that outlives its manifest cannot be dated, and dating it is
+                // how the evaluation clock is read.
+                if let Some(target) = file.target {
+                    held_back.push(target);
+                }
+            }
         }
     }
 
@@ -478,6 +495,30 @@ mod tests {
         assert!(
             text.contains("delete /srv/vm/run/linux/overlay.qcow2 (2.0 GiB)"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn a_purge_deletes_the_manifest_after_everything_it_describes() {
+        // An image that outlives its manifest cannot be dated, and dating it
+        // is the only way to read the evaluation clock. A purge that got that
+        // far and stopped would leave the store in exactly the state a boot
+        // now has to refuse.
+        let inv = inventory(vec![with_run_state(Target::Windows)]);
+        let plan = plan(&store(), &inv, Selection::One(Target::Windows), true);
+        let manifest = plan
+            .files
+            .iter()
+            .position(|f| f.path.to_string_lossy().contains("manifest.json"))
+            .expect("the manifest is in the plan");
+        let last_image = plan
+            .files
+            .iter()
+            .rposition(|f| f.path.to_string_lossy().contains("golden."))
+            .expect("an image is in the plan");
+        assert!(
+            manifest > last_image,
+            "the manifest is deleted before the images it describes"
         );
     }
 

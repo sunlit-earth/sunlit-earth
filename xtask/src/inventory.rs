@@ -105,6 +105,12 @@ impl TargetInventory {
                     .manifest_error
                     .clone()
                     .unwrap_or_else(|| "no manifest next to the image".to_owned()),
+                // Without a manifest there is no build timestamp, and without
+                // that the evaluation clock cannot be read at all. For the
+                // Windows image that is exactly the situation decision 5
+                // exists to prevent, so it blocks a boot; the Linux image has
+                // no clock, so the only thing lost is knowing it is current.
+                expiry_unknown: self.target().has_eval_expiry(),
             };
         };
         if let Some(detail) = self.size_mismatch(manifest) {
@@ -169,6 +175,10 @@ pub enum ImageCondition {
     /// Images without a usable manifest: age and currency cannot be judged.
     Unmanifested {
         detail: String,
+        /// Whether this target has an evaluation clock that can no longer be
+        /// read, which is what makes an unmanifested image unusable rather
+        /// than merely unlabelled.
+        expiry_unknown: bool,
     },
     /// The files on disk disagree with what the build recorded.
     Corrupt {
@@ -208,7 +218,17 @@ impl ImageCondition {
     pub fn detail(&self) -> String {
         match self {
             Self::Missing => "no golden image built yet".to_owned(),
-            Self::Unmanifested { detail } | Self::Corrupt { detail } => detail.clone(),
+            Self::Corrupt { detail } => detail.clone(),
+            Self::Unmanifested {
+                detail,
+                expiry_unknown,
+            } => {
+                if *expiry_unknown {
+                    format!("{detail}, so the evaluation age cannot be read")
+                } else {
+                    format!("{detail}, so it cannot be told whether it is current")
+                }
+            }
             Self::Expired { state } | Self::Expiring { state } => state.summary(),
             Self::Stale {
                 built_from,
@@ -223,7 +243,13 @@ impl ImageCondition {
     pub fn blocks_boot(&self) -> bool {
         matches!(
             self,
-            Self::Missing | Self::Corrupt { .. } | Self::Expired { .. }
+            Self::Missing
+                | Self::Corrupt { .. }
+                | Self::Expired { .. }
+                | Self::Unmanifested {
+                    expiry_unknown: true,
+                    ..
+                }
         )
     }
 }
@@ -476,6 +502,27 @@ mod tests {
         let condition = entry.condition(BUILT);
         assert_eq!(condition.label(), "no manifest");
         assert!(condition.detail().contains("no manifest"), "{condition:?}");
+    }
+
+    #[test]
+    fn an_unmanifested_windows_image_blocks_a_boot_and_a_linux_one_does_not() {
+        // The manifest is the only record of when the evaluation licence
+        // started. Losing it for the Windows image means losing the answer to
+        // the question decision 5 exists to ask.
+        let mut windows = healthy(Target::Windows);
+        windows.manifest = None;
+        let condition = windows.condition(BUILT);
+        assert!(condition.blocks_boot(), "{condition:?}");
+        assert!(
+            condition.detail().contains("evaluation age"),
+            "{condition:?}"
+        );
+
+        let mut linux = healthy(Target::Linux);
+        linux.manifest = None;
+        let condition = linux.condition(BUILT);
+        assert!(!condition.blocks_boot(), "{condition:?}");
+        assert!(condition.detail().contains("current"), "{condition:?}");
     }
 
     #[test]

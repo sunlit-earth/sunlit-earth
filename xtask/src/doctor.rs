@@ -227,11 +227,25 @@ fn windows_hypervisor_checks(windows: &crate::facts::WindowsFacts, checks: &mut 
         ),
     });
 
+    // Decision 2: the firmware flag is consulted whenever no hypervisor is
+    // running, and only then, because it can read false while Hyper-V owns
+    // VT-x. Ordering it after the feature check made a host with the feature
+    // enabled and virtualization off in the BIOS wait forever for a restart
+    // that could not help, with the doctor exiting 0 the whole time.
     checks.push(if windows.hypervisor_present {
         Check::new(
             "hypervisor running",
             Status::Pass,
             "a hypervisor is running",
+        )
+    } else if windows.virtualization_firmware_enabled == Some(false) {
+        Check::new(
+            "hypervisor running",
+            Status::Fail,
+            "no hypervisor is running, and the firmware reports hardware              virtualization disabled",
+        )
+        .hint(
+            "enable VT-x (Intel) or SVM / AMD-V (AMD) in the firmware setup;              no amount of restarting will start a hypervisor without it",
         )
     } else if hyperv == FeatureState::Enabled {
         Check::new(
@@ -240,13 +254,6 @@ fn windows_hypervisor_checks(windows: &crate::facts::WindowsFacts, checks: &mut 
             "the features are enabled but no hypervisor is running",
         )
         .hint("this is what a pending restart looks like; restart, then run the doctor again")
-    } else if windows.virtualization_firmware_enabled == Some(false) {
-        Check::new(
-            "hypervisor running",
-            Status::Fail,
-            "no hypervisor, and the firmware reports virtualization disabled",
-        )
-        .hint("enable VT-x or AMD-V in the firmware setup")
     } else {
         Check::new(
             "hypervisor running",
@@ -429,17 +436,21 @@ fn image_checks(inventory: &Inventory, now_unix: u64, checks: &mut Vec<Check>) {
         };
         let condition = entry.condition(now_unix);
         let detail = format!("{}: {}", condition.label(), condition.detail());
-        let check = match condition {
-            ImageCondition::Ok => Check::new(name, Status::Pass, detail),
-            ImageCondition::Corrupt { .. } | ImageCondition::Expired { .. } => {
-                Check::new(name, Status::Fail, detail)
-                    .hint(format!("`cargo xtask vm build-image {target}`"))
-            }
-            ImageCondition::Missing
-            | ImageCondition::Stale { .. }
-            | ImageCondition::Expiring { .. }
-            | ImageCondition::Unmanifested { .. } => Check::new(name, Status::Warn, detail)
-                .hint(format!("`cargo xtask vm build-image {target}`")),
+        // A missing image is the ordinary state before the first build, so it
+        // warns even though it stops a boot. Everything else that stops a boot
+        // fails here too: the doctor's severity and the boot gate are the same
+        // judgement, so they are made by the same function rather than by two
+        // lists that can drift apart.
+        let status = match condition {
+            ImageCondition::Ok => Status::Pass,
+            ImageCondition::Missing => Status::Warn,
+            ref other if other.blocks_boot() => Status::Fail,
+            _ => Status::Warn,
+        };
+        let check = if status == Status::Pass {
+            Check::new(name, status, detail)
+        } else {
+            Check::new(name, status, detail).hint(format!("`cargo xtask vm build-image {target}`"))
         };
         checks.push(check);
     }
@@ -590,6 +601,25 @@ mod tests {
         let check = report.get("hypervisor running").expect("checked");
         assert_eq!(check.status, Status::Warn);
         assert!(check.hint.as_ref().unwrap().contains("restart"));
+    }
+
+    #[test]
+    fn disabled_firmware_virtualization_fails_even_with_the_feature_enabled() {
+        // The combination that used to report a pending restart forever: the
+        // feature is on, nothing is running, and no restart can change that
+        // because the hardware support is switched off in the BIOS.
+        let mut facts = good_windows();
+        let windows = facts.windows.as_mut().unwrap();
+        windows.hypervisor_present = false;
+        windows.virtualization_firmware_enabled = Some(false);
+        assert_eq!(windows.feature(FEATURE_HYPERV), FeatureState::Enabled);
+
+        let report = evaluate(&facts, &built_images(), now());
+        let check = report.get("hypervisor running").expect("checked");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.detail.contains("firmware"), "{check:?}");
+        assert!(check.hint.as_ref().unwrap().contains("VT-x"), "{check:?}");
+        assert!(report.failed());
     }
 
     #[test]
@@ -753,6 +783,19 @@ mod tests {
                 .unwrap()
                 .contains("build-image linux")
         );
+    }
+
+    #[test]
+    fn an_image_that_cannot_be_dated_fails_where_it_matters() {
+        // The doctor's severity and the boot gate are the same decision, so
+        // they are made by the same function and cannot drift apart.
+        let mut windows = healthy(Target::Windows);
+        windows.manifest = None;
+        let mut linux = healthy(Target::Linux);
+        linux.manifest = None;
+        let report = evaluate(&good_windows(), &inventory(vec![windows, linux]), now());
+        assert_eq!(report.get("windows image").unwrap().status, Status::Fail);
+        assert_eq!(report.get("linux image").unwrap().status, Status::Warn);
     }
 
     #[test]

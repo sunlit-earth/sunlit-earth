@@ -113,6 +113,12 @@ impl ProviderKind {
 /// The provider matrix from retrospective section 8.3: `Hyper-V` for the
 /// Windows guest on a Windows host, QEMU everywhere else.
 ///
+/// This answers which hypervisor would drive a guest, which is not the same as
+/// whether this host can run the suite in one. A Linux host has a hypervisor
+/// for the Windows guest and no way to build the binaries to put in it; that
+/// question belongs to `artifacts::check_can_build`, which the commands that
+/// need binaries ask first.
+///
 /// The two coexist on a Windows host by design, because QEMU's WHPX
 /// acceleration runs on top of the `Hyper-V` hypervisor.
 pub fn provider_for(host: HostOs, target: Target) -> Option<ProviderKind> {

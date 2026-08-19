@@ -101,6 +101,10 @@ fn run_on_host(runner: &dyn Runner) -> Result<u8, String> {
     println!("running the desktop e2e suite on this host");
     println!("windows will open and close; leave the desktop alone while it runs");
     let cmd = Cmd::new("cargo")
+        // The same arguments the guest job uses, so that a case behaving
+        // differently in the two places is the guest's doing rather than the
+        // command line's. --nocapture matters: several cases print the figures
+        // that are the reason for running them.
         .args([
             "test",
             "--test",
@@ -108,6 +112,7 @@ fn run_on_host(runner: &dyn Runner) -> Result<u8, String> {
             "--",
             "--ignored",
             "--test-threads=1",
+            "--nocapture",
         ])
         .cwd(store::repo_root());
     let code = runner
@@ -127,8 +132,23 @@ fn run_in_guest(
     let store = store::store()?;
     let started = std::time::Instant::now();
 
+    // Asked before anything is created. The provider matrix has a hypervisor
+    // for every cell, which is not the same as this host being able to produce
+    // the binaries to put in one, and finding that out after a boot means a
+    // guest running with nothing to run in it.
+    artifacts::check_can_build(crate::target::HostOs::current(), target)?;
+
     let session = vm::boot(runner, &store, target, StartReason::Run, allow_expired)?;
-    let paths = artifacts::stage(runner, &store, &session)?;
+
+    // From here on the VM exists, so no failure may return without saying what
+    // happened to it.
+    let paths = match artifacts::stage(runner, &store, &session) {
+        Ok(paths) => paths,
+        Err(e) => {
+            println!("{}", vm::after_failure(&session, &store, keep));
+            return Err(e);
+        }
+    };
 
     println!("running the suite in the guest's console session");
     let script = job_script(target, &paths);
@@ -167,12 +187,14 @@ fn run_in_guest(
 
     if keep {
         println!("{}", vm::lifecycle_explainer(target));
-    } else {
-        if let Err(e) = session.provider.destroy(&session.state) {
-            println!("warning: {e}");
-        }
-        let _ = std::fs::remove_file(store.state_file(target));
-        let _ = std::fs::remove_file(&session.state.overlay);
+    } else if let Err(e) = session.tear_down(&store) {
+        // Reported with the way out, not as a bare warning: a VM that would
+        // not go away holds its memory and the ports the next run needs.
+        println!(
+            "warning: {} could not be destroyed: {e}",
+            session.state.vm_name
+        );
+        println!("{}", session.reach_hint());
     }
 
     if let Err(e) = collected {

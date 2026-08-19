@@ -92,6 +92,36 @@ pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
+/// Whether this host can build a guest's binaries at all, and whether it does
+/// so natively.
+///
+/// Asked before anything is created, because the answer does not depend on the
+/// VM and finding out afterwards means a booted guest with nothing to run in
+/// it. `build` uses the same function, so the check and the attempt cannot
+/// disagree about what is possible.
+///
+/// A Windows guest needs Windows binaries, and a Linux host has no toolchain
+/// for those: cross-compiling them would mean mingw-w64 or a Windows SDK, a
+/// second target triple, and a second set of link-time problems, for the one
+/// cell of the matrix that a Windows host covers natively. Left unsupported
+/// deliberately rather than half-built.
+pub fn check_can_build(host: HostOs, target: Target) -> Result<bool, String> {
+    match (host, target) {
+        (HostOs::Windows, Target::Windows) | (HostOs::Linux, Target::Linux) => Ok(true),
+        // WSL builds the Linux guest's binaries against the same Ubuntu the
+        // guest runs.
+        (HostOs::Windows, Target::Linux) => Ok(false),
+        (HostOs::Linux, Target::Windows) => Err(
+            "the Windows guest's binaries cannot be built on a Linux host, so              `--target windows` needs a Windows host. The Linux guest works here."
+                .to_owned(),
+        ),
+        _ => Err(format!(
+            "a {} host cannot build binaries for a {target} guest",
+            host.name()
+        )),
+    }
+}
+
 /// Pick the two executables out of what Cargo reported.
 pub fn select(artifacts: &[Artifact]) -> Result<(PathBuf, PathBuf), String> {
     let app = cargo_json::bin(artifacts, PACKAGE)
@@ -111,16 +141,7 @@ pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostA
         .join("fixtures");
 
     let host = HostOs::current();
-    let native = match (host, target) {
-        (HostOs::Windows, Target::Windows) | (HostOs::Linux, Target::Linux) => true,
-        (HostOs::Windows, Target::Linux) => false,
-        _ => {
-            return Err(format!(
-                "a {} host cannot build binaries for a {target} guest",
-                host.name()
-            ));
-        }
-    };
+    let native = check_can_build(host, target)?;
 
     if native {
         println!("building the e2e suite for the {target} guest (a few minutes if cold)");
@@ -283,6 +304,20 @@ pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<Gu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_linux_host_says_it_cannot_build_the_windows_guest_before_anything_boots() {
+        // The provider matrix has a hypervisor for this cell, which is not the
+        // same as being able to produce the binaries to put in it.
+        let err = check_can_build(HostOs::Linux, Target::Windows).unwrap_err();
+        assert!(err.contains("needs a Windows host"), "{err}");
+
+        assert_eq!(check_can_build(HostOs::Linux, Target::Linux), Ok(true));
+        assert_eq!(check_can_build(HostOs::Windows, Target::Windows), Ok(true));
+        // Not native: built through WSL.
+        assert_eq!(check_can_build(HostOs::Windows, Target::Linux), Ok(false));
+        assert!(check_can_build(HostOs::Other, Target::Linux).is_err());
+    }
 
     #[test]
     fn the_build_never_runs_the_tests_and_pins_the_lockfile() {

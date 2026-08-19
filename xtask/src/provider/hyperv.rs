@@ -290,7 +290,13 @@ impl crate::provider::Provider for HypervProvider<'_> {
                 None,
             )
             .map_err(|e| format!("cannot start vmconnect: {e}"))?;
-        Ok(format!("vmconnect is opening {}", state.vm_name))
+        Ok(format!(
+            "vmconnect is opening {}.\n\
+             Use the basic session it opens with, not an enhanced one: enhanced \
+             session mode is RDP underneath and logs into a session of its own, \
+             which locks the console session out from under a running job.",
+            state.vm_name
+        ))
     }
 
     fn ssh_target(&self, state: &RunState) -> SshTarget {

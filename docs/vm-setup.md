@@ -26,9 +26,12 @@ cargo xtask e2e --target linux
 
 | | Windows guest | Linux guest | This desktop |
 |---|---|---|---|
-| Hypervisor | Hyper-V (QEMU on a Linux host) | QEMU | none |
+| Hypervisor | Hyper-V | QEMU | none |
+| Host it runs from | Windows only | Windows or Linux | any |
 | Cases | all 8 | 6 of 8 | all 8 |
 | GPU | WARP | lavapipe | the real one |
+
+The Windows guest needs a Windows host, because its binaries have to be built somewhere and a Linux host has no toolchain for Windows executables. `e2e --target windows` says so and stops before creating anything.
 
 The Linux guest skips the two cases that need a tray icon. One of them is the tray-start-hidden lifecycle; the other is single-instance enforcement, which the app performs in tray mode only, so on a platform without a tray there is nothing for it to enforce. Both print why they skipped. Linux tray support waits on the StatusNotifier work that comes after this phase.
 

@@ -31,6 +31,51 @@ pub struct Session<'a> {
     pub target: Target,
 }
 
+impl Session<'_> {
+    /// Stop the VM and remove the run state it left behind.
+    pub fn tear_down(&self, store: &Store) -> Result<(), String> {
+        self.provider.destroy(&self.state)?;
+        let _ = std::fs::remove_file(store.state_file(self.target));
+        let _ = std::fs::remove_file(&self.state.overlay);
+        Ok(())
+    }
+
+    /// How to reach and get rid of this guest, for when something has gone
+    /// wrong and it is still running.
+    pub fn reach_hint(&self) -> String {
+        let target = self.target;
+        format!(
+            "  ssh:     cargo xtask vm ssh {target}\n  \
+             desktop: cargo xtask vm view {target}\n  \
+             destroy: cargo xtask vm destroy {target}"
+        )
+    }
+}
+
+/// Deal with a guest after something went wrong with it.
+///
+/// A failure after the boot used to leave a VM running with no message and no
+/// hint, which is the worst of both: it holds its memory, it blocks the next
+/// run's ports, and nothing said it was there. Either it goes, or it is named
+/// along with the command that removes it.
+pub fn after_failure(session: &Session, store: &Store, keep: bool) -> String {
+    if keep {
+        return format!(
+            "{} is still running, because --keep was given.\n{}",
+            session.state.vm_name,
+            session.reach_hint()
+        );
+    }
+    match session.tear_down(store) {
+        Ok(()) => format!("{} was destroyed.", session.state.vm_name),
+        Err(e) => format!(
+            "{} could not be destroyed ({e}), and is still running.\n{}",
+            session.state.vm_name,
+            session.reach_hint()
+        ),
+    }
+}
+
 /// The help text an expired evaluation image gets (plan decision 5).
 ///
 /// Expiry is not a hard refusal anywhere else, and it is not one here either:
@@ -57,12 +102,25 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
     };
     let condition = entry.condition(util::now_unix());
     if !condition.blocks_boot() {
-        if let ImageCondition::Stale { .. } = condition {
-            println!(
-                "warning: the {target} image is stale: {}",
-                condition.detail()
-            );
-            println!("it still runs; `cargo xtask vm build-image {target}` brings it up to date");
+        // Every non-blocking condition that is not simply "fine" says so.
+        // Passing in silence is what let an image whose age nobody could read
+        // boot as though it had been checked.
+        match &condition {
+            ImageCondition::Ok => {}
+            ImageCondition::Stale { .. } => {
+                println!(
+                    "warning: the {target} image is stale: {}",
+                    condition.detail()
+                );
+                println!(
+                    "it still runs; `cargo xtask vm build-image {target}` brings it up to date"
+                );
+            }
+            other => println!(
+                "warning: the {target} image is {}: {}",
+                other.label(),
+                other.detail()
+            ),
         }
         return Ok(());
     }
@@ -209,10 +267,19 @@ pub fn lifecycle_explainer(target: Target) -> String {
 /// `vm up`.
 pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8, String> {
     let store = store::store()?;
+    // Asked before anything is created: a guest with no binaries to put in it
+    // is worse than a refusal.
+    crate::artifacts::check_can_build(crate::target::HostOs::current(), target)?;
+
     let session = boot(runner, &store, target, StartReason::Up, allow_expired)?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
-    crate::artifacts::stage(runner, &store, &session)?;
+    if let Err(e) = crate::artifacts::stage(runner, &store, &session) {
+        // Keep the guest: `vm up` is for looking at one, and a guest that
+        // booted is still worth having even if the binaries did not arrive.
+        println!("{}", after_failure(&session, &store, true));
+        return Err(e);
+    }
     println!("{}", lifecycle_explainer(session.target));
     Ok(0)
 }
@@ -265,12 +332,10 @@ pub fn view(runner: &dyn Runner, target: Target) -> Result<u8, String> {
             state.vm_name
         ));
     }
+    // The advice about how to use a console belongs to whichever provider
+    // opened it: none of the enhanced-session warning means anything to
+    // somebody looking at a VNC framebuffer.
     println!("{}", provider.view(&state)?);
-    println!(
-        "Use the basic session, not an enhanced one: enhanced session mode is RDP \
-         underneath and logs into a session of its own, which locks the console \
-         session out from under a running job."
-    );
     Ok(0)
 }
 
@@ -346,19 +411,31 @@ pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, Stri
 
     println!("running a trivial job through the guest contract");
     let scratch = store.run_dir(target).join("job");
-    let code = job::run(
+    // From here on the VM exists, so `?` would leave it running unannounced.
+    let code = match job::run(
         session.provider.as_ref(),
         &session.state,
         target,
         script,
         &scratch,
         Duration::from_secs(300),
-    )?;
+    ) {
+        Ok(code) => code,
+        Err(e) => {
+            println!("{}", after_failure(&session, &store, keep));
+            return Err(e);
+        }
+    };
 
     let results = store.results_dir(target);
-    session
-        .provider
-        .collect_results(&session.state, &provider::guest_results(target), &results)?;
+    if let Err(e) =
+        session
+            .provider
+            .collect_results(&session.state, &provider::guest_results(target), &results)
+    {
+        println!("{}", after_failure(&session, &store, keep));
+        return Err(e);
+    }
 
     println!();
     println!(
@@ -375,9 +452,7 @@ pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, Stri
     if keep {
         println!("{}", lifecycle_explainer(target));
     } else {
-        session.provider.destroy(&session.state)?;
-        let _ = std::fs::remove_file(store.state_file(target));
-        let _ = std::fs::remove_file(&session.state.overlay);
+        session.tear_down(&store)?;
         println!("the VM is destroyed and the overlay is gone");
     }
     Ok(u8::from(code != 0))

@@ -22,6 +22,7 @@ mod destroy;
 mod doctor;
 mod e2e;
 mod facts;
+mod firmware;
 mod hash;
 mod inventory;
 mod job;

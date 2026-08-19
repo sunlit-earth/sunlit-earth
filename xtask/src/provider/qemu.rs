@@ -72,8 +72,9 @@ pub struct Launch {
     pub qmp_port: u16,
     pub vnc_display: u16,
     /// UEFI firmware, which the Windows guest requires and the Linux cloud
-    /// image does not need.
-    pub firmware: Option<PathBuf>,
+    /// image does not need. The variables half must be a per-VM copy: the
+    /// firmware writes the boot entry Windows Setup created into it.
+    pub firmware: Option<crate::firmware::Firmware>,
 }
 
 impl Launch {
@@ -113,8 +114,19 @@ impl Launch {
             "base=utc".into(),
         ];
         if let Some(firmware) = &self.firmware {
-            args.push("-bios".into());
-            args.push(firmware.display().to_string());
+            // pflash rather than -bios: -bios gives the firmware nowhere to
+            // keep its variables, and an installed Windows then has no boot
+            // entry to find on the next start.
+            args.push("-drive".into());
+            args.push(format!(
+                "if=pflash,format=raw,unit=0,readonly=on,file={}",
+                firmware.code.display()
+            ));
+            args.push("-drive".into());
+            args.push(format!(
+                "if=pflash,format=raw,unit=1,file={}",
+                firmware.vars.display()
+            ));
         }
         args
     }
@@ -150,6 +162,11 @@ impl<'a> QemuProvider<'a> {
     /// The launch parameters for a target.
     pub fn launch_for(&self, target: Target, overlay: PathBuf) -> Launch {
         let (memory_mb, cpus) = resources_for(target);
+        let firmware = if target == Target::Windows {
+            self.per_vm_firmware(target)
+        } else {
+            None
+        };
         Launch {
             name: target.vm_name(),
             overlay,
@@ -160,8 +177,26 @@ impl<'a> QemuProvider<'a> {
             ssh_port: SSH_PORT,
             qmp_port: QMP_PORT,
             vnc_display: VNC_DISPLAY,
-            firmware: None,
+            firmware,
         }
+    }
+
+    /// Copy the firmware's variables store into the run directory, so each VM
+    /// writes its boot entries into its own throwaway copy rather than into the
+    /// shared one the host installed.
+    fn per_vm_firmware(&self, target: Target) -> Option<crate::firmware::Firmware> {
+        let binary = crate::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host);
+        let found = crate::firmware::locate(self.host, binary.as_deref())?;
+        let copy = self.store.run_dir(target).join("efi-vars.fd");
+        if std::fs::create_dir_all(self.store.run_dir(target)).is_err()
+            || std::fs::copy(&found.vars, &copy).is_err()
+        {
+            return Some(found);
+        }
+        Some(crate::firmware::Firmware {
+            code: found.code,
+            vars: copy,
+        })
     }
 }
 
@@ -380,12 +415,23 @@ mod tests {
 
     #[test]
     fn firmware_is_passed_only_when_there_is_some() {
-        assert!(!joined(Target::Linux).contains("-bios"));
+        assert!(!joined(Target::Linux).contains("pflash"));
         let mut with_firmware = launch(Target::Windows);
-        with_firmware.firmware = Some(PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd"));
+        with_firmware.firmware = Some(crate::firmware::Firmware {
+            code: PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd"),
+            vars: PathBuf::from("/srv/vm/run/windows/efi-vars.fd"),
+        });
         let text = with_firmware.args().join(" ");
         assert!(
-            text.contains("-bios /usr/share/OVMF/OVMF_CODE.fd"),
+            text.contains(
+                "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd"
+            ),
+            "{text}"
+        );
+        // The writable half is the per-VM copy, never the host's own: the
+        // firmware writes the boot entry Windows Setup created into it.
+        assert!(
+            text.contains("if=pflash,format=raw,unit=1,file=/srv/vm/run/windows/efi-vars.fd"),
             "{text}"
         );
     }

@@ -54,7 +54,12 @@ impl BuildPlan {
 }
 
 /// Assemble the plan for one target.
-pub fn plan(store: &Store, target: Target, host: HostOs, accelerator: &str) -> BuildPlan {
+pub fn plan(
+    store: &Store,
+    target: Target,
+    accelerator: &str,
+    firmware: Option<&crate::firmware::Firmware>,
+) -> BuildPlan {
     let build_dir = store.build_dir(target);
     let mut vars = vec![
         (
@@ -72,8 +77,17 @@ pub fn plan(store: &Store, target: Target, host: HostOs, accelerator: &str) -> B
             "iso_path".to_owned(),
             store.windows_iso().to_string_lossy().into_owned(),
         ));
+        if let Some(firmware) = firmware {
+            vars.push((
+                "efi_firmware_code".to_owned(),
+                firmware.code.to_string_lossy().into_owned(),
+            ));
+            vars.push((
+                "efi_firmware_vars".to_owned(),
+                firmware.vars.to_string_lossy().into_owned(),
+            ));
+        }
     }
-    let _ = host;
     BuildPlan {
         target,
         template_dir: store::template_dir(target),
@@ -180,7 +194,17 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     }
 
     let accelerator = accelerator_for(host);
-    let plan = plan(&store, target, host, accelerator);
+    // Windows 11 needs UEFI, and Packer's own defaults for it are Linux paths.
+    let firmware = if target == Target::Windows {
+        let binary = crate::facts::resolve_tool(runner, "qemu-system-x86_64", host);
+        Some(
+            crate::firmware::locate(host, binary.as_deref())
+                .ok_or_else(|| crate::firmware::missing_message(host))?,
+        )
+    } else {
+        None
+    };
+    let plan = plan(&store, target, accelerator, firmware.as_ref());
     if !plan.template_dir.is_dir() {
         return Err(format!(
             "no templates at {}; the repo is where they live",
@@ -369,7 +393,7 @@ mod tests {
 
     #[test]
     fn the_plan_points_packer_at_the_store_and_the_repo() {
-        let plan = plan(&store(), Target::Linux, HostOs::Windows, "whpx");
+        let plan = plan(&store(), Target::Linux, "whpx", None);
         assert!(
             plan.template_dir.ends_with("vm/linux") || plan.template_dir.ends_with(r"vm\linux")
         );
@@ -383,15 +407,24 @@ mod tests {
 
     #[test]
     fn only_the_windows_plan_carries_an_iso_path() {
-        let linux = plan(&store(), Target::Linux, HostOs::Linux, "kvm");
-        let windows = plan(&store(), Target::Windows, HostOs::Windows, "whpx");
+        let firmware = crate::firmware::Firmware {
+            code: PathBuf::from("/fw/code.fd"),
+            vars: PathBuf::from("/fw/vars.fd"),
+        };
+        let linux = plan(&store(), Target::Linux, "kvm", Some(&firmware));
+        let windows = plan(&store(), Target::Windows, "whpx", Some(&firmware));
         assert!(!linux.vars.iter().any(|(k, _)| k == "iso_path"));
         assert!(windows.vars.iter().any(|(k, _)| k == "iso_path"));
+        // The Linux cloud image boots without UEFI, so it is not handed
+        // firmware it does not need.
+        assert!(!linux.vars.iter().any(|(k, _)| k == "efi_firmware_code"));
+        assert!(windows.vars.iter().any(|(k, _)| k == "efi_firmware_code"));
+        assert!(windows.vars.iter().any(|(k, _)| k == "efi_firmware_vars"));
     }
 
     #[test]
     fn the_build_command_passes_every_variable_and_the_template_last() {
-        let plan = plan(&store(), Target::Linux, HostOs::Linux, "kvm");
+        let plan = plan(&store(), Target::Linux, "kvm", None);
         let args = plan.build_args();
         assert_eq!(args[0], "build");
         assert!(args.contains(&"accelerator=kvm".to_owned()));

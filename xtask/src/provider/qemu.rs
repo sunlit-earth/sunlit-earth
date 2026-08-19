@@ -119,6 +119,20 @@ pub fn disk_device_for(target: Target) -> &'static str {
     }
 }
 
+/// The network device model, for the same reason as the disk and the display.
+///
+/// This has to match what the image was installed with, or the guest comes up
+/// with a device it has no driver for and no network. The symptom is the worst
+/// kind: nothing is wrong on the host, the VM runs, and the SSH wait times out
+/// ten minutes later with nothing to point at. `the_runtime_devices_match_the_templates`
+/// pins each choice against the template that installed it.
+pub fn nic_device_for(target: Target) -> &'static str {
+    match target {
+        Target::Windows => "e1000",
+        Target::Linux => "virtio-net-pci",
+    }
+}
+
 /// Everything a `qemu-system-x86_64` command line needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
@@ -159,7 +173,7 @@ impl Launch {
             "-netdev".into(),
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", self.ssh_port),
             "-device".into(),
-            "virtio-net-pci,netdev=net0".into(),
+            format!("{},netdev=net0", nic_device_for(self.target)),
             "-vga".into(),
             vga_for(self.target).to_owned(),
             // No local window, and a VNC server on loopback that costs nothing
@@ -759,5 +773,91 @@ mod tests {
         );
         let backing = args.iter().position(|a| a == "-b").expect("backing flag");
         assert_eq!(args[backing + 1], "/srv/vm/images/linux/golden.qcow2");
+    }
+}
+
+#[cfg(test)]
+mod template_agreement {
+    //! The runtime command line and the image build have to choose the same
+    //! virtual hardware.
+    //!
+    //! A guest installed with one network card and booted with another has no
+    //! driver for what it finds, and the symptom is an SSH wait that times out
+    //! ten minutes later with nothing on the host to point at. Nothing but a
+    //! convention connected the two sides, so this reads the templates.
+
+    use super::{disk_device_for, nic_device_for, vga_for};
+    use crate::store::template_dir;
+    use crate::target::Target;
+
+    fn template(target: Target) -> String {
+        let dir = template_dir(target);
+        let name = match target {
+            Target::Windows => "windows11.pkr.hcl",
+            Target::Linux => "ubuntu-2204.pkr.hcl",
+        };
+        std::fs::read_to_string(dir.join(name))
+            .unwrap_or_else(|e| panic!("cannot read the {target} template: {e}"))
+    }
+
+    /// The value of a `key = "value"` line in an HCL template.
+    fn setting(text: &str, key: &str) -> String {
+        text.lines()
+            .find_map(|line| {
+                let (found, value) = line.split_once('=')?;
+                (found.trim() == key).then(|| value.trim().trim_matches('"').to_owned())
+            })
+            .unwrap_or_else(|| panic!("no {key} in the template"))
+    }
+
+    #[test]
+    fn the_runtime_devices_match_the_templates() {
+        for target in Target::ALL {
+            let text = template(target);
+
+            // Packer spells the network device the way QEMU's -device does.
+            assert_eq!(
+                setting(&text, "net_device"),
+                nic_device_for(target),
+                "{target}: the image is installed with a different NIC than it boots with"
+            );
+
+            // The disk is spelled as an interface in Packer and as a device at
+            // runtime, so the pairing is stated rather than compared.
+            let expected_interface = match disk_device_for(target) {
+                "ide-hd" => "ide",
+                "virtio-blk-pci" => "virtio",
+                other => panic!("unmapped disk device {other}"),
+            };
+            assert_eq!(
+                setting(&text, "disk_interface"),
+                expected_interface,
+                "{target}: the image is installed on a different disk controller than it boots from"
+            );
+
+            // Both machines are q35, which is what makes an ide-hd device land
+            // on a SATA controller rather than a legacy IDE one.
+            assert_eq!(setting(&text, "machine_type"), "q35", "{target}");
+
+            // The display is runtime-only: Packer never sees it, so this only
+            // checks the value is one QEMU knows.
+            assert!(
+                ["std", "virtio", "qxl", "vmware", "cirrus"].contains(&vga_for(target)),
+                "{target}: unknown -vga value {}",
+                vga_for(target)
+            );
+        }
+    }
+
+    #[test]
+    fn the_windows_guest_boots_devices_a_stock_install_has_drivers_for() {
+        // The whole reason for the split: no virtio drivers are injected, so
+        // both of these have to be things Windows ships a driver for.
+        assert_eq!(nic_device_for(Target::Windows), "e1000");
+        assert_eq!(disk_device_for(Target::Windows), "ide-hd");
+        assert_ne!(
+            nic_device_for(Target::Windows),
+            nic_device_for(Target::Linux)
+        );
     }
 }

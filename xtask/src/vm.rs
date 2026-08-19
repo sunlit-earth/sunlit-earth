@@ -33,10 +33,71 @@ pub struct Session<'a> {
 
 impl Session<'_> {
     /// Stop the VM and remove the run state it left behind.
+    ///
+    /// The record goes only after the teardown succeeded, and a file that
+    /// could not be removed is reported rather than swallowed: a leaked
+    /// overlay is not cosmetic, because the next boot creates its child with
+    /// `New-VHD -Path <existing>` or `qemu-img create <existing>` and both
+    /// refuse.
     pub fn tear_down(&self, store: &Store) -> Result<(), String> {
         self.provider.destroy(&self.state)?;
-        let _ = std::fs::remove_file(store.state_file(self.target));
-        let _ = std::fs::remove_file(&self.state.overlay);
+
+        let mut problems = Vec::new();
+        for path in [&store.state_file(self.target), &self.state.overlay] {
+            if let Err(e) = std::fs::remove_file(path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                problems.push(format!("{}: {e}", path.display()));
+            }
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "the VM was stopped, but {} could not be removed. The next boot \
+                 will refuse to create its overlay until they are gone.",
+                problems.join("; ")
+            ))
+        }
+    }
+
+    /// Record the VM, start it, and wait until it can be used.
+    ///
+    /// Split out of `boot` so that every step from "the VM exists" onwards is
+    /// behind one `?`-free boundary: the caller turns any error here into a
+    /// teardown or a message, and none of these steps can return quietly.
+    ///
+    /// The record is written before the VM is started and again afterwards.
+    /// Before, because a running VM with no state file is invisible to status
+    /// and destroy, and `destroy::plan` would then see an overlay with no VM
+    /// behind it and unlink the disk of a live guest. Afterwards, because that
+    /// is when the process id and the address exist to record.
+    fn bring_up(&mut self, store: &Store) -> Result<(), String> {
+        write_state(store, self.target, &self.state)?;
+
+        println!(
+            "starting {} on {}",
+            self.state.vm_name,
+            self.provider.kind().name()
+        );
+        self.provider.start(&mut self.state)?;
+        write_state(store, self.target, &self.state)?;
+
+        println!("waiting for the guest to answer on SSH");
+        let elapsed = self.provider.wait_ssh(&self.state, BOOT_TIMEOUT)?;
+        println!("  SSH answered after {:.0}s", elapsed.as_secs_f64());
+
+        println!("waiting for the desktop session");
+        let elapsed = job::wait_for_session(
+            self.provider.as_ref(),
+            &self.state,
+            self.target,
+            SESSION_TIMEOUT,
+        )?;
+        println!(
+            "  the desktop was ready after {:.0}s",
+            elapsed.as_secs_f64()
+        );
         Ok(())
     }
 
@@ -208,40 +269,62 @@ pub fn boot<'a>(
 ) -> Result<Session<'a>, String> {
     check_image(store, target, allow_expired)?;
     check_no_other_vm(runner, store, target)?;
-
-    // A VM already recorded for this target is stale run state; take it down
-    // rather than booting a second one onto the same ports.
-    if let Some(existing) = load_state(store, target) {
-        println!("clearing the {target} VM left behind by an earlier run");
-        if let Ok(existing_provider) = provider::for_state(runner, store, &existing) {
-            let _ = existing_provider.destroy(&existing);
-        }
-        let _ = std::fs::remove_file(store.state_file(target));
-    }
+    clear_stale_state(runner, store, target)?;
 
     let provider = provider::for_target(runner, store, target)?;
     println!("creating a throwaway overlay of the {target} golden image");
-    let mut state = provider.create_from_golden(target, reason)?;
+    let state = provider.create_from_golden(target, reason)?;
 
-    println!("starting {} on {}", state.vm_name, provider.kind().name());
-    provider.start(&mut state)?;
-    write_state(store, target, &state)?;
-
-    println!("waiting for the guest to answer on SSH");
-    let elapsed = provider.wait_ssh(&state, BOOT_TIMEOUT)?;
-    println!("  SSH answered after {:.0}s", elapsed.as_secs_f64());
-
-    println!("waiting for the desktop session");
-    let elapsed = job::wait_for_session(provider.as_ref(), &state, target, SESSION_TIMEOUT)?;
-    println!(
-        "  the desktop was ready after {:.0}s",
-        elapsed.as_secs_f64()
-    );
-
-    Ok(Session {
+    // From here the VM exists: for Hyper-V it is registered, for QEMU its
+    // overlay is on disk. Everything after this point goes through
+    // `after_failure`, so no failure can return while leaving one running.
+    let mut session = Session {
         provider,
         state,
         target,
+    };
+    match session.bring_up(store) {
+        Ok(()) => Ok(session),
+        Err(e) => {
+            println!("{}", after_failure(&session, store, false));
+            Err(e)
+        }
+    }
+}
+
+/// Take down whatever an earlier run left recorded for this target.
+///
+/// The record is removed only once the teardown has succeeded, which is the
+/// same rule `destroy::execute` follows and for the same reason: deleting the
+/// record of a VM that is still registered makes it invisible to `vm status`
+/// and `vm destroy` for good. That is reachable on a host where the `Hyper-V`
+/// cmdlets fail, which is a plain missing group membership away.
+fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Result<(), String> {
+    let Some(existing) = load_state(store, target) else {
+        return Ok(());
+    };
+    println!("clearing the {target} VM left behind by an earlier run");
+
+    let provider = provider::for_state(runner, store, &existing).map_err(|e| {
+        format!(
+            "{} is recorded for {target}, but {e}. The record is left in place \
+             rather than deleted; `cargo xtask vm destroy {target}` clears it.",
+            existing.vm_name
+        )
+    })?;
+
+    let session = Session {
+        provider,
+        state: existing,
+        target,
+    };
+    session.tear_down(store).map_err(|e| {
+        format!(
+            "the {target} VM left behind by an earlier run could not be taken \
+             down: {e}\nIts record is kept rather than deleted, because a VM \
+             that is still registered and no longer recorded cannot be found \
+             again. `cargo xtask vm destroy {target}` retries this."
+        )
     })
 }
 
@@ -451,9 +534,19 @@ pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, Stri
 
     if keep {
         println!("{}", lifecycle_explainer(target));
+    } else if let Err(e) = session.tear_down(&store) {
+        // The same shape as the other three teardown sites: name the VM and
+        // say how to reach it, because it is still there.
+        println!(
+            "warning: {} could not be destroyed: {e}",
+            session.state.vm_name
+        );
+        println!("{}", session.reach_hint());
     } else {
-        session.tear_down(&store)?;
-        println!("the VM is destroyed and the overlay is gone");
+        println!(
+            "{} is destroyed and the overlay is gone",
+            session.state.vm_name
+        );
     }
     Ok(u8::from(code != 0))
 }

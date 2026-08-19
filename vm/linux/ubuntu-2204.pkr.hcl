@@ -118,7 +118,11 @@ source "qemu" "ubuntu" {
   headless         = true
   vnc_bind_address = "127.0.0.1"
 
-  net_device     = "virtio-net"
+  # Spelled the way `qemu.rs` spells it at run time rather than as the
+  # `virtio-net` alias, so that the two can be compared literally: an image
+  # installed with one network card and booted with another has no driver for
+  # what it finds, and the symptom is a ten-minute SSH timeout.
+  net_device     = "virtio-net-pci"
   disk_interface = "virtio"
   machine_type   = "q35"
 

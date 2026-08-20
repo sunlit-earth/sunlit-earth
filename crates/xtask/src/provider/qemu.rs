@@ -889,14 +889,32 @@ mod template_agreement {
     }
 
     #[test]
+    fn the_boot_key_is_pressed_over_qmp_rather_than_typed_by_packer() {
+        // Packer logs every keystroke it sends over VNC and the guest receives
+        // none of them on this host, so the template asks Packer to type
+        // nothing and opens a monitor for the xtask to press the key on. The
+        // port has to be the one the xtask presses.
+        let text = template(Target::Windows);
+        assert!(text.contains("boot_command = []"), "{text}");
+        assert!(text.contains(r#"["-qmp", "tcp:127.0.0.1:${var.qmp_port}"#), "{text}");
+        let port = crate::commands::build_image::BUILD_QMP_PORT.to_string();
+        assert!(
+            text.contains(&format!("default = \"{port}\"")),
+            "the template's qmp_port default is not {port}"
+        );
+        assert_ne!(
+            crate::commands::build_image::BUILD_QMP_PORT,
+            super::QMP_PORT,
+            "a build and a running guest would fight over the monitor"
+        );
+    }
+
+    #[test]
     fn the_windows_template_boots_its_installation_media_first() {
         // Without this the "Press any key to boot from CD or DVD" prompt never
         // appears, and no keypress can rescue the build.
         let text = template(Target::Windows);
         assert!(text.contains(r#"["-boot", "order=d"]"#), "{text}");
-        // The keypress has to cover the window the prompt appears in, which is
-        // around ten seconds in, not the two the first version waited.
-        assert!(text.matches("<spacebar>").count() >= 10, "{text}");
     }
 
     #[test]

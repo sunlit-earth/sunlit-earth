@@ -32,6 +32,19 @@ pub fn request(execute: &str) -> String {
     format!("{{\"execute\":\"{execute}\"}}\n")
 }
 
+/// A `send-key` line for one key, named the way QEMU names keys.
+///
+/// This injects at the input device rather than through a VNC client, which is
+/// the whole reason it exists: Packer types its boot command over VNC, and on
+/// this host those keystrokes never reach the guest, while the same key sent
+/// here does. `hold_ms` is QEMU's `hold-time`.
+pub fn send_key_request(qcode: &str, hold_ms: u32) -> String {
+    format!(
+        "{{\"execute\":\"send-key\",\"arguments\":{{\"keys\":[{{\"type\":\"qcode\",\
+         \"data\":\"{qcode}\"}}],\"hold-time\":{hold_ms}}}}}\n"
+    )
+}
+
 /// Classify one line of server output.
 pub fn classify(line: &str) -> Result<Reply, String> {
     let value: serde_json::Value =
@@ -89,6 +102,49 @@ pub fn execute(port: u16, command: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Press one key repeatedly on a running guest, and report how many landed.
+///
+/// One connection for the whole run, because reconnecting per key would spend
+/// more time in handshakes than in keys. The caller is answering a prompt whose
+/// exact moment is unknown, so this presses on a schedule rather than waiting
+/// for anything.
+pub fn press_key(
+    port: u16,
+    qcode: &str,
+    presses: u32,
+    gap: Duration,
+    hold_ms: u32,
+) -> Result<u32, String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let stream = TcpStream::connect_timeout(&address, TIMEOUT)
+        .map_err(|e| format!("cannot reach the QMP socket on port {port}: {e}"))?;
+    stream
+        .set_read_timeout(Some(TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(TIMEOUT)))
+        .map_err(|e| format!("cannot configure the QMP socket: {e}"))?;
+    let mut writer = stream
+        .try_clone()
+        .map_err(|e| format!("cannot clone the QMP socket: {e}"))?;
+    let mut reader = BufReader::new(&stream);
+
+    read_until_reply(&mut reader, "the greeting")?;
+    send(&mut writer, &request("qmp_capabilities"))?;
+    read_until_reply(&mut reader, "qmp_capabilities")?;
+
+    let line = send_key_request(qcode, hold_ms);
+    let mut sent = 0;
+    for press in 0..presses {
+        send(&mut writer, &line)?;
+        read_until_reply(&mut reader, "send-key")?;
+        sent += 1;
+        if press + 1 < presses {
+            std::thread::sleep(gap);
+        }
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(sent)
+}
+
 fn send(writer: &mut impl Write, line: &str) -> Result<(), String> {
     writer
         .write_all(line.as_bytes())
@@ -122,6 +178,18 @@ mod tests {
     fn a_request_is_one_json_line() {
         assert_eq!(request("quit"), "{\"execute\":\"quit\"}\n");
         assert!(request("system_powerdown").ends_with('\n'));
+    }
+
+    #[test]
+    fn a_send_key_request_names_the_key_and_holds_it() {
+        let line = send_key_request("spc", 100);
+        assert_eq!(line.matches('\n').count(), 1, "the protocol is JSON lines");
+        let parsed: serde_json::Value =
+            serde_json::from_str(line.trim()).expect("send-key must be valid JSON");
+        assert_eq!(parsed["execute"], "send-key");
+        assert_eq!(parsed["arguments"]["keys"][0]["type"], "qcode");
+        assert_eq!(parsed["arguments"]["keys"][0]["data"], "spc");
+        assert_eq!(parsed["arguments"]["hold-time"], 100);
     }
 
     #[test]

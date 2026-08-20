@@ -289,6 +289,73 @@ fn resolve_iso_tool(
     Ok((tool, at.parent().map(Path::to_path_buf)))
 }
 
+/// The QMP port the Windows template opens for the boot key, and the one this
+/// presses on. Not the 4444 a running guest uses, so a build and a guest cannot
+/// collide.
+pub const BUILD_QMP_PORT: u16 = 4445;
+
+/// The key that answers "Press any key to boot from CD or DVD", how many times
+/// it is pressed, and how far apart.
+///
+/// The prompt appears about ten seconds into the boot and lasts about five, and
+/// neither number is under anyone's control, so the answer is to press across
+/// the window rather than to time it. It stops well before setup has a screen
+/// with a focused button on it: a spacebar arriving then would press whatever
+/// that is, and one of them is Cancel.
+pub const BOOT_KEY: &str = "spc";
+pub const BOOT_KEY_PRESSES: u32 = 35;
+pub const BOOT_KEY_GAP: Duration = Duration::from_secs(1);
+pub const BOOT_KEY_HOLD_MS: u32 = 100;
+
+/// How long to keep trying to reach the monitor before giving up on it.
+const BOOT_KEY_CONNECT_WINDOW: Duration = Duration::from_secs(30);
+
+/// Answer the installer's boot prompt, in the background, while Packer builds.
+///
+/// Packer's own `boot_command` is empty because its VNC keystrokes do not
+/// arrive on this host; QMP's `send-key` injects at the input device instead.
+/// Nothing here can fail the build: a monitor that never answers means the
+/// prompt goes unanswered, which the build reports for itself in its own time,
+/// and saying so twice would just bury it.
+fn press_boot_key_in_background(port: u16, target: Target) {
+    if target != Target::Windows {
+        return;
+    }
+    println!(
+        "  boot key:  {BOOT_KEY} on 127.0.0.1:{port}, {BOOT_KEY_PRESSES} times, \
+         to answer \"Press any key to boot from CD or DVD\""
+    );
+    let _ = std::thread::Builder::new()
+        .name("boot-key".to_owned())
+        .spawn(move || {
+            let deadline = std::time::Instant::now() + BOOT_KEY_CONNECT_WINDOW;
+            loop {
+                match crate::provider::qmp::press_key(
+                    port,
+                    BOOT_KEY,
+                    BOOT_KEY_PRESSES,
+                    BOOT_KEY_GAP,
+                    BOOT_KEY_HOLD_MS,
+                ) {
+                    Ok(sent) => {
+                        println!("  boot key:  {sent} presses sent");
+                        return;
+                    }
+                    Err(e) if std::time::Instant::now() < deadline => {
+                        // QEMU is not listening yet, which is the normal state
+                        // for the first second or two of a build.
+                        std::thread::sleep(Duration::from_millis(500));
+                        let _ = e;
+                    }
+                    Err(e) => {
+                        println!("  boot key:  not sent ({e})");
+                        return;
+                    }
+                }
+            }
+        });
+}
+
 /// Run a build end to end.
 pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     let store = store::store()?;
@@ -370,6 +437,9 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
 
     let mut vars = plan.vars.clone();
     vars.push(("ssh_public_key".to_owned(), public_key));
+    if target == Target::Windows {
+        vars.push(("qmp_port".to_owned(), BUILD_QMP_PORT.to_string()));
+    }
     let mut build = Cmd::new("packer")
         .args(
             BuildPlan {
@@ -382,6 +452,7 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     if let Some(path) = &extra_path {
         build = build.env("PATH", path);
     }
+    press_boot_key_in_background(BUILD_QMP_PORT, target);
     let code = runner
         .stream(&build)
         .map_err(|e| format!("cannot run packer: {e}"))?;

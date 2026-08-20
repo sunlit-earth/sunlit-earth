@@ -233,6 +233,10 @@ Against the success criteria:
 
     What made all of this findable in one sitting is worth recording: QEMU's VNC server is always listening on loopback, and a 60-line RFB client is enough to take a screenshot of a guest and to type into it. That is how each of these states was read off a running VM with no VNC viewer installed on the host.
 
+22. **Packer's boot command does not reach the guest on this host, so the xtask presses the key itself.** The keypress that answers "Press any key to boot from CD or DVD" is not optional: the prompt comes from the ISO's own boot manager, and attaching the media as a disk rather than a CD does not avoid it, which was measured. Packer types that key over VNC, and with `PACKER_LOG=1` it logs every one of the fifteen it sent, one a second, across exactly the window that works. The prompt timed out anyway, four runs in a row. The same key, on the same schedule, from a sixty-line RFB client of our own reached the guest every time, including with a zero-length hold, which is what Packer's own client uses. Running both at once settled it: Packer typing plus our client typing installs Windows, Packer typing alone does not.
+
+    Rather than keep guessing at the difference, the template now asks Packer to type nothing and opens a QMP monitor on its own port, and `build-image` presses the key there with `send-key`, which injects at the input device and involves no VNC client at all. The xtask already had a QMP client for stopping a guest cleanly, so this is one request shape and one loop rather than a new protocol. Verified end to end through `vm build-image windows` against an isolated store: 35 presses sent, and the installer writing to disk a minute later.
+
 ## Results
 
 To be recorded on the first live run: image build times, warm VM run times, and per-guest pass counts. Nothing in this section can be filled in from a session that was not permitted to boot a VM, and inventing plausible numbers would be worse than leaving it empty.

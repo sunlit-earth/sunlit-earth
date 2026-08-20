@@ -79,6 +79,14 @@ variable "cpus" {
   default = "4"
 }
 
+# The QMP port the xtask presses the boot key on. Its own, not the 4444 a
+# running guest uses, so a build and a guest cannot collide. The default and the
+# xtask's constant are kept in step by a test.
+variable "qmp_port" {
+  type    = string
+  default = "4445"
+}
+
 variable "memory" {
   type    = string
   default = "6144"
@@ -146,23 +154,18 @@ source "qemu" "windows" {
     "sunlit-e2e-media.marker" = "sunlit-e2e"
   }
 
-  # "Press any key to boot from CD or DVD" appears when the firmware reaches
-  # the CD, which is around ten seconds in on this hardware, not two: the
-  # firmware enumerates three block devices and its own logo first. Measured on
-  # 2026-08-20, a keypress at two seconds arrives while the OVMF logo is still
-  # up, the prompt then times out, and the firmware falls through to the second
-  # CD, the empty disk, and finally PXE. So the spacebar is pressed once a
-  # second across the window the prompt can appear in.
+  # Empty on purpose. "Press any key to boot from CD or DVD" still has to be
+  # answered, and the xtask does it over QMP while this build runs, because
+  # Packer's own keystrokes do not arrive.
   #
-  # The window is deliberately bounded rather than generous: once setup is up,
-  # a spacebar presses whatever control has focus, and one of them is Cancel,
-  # which puts an "Are you sure you want to quit?" dialog over the install.
-  boot_wait = "4s"
-  boot_command = [
-    "<spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>",
-    "<wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>",
-    "<wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>",
-  ]
+  # Measured on 2026-08-20: Packer logs each `<spacebar>` it sends over VNC,
+  # QEMU's log shows nothing wrong, and the prompt times out anyway. The same
+  # key, on the same schedule, from a small VNC client of our own reached the
+  # guest every time, and so does `send-key` over QMP, which injects at the
+  # input device and skips the question entirely. `-qmp` below is what the
+  # xtask connects to.
+  boot_wait    = "1s"
+  boot_command = []
 
   # SSH does not exist until bootstrap.ps1 installs it at first logon, which is
   # on the far side of the whole Windows install.
@@ -201,6 +204,10 @@ source "qemu" "windows" {
     # is understood, where `once=` depends on how QEMU rewrites the boot order
     # across a guest-initiated reset.
     ["-boot", "order=d"],
+
+    # The monitor the xtask presses the boot key on. Loopback only, and it
+    # answers as soon as QEMU is up rather than making QEMU wait for a client.
+    ["-qmp", "tcp:127.0.0.1:${var.qmp_port},server=on,wait=off"],
   ]
 }
 

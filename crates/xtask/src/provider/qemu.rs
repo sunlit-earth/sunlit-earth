@@ -171,6 +171,14 @@ impl Launch {
             self.name.clone(),
             "-machine".into(),
             format!("q35,accel={}", self.accelerator),
+            // The guest CPU is asked for explicitly because QEMU's default,
+            // `qemu64`, is what makes WHPX abort a Windows guest: the vCPU dies
+            // with "Unexpected VP exit code 4" as soon as the Windows boot
+            // manager runs, and the VM then sits at the firmware logo until
+            // something times out. The same flag is in both Packer templates,
+            // for the same reason, and it costs nothing under KVM.
+            "-cpu".into(),
+            "max".into(),
             "-m".into(),
             self.memory_mb.to_string(),
             "-smp".into(),
@@ -689,6 +697,17 @@ mod tests {
     }
 
     #[test]
+    fn the_guest_cpu_is_asked_for_rather_than_left_to_qemu() {
+        // With QEMU's default `qemu64`, WHPX kills the vCPU as soon as the
+        // Windows boot manager runs ("Unexpected VP exit code 4"), and the VM
+        // then sits at the firmware logo forever. Both Packer templates carry
+        // the same flag, which their own test checks.
+        for target in Target::ALL {
+            assert!(joined(target).contains("-cpu max"), "{target}");
+        }
+    }
+
+    #[test]
     fn qmp_listens_without_blocking_the_boot() {
         let text = joined(Target::Linux);
         // `wait=off` matters: with the default, QEMU would not start until
@@ -852,6 +871,31 @@ mod template_agreement {
                 (found.trim() == key).then(|| value.trim().trim_matches('"').to_owned())
             })
             .unwrap_or_else(|| panic!("no {key} in the template"))
+    }
+
+    #[test]
+    fn neither_template_leaves_the_guest_cpu_at_qemus_default() {
+        // QEMU's default `qemu64` is what makes WHPX abort a Windows guest the
+        // moment its boot manager runs, and the symptom is an image build that
+        // sits at the firmware logo until Packer's SSH timeout. The runtime
+        // side of this is asserted next to the other launch arguments.
+        for target in Target::ALL {
+            assert!(
+                template(target).contains(r#"["-cpu", "max"]"#),
+                "{target}: the template leaves the guest CPU at QEMU's default"
+            );
+        }
+    }
+
+    #[test]
+    fn the_windows_template_boots_its_installation_media_first() {
+        // Without this the "Press any key to boot from CD or DVD" prompt never
+        // appears, and no keypress can rescue the build.
+        let text = template(Target::Windows);
+        assert!(text.contains(r#"["-boot", "order=d"]"#), "{text}");
+        // The keypress has to cover the window the prompt appears in, which is
+        // around ten seconds in, not the two the first version waited.
+        assert!(text.matches("<spacebar>").count() >= 10, "{text}");
     }
 
     #[test]

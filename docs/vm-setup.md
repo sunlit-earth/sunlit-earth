@@ -94,6 +94,10 @@ The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Wi
 
 **The ISO download fails.** Microsoft publishes the evaluation behind a registration form and documents no direct link, so this is expected to break from time to time. The command prints the Evaluation Center page and the exact path to save the file at; download it by hand and run `vm build-image windows` again.
 
+**A Windows build sits at the firmware logo and nothing happens.** The tell is that the output disk stays a few hundred kilobytes and the guest's CPU is idle. QEMU says why on its own stderr, which Packer prints: `WHPX: Unexpected VP exit code 4` means the hypervisor gave up on the vCPU, which QEMU's default guest CPU model provokes as soon as the Windows boot manager runs. Both templates ask for `-cpu max` for exactly this reason; if you are looking at this on a modified template, that is the first thing to check. Packer will otherwise wait out its two-hour SSH timeout, so stop the build rather than waiting.
+
+**A Windows build reaches "Start PXE over IPv4" and then hangs.** The keypress that answers "Press any key to boot from CD or DVD" was missed, so the firmware fell through every other boot option. The template presses the spacebar once a second across the window that prompt appears in; a slower host may need that window widened.
+
 **A Windows build stops at "This PC can't run Windows 11".** The unattend file's LabConfig bypass keys are undocumented and a revision can stop honoring them. `cargo xtask vm view windows` shows the installer's screen while a build is running, which is the fastest way to see where it stopped.
 
 **A guest boots but never becomes reachable.** `vm view` shows its console. For a QEMU guest the console is a VNC server on `127.0.0.1:5900` that is always running, so a viewer can attach at any moment, including in the middle of a wedged boot.

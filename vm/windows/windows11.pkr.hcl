@@ -146,12 +146,23 @@ source "qemu" "windows" {
     "sunlit-e2e-media.marker" = "sunlit-e2e"
   }
 
-  # "Press any key to boot from CD or DVD" waits about five seconds and then
-  # falls through to the empty disk. One keypress is all it needs, and a stray
-  # one at the setup screen that follows is harmless because setup is
-  # unattended from there on.
-  boot_wait    = "2s"
-  boot_command = ["<spacebar><wait1><spacebar>"]
+  # "Press any key to boot from CD or DVD" appears when the firmware reaches
+  # the CD, which is around ten seconds in on this hardware, not two: the
+  # firmware enumerates three block devices and its own logo first. Measured on
+  # 2026-08-20, a keypress at two seconds arrives while the OVMF logo is still
+  # up, the prompt then times out, and the firmware falls through to the second
+  # CD, the empty disk, and finally PXE. So the spacebar is pressed once a
+  # second across the window the prompt can appear in.
+  #
+  # The window is deliberately bounded rather than generous: once setup is up,
+  # a spacebar presses whatever control has focus, and one of them is Cancel,
+  # which puts an "Are you sure you want to quit?" dialog over the install.
+  boot_wait = "4s"
+  boot_command = [
+    "<spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>",
+    "<wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>",
+    "<wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar><wait1><spacebar>",
+  ]
 
   # SSH does not exist until bootstrap.ps1 installs it at first logon, which is
   # on the far side of the whole Windows install.
@@ -173,6 +184,23 @@ source "qemu" "windows" {
     ["-m", "${var.memory}"],
     ["-smp", "${var.cpus}"],
     ["-rtc", "base=utc"],
+
+    # Not optional, and not a performance choice. QEMU's default guest CPU is
+    # `qemu64`, and with that model WHPX dies the moment the Windows boot
+    # manager runs: `WHPX: Unexpected VP exit code 4`, after which the vCPU is
+    # gone, the screen stays on the firmware logo, and QEMU sits there forever
+    # while Packer waits out its two-hour SSH timeout. Measured on an AMD Ryzen
+    # 7 5800X host on 2026-08-20 and reproduced four times; `-cpu max` boots the
+    # same media to an unattended install on the same host.
+    ["-cpu", "max"],
+
+    # The firmware has to try the CD first, or the "Press any key" prompt never
+    # comes up and no keypress can help. `order=` rather than `once=`: the
+    # install restarts several times, and each of those restarts then waits out
+    # the prompt before reaching the disk, which costs about five seconds and
+    # is understood, where `once=` depends on how QEMU rewrites the boot order
+    # across a guest-initiated reset.
+    ["-boot", "order=d"],
   ]
 }
 

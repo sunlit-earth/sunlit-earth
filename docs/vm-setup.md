@@ -78,8 +78,6 @@ cargo xtask vm purge linux --image           # only the golden image and its lef
 
 `vm purge` deletes what took time to get: the golden image, its manifest, Packer's leftovers, and the cached installation media. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The three flags are additive, and none of them means all of it.
 
-`--purge` additionally deletes the golden image, the converted VHDX, the cached ISO, and the manifest. That is the disk-space recovery path. It prints what it deleted and how much it freed, and the next `vm status` reports the images as missing. Getting them back means another `vm build-image`, so purge when you need the space rather than as a matter of routine.
-
 Neither command touches anything that is not the xtask's own. Every VM it creates is named `sunlit-e2e-<target>`, every file it writes lives under the image store, and a state file naming anything else is reported and left alone.
 
 The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Windows and `~/.local/share/SunlitEarth/vm` on Linux. Set `SUNLIT_EARTH_VM_DIR` to put them somewhere else, on a bigger disk for instance. Budget 40 to 60 GB for both images plus their overlays and the Windows installation media.

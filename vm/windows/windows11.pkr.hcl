@@ -156,7 +156,10 @@ source "qemu" "windows" {
 
   # Empty on purpose. "Press any key to boot from CD or DVD" still has to be
   # answered, and the xtask does it over QMP while this build runs, because
-  # Packer's own keystrokes do not arrive.
+  # Packer's own keystrokes do not arrive. It presses until the disk shows the
+  # installer writing, and then stops: a spacebar arriving after setup is up
+  # presses whatever has focus, and on the "Installing Windows" screen that is
+  # Cancel.
   #
   # Measured on 2026-08-20: Packer logs each `<spacebar>` it sends over VNC,
   # QEMU's log shows nothing wrong, and the prompt times out anyway. The same

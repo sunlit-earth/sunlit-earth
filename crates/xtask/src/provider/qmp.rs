@@ -102,18 +102,21 @@ pub fn execute(port: u16, command: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Press one key repeatedly on a running guest, and report how many landed.
+/// Press one key on a running guest until `stop` says to, and report how many
+/// presses landed.
 ///
 /// One connection for the whole run, because reconnecting per key would spend
 /// more time in handshakes than in keys. The caller is answering a prompt whose
-/// exact moment is unknown, so this presses on a schedule rather than waiting
-/// for anything.
-pub fn press_key(
+/// exact moment is unknown, hence the repetition; `stop` is how it says the
+/// prompt has been answered, which matters because these keystrokes go
+/// somewhere once the guest is past it.
+pub fn press_key_until(
     port: u16,
     qcode: &str,
-    presses: u32,
+    max_presses: u32,
     gap: Duration,
     hold_ms: u32,
+    stop: &dyn Fn() -> bool,
 ) -> Result<u32, String> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let stream = TcpStream::connect_timeout(&address, TIMEOUT)
@@ -133,12 +136,15 @@ pub fn press_key(
 
     let line = send_key_request(qcode, hold_ms);
     let mut sent = 0;
-    for press in 0..presses {
+    for press in 0..max_presses {
         send(&mut writer, &line)?;
         read_until_reply(&mut reader, "send-key")?;
         sent += 1;
-        if press + 1 < presses {
+        if press + 1 < max_presses {
             std::thread::sleep(gap);
+        }
+        if stop() {
+            break;
         }
     }
     let _ = stream.shutdown(Shutdown::Both);

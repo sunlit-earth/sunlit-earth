@@ -294,21 +294,46 @@ fn resolve_iso_tool(
 /// collide.
 pub const BUILD_QMP_PORT: u16 = 4445;
 
-/// The key that answers "Press any key to boot from CD or DVD", how many times
-/// it is pressed, and how far apart.
+/// What Packer names the disk it builds, which is the template's `vm_name`.
+pub const BUILT_DISK: &str = "golden.qcow2";
+
+/// The key that answers "Press any key to boot from CD or DVD".
 ///
 /// The prompt appears about ten seconds into the boot and lasts about five, and
-/// neither number is under anyone's control, so the answer is to press across
-/// the window rather than to time it. It stops well before setup has a screen
-/// with a focused button on it: a spacebar arriving then would press whatever
-/// that is, and one of them is Cancel.
+/// neither number is under anyone's control, so it is pressed repeatedly rather
+/// than timed.
 pub const BOOT_KEY: &str = "spc";
-pub const BOOT_KEY_PRESSES: u32 = 35;
 pub const BOOT_KEY_GAP: Duration = Duration::from_secs(1);
 pub const BOOT_KEY_HOLD_MS: u32 = 100;
 
+/// The upper bound, for a host so slow that the prompt is a minute away.
+pub const BOOT_KEY_MAX_PRESSES: u32 = 60;
+
+/// The size at which the disk says the installer is running.
+///
+/// Pressing has to stop then, and this is the signal to stop on: everything
+/// before that boot is the firmware, which writes nothing to the disk, and
+/// setup's first writes are tens of megabytes. Measured on 2026-08-20: 197 KB
+/// while the firmware is deciding, 96 MB within seconds of the installer
+/// starting.
+///
+/// Stopping matters as much as pressing. A spacebar arriving after setup is up
+/// presses whatever control has focus, and on the "Installing Windows" screen
+/// that is Cancel, which puts an "Are you sure you want to quit?" dialog over
+/// the install. That happened on a real build, so the window is not guessed at
+/// any more: it closes when the installer is observably running.
+pub const INSTALLER_WRITING_BYTES: u64 = 64 * 1024 * 1024;
+
 /// How long to keep trying to reach the monitor before giving up on it.
 const BOOT_KEY_CONNECT_WINDOW: Duration = Duration::from_secs(30);
+
+/// Whether the file at `path` has grown past `threshold`.
+///
+/// A missing file is not started: Packer creates the disk before QEMU runs, so
+/// absence here means something is wrong elsewhere and pressing on is harmless.
+pub fn installer_started(path: &Path, threshold: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.len() > threshold)
+}
 
 /// Answer the installer's boot prompt, in the background, while Packer builds.
 ///
@@ -317,12 +342,12 @@ const BOOT_KEY_CONNECT_WINDOW: Duration = Duration::from_secs(30);
 /// Nothing here can fail the build: a monitor that never answers means the
 /// prompt goes unanswered, which the build reports for itself in its own time,
 /// and saying so twice would just bury it.
-fn press_boot_key_in_background(port: u16, target: Target) {
+fn press_boot_key_in_background(port: u16, target: Target, disk: PathBuf) {
     if target != Target::Windows {
         return;
     }
     println!(
-        "  boot key:  {BOOT_KEY} on 127.0.0.1:{port}, {BOOT_KEY_PRESSES} times, \
+        "  boot key:  {BOOT_KEY} on 127.0.0.1:{port} until the installer writes, \
          to answer \"Press any key to boot from CD or DVD\""
     );
     let _ = std::thread::Builder::new()
@@ -330,15 +355,24 @@ fn press_boot_key_in_background(port: u16, target: Target) {
         .spawn(move || {
             let deadline = std::time::Instant::now() + BOOT_KEY_CONNECT_WINDOW;
             loop {
-                match crate::provider::qmp::press_key(
+                let started = || installer_started(&disk, INSTALLER_WRITING_BYTES);
+                match crate::provider::qmp::press_key_until(
                     port,
                     BOOT_KEY,
-                    BOOT_KEY_PRESSES,
+                    BOOT_KEY_MAX_PRESSES,
                     BOOT_KEY_GAP,
                     BOOT_KEY_HOLD_MS,
+                    &started,
                 ) {
+                    Ok(sent) if started() => {
+                        println!("  boot key:  the installer started after {sent} presses");
+                        return;
+                    }
                     Ok(sent) => {
-                        println!("  boot key:  {sent} presses sent");
+                        println!(
+                            "  boot key:  {sent} presses sent and the installer has not started; \
+                             if this build fails waiting for SSH, the boot prompt was missed"
+                        );
                         return;
                     }
                     Err(e) if std::time::Instant::now() < deadline => {
@@ -452,7 +486,9 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     if let Some(path) = &extra_path {
         build = build.env("PATH", path);
     }
-    press_boot_key_in_background(BUILD_QMP_PORT, target);
+    // The same file `finish` collects, which is also the signal that the boot
+    // prompt has been answered.
+    press_boot_key_in_background(BUILD_QMP_PORT, target, plan.output_dir.join(BUILT_DISK));
     let code = runner
         .stream(&build)
         .map_err(|e| format!("cannot run packer: {e}"))?;
@@ -479,7 +515,7 @@ fn finish(
     std::fs::create_dir_all(&plan.image_dir)
         .map_err(|e| format!("cannot create {}: {e}", plan.image_dir.display()))?;
 
-    let built = plan.output_dir.join("golden.qcow2");
+    let built = plan.output_dir.join(BUILT_DISK);
     let qcow2 = store.qcow2(target);
     move_file(&built, &qcow2)?;
 
@@ -581,6 +617,30 @@ mod tests {
 
     fn store() -> Store {
         Store::new("/srv/vm")
+    }
+
+    #[test]
+    fn the_boot_key_stops_once_the_installer_is_writing() {
+        // The signal has to distinguish "the firmware is still deciding", where
+        // the disk is a couple of hundred kilobytes, from "setup is running",
+        // where it is tens of megabytes within seconds. Pressing past that point
+        // put an "are you sure you want to quit" dialog over a real install.
+        let dir = std::env::temp_dir().join("sunlit_xtask_boot_key_disk");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let disk = dir.join(BUILT_DISK);
+        assert!(
+            !installer_started(&disk, INSTALLER_WRITING_BYTES),
+            "a disk that does not exist yet has not started"
+        );
+        std::fs::write(&disk, vec![0u8; 197_632]).expect("write");
+        assert!(
+            !installer_started(&disk, INSTALLER_WRITING_BYTES),
+            "the firmware writes nothing, and this is what that looks like"
+        );
+        std::fs::write(&disk, vec![0u8; 96 * 1024 * 1024]).expect("write");
+        assert!(installer_started(&disk, INSTALLER_WRITING_BYTES));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

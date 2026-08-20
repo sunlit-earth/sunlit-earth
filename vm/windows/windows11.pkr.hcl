@@ -1,10 +1,17 @@
 # The Windows golden image: Windows 11 Enterprise evaluation, autologon,
 # OpenSSH, and a scheduled task that runs the e2e job in the console session.
-# `cargo xtask vm build-image windows` drives this.
 #
-# One canonical install, built with Packer's QEMU builder and converted to VHDX
-# afterwards, so the Hyper-V provider and the QEMU provider boot the same
-# Windows (plan decision 10).
+# This is the Linux-host half of the builder matrix. `cargo xtask vm build-image
+# windows` drives it there, on KVM; on a Windows host the same command installs
+# Windows natively on Hyper-V instead, because QEMU there runs on WHPX and a WHPX
+# guest does not survive the reset Windows Setup performs after copying its files
+# (deviation 25 of the phase 3 plan, and the amendment
+# docs/plans/2026-08-20-phase3-amendment-hyperv-windows-build.md). Nothing in
+# this file changed with that: it is the path KVM still takes.
+#
+# One canonical install either way, converted between qcow2 and VHDX so the
+# Hyper-V provider and the QEMU provider boot the same Windows (plan decision
+# 10). Which format is derived depends on where the install happened.
 #
 # The devices are the ones a stock Windows install has in-box drivers for: an
 # IDE disk and an e1000 NIC. That is slower than virtio and it is deliberate.
@@ -77,9 +84,9 @@ variable "vm_name" {
 # Two is the floor, not a choice: Windows 11 Setup refuses to install on a
 # single-core processor ("The processor needs to have two or more cores"), and
 # the LabConfig BypassCPUCheck key below does not cover that check. It is worth
-# writing down because one vCPU is the workaround for the WHPX reset fault that
-# `commands::build_image::qemu_cannot_install_windows` describes, and this is
-# why that workaround is not available.
+# writing down because one vCPU is the workaround for the WHPX reset fault, which
+# is why that workaround was never available and why a Windows host installs this
+# image on Hyper-V instead. Deviation 25 has the measurements.
 variable "cpus" {
   type    = string
   default = "4"
@@ -204,9 +211,11 @@ source "qemu" "windows" {
     # unattended install on the same host, measured on an AMD Ryzen 7 5800X on
     # 2026-08-20 and reproduced four times.
     #
-    # It does not make WHPX survive the installer's reboot: that is a separate
-    # fault with the same exit code, no CPU model avoids it, and
-    # `commands::build_image::qemu_cannot_install_windows` is where that stands.
+    # It stays even though this template is now a Linux host's, because the same
+    # guest is booted through the QEMU provider override on a Windows host, where
+    # WHPX is what runs it. It does not make WHPX survive the installer's reboot:
+    # that is a separate fault with the same exit code and no CPU model avoids
+    # it, which is deviation 25 and why a Windows host does not use this path.
     ["-cpu", "max"],
 
     # The firmware has to try the CD first, or the "Press any key" prompt never

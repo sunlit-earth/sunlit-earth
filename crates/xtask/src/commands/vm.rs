@@ -229,31 +229,19 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
             .map(|p| p.is_running(state))
             .unwrap_or(false);
         if running {
+            let cost = state
+                .reason
+                .cost_of_ending()
+                .map_or_else(String::new, |cost| format!(", which {cost}"));
             return Err(format!(
                 "{} is already running, and this phase runs one VM at a time \
                  (they share the same forwarded ports).\n\
-                 `cargo xtask vm down {other}` frees it{}.",
-                state.vm_name,
-                cost_of_ending(state.reason)
+                 `cargo xtask vm down {other}` frees it{cost}.",
+                state.vm_name
             ));
         }
     }
     Ok(())
-}
-
-/// What taking a running guest down costs, said only when it costs something.
-///
-/// Every guest this boots holds nothing worth keeping, so "frees it" is the
-/// whole story for all of them but one: a build holds an install of tens of
-/// minutes, and being told to end it without being told that is how an hour goes
-/// missing.
-fn cost_of_ending(reason: StartReason) -> &'static str {
-    if reason == StartReason::Build {
-        ", which ends the image build running in it and starts that install over \
-         from the media"
-    } else {
-        ""
-    }
 }
 
 /// Save the state file. Called as soon as the VM exists, so that a crash from
@@ -337,7 +325,6 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> 
     let Some(existing) = load_state(store, target) else {
         return Ok(());
     };
-    println!("clearing the {target} VM left behind by an earlier run");
 
     let provider = provider::for_state(runner, store, &existing).map_err(|e| {
         format!(
@@ -348,6 +335,11 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> 
     })?;
 
     may_clear(target, existing.reason, provider.is_running(&existing))?;
+
+    // Said after the decision, not before it: a running build is refused here,
+    // and announcing a clearing that is then declined describes something that
+    // never happens.
+    println!("clearing the {target} VM left behind by an earlier run");
 
     let session = Session {
         provider,
@@ -700,12 +692,16 @@ mod tests {
     #[test]
     fn being_told_to_end_a_build_says_what_that_ends() {
         // The one-VM-at-a-time refusal points at `vm down <other>`, and for a
-        // build that command costs an install rather than a boot.
-        let build = cost_of_ending(StartReason::Build);
+        // build that command costs an install rather than a boot. The clause
+        // itself lives on the reason, because the teardown that stops a guest
+        // has to say the same thing.
+        let build = StartReason::Build
+            .cost_of_ending()
+            .expect("ending a build costs something");
         assert!(build.contains("ends the image build"), "{build}");
         assert!(build.contains("over from the media"), "{build}");
         for reason in [StartReason::Run, StartReason::Keep, StartReason::Up] {
-            assert_eq!(cost_of_ending(reason), "", "{reason:?}");
+            assert_eq!(reason.cost_of_ending(), None, "{reason:?}");
         }
     }
 

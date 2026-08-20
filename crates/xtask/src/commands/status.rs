@@ -38,7 +38,15 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
             format_bytes(inventory.iso_bytes())
         );
         for file in &inventory.iso {
-            let _ = writeln!(out, "  {}  {}", file.name(), format_bytes(file.bytes));
+            let name = file.name();
+            let _ = write!(out, "  {name}  {}", format_bytes(file.bytes));
+            // The directory holds one file that is not media, and `--iso`
+            // deletes it with the rest. Listing it unlabeled read as a third
+            // ISO; leaving it out would show two files and delete three.
+            if let Some(note) = crate::store::windows_media::media_note(&name) {
+                let _ = write!(out, "  ({note})");
+            }
+            let _ = writeln!(out);
         }
     }
 
@@ -401,12 +409,22 @@ mod tests {
     fn both_windows_media_files_are_listed_and_counted() {
         // The install media and its prompt-free repack. Two files rather than
         // one is what doubles the media footprint, so both are named and both
-        // are in the total.
+        // are in the total. The record beside them is listed as well, because
+        // `vm purge windows --iso` deletes it too, and it is labeled for what
+        // it is rather than passing as a third ISO.
         let mut inv = inventory(vec![empty(Target::Windows), empty(Target::Linux)]);
         inv.iso = vec![
             FileInfo::new(
                 "/srv/vm/iso/windows11-enterprise-eval-noprompt.iso",
                 7_092_805_632,
+                BUILT,
+            ),
+            FileInfo::new(
+                format!(
+                    "/srv/vm/iso/{}",
+                    crate::store::windows_media::SOURCE_MARK_FILE
+                ),
+                84,
                 BUILT,
             ),
             FileInfo::new(
@@ -416,10 +434,19 @@ mod tests {
             ),
         ];
         let text = render(&inv, now());
-        assert!(text.contains("installation media: 2 files"), "{text}");
+        assert!(text.contains("installation media: 3 files"), "{text}");
         assert!(text.contains("windows11-enterprise-eval.iso"), "{text}");
         assert!(
             text.contains("windows11-enterprise-eval-noprompt.iso"),
+            "{text}"
+        );
+        assert!(
+            text.contains(".source.json  84 B  (the record of which download"),
+            "{text}"
+        );
+        // And the ISOs themselves carry no note, so the label distinguishes.
+        assert!(
+            text.contains("windows11-enterprise-eval.iso  6.6 GiB\n"),
             "{text}"
         );
         assert!(text.contains("total: 13.2 GiB"), "{text}");

@@ -159,6 +159,33 @@ impl TeardownPlan {
         self.vms.is_empty() && self.files.is_empty()
     }
 
+    /// What this plan ends a build over and then leaves lying there, in words.
+    ///
+    /// One case reaches this, and it is the reason `cost_of_ending` exists: a
+    /// media purge during a build stops the build (departure 45) while its scope
+    /// does not include run state, so the record and the disk the install had
+    /// written stay where they are. `vm status` afterwards reads as a crashed
+    /// build with nothing having said why. Widening `--iso` to delete them
+    /// instead would make a flag that narrows a purge delete more than it names,
+    /// so the plan says what it leaves and which command takes it.
+    fn left_behind(&self) -> Vec<String> {
+        if self.scope.vm {
+            return Vec::new();
+        }
+        self.vms
+            .iter()
+            .filter(|vm| vm.reason == StartReason::Build)
+            .map(|vm| {
+                format!(
+                    "{}'s record and the disk its install had written, because this \
+                     purge does not take run state; `cargo xtask vm down {}` clears \
+                     both",
+                    vm.vm_name, vm.target
+                )
+            })
+            .collect()
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::new();
         if self.is_empty() {
@@ -170,7 +197,15 @@ impl TeardownPlan {
             );
         }
         for vm in &self.vms {
-            let _ = writeln!(out, "stop {} ({})", vm.vm_name, vm.provider);
+            let _ = write!(out, "stop {} ({})", vm.vm_name, vm.provider);
+            // What ending it costs, on the line that says it is being ended.
+            // This is printed whether or not there is a question afterwards,
+            // which is what makes `--force` a way to skip the question rather
+            // than a way to end an hour-long install in silence.
+            if let Some(cost) = vm.reason.cost_of_ending() {
+                let _ = write!(out, ", which {cost}");
+            }
+            let _ = writeln!(out);
         }
         for file in &self.files {
             let _ = writeln!(
@@ -187,6 +222,9 @@ impl TeardownPlan {
                 format_bytes(self.bytes()),
                 crate::util::count(self.files.len(), "file")
             );
+        }
+        for kept in self.left_behind() {
+            let _ = writeln!(out, "kept: {kept}");
         }
         for refusal in &self.refused {
             let _ = writeln!(out, "skipped: {refusal}");
@@ -319,9 +357,19 @@ pub fn plan(
 /// the question rather than the inventory: the point of asking at all is that a
 /// purge deletes things that cost tens of minutes to build or a six-gigabyte
 /// download to fetch again.
+///
+/// The one thing the scope and the byte count cannot say is what stopping a
+/// guest costs, and for a build that is more than everything else in the
+/// question put together, so it is asked about here as well as printed above.
 pub fn confirmation_prompt(plan: &TeardownPlan) -> String {
+    let mut costs = String::new();
+    for vm in &plan.vms {
+        if let Some(cost) = vm.reason.cost_of_ending() {
+            let _ = write!(costs, " That also stops {}, which {cost}.", vm.vm_name);
+        }
+    }
     format!(
-        "delete {} for {}, freeing {}? [y/N] ",
+        "delete {} for {}, freeing {}?{costs} [y/N] ",
         plan.scope.label(),
         plan.selection.label(),
         format_bytes(plan.bytes())
@@ -591,9 +639,11 @@ mod tests {
 
     #[test]
     fn purging_the_media_takes_both_windows_media_files() {
-        // The download and its prompt-free repack. `--iso` is the command the
-        // status report offers for reclaiming the media, and leaving half of it
-        // behind would make the number it printed a lie.
+        // The download, its prompt-free repack, and the record tying the second
+        // to the first. `--iso` is the command the status report offers for
+        // reclaiming the media, and leaving any of it behind would make the
+        // number it printed a lie; a record outliving its copy would claim a
+        // provenance for a file that is gone.
         let mut inv = inventory(vec![healthy(Target::Windows)]);
         inv.iso = vec![
             FileInfo::new(
@@ -606,6 +656,14 @@ mod tests {
                 7 * 1024 * 1024 * 1024,
                 BUILT,
             ),
+            FileInfo::new(
+                format!(
+                    "/srv/vm/iso/{}",
+                    crate::store::windows_media::SOURCE_MARK_FILE
+                ),
+                0,
+                BUILT,
+            ),
         ];
         let plan = plan(
             &store(),
@@ -613,7 +671,7 @@ mod tests {
             Selection::One(Target::Windows),
             Scope::from_flags(false, false, true),
         );
-        assert_eq!(plan.files.len(), 2, "{plan:?}");
+        assert_eq!(plan.files.len(), 3, "{plan:?}");
         assert_eq!(plan.bytes(), 14 * 1024 * 1024 * 1024);
         assert!(
             plan.files.iter().all(|f| f.target == Some(Target::Windows)),
@@ -800,6 +858,73 @@ mod tests {
         );
         assert_eq!(plan.vms.len(), 1, "{plan:?}");
         assert_eq!(plan.vms[0].reason, StartReason::Build);
+    }
+
+    #[test]
+    fn a_purge_that_ends_a_build_says_so_whether_or_not_it_asks() {
+        // `--force` skips the question, not the consequences, so the listing
+        // carries what ending the guest costs. The question carries it too,
+        // because a question about bytes does not describe an install.
+        let mut entry = with_run_state(Target::Windows);
+        if let Some(state) = entry.state.as_mut() {
+            state.reason = StartReason::Build;
+        }
+        let plan = plan(
+            &store(),
+            &inventory(vec![entry]),
+            Selection::One(Target::Windows),
+            Scope::from_flags(false, false, true),
+        );
+
+        let text = plan.render();
+        assert!(
+            text.contains("stop sunlit-e2e-windows (qemu), which ends the image build"),
+            "{text}"
+        );
+        assert!(text.contains("over from the media"), "{text}");
+        // And what it stops without clearing up, with the command that does.
+        assert!(
+            text.contains("kept: sunlit-e2e-windows's record and the disk its install had written"),
+            "{text}"
+        );
+        assert!(text.contains("does not take run state"), "{text}");
+        assert!(text.contains("cargo xtask vm down windows"), "{text}");
+
+        let prompt = confirmation_prompt(&plan);
+        assert!(prompt.contains("ends the image build"), "{prompt}");
+        assert!(prompt.ends_with("[y/N] "), "{prompt}");
+    }
+
+    #[test]
+    fn a_teardown_that_takes_the_run_state_with_it_has_nothing_to_report_keeping() {
+        // `vm down` on a build, and a purge with `--vm`, delete the record and
+        // the unfinished disk themselves, so there is nothing left to name.
+        let mut entry = with_run_state(Target::Windows);
+        if let Some(state) = entry.state.as_mut() {
+            state.reason = StartReason::Build;
+        }
+        let inv = inventory(vec![entry]);
+        for scope in [Scope::RUN_STATE, Scope::EVERYTHING] {
+            let text = plan(&store(), &inv, Selection::One(Target::Windows), scope).render();
+            assert!(text.contains("which ends the image build"), "{text}");
+            assert!(!text.contains("kept:"), "{text}");
+        }
+    }
+
+    #[test]
+    fn ending_a_guest_that_holds_nothing_is_reported_as_the_plain_thing_it_is() {
+        let inv = inventory(vec![with_run_state(Target::Linux)]);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::EVERYTHING,
+        );
+        // The stop line ends where the VM's provider does: nothing to add.
+        let text = plan.render();
+        assert!(text.contains("stop sunlit-e2e-linux (qemu)\n"), "{text}");
+        assert!(!text.contains("kept:"), "{text}");
+        assert!(!confirmation_prompt(&plan).contains("That also stops"));
     }
 
     #[test]

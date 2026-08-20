@@ -122,8 +122,7 @@ impl Store {
     /// cached repack can be told from one made out of a different download.
     /// Beside the two ISOs, so `vm purge windows --iso` takes it with them.
     pub fn windows_iso_noprompt_source(&self) -> PathBuf {
-        self.iso_dir()
-            .join("windows11-enterprise-eval-noprompt.source.json")
+        self.iso_dir().join(windows_media::SOURCE_MARK_FILE)
     }
 
     /// Packer's working directory for one target, which also holds its log.

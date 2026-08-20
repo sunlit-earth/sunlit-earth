@@ -47,6 +47,29 @@ impl StartReason {
             Self::Build => "an image build (vm build-image)",
         }
     }
+
+    /// What ending this guest costs beyond its own overlay, as a clause, or
+    /// `None` when ending it costs nothing worth saying.
+    ///
+    /// Every guest the xtask boots holds nothing worth keeping, which is plan
+    /// decision 14's whole lifecycle, so there is one answer here for one
+    /// reason: a build holds an install of tens of minutes, and being told to
+    /// end one, or ending one on the way to something else, without being told
+    /// that is how an hour goes missing.
+    ///
+    /// It lives on the reason rather than at either call site because both the
+    /// one-VM-at-a-time refusal and the teardown that is about to stop the guest
+    /// have to say the same thing, and a sentence written twice is a sentence
+    /// that drifts.
+    pub fn cost_of_ending(self) -> Option<&'static str> {
+        match self {
+            Self::Build => Some(
+                "ends the image build running in it and starts that install over \
+                 from the media",
+            ),
+            Self::Run | Self::Keep | Self::Up => None,
+        }
+    }
 }
 
 /// What one running or left-behind VM is, and how to reach it.

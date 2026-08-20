@@ -320,6 +320,22 @@ pub fn read_source_mark(path: &Path) -> Option<SourceMark> {
     SourceMark::from_json(&std::fs::read_to_string(path).ok()?).ok()
 }
 
+/// The name of that record, which is where [`Store::windows_iso_noprompt_source`]
+/// puts it and what a listing of the media directory recognizes it by.
+pub const SOURCE_MARK_FILE: &str = "windows11-enterprise-eval-noprompt.source.json";
+
+/// What a file in the media directory is, when it is not media.
+///
+/// The directory holds the download, the prompt-free copy, and the record tying
+/// the second to the first, and `vm purge windows --iso` takes all three: a
+/// record that outlived its copy would claim a provenance for a file that is no
+/// longer there (departure 43). So a listing shows all three rather than showing
+/// two and deleting three, and says which of them is not an ISO.
+pub fn media_note(name: &str) -> Option<&'static str> {
+    (name == SOURCE_MARK_FILE)
+        .then_some("the record of which download the prompt-free copy was made from")
+}
+
 /// The size of a file, or `None` if it is not there.
 fn file_bytes(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|meta| meta.len())
@@ -515,7 +531,11 @@ fn repack_noprompt(
         )
     })?;
 
-    let packed = pack_noprompt(runner, &tool, source, &tree, &staged, build_dir);
+    // Packing and putting the result where it belongs are one operation with
+    // one cleanup site, because the staged ISO is another copy of the media and
+    // a move that failed leaves it exactly where a failed pack does.
+    let packed = pack_noprompt(runner, &tool, source, &tree, &staged, build_dir)
+        .and_then(|()| install_packed(&staged, &destination));
     // The tree is the size of the media, and it goes on every path out of here
     // rather than only the ones that reached oscdimg: media that cannot be
     // mounted and media with no noprompt boot image both return above that
@@ -526,11 +546,6 @@ fn repack_noprompt(
         return Err(e);
     }
 
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-    }
-    move_file(&staged, &destination)?;
     let bytes = file_bytes(&destination).unwrap_or(0);
     if !plausible_iso(bytes) {
         let _ = std::fs::remove_file(&destination);
@@ -559,6 +574,20 @@ fn repack_noprompt(
         Err(e) => println!("warning: cannot read the download to record it ({e})"),
     }
     Ok(destination)
+}
+
+/// Put the packed ISO in the media directory, making the directory if it is not
+/// there yet.
+///
+/// Part of the same fallible step as the pack, so that the staged ISO has one
+/// place to be deleted from: it is 6.6 GB, and a move that could not be made is
+/// no more worth keeping than a pack that could not be finished.
+fn install_packed(staged: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    move_file(staged, destination)
 }
 
 /// Extract the media, find its boot images, and pack the copy.
@@ -723,9 +752,12 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     if std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    std::fs::copy(from, to)
-        .map(|_| ())
-        .map_err(|e| format!("cannot move {} to {}: {e}", from.display(), to.display()))?;
+    std::fs::copy(from, to).map(|_| ()).map_err(|e| {
+        // A copy that stopped partway leaves a piece of an ISO where a whole one
+        // belongs, and nothing downstream would ever call it anything but media.
+        let _ = std::fs::remove_file(to);
+        format!("cannot move {} to {}: {e}", from.display(), to.display())
+    })?;
     let _ = std::fs::remove_file(from);
     Ok(())
 }
@@ -1090,6 +1122,36 @@ mod tests {
             "{:?}",
             runner.calls()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_packed_iso_that_cannot_be_put_in_place_is_the_cleanup_sites_business() {
+        // Moving the staged ISO into the media directory is part of the same
+        // fallible step as packing it, because the file is another copy of the
+        // media: the caller deletes it once, for either failure, and this half
+        // therefore leaves it where the caller can find it.
+        let dir = std::env::temp_dir().join("sunlit_xtask_install_packed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp tree");
+        let staged = dir.join("noprompt.iso");
+        std::fs::write(&staged, b"packed").expect("write");
+
+        // A parent that is a file is the portable way for the directory not to
+        // be makeable.
+        let blocked = dir.join("blocked");
+        std::fs::write(&blocked, b"not a directory").expect("write");
+        let error = install_packed(&staged, &blocked.join("windows.iso"))
+            .expect_err("the media directory cannot be created");
+        assert!(error.contains("cannot create"), "{error}");
+        assert!(staged.is_file(), "the staged ISO is the caller's to delete");
+
+        // And on the way it is meant to go, the destination directory is made
+        // and the staged copy does not survive as a second one.
+        let destination = dir.join("iso").join("windows.iso");
+        install_packed(&staged, &destination).expect("the move");
+        assert!(destination.is_file());
+        assert!(!staged.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

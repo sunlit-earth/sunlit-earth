@@ -361,10 +361,28 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     if host == HostOs::Other {
         return Err("images are built on a Windows or Linux host".to_owned());
     }
-    match builder_for(host, target) {
+    with_host_keys_forgotten(&store, || match builder_for(host, target) {
         Builder::HyperV => crate::commands::build_hyperv::run(runner, &store, target),
         Builder::PackerQemu => run_packer_build(runner, &store, target, host),
-    }
+    })
+}
+
+/// Run a build and forget the guests' host keys whatever it did.
+///
+/// Both outcomes, and one place for both builders, because the failure path is
+/// the one that needed it: a build fails after its guest has answered on SSH
+/// often enough (`finalize.ps1`, the bootstrap wait, the shutdown), and the entry
+/// that guest left is then wrong for every later connection to the same address
+/// until some other build happens to succeed. That is exactly the warning
+/// [`forget_host_keys`] exists to remove, so it cannot be on the success path
+/// only.
+fn with_host_keys_forgotten(
+    store: &Store,
+    build: impl FnOnce() -> Result<u8, String>,
+) -> Result<u8, String> {
+    let outcome = build();
+    forget_host_keys(store);
+    outcome
 }
 
 /// The Packer and QEMU path: both images on a Linux host, and the Linux image
@@ -575,7 +593,6 @@ fn finish(
 
     let _ = std::fs::remove_dir_all(&plan.output_dir);
 
-    forget_host_keys(store);
     announce(target, &images);
     Ok(0)
 }
@@ -957,6 +974,28 @@ mod tests {
         assert!(!known.exists());
         assert!(store.ssh_key().is_file());
         forget_host_keys(&store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_build_that_failed_forgets_them_too() {
+        // The path that needed it. A build fails after its guest has answered
+        // on SSH often enough, and the entry that guest left is then wrong for
+        // every later connection to the same address: waiting for some later
+        // build to succeed is waiting for the noise to be somebody else's
+        // problem.
+        let dir = std::env::temp_dir().join("sunlit_xtask_forget_host_keys_failed");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let known = crate::guest::ssh::known_hosts(&store.ssh_key());
+        std::fs::create_dir_all(known.parent().expect("a parent")).expect("temp tree");
+
+        for outcome in [Ok(0), Err("the install never reached SSH".to_owned())] {
+            std::fs::write(&known, b"172.28.144.5 ssh-ed25519 AAAA\n").expect("write");
+            let expected = outcome.clone();
+            assert_eq!(with_host_keys_forgotten(&store, || outcome), expected);
+            assert!(!known.exists(), "{expected:?}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

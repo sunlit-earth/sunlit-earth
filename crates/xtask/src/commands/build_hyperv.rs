@@ -417,7 +417,9 @@ fn run_script(runner: &dyn Runner, script: &str) -> Result<String, String> {
 pub enum Presence {
     /// Registered, so it is holding memory and a disk whatever state it is in.
     Registered,
-    /// Not registered, so nothing of this build is running.
+    /// No VM of that name is registered. Which of "never created" and "created
+    /// and gone again" that is cannot be read from one query, and nothing that
+    /// reports it needs to know: nothing of this build is running either way.
     Gone,
     /// `Hyper-V` would not answer, which is its own thing to report rather than
     /// either of the above.
@@ -462,6 +464,11 @@ fn presence(runner: &dyn Runner, name: &str) -> Presence {
 /// stops at its first failure and both halves of it are reachable: `New-VHD`
 /// failing leaves nothing, and anything after `New-VM` leaves a registered VM,
 /// including the script's own `throw` for media that would not attach.
+///
+/// [`Presence::Gone`] is reached from both ends of a build: a create that never
+/// registered anything, and a VM that disappeared out from under an install the
+/// watcher or the shutdown was in the middle of. One query cannot say which, so
+/// this says what the query answered instead of picking one.
 fn aftermath(presence: &Presence, target: Target, state: &RunState) -> String {
     let vm = &state.vm_name;
     match presence {
@@ -472,7 +479,8 @@ fn aftermath(presence: &Presence, target: Target, state: &RunState) -> String {
              down:    cargo xtask vm down {target}  (removes the VM and the unfinished disk)"
         ),
         Presence::Gone => format!(
-            "{vm} was not created, so nothing of this build is running.\n  \
+            "no VM called {vm} is registered with Hyper-V now, so nothing of this \
+             build is running.\n  \
              down:    cargo xtask vm down {target}  (clears the record and any disk \
              that was made for it)"
         ),
@@ -1032,9 +1040,9 @@ fn finish(
         source.to_owned(),
         builder_label(),
     )?;
-    // The new image has new host keys, and what remembers the old ones is one
-    // file of the xtask's own.
-    build_image::forget_host_keys(store);
+    // The host keys the new image answers with are forgotten by the caller,
+    // which does it on the failure path too: a build that got as far as an SSH
+    // session and then failed has already written an entry that is wrong.
     build_image::announce(target, &images);
     Ok(0)
 }
@@ -1449,10 +1457,16 @@ mod tests {
             assert!(text.contains(hint), "{text}");
         }
 
-        // A VM that was never created is not described as running, because a
-        // hint to go and look at one is worse than none.
+        // A VM that is not registered is not described as running, because a
+        // hint to go and look at one is worse than none. And it is not
+        // described as never created either: a VM that vanished mid-install
+        // answers the same query the same way, and this text is on both paths.
         let gone = aftermath(&Presence::Gone, Target::Windows, &state);
-        assert!(gone.contains("was not created"), "{gone}");
+        assert!(
+            gone.contains("no VM called sunlit-e2e-windows is registered"),
+            "{gone}"
+        );
+        assert!(!gone.contains("was not created"), "{gone}");
         assert!(!gone.contains("still there"), "{gone}");
         assert!(!gone.contains("vm view windows"), "{gone}");
         assert!(gone.contains("cargo xtask vm down windows"), "{gone}");
@@ -1547,7 +1561,10 @@ mod tests {
         )
         .expect_err("the create script failed");
         assert!(error.contains("not enough space"), "{error}");
-        assert!(error.contains("was not created"), "{error}");
+        assert!(
+            error.contains("no VM called sunlit-e2e-windows is registered"),
+            "{error}"
+        );
         assert!(!error.contains("still there"), "{error}");
     }
 
@@ -1567,6 +1584,31 @@ mod tests {
             runner.calls().len() >= NOT_RUNNING_SAMPLES as usize,
             "the first reading has to have been tolerated: {:?}",
             runner.calls()
+        );
+    }
+
+    #[test]
+    fn a_vm_that_vanished_mid_install_is_not_reported_as_one_that_was_never_created() {
+        // Both ends of a build reach `Presence::Gone` through the one map_err
+        // in `create_and_install`: a create that registered nothing, and an
+        // install whose VM disappeared under it. The text is composed here the
+        // way that map_err composes it, and it may not assert a history no
+        // query can read.
+        let runner = FakeRunner::new().on("STATE=", CommandOutput::ok("QUERY=ok\n"));
+        let store = Store::new("/srv/vm");
+        let mut state = build_state(&store, Target::Windows);
+        let error = watch_install(&runner, &store, Target::Windows, &mut state, Duration::ZERO)
+            .expect_err("a VM that is not registered ends the install");
+        assert!(error.contains("is no longer registered"), "{error}");
+
+        let whole = format!(
+            "{error}\n{}",
+            aftermath(&presence(&runner, &state.vm_name), Target::Windows, &state)
+        );
+        assert!(!whole.contains("was not created"), "{whole}");
+        assert!(
+            whole.contains("no VM called sunlit-e2e-windows is registered"),
+            "{whole}"
         );
     }
 

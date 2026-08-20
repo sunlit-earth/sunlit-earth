@@ -28,6 +28,58 @@ pub fn accelerator_for(host: HostOs) -> &'static str {
     }
 }
 
+/// The warning for a build this host is not going to finish, or `None`.
+///
+/// Measured on 2026-08-20 on an AMD Ryzen 7 5800X, Windows 11, QEMU 11.1.0, and
+/// then narrowed with a throwaway QEMU rather than by repeating hour-long
+/// builds. Three Windows image builds died the same way, four minutes and 11 GB
+/// in, at the installer's first reboot:
+///
+/// - A WHPX guest with more than one vCPU does not survive a guest reset. QEMU
+///   stops it with `WHPX: Unexpected VP exit code 4`, which is
+///   `WHvRunVpExitReasonUnrecoverableException`, a triple fault. Four vCPUs die,
+///   two die, one survives three resets in a row. No CPU model avoids it
+///   (`max`, `host`, `qemu64`, `Skylake-Client`, `EPYC`), nor does the machine
+///   type or the firmware, and once stopped it is gone: `cont`, `system_reset`,
+///   and both together all leave it stopped or frozen.
+/// - `kernel-irqchip=off`, the other workaround upstream reports, is worse
+///   here: with QEMU's own APIC this guest never leaves the firmware splash, at
+///   one vCPU or four. That is QEMU issue 3178, in a form 11.1 still has.
+/// - One vCPU, the workaround that does work for the reset, is refused by the
+///   product: Windows 11 Setup stops at "The processor needs to have two or
+///   more cores", and the unattend file's `BypassCPUCheck` does not cover that
+///   check.
+///
+/// So the three levers are mutually exclusive and the QEMU builder cannot
+/// install Windows 11 on a Windows host. Upstream it is QEMU issues 858, 2042
+/// and 2402, all open; the maintainer's fix, moving `WHvResetPartition` to the
+/// boot CPU's reset, was still unmerged on 2026-08-18. This is a warning rather
+/// than a refusal because the build is the only thing that can tell us a newer
+/// QEMU has it, and the watcher now ends the attempt in about four minutes
+/// instead of at Packer's two-hour timeout.
+///
+/// KVM has none of this, so a Linux host builds the Windows image normally.
+pub fn qemu_cannot_install_windows(
+    host: HostOs,
+    target: Target,
+    accelerator: &str,
+) -> Option<String> {
+    if target != Target::Windows || host != HostOs::Windows || accelerator != "whpx" {
+        return None;
+    }
+    Some(
+        "this build is expected to fail, and to say so after about four minutes.\n  \
+         QEMU's WHPX accelerator on a Windows host cannot survive the reboot the \
+         Windows installer does\n  after copying its files: the guest stops with \
+         \"WHPX: Unexpected VP exit code 4\" and cannot be\n  restarted (QEMU issues \
+         858, 2042 and 2402, all open). One vCPU survives that, and Windows 11\n  \
+         Setup refuses to install on one core; turning off the in-hypervisor APIC \
+         stops the guest\n  booting at all. docs/vm-setup.md has the measurements.\n  \
+         A Linux host builds this image normally, because KVM does not have the fault."
+            .to_owned(),
+    )
+}
+
 /// Everything a build needs, decided before anything runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildPlan {
@@ -367,6 +419,9 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     println!("  output:    {}", plan.output_dir.display());
     println!("  log:       {}", log.display());
     println!("  this takes tens of minutes and downloads several gigabytes");
+    if let Some(warning) = qemu_cannot_install_windows(host, target, accelerator) {
+        println!("\nwarning: {warning}\n");
+    }
 
     let extra_path = iso_tool_dir
         .as_deref()
@@ -575,6 +630,26 @@ mod tests {
 
     fn store() -> Store {
         Store::new("/srv/vm")
+    }
+
+    #[test]
+    fn the_one_host_that_cannot_build_a_windows_image_is_warned_about_it() {
+        let warning = qemu_cannot_install_windows(HostOs::Windows, Target::Windows, "whpx")
+            .expect("a WHPX host cannot install Windows 11");
+        assert!(warning.contains("expected to fail"), "{warning}");
+        assert!(warning.contains("Unexpected VP exit code 4"), "{warning}");
+        assert!(warning.contains("A Linux host"), "{warning}");
+
+        // The Linux image installs fine on the same host, KVM has none of it,
+        // and neither does a Windows guest under a Linux host's KVM.
+        assert_eq!(
+            qemu_cannot_install_windows(HostOs::Windows, Target::Linux, "whpx"),
+            None
+        );
+        assert_eq!(
+            qemu_cannot_install_windows(HostOs::Linux, Target::Windows, "kvm"),
+            None
+        );
     }
 
     #[test]

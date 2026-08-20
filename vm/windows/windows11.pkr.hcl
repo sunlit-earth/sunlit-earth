@@ -74,6 +74,12 @@ variable "vm_name" {
   default = "golden.qcow2"
 }
 
+# Two is the floor, not a choice: Windows 11 Setup refuses to install on a
+# single-core processor ("The processor needs to have two or more cores"), and
+# the LabConfig BypassCPUCheck key below does not cover that check. It is worth
+# writing down because one vCPU is the workaround for the WHPX reset fault that
+# `commands::build_image::qemu_cannot_install_windows` describes, and this is
+# why that workaround is not available.
 variable "cpus" {
   type    = string
   default = "4"
@@ -191,13 +197,16 @@ source "qemu" "windows" {
     ["-smp", "${var.cpus}"],
     ["-rtc", "base=utc"],
 
-    # Not optional, and not a performance choice. QEMU's default guest CPU is
-    # `qemu64`, and with that model WHPX dies the moment the Windows boot
-    # manager runs: `WHPX: Unexpected VP exit code 4`, after which the vCPU is
-    # gone, the screen stays on the firmware logo, and QEMU sits there forever
-    # while Packer waits out its two-hour SSH timeout. Measured on an AMD Ryzen
-    # 7 5800X host on 2026-08-20 and reproduced four times; `-cpu max` boots the
-    # same media to an unattended install on the same host.
+    # Not optional, and not a performance choice. With QEMU's default guest CPU,
+    # `qemu64`, WHPX dies the moment the Windows boot manager runs: `WHPX:
+    # Unexpected VP exit code 4`, after which the vCPU is gone and the screen
+    # stays on the firmware logo. `-cpu max` boots the same media to an
+    # unattended install on the same host, measured on an AMD Ryzen 7 5800X on
+    # 2026-08-20 and reproduced four times.
+    #
+    # It does not make WHPX survive the installer's reboot: that is a separate
+    # fault with the same exit code, no CPU model avoids it, and
+    # `commands::build_image::qemu_cannot_install_windows` is where that stands.
     ["-cpu", "max"],
 
     # The firmware has to try the CD first, or the "Press any key" prompt never

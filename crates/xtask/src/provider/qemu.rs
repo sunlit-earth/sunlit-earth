@@ -863,6 +863,20 @@ mod template_agreement {
             .unwrap_or_else(|e| panic!("cannot read the {target} template: {e}"))
     }
 
+    /// The default of one `variable "name" {}` block, since a template has many
+    /// `default =` lines and only one of them belongs to the variable in hand.
+    fn variable_default(text: &str, name: &str) -> String {
+        let after = text
+            .split_once(&format!("variable \"{name}\" {{"))
+            .unwrap_or_else(|| panic!("no variable {name} in the template"))
+            .1;
+        let block = after
+            .split_once('}')
+            .unwrap_or_else(|| panic!("variable {name} has no closing brace"))
+            .0;
+        setting(block, "default")
+    }
+
     /// The value of a `key = "value"` line in an HCL template.
     fn setting(text: &str, key: &str) -> String {
         text.lines()
@@ -871,6 +885,19 @@ mod template_agreement {
                 (found.trim() == key).then(|| value.trim().trim_matches('"').to_owned())
             })
             .unwrap_or_else(|| panic!("no {key} in the template"))
+    }
+
+    #[test]
+    fn the_windows_template_installs_on_at_least_two_cores() {
+        // Windows 11 Setup refuses a single-core processor outright, and the
+        // unattend file's BypassCPUCheck does not cover that check, so this is a
+        // floor rather than a preference. It is pinned because one vCPU is the
+        // workaround for the WHPX reset fault and would otherwise look like a
+        // free choice to make here.
+        let cores: u32 = variable_default(&template(Target::Windows), "cpus")
+            .parse()
+            .expect("the cpus default is a number");
+        assert!(cores >= 2, "Windows 11 Setup refuses {cores} core(s)");
     }
 
     #[test]

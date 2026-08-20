@@ -249,6 +249,14 @@ Against the success criteria:
 
     The build also sets `PACKER_LOG` to a file in the build directory. QEMU's stderr is where a hypervisor failure explains itself, Packer captures rather than prints it, and the earlier note in `vm-setup.md` that Packer prints it was wrong.
 
+25. **The Windows image cannot be built on a Windows host, and the plan's step 2 assumed it could.** Decision 10 asks for one canonical Windows install, built with Packer's QEMU builder and converted to VHDX so both providers boot the same Windows. On a Windows host that install cannot be performed at all. QEMU there runs on WHPX, and a WHPX guest with more than one vCPU does not survive a guest reset, which is what Windows Setup does when it has finished copying files: the machine stops with `WHPX: Unexpected VP exit code 4`, `WHvRunVpExitReasonUnrecoverableException`, and nothing brings it back.
+
+    Three builds died there on 2026-08-20 before it was understood, each looking like a slow install for an hour and a quarter. The narrowing was then done with a throwaway QEMU and a QMP `system_reset`, twenty seconds a run instead of an hour: four vCPUs die, two die, one survives three resets; no CPU model, machine type or firmware changes it; `cont`, `system_reset` and both together all fail to revive it. The two workarounds upstream reports are each blocked by something else. `kernel-irqchip=off` keeps the vCPUs but this guest then never leaves the firmware splash, which is QEMU issue 3178 in a form 11.1 still has. One vCPU survives resets, and Windows 11 Setup refuses to install on one core, which `BypassCPUCheck` does not bypass. Upstream this is QEMU issues 858, 2042 and 2402; the maintainer's fix was unmerged as of 2026-08-18, so no released QEMU has it and downgrading does not help.
+
+    What the code does about it: `build-image` warns before it starts, in `qemu_cannot_install_windows`, which is also where the measurements live, and the watcher from deviation 24 ends the attempt in about four minutes. Nothing was hacked around it: one vCPU was tried and reverted when Setup refused, and the machine-argument plumbing added for `kernel-irqchip=off` was reverted when it turned out to stop the guest booting.
+
+    The way out is a host decision rather than a code one, and it is the user's to make: build the image on a Linux host, where KVM has none of this, or add a `hyperv-iso` template so a Windows host installs on the hypervisor it will run the guest on anyway. The second inverts decision 10's direction (install on Hyper-V, convert to qcow2 for QEMU) rather than abandoning its intent, which was one install rather than two.
+
 ## Results
 
 To be recorded on the first live run: image build times, warm VM run times, and per-guest pass counts. Nothing in this section can be filled in from a session that was not permitted to boot a VM, and inventing plausible numbers would be worse than leaving it empty.

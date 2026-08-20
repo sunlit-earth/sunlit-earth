@@ -1015,6 +1015,130 @@ fn test_tray_mode_ipc_lifecycle() {
     }
 }
 
+/// Find the app's session-end listener window and check it belongs to `pid`.
+///
+/// Unlike the rest of the suite this case is `cfg`-gated rather than skipped at
+/// runtime: the messages Windows sends before a reboot are Win32 calls, so the
+/// body does not compile anywhere else. The decision they drive is unit-tested
+/// on every platform in `session_end`.
+#[cfg(windows)]
+fn find_session_listener(pid: u32, timeout: Duration) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
+
+    let class: Vec<u16> = sunlit_earth::session_end::CLASS_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let deadline = Instant::now() + timeout;
+    loop {
+        // SAFETY: a NUL-terminated class name that outlives the call, and a
+        // null window name, which means "any title".
+        #[allow(unsafe_code)]
+        let hwnd = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+        if !hwnd.is_null() {
+            let mut owner = 0u32;
+            // SAFETY: a window handle just returned by FindWindowW and a
+            // writable u32 for the process id.
+            #[allow(unsafe_code)]
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &raw mut owner);
+            }
+            assert_eq!(owner, pid, "the listener window belongs to another process");
+            return hwnd as isize;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no session-end listener window appeared"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A reboot, as Windows conducts it: ask, then tell.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_session_end_shuts_down_promptly() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+
+    let socket_name = unique_socket_name();
+    let mut guard = ChildGuard::new(
+        Command::new(binary())
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+            .args([
+                "--log-level",
+                "debug",
+                "--tray-start",
+                "hidden",
+                "--ipc-socket",
+                &socket_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+    let pid = child.id();
+    let stdout_watcher = StdoutWatcher::new(child);
+    let watcher = StderrWatcher::new(child);
+
+    let ready_timeout = Duration::from_secs(30);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("window_hidden_deferred", ready_timeout);
+
+    let hwnd = find_session_listener(pid, Duration::from_secs(10));
+
+    // SAFETY: a window handle whose owning process this test just verified, and
+    // two documented messages. `SendMessageW` returns once it has been handled.
+    #[allow(unsafe_code)]
+    let permitted = unsafe {
+        SendMessageW(
+            hwnd as _,
+            sunlit_earth::session_end::WM_QUERYENDSESSION,
+            1,
+            0,
+        )
+    };
+    assert_eq!(
+        permitted, 1,
+        "vetoing is what makes Windows name the app as blocking the reboot"
+    );
+
+    let started = Instant::now();
+    // SAFETY: as above. wParam 1 means the session really is ending.
+    #[allow(unsafe_code)]
+    unsafe {
+        SendMessageW(hwnd as _, sunlit_earth::session_end::WM_ENDSESSION, 1, 0);
+    }
+
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    let elapsed = started.elapsed();
+    assert!(
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
+    );
+    // The point of the case is that it is quick: Windows shows its shutdown
+    // screen while it waits, and kills the process after about five seconds.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the app took {elapsed:?} to exit after the session ended"
+    );
+
+    let stderr = watcher.lines().join("\n");
+    assert!(
+        stderr.contains("windows is ending the session"),
+        "stderr missing the session-end log line:\n{stderr}"
+    );
+    for line in watcher.lines() {
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
+    }
+}
+
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]

@@ -22,8 +22,15 @@ interprocess.workspace = true
 crossbeam-channel.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# Only for AttachConsole; everything else Win32 lives in sunlit-core.
-windows-sys = { workspace = true, features = ["Win32_System_Console"] }
+# AttachConsole, and the invisible window `session_end` listens on. Everything
+# else Win32 lives in sunlit-core.
+windows-sys = { workspace = true, features = [
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+] }
 
 [dev-dependencies]
 approx.workspace = true

@@ -135,6 +135,7 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 - `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
 - `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`, `set-wallpaper`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test` and `query-memory` are answered on the listener thread, so they work while the event loop is idle.
 - `tray.rs`: the procedurally generated 32x32 icon, the tray callback wiring, and single-instance enforcement. The tray icon itself is a `SystemTrayIcon` component in `ui/main.slint`, so Slint owns the platform integration.
+- `session_end.rs`: Windows only. An invisible top-level window on its own thread that answers `WM_QUERYENDSESSION` and quits the event loop on `WM_ENDSESSION`, so a reboot does not have to wait for Windows to kill the process. winit handles neither message, so without this nothing in the app ever learned the session was ending. The decision is a pure function (`classify`), unit-tested everywhere; the Win32 window is tested by sending it both messages.
 - `mouse_math.rs`: pure functions for mouse interaction (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; unit-tested with `proptest` invariants.
 
 ### UI (`ui/main.slint`)
@@ -217,17 +218,20 @@ Windows is the platform that ships. Linux and macOS build, test, and render head
 | `render` subcommand | yes | yes | yes |
 | Settings window | yes | untested | untested |
 | Set the desktop wallpaper | yes | no | no |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (8 of 9 cases) or in a local VM (all 9) | yes, in a local VM (6 of 9 cases) | compiles, unrun |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (9 of 10 cases) or in a local VM (all 10) | yes, in a local VM (6 of 9 cases) | compiles, unrun |
 
-Per-OS implementations live in three places, each behind a `cfg` and each documented where it sits:
+Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:
 
 - `memory::snapshot`: `GetProcessMemoryInfo`, `/proc/self/{status,smaps_rollup}`, `task_info(TASK_VM_INFO)`. Same `MemorySnapshot`, same CSV, so every memory assertion in the suite is live on all three.
 - `engine::wallpaper_sink::SystemWallpaper`: off Windows, `check_supported` returns "not supported on this platform yet" before anything is rendered, `publish` returns the same string if it is reached anyway, and `target_size` returns a documented 2560x1440. Not a stub that pretends to succeed, and not a refusal that arrives after a full-resolution render and readback.
 - `config::is_position_on_screen`: Win32 monitor enumeration on Windows; elsewhere a coordinate-range sanity check against X11's INT16 window-position range, which is the coarse portable half of the same question.
+- `session_end::install`: the Win32 listener above on Windows; elsewhere it returns `None` and says so, because a Linux desktop asks over the session bus rather than with window messages.
 
 The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes (which is free coverage for the IPC and process plumbing) and never runs in CI, because hosted runners have no interactive desktop. It runs on the developer's desktop with `cargo e2e`, and in a local VM with `cargo xtask e2e --target <windows|linux>`; see `docs/vm-setup.md`.
 
 Three cases inside it are gated at runtime rather than by `cfg`, following the same convention as `software_adapter_produces_correct_results`. The tray-start-hidden lifecycle and single-instance enforcement need a tray icon, which the app has on Windows only, and single-instance is additionally tray-mode-only in the product. `test_set_wallpaper` sets a real desktop wallpaper, so it is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the generated Windows guest job sets; it asks `SystemWallpaper::check_supported` for the capability itself and asserts that answer matches the platform, so a Windows regression fails rather than skips. All three print why they skipped. Two further cases pick their startup mode by the tray capability, running windowed where there is no tray, which tests the same thing minus the icon. macOS has no VM story: it stays on hosted runners.
+
+The tenth case, `test_session_end_shuts_down_promptly`, is the one exception to "`#[ignore]`d, not `cfg`-gated": it delivers `WM_QUERYENDSESSION` and `WM_ENDSESSION` to the running binary, which are Win32 calls, so the body does not compile elsewhere. It asserts the app exits successfully and in under five seconds, which is the number Windows gives an application before it names it on the shutdown screen.
 
 ## Testing
 

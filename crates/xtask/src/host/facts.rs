@@ -298,8 +298,15 @@ foreach ($name in @('Microsoft-Hyper-V-All','HypervisorPlatform')) {
   $pairs += "$name=$state"
 }
 
-$service = Get-Service -Name vmms -ErrorAction SilentlyContinue
-$vmms = if ($service) { $service.Status.ToString() } else { '' }
+# In a try rather than with -ErrorAction SilentlyContinue. On a host without
+# Hyper-V there is no such service, and a suppressed error still leaves
+# powershell.exe exiting 1, which would make the whole probe read as broken and
+# hide every feature answer behind it. A caught one costs nothing.
+$vmms = ''
+try {
+  $service = Get-Service -Name vmms -ErrorAction Stop
+  $vmms = $service.Status.ToString()
+} catch { }
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $inHyperV = @($identity.Groups | Where-Object { $_.Value -eq 'S-1-5-32-578' }).Count -gt 0

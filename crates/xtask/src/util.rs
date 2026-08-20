@@ -82,6 +82,20 @@ pub fn env_var(name: &str) -> Option<String> {
     non_blank(std::env::var(name).ok())
 }
 
+/// The value of a `KEY=value` line in a script's output.
+///
+/// Every `PowerShell` script here reports its findings as marker lines rather
+/// than as objects, because the alternative is parsing whatever the cmdlet's
+/// default formatter felt like emitting. Empty values read as absent: a cmdlet
+/// that has no answer prints `KEY=` rather than nothing at all.
+pub fn marker(stdout: &str, key: &str) -> Option<String> {
+    stdout
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(key))
+        .map(|value| value.trim().to_owned())
+        .find(|value| !value.is_empty())
+}
+
 /// `"1 thing"` / `"2 things"`, for report lines that count what they found.
 pub fn count(n: usize, singular: &str) -> String {
     if n == 1 {
@@ -142,6 +156,25 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(250)), "4m10s");
         assert_eq!(format_duration(Duration::from_secs(3600)), "1h00m");
         assert_eq!(format_duration(Duration::from_secs(4500)), "1h15m");
+    }
+
+    #[test]
+    fn a_marker_line_is_read_by_its_key_and_an_empty_one_is_absent() {
+        assert_eq!(
+            marker("DRIVE=E\nLABEL=CCCOMA\n", "DRIVE="),
+            Some("E".to_owned())
+        );
+        assert_eq!(
+            marker("DRIVE=E\nLABEL=CCCOMA\n", "LABEL="),
+            Some("CCCOMA".to_owned())
+        );
+        // A cmdlet with no answer prints the key and nothing after it, which is
+        // the same as not knowing.
+        assert_eq!(marker("DRIVE=\n", "DRIVE="), None);
+        assert_eq!(marker("", "DRIVE="), None);
+        assert_eq!(marker("noise\n", "DRIVE="), None);
+        // Noise before the answer does not hide it.
+        assert_eq!(marker("DRIVE=\nDRIVE=F", "DRIVE="), Some("F".to_owned()));
     }
 
     #[test]

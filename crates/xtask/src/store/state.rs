@@ -25,14 +25,26 @@ pub enum StartReason {
     Keep,
     /// An interactive guest from `vm up`.
     Up,
+    /// The guest a `vm build-image` is installing Windows into.
+    ///
+    /// It carries the same name and record as any other, so `vm status`,
+    /// `vm view`, `vm ssh`, `vm down`, and the one-VM-at-a-time rule all apply
+    /// to a build without new plumbing, and a build left behind by a crash is
+    /// something the inventory can name rather than an orphan (amendment
+    /// decision 17).
+    Build,
 }
 
 impl StartReason {
+    /// What to call this in a report, with its article: the labels are read
+    /// inside sentences such as "left behind by ...", and a sentence that
+    /// supplies the article cannot fit all four.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Run => "test run",
-            Self::Keep => "kept after a test run (--keep)",
-            Self::Up => "interactive (vm up)",
+            Self::Run => "a test run",
+            Self::Keep => "a test run kept with --keep",
+            Self::Up => "an interactive guest (vm up)",
+            Self::Build => "an image build (vm build-image)",
         }
     }
 }
@@ -161,6 +173,42 @@ mod tests {
         assert!(parsed.is_ours());
         assert_eq!(parsed.pid, None);
         assert_eq!(parsed.ssh_port, 0);
+    }
+
+    #[test]
+    fn a_crashed_build_leaves_a_record_that_names_itself_as_one() {
+        // What `vm status` reads after a build died: the same file every other
+        // guest leaves, distinguishable only by its reason, and naming the
+        // unfinished disk that `vm down` deletes with it.
+        let json = r#"{"format_version":1,"target":"windows","provider":"hyperv",
+             "vm_name":"sunlit-e2e-windows",
+             "overlay":"C:/vm/run/windows/build.vhdx","reason":"build",
+             "ssh_user":"tester","ssh_port":22,"started_unix":1755600000}"#;
+        let parsed = RunState::from_json(json).expect("a build record parses");
+        assert_eq!(parsed.reason, StartReason::Build);
+        assert!(parsed.is_ours());
+        assert!(parsed.reason.label().contains("build"));
+        assert!(
+            parsed.overlay.to_string_lossy().ends_with("build.vhdx"),
+            "{:?}",
+            parsed.overlay
+        );
+        // And it round trips under the same spelling, because the file is
+        // written by one version of this and read by another.
+        let mut state = RunState::new(
+            Target::Windows,
+            ProviderKind::HyperV,
+            PathBuf::from("C:/vm/run/windows/build.vhdx"),
+            StartReason::Build,
+            1_755_600_000,
+        );
+        state.ssh_user = "tester".to_owned();
+        state.ssh_port = 22;
+        assert!(state.to_json().contains(r#""reason": "build""#));
+        assert_eq!(
+            RunState::from_json(&state.to_json()).expect("round trip"),
+            state
+        );
     }
 
     #[test]

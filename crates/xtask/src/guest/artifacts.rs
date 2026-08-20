@@ -24,6 +24,70 @@ pub struct HostArtifacts {
     pub app: PathBuf,
     pub harness: PathBuf,
     pub fixtures: PathBuf,
+    /// The repository's texture directory, when it holds the real assets.
+    ///
+    /// `None` is not a failure: the suite then runs in the guest exactly as it
+    /// runs on a host that has never fetched them, with the render case looking
+    /// at the procedural grid.
+    pub textures: Option<PathBuf>,
+}
+
+/// The texture files the app resolves, and therefore the ones the guest needs.
+///
+/// `resolve_texture_paths` in the app names these two, and nothing else
+/// connects the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
+/// reads that function and asserts both are still spelled this way.
+pub const TEXTURE_FILES: [&str; 2] = ["world.topo.200405.jxl", "BlackMarble_2016.jxl"];
+
+/// Smaller than any real asset here and far larger than a Git LFS pointer.
+const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
+
+/// Whether a textures directory holds the assets or something that only looks
+/// like them.
+///
+/// `textures/**` is Git LFS, and a checkout without the objects leaves pointer
+/// files of a couple of hundred bytes, which are there as far as anything that
+/// only asks whether the file exists is concerned. Staging those would be worse
+/// than staging nothing: the app would fail to decode them, and a failed decode
+/// leaves the slot in the state `Renderer::textures_ready` never reports ready
+/// (the open roadmap item), so a guest would wait for an event that cannot
+/// arrive. Size is what tells the two apart, since the smaller of the two real
+/// assets is over a megabyte.
+pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(), String> {
+    for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
+        match size {
+            None => return Err(format!("there is no {name} in it")),
+            Some(bytes) if bytes < TEXTURE_MIN_BYTES => {
+                return Err(format!(
+                    "{name} is {bytes} bytes, which is a Git LFS pointer rather than \
+                     the asset; `git lfs pull` fetches it"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The repository's textures directory, if it is worth copying in.
+///
+/// Reports what it decided either way, because the render case samples the
+/// Sahara and the Atlantic: with the assets it tests the real map, and without
+/// them it tests the procedural grid and says so, which is the same thing that
+/// happens to `cargo e2e` on a host in this state.
+fn host_textures(repo: &Path) -> Option<PathBuf> {
+    let dir = repo.join("textures");
+    // An array rather than a vector, so the sizes and the names cannot get
+    // out of step with each other.
+    let sizes = TEXTURE_FILES.map(|name| std::fs::metadata(dir.join(name)).ok().map(|m| m.len()));
+    match textures_verdict(sizes) {
+        Ok(()) => Some(dir),
+        Err(why) => {
+            println!("not staging {}: {why}", dir.display());
+            println!("  the guest will render the procedural grid, as this host would");
+            None
+        }
+    }
 }
 
 /// The `cargo` invocation that builds the suite without running it.
@@ -141,6 +205,8 @@ pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostA
         .join("tests")
         .join("fixtures");
 
+    let textures = host_textures(&repo);
+
     let host = HostOs::current();
     let native = check_can_build(host, target)?;
 
@@ -165,10 +231,11 @@ pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostA
             app,
             harness,
             fixtures,
+            textures,
         });
     }
 
-    build_in_wsl(runner, store, &repo, fixtures)
+    build_in_wsl(runner, store, &repo, fixtures, textures)
 }
 
 /// Build the Linux binaries in WSL and copy them onto the Windows filesystem.
@@ -181,6 +248,7 @@ fn build_in_wsl(
     store: &Store,
     repo: &Path,
     fixtures: PathBuf,
+    textures: Option<PathBuf>,
 ) -> Result<HostArtifacts, String> {
     let distro = crate::host::facts::WSL_DISTRO;
     let repo_wsl = wslpath(runner, distro, "-u", &repo.to_string_lossy())?;
@@ -229,6 +297,9 @@ fn build_in_wsl(
         app: staging.join(file_name(&app)),
         harness: staging.join(file_name(&harness)),
         fixtures,
+        // The repository half, not the distribution's: `scp` runs on Windows
+        // here and reads the same files the Windows host does.
+        textures,
     })
 }
 
@@ -257,20 +328,27 @@ pub struct GuestPaths {
     pub app: String,
     pub harness: String,
     pub fixtures: String,
+    /// Where the textures landed, when there were any to stage. The job script
+    /// points `SUNLIT_EARTH_TEXTURES` at this, and omits the variable
+    /// altogether when it is `None` rather than naming a directory the guest
+    /// does not have.
+    pub textures: Option<String>,
 }
 
 /// The guest-side paths for a target, given the host file names.
-pub fn guest_paths(target: Target, app: &str, harness: &str) -> GuestPaths {
+pub fn guest_paths(target: Target, app: &str, harness: &str, textures: bool) -> GuestPaths {
     match target {
         Target::Windows => GuestPaths {
             app: format!(r"{}\{app}", provider::guest_bin(target)),
             harness: format!(r"{}\{harness}", provider::guest_bin(target)),
             fixtures: format!(r"{}\fixtures", provider::GUEST_ROOT_WINDOWS),
+            textures: textures.then(|| provider::guest_textures(target)),
         },
         Target::Linux => GuestPaths {
             app: format!("{}/{app}", provider::guest_bin(target)),
             harness: format!("{}/{harness}", provider::guest_bin(target)),
             fixtures: format!("{}/fixtures", provider::GUEST_ROOT_LINUX),
+            textures: textures.then(|| provider::guest_textures(target)),
         },
     }
 }
@@ -293,8 +371,21 @@ pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<Gu
         &built.fixtures,
         &format!("{}/", provider::guest_root(target)),
     )?;
+    if let Some(textures) = &built.textures {
+        println!("copying the textures into the guest");
+        session.provider.copy_in(
+            &session.state,
+            textures,
+            &format!("{}/", provider::guest_root(target)),
+        )?;
+    }
 
-    let paths = guest_paths(target, &file_name(&built.app), &file_name(&built.harness));
+    let paths = guest_paths(
+        target,
+        &file_name(&built.app),
+        &file_name(&built.harness),
+        built.textures.is_some(),
+    );
     if target == Target::Linux {
         // scp does not carry the executable bit onto every filesystem, and a
         // harness that cannot be executed fails in a way that looks like a
@@ -418,14 +509,70 @@ mod tests {
 
     #[test]
     fn guest_paths_follow_each_operating_systems_separator() {
-        let linux = guest_paths(Target::Linux, "sunlit-earth", "e2e-1a2b");
+        let linux = guest_paths(Target::Linux, "sunlit-earth", "e2e-1a2b", true);
         assert_eq!(linux.app, "/var/lib/sunlit-e2e/bin/sunlit-earth");
         assert_eq!(linux.harness, "/var/lib/sunlit-e2e/bin/e2e-1a2b");
         assert_eq!(linux.fixtures, "/var/lib/sunlit-e2e/fixtures");
+        assert_eq!(
+            linux.textures.as_deref(),
+            Some("/var/lib/sunlit-e2e/textures")
+        );
 
-        let windows = guest_paths(Target::Windows, "sunlit-earth.exe", "e2e-1a2b.exe");
+        let windows = guest_paths(Target::Windows, "sunlit-earth.exe", "e2e-1a2b.exe", true);
         assert_eq!(windows.app, r"C:\sunlit-e2e\bin\sunlit-earth.exe");
         assert_eq!(windows.harness, r"C:\sunlit-e2e\bin\e2e-1a2b.exe");
         assert_eq!(windows.fixtures, r"C:\sunlit-e2e\fixtures");
+        assert_eq!(windows.textures.as_deref(), Some(r"C:\sunlit-e2e\textures"));
+
+        // Nothing staged, nothing named.
+        for target in Target::ALL {
+            assert_eq!(guest_paths(target, "a", "h", false).textures, None);
+        }
+    }
+
+    #[test]
+    fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
+        // Both real: the size of the day and night assets in this repository.
+        assert_eq!(textures_verdict([Some(2_574_413), Some(1_382_310)]), Ok(()));
+
+        // A pointer file is a few hundred bytes and is otherwise a file like
+        // any other, so existence is not the question to ask.
+        let err = textures_verdict([Some(130), Some(1_382_310)]).unwrap_err();
+        assert!(err.contains("world.topo.200405.jxl"), "{err}");
+        assert!(err.contains("git lfs pull"), "{err}");
+
+        // Missing is reported as missing rather than as a pointer.
+        let err = textures_verdict([Some(2_574_413), None]).unwrap_err();
+        assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
+        assert!(!err.contains("pointer"), "{err}");
+    }
+
+    /// The app decides which files it loads; the xtask decides which files the
+    /// guest gets. Nothing else connects the two, so a rename in the app would
+    /// otherwise surface as the render case sampling the procedural grid in a
+    /// guest that was told it had textures.
+    #[test]
+    fn the_staged_textures_are_the_ones_the_app_asks_for() {
+        let main = std::fs::read_to_string(
+            store::repo_root()
+                .join("crates")
+                .join("sunlit-app")
+                .join("src")
+                .join("main.rs"),
+        )
+        .expect("the app's main.rs");
+        let resolver = main
+            .split("fn resolve_texture_paths")
+            .nth(1)
+            .expect("resolve_texture_paths is where the app names its textures");
+        let body = &resolver[..resolver.find("\n}").unwrap_or(resolver.len())];
+        for name in TEXTURE_FILES {
+            assert!(
+                body.contains(name),
+                "the app no longer resolves {name}, so staging it is pointless"
+            );
+        }
+        // Both slots, and no third one the guest would be missing.
+        assert_eq!(body.matches(".jxl").count(), TEXTURE_FILES.len());
     }
 }

@@ -96,6 +96,17 @@ pub enum Guest {
         status: String,
         at: Option<String>,
     },
+    /// The machine is not running, and on this hypervisor that is where it
+    /// ends rather than something to resume.
+    ///
+    /// A `Hyper-V` guest stays running through the reboots an install performs,
+    /// so anything else mid-install means the install is over. There is nothing
+    /// to start again and nothing wedged: `Stopped` above exists because a WHPX
+    /// guest can be paused at an instruction it will never leave, which is a
+    /// state this hypervisor does not produce (amendment decision 18).
+    Off {
+        state: String,
+    },
     /// The monitor did not answer, and will not be asked again.
     Silent(String),
 }
@@ -107,6 +118,7 @@ impl Guest {
             Self::Unmonitored => "unmonitored",
             Self::Running => "running",
             Self::Stopped { .. } => "stopped",
+            Self::Off { .. } => "off",
             Self::Silent(_) => "silent",
         }
     }
@@ -249,6 +261,7 @@ impl Trend {
         }
         match &sample.guest {
             Guest::Running => parts.push("guest running".to_owned()),
+            Guest::Off { state } => parts.push(format!("the guest is {state}")),
             Guest::Silent(why) => parts.push(format!("the monitor stopped answering ({why})")),
             Guest::Unmonitored | Guest::Stopped { .. } => {}
         }
@@ -398,15 +411,25 @@ fn presses(n: u32) -> String {
     }
 }
 
-/// Print one reading, continuation lines lined up under the first.
-fn say(text: &str) {
+/// Print one reading under a label, continuation lines lined up under the first.
+///
+/// Shared with the native `Hyper-V` build, so a build reads the same whichever
+/// mechanism produced it. Every label is nine characters wide including its
+/// colon, which is what lines the two columns up.
+pub fn report(label: &str, text: &str) {
+    let column = format!("{label}:");
     for (index, line) in text.lines().enumerate() {
         if index == 0 {
-            tell(&format!("  progress:  {line}"));
+            tell(&format!("  {column:<9}  {line}"));
         } else {
             tell(&format!("             {}", line.trim_start()));
         }
     }
+}
+
+/// Print one reading of a build's progress.
+fn say(text: &str) {
+    report("progress", text);
 }
 
 /// Write one line, and carry on if there is nothing listening.
@@ -705,6 +728,28 @@ mod tests {
         let line = text(&trend.observe(&sample));
         assert!(line.contains("2.8 GiB on disk"), "{line}");
         assert!(!line.contains("guest"), "{line}");
+    }
+
+    #[test]
+    fn a_guest_that_turned_itself_off_is_said_at_once_and_not_resumed() {
+        // The Hyper-V build's signal for "the install ended". Reported the
+        // moment it changes rather than at the next heartbeat, and never as
+        // something to start again: there is nothing wedged to recover.
+        let mut trend = Trend::new();
+        let _ = trend.observe(&running(5, 12_000_000_000));
+        let sample = Sample {
+            elapsed: secs(10),
+            disk: 12_000_000_000,
+            guest: Guest::Off {
+                state: "Off".to_owned(),
+            },
+            screen: None,
+        };
+        let action = trend.observe(&sample);
+        assert!(matches!(action, Action::Say(_)), "{action:?}");
+        let line = text(&action);
+        assert!(line.contains("the guest is Off"), "{line}");
+        assert!(!line.contains("starting it again"), "{line}");
     }
 
     #[test]

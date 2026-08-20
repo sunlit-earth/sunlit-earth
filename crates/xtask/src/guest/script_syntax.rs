@@ -18,6 +18,7 @@ use crate::runner::{encode_command, powershell};
 /// Every script the crate can produce, with a name to report it under.
 #[cfg(windows)]
 fn all_scripts() -> Vec<(String, String)> {
+    use crate::commands::build_hyperv;
     use crate::commands::setup::{SetupInputs, windows_plan};
     use crate::host::facts::{FEATURE_HYPERV, WINDOWS_QEMU_DIRS};
     use crate::provider::hyperv;
@@ -46,6 +47,34 @@ fn all_scripts() -> Vec<(String, String)> {
     scripts.push((
         "hyperv: start".to_owned(),
         format!("Start-VM -Name {}", crate::runner::ps_quote(name)),
+    ));
+
+    // The native Windows image build: the VM it installs into, the signals it
+    // watches, and the removal that keeps the disk.
+    scripts.push((
+        "build: create".to_owned(),
+        build_hyperv::create_script(
+            name,
+            std::path::Path::new(r"C:\vm store\run\windows\build.vhdx"),
+            std::path::Path::new(r"C:\vm store\iso\noprompt.iso"),
+            std::path::Path::new(r"C:\vm store\build\windows\unattend.iso"),
+        ),
+    ));
+    scripts.push(("build: probe".to_owned(), build_hyperv::probe_script(name)));
+    scripts.push((
+        "build: remove".to_owned(),
+        build_hyperv::remove_keeping_disk_script(name),
+    ));
+
+    // And the media repack, which mounts the installation media to copy it out.
+    let iso = std::path::Path::new(r"C:\vm store\iso\windows11-enterprise-eval.iso");
+    scripts.push((
+        "media: mount".to_owned(),
+        crate::store::windows_media::mount_script(iso),
+    ));
+    scripts.push((
+        "media: dismount".to_owned(),
+        crate::store::windows_media::dismount_script(iso),
     ));
 
     // The scripts that ship in the repo and run inside the guest. A typo in
@@ -148,6 +177,41 @@ fn check(scripts: &[(String, String)]) -> crate::runner::CommandOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No shipped guest script may carry a control character.
+    ///
+    /// Found the expensive way while preparing the amendment. `finalize.ps1`
+    /// held a literal backspace, 0x08, where `\b` had been written into a path:
+    /// the file said `\EFI\Microsoft\Boot` and then a byte that made a terminal
+    /// print the next character over the last one, so it read as
+    /// `\EFI\Microsoft\Bootootmgfw.efi` and named a file that cannot exist.
+    ///
+    /// A parser does not care: inside a double-quoted string a backspace is a
+    /// character like any other, so the `PowerShell` parse check passes it and
+    /// the fault only surfaces as a path that is not found, in a script that
+    /// runs forty minutes into an image build. This is the check of the same
+    /// kind as the failure.
+    #[test]
+    fn no_guest_script_carries_a_control_character() {
+        let mut checked = 0;
+        for script in windows_guest_scripts("ps1")
+            .into_iter()
+            .chain(windows_guest_scripts("cmd"))
+            .chain(linux_guest_scripts())
+        {
+            let bytes = std::fs::read(&script).expect("readable");
+            for (index, byte) in bytes.iter().enumerate() {
+                assert!(
+                    !byte.is_ascii_control() || matches!(byte, b'\t' | b'\r' | b'\n'),
+                    "{} carries a {byte:#04x} control character at byte {index}, \
+                     which is what an escape such as \\b in a path leaves behind",
+                    script.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 7, "only {checked} guest scripts checked");
+    }
 
     #[test]
     fn every_batch_file_the_windows_guest_runs_is_usable() {

@@ -263,11 +263,23 @@ fn windows_access_steps(inputs: &SetupInputs) -> Vec<Step> {
         Step::new(
             "hyper-v administrators",
             format!(
+                // Both halves tolerate the state they are trying to reach, and
+                // neither hides an error behind an exit code. Enumerating a
+                // group with a member whose SID no longer resolves fails, and a
+                // suppressed failure would still leave powershell.exe exiting 1,
+                // reporting a step that worked as one that did not; and a
+                // membership this process cannot see is better answered by
+                // trying to add it than by guessing.
                 "$group = Get-LocalGroup -SID '{HYPERV_ADMINS_SID}'\n\
                  $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name\n\
-                 if (-not (Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | \
-                 Where-Object {{ $_.Name -eq $user }})) {{\n  \
-                 Add-LocalGroupMember -Group $group -Member $user\n}}"
+                 $members = @()\n\
+                 try {{ $members = @(Get-LocalGroupMember -Group $group -ErrorAction Stop) }} \
+                 catch {{ }}\n\
+                 if (-not ($members | Where-Object {{ $_.Name -eq $user }})) {{\n  \
+                 try {{ Add-LocalGroupMember -Group $group -Member $user -ErrorAction Stop }} \
+                 catch {{\n    \
+                 if ($_.CategoryInfo.Category -ne 'ResourceExists') {{ throw }}\n  \
+                 }}\n}}"
             ),
             !windows.in_hyperv_admins,
             if windows.in_hyperv_admins {

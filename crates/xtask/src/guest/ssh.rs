@@ -37,24 +37,66 @@ impl SshTarget {
     }
 }
 
-/// The null device, which is where the known-hosts file goes.
-pub fn null_device(windows_host: bool) -> &'static str {
-    if windows_host { "NUL" } else { "/dev/null" }
+/// Where the host keys these connections collect are kept: beside the key pair
+/// the guests trust, inside the image store.
+///
+/// Not the null device, which cannot be named portably from here. `NUL` is the
+/// null device to Windows' own OpenSSH client and an ordinary file name to the
+/// MSYS2 build that ships with Git for Windows, which is what `ssh` resolves to
+/// on a Windows host as often as not; that client took
+/// `UserKnownHostsFile=NUL` literally and left a file called `NUL` in whatever
+/// directory the xtask was run from, which is the repository root, and one that
+/// `cmd` cannot delete without the `\\?\` prefix. `/dev/null` has the mirror
+/// problem on the other client.
+///
+/// A real file in the store is a path both clients understand, and it keeps the
+/// property the option is there for: the developer's own `~/.ssh/known_hosts` is
+/// never written to.
+///
+/// `ssh` does read it, which is worth being clear about.
+/// `StrictHostKeyChecking=no` accepts a key it has never seen without asking,
+/// and says nothing about a key it has seen *change*: that still prints the
+/// remote-host-identification-changed warning, on every connection, while
+/// public-key authentication carries on working. A guest's host keys are
+/// generated during the image build and live on the golden disk, so every
+/// throwaway overlay of one image answers with the same key and the entries here
+/// stay right for the life of that image. A rebuild is what changes them, and
+/// `build_image::forget_host_keys` deletes this file at the end of one for
+/// exactly that reason.
+pub fn known_hosts(key: &Path) -> PathBuf {
+    key.with_file_name("known_hosts")
+}
+
+/// The known-hosts path as the option value `ssh` parses.
+///
+/// `UserKnownHostsFile` takes a whitespace-separated list of files, so a store
+/// under a directory with a space in its name would otherwise arrive as two
+/// paths, neither of them real. `ssh` accepts a double-quoted argument for
+/// exactly this, and the quotes are added only when they are needed so that the
+/// ordinary case is the plain path it looks like.
+pub fn known_hosts_option(key: &Path) -> String {
+    let path = known_hosts(key);
+    let path = path.to_string_lossy();
+    if path.contains(' ') {
+        format!("UserKnownHostsFile=\"{path}\"")
+    } else {
+        format!("UserKnownHostsFile={path}")
+    }
 }
 
 /// The options every connection uses.
 ///
-/// Host-key checking is off and the known-hosts file is the null device
+/// Host-key checking is off and the known-hosts file is one of the xtask's own
 /// because every run boots a fresh overlay whose host keys are generated on
 /// first boot: the same address legitimately has a different key every time, so
 /// a known-hosts entry would be a guaranteed false alarm rather than a
 /// protection. The guest is reachable only from this host's loopback.
-pub fn common_options(key: &Path, windows_host: bool) -> Vec<String> {
+pub fn common_options(key: &Path) -> Vec<String> {
     vec![
         "-o".to_owned(),
         "StrictHostKeyChecking=no".to_owned(),
         "-o".to_owned(),
-        format!("UserKnownHostsFile={}", null_device(windows_host)),
+        known_hosts_option(key),
         // Never fall back to a password or a passphrase prompt: a hung
         // orchestrator waiting on invisible input is the worst failure here.
         "-o".to_owned(),
@@ -71,8 +113,8 @@ pub fn common_options(key: &Path, windows_host: bool) -> Vec<String> {
 }
 
 /// `ssh [options] -p port user@host [command]`.
-pub fn ssh_command(target: &SshTarget, remote: Option<&str>, windows_host: bool) -> Cmd {
-    let mut args = common_options(&target.key, windows_host);
+pub fn ssh_command(target: &SshTarget, remote: Option<&str>) -> Cmd {
+    let mut args = common_options(&target.key);
     args.push("-p".to_owned());
     args.push(target.port.to_string());
     args.push(target.destination());
@@ -99,8 +141,8 @@ pub fn scp_remote_path(remote: &str) -> String {
 ///
 /// `scp` spells the port `-P` where `ssh` spells it `-p`, which is the kind of
 /// detail a unit test is for.
-pub fn scp_to_command(target: &SshTarget, local: &Path, remote: &str, windows_host: bool) -> Cmd {
-    let mut args = common_options(&target.key, windows_host);
+pub fn scp_to_command(target: &SshTarget, local: &Path, remote: &str) -> Cmd {
+    let mut args = common_options(&target.key);
     args.push("-P".to_owned());
     args.push(target.port.to_string());
     args.push("-r".to_owned());
@@ -114,8 +156,8 @@ pub fn scp_to_command(target: &SshTarget, local: &Path, remote: &str, windows_ho
 }
 
 /// `scp [options] -P port user@host:<remote> <local>`.
-pub fn scp_from_command(target: &SshTarget, remote: &str, local: &Path, windows_host: bool) -> Cmd {
-    let mut args = common_options(&target.key, windows_host);
+pub fn scp_from_command(target: &SshTarget, remote: &str, local: &Path) -> Cmd {
+    let mut args = common_options(&target.key);
     args.push("-P".to_owned());
     args.push(target.port.to_string());
     args.push("-r".to_owned());
@@ -133,31 +175,44 @@ pub fn exec(
     runner: &dyn Runner,
     target: &SshTarget,
     command: &str,
-    windows_host: bool,
 ) -> Result<CommandOutput, String> {
     runner
-        .capture(&ssh_command(target, Some(command), windows_host))
+        .capture(&ssh_command(target, Some(command)))
         .map_err(|e| format!("cannot run ssh: {e}"))
 }
 
-/// Block until the guest answers, or give up.
+/// What the readiness probe asks the guest to say back.
+pub const READY_MARKER: &str = "sunlit-e2e-ssh-ready";
+
+/// One readiness probe: can the guest run a command right now?
 ///
-/// The probe is a real command rather than a port check: an SSH server that
-/// accepts connections before the account is usable is a real state, and a
-/// successful `echo` is the first moment the guest can actually do anything.
+/// A real command rather than a port check: an SSH server that accepts
+/// connections before the account is usable is a real state, and a successful
+/// `echo` is the first moment the guest can actually do anything.
+///
+/// The error carries the reason so a caller that gives up can say what the last
+/// attempt looked like, which is the difference between "refused" and "timed
+/// out" and between either of those and a rejected key.
+pub fn probe_ready(runner: &dyn Runner, target: &SshTarget) -> Result<(), String> {
+    match exec(runner, target, &format!("echo {READY_MARKER}")) {
+        Ok(out) if out.stdout.contains(READY_MARKER) => Ok(()),
+        Ok(out) => Err(format!("exit {:?}: {}", out.code, out.stderr.trim())),
+        Err(e) => Err(e),
+    }
+}
+
+/// Block until the guest answers, or give up.
 pub fn wait_ready(
     runner: &dyn Runner,
     target: &SshTarget,
     timeout: Duration,
     poll: Duration,
-    windows_host: bool,
 ) -> Result<Duration, String> {
     let start = Instant::now();
     let mut last;
     loop {
-        match exec(runner, target, "echo sunlit-e2e-ssh-ready", windows_host) {
-            Ok(out) if out.stdout.contains("sunlit-e2e-ssh-ready") => return Ok(start.elapsed()),
-            Ok(out) => last = format!("exit {:?}: {}", out.code, out.stderr.trim()),
+        match probe_ready(runner, target) {
+            Ok(()) => return Ok(start.elapsed()),
             Err(e) => last = e,
         }
         if start.elapsed() >= timeout {
@@ -188,19 +243,61 @@ mod tests {
     }
 
     #[test]
-    fn the_known_hosts_file_is_the_platform_null_device() {
-        assert_eq!(null_device(true), "NUL");
-        assert_eq!(null_device(false), "/dev/null");
-        let options = common_options(Path::new("/k"), true);
+    fn the_known_hosts_file_sits_beside_the_key_and_never_in_the_home_directory() {
+        // `NUL` is what this used to be on a Windows host, and the MSYS2 ssh
+        // that Git for Windows ships took it literally: the run left a file
+        // called NUL in the directory the xtask was started from. A path in the
+        // store is one both clients understand.
+        // Joined rather than spelled out, because `with_file_name` uses the
+        // host's own separator and this test runs on all three.
+        let dir = Path::new("/srv/vm/ssh");
+        let expected = dir.join("known_hosts");
+        assert_eq!(known_hosts(&dir.join("id_ed25519")), expected);
+        let options = common_options(&dir.join("id_ed25519"));
         assert!(
-            options.contains(&"UserKnownHostsFile=NUL".to_owned()),
+            options.contains(&format!("UserKnownHostsFile={}", expected.display())),
             "{options:?}"
+        );
+        for option in &options {
+            assert!(
+                !option.contains("NUL") && !option.contains("/dev/null"),
+                "{option} names a null device only one of the two clients understands"
+            );
+        }
+    }
+
+    #[test]
+    fn a_store_under_a_directory_with_a_space_is_quoted_for_ssh() {
+        // UserKnownHostsFile takes a list of files separated by whitespace, so
+        // an unquoted path with a space in it is two paths, neither of them
+        // real. %LOCALAPPDATA% carries the account name, which can have one.
+        let spaced = Path::new("/home/Ada Byron/.local/SunlitEarth/vm/ssh").join("id_ed25519");
+        let option = known_hosts_option(&spaced);
+        assert!(option.starts_with("UserKnownHostsFile=\""), "{option}");
+        assert!(option.ends_with("known_hosts\""), "{option}");
+        // The ordinary case stays the plain path it looks like.
+        let plain = Path::new("/srv/vm/ssh").join("id_ed25519");
+        assert_eq!(
+            known_hosts_option(&plain),
+            format!(
+                "UserKnownHostsFile={}",
+                Path::new("/srv/vm/ssh").join("known_hosts").display()
+            )
         );
     }
 
     #[test]
+    fn the_known_hosts_file_is_inside_the_image_store() {
+        // Which is what makes it the xtask's own junk rather than the
+        // developer's, and what a `vm purge` of the whole store would take with
+        // it.
+        let store = crate::store::Store::new("/srv/vm");
+        assert!(store.contains(&known_hosts(&store.ssh_key())));
+    }
+
+    #[test]
     fn every_connection_refuses_to_prompt_for_anything() {
-        let options = common_options(Path::new("/k"), false);
+        let options = common_options(Path::new("/k"));
         assert!(options.contains(&"BatchMode=yes".to_owned()));
         assert!(options.contains(&"IdentitiesOnly=yes".to_owned()));
         assert!(options.contains(&"StrictHostKeyChecking=no".to_owned()));
@@ -208,7 +305,7 @@ mod tests {
 
     #[test]
     fn the_ssh_command_puts_the_remote_command_last() {
-        let cmd = ssh_command(&target(), Some("whoami"), false);
+        let cmd = ssh_command(&target(), Some("whoami"));
         assert_eq!(cmd.program, "ssh");
         assert_eq!(cmd.args.last().map(String::as_str), Some("whoami"));
         let destination = cmd.args.len() - 2;
@@ -219,7 +316,7 @@ mod tests {
 
     #[test]
     fn an_interactive_session_passes_no_remote_command() {
-        let cmd = ssh_command(&target(), None, false);
+        let cmd = ssh_command(&target(), None);
         assert_eq!(
             cmd.args.last().map(String::as_str),
             Some("tester@127.0.0.1")
@@ -228,12 +325,7 @@ mod tests {
 
     #[test]
     fn scp_spells_the_port_with_a_capital_p_in_both_directions() {
-        let to = scp_to_command(
-            &target(),
-            Path::new("/tmp/app"),
-            "/var/lib/sunlit-e2e/bin/",
-            false,
-        );
+        let to = scp_to_command(&target(), Path::new("/tmp/app"), "/var/lib/sunlit-e2e/bin/");
         assert_eq!(to.program, "scp");
         assert!(to.args.contains(&"-P".to_owned()), "{:?}", to.args);
         assert!(!to.args.contains(&"-p".to_owned()), "{:?}", to.args);
@@ -246,7 +338,6 @@ mod tests {
             &target(),
             "/var/lib/sunlit-e2e/results",
             Path::new("/tmp/out"),
-            false,
         );
         assert!(from.args.contains(&"-P".to_owned()));
         assert_eq!(from.args.last().map(String::as_str), Some("/tmp/out"));
@@ -267,12 +358,7 @@ mod tests {
             "/var/lib/sunlit-e2e/results"
         );
 
-        let cmd = scp_to_command(
-            &target(),
-            Path::new("/tmp/app"),
-            r"C:\sunlit-e2e\bin",
-            false,
-        );
+        let cmd = scp_to_command(&target(), Path::new("/tmp/app"), r"C:\sunlit-e2e\bin");
         assert_eq!(
             cmd.args.last().map(String::as_str),
             Some("tester@127.0.0.1:C:/sunlit-e2e/bin")
@@ -281,7 +367,7 @@ mod tests {
 
     #[test]
     fn copies_are_recursive_so_a_results_directory_comes_back_whole() {
-        let from = scp_from_command(&target(), "r", Path::new("/tmp/out"), false);
+        let from = scp_from_command(&target(), "r", Path::new("/tmp/out"));
         assert!(from.args.contains(&"-r".to_owned()));
     }
 
@@ -296,7 +382,6 @@ mod tests {
             &target(),
             Duration::from_millis(50),
             Duration::from_millis(1),
-            false,
         )
         .expect("ready");
         assert!(elapsed < Duration::from_secs(1));
@@ -313,7 +398,6 @@ mod tests {
             &target(),
             Duration::from_millis(5),
             Duration::from_millis(1),
-            false,
         )
         .unwrap_err();
         assert!(err.contains("127.0.0.1:2222"), "{err}");

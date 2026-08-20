@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use crate::provider::target::Target;
 use crate::store::inventory::{Inventory, TargetInventory};
-use crate::store::state::RunState;
+use crate::store::state::{RunState, StartReason};
 use crate::util::{format_bytes, format_unix_utc};
 
 /// Render the whole inventory.
@@ -169,7 +169,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
         (Some(state), Some(false)) => {
             let _ = writeln!(
                 out,
-                "  {} is registered but not running, left behind by a {}",
+                "  {} is registered but not running, left behind by {}",
                 state.vm_name,
                 state.reason.label()
             );
@@ -179,9 +179,12 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
             );
         }
         (Some(state), None) => {
+            // "recorded by <label>" rather than "recorded (<label>)": the
+            // labels carry a parenthesis of their own, and a line that reads
+            // "recorded (an image build (vm build-image))" reads as a mistake.
             let _ = writeln!(
                 out,
-                "  {} is recorded ({}); liveness not checked",
+                "  {} is recorded by {}; liveness not checked",
                 state.vm_name,
                 state.reason.label()
             );
@@ -221,10 +224,18 @@ fn running_vm(target: Target, state: &RunState) -> String {
             .map(|vnc| format!("  (vnc {vnc})"))
             .unwrap_or_default()
     );
+    // A build's disk is the image being installed, not a throwaway child of an
+    // image, and calling it an overlay would say the opposite of what ending
+    // one costs: the install is lost and starts again from the media.
     let _ = writeln!(
         out,
-        "    down:    `cargo xtask vm down {target}`  (frees the memory and the overlay; \
-         the golden image is untouched)"
+        "    down:    `cargo xtask vm down {target}`  ({})",
+        if state.reason == StartReason::Build {
+            "frees the memory and deletes the unfinished disk, so the install starts \
+             over; any golden image already in the store is untouched"
+        } else {
+            "frees the memory and the overlay; the golden image is untouched"
+        }
     );
     out
 }
@@ -235,7 +246,6 @@ mod tests {
     use crate::provider::target::ProviderKind;
     use crate::store::inventory::FileInfo;
     use crate::store::inventory::fixtures::{BUILT, empty, healthy, inventory};
-    use crate::store::state::StartReason;
     use crate::util::SECS_PER_DAY;
 
     fn now() -> u64 {
@@ -309,11 +319,14 @@ mod tests {
         )];
         let text = render(&inventory(vec![empty(Target::Windows), entry]), now());
         assert!(text.contains("sunlit-e2e-linux is running"), "{text}");
-        assert!(text.contains("kept after a test run (--keep)"), "{text}");
+        assert!(text.contains("a test run kept with --keep"), "{text}");
         assert!(text.contains("cargo xtask vm ssh linux"), "{text}");
         assert!(text.contains("cargo xtask vm view linux"), "{text}");
         assert!(text.contains("cargo xtask vm down linux"), "{text}");
         assert!(text.contains("golden image is untouched"), "{text}");
+        // A test run boots a throwaway child of the image, and that is what the
+        // teardown frees; only a build has an unfinished image of its own.
+        assert!(text.contains("frees the memory and the overlay"), "{text}");
         assert!(text.contains("vnc 127.0.0.1:5900"), "{text}");
         assert!(text.contains("2.0 GiB in run state"), "{text}");
     }
@@ -334,6 +347,83 @@ mod tests {
         assert!(text.contains("registered but not running"), "{text}");
         assert!(text.contains("left behind by a test run"), "{text}");
         assert!(text.contains("cargo xtask vm down linux"), "{text}");
+    }
+
+    #[test]
+    fn an_image_build_is_reported_as_one_whether_it_is_running_or_not() {
+        // A build carries the same record every other guest does, so the only
+        // thing that says it is a build is the reason. Both states matter: one
+        // is a build in progress and the other is what a crash leaves.
+        let mut entry = empty(Target::Windows);
+        let mut state = running_state(Target::Windows);
+        state.reason = StartReason::Build;
+        state.ssh_port = 22;
+        entry.state = Some(state);
+        entry.running = Some(true);
+        entry.run_files = vec![FileInfo::new(
+            "/srv/vm/run/windows/build.vhdx",
+            11 * 1024 * 1024 * 1024,
+            BUILT,
+        )];
+        let text = render(&inventory(vec![entry.clone(), empty(Target::Linux)]), now());
+        assert!(text.contains("sunlit-e2e-windows is running"), "{text}");
+        assert!(text.contains("an image build (vm build-image)"), "{text}");
+        assert!(text.contains("build.vhdx  11.0 GiB"), "{text}");
+        assert!(text.contains("cargo xtask vm view windows"), "{text}");
+        // The file a build's teardown deletes is the image being installed, so
+        // the hint says that and not "the overlay".
+        assert!(text.contains("deletes the unfinished disk"), "{text}");
+        assert!(text.contains("the install starts over"), "{text}");
+        assert!(!text.contains("and the overlay"), "{text}");
+
+        entry.running = Some(false);
+        let crashed = render(&inventory(vec![entry.clone(), empty(Target::Linux)]), now());
+        assert!(crashed.contains("registered but not running"), "{crashed}");
+        assert!(
+            crashed.contains("left behind by an image build"),
+            "{crashed}"
+        );
+        assert!(crashed.contains("cargo xtask vm down windows"), "{crashed}");
+
+        // And the third state: a record nothing asked the provider about, which
+        // is what `vm doctor` renders. The labels carry a parenthesis of their
+        // own, so this line puts none around them.
+        entry.running = None;
+        let unchecked = render(&inventory(vec![entry, empty(Target::Linux)]), now());
+        assert!(
+            unchecked.contains("is recorded by an image build (vm build-image)"),
+            "{unchecked}"
+        );
+        assert!(!unchecked.contains("))"), "{unchecked}");
+    }
+
+    #[test]
+    fn both_windows_media_files_are_listed_and_counted() {
+        // The install media and its prompt-free repack. Two files rather than
+        // one is what doubles the media footprint, so both are named and both
+        // are in the total.
+        let mut inv = inventory(vec![empty(Target::Windows), empty(Target::Linux)]);
+        inv.iso = vec![
+            FileInfo::new(
+                "/srv/vm/iso/windows11-enterprise-eval-noprompt.iso",
+                7_092_805_632,
+                BUILT,
+            ),
+            FileInfo::new(
+                "/srv/vm/iso/windows11-enterprise-eval.iso",
+                7_092_807_680,
+                BUILT,
+            ),
+        ];
+        let text = render(&inv, now());
+        assert!(text.contains("installation media: 2 files"), "{text}");
+        assert!(text.contains("windows11-enterprise-eval.iso"), "{text}");
+        assert!(
+            text.contains("windows11-enterprise-eval-noprompt.iso"),
+            "{text}"
+        );
+        assert!(text.contains("total: 13.2 GiB"), "{text}");
+        assert!(text.contains("vm purge all"), "{text}");
     }
 
     #[test]

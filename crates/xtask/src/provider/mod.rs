@@ -75,10 +75,6 @@ pub trait Provider {
     /// The runner, so the default methods can reach a process.
     fn runner(&self) -> &dyn Runner;
 
-    /// Whether the host this is running on is Windows, which changes the null
-    /// device the SSH client is pointed at.
-    fn windows_host(&self) -> bool;
-
     /// Block until the guest's SSH server answers.
     fn wait_ssh(&self, state: &RunState, timeout: Duration) -> Result<Duration, String> {
         ssh::wait_ready(
@@ -86,23 +82,17 @@ pub trait Provider {
             &self.ssh_target(state),
             timeout,
             ssh::POLL_INTERVAL,
-            self.windows_host(),
         )
     }
 
     /// Run one command in the guest.
     fn exec(&self, state: &RunState, command: &str) -> Result<CommandOutput, String> {
-        ssh::exec(
-            self.runner(),
-            &self.ssh_target(state),
-            command,
-            self.windows_host(),
-        )
+        ssh::exec(self.runner(), &self.ssh_target(state), command)
     }
 
     /// Copy a file or directory into the guest.
     fn copy_in(&self, state: &RunState, local: &Path, remote: &str) -> Result<(), String> {
-        let cmd = ssh::scp_to_command(&self.ssh_target(state), local, remote, self.windows_host());
+        let cmd = ssh::scp_to_command(&self.ssh_target(state), local, remote);
         let out = self
             .runner()
             .capture(&cmd)
@@ -125,8 +115,7 @@ pub trait Provider {
                 .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
         }
         let _ = std::fs::remove_dir_all(local);
-        let cmd =
-            ssh::scp_from_command(&self.ssh_target(state), remote, local, self.windows_host());
+        let cmd = ssh::scp_from_command(&self.ssh_target(state), remote, local);
         let out = self
             .runner()
             .capture(&cmd)
@@ -205,6 +194,17 @@ pub fn guest_bin(target: Target) -> String {
     }
 }
 
+/// Where the texture assets are copied to inside the guest.
+///
+/// The directory keeps its repository name, so that what the job points
+/// `SUNLIT_EARTH_TEXTURES` at is the same shape the app finds beside a checkout.
+pub fn guest_textures(target: Target) -> String {
+    match target {
+        Target::Windows => format!(r"{GUEST_ROOT_WINDOWS}\textures"),
+        Target::Linux => format!("{GUEST_ROOT_LINUX}/textures"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +217,11 @@ mod tests {
         assert_eq!(guest_results(Target::Windows), r"C:\sunlit-e2e\results");
         assert_eq!(guest_bin(Target::Linux), "/var/lib/sunlit-e2e/bin");
         assert_eq!(guest_bin(Target::Windows), r"C:\sunlit-e2e\bin");
+        assert_eq!(
+            guest_textures(Target::Linux),
+            "/var/lib/sunlit-e2e/textures"
+        );
+        assert_eq!(guest_textures(Target::Windows), r"C:\sunlit-e2e\textures");
     }
 
     #[test]
@@ -227,9 +232,11 @@ mod tests {
         assert!(guest_root(Target::Linux).starts_with('/'));
         assert!(guest_results(Target::Linux).starts_with('/'));
         assert!(guest_bin(Target::Linux).starts_with('/'));
+        assert!(guest_textures(Target::Linux).starts_with('/'));
         assert!(guest_root(Target::Windows).starts_with("C:"));
         assert!(guest_results(Target::Windows).starts_with("C:"));
         assert!(guest_bin(Target::Windows).starts_with("C:"));
+        assert!(guest_textures(Target::Windows).starts_with("C:"));
     }
 
     /// The orchestrator and the scripts baked into the images have to name the

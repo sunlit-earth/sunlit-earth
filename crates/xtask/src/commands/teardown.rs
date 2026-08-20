@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use crate::provider::target::Target;
 use crate::store::Store;
 use crate::store::inventory::{FileInfo, Inventory};
-use crate::store::state::RunState;
+use crate::store::state::{RunState, StartReason};
 use crate::util::format_bytes;
 
 /// What a teardown deletes.
@@ -67,10 +67,15 @@ impl Scope {
     /// Whether a running guest has to be stopped for this scope.
     ///
     /// Its overlay is obviously held open by it, and so, for `Hyper-V`, is the
-    /// golden image its differencing child was made from. Media is neither: a
-    /// booted guest has long finished with the ISO.
-    pub fn needs_the_vm_stopped(self) -> bool {
-        self.vm || self.image
+    /// golden image its differencing child was made from. Media is the one that
+    /// depends on what the guest is: a booted test guest has long finished with
+    /// the ISO, and a build VM has both DVDs attached for the whole install, so
+    /// deleting the media under one means deleting a file Windows has open.
+    /// Windows refuses that and the refusal is reported, but a purge that has
+    /// to be run twice for a reason nothing explained is not the answer either,
+    /// so a media purge ends a build first.
+    pub fn needs_the_vm_stopped(self, reason: Option<StartReason>) -> bool {
+        self.vm || self.image || (self.iso && reason == Some(StartReason::Build))
     }
 
     /// The parts, in words, for a prompt or a report.
@@ -228,7 +233,7 @@ pub fn plan(
             continue;
         };
 
-        if scope.needs_the_vm_stopped() {
+        if scope.needs_the_vm_stopped(entry.state.as_ref().map(|state| state.reason)) {
             if let Some(state) = &entry.state {
                 if state.is_ours() {
                     vms.push(state.clone());
@@ -585,6 +590,85 @@ mod tests {
     }
 
     #[test]
+    fn purging_the_media_takes_both_windows_media_files() {
+        // The download and its prompt-free repack. `--iso` is the command the
+        // status report offers for reclaiming the media, and leaving half of it
+        // behind would make the number it printed a lie.
+        let mut inv = inventory(vec![healthy(Target::Windows)]);
+        inv.iso = vec![
+            FileInfo::new(
+                "/srv/vm/iso/windows11-enterprise-eval.iso",
+                7 * 1024 * 1024 * 1024,
+                BUILT,
+            ),
+            FileInfo::new(
+                "/srv/vm/iso/windows11-enterprise-eval-noprompt.iso",
+                7 * 1024 * 1024 * 1024,
+                BUILT,
+            ),
+        ];
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Windows),
+            Scope::from_flags(false, false, true),
+        );
+        assert_eq!(plan.files.len(), 2, "{plan:?}");
+        assert_eq!(plan.bytes(), 14 * 1024 * 1024 * 1024);
+        assert!(
+            plan.files.iter().all(|f| f.target == Some(Target::Windows)),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
+    fn a_crashed_build_is_torn_down_with_its_unfinished_disk() {
+        // The build disk lives in the run directory precisely so that this is
+        // true without new plumbing: a half-built image is worth nothing, and
+        // `vm down` is what gets rid of it.
+        let mut entry = healthy(Target::Windows);
+        entry.run_files = vec![
+            FileInfo::new(
+                "/srv/vm/run/windows/build.vhdx",
+                11 * 1024 * 1024 * 1024,
+                BUILT,
+            ),
+            FileInfo::new("/srv/vm/run/windows/vm.json", 512, BUILT),
+        ];
+        let mut state = RunState::new(
+            Target::Windows,
+            ProviderKind::HyperV,
+            "/srv/vm/run/windows/build.vhdx".into(),
+            StartReason::Build,
+            BUILT,
+        );
+        state.ssh_user = "tester".to_owned();
+        entry.state = Some(state);
+
+        let plan = plan(
+            &store(),
+            &inventory(vec![entry]),
+            Selection::One(Target::Windows),
+            Scope::RUN_STATE,
+        );
+        assert_eq!(plan.vms.len(), 1);
+        assert!(
+            plan.files
+                .iter()
+                .any(|f| f.path.to_string_lossy().contains("build.vhdx")),
+            "{plan:?}"
+        );
+        // And the golden image the target may already have is untouched.
+        assert!(
+            !plan
+                .files
+                .iter()
+                .any(|f| f.path.to_string_lossy().contains("golden.")),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
     fn purging_only_linux_leaves_the_windows_media_alone() {
         let mut inv = inventory(vec![healthy(Target::Windows), healthy(Target::Linux)]);
         inv.iso = vec![FileInfo::new("/srv/vm/iso/win.iso", 1024, BUILT)];
@@ -679,16 +763,43 @@ mod tests {
 
     #[test]
     fn only_a_scope_that_touches_the_guests_files_stops_the_guest() {
-        assert!(Scope::RUN_STATE.needs_the_vm_stopped());
-        assert!(Scope::EVERYTHING.needs_the_vm_stopped());
+        let run = Some(StartReason::Run);
+        assert!(Scope::RUN_STATE.needs_the_vm_stopped(run));
+        assert!(Scope::EVERYTHING.needs_the_vm_stopped(run));
         // A Hyper-V child holds the golden image open, so an image purge stops
         // the VM as well.
         assert!(
-            Scope::from_flags(false, true, false).needs_the_vm_stopped(),
+            Scope::from_flags(false, true, false).needs_the_vm_stopped(run),
             "deleting an image under a running differencing child"
         );
-        // Media is different: a booted guest finished with the ISO long ago.
-        assert!(!Scope::from_flags(false, false, true).needs_the_vm_stopped());
+        // Media is different: a booted test guest finished with the ISO long
+        // ago, whether there is a guest recorded or not.
+        let media = Scope::from_flags(false, false, true);
+        assert!(!media.needs_the_vm_stopped(run));
+        assert!(!media.needs_the_vm_stopped(None));
+        // Except under a build, which has both DVDs attached for the whole
+        // install: deleting the media under one is deleting a file Windows has
+        // open.
+        assert!(media.needs_the_vm_stopped(Some(StartReason::Build)));
+    }
+
+    #[test]
+    fn purging_the_media_during_a_build_ends_the_build_first() {
+        // The install DVD is attached to the build VM for the length of the
+        // install, so the media cannot go while it runs.
+        let mut entry = with_run_state(Target::Windows);
+        if let Some(state) = entry.state.as_mut() {
+            state.reason = StartReason::Build;
+        }
+        let inv = inventory(vec![entry]);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Windows),
+            Scope::from_flags(false, false, true),
+        );
+        assert_eq!(plan.vms.len(), 1, "{plan:?}");
+        assert_eq!(plan.vms[0].reason, StartReason::Build);
     }
 
     #[test]

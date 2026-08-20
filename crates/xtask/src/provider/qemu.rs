@@ -505,10 +505,6 @@ impl crate::provider::Provider for QemuProvider<'_> {
     fn runner(&self) -> &dyn Runner {
         self.runner
     }
-
-    fn windows_host(&self) -> bool {
-        self.host == HostOs::Windows
-    }
 }
 
 #[cfg(test)]

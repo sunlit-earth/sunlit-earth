@@ -28,56 +28,61 @@ pub fn accelerator_for(host: HostOs) -> &'static str {
     }
 }
 
-/// The warning for a build this host is not going to finish, or `None`.
+/// What performs an install, which is not the same question as which hypervisor
+/// runs the finished guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builder {
+    /// The xtask installs Windows on `Hyper-V` itself, no builder in the loop.
+    HyperV,
+    /// Packer's QEMU builder, which is what both images were always built with.
+    PackerQemu,
+}
+
+/// The builder matrix, which mirrors the runtime provider matrix.
 ///
-/// Measured on 2026-08-20 on an AMD Ryzen 7 5800X, Windows 11, QEMU 11.1.0, and
-/// then narrowed with a throwaway QEMU rather than by repeating hour-long
-/// builds. Three Windows image builds died the same way, four minutes and 11 GB
-/// in, at the installer's first reboot:
+/// | | Windows host | Linux host |
+/// |---|---|---|
+/// | Windows image | native `Hyper-V` | Packer and QEMU on KVM |
+/// | Linux image | Packer and QEMU on WHPX | Packer and QEMU on KVM |
 ///
-/// - A WHPX guest with more than one vCPU does not survive a guest reset. QEMU
-///   stops it with `WHPX: Unexpected VP exit code 4`, which is
-///   `WHvRunVpExitReasonUnrecoverableException`, a triple fault. Four vCPUs die,
-///   two die, one survives three resets in a row. No CPU model avoids it
-///   (`max`, `host`, `qemu64`, `Skylake-Client`, `EPYC`), nor does the machine
-///   type or the firmware, and once stopped it is gone: `cont`, `system_reset`,
-///   and both together all leave it stopped or frozen.
-/// - `kernel-irqchip=off`, the other workaround upstream reports, is worse
-///   here: with QEMU's own APIC this guest never leaves the firmware splash, at
-///   one vCPU or four. That is QEMU issue 3178, in a form 11.1 still has.
-/// - One vCPU, the workaround that does work for the reset, is refused by the
-///   product: Windows 11 Setup stops at "The processor needs to have two or
-///   more cores", and the unattend file's `BypassCPUCheck` does not cover that
-///   check.
+/// The one cell that changed is the Windows image on a Windows host, because
+/// QEMU there runs on WHPX and a WHPX guest does not survive the reset Windows
+/// Setup performs after copying its files (deviation 25 of the phase 3 plan,
+/// and `docs/vm-setup.md` has the measurements). On this host the primary
+/// runtime provider is `Hyper-V` anyway, so the install happens where the guest
+/// will run and `qemu-img` derives the qcow2 for the QEMU override cell.
 ///
-/// So the three levers are mutually exclusive and the QEMU builder cannot
-/// install Windows 11 on a Windows host. Upstream it is QEMU issues 858, 2042
-/// and 2402, all open; the maintainer's fix, moving `WHvResetPartition` to the
-/// boot CPU's reset, was still unmerged on 2026-08-18. This is a warning rather
-/// than a refusal because the build is the only thing that can tell us a newer
-/// QEMU has it, and the watcher now ends the attempt in about four minutes
-/// instead of at Packer's two-hour timeout.
-///
-/// KVM has none of this, so a Linux host builds the Windows image normally.
-pub fn qemu_cannot_install_windows(
-    host: HostOs,
-    target: Target,
-    accelerator: &str,
-) -> Option<String> {
-    if target != Target::Windows || host != HostOs::Windows || accelerator != "whpx" {
-        return None;
+/// Deliberately not overridable. `SUNLIT_EARTH_VM_PROVIDER` moves a *guest*
+/// between hypervisors, which is a cheap thing to try; pointing a build at a
+/// path measured not to work would be a two-hour way to learn nothing. The
+/// recheck recipe in `docs/vm-setup.md` re-measures it in twenty seconds
+/// instead.
+pub fn builder_for(host: HostOs, target: Target) -> Builder {
+    match (host, target) {
+        (HostOs::Windows, Target::Windows) => Builder::HyperV,
+        _ => Builder::PackerQemu,
     }
-    Some(
-        "this build is expected to fail, and to say so after about four minutes.\n  \
-         QEMU's WHPX accelerator on a Windows host cannot survive the reboot the \
-         Windows installer does\n  after copying its files: the guest stops with \
-         \"WHPX: Unexpected VP exit code 4\" and cannot be\n  restarted (QEMU issues \
-         858, 2042 and 2402, all open). One vCPU survives that, and Windows 11\n  \
-         Setup refuses to install on one core; turning off the in-hypervisor APIC \
-         stops the guest\n  booting at all. docs/vm-setup.md has the measurements.\n  \
-         A Linux host builds this image normally, because KVM does not have the fault."
-            .to_owned(),
-    )
+}
+
+/// What each path needs on `PATH`, and nothing it does not.
+///
+/// The `Hyper-V` path asks for less than the other: the install runs on the
+/// hypervisor this host already has, so there is no `packer` and no
+/// `qemu-system-x86_64` in it, and nothing after the ISO download touches the
+/// network, so `packer init` and its firewall failure class (deviation 20) are
+/// gone from this target. `qemu-img` stays, because the qcow2 the QEMU override
+/// cell boots is derived from the VHDX.
+pub fn required_tools(builder: Builder) -> &'static [&'static str] {
+    match builder {
+        Builder::HyperV => &[
+            crate::store::windows_media::ISO_BUILDER,
+            "qemu-img",
+            "ssh",
+            "scp",
+            "ssh-keygen",
+        ],
+        Builder::PackerQemu => &["packer", "qemu-system-x86_64", "qemu-img", "ssh-keygen"],
+    }
 }
 
 /// Everything a build needs, decided before anything runs.
@@ -349,14 +354,28 @@ pub const BUILD_QMP_PORT: u16 = 4445;
 /// What Packer names the disk it builds, which is the template's `vm_name`.
 pub const BUILT_DISK: &str = "golden.qcow2";
 
-/// Run a build end to end.
+/// Run a build end to end, on whichever path this host and target choose.
 pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     let store = store::store()?;
     let host = HostOs::current();
     if host == HostOs::Other {
         return Err("images are built on a Windows or Linux host".to_owned());
     }
-    for tool in ["packer", "qemu-system-x86_64", "qemu-img", "ssh-keygen"] {
+    match builder_for(host, target) {
+        Builder::HyperV => crate::commands::build_hyperv::run(runner, &store, target),
+        Builder::PackerQemu => run_packer_build(runner, &store, target, host),
+    }
+}
+
+/// The Packer and QEMU path: both images on a Linux host, and the Linux image
+/// on a Windows one.
+fn run_packer_build(
+    runner: &dyn Runner,
+    store: &Store,
+    target: Target,
+    host: HostOs,
+) -> Result<u8, String> {
+    for tool in required_tools(Builder::PackerQemu) {
         if crate::host::facts::resolve_tool(runner, tool, host).is_none() {
             return Err(format!(
                 "{tool} is not available; run `cargo xtask vm doctor` for the whole list"
@@ -370,9 +389,9 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     // a tool nothing here has ever mentioned.
     let (iso_tool, iso_tool_dir) = resolve_iso_tool(runner, host)?;
 
-    let public_key = ensure_ssh_key(runner, &store)?;
+    let public_key = ensure_ssh_key(runner, store)?;
     if target == Target::Windows {
-        crate::store::windows_media::ensure_iso(runner, &store)?;
+        crate::store::windows_media::ensure_iso(runner, store)?;
     }
 
     let accelerator = accelerator_for(host);
@@ -386,7 +405,7 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     } else {
         None
     };
-    let plan = plan(&store, target, accelerator, firmware.as_ref());
+    let plan = plan(store, target, accelerator, firmware.as_ref());
     if !plan.template_dir.is_dir() {
         return Err(format!(
             "no templates at {}; the repo is where they live",
@@ -419,9 +438,6 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     println!("  output:    {}", plan.output_dir.display());
     println!("  log:       {}", log.display());
     println!("  this takes tens of minutes and downloads several gigabytes");
-    if let Some(warning) = qemu_cannot_install_windows(host, target, accelerator) {
-        println!("\nwarning: {warning}\n");
-    }
 
     let extra_path = iso_tool_dir
         .as_deref()
@@ -445,7 +461,7 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         screen,
     )?;
 
-    finish(runner, &store, target, &plan, &version)
+    finish(runner, store, target, &plan, &version)
 }
 
 /// Run the build itself: the command, the watcher over it, and what a nonzero
@@ -536,51 +552,125 @@ fn finish(
 
     if target == Target::Windows {
         // One canonical install, two disk formats: Hyper-V boots the VHDX and
-        // QEMU boots the qcow2, and they are the same Windows.
+        // QEMU boots the qcow2, and they are the same Windows. A native
+        // Hyper-V build derives them the other way round.
         let vhdx = store.vhdx(target);
         println!("converting to VHDX for the Hyper-V provider");
-        let convert = Cmd::new("qemu-img").args([
-            "convert".to_owned(),
-            "-p".to_owned(),
-            "-O".to_owned(),
-            "vhdx".to_owned(),
-            "-o".to_owned(),
-            "subformat=dynamic".to_owned(),
-            qcow2.to_string_lossy().into_owned(),
-            vhdx.to_string_lossy().into_owned(),
-        ]);
-        let code = runner
-            .stream(&convert)
-            .map_err(|e| format!("cannot run qemu-img: {e}"))?;
-        if code != 0 {
-            return Err(format!("qemu-img convert failed with exit code {code}"));
-        }
+        convert(runner, &qcow2, &vhdx, "vhdx")?;
         images.push(record(&vhdx)?);
     }
 
-    let template_hash = hash::read_tree(&plan.template_dir)
-        .map(|files| hash::template_hash(&files))
-        .map_err(|e| format!("cannot hash the templates: {e}"))?;
     let source = match target {
         Target::Windows => store.windows_iso().to_string_lossy().into_owned(),
         Target::Linux => "ubuntu 22.04 cloud image".to_owned(),
     };
-    let manifest = manifest_for(
+    write_manifest(
+        store,
         target,
-        template_hash,
+        &plan.template_dir,
         &images,
-        util::now_unix(),
         source,
         builder.to_owned(),
-    );
-    std::fs::write(store.manifest(target), manifest.to_json())
-        .map_err(|e| format!("cannot write the manifest: {e}"))?;
+    )?;
 
     let _ = std::fs::remove_dir_all(&plan.output_dir);
 
+    forget_host_keys(store);
+    announce(target, &images);
+    Ok(0)
+}
+
+/// `qemu-img convert` between the two formats the two providers boot.
+///
+/// `subformat=dynamic` only when a VHDX is being written: it is a VHDX option,
+/// and qcow2 refuses it.
+pub fn convert_command(from: &Path, to: &Path, format: &str) -> Cmd {
+    let mut args = vec![
+        "convert".to_owned(),
+        "-p".to_owned(),
+        "-O".to_owned(),
+        format.to_owned(),
+    ];
+    if format == "vhdx" {
+        args.push("-o".to_owned());
+        args.push("subformat=dynamic".to_owned());
+    }
+    args.push(from.to_string_lossy().into_owned());
+    args.push(to.to_string_lossy().into_owned());
+    Cmd::new("qemu-img").args(args)
+}
+
+/// Derive the second disk format, streaming `qemu-img`'s own progress.
+pub fn convert(runner: &dyn Runner, from: &Path, to: &Path, format: &str) -> Result<(), String> {
+    let _ = std::fs::remove_file(to);
+    let code = runner
+        .stream(&convert_command(from, to, format))
+        .map_err(|e| format!("cannot run qemu-img: {e}"))?;
+    if code != 0 {
+        // Deleted rather than left behind: a partial image is the one thing
+        // the size check in the currency model cannot tell from a whole one,
+        // because the manifest that would contradict it is not written yet.
+        let _ = std::fs::remove_file(to);
+        return Err(format!(
+            "qemu-img convert to {format} failed with exit code {code}"
+        ));
+    }
+    Ok(())
+}
+
+/// Write the manifest that makes the result auditable (plan decision 4).
+pub fn write_manifest(
+    store: &Store,
+    target: Target,
+    template_dir: &Path,
+    images: &[(String, u64, String)],
+    source: String,
+    builder: String,
+) -> Result<(), String> {
+    let template_hash = hash::read_tree(template_dir)
+        .map(|files| hash::template_hash(&files))
+        .map_err(|e| format!("cannot hash the templates: {e}"))?;
+    let manifest = manifest_for(
+        target,
+        template_hash,
+        images,
+        util::now_unix(),
+        source,
+        builder,
+    );
+    std::fs::write(store.manifest(target), manifest.to_json())
+        .map_err(|e| format!("cannot write the manifest: {e}"))
+}
+
+/// Forget the host keys of the image that has just been replaced.
+///
+/// A guest's SSH host keys are generated during the image build and live on the
+/// golden disk, so every throwaway overlay of one image answers with the same
+/// key and the known-hosts file beside the key pair is right about it. A rebuild
+/// changes that key, and `ssh` then prints the remote-host-identification-changed
+/// warning on every connection for the rest of that image's life:
+/// `StrictHostKeyChecking=no` accepts a *new* key without a prompt and says
+/// nothing about accepting a *changed* one. Public-key authentication keeps
+/// working either way, so this is noise rather than a failure, which is exactly
+/// why it would never be dealt with otherwise.
+///
+/// The file is the xtask's own and holds nothing but these guests, so a build
+/// deletes it. Clearing both targets' entries rather than one is deliberate: it
+/// is one file, and the entries come back on the next boot for free.
+pub fn forget_host_keys(store: &Store) {
+    let path = crate::guest::ssh::known_hosts(&store.ssh_key());
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        println!("warning: cannot clear {} ({e})", path.display());
+    }
+}
+
+/// The closing report, the same whichever path built the image.
+pub fn announce(target: Target, images: &[(String, u64, String)]) {
     println!();
     println!("the {target} golden image is built:");
-    for (file, bytes, _) in &images {
+    for (file, bytes, _) in images {
         println!("  {file}  {}", util::format_bytes(*bytes));
     }
     if target.has_eval_expiry() {
@@ -590,10 +680,9 @@ fn finish(
         );
     }
     println!("`cargo xtask vm status` lists it; `cargo xtask e2e --target {target}` uses it.");
-    Ok(0)
 }
 
-fn record(path: &Path) -> Result<(String, u64, String), String> {
+pub fn record(path: &Path) -> Result<(String, u64, String), String> {
     let bytes = std::fs::metadata(path)
         .map_err(|e| format!("cannot stat {}: {e}", path.display()))?
         .len();
@@ -606,10 +695,10 @@ fn record(path: &Path) -> Result<(String, u64, String), String> {
 }
 
 /// Rename, falling back to copy when the two paths are on different volumes.
-fn move_file(from: &Path, to: &Path) -> Result<(), String> {
+pub fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     if !from.is_file() {
         return Err(format!(
-            "packer reported success but produced no {}",
+            "the build reported success but produced no {}",
             from.display()
         ));
     }
@@ -633,23 +722,99 @@ mod tests {
     }
 
     #[test]
-    fn the_one_host_that_cannot_build_a_windows_image_is_warned_about_it() {
-        let warning = qemu_cannot_install_windows(HostOs::Windows, Target::Windows, "whpx")
-            .expect("a WHPX host cannot install Windows 11");
-        assert!(warning.contains("expected to fail"), "{warning}");
-        assert!(warning.contains("Unexpected VP exit code 4"), "{warning}");
-        assert!(warning.contains("A Linux host"), "{warning}");
+    fn the_builder_matrix_mirrors_the_runtime_provider_matrix() {
+        // The one cell that is not Packer is the one QEMU cannot install: a
+        // WHPX guest does not survive the reset Windows Setup performs.
+        assert_eq!(
+            builder_for(HostOs::Windows, Target::Windows),
+            Builder::HyperV
+        );
+        assert_eq!(
+            builder_for(HostOs::Windows, Target::Linux),
+            Builder::PackerQemu
+        );
+        assert_eq!(
+            builder_for(HostOs::Linux, Target::Windows),
+            Builder::PackerQemu
+        );
+        assert_eq!(
+            builder_for(HostOs::Linux, Target::Linux),
+            Builder::PackerQemu
+        );
+        // The same builder the runtime provider would be, wherever both exist.
+        for target in Target::ALL {
+            let native = crate::provider::target::provider_for(HostOs::Windows, target);
+            let hyperv = native == Some(crate::provider::target::ProviderKind::HyperV);
+            assert_eq!(
+                builder_for(HostOs::Windows, target) == Builder::HyperV,
+                hyperv,
+                "{target} builds on a different hypervisor than it runs on"
+            );
+        }
+    }
 
-        // The Linux image installs fine on the same host, KVM has none of it,
-        // and neither does a Windows guest under a Linux host's KVM.
+    #[test]
+    fn the_native_path_needs_neither_packer_nor_a_qemu_to_run_a_guest_in() {
+        let native = required_tools(Builder::HyperV);
+        assert!(!native.contains(&"packer"), "{native:?}");
+        assert!(!native.contains(&"qemu-system-x86_64"), "{native:?}");
+        // It still needs the ISO builder, for both the media repack and the
+        // unattend CD, and qemu-img for the qcow2 the override cell boots.
+        assert!(native.contains(&"oscdimg"), "{native:?}");
+        assert!(native.contains(&"qemu-img"), "{native:?}");
+        // And the SSH client family, which is how the guest is reached.
+        for tool in ["ssh", "scp", "ssh-keygen"] {
+            assert!(native.contains(&tool), "{native:?}");
+        }
+
+        let packer = required_tools(Builder::PackerQemu);
+        assert!(packer.contains(&"packer"), "{packer:?}");
+        assert!(packer.contains(&"qemu-system-x86_64"), "{packer:?}");
+        assert!(packer.contains(&"qemu-img"), "{packer:?}");
+    }
+
+    #[test]
+    fn the_conversion_command_is_pinned_in_both_directions() {
+        // One canonical install, two formats. Which one is derived depends on
+        // where the install happened, and the command is otherwise the same.
+        let to_vhdx = convert_command(
+            Path::new("/srv/vm/images/windows/golden.qcow2"),
+            Path::new("/srv/vm/images/windows/golden.vhdx"),
+            "vhdx",
+        );
+        assert_eq!(to_vhdx.program, "qemu-img");
         assert_eq!(
-            qemu_cannot_install_windows(HostOs::Windows, Target::Linux, "whpx"),
-            None
+            to_vhdx.args,
+            [
+                "convert",
+                "-p",
+                "-O",
+                "vhdx",
+                "-o",
+                "subformat=dynamic",
+                "/srv/vm/images/windows/golden.qcow2",
+                "/srv/vm/images/windows/golden.vhdx",
+            ]
+        );
+
+        let to_qcow2 = convert_command(
+            Path::new("/srv/vm/images/windows/golden.vhdx"),
+            Path::new("/srv/vm/images/windows/golden.qcow2"),
+            "qcow2",
         );
         assert_eq!(
-            qemu_cannot_install_windows(HostOs::Linux, Target::Windows, "kvm"),
-            None
+            to_qcow2.args,
+            [
+                "convert",
+                "-p",
+                "-O",
+                "qcow2",
+                "/srv/vm/images/windows/golden.vhdx",
+                "/srv/vm/images/windows/golden.qcow2",
+            ]
         );
+        // `subformat=dynamic` is a VHDX option, and qcow2 rejects it.
+        assert!(!to_qcow2.args.contains(&"-o".to_owned()));
     }
 
     #[test]
@@ -771,6 +936,28 @@ mod tests {
             parse_packer_version("something else entirely"),
             "packer (version unknown)"
         );
+    }
+
+    #[test]
+    fn a_rebuild_forgets_the_host_keys_of_the_image_it_replaced() {
+        // The keys live on the golden disk, so they change with the image and
+        // every connection afterwards would warn that the host identification
+        // changed. Nothing else writes this file, and a missing one is not a
+        // problem to report.
+        let dir = std::env::temp_dir().join("sunlit_xtask_forget_host_keys");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let known = crate::guest::ssh::known_hosts(&store.ssh_key());
+        std::fs::create_dir_all(known.parent().expect("a parent")).expect("temp tree");
+        std::fs::write(&known, b"172.28.144.5 ssh-ed25519 AAAA\n").expect("write");
+        // The key pair itself is not touched: it is what the guests trust.
+        std::fs::write(store.ssh_key(), b"private").expect("write");
+
+        forget_host_keys(&store);
+        assert!(!known.exists());
+        assert!(store.ssh_key().is_file());
+        forget_host_keys(&store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

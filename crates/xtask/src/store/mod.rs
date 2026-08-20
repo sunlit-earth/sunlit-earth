@@ -84,6 +84,18 @@ impl Store {
         self.run_dir(target).join("vm.json")
     }
 
+    /// The disk a native install writes into, before it becomes the golden
+    /// image.
+    ///
+    /// In the run directory rather than the build directory, because it is run
+    /// state: it belongs to a VM that exists right now, and `vm down` is what
+    /// gets rid of both together. A half-built image is worth nothing, so
+    /// nothing about it is worth keeping past the guest that was writing it
+    /// (amendment decision 17).
+    pub fn build_disk(&self, target: Target) -> PathBuf {
+        self.run_dir(target).join("build.vhdx")
+    }
+
     pub fn vm_log(&self, target: Target) -> PathBuf {
         self.run_dir(target).join("vm.log")
     }
@@ -95,6 +107,23 @@ impl Store {
 
     pub fn windows_iso(&self) -> PathBuf {
         self.iso_dir().join("windows11-enterprise-eval.iso")
+    }
+
+    /// The same media repacked without the "Press any key to boot from CD or
+    /// DVD" prompt, which the native Hyper-V install boots (amendment decision
+    /// 16). Cached beside the original because making it costs a full copy of
+    /// the media out of a mounted image and back.
+    pub fn windows_iso_noprompt(&self) -> PathBuf {
+        self.iso_dir()
+            .join("windows11-enterprise-eval-noprompt.iso")
+    }
+
+    /// What that copy was repacked from: the original's size and checksum, so a
+    /// cached repack can be told from one made out of a different download.
+    /// Beside the two ISOs, so `vm purge windows --iso` takes it with them.
+    pub fn windows_iso_noprompt_source(&self) -> PathBuf {
+        self.iso_dir()
+            .join("windows11-enterprise-eval-noprompt.source.json")
     }
 
     /// Packer's working directory for one target, which also holds its log.
@@ -234,7 +263,10 @@ mod tests {
             store.manifest(Target::Windows),
             store.overlay(Target::Linux),
             store.state_file(Target::Windows),
+            store.build_disk(Target::Windows),
             store.windows_iso(),
+            store.windows_iso_noprompt(),
+            store.windows_iso_noprompt_source(),
             store.build_dir(Target::Linux),
             store.ssh_key(),
             store.results_dir(Target::Linux),
@@ -278,6 +310,23 @@ mod tests {
         assert!(store.contains(Path::new(
             r"c:\Users\dev\AppData\Local\SunlitEarth\vm\images\linux\golden.qcow2"
         )));
+    }
+
+    #[test]
+    fn the_build_disk_and_the_two_media_files_are_all_distinct() {
+        let store = Store::new("/srv/vm");
+        // The build disk shares the run directory with the overlay a guest
+        // boots from, and a build and a guest must never write to one file.
+        assert_ne!(
+            store.build_disk(Target::Windows),
+            store.overlay(Target::Windows)
+        );
+        assert_ne!(store.windows_iso(), store.windows_iso_noprompt());
+        // Both media files sit in the one directory `vm purge --iso` clears.
+        assert_eq!(
+            store.windows_iso_noprompt().parent(),
+            store.windows_iso().parent()
+        );
     }
 
     #[test]

@@ -51,6 +51,27 @@ pub fn job_timeout(target: Target) -> Duration {
     }
 }
 
+/// The Slint backend the Windows guest runs the app with.
+///
+/// A Hyper-V guest's synthetic display adapter offers no OpenGL, and Windows
+/// ships no software implementation of it, so Slint's default winit renderer
+/// (femtovg, which is GL) has nothing to initialize: the app dies with
+/// "Could not locate glCreateShader symbol" before its event loop starts, and
+/// every windowed case then times out waiting for the first frame. WARP covers
+/// wgpu and not this, because WARP is a Direct3D adapter and Slint asks for GL.
+///
+/// `winit-software` keeps the winit event loop, which is what the windowed cases
+/// are about, and swaps the renderer for Slint's CPU one: the same choice for
+/// Slint that WARP already is for wgpu in this guest. Slint parses the value as
+/// `<event loop>-<renderer>`, so this selects the software renderer by name
+/// rather than falling back to it; `renderer-software` is one of the crate's
+/// default features, so the renderer is compiled in.
+///
+/// The Linux guest needs no equivalent: Mesa is a software GL implementation
+/// and llvmpipe answers there, which is the same reason that guest has a GPU
+/// story for wgpu at all.
+pub const WINDOWS_SLINT_BACKEND: &str = "winit-software";
+
 /// The job script that runs the suite inside a guest.
 ///
 /// `--test-threads=1` on top of the suite's own `#[serial]` attributes: a guest
@@ -60,6 +81,11 @@ pub fn job_timeout(target: Target) -> Duration {
 /// The Windows job opts the wallpaper case in. That case replaces the desktop
 /// wallpaper of whatever machine runs it, which is the whole reason it is
 /// opt-in: a throwaway guest is the one place where doing so costs nothing.
+///
+/// `SUNLIT_EARTH_TEXTURES` appears only when the textures were staged. The
+/// render case samples the Sahara and the Atlantic, so it needs the real map;
+/// pointing the app at a directory that is not there would make it fall back to
+/// the procedural grid anyway, and saying so would then be a lie in the script.
 pub fn job_script(target: Target, paths: &GuestPaths) -> String {
     match target {
         Target::Linux => format!(
@@ -67,10 +93,17 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
              set -uo pipefail\n\
              export SUNLIT_EARTH_BIN={app}\n\
              export SUNLIT_EARTH_E2E_FIXTURES={fixtures}\n\
+             {textures}\
              export RUST_BACKTRACE=1\n\
              {harness} --ignored --test-threads=1 --nocapture\n",
             app = artifacts::shell_quote(&paths.app),
             fixtures = artifacts::shell_quote(&paths.fixtures),
+            textures = paths.textures.as_ref().map_or_else(String::new, |dir| {
+                format!(
+                    "export SUNLIT_EARTH_TEXTURES={}\n",
+                    artifacts::shell_quote(dir)
+                )
+            }),
             harness = artifacts::shell_quote(&paths.harness),
         ),
         Target::Windows => format!(
@@ -78,11 +111,17 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
              set SUNLIT_EARTH_BIN={app}\r\n\
              set SUNLIT_EARTH_E2E_FIXTURES={fixtures}\r\n\
              set SUNLIT_EARTH_E2E_WALLPAPER=1\r\n\
+             {textures}\
+             set SLINT_BACKEND={backend}\r\n\
              set RUST_BACKTRACE=1\r\n\
              \"{harness}\" --ignored --test-threads=1 --nocapture\r\n\
              exit /b %ERRORLEVEL%\r\n",
             app = paths.app,
             fixtures = paths.fixtures,
+            textures = paths.textures.as_ref().map_or_else(String::new, |dir| {
+                format!("set SUNLIT_EARTH_TEXTURES={dir}\r\n")
+            }),
+            backend = WINDOWS_SLINT_BACKEND,
             harness = paths.harness,
         ),
     }
@@ -221,6 +260,10 @@ mod tests {
     use super::*;
 
     fn paths(target: Target) -> GuestPaths {
+        paths_with_textures(target, true)
+    }
+
+    fn paths_with_textures(target: Target, textures: bool) -> GuestPaths {
         artifacts::guest_paths(
             target,
             if target == Target::Windows {
@@ -233,6 +276,7 @@ mod tests {
             } else {
                 "e2e-1a2b"
             },
+            textures,
         )
     }
 
@@ -360,6 +404,47 @@ mod tests {
         );
         let windows = job_script(Target::Windows, &paths(Target::Windows));
         assert!(windows.contains("\r\n"), "{windows}");
+    }
+
+    #[test]
+    fn only_the_windows_job_picks_slints_software_renderer() {
+        // A Hyper-V guest has no OpenGL and Windows ships no software
+        // implementation, so the default GL renderer cannot start there at all.
+        // The Linux guest has Mesa, which is a software GL implementation, so
+        // asking for the CPU renderer there would test something the guest does
+        // not do.
+        let windows = job_script(Target::Windows, &paths(Target::Windows));
+        assert!(
+            windows.contains("set SLINT_BACKEND=winit-software"),
+            "{windows}"
+        );
+        // The value is parsed by Slint as <event loop>-<renderer>, so the event
+        // loop half has to stay winit: the windowed cases are about a real
+        // window on a real desktop session.
+        assert!(
+            WINDOWS_SLINT_BACKEND.starts_with("winit-"),
+            "{WINDOWS_SLINT_BACKEND}"
+        );
+        let linux = job_script(Target::Linux, &paths(Target::Linux));
+        assert!(!linux.contains("SLINT_BACKEND"), "{linux}");
+    }
+
+    #[test]
+    fn the_textures_variable_appears_only_when_there_are_textures_in_the_guest() {
+        // Naming a directory the guest does not have would make the render case
+        // fall back to the procedural grid while the script claimed otherwise.
+        for target in Target::ALL {
+            let staged = job_script(target, &paths_with_textures(target, true));
+            assert!(staged.contains("SUNLIT_EARTH_TEXTURES"), "{staged}");
+            let expected = crate::provider::guest_textures(target);
+            assert!(staged.contains(&expected), "{staged}");
+
+            let bare = job_script(target, &paths_with_textures(target, false));
+            assert!(!bare.contains("SUNLIT_EARTH_TEXTURES"), "{bare}");
+            // Everything else is unchanged by the absence, including the line
+            // that runs the harness.
+            assert!(bare.contains("--ignored"), "{bare}");
+        }
     }
 
     #[test]

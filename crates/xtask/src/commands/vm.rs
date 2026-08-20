@@ -232,12 +232,28 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
             return Err(format!(
                 "{} is already running, and this phase runs one VM at a time \
                  (they share the same forwarded ports).\n\
-                 `cargo xtask vm down {other}` frees it.",
-                state.vm_name
+                 `cargo xtask vm down {other}` frees it{}.",
+                state.vm_name,
+                cost_of_ending(state.reason)
             ));
         }
     }
     Ok(())
+}
+
+/// What taking a running guest down costs, said only when it costs something.
+///
+/// Every guest this boots holds nothing worth keeping, so "frees it" is the
+/// whole story for all of them but one: a build holds an install of tens of
+/// minutes, and being told to end it without being told that is how an hour goes
+/// missing.
+fn cost_of_ending(reason: StartReason) -> &'static str {
+    if reason == StartReason::Build {
+        ", which ends the image build running in it and starts that install over \
+         from the media"
+    } else {
+        ""
+    }
 }
 
 /// Save the state file. Called as soon as the VM exists, so that a crash from
@@ -292,6 +308,24 @@ pub fn boot<'a>(
     }
 }
 
+/// Whether a recorded VM may be taken down to make room for a new one.
+///
+/// Everything else the xtask boots holds nothing worth keeping, which is the
+/// whole of decision 14's lifecycle. An image build is the exception: it is tens
+/// of minutes of install whose disk is not an image yet, so taking it down means
+/// starting again from the media. A build that is recorded and no longer running
+/// is a crashed one, and clearing that away is exactly what clearing is for.
+pub fn may_clear(target: Target, reason: StartReason, running: bool) -> Result<(), String> {
+    if reason == StartReason::Build && running {
+        return Err(format!(
+            "an image build is running in the {target} VM, and clearing it away \
+             would throw away the install it is partway through.\n\
+             Wait for it, or `cargo xtask vm down {target}` to end it deliberately."
+        ));
+    }
+    Ok(())
+}
+
 /// Take down whatever an earlier run left recorded for this target.
 ///
 /// The record is removed only once the teardown has succeeded, which is the
@@ -299,7 +333,7 @@ pub fn boot<'a>(
 /// record of a VM that is still registered makes it invisible to `vm status`
 /// and `vm down` for good. That is reachable on a host where the `Hyper-V`
 /// cmdlets fail, which is a plain missing group membership away.
-fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Result<(), String> {
+pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Result<(), String> {
     let Some(existing) = load_state(store, target) else {
         return Ok(());
     };
@@ -312,6 +346,8 @@ fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Resu
             existing.vm_name
         )
     })?;
+
+    may_clear(target, existing.reason, provider.is_running(&existing))?;
 
     let session = Session {
         provider,
@@ -342,9 +378,29 @@ pub fn lifecycle_explainer(target: Target) -> String {
          `vm up` boots something pristine. Until then it holds its RAM.\n\n\
          Watching a run is harmless; clicking during one perturbs it. The \
          hypervisor console has no clipboard integration, so text and files go \
-         in over `vm ssh` and scp.",
-        vm = target.vm_name()
+         in over `vm ssh` and scp.{extra}",
+        vm = target.vm_name(),
+        extra = guest_environment_note(target)
     )
+}
+
+/// What someone running the app in this guest by hand has to set, which the
+/// generated job sets for a test run.
+///
+/// A Windows guest has no OpenGL, and the failure that produces names
+/// `glCreateShader` rather than the guest, so the hint belongs where the guest
+/// is handed over. The value comes from the job's own constant, so the two
+/// cannot drift apart.
+fn guest_environment_note(target: Target) -> String {
+    match target {
+        Target::Windows => format!(
+            "\n\nRunning the app in here by hand needs \
+             `set SLINT_BACKEND={backend}` first: this guest has no OpenGL, and \
+             without it the app exits before a window appears.",
+            backend = crate::commands::e2e::WINDOWS_SLINT_BACKEND
+        ),
+        Target::Linux => String::new(),
+    }
 }
 
 /// `vm up`.
@@ -392,9 +448,7 @@ pub fn ssh(runner: &dyn Runner, target: Target, extra: &[String]) -> Result<u8, 
     // buffer, unechoed, and only appear once the process finally exits. That is
     // what it looked like when this was reported, and the appearance of a
     // frozen terminal was the symptom.
-    let cmd =
-        crate::guest::ssh::ssh_command(&ssh_target, remote.as_deref(), provider.windows_host())
-            .interactive();
+    let cmd = crate::guest::ssh::ssh_command(&ssh_target, remote.as_deref()).interactive();
     if remote.is_none() {
         println!(
             "opening a shell on {} ({}:{}); `exit` or Ctrl-D leaves it",
@@ -595,13 +649,13 @@ mod tests {
             port: 2222,
             key: std::path::PathBuf::from("/srv/vm/ssh/id_ed25519"),
         };
-        let shell = crate::guest::ssh::ssh_command(&target, None, true).interactive();
+        let shell = crate::guest::ssh::ssh_command(&target, None).interactive();
         assert!(
             shell.interactive,
             "a shell nobody can type into is not a shell"
         );
         // Every other ssh invocation stays non-interactive on purpose.
-        let probe = crate::guest::ssh::ssh_command(&target, Some("echo hi"), true);
+        let probe = crate::guest::ssh::ssh_command(&target, Some("echo hi"));
         assert!(!probe.interactive);
     }
 
@@ -622,6 +676,40 @@ mod tests {
     }
 
     #[test]
+    fn a_running_image_build_is_not_cleared_away_to_make_room() {
+        let running = may_clear(Target::Windows, StartReason::Build, true).unwrap_err();
+        assert!(running.contains("image build is running"), "{running}");
+        assert!(running.contains("vm down windows"), "{running}");
+        // The refusal is about the reason rather than about the target, so it
+        // names the target it was asked about and not the one builds usually
+        // happen on.
+        let linux = may_clear(Target::Linux, StartReason::Build, true).unwrap_err();
+        assert!(linux.contains("vm down linux"), "{linux}");
+        assert!(!linux.contains("windows"), "{linux}");
+        // A crashed build is exactly what clearing is for, and every other
+        // guest holds nothing worth keeping.
+        assert!(may_clear(Target::Windows, StartReason::Build, false).is_ok());
+        for reason in [StartReason::Run, StartReason::Keep, StartReason::Up] {
+            for target in Target::ALL {
+                assert!(may_clear(target, reason, true).is_ok(), "{reason:?}");
+                assert!(may_clear(target, reason, false).is_ok(), "{reason:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn being_told_to_end_a_build_says_what_that_ends() {
+        // The one-VM-at-a-time refusal points at `vm down <other>`, and for a
+        // build that command costs an install rather than a boot.
+        let build = cost_of_ending(StartReason::Build);
+        assert!(build.contains("ends the image build"), "{build}");
+        assert!(build.contains("over from the media"), "{build}");
+        for reason in [StartReason::Run, StartReason::Keep, StartReason::Up] {
+            assert_eq!(cost_of_ending(reason), "", "{reason:?}");
+        }
+    }
+
+    #[test]
     fn the_lifecycle_explainer_says_there_is_no_stop() {
         let text = lifecycle_explainer(Target::Linux);
         assert!(text.contains("no stop or pause"), "{text}");
@@ -630,5 +718,22 @@ mod tests {
         assert!(text.contains("cargo xtask vm down linux"), "{text}");
         assert!(text.contains("clicking during one perturbs it"), "{text}");
         assert!(text.contains("clipboard"), "{text}");
+        // Mesa answers in the Linux guest, so there is nothing to set there.
+        assert!(!text.contains("SLINT_BACKEND"), "{text}");
+    }
+
+    #[test]
+    fn handing_over_a_windows_guest_says_what_the_app_needs_in_it() {
+        // The job sets this; a shell does not, and the failure without it names
+        // an OpenGL symbol rather than the guest.
+        let text = lifecycle_explainer(Target::Windows);
+        assert!(
+            text.contains(&format!(
+                "SLINT_BACKEND={}",
+                crate::commands::e2e::WINDOWS_SLINT_BACKEND
+            )),
+            "{text}"
+        );
+        assert!(text.contains("no OpenGL"), "{text}");
     }
 }

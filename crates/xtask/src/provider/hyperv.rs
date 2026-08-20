@@ -63,25 +63,59 @@ pub fn create_script(name: &str, golden: &str, overlay: &str) -> String {
     )
 }
 
-/// The script that reports a VM's state, or nothing if it does not exist.
-pub fn state_script(name: &str) -> String {
+/// The line a query script prints to prove it ran.
+///
+/// Marker rather than exit code, and not for elegance. `Get-VM -Name X` on a
+/// host with no such VM writes an error record, and `-ErrorAction
+/// SilentlyContinue` hides the record without undoing what it did to the exit
+/// code: `powershell.exe` still exits 1. Every caller then reads "Hyper-V
+/// refused" where the truth is "there is no such VM", which is the one
+/// distinction a teardown may not get wrong, and it is what ended the first
+/// live Windows image build one step from success.
+///
+/// So no query asks for a VM by name any more. Listing every VM and filtering
+/// in the script is a question that has an answer either way, and this marker
+/// says the listing itself worked: a host where the cmdlets fail, for a stopped
+/// service or a missing group membership, throws before printing it. The crate
+/// already learned this lesson once, from winget (deviation 19): what a script
+/// knows, a script has to say, because `powershell -EncodedCommand` will not
+/// carry it in the exit code.
+pub const QUERY_OK: &str = "QUERY=ok";
+
+/// A query script: find our VM without its absence reading as a failure, report
+/// on it, and prove the query ran.
+pub fn query_script(name: &str, body: &str) -> String {
     format!(
-        "$vm = Get-VM -Name {name} -ErrorAction SilentlyContinue\n\
-         if ($vm) {{ Write-Output \"STATE=$($vm.State)\" }}\n",
+        "$vm = @(Get-VM) | Where-Object {{ $_.Name -eq {name} }} | Select-Object -First 1\n\
+         {body}\
+         Write-Output '{QUERY_OK}'\n",
         name = ps_quote(name)
     )
+}
+
+/// Whether a query script's own answer arrived.
+pub fn answered(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.trim() == QUERY_OK)
+}
+
+/// The script that reports a VM's state, or nothing if it does not exist.
+pub fn state_script(name: &str) -> String {
+    query_script(name, "if ($vm) { Write-Output \"STATE=$($vm.State)\" }\n")
 }
 
 /// The script that reports the guest's addresses.
 ///
 /// `Get-VMNetworkAdapter` reads them out of the integration services, which
 /// every Windows guest has built in, so nothing has to be installed in the
-/// guest to make this work.
+/// guest to make this work. Handed the VM object rather than its name, so a
+/// guest that has gone away is an empty answer rather than an error.
 pub fn address_script(name: &str) -> String {
-    format!(
-        "$adapter = Get-VMNetworkAdapter -VMName {name} -ErrorAction SilentlyContinue\n\
-         if ($adapter) {{ $adapter.IPAddresses | ForEach-Object {{ Write-Output \"IP=$_\" }} }}\n",
-        name = ps_quote(name)
+    query_script(
+        name,
+        "if ($vm) {\n  \
+         $vm | Get-VMNetworkAdapter | ForEach-Object { $_.IPAddresses } | \
+         ForEach-Object { Write-Output \"IP=$_\" }\n\
+         }\n",
     )
 }
 
@@ -90,14 +124,20 @@ pub fn address_script(name: &str) -> String {
 /// `-TurnOff` rather than a graceful shutdown: the guest holds nothing worth
 /// flushing, its disk is a differencing child about to be deleted, and waiting
 /// for Windows to shut down politely costs a minute per run.
+///
+/// The two cmdlets that change anything name the VM explicitly, even though the
+/// object is already in hand, because a mutating cmdlet reading its subject from
+/// a pipeline is one refactor away from acting on everything the pipeline holds.
 pub fn destroy_script(name: &str) -> String {
-    format!(
-        "$vm = Get-VM -Name {name} -ErrorAction SilentlyContinue\n\
-         if ($vm) {{\n  \
-         if ($vm.State -ne 'Off') {{ Stop-VM -Name {name} -TurnOff -Force }}\n  \
-         Remove-VM -Name {name} -Force\n\
-         }}\n",
-        name = ps_quote(name)
+    query_script(
+        name,
+        &format!(
+            "if ($vm) {{\n  \
+             if ($vm.State -ne 'Off') {{ Stop-VM -Name {name} -TurnOff -Force }}\n  \
+             Remove-VM -Name {name} -Force\n\
+             }}\n",
+            name = ps_quote(name)
+        ),
     )
 }
 
@@ -171,9 +211,19 @@ impl<'a> HypervProvider<'a> {
     ///
     /// The error is kept rather than swallowed: "the cmdlets did not work"
     /// and "there is no such VM" are the same answer to `is_running` and very
-    /// different answers to "may I delete this disk now".
+    /// different answers to "may I delete this disk now". Which is why the
+    /// answer has to be the script's own word for it rather than its exit code;
+    /// see [`QUERY_OK`].
     fn query_state(&self, name: &str) -> Result<Option<String>, String> {
-        Ok(parse_state(&self.run_script(&state_script(name))?))
+        let out = self.run_script(&state_script(name))?;
+        if !answered(&out) {
+            return Err(format!(
+                "the query about {name} did not run to the end, so whether it \
+                 exists is unknown. Its output was: {}",
+                out.trim()
+            ));
+        }
+        Ok(parse_state(&out))
     }
 
     /// Poll until the guest reports a usable address.
@@ -181,6 +231,7 @@ impl<'a> HypervProvider<'a> {
         let start = Instant::now();
         loop {
             if let Ok(out) = self.run_script(&address_script(name))
+                && answered(&out)
                 && let Some(address) = first_usable_ipv4(&parse_addresses(&out))
             {
                 return Ok(address);
@@ -281,9 +332,15 @@ impl crate::provider::Provider for HypervProvider<'_> {
     /// A failed query answers `false`, which is the only thing a boolean can
     /// say, and is why nothing that deletes anything is allowed to ask this:
     /// `destroy` uses `query_state` so that "the cmdlets did not work" stays
-    /// distinguishable from "there is no such VM". The callers here are
-    /// `vm ssh`, `vm view`, `vm status`, and the one-VM-at-a-time check, all
-    /// of which either report it or refuse, so a false negative costs a
+    /// distinguishable from "there is no such VM". The callers are `vm ssh`,
+    /// `vm view`, `vm status`, the one-VM-at-a-time check, and the answer
+    /// `clear_stale_state` hands `vm::may_clear`. The first four either report
+    /// it or refuse. The fifth decides whether a recorded image build is
+    /// running, and so whether clearing it away is allowed at all. A query that
+    /// failed answers no there, which would allow a live build to be cleared;
+    /// what keeps that from costing the install is that the clearing itself goes
+    /// through `destroy`, which asks `query_state` and refuses to delete
+    /// anything it cannot account for. So even there a false negative costs a
     /// message rather than a disk.
     fn is_running(&self, state: &RunState) -> bool {
         match self.query_state(&state.vm_name) {
@@ -324,10 +381,6 @@ impl crate::provider::Provider for HypervProvider<'_> {
 
     fn runner(&self) -> &dyn Runner {
         self.runner
-    }
-
-    fn windows_host(&self) -> bool {
-        self.host == HostOs::Windows
     }
 }
 
@@ -398,11 +451,66 @@ mod tests {
     #[test]
     fn destroying_stops_first_and_removes_only_what_exists() {
         let script = destroy_script("sunlit-e2e-windows");
-        assert!(script.contains("Get-VM -Name 'sunlit-e2e-windows' -ErrorAction SilentlyContinue"));
+        assert!(
+            script.contains("$_.Name -eq 'sunlit-e2e-windows'"),
+            "{script}"
+        );
+        assert!(script.contains("if ($vm)"), "{script}");
         assert!(script.contains("-TurnOff -Force"), "{script}");
-        assert!(script.contains("Remove-VM"), "{script}");
-        // Never a blanket removal.
-        assert!(!script.contains("Get-VM |"), "{script}");
+        // Never a blanket removal: both cmdlets that change anything name the
+        // VM, so no pipeline can widen what they act on.
+        assert!(
+            script.contains("Stop-VM -Name 'sunlit-e2e-windows'"),
+            "{script}"
+        );
+        assert!(
+            script.contains("Remove-VM -Name 'sunlit-e2e-windows'"),
+            "{script}"
+        );
+    }
+
+    /// `Get-VM -Name X` for a VM that does not exist writes an error record,
+    /// and `-ErrorAction SilentlyContinue` hides the record while leaving
+    /// `powershell.exe` exiting 1. Measured on 2026-08-20: it is what ended the
+    /// first live Windows image build one step from success, after the guest had
+    /// installed, finalized, and shut down. So no query names a VM to the
+    /// cmdlet any more, and every one of them says whether it ran.
+    #[test]
+    fn no_query_asks_for_a_vm_by_name_or_hides_an_error_behind_an_exit_code() {
+        for script in [
+            state_script("sunlit-e2e-windows"),
+            address_script("sunlit-e2e-windows"),
+            destroy_script("sunlit-e2e-windows"),
+        ] {
+            assert!(
+                !script.contains("Get-VM -Name"),
+                "a by-name lookup makes a missing VM an error: {script}"
+            );
+            assert!(
+                !script.contains("-ErrorAction SilentlyContinue"),
+                "a suppressed error still decides the exit code: {script}"
+            );
+            assert!(
+                script.contains(QUERY_OK),
+                "a query has to say it ran: {script}"
+            );
+        }
+        // And a by-name lookup of the network adapter would do the same, so the
+        // VM object is handed over instead.
+        assert!(!address_script("vm").contains("Get-VMNetworkAdapter -VMName"));
+    }
+
+    #[test]
+    fn a_query_that_did_not_run_is_told_from_one_that_found_nothing() {
+        // Both come back with no STATE line. Only the marker separates "there
+        // is no such VM" from "the cmdlets never got that far", and a teardown
+        // may not confuse the two: one means the disk is safe to delete and the
+        // other means nothing is known about the guest holding it.
+        assert!(answered("QUERY=ok\n"));
+        assert!(answered("STATE=Running\nQUERY=ok"));
+        assert!(!answered(""));
+        assert!(!answered("STATE=Running\n"));
+        assert!(!answered("Get-VM : access denied\n"));
     }
 
     #[test]

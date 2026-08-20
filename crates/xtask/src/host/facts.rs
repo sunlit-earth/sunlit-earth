@@ -58,6 +58,28 @@ pub const VNC_VIEWERS: [&str; 5] = [
 /// a perfectly good QEMU install is invisible to a plain `PATH` lookup.
 pub const WINDOWS_QEMU_DIRS: [&str; 2] = [r"C:\Program Files\qemu", r"C:\Program Files (x86)\qemu"];
 
+/// Where winget links the commands of the packages it installs.
+///
+/// A winget package that declares a command, as both `Hashicorp.Packer` and
+/// `Microsoft.OSCDIMG` do, gets a link here, and winget appends this directory
+/// to the user `PATH` when it creates the first one. The shell that ran
+/// `vm setup` inherited its `PATH` before that happened, so the tool is
+/// installed and invisible to a plain `PATH` lookup until a new shell starts.
+/// Detection has to look here as well, or a second `vm setup` in the same
+/// shell plans an install that winget then refuses as redundant.
+pub const WINGET_LINKS_SUBPATH: &str = r"Microsoft\WinGet\Links";
+
+/// The winget link for a tool, given `%LOCALAPPDATA%`.
+///
+/// Pure, so that the location is testable without an environment.
+pub fn winget_link_candidate(tool: &str, local_app_data: Option<&Path>) -> Option<PathBuf> {
+    Some(
+        local_app_data?
+            .join(WINGET_LINKS_SUBPATH)
+            .join(format!("{tool}.exe")),
+    )
+}
+
 /// The SID of the local `Hyper-V Administrators` group. Membership in it is
 /// what lets `vm status`, `e2e`, and `vm destroy` drive the hypervisor without
 /// elevation.
@@ -136,6 +158,8 @@ pub struct WindowsFacts {
     /// The machine `PATH`, needed because the winget QEMU package installs a
     /// working QEMU and leaves it off `PATH` entirely.
     pub machine_path: String,
+    /// The user `PATH`, which is where winget appends its links directory.
+    pub user_path: String,
 }
 
 impl WindowsFacts {
@@ -159,10 +183,19 @@ impl WindowsFacts {
             .find(|d| d.name.eq_ignore_ascii_case(name))
     }
 
-    /// Whether a directory is already on the machine `PATH`, comparing the way
-    /// Windows does: case-insensitively and ignoring a trailing separator.
+    /// Whether a directory is already on the persisted `PATH`, machine or user,
+    /// comparing the way Windows does: case-insensitively and ignoring a
+    /// trailing separator.
+    ///
+    /// Both halves count, because the question every caller is really asking is
+    /// "will a new shell find this", and winget answers it by appending to the
+    /// user half.
     pub fn path_contains(&self, dir: &str) -> bool {
-        self.machine_path.split(';').any(|entry| {
+        let mut entries = self
+            .machine_path
+            .split(';')
+            .chain(self.user_path.split(';'));
+        entries.any(|entry| {
             entry
                 .trim()
                 .trim_end_matches(['\\', '/'])
@@ -197,6 +230,10 @@ pub struct HostFacts {
     pub vnc_viewer: Option<PathBuf>,
     /// The ISO builders on `PATH`, of the ones Packer knows how to drive.
     pub iso_tools: Vec<String>,
+    /// ISO builders that are installed but not on this process's `PATH`. That
+    /// is the state a fresh `vm setup` leaves behind, and it is a different
+    /// answer from "missing": a new shell finds them.
+    pub iso_tools_off_path: Vec<String>,
     /// Free space where the image store lives, or the nearest existing parent.
     pub free_bytes: Option<u64>,
     /// Why the host probe failed, when it did. Every other field is then at its
@@ -211,6 +248,16 @@ impl HostFacts {
 
     pub fn tool(&self, name: &str) -> Option<&Path> {
         self.tools.get(name).and_then(Option::as_deref)
+    }
+
+    /// The ISO builder that is installed, whether or not this process's `PATH`
+    /// can see it yet. This is the question `vm setup` asks, because installing
+    /// a second copy of a tool winget already has is not an improvement.
+    pub fn iso_tool_installed(&self) -> Option<&str> {
+        self.iso_tool().or_else(|| {
+            let off_path: Vec<&str> = self.iso_tools_off_path.iter().map(String::as_str).collect();
+            packer_iso_tool(&off_path)
+        })
     }
 
     /// The ISO builder Packer would use, if any is present.
@@ -282,6 +329,7 @@ try {
   wsl_raw = $wsl
   free_bytes = $free
   machine_path = [string][Environment]::GetEnvironmentVariable('Path','Machine')
+  user_path = [string][Environment]::GetEnvironmentVariable('Path','User')
 } | ConvertTo-Json -Compress
 "#;
 
@@ -311,6 +359,14 @@ pub fn collect(runner: &dyn Runner, host: HostOs, store_root: &Path) -> HostFact
     facts.iso_tools = PACKER_ISO_TOOLS
         .iter()
         .filter(|tool| runner.which(tool).is_some())
+        .map(|tool| (*tool).to_owned())
+        .collect();
+    // Installed but not yet on this process's PATH, which is what a winget
+    // install in this same shell looks like.
+    facts.iso_tools_off_path = PACKER_ISO_TOOLS
+        .iter()
+        .filter(|tool| runner.which(tool).is_none())
+        .filter(|tool| resolve_tool(runner, tool, host).is_some())
         .map(|tool| (*tool).to_owned())
         .collect();
 
@@ -399,6 +455,16 @@ pub fn fallback_candidates(tool: &str, host: HostOs) -> Vec<PathBuf> {
         }
         "wsl" => out.push(PathBuf::from(r"C:\Windows\System32\wsl.exe")),
         _ => {}
+    }
+    // Last, because a real installation directory is the better answer when
+    // there is one; winget's link is what makes a just-installed tool findable.
+    if let Some(link) = winget_link_candidate(
+        tool,
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .as_deref(),
+    ) {
+        out.push(link);
     }
     out
 }
@@ -493,6 +559,8 @@ struct RawWindowsFacts {
     free_bytes: Option<u64>,
     #[serde(default)]
     machine_path: String,
+    #[serde(default)]
+    user_path: String,
 }
 
 /// Parse the probe's JSON into facts plus the free-space figure.
@@ -522,6 +590,7 @@ pub fn parse_windows_facts(json: &str) -> Result<(WindowsFacts, Option<u64>), St
         elevated: raw.elevated,
         wsl_distros: parse_wsl_list(&raw.wsl_raw),
         machine_path: raw.machine_path,
+        user_path: raw.user_path,
     };
     Ok((facts, raw.free_bytes))
 }
@@ -797,6 +866,57 @@ mod tests {
                 .iter()
                 .any(|p| p.ends_with("vmconnect.exe"))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_winget_installed_tool_is_found_through_its_links_directory() {
+        let candidate =
+            winget_link_candidate("packer", Some(Path::new(r"C:\Users\me\AppData\Local")))
+                .expect("a local app data directory yields a candidate");
+        assert_eq!(
+            candidate,
+            Path::new(r"C:\Users\me\AppData\Local\Microsoft\WinGet\Links\packer.exe")
+        );
+        assert!(winget_link_candidate("packer", None).is_none());
+        assert!(
+            fallback_candidates("packer", HostOs::Windows)
+                .iter()
+                .any(|p| p.ends_with(r"Microsoft\WinGet\Links\packer.exe")),
+            "a winget package that declares a command lands there"
+        );
+    }
+
+    #[test]
+    fn the_user_half_of_the_path_counts_as_being_on_path() {
+        // winget appends its links directory to the user PATH, and the question
+        // every caller is asking is whether a new shell would find the tool.
+        let facts = WindowsFacts {
+            machine_path: r"C:\Windows\System32".to_owned(),
+            user_path: r"C:\Users\me\AppData\Local\Microsoft\WinGet\Links;".to_owned(),
+            ..WindowsFacts::default()
+        };
+        assert!(facts.path_contains(r"C:\Users\me\AppData\Local\Microsoft\WinGet\Links"));
+        assert!(facts.path_contains(r"c:\windows\system32\"));
+        assert!(!facts.path_contains(r"C:\Program Files\qemu"));
+    }
+
+    #[test]
+    fn an_iso_builder_off_path_is_installed_but_not_what_packer_sees() {
+        let facts = HostFacts {
+            iso_tools_off_path: vec!["oscdimg".to_owned()],
+            ..HostFacts::default()
+        };
+        assert_eq!(facts.iso_tool(), None, "Packer only looks on PATH");
+        assert_eq!(facts.iso_tool_installed(), Some("oscdimg"));
+
+        let both = HostFacts {
+            iso_tools: vec!["xorriso".to_owned()],
+            iso_tools_off_path: vec!["oscdimg".to_owned()],
+            ..HostFacts::default()
+        };
+        assert_eq!(both.iso_tool(), Some("xorriso"));
+        assert_eq!(both.iso_tool_installed(), Some("xorriso"));
     }
 
     #[test]

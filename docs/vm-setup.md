@@ -88,6 +88,8 @@ The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Wi
 
 **A build fails immediately with "could not find a supported CD ISO creation command".** Each template hands its guest a small CD, the Linux one carrying its cloud-init seed and the Windows one its unattend file, and Packer builds that CD by shelling out. It looks for xorriso, mkisofs, hdiutil, or oscdimg, in that order, and nothing else. `vm setup` installs one (the winget package `Microsoft.OSCDIMG` on Windows, `xorriso` on Linux) and `vm doctor` reports which one Packer will pick. Both `vm doctor` and `vm build-image` check for it before anything starts.
 
+**A second `vm setup` in the same shell reports failed steps.** Fixed, and worth knowing why: winget adds the directory it links `packer` and `oscdimg` into to your user `PATH`, and a shell that was already running does not see it, so setup planned installs for packages that were already there and winget refused them. Detection now looks in that directory, and `vm doctor` calls a tool it finds there but not on `PATH` a warning rather than a failure. Opening a new shell clears it either way.
+
 **The ISO download fails.** Microsoft publishes the evaluation behind a registration form and documents no direct link, so this is expected to break from time to time. The command prints the Evaluation Center page and the exact path to save the file at; download it by hand and run `vm build-image windows` again.
 
 **A Windows build stops at "This PC can't run Windows 11".** The unattend file's LabConfig bypass keys are undocumented and a revision can stop honoring them. `cargo xtask vm view windows` shows the installer's screen while a build is running, which is the fastest way to see where it stopped.

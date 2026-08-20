@@ -213,6 +213,13 @@ Against the success criteria:
 
 18. **The crate lives at `crates/xtask`, not the repo root decision 9 chose.** Relocated on 2026-08-20 at the user's request, so all crates share one directory. The move simplifies the workspace manifest (the `crates/*` glob now covers everything, no explicit member), leaves the `cargo xtask` alias untouched because the alias names the package rather than the path, and cost one code change: `store::repo_root` derives the repository root from the crate's compile-time location and now walks two levels up instead of one. The unit tests that read `vm/` through `repo_root` pin that this stays true.
 
+19. **A second `vm setup` in the same shell reported two failed steps, and both halves of that were wrong.** Found on the first live run, 2026-08-20. Detection asked this process's `PATH` for `packer` and `oscdimg`, and winget installs those two as links in `%LOCALAPPDATA%\Microsoft\WinGet\Links`, appending that directory to the *user* `PATH`; a shell that was already running never sees it. So setup planned an install for a package that was already there, and `winget install` on an installed package with no newer version available does not exit zero: it attempts an upgrade, finds none, and fails. Two steps, two failures, on a host that was in the desired state.
+
+    Three things changed, at the three levels the mistake lived on. Detection looks in winget's links directory, through the same `fallback_candidates` mechanism that already covered QEMU's install location. Each winget step asks `winget list --id <id> --exact` first and treats "installed" as success either way, which also covers the case where detection is wrong for some other reason; the exit code winget used is unrecoverable through `powershell -EncodedCommand`, which collapses a native command's code to 1, so the script decides for itself. And `vm doctor` now distinguishes "no ISO builder" from "an ISO builder that this shell's `PATH` cannot see yet", which is a warning with the reason rather than a failure that sends someone to install a second copy. The build hands Packer the directory in its `PATH` when it has to, since Packer resolves the tool itself.
+
+    The `path_contains` helper now spans the machine and user halves of the persisted `PATH`, because the question every caller asks is whether a new shell would find the thing.
+
+
 ## Results
 
 To be recorded on the first live run: image build times, warm VM run times, and per-guest pass counts. Nothing in this section can be filled in from a session that was not permitted to boot a VM, and inventing plausible numbers would be worse than leaving it empty.

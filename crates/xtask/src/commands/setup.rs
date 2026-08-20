@@ -40,6 +40,41 @@ pub const WINGET_PACKER: &str = "Hashicorp.Packer";
 /// Linux the equivalent is xorriso, which every distribution packages.
 pub const WINGET_OSCDIMG: &str = "Microsoft.OSCDIMG";
 
+/// The script one winget step runs.
+///
+/// It asks before it installs, for two reasons. Detection reads this process's
+/// `PATH`, which cannot see the links directory winget appended during an
+/// earlier run in the same shell, so a step can be planned for a package that
+/// is already there. And `winget install` on a package it finds installed does
+/// not exit zero: it tries an upgrade, finds none, and fails, which a second
+/// `vm setup` in the same shell then reported as two broken steps.
+///
+/// Which code winget used is not recoverable from here, because
+/// `powershell.exe -EncodedCommand` collapses a native command's exit code to
+/// 1, so the script decides for itself and says which case it was.
+pub fn winget_install_script(id: &str) -> String {
+    format!(
+        "$id = '{id}'\n\
+         winget list --id $id --exact --accept-source-agreements 2>$null | Out-Null\n\
+         if ($LASTEXITCODE -eq 0) {{\n  \
+         Write-Output \"$id is already installed\"\n  \
+         exit 0\n\
+         }}\n\
+         winget install --id $id --exact --silent \
+         --accept-package-agreements --accept-source-agreements\n\
+         $code = $LASTEXITCODE\n\
+         if ($code -ne 0) {{\n  \
+         winget list --id $id --exact 2>$null | Out-Null\n  \
+         if ($LASTEXITCODE -eq 0) {{\n    \
+         Write-Output \"winget exited $code, but $id is installed\"\n    \
+         exit 0\n  \
+         }}\n  \
+         Write-Output \"winget install $id failed with exit code $code\"\n  \
+         exit 1\n\
+         }}"
+    )
+}
+
 /// Build dependencies for the Linux guest's binaries, matching the list in
 /// CLAUDE.md. `mesa-vulkan-drivers` supplies lavapipe, which is the adapter the
 /// GPU tests use.
@@ -154,10 +189,7 @@ fn windows_tool_steps(inputs: &SetupInputs) -> Vec<Step> {
     let qemu_present = facts.tool("qemu-system-x86_64").is_some();
     steps.push(Step::new(
         "qemu",
-        format!(
-            "winget install --id {WINGET_QEMU} --exact --silent \
-             --accept-package-agreements --accept-source-agreements"
-        ),
+        winget_install_script(WINGET_QEMU),
         !qemu_present,
         if qemu_present {
             "already installed".to_owned()
@@ -183,7 +215,7 @@ fn windows_tool_steps(inputs: &SetupInputs) -> Vec<Step> {
             ),
             !path_ok,
             if path_ok {
-                format!("{qemu_dir} is already on the machine PATH")
+                format!("{qemu_dir} is already on PATH")
             } else {
                 format!("the QEMU installer does not put {qemu_dir} on PATH")
             },
@@ -193,13 +225,12 @@ fn windows_tool_steps(inputs: &SetupInputs) -> Vec<Step> {
 
     // Packer shells out to build the small CD each template hands its guest,
     // and fails at once if it cannot find a tool for it.
-    let iso_present = inputs.facts.iso_tool().is_some();
+    // Whether it is installed is the question, not whether this shell can see
+    // it yet: a second copy of a tool winget already has is not an improvement.
+    let iso_present = inputs.facts.iso_tool_installed().is_some();
     steps.push(Step::new(
         "iso builder",
-        format!(
-            "winget install --id {WINGET_OSCDIMG} --exact --silent \
-             --accept-package-agreements --accept-source-agreements"
-        ),
+        winget_install_script(WINGET_OSCDIMG),
         !iso_present,
         if iso_present {
             "already installed".to_owned()
@@ -211,10 +242,7 @@ fn windows_tool_steps(inputs: &SetupInputs) -> Vec<Step> {
     let packer_present = facts.tool("packer").is_some();
     steps.push(Step::new(
         "packer",
-        format!(
-            "winget install --id {WINGET_PACKER} --exact --silent \
-             --accept-package-agreements --accept-source-agreements"
-        ),
+        winget_install_script(WINGET_PACKER),
         !packer_present,
         if packer_present {
             "already installed".to_owned()
@@ -298,7 +326,7 @@ pub fn linux_plan(inputs: &SetupInputs, store: &Store) -> Vec<Step> {
 
     let qemu_present =
         facts.tool("qemu-system-x86_64").is_some() && facts.tool("qemu-img").is_some();
-    let iso_present = inputs.facts.iso_tool().is_some();
+    let iso_present = inputs.facts.iso_tool_installed().is_some();
     steps.push(Step::new(
         "iso builder",
         "sudo apt-get update && sudo apt-get install -y xorriso".to_owned(),
@@ -613,6 +641,42 @@ mod tests {
             "{:#?}",
             steps.iter().filter(|s| s.needed).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_second_run_in_the_same_shell_plans_nothing_for_the_winget_tools() {
+        // The regression: winget appends its links directory to the user PATH,
+        // so the shell that ran setup still cannot see `packer` or `oscdimg`.
+        // Detection finds them anyway, through the link.
+        let mut inputs = done_windows();
+        inputs.facts.iso_tools.clear();
+        inputs.facts.iso_tools_off_path = vec!["oscdimg".to_owned()];
+        let steps = windows_plan(&inputs, &store());
+        for name in ["iso builder", "packer", "qemu"] {
+            let step = steps.iter().find(|s| s.name == name).unwrap();
+            assert!(!step.needed, "{name} would be installed twice: {step:?}");
+            assert_eq!(step.note, "already installed");
+        }
+    }
+
+    #[test]
+    fn a_winget_step_asks_before_it_installs_and_tolerates_a_package_that_is_there() {
+        let script = winget_install_script(WINGET_PACKER);
+        let list = script
+            .find("winget list")
+            .expect("it asks whether the package is installed");
+        let install = script
+            .find("winget install")
+            .expect("and installs it if not");
+        assert!(list < install, "the query comes first: {script}");
+        // Both exits from the "already there" branches are successes, and the
+        // real failure still exits non-zero.
+        assert_eq!(script.matches("exit 0").count(), 2, "{script}");
+        assert_eq!(script.matches("exit 1").count(), 1, "{script}");
+        assert!(script.contains("$LASTEXITCODE"), "{script}");
+        // A broken line continuation in one of these scripts is invisible in
+        // review and reaches the user as a double space.
+        assert!(!script.contains("  --"), "{script}");
     }
 
     #[test]

@@ -369,13 +369,25 @@ fn tool_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
     // Packer shells out for this and fails at once without it, and it is
     // needed for both images: each template hands its guest a small CD, the
     // Linux one its cloud-init seed and the Windows one its unattend file.
-    checks.push(match facts.iso_tool() {
-        Some(tool) => Check::new(
+    checks.push(match (facts.iso_tool(), facts.iso_tool_installed()) {
+        (Some(tool), _) => Check::new(
             "iso builder",
             Status::Pass,
             format!("{tool}, which is the one Packer will use"),
         ),
-        None => Check::new(
+        // Installed, but this shell started before winget put it on PATH. Not a
+        // failure: a new shell finds it, and the build passes the directory to
+        // Packer regardless.
+        (None, Some(tool)) => Check::new(
+            "iso builder",
+            Status::Warn,
+            format!("{tool} is installed but not on this shell's PATH yet"),
+        )
+        .hint(
+            "open a new shell to pick it up; `cargo xtask vm build-image` hands \
+             Packer the directory either way",
+        ),
+        (None, None) => Check::new(
             "iso builder",
             Status::Fail,
             format!(
@@ -552,6 +564,7 @@ mod tests {
                     version: 2,
                 }],
                 machine_path: r"C:\Windows\system32;C:\Program Files\qemu".to_owned(),
+                user_path: String::new(),
             }),
             tools,
             vnc_viewer: Some(PathBuf::from("C:/bin/vncviewer.exe")),
@@ -777,6 +790,24 @@ mod tests {
             "{check:?}"
         );
         assert!(report.failed());
+    }
+
+    #[test]
+    fn an_iso_builder_winget_just_installed_warns_rather_than_fails() {
+        // The shell that ran `vm setup` cannot see winget's links directory,
+        // and calling that "missing" sent people to install it a second time.
+        let mut facts = good_windows();
+        facts.iso_tools.clear();
+        facts.iso_tools_off_path = vec!["oscdimg".to_owned()];
+        let report = evaluate(&facts, &built_images(), now());
+        let check = report.get("iso builder").expect("checked");
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("oscdimg"), "{check:?}");
+        assert!(
+            check.hint.as_ref().unwrap().contains("new shell"),
+            "{check:?}"
+        );
+        assert!(!report.failed());
     }
 
     #[test]

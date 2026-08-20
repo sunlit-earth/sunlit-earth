@@ -47,6 +47,33 @@ try {
     icacls $adminKeys /grant 'Administrators:F' | Out-Null
     icacls $adminKeys /grant 'SYSTEM:F' | Out-Null
 
+    Step 'visual c++ runtime'
+    # Windows ships no vcruntime140.dll, and every Rust MSVC binary this suite
+    # runs links it dynamically. Without it the test harness cannot start at all,
+    # and the only symptom is exit code 0xC0000135 with an empty output.log:
+    # STATUS_DLL_NOT_FOUND, which prints nothing anywhere. Measured on
+    # 2026-08-20 on a fresh build 26100: System32 has only the _clr0400
+    # variants, which belong to .NET and do not satisfy the loader.
+    #
+    # This is the one thing either image build fetches from inside the guest,
+    # and it is also exactly what a user installing the product needs, so a
+    # guest that has it is a guest that looks like the machine under test.
+    # `finalize.ps1` checks for the DLLs afterwards, so a guest with no network
+    # fails the build here rather than producing an image whose binaries cannot
+    # run.
+    $redist = Join-Path $env:TEMP 'vc_redist.x64.exe'
+    curl.exe -L -o $redist 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    if ($LASTEXITCODE -ne 0) {
+        throw "could not download the Visual C++ runtime: curl exited $LASTEXITCODE"
+    }
+    # A native installer: it does not throw, and 3010 means "installed, wants a
+    # reboot", which is not a failure for an image that is about to be shut down.
+    & $redist /install /quiet /norestart | Out-Null
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+        throw "the Visual C++ runtime installer exited $LASTEXITCODE"
+    }
+    Remove-Item $redist -Force -ErrorAction SilentlyContinue
+
     Step 'firewall'
     if (-not (Get-NetFirewallRule -Name 'sunlit-e2e-ssh' -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -Name 'sunlit-e2e-ssh' -DisplayName 'sunlit-e2e SSH' `

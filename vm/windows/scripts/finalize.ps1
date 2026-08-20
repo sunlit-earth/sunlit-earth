@@ -21,6 +21,16 @@ foreach ($path in @("$root\run-job.cmd", "$root\session-ready.cmd", "$root\bin",
     if (-not (Test-Path $path)) { $problems += "$path is missing" }
 }
 
+# Windows ships neither of these and every Rust MSVC binary the suite runs links
+# them dynamically, so an image without them boots fine and then answers every
+# test with exit code 0xC0000135 and an empty log. Checked here because that is
+# the one failure the image cannot report about itself later.
+foreach ($dll in @('vcruntime140.dll', 'msvcp140.dll')) {
+    if (-not (Test-Path (Join-Path $env:SystemRoot "System32\$dll"))) {
+        $problems += "$dll is missing, so the binaries this image exists to run cannot start"
+    }
+}
+
 # The job task has to run in the console session. A task that ended up with
 # any other logon type would run invisibly and every windowed test would fail
 # in a way that looks like the product's fault.
@@ -78,7 +88,7 @@ if (-not $esp) {
 
             $fallbackDir = "${esp}:\EFI\Boot"
             $fallback = Join-Path $fallbackDir 'bootx64.efi'
-            $bootManager = "${esp}:\EFI\Microsoft\Bootootmgfw.efi"
+            $bootManager = "${esp}:\EFI\Microsoft\Boot\bootmgfw.efi"
             if (-not (Test-Path $fallback)) {
                 if (Test-Path $bootManager) {
                     New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null

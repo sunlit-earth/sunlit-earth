@@ -255,7 +255,7 @@ Against the success criteria:
 
     What the code does about it: `build-image` warns before it starts, in `qemu_cannot_install_windows`, which is also where the measurements live, and the watcher from deviation 24 ends the attempt in about four minutes. Nothing was hacked around it: one vCPU was tried and reverted when Setup refused, and the machine-argument plumbing added for `kernel-irqchip=off` was reverted when it turned out to stop the guest booting.
 
-    The way out is a host decision rather than a code one, and it is the user's to make: build the image on a Linux host, where KVM has none of this, or add a `hyperv-iso` template so a Windows host installs on the hypervisor it will run the guest on anyway. The second inverts decision 10's direction (install on Hyper-V, convert to qcow2 for QEMU) rather than abandoning its intent, which was one install rather than two.
+    The way out is a host decision rather than a code one, and it is the user's to make: build the image on a Linux host, where KVM has none of this, or add a `hyperv-iso` template so a Windows host installs on the hypervisor it will run the guest on anyway. The second inverts decision 10's direction (install on Hyper-V, convert to qcow2 for QEMU) rather than abandoning its intent, which was one install rather than two. Decided on 2026-08-20: a Windows host installs on Hyper-V, driven by the xtask natively rather than through `hyperv-iso`; `2026-08-20-phase3-amendment-hyperv-windows-build.md` records the design and the cleanup that goes with it.
 
 ## Results
 

@@ -896,7 +896,10 @@ mod template_agreement {
         // port has to be the one the xtask presses.
         let text = template(Target::Windows);
         assert!(text.contains("boot_command = []"), "{text}");
-        assert!(text.contains(r#"["-qmp", "tcp:127.0.0.1:${var.qmp_port}"#), "{text}");
+        assert!(
+            text.contains(r#"["-qmp", "tcp:127.0.0.1:${var.qmp_port}"#),
+            "{text}"
+        );
         let port = crate::commands::build_image::BUILD_QMP_PORT.to_string();
         assert!(
             text.contains(&format!("default = \"{port}\"")),

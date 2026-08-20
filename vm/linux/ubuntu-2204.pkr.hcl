@@ -132,12 +132,6 @@ source "qemu" "ubuntu" {
   qemuargs = [
     ["-m", "${var.memory}"],
     ["-smp", "${var.cpus}"],
-
-    # The Windows template explains this one at length: QEMU's default `qemu64`
-    # guest CPU is what makes WHPX abort a guest on a Windows host. Nothing here
-    # has been seen to need it, and it costs nothing on KVM, so both templates
-    # ask for the same thing rather than differing for no recorded reason.
-    ["-cpu", "max"],
   ]
 }
 

@@ -874,17 +874,18 @@ mod template_agreement {
     }
 
     #[test]
-    fn neither_template_leaves_the_guest_cpu_at_qemus_default() {
+    fn the_windows_template_does_not_leave_the_guest_cpu_at_qemus_default() {
         // QEMU's default `qemu64` is what makes WHPX abort a Windows guest the
         // moment its boot manager runs, and the symptom is an image build that
         // sits at the firmware logo until Packer's SSH timeout. The runtime
-        // side of this is asserted next to the other launch arguments.
-        for target in Target::ALL {
-            assert!(
-                template(target).contains(r#"["-cpu", "max"]"#),
-                "{target}: the template leaves the guest CPU at QEMU's default"
-            );
-        }
+        // side of this is asserted next to the other launch arguments, and it
+        // covers both guests; only the Windows *install* has been seen to need
+        // it, and asking for it in the Linux template too would invalidate
+        // every Linux image already built for no behaviour anyone has observed.
+        assert!(
+            template(Target::Windows).contains(r#"["-cpu", "max"]"#),
+            "the Windows template leaves the guest CPU at QEMU's default"
+        );
     }
 
     #[test]

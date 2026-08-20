@@ -243,6 +243,12 @@ Against the success criteria:
 
     A purge also asks first, unless `-f`, and a closed stdin answers no, so a script cannot delete a golden image by not being there to object. Its three flags (`--vm`, `--image`, `--iso`) are additive and narrow it; none of them means all of it. Both commands share one planner and differ only in a `Scope`, which is what keeps "never delete an image out from under a running guest" in one place: a scope that touches the guest's own files stops the guest first, and media, which no booted guest still holds, does not.
 
+24. **A build watches its guest and reports on it, which the plan does not ask for.** Step 2 treats `build-image` as a wrapper around Packer, and it was one. What running it showed is that Packer's output has an hour-long hole in it: after `Waiting for SSH to become available...` there is nothing until the guest answers, because nothing on the host is driving the install and nothing was watching it either. Twice on 2026-08-20 that hole hid a dead guest for an hour and a quarter. The signals were all there, unread: the output disk, and, for a target whose template opens a monitor, QEMU itself.
+
+    So `commands::build_watch` now holds one QMP connection for the length of a build, presses the boot key with it, and then prints a line a minute: what the disk holds and how fast it is growing, whether the guest's screen is changing, and what QEMU says the machine is doing. Two things fall out of having a monitor connection open anyway. A guest QEMU has stopped is now the loudest thing the build says, and if starting it again changes nothing, the build ends the guest rather than waiting out Packer's two-hour SSH timeout. And the guest's screen is kept as a PNG, encoded by QEMU's own `screendump`, so a build that fails leaves the picture of where it failed outside the output directory Packer deletes on the way out.
+
+    The build also sets `PACKER_LOG` to a file in the build directory. QEMU's stderr is where a hypervisor failure explains itself, Packer captures rather than prints it, and the earlier note in `vm-setup.md` that Packer prints it was wrong.
+
 ## Results
 
 To be recorded on the first live run: image build times, warm VM run times, and per-guest pass counts. Nothing in this section can be filled in from a session that was not permitted to boot a VM, and inventing plausible numbers would be worse than leaving it empty.

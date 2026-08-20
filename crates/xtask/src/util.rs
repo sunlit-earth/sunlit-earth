@@ -55,6 +55,22 @@ pub fn format_bytes(bytes: u64) -> String {
     format!("{:.1} {}", value, UNITS[unit])
 }
 
+/// An elapsed time, for the lines a long-running command prints about itself.
+///
+/// Whole seconds and no fractions: the readings are minutes apart, and the
+/// question they answer is "how far into an hour-long build is this".
+pub fn format_duration(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    let (hours, minutes, seconds) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 /// Treat an unset and a blank environment variable the same, matching
 /// `sunlit_core::env_override`.
 pub fn non_blank(value: Option<String>) -> Option<String> {
@@ -115,6 +131,17 @@ mod tests {
         assert_eq!(non_blank(Some(String::new())), None);
         assert_eq!(non_blank(Some("   ".to_owned())), None);
         assert_eq!(non_blank(Some(" x ".to_owned())), Some(" x ".to_owned()));
+    }
+
+    #[test]
+    fn durations_read_as_a_position_in_a_long_build() {
+        use std::time::Duration;
+        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(format_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m00s");
+        assert_eq!(format_duration(Duration::from_secs(250)), "4m10s");
+        assert_eq!(format_duration(Duration::from_secs(3600)), "1h00m");
+        assert_eq!(format_duration(Duration::from_secs(4500)), "1h15m");
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! `runner::Runner`.
 
 pub mod build_image;
+pub mod build_watch;
 pub mod doctor;
 pub mod e2e;
 pub mod setup;

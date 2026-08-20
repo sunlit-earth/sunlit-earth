@@ -297,99 +297,6 @@ pub const BUILD_QMP_PORT: u16 = 4445;
 /// What Packer names the disk it builds, which is the template's `vm_name`.
 pub const BUILT_DISK: &str = "golden.qcow2";
 
-/// The key that answers "Press any key to boot from CD or DVD".
-///
-/// The prompt appears about ten seconds into the boot and lasts about five, and
-/// neither number is under anyone's control, so it is pressed repeatedly rather
-/// than timed.
-pub const BOOT_KEY: &str = "spc";
-pub const BOOT_KEY_GAP: Duration = Duration::from_secs(1);
-pub const BOOT_KEY_HOLD_MS: u32 = 100;
-
-/// The upper bound, for a host so slow that the prompt is a minute away.
-pub const BOOT_KEY_MAX_PRESSES: u32 = 60;
-
-/// The size at which the disk says the installer is running.
-///
-/// Pressing has to stop then, and this is the signal to stop on: everything
-/// before that boot is the firmware, which writes nothing to the disk, and
-/// setup's first writes are tens of megabytes. Measured on 2026-08-20: 197 KB
-/// while the firmware is deciding, 96 MB within seconds of the installer
-/// starting.
-///
-/// Stopping matters as much as pressing. A spacebar arriving after setup is up
-/// presses whatever control has focus, and on the "Installing Windows" screen
-/// that is Cancel, which puts an "Are you sure you want to quit?" dialog over
-/// the install. That happened on a real build, so the window is not guessed at
-/// any more: it closes when the installer is observably running.
-pub const INSTALLER_WRITING_BYTES: u64 = 64 * 1024 * 1024;
-
-/// How long to keep trying to reach the monitor before giving up on it.
-const BOOT_KEY_CONNECT_WINDOW: Duration = Duration::from_secs(30);
-
-/// Whether the file at `path` has grown past `threshold`.
-///
-/// A missing file is not started: Packer creates the disk before QEMU runs, so
-/// absence here means something is wrong elsewhere and pressing on is harmless.
-pub fn installer_started(path: &Path, threshold: u64) -> bool {
-    std::fs::metadata(path).is_ok_and(|meta| meta.len() > threshold)
-}
-
-/// Answer the installer's boot prompt, in the background, while Packer builds.
-///
-/// Packer's own `boot_command` is empty because its VNC keystrokes do not
-/// arrive on this host; QMP's `send-key` injects at the input device instead.
-/// Nothing here can fail the build: a monitor that never answers means the
-/// prompt goes unanswered, which the build reports for itself in its own time,
-/// and saying so twice would just bury it.
-fn press_boot_key_in_background(port: u16, target: Target, disk: PathBuf) {
-    if target != Target::Windows {
-        return;
-    }
-    println!(
-        "  boot key:  {BOOT_KEY} on 127.0.0.1:{port} until the installer writes, \
-         to answer \"Press any key to boot from CD or DVD\""
-    );
-    let _ = std::thread::Builder::new()
-        .name("boot-key".to_owned())
-        .spawn(move || {
-            let deadline = std::time::Instant::now() + BOOT_KEY_CONNECT_WINDOW;
-            loop {
-                let started = || installer_started(&disk, INSTALLER_WRITING_BYTES);
-                match crate::provider::qmp::press_key_until(
-                    port,
-                    BOOT_KEY,
-                    BOOT_KEY_MAX_PRESSES,
-                    BOOT_KEY_GAP,
-                    BOOT_KEY_HOLD_MS,
-                    &started,
-                ) {
-                    Ok(sent) if started() => {
-                        println!("  boot key:  the installer started after {sent} presses");
-                        return;
-                    }
-                    Ok(sent) => {
-                        println!(
-                            "  boot key:  {sent} presses sent and the installer has not started; \
-                             if this build fails waiting for SSH, the boot prompt was missed"
-                        );
-                        return;
-                    }
-                    Err(e) if std::time::Instant::now() < deadline => {
-                        // QEMU is not listening yet, which is the normal state
-                        // for the first second or two of a build.
-                        std::thread::sleep(Duration::from_millis(500));
-                        let _ = e;
-                    }
-                    Err(e) => {
-                        println!("  boot key:  not sent ({e})");
-                        return;
-                    }
-                }
-            }
-        });
-}
-
 /// Run a build end to end.
 pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     let store = store::store()?;
@@ -453,8 +360,12 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         None => println!("  cd images: {iso_tool}"),
         Some(dir) => println!("  cd images: {iso_tool}, from {}", dir.display()),
     }
+    let build_dir = store.build_dir(target);
+    let log = build_dir.join("packer.log");
+    let screen = build_dir.join("screen.png");
     println!("  templates: {}", plan.template_dir.display());
     println!("  output:    {}", plan.output_dir.display());
+    println!("  log:       {}", log.display());
     println!("  this takes tens of minutes and downloads several gigabytes");
 
     let extra_path = iso_tool_dir
@@ -469,6 +380,30 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         INIT_RETRY_DELAY,
     )?;
 
+    run_packer(
+        runner,
+        &plan,
+        target,
+        public_key,
+        extra_path.as_deref(),
+        &log,
+        screen,
+    )?;
+
+    finish(runner, &store, target, &plan, &version)
+}
+
+/// Run the build itself: the command, the watcher over it, and what a nonzero
+/// exit code means.
+fn run_packer(
+    runner: &dyn Runner,
+    plan: &BuildPlan,
+    target: Target,
+    public_key: String,
+    extra_path: Option<&str>,
+    log: &Path,
+    screen: PathBuf,
+) -> Result<(), String> {
     let mut vars = plan.vars.clone();
     vars.push(("ssh_public_key".to_owned(), public_key));
     if target == Target::Windows {
@@ -482,25 +417,48 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
             }
             .build_args(),
         )
-        .env("PACKER_CACHE_DIR", plan.cache_dir.to_string_lossy());
-    if let Some(path) = &extra_path {
+        .env("PACKER_CACHE_DIR", plan.cache_dir.to_string_lossy())
+        // Packer's own log, kept because the interesting half of a failed build
+        // is what QEMU said, and Packer swallows that unless it is logging. To
+        // a file rather than to stderr, which is what setting the path does, so
+        // the terminal still shows the build and not the log.
+        .env("PACKER_LOG", "1")
+        .env("PACKER_LOG_PATH", log.to_string_lossy());
+    if let Some(path) = extra_path {
         build = build.env("PATH", path);
     }
-    // The same file `finish` collects, which is also the signal that the boot
-    // prompt has been answered.
-    press_boot_key_in_background(BUILD_QMP_PORT, target, plan.output_dir.join(BUILT_DISK));
-    let code = runner
-        .stream(&build)
-        .map_err(|e| format!("cannot run packer: {e}"))?;
-    if code != 0 {
-        return Err(format!(
-            "packer build failed with exit code {code}; the output above says why, \
-             and `{}` holds what it left behind",
-            plan.output_dir.display()
-        ));
-    }
 
-    finish(runner, &store, target, &plan, &version)
+    // Packer says nothing between the boot prompt and the guest's first SSH
+    // answer, which is most of a Windows install. The watcher reads what is
+    // observable in the meantime and ends a build whose guest has stopped.
+    let watcher = crate::commands::build_watch::spawn(crate::commands::build_watch::Watch {
+        target,
+        qmp_port: (target == Target::Windows).then_some(BUILD_QMP_PORT),
+        // The same file `finish` collects, which is also the signal that the
+        // boot prompt has been answered.
+        disk: plan.output_dir.join(BUILT_DISK),
+        screen,
+        poll: crate::commands::build_watch::POLL,
+    });
+    let outcome = runner.stream(&build);
+    let verdict = watcher.stop();
+    let code = outcome.map_err(|e| format!("cannot run packer: {e}"))?;
+    if code != 0 {
+        return Err(match verdict {
+            Some(why) => format!(
+                "packer build failed with exit code {code} because {why}. \
+                 Nothing has been built; `{}` has the log.",
+                log.display()
+            ),
+            None => format!(
+                "packer build failed with exit code {code}; the output above says why, \
+                 `{}` holds what it left behind, and `{}` has the log",
+                plan.output_dir.display(),
+                log.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Move the built image into place, convert it where a second format is
@@ -617,30 +575,6 @@ mod tests {
 
     fn store() -> Store {
         Store::new("/srv/vm")
-    }
-
-    #[test]
-    fn the_boot_key_stops_once_the_installer_is_writing() {
-        // The signal has to distinguish "the firmware is still deciding", where
-        // the disk is a couple of hundred kilobytes, from "setup is running",
-        // where it is tens of megabytes within seconds. Pressing past that point
-        // put an "are you sure you want to quit" dialog over a real install.
-        let dir = std::env::temp_dir().join("sunlit_xtask_boot_key_disk");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let disk = dir.join(BUILT_DISK);
-        assert!(
-            !installer_started(&disk, INSTALLER_WRITING_BYTES),
-            "a disk that does not exist yet has not started"
-        );
-        std::fs::write(&disk, vec![0u8; 197_632]).expect("write");
-        assert!(
-            !installer_started(&disk, INSTALLER_WRITING_BYTES),
-            "the firmware writes nothing, and this is what that looks like"
-        );
-        std::fs::write(&disk, vec![0u8; 96 * 1024 * 1024]).expect("write");
-        assert!(installer_started(&disk, INSTALLER_WRITING_BYTES));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

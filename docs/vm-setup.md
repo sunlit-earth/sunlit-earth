@@ -100,6 +100,8 @@ The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Wi
 
 **A Windows build stops at "This PC can't run Windows 11".** The unattend file's LabConfig bypass keys are undocumented and a revision can stop honoring them. `cargo xtask vm view windows` shows the installer's screen while a build is running, which is the fastest way to see where it stopped.
 
+**`vm up` looks stuck after the guest boots.** It is building the e2e suite for that guest, which is a cold cargo build the first time and takes minutes; for the Linux guest it runs inside WSL against its own target directory. Cargo's progress goes to the terminal while its machine-readable output is parsed, so there is something to watch. `vm ssh` works while that build is still running: the guest is already up.
+
 **A guest boots but never becomes reachable.** `vm view` shows its console. For a QEMU guest the console is a VNC server on `127.0.0.1:5900` that is always running, so a viewer can attach at any moment, including in the middle of a wedged boot.
 
 **A run leaves a VM behind.** `vm status` finds it; `vm destroy <target>` removes it. The orchestrator writes its state file as soon as the VM exists, so a crash mid-run leaves something to clean up rather than an orphan nothing knows about, and any failure after a boot either destroys the guest or prints exactly what is still running and how to reach it.

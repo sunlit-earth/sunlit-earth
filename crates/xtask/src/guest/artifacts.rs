@@ -146,14 +146,19 @@ pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostA
 
     if native {
         println!("building the e2e suite for the {target} guest (a few minutes if cold)");
+        // stdout is the JSON this parses; stderr is cargo's progress, and that
+        // goes to the terminal, because the alternative is several silent
+        // minutes that look like a hang.
         let out = runner
-            .capture(&Cmd::new("cargo").args(build_args()).cwd(&repo))
+            .capture(
+                &Cmd::new("cargo")
+                    .args(build_args())
+                    .cwd(&repo)
+                    .show_stderr(),
+            )
             .map_err(|e| format!("cannot run cargo: {e}"))?;
         if !out.success() {
-            return Err(format!(
-                "building the e2e suite failed:\n{}",
-                out.stderr.trim()
-            ));
+            return Err("building the e2e suite failed; the output above says why".to_owned());
         }
         let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;
         return Ok(HostArtifacts {
@@ -182,12 +187,12 @@ fn build_in_wsl(
 
     println!("building the e2e suite for the linux guest in {distro} (a few minutes if cold)");
     let out = runner
-        .capture(&wsl_build_command(distro, &repo_wsl))
+        .capture(&wsl_build_command(distro, &repo_wsl).show_stderr())
         .map_err(|e| format!("cannot run wsl.exe: {e}"))?;
     if !out.success() {
         return Err(format!(
-            "building the Linux e2e suite in {distro} failed:\n{}",
-            out.stderr.trim()
+            "building the Linux e2e suite in {distro} failed; \
+             the output above says why"
         ));
     }
     let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;
@@ -305,6 +310,26 @@ pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<Gu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_guest_build_shows_its_progress_while_its_json_is_captured() {
+        // A cold build is minutes long. Capturing both streams made `vm up`
+        // look like it had hung, which is what it was reported as.
+        let native = Cmd::new("cargo").args(build_args()).show_stderr();
+        assert!(native.inherit_stderr);
+        assert!(
+            wsl_build_command(crate::host::facts::WSL_DISTRO, "/mnt/c/x")
+                .show_stderr()
+                .inherit_stderr
+        );
+        // The JSON has to keep coming back on stdout, or nothing downstream
+        // knows which files were built.
+        assert!(
+            build_args().contains(&"--message-format=json".to_owned()),
+            "{:?}",
+            build_args()
+        );
+    }
 
     #[test]
     fn a_linux_host_says_it_cannot_build_the_windows_guest_before_anything_boots() {

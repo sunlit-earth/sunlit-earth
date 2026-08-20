@@ -63,6 +63,13 @@ pub struct Cmd {
     /// The readable form of a command whose arguments are encoded, kept for
     /// logs and for the test double to match on. Never sent to the process.
     pub script: Option<String>,
+    /// Whether the child's stderr goes to the terminal instead of being
+    /// captured.
+    ///
+    /// For a command whose stdout is data and whose stderr is progress, which
+    /// is exactly what `cargo --message-format=json` is. Without this, a cold
+    /// guest build is several silent minutes.
+    pub inherit_stderr: bool,
     /// Whether the child inherits this process's stdin.
     ///
     /// Off by default, and that is the important half: an orchestration step
@@ -134,6 +141,13 @@ impl Cmd {
         self
     }
 
+    /// Let the child's stderr reach the terminal while its stdout is captured.
+    #[must_use]
+    pub fn show_stderr(mut self) -> Self {
+        self.inherit_stderr = true;
+        self
+    }
+
     /// A one-line rendering used for logs, error messages, and as the key the
     /// test double matches on.
     pub fn display(&self) -> String {
@@ -197,7 +211,11 @@ impl Runner for RealRunner {
                 Stdio::null()
             })
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(if cmd.inherit_stderr {
+                Stdio::inherit()
+            } else {
+                Stdio::piped()
+            });
 
         let mut child = command.spawn()?;
         if let Some(text) = &cmd.stdin {

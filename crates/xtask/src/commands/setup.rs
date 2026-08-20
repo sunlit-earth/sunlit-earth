@@ -273,7 +273,7 @@ fn windows_access_steps(inputs: &SetupInputs) -> Vec<Step> {
             if windows.in_hyperv_admins {
                 "already a member".to_owned()
             } else {
-                "membership is what lets e2e, vm status, and vm destroy drive Hyper-V \
+                "membership is what lets e2e, vm status, and vm down drive Hyper-V \
                  without elevation"
                     .to_owned()
             },

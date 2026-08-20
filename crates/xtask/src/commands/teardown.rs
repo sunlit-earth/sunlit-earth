@@ -1,15 +1,20 @@
-//! `cargo xtask vm destroy [--purge]`: the cleanup pair to `vm status`.
+//! `cargo xtask vm down` and `vm purge`: the cleanup pair to `vm status`.
 //!
-//! Plan decision 13. A plain destroy tears down run state only, which is cheap
-//! and never costs an image rebuild. `--purge` additionally deletes the golden
-//! images, the converted VHDX, the cached installation media, and the manifest,
-//! which is the disk-space recovery path.
+//! Plan decision 13, under the names the developer using it asked for. `down`
+//! ends a guest and deletes its run state, which is cheap and never costs an
+//! image rebuild. `purge` deletes what is on disk: the golden image, the
+//! converted VHDX, the manifest, the build leftovers, and the cached
+//! installation media, which is the disk-space recovery path. Flags narrow a
+//! purge to one of those; on its own it means all of them, and it asks first.
+//!
+//! Both commands share one planner, because they differ only in [`Scope`].
 //!
 //! Selecting what to delete is a pure function, because the cost of getting it
 //! wrong is somebody else's virtual machine. Nothing outside the image store is
 //! ever deleted, and nothing without the `sunlit-e2e-` prefix is ever stopped.
 
 use std::fmt::Write as _;
+use std::io::{BufRead, Write as _WriteIo};
 use std::path::PathBuf;
 
 use crate::provider::target::Target;
@@ -18,7 +23,80 @@ use crate::store::inventory::{FileInfo, Inventory};
 use crate::store::state::RunState;
 use crate::util::format_bytes;
 
-/// Which targets a destroy applies to.
+/// What a teardown deletes.
+///
+/// The three parts have very different costs to lose: run state is recreated by
+/// the next boot, an image is a build of tens of minutes, and the installation
+/// media is a 6.6 GB download. So they are separable, and `down` is exactly the
+/// cheapest one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scope {
+    /// The guest itself, its throwaway overlay, and its run state.
+    pub vm: bool,
+    /// The golden image, its manifest, and Packer's build leftovers.
+    pub image: bool,
+    /// Cached installation media, which is the Windows evaluation ISO.
+    pub iso: bool,
+}
+
+impl Scope {
+    /// What `vm down` does.
+    pub const RUN_STATE: Self = Self {
+        vm: true,
+        image: false,
+        iso: false,
+    };
+
+    /// What `vm purge` does when nothing narrows it.
+    pub const EVERYTHING: Self = Self {
+        vm: true,
+        image: true,
+        iso: true,
+    };
+
+    /// A purge's flags. None of them means all of it, which is the documented
+    /// default and the reason the flags are additive rather than exclusive.
+    pub fn from_flags(vm: bool, image: bool, iso: bool) -> Self {
+        if vm || image || iso {
+            Self { vm, image, iso }
+        } else {
+            Self::EVERYTHING
+        }
+    }
+
+    /// Whether a running guest has to be stopped for this scope.
+    ///
+    /// Its overlay is obviously held open by it, and so, for `Hyper-V`, is the
+    /// golden image its differencing child was made from. Media is neither: a
+    /// booted guest has long finished with the ISO.
+    pub fn needs_the_vm_stopped(self) -> bool {
+        self.vm || self.image
+    }
+
+    /// The parts, in words, for a prompt or a report.
+    pub fn label(self) -> String {
+        let parts: Vec<&str> = [
+            self.vm.then_some("the VM and its run state"),
+            self.image.then_some("the golden image"),
+            self.iso.then_some("the installation media"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        match parts.as_slice() {
+            [] => "nothing".to_owned(),
+            [one] => (*one).to_owned(),
+            [first, second] => format!("{first} and {second}"),
+            rest => format!(
+                "{}, and {}",
+                rest[..rest.len() - 1].join(", "),
+                rest[rest.len() - 1]
+            ),
+        }
+    }
+}
+
+/// Which targets a teardown applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
     One(Target),
@@ -48,15 +126,15 @@ pub struct DeleteItem {
     pub bytes: u64,
     /// The target whose VM holds this file, when one does. A file belonging to
     /// a VM that could not be stopped is not deleted, so this is what connects
-    /// the two halves of a destroy.
+    /// the two halves of a teardown.
     pub target: Option<Target>,
 }
 
-/// What a destroy would do, decided before anything is touched.
+/// What a teardown would do, decided before anything is touched.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DestroyPlan {
+pub struct TeardownPlan {
     pub selection: Selection,
-    pub purge: bool,
+    pub scope: Scope,
     /// VMs to stop and unregister first.
     pub vms: Vec<RunState>,
     pub files: Vec<DeleteItem>,
@@ -67,7 +145,7 @@ pub struct DestroyPlan {
     pub refused: Vec<String>,
 }
 
-impl DestroyPlan {
+impl TeardownPlan {
     pub fn bytes(&self) -> u64 {
         self.files.iter().map(|f| f.bytes).sum()
     }
@@ -81,13 +159,9 @@ impl DestroyPlan {
         if self.is_empty() {
             let _ = writeln!(
                 out,
-                "nothing to destroy for {} ({})",
+                "nothing to remove for {} ({})",
                 self.selection.label(),
-                if self.purge {
-                    "no images, media, or run state"
-                } else {
-                    "no run state"
-                }
+                self.scope.label()
             );
         }
         for vm in &self.vms {
@@ -116,13 +190,13 @@ impl DestroyPlan {
     }
 }
 
-/// Decide what a destroy would touch.
+/// Decide what a teardown would touch.
 pub fn plan(
     store: &Store,
     inventory: &Inventory,
     selection: Selection,
-    purge: bool,
-) -> DestroyPlan {
+    scope: Scope,
+) -> TeardownPlan {
     let mut vms = Vec::new();
     let mut files = Vec::new();
     let mut dirs = Vec::new();
@@ -154,26 +228,30 @@ pub fn plan(
             continue;
         };
 
-        if let Some(state) = &entry.state {
-            if state.is_ours() {
-                vms.push(state.clone());
-            } else {
-                refused.push(format!(
-                    "{} is not one of ours and was left alone",
-                    state.vm_name
-                ));
+        if scope.needs_the_vm_stopped() {
+            if let Some(state) = &entry.state {
+                if state.is_ours() {
+                    vms.push(state.clone());
+                } else {
+                    refused.push(format!(
+                        "{} is not one of ours and was left alone",
+                        state.vm_name
+                    ));
+                }
+            }
+            if let Some(error) = &entry.state_error {
+                refused.push(format!("{target}: {error}"));
             }
         }
-        if let Some(error) = &entry.state_error {
-            refused.push(format!("{target}: {error}"));
+
+        if scope.vm {
+            for file in &entry.run_files {
+                take(file, Some(target), &mut files, &mut refused);
+            }
+            dirs.push(store.run_dir(target));
         }
 
-        for file in &entry.run_files {
-            take(file, Some(target), &mut files, &mut refused);
-        }
-        dirs.push(store.run_dir(target));
-
-        if purge {
+        if scope.image {
             // Images and build leftovers are not held open by a running VM,
             // but they are still that target's, so a VM that would not stop
             // keeps them too: a half-purged target is a state nothing can
@@ -202,7 +280,7 @@ pub fn plan(
         }
     }
 
-    if purge {
+    if scope.iso {
         // Installation media is shared, so it only goes when the target that
         // consumes it does. The Windows evaluation ISO is the only cached
         // download; the Ubuntu cloud image is fetched into the build directory.
@@ -220,9 +298,9 @@ pub fn plan(
         }
     }
 
-    DestroyPlan {
+    TeardownPlan {
         selection,
-        purge,
+        scope,
         vms,
         files,
         dirs,
@@ -230,9 +308,50 @@ pub fn plan(
     }
 }
 
-/// What a destroy actually managed to do.
+/// What to ask before a purge.
+///
+/// The plan's own rendering has already listed every file above it, so this is
+/// the question rather than the inventory: the point of asking at all is that a
+/// purge deletes things that cost tens of minutes to build or a six-gigabyte
+/// download to fetch again.
+pub fn confirmation_prompt(plan: &TeardownPlan) -> String {
+    format!(
+        "delete {} for {}, freeing {}? [y/N] ",
+        plan.scope.label(),
+        plan.selection.label(),
+        format_bytes(plan.bytes())
+    )
+}
+
+/// Whether an answer to that question is a yes.
+///
+/// Anything that is not plainly yes is a no, including an empty line, which is
+/// what the capital N in the prompt promises.
+pub fn is_affirmative(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Ask, and read the answer.
+///
+/// Nothing to read means no. That is the case in a script or a CI job, and
+/// deleting a golden image because nobody was there to object is the wrong
+/// default; `--force` is how such a caller says yes in advance.
+pub fn confirm(prompt: &str) -> bool {
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    match std::io::stdin().lock().read_line(&mut answer) {
+        Ok(0) | Err(_) => {
+            println!("\nnot confirmed: nothing to read on stdin. `--force` answers it in advance");
+            false
+        }
+        Ok(_) => is_affirmative(&answer),
+    }
+}
+
+/// What a teardown actually managed to do.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct DestroyOutcome {
+pub struct TeardownOutcome {
     /// VMs that were actually running and were stopped.
     pub stopped: usize,
     pub deleted: usize,
@@ -251,16 +370,16 @@ pub struct DestroyOutcome {
 /// A VM is stopped before its files are deleted, because a running hypervisor
 /// holds them open. If that stop fails, the target's files are left alone: the
 /// alternative is unlinking the disk of a VM that is still running, which
-/// destroys a guest mid-write and, with `--purge`, takes the golden image with
-/// it. A destroy that reports a problem and leaves everything in place can be
+/// destroys a guest mid-write and, in a purge, takes the golden image with it.
+/// A teardown that reports a problem and leaves everything in place can be
 /// retried; one that half-succeeded cannot.
 pub fn execute(
-    plan: &DestroyPlan,
+    plan: &TeardownPlan,
     stop: &dyn Fn(&RunState) -> Result<crate::provider::Stopped, String>,
-) -> DestroyOutcome {
-    let mut outcome = DestroyOutcome {
+) -> TeardownOutcome {
+    let mut outcome = TeardownOutcome {
         problems: plan.refused.clone(),
-        ..DestroyOutcome::default()
+        ..TeardownOutcome::default()
     };
     // Target, and why it was held back: the two are reported together,
     // because "a file survived" without the reason is not actionable.
@@ -341,7 +460,7 @@ pub fn execute(
 }
 
 /// The closing report.
-pub fn render_outcome(outcome: &DestroyOutcome, purge: bool) -> String {
+pub fn render_outcome(outcome: &TeardownOutcome, scope: Scope) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -353,12 +472,12 @@ pub fn render_outcome(outcome: &DestroyOutcome, purge: bool) -> String {
     // What was asked for is not what happened: a purge that held everything
     // back still deleted nothing, and saying the images are gone when they are
     // sitting there is how someone ends up rebuilding an image they still have.
-    if purge && outcome.skipped == 0 && outcome.deleted > 0 {
+    if scope.image && outcome.skipped == 0 && outcome.deleted > 0 {
         let _ = writeln!(
             out,
             "the golden images are gone; `cargo xtask vm build-image <target>` rebuilds them"
         );
-    } else if purge && outcome.skipped > 0 {
+    } else if scope.image && outcome.skipped > 0 {
         let _ = writeln!(
             out,
             "some images were kept, listed below; nothing was half-deleted, so \
@@ -413,7 +532,12 @@ mod tests {
     #[test]
     fn a_plain_destroy_takes_run_state_and_leaves_the_image() {
         let inv = inventory(vec![with_run_state(Target::Linux)]);
-        let plan = plan(&store(), &inv, Selection::One(Target::Linux), false);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::RUN_STATE,
+        );
         assert_eq!(plan.vms.len(), 1);
         assert_eq!(plan.files.len(), 2);
         assert_eq!(plan.bytes(), 2 * 1024 * 1024 * 1024 + 512);
@@ -434,7 +558,12 @@ mod tests {
             7 * 1024 * 1024 * 1024,
             BUILT,
         )];
-        let plan = plan(&store(), &inv, Selection::One(Target::Windows), true);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Windows),
+            Scope::EVERYTHING,
+        );
         let names: Vec<String> = plan
             .files
             .iter()
@@ -459,7 +588,12 @@ mod tests {
     fn purging_only_linux_leaves_the_windows_media_alone() {
         let mut inv = inventory(vec![healthy(Target::Windows), healthy(Target::Linux)]);
         inv.iso = vec![FileInfo::new("/srv/vm/iso/win.iso", 1024, BUILT)];
-        let plan = plan(&store(), &inv, Selection::One(Target::Linux), true);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::EVERYTHING,
+        );
         let names: Vec<String> = plan
             .files
             .iter()
@@ -475,7 +609,7 @@ mod tests {
             with_run_state(Target::Windows),
             with_run_state(Target::Linux),
         ]);
-        let plan = plan(&store(), &inv, Selection::All, false);
+        let plan = plan(&store(), &inv, Selection::All, Scope::RUN_STATE);
         assert_eq!(plan.vms.len(), 2);
         assert_eq!(plan.files.len(), 4);
     }
@@ -484,7 +618,12 @@ mod tests {
     fn a_state_file_naming_a_foreign_vm_is_refused_rather_than_acted_on() {
         let mut entry = with_run_state(Target::Linux);
         entry.state.as_mut().unwrap().vm_name = "production-db".to_owned();
-        let plan = plan(&store(), &inventory(vec![entry]), Selection::All, false);
+        let plan = plan(
+            &store(),
+            &inventory(vec![entry]),
+            Selection::All,
+            Scope::RUN_STATE,
+        );
         assert!(plan.vms.is_empty());
         assert!(plan.refused[0].contains("production-db"), "{plan:?}");
     }
@@ -493,7 +632,12 @@ mod tests {
     fn a_path_outside_the_store_is_refused_rather_than_deleted() {
         let mut entry = with_run_state(Target::Linux);
         entry.run_files[0].path = PathBuf::from("/etc/passwd");
-        let plan = plan(&store(), &inventory(vec![entry]), Selection::All, true);
+        let plan = plan(
+            &store(),
+            &inventory(vec![entry]),
+            Selection::All,
+            Scope::EVERYTHING,
+        );
         assert!(
             !plan
                 .files
@@ -508,18 +652,132 @@ mod tests {
     }
 
     #[test]
+    fn a_purge_with_no_flags_means_all_of_it() {
+        assert_eq!(Scope::from_flags(false, false, false), Scope::EVERYTHING);
+        assert_eq!(
+            Scope::from_flags(false, false, true),
+            Scope {
+                vm: false,
+                image: false,
+                iso: true
+            }
+        );
+        // Additive rather than exclusive: two flags select two things.
+        assert_eq!(
+            Scope::from_flags(false, true, true),
+            Scope {
+                vm: false,
+                image: true,
+                iso: true
+            }
+        );
+        // `down` is the cheap one, and purge's flags cannot produce it by
+        // accident: it never touches an image.
+        assert_ne!(Scope::RUN_STATE, Scope::from_flags(false, false, false));
+        assert_eq!(Scope::RUN_STATE, Scope::from_flags(true, false, false));
+    }
+
+    #[test]
+    fn only_a_scope_that_touches_the_guests_files_stops_the_guest() {
+        assert!(Scope::RUN_STATE.needs_the_vm_stopped());
+        assert!(Scope::EVERYTHING.needs_the_vm_stopped());
+        // A Hyper-V child holds the golden image open, so an image purge stops
+        // the VM as well.
+        assert!(
+            Scope::from_flags(false, true, false).needs_the_vm_stopped(),
+            "deleting an image under a running differencing child"
+        );
+        // Media is different: a booted guest finished with the ISO long ago.
+        assert!(!Scope::from_flags(false, false, true).needs_the_vm_stopped());
+    }
+
+    #[test]
+    fn purging_only_the_media_leaves_the_guest_and_its_image_alone() {
+        let inv = inventory(vec![with_run_state(Target::Windows)]);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Windows),
+            Scope::from_flags(false, false, true),
+        );
+        assert!(plan.vms.is_empty(), "{plan:?}");
+        let paths: Vec<String> = plan
+            .files
+            .iter()
+            .map(|f| f.path.display().to_string())
+            .collect();
+        assert!(paths.iter().all(|p| p.contains("iso")), "{paths:?}");
+    }
+
+    #[test]
+    fn the_question_says_what_goes_and_what_it_frees() {
+        let inv = inventory(vec![with_run_state(Target::Linux)]);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::EVERYTHING,
+        );
+        let prompt = confirmation_prompt(&plan);
+        for part in [
+            "the VM and its run state",
+            "the golden image",
+            "the installation media",
+            "linux",
+            "[y/N]",
+        ] {
+            assert!(prompt.contains(part), "{prompt} is missing {part}");
+        }
+        assert!(prompt.contains("GiB"), "{prompt}");
+    }
+
+    #[test]
+    fn only_a_plain_yes_deletes_anything() {
+        for yes in [
+            "y", "Y", "yes", "YES", " yes 
+",
+        ] {
+            assert!(is_affirmative(yes), "{yes:?}");
+        }
+        // An empty line is what someone pressing return gives, and the prompt
+        // promises that means no.
+        for no in [
+            "",
+            "
+",
+            "n",
+            "no",
+            "sure",
+            "yes please",
+            "yolo",
+        ] {
+            assert!(!is_affirmative(no), "{no:?}");
+        }
+    }
+
+    #[test]
     fn an_empty_store_produces_an_empty_plan_that_says_so() {
         let inv = inventory(vec![empty(Target::Windows), empty(Target::Linux)]);
-        let plan = plan(&store(), &inv, Selection::All, true);
+        let plan = plan(&store(), &inv, Selection::All, Scope::EVERYTHING);
         assert!(plan.is_empty());
         assert_eq!(plan.bytes(), 0);
-        assert!(plan.render().contains("nothing to destroy for all"));
+        let text = plan.render();
+        assert!(text.contains("nothing to remove for all ("), "{text}");
+        // What was asked for is named, so "nothing to remove" cannot be read as
+        // "there is nothing there" when only one part was in scope.
+        assert!(text.contains("the golden image"), "{text}");
     }
 
     #[test]
     fn the_plan_reads_as_a_list_of_intentions() {
         let inv = inventory(vec![with_run_state(Target::Linux)]);
-        let text = plan(&store(), &inv, Selection::One(Target::Linux), false).render();
+        let text = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::RUN_STATE,
+        )
+        .render();
         assert!(text.contains("stop sunlit-e2e-linux (qemu)"), "{text}");
         assert!(
             text.contains("delete /srv/vm/run/linux/overlay.qcow2 (2.0 GiB)"),
@@ -534,7 +792,12 @@ mod tests {
         // far and stopped would leave the store in exactly the state a boot
         // now has to refuse.
         let inv = inventory(vec![with_run_state(Target::Windows)]);
-        let plan = plan(&store(), &inv, Selection::One(Target::Windows), true);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Windows),
+            Scope::EVERYTHING,
+        );
         let manifest = plan
             .files
             .iter()
@@ -557,7 +820,12 @@ mod tests {
         // --purge the golden image with it. A destroy that changed nothing can
         // be retried; one that half-succeeded cannot.
         let inv = inventory(vec![with_run_state(Target::Linux)]);
-        let plan = plan(&store(), &inv, Selection::One(Target::Linux), true);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::EVERYTHING,
+        );
         assert!(!plan.files.is_empty());
 
         let outcome = execute(&plan, &|_| Err("the hypervisor said no".to_owned()));
@@ -575,7 +843,7 @@ mod tests {
             with_run_state(Target::Windows),
             with_run_state(Target::Linux),
         ]);
-        let plan = plan(&store(), &inv, Selection::All, false);
+        let plan = plan(&store(), &inv, Selection::All, Scope::RUN_STATE);
         let outcome = execute(&plan, &|state| {
             if state.target == "windows" {
                 Err("stuck".to_owned())
@@ -596,7 +864,12 @@ mod tests {
         // target, is the opposite of the "safe to repeat" the guide promises.
         let mut inv = inventory(vec![with_run_state(Target::Windows)]);
         inv.iso = vec![FileInfo::new("/srv/vm/iso/win.iso", 1024, BUILT)];
-        let plan = plan(&store(), &inv, Selection::One(Target::Windows), true);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Windows),
+            Scope::EVERYTHING,
+        );
 
         let iso = plan
             .files
@@ -613,17 +886,27 @@ mod tests {
     #[test]
     fn a_vm_that_was_not_running_is_not_counted_as_stopped() {
         let inv = inventory(vec![with_run_state(Target::Linux)]);
-        let plan = plan(&store(), &inv, Selection::One(Target::Linux), false);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::RUN_STATE,
+        );
         let outcome = execute(&plan, &|_| Ok(crate::provider::Stopped::WasNotRunning));
         assert_eq!(outcome.stopped, 0);
         assert_eq!(outcome.skipped, 0);
-        assert!(render_outcome(&outcome, false).contains("stopped 0 VMs"));
+        assert!(render_outcome(&outcome, Scope::RUN_STATE).contains("stopped 0 VMs"));
     }
 
     #[test]
     fn execution_reports_what_it_could_not_stop() {
         let inv = inventory(vec![with_run_state(Target::Linux)]);
-        let plan = plan(&store(), &inv, Selection::One(Target::Linux), false);
+        let plan = plan(
+            &store(),
+            &inv,
+            Selection::One(Target::Linux),
+            Scope::RUN_STATE,
+        );
         let outcome = execute(&plan, &|_| Err("the hypervisor said no".to_owned()));
         assert_eq!(outcome.stopped, 0);
         assert_eq!(outcome.deleted, 0);
@@ -633,20 +916,20 @@ mod tests {
 
     #[test]
     fn the_outcome_says_whether_a_rebuild_is_now_needed() {
-        let outcome = DestroyOutcome {
+        let outcome = TeardownOutcome {
             stopped: 1,
             deleted: 3,
             skipped: 0,
             bytes_freed: 1024 * 1024,
             problems: Vec::new(),
         };
-        let plain = render_outcome(&outcome, false);
+        let plain = render_outcome(&outcome, Scope::RUN_STATE);
         assert!(
             plain.contains("stopped 1 VM, deleted 3 files, freed 1.0 MiB"),
             "{plain}"
         );
         assert!(plain.contains("golden images are untouched"), "{plain}");
-        let purged = render_outcome(&outcome, true);
+        let purged = render_outcome(&outcome, Scope::EVERYTHING);
         assert!(purged.contains("build-image"), "{purged}");
     }
 }

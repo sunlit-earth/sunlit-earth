@@ -42,13 +42,14 @@ cargo xtask vm build-image <windows|linux>   # Packer, then a manifest. Tens of 
 cargo xtask vm up <target>         # An interactive guest, with the current binaries in it
 cargo xtask vm ssh <target>        # A shell in the running guest
 cargo xtask vm view <target>       # Its desktop (vmconnect for Hyper-V, VNC for QEMU)
-cargo xtask vm smoke <target>      # Boot, run a trivial job through the guest contract, destroy
+cargo xtask vm smoke <target>      # Boot, run a trivial job through the guest contract, take it down
 cargo xtask vm status              # Images, media, overlays, running VMs, disk footprint
-cargo xtask vm destroy <windows|linux|all> [--purge]
+cargo xtask vm down <windows|linux|all>      # End the guest, keep the golden image
+cargo xtask vm purge <windows|linux|all> [--vm] [--image] [--iso] [-f]
 cargo xtask e2e --target <host|windows|linux> [--keep] [--allow-expired-image]
 ```
 
-`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
+`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `vm down` is the cheap teardown: it ends the guest and deletes its run state, which the next boot recreates. `vm purge` is the disk-space one: everything a target has on disk unless `--vm`, `--image`, or `--iso` narrows it, and it asks before deleting unless `-f` is given. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
 
 CI sets `RUSTFLAGS: "-D warnings"`, so a warning is a build failure there. `cargo clippy --all-targets` locally is what keeps that true; clippy is not run in CI because its artifacts do not share the test cache and would force a full recompile.
 

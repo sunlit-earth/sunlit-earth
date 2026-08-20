@@ -1,4 +1,4 @@
-//! The VM lifecycle commands: `up`, `ssh`, `view`, `status`, `destroy`, and the
+//! The VM lifecycle commands: `up`, `ssh`, `view`, `status`, `down`, `purge`,
 //! guest-contract smoke test.
 //!
 //! `vm up` and `e2e --target <t>` share the whole boot path, which is what
@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use crate::commands::destroy::{self, Selection};
 use crate::commands::status;
+use crate::commands::teardown::{self, Selection};
 use crate::guest::job;
 use crate::provider::target::Target;
 use crate::provider::{self, Provider};
@@ -69,7 +69,7 @@ impl Session<'_> {
     ///
     /// The record is written before the VM is started and again afterwards.
     /// Before, because a running VM with no state file is invisible to status
-    /// and destroy, and `destroy::plan` would then see an overlay with no VM
+    /// and destroy, and `teardown::plan` would then see an overlay with no VM
     /// behind it and unlink the disk of a live guest. Afterwards, because that
     /// is when the process id and the address exist to record.
     fn bring_up(&mut self, store: &Store) -> Result<(), String> {
@@ -108,7 +108,7 @@ impl Session<'_> {
         format!(
             "  ssh:     cargo xtask vm ssh {target}\n  \
              desktop: cargo xtask vm view {target}\n  \
-             destroy: cargo xtask vm destroy {target}"
+             down:    cargo xtask vm down {target}"
         )
     }
 }
@@ -232,7 +232,7 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
             return Err(format!(
                 "{} is already running, and this phase runs one VM at a time \
                  (they share the same forwarded ports).\n\
-                 `cargo xtask vm destroy {other}` frees it.",
+                 `cargo xtask vm down {other}` frees it.",
                 state.vm_name
             ));
         }
@@ -241,7 +241,7 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
 }
 
 /// Save the state file. Called as soon as the VM exists, so that a crash from
-/// here on still leaves something `vm status` can see and `vm destroy` can
+/// here on still leaves something `vm status` can see and `vm down` can
 /// clean up.
 pub fn write_state(store: &Store, target: Target, state: &RunState) -> Result<(), String> {
     let path = store.state_file(target);
@@ -295,9 +295,9 @@ pub fn boot<'a>(
 /// Take down whatever an earlier run left recorded for this target.
 ///
 /// The record is removed only once the teardown has succeeded, which is the
-/// same rule `destroy::execute` follows and for the same reason: deleting the
+/// same rule `teardown::execute` follows and for the same reason: deleting the
 /// record of a VM that is still registered makes it invisible to `vm status`
-/// and `vm destroy` for good. That is reachable on a host where the `Hyper-V`
+/// and `vm down` for good. That is reachable on a host where the `Hyper-V`
 /// cmdlets fail, which is a plain missing group membership away.
 fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Result<(), String> {
     let Some(existing) = load_state(store, target) else {
@@ -308,7 +308,7 @@ fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Resu
     let provider = provider::for_state(runner, store, &existing).map_err(|e| {
         format!(
             "{} is recorded for {target}, but {e}. The record is left in place \
-             rather than deleted; `cargo xtask vm destroy {target}` clears it.",
+             rather than deleted; `cargo xtask vm down {target}` clears it.",
             existing.vm_name
         )
     })?;
@@ -323,7 +323,7 @@ fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Resu
             "the {target} VM left behind by an earlier run could not be taken \
              down: {e}\nIts record is kept rather than deleted, because a VM \
              that is still registered and no longer recorded cannot be found \
-             again. `cargo xtask vm destroy {target}` retries this."
+             again. `cargo xtask vm down {target}` retries this."
         )
     })
 }
@@ -335,7 +335,7 @@ pub fn lifecycle_explainer(target: Target) -> String {
          {vm} is up.\n  \
          ssh:     cargo xtask vm ssh {target}\n  \
          desktop: cargo xtask vm view {target}\n  \
-         destroy: cargo xtask vm destroy {target}\n\n\
+         down:    cargo xtask vm down {target}\n\n\
          There is no stop or pause. This guest holds no state worth keeping, so \
          ending it and discarding it are the same act: destroying it frees the \
          memory and the overlay, leaves the golden image untouched, and the next \
@@ -376,7 +376,7 @@ pub fn ssh(runner: &dyn Runner, target: Target, extra: &[String]) -> Result<u8, 
     let provider = provider::for_state(runner, &store, &state)?;
     if !provider.is_running(&state) {
         return Err(format!(
-            "{} is recorded but not running. `cargo xtask vm destroy {target}` \
+            "{} is recorded but not running. `cargo xtask vm down {target}` \
              clears it and `cargo xtask vm up {target}` starts a fresh one.",
             state.vm_name
         ));
@@ -447,27 +447,48 @@ pub fn status(runner: &dyn Runner) -> Result<u8, String> {
     Ok(0)
 }
 
-/// `vm destroy`.
-pub fn destroy_command(
+/// `vm down`: end the guest, keep everything that took time to build.
+pub fn down(runner: &dyn Runner, selection: Selection) -> Result<u8, String> {
+    tear_down(runner, selection, teardown::Scope::RUN_STATE, true)
+}
+
+/// `vm purge`: delete what is on disk, after asking.
+pub fn purge(
     runner: &dyn Runner,
     selection: Selection,
-    purge: bool,
+    scope: teardown::Scope,
+    force: bool,
+) -> Result<u8, String> {
+    tear_down(runner, selection, scope, force)
+}
+
+/// The shared half. `confirmed` is what `--force` sets and what `down` is
+/// always allowed to assume: it deletes only state the next boot recreates.
+fn tear_down(
+    runner: &dyn Runner,
+    selection: Selection,
+    scope: teardown::Scope,
+    confirmed: bool,
 ) -> Result<u8, String> {
     let store = store::store()?;
     let inventory = inventory::scan(&store);
-    let plan = destroy::plan(&store, &inventory, selection, purge);
+    let plan = teardown::plan(&store, &inventory, selection, scope);
     print!("{}", plan.render());
     if plan.is_empty() {
+        return Ok(0);
+    }
+    if !confirmed && !teardown::confirm(&teardown::confirmation_prompt(&plan)) {
+        println!("nothing was deleted");
         return Ok(0);
     }
     // Asked unconditionally. Whether there is anything to stop is the
     // provider's question to answer, and answering it here by consulting
     // `is_running` first is what let a registered but powered-off Hyper-V VM
     // keep its registration while its disk was deleted out from under it.
-    let outcome = destroy::execute(&plan, &|state| {
+    let outcome = teardown::execute(&plan, &|state| {
         provider::for_state(runner, &store, state)?.destroy(state)
     });
-    print!("{}", destroy::render_outcome(&outcome, purge));
+    print!("{}", teardown::render_outcome(&outcome, scope));
     Ok(u8::from(!outcome.problems.is_empty()))
 }
 
@@ -606,7 +627,7 @@ mod tests {
         assert!(text.contains("no stop or pause"), "{text}");
         assert!(text.contains("golden image untouched"), "{text}");
         assert!(text.contains("holds its RAM"), "{text}");
-        assert!(text.contains("cargo xtask vm destroy linux"), "{text}");
+        assert!(text.contains("cargo xtask vm down linux"), "{text}");
         assert!(text.contains("clicking during one perturbs it"), "{text}");
         assert!(text.contains("clipboard"), "{text}");
     }

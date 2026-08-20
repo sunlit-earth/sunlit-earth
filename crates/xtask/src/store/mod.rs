@@ -3,7 +3,7 @@
 //! Plan decision 4: images live outside the repo in a platform data directory,
 //! overridable with `SUNLIT_EARTH_VM_DIR`; the repo carries only the templates.
 //! Every path the xtask reads or writes is derived here, which is also what
-//! lets `vm destroy` prove that a path it is about to delete belongs to it.
+//! lets a teardown prove that a path it is about to delete belongs to it.
 
 pub mod hash;
 pub mod inventory;
@@ -119,7 +119,7 @@ impl Store {
 
     /// Whether `path` is inside the store.
     ///
-    /// `vm destroy` asks this about every path before deleting it, so a
+    /// `vm down` and `vm purge` ask this about every path before deleting it, so a
     /// malformed state file cannot point the cleanup at something else. The
     /// comparison is lexical over normalized components, because the paths in
     /// question may not exist any more by the time it is asked.

@@ -161,7 +161,7 @@ pub fn for_target<'a>(
 /// onto QEMU for the Windows guest.
 pub const PROVIDER_ENV: &str = "SUNLIT_EARTH_VM_PROVIDER";
 
-/// The provider that matches an existing state file, so `vm destroy` tears down
+/// The provider that matches an existing state file, so `vm down` tears down
 /// what actually exists rather than what the matrix would create today.
 pub fn for_state<'a>(
     runner: &'a dyn Runner,

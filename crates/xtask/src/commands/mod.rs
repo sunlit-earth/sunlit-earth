@@ -5,9 +5,9 @@
 //! `runner::Runner`.
 
 pub mod build_image;
-pub mod destroy;
 pub mod doctor;
 pub mod e2e;
 pub mod setup;
 pub mod status;
+pub mod teardown;
 pub mod vm;

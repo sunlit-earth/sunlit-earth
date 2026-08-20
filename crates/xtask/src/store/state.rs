@@ -3,7 +3,7 @@
 //! Plan decision 13: everything the xtask creates has to be findable again
 //! after the orchestrator that created it is gone. A crashed run, a `--keep`
 //! run, and a `vm up` all leave the same small file, so `vm status` and
-//! `vm destroy` work from a record on disk rather than by scanning the host for
+//! `vm down` work from a record on disk rather than by scanning the host for
 //! things that might be ours.
 
 use std::path::PathBuf;
@@ -105,7 +105,7 @@ impl RunState {
 
     /// Whether this record describes something the xtask created.
     ///
-    /// `vm destroy` refuses to act on anything that fails this, so a
+    /// A teardown refuses to act on anything that fails this, so a
     /// hand-edited or corrupted state file cannot aim the teardown at another
     /// VM on the host.
     pub fn is_ours(&self) -> bool {

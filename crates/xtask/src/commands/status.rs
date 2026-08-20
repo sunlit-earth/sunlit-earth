@@ -63,13 +63,13 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
     if runs > 0 {
         let _ = writeln!(
             out,
-            "  `cargo xtask vm destroy all` frees the run state and leaves the images alone"
+            "  `cargo xtask vm down all` frees the run state and leaves the images alone"
         );
     }
     if images + inventory.iso_bytes() > 0 {
         let _ = writeln!(
             out,
-            "  `cargo xtask vm destroy all --purge` frees everything, including the images; \
+            "  `cargo xtask vm purge all` frees everything, including the images; \
              rebuilding costs one `vm build-image` per target"
         );
     }
@@ -175,7 +175,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
             );
             let _ = writeln!(
                 out,
-                "    `cargo xtask vm destroy {target}` removes the leftovers"
+                "    `cargo xtask vm down {target}` removes the leftovers"
             );
         }
         (Some(state), None) => {
@@ -185,7 +185,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
                 state.vm_name,
                 state.reason.label()
             );
-            let _ = writeln!(out, "    `cargo xtask vm destroy {target}` removes it");
+            let _ = writeln!(out, "    `cargo xtask vm down {target}` removes it");
         }
         (None, _) => {}
     }
@@ -223,7 +223,7 @@ fn running_vm(target: Target, state: &RunState) -> String {
     );
     let _ = writeln!(
         out,
-        "    destroy: `cargo xtask vm destroy {target}`  (frees the memory and the overlay; \
+        "    down:    `cargo xtask vm down {target}`  (frees the memory and the overlay; \
          the golden image is untouched)"
     );
     out
@@ -286,7 +286,7 @@ mod tests {
         assert!(text.contains("built 1972-09-27T00:00:00Z"), "{text}");
         assert!(text.contains("windows11-enterprise-eval.iso"), "{text}");
         assert!(text.contains("total: 46.6 GiB"), "{text}");
-        assert!(text.contains("destroy all --purge"), "{text}");
+        assert!(text.contains("vm purge all"), "{text}");
     }
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
         assert!(text.contains("kept after a test run (--keep)"), "{text}");
         assert!(text.contains("cargo xtask vm ssh linux"), "{text}");
         assert!(text.contains("cargo xtask vm view linux"), "{text}");
-        assert!(text.contains("cargo xtask vm destroy linux"), "{text}");
+        assert!(text.contains("cargo xtask vm down linux"), "{text}");
         assert!(text.contains("golden image is untouched"), "{text}");
         assert!(text.contains("vnc 127.0.0.1:5900"), "{text}");
         assert!(text.contains("2.0 GiB in run state"), "{text}");
@@ -333,7 +333,7 @@ mod tests {
         let text = render(&inventory(vec![empty(Target::Windows), entry]), now());
         assert!(text.contains("registered but not running"), "{text}");
         assert!(text.contains("left behind by a test run"), "{text}");
-        assert!(text.contains("cargo xtask vm destroy linux"), "{text}");
+        assert!(text.contains("cargo xtask vm down linux"), "{text}");
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
         );
         assert!(text.contains("1.0 GiB in run state"), "{text}");
         assert!(
-            text.contains("`cargo xtask vm destroy all` frees the run state"),
+            text.contains("`cargo xtask vm down all` frees the run state"),
             "{text}"
         );
     }

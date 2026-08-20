@@ -237,6 +237,10 @@ Against the success criteria:
 
     Rather than keep guessing at the difference, the template now asks Packer to type nothing and opens a QMP monitor on its own port, and `build-image` presses the key there with `send-key`, which injects at the input device and involves no VNC client at all. The xtask already had a QMP client for stopping a guest cleanly, so this is one request shape and one loop rather than a new protocol. Verified end to end through `vm build-image windows` against an isolated store: 35 presses sent, and the installer writing to disk a minute later.
 
+23. **`vm destroy` and `vm destroy --purge` are `vm down` and `vm purge`.** Renamed on 2026-08-20 at the user's request, after using them. Decision 1 fixed the command surface and decision 13 named this pair; both stand as designed, and the argument in decision 14 for `up` and `destroy` pairing the way Vagrant's do turned out to matter less than the two commands reading as what they cost. `down` is the cheap one and now says so; `purge` is the one that deletes what took tens of minutes or a 6.6 GB download to get, so it is a command of its own rather than a flag on the cheap one.
+
+    A purge also asks first, unless `-f`, and a closed stdin answers no, so a script cannot delete a golden image by not being there to object. Its three flags (`--vm`, `--image`, `--iso`) are additive and narrow it; none of them means all of it. Both commands share one planner and differ only in a `Scope`, which is what keeps "never delete an image out from under a running guest" in one place: a scope that touches the guest's own files stops the guest first, and media, which no booted guest still holds, does not.
+
 ## Results
 
 To be recorded on the first live run: image build times, warm VM run times, and per-guest pass counts. Nothing in this section can be filled in from a session that was not permitted to boot a VM, and inventing plausible numbers would be worse than leaving it empty.

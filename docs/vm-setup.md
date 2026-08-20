@@ -41,7 +41,7 @@ The Linux guest skips the two cases that need a tray icon. One of them is the tr
 
 `cargo xtask vm up <target>` boots a guest and copies the current binaries in without running anything. `cargo xtask vm view <target>` opens its desktop, and `cargo xtask vm ssh <target>` opens a shell in it. To look at the aftermath of a test run instead, use `cargo xtask e2e --target <target> --keep` and then the same two commands.
 
-There is no stop or pause, and that is deliberate. A guest holds no state worth keeping, so ending one and discarding it are the same act: `vm destroy` frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Until you destroy it, a running guest holds its RAM allocation. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
+There is no stop or pause, and that is deliberate. A guest holds no state worth keeping, so ending one and discarding it are the same act: `vm down` frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Until you take it down, a running guest holds its RAM allocation. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
 
 Three things to know before you connect:
 
@@ -66,11 +66,15 @@ The fix is `cargo xtask vm build-image windows`, which is also the only way to g
 `cargo xtask vm status` lists what exists: the golden images with their sizes and build dates, the cached installation media, any overlays including ones a crashed run left behind, any VM that is registered or running and how to reach it, and what all of it costs. It prints the command to reclaim each part next to the numbers.
 
 ```
-cargo xtask vm destroy <windows|linux|all>            # run state only
-cargo xtask vm destroy <windows|linux|all> --purge    # images and media too
+cargo xtask vm down <windows|linux|all>      # the guest and its run state
+cargo xtask vm purge <windows|linux|all>     # that, the golden image, and the media
+cargo xtask vm purge windows --iso           # only the 6.6 GB download
+cargo xtask vm purge linux --image           # only the golden image and its leftovers
 ```
 
-A plain destroy stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image.
+`vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image.
+
+`vm purge` deletes what took time to get: the golden image, its manifest, Packer's leftovers, and the cached installation media. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The three flags are additive, and none of them means all of it.
 
 `--purge` additionally deletes the golden image, the converted VHDX, the cached ISO, and the manifest. That is the disk-space recovery path. It prints what it deleted and how much it freed, and the next `vm status` reports the images as missing. Getting them back means another `vm build-image`, so purge when you need the space rather than as a matter of routine.
 
@@ -104,10 +108,10 @@ The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Wi
 
 **A guest boots but never becomes reachable.** `vm view` shows its console. For a QEMU guest the console is a VNC server on `127.0.0.1:5900` that is always running, so a viewer can attach at any moment, including in the middle of a wedged boot.
 
-**A run leaves a VM behind.** `vm status` finds it; `vm destroy <target>` removes it. The orchestrator writes its state file as soon as the VM exists, so a crash mid-run leaves something to clean up rather than an orphan nothing knows about, and any failure after a boot either destroys the guest or prints exactly what is still running and how to reach it.
+**A run leaves a VM behind.** `vm status` finds it; `vm down <target>` removes it. The orchestrator writes its state file as soon as the VM exists, so a crash mid-run leaves something to clean up rather than an orphan nothing knows about, and any failure after a boot either destroys the guest or prints exactly what is still running and how to reach it.
 
-**`vm destroy` says it could not stop something and deleted nothing.** That is deliberate. A VM whose stop failed keeps its files, because unlinking the disk of a running guest destroys it mid-write and, with `--purge`, takes the golden image too. Fix whatever stopped it, then run the destroy again: nothing was half-done, so it is safe to repeat.
+**A teardown says it could not stop something and deleted nothing.** That is deliberate. A VM whose stop failed keeps its files, because unlinking the disk of a running guest destroys it mid-write and, in a purge, takes the golden image too. Fix whatever stopped it, then run it again: nothing was half-done, so it is safe to repeat.
 
-**`vm destroy` says a process id was reused.** The VM's process is gone and something unrelated now has its id, so nothing was stopped and nothing was deleted. Delete the state file it names once you are sure nothing of yours is running.
+**A teardown says a process id was reused.** The VM's process is gone and something unrelated now has its id, so nothing was stopped and nothing was deleted. Delete the state file it names once you are sure nothing of yours is running.
 
 **A test fails in the guest but passes on the desktop.** The results are pulled back to the image store and the path is printed at the end of the run: `output.log` is the suite's own output and `artifacts/` is whatever it wrote. `e2e --target <t> --keep` leaves the VM up so you can look at it from the inside.

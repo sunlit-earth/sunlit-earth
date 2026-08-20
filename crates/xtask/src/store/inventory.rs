@@ -80,7 +80,7 @@ impl TargetInventory {
         self.build_files.iter().map(|f| f.bytes).sum()
     }
 
-    /// Bytes that a plain `vm destroy` would reclaim for this target.
+    /// Bytes that `vm down` would reclaim for this target.
     pub fn run_bytes(&self) -> u64 {
         self.run_files.iter().map(|f| f.bytes).sum()
     }

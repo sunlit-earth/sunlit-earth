@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{build_image, destroy, doctor, e2e, setup, vm};
+use crate::commands::{build_image, doctor, e2e, setup, teardown, vm};
 use crate::host::facts;
 use crate::provider::target::{HostOs, Target};
 use crate::runner::RealRunner;
@@ -88,7 +88,7 @@ enum VmCommand {
     },
     /// Open the running guest's desktop.
     View { target: Target },
-    /// Boot, run a trivial job through the guest contract, collect it, destroy.
+    /// Boot, run a trivial job through the guest contract, collect it, take it down.
     Smoke {
         target: Target,
         /// Leave the VM running afterwards.
@@ -97,31 +97,45 @@ enum VmCommand {
     },
     /// List the images, media, overlays, and VMs the xtask owns.
     Status,
-    /// Tear down run state, and with `--purge` the golden images too.
-    Destroy {
+    /// End the guest and delete its run state. The golden image stays.
+    Down {
         /// Which target, or `all`.
-        target: DestroyTarget,
-        /// Also delete the golden images, the installation media, and the
-        /// manifests. This is the disk-space recovery path; rebuilding costs
-        /// one `vm build-image` per target.
+        target: TeardownTarget,
+    },
+    /// Delete what a target has on disk. Everything unless a flag narrows it,
+    /// and it asks first. Rebuilding costs one `vm build-image` per target and
+    /// re-downloading the Windows media costs 6.6 GB.
+    Purge {
+        /// Which target, or `all`.
+        target: TeardownTarget,
+        /// Only the VM: its overlay and run state.
         #[arg(long)]
-        purge: bool,
+        vm: bool,
+        /// Only the golden image, its manifest, and the build leftovers.
+        #[arg(long)]
+        image: bool,
+        /// Only the cached installation media.
+        #[arg(long)]
+        iso: bool,
+        /// Do not ask.
+        #[arg(short, long)]
+        force: bool,
     },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
-enum DestroyTarget {
+enum TeardownTarget {
     Windows,
     Linux,
     All,
 }
 
-impl From<DestroyTarget> for destroy::Selection {
-    fn from(value: DestroyTarget) -> Self {
+impl From<TeardownTarget> for teardown::Selection {
+    fn from(value: TeardownTarget) -> Self {
         match value {
-            DestroyTarget::Windows => Self::One(Target::Windows),
-            DestroyTarget::Linux => Self::One(Target::Linux),
-            DestroyTarget::All => Self::All,
+            TeardownTarget::Windows => Self::One(Target::Windows),
+            TeardownTarget::Linux => Self::One(Target::Linux),
+            TeardownTarget::All => Self::All,
         }
     }
 }
@@ -148,9 +162,19 @@ fn main() -> ExitCode {
             VmCommand::View { target } => vm::view(&runner, target),
             VmCommand::Smoke { target, keep } => vm::smoke(&runner, target, keep),
             VmCommand::Status => vm::status(&runner),
-            VmCommand::Destroy { target, purge } => {
-                vm::destroy_command(&runner, target.into(), purge)
-            }
+            VmCommand::Down { target } => vm::down(&runner, target.into()),
+            VmCommand::Purge {
+                target,
+                vm,
+                image,
+                iso,
+                force,
+            } => vm::purge(
+                &runner,
+                target.into(),
+                teardown::Scope::from_flags(vm, image, iso),
+                force,
+            ),
         },
     };
 

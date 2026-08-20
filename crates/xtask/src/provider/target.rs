@@ -30,7 +30,7 @@ impl Target {
     /// The VM name this target's guest runs under.
     ///
     /// The prefix is what makes every VM the xtask creates recognizable as its
-    /// own, so `vm status` and `vm destroy` never touch anything else on the
+    /// own, so `vm status` and `vm down` never touch anything else on the
     /// host.
     pub fn vm_name(self) -> String {
         format!("{}{}", VM_NAME_PREFIX, self.slug())

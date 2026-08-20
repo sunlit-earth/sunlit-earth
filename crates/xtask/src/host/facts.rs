@@ -81,7 +81,7 @@ pub fn winget_link_candidate(tool: &str, local_app_data: Option<&Path>) -> Optio
 }
 
 /// The SID of the local `Hyper-V Administrators` group. Membership in it is
-/// what lets `vm status`, `e2e`, and `vm destroy` drive the hypervisor without
+/// what lets `vm status`, `e2e`, and `vm down` drive the hypervisor without
 /// elevation.
 pub const HYPERV_ADMINS_SID: &str = "S-1-5-32-578";
 

@@ -63,6 +63,14 @@ pub struct Cmd {
     /// The readable form of a command whose arguments are encoded, kept for
     /// logs and for the test double to match on. Never sent to the process.
     pub script: Option<String>,
+    /// Whether the child inherits this process's stdin.
+    ///
+    /// Off by default, and that is the important half: an orchestration step
+    /// that blocks on invisible input is the worst failure mode here, which is
+    /// also why every SSH invocation carries `BatchMode=yes`. The exception is
+    /// a command whose whole purpose is to hand the terminal over, and there is
+    /// one: `vm ssh`, which is a person at a shell in the guest.
+    pub interactive: bool,
 }
 
 impl Cmd {
@@ -115,6 +123,14 @@ impl Cmd {
     #[must_use]
     pub fn script(mut self, text: impl Into<String>) -> Self {
         self.script = Some(text.into());
+        self
+    }
+
+    /// Hand this process's stdin to the child, for a session a person types
+    /// into. Only `stream` honours it; `capture` has its own stdin rules.
+    #[must_use]
+    pub fn interactive(mut self) -> Self {
+        self.interactive = true;
         self
     }
 
@@ -205,7 +221,11 @@ impl Runner for RealRunner {
     fn stream(&self, cmd: &Cmd) -> io::Result<i32> {
         let mut command = Self::build(cmd);
         command
-            .stdin(Stdio::null())
+            .stdin(if cmd.interactive {
+                Stdio::inherit()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         let status = command.status()?;

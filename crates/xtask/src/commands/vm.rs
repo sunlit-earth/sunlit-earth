@@ -386,11 +386,21 @@ pub fn ssh(runner: &dyn Runner, target: Target, extra: &[String]) -> Result<u8, 
     } else {
         Some(extra.join(" "))
     };
-    let cmd = crate::guest::ssh::ssh_command(
-        &provider.ssh_target(&state),
-        remote.as_deref(),
-        provider.windows_host(),
-    );
+    let ssh_target = provider.ssh_target(&state);
+    // Without this the child gets a closed stdin, and `vm ssh` is then a shell
+    // nobody can type into: the keystrokes sit unread in the terminal's own
+    // buffer, unechoed, and only appear once the process finally exits. That is
+    // what it looked like when this was reported, and the appearance of a
+    // frozen terminal was the symptom.
+    let cmd =
+        crate::guest::ssh::ssh_command(&ssh_target, remote.as_deref(), provider.windows_host())
+            .interactive();
+    if remote.is_none() {
+        println!(
+            "opening a shell on {} ({}:{}); `exit` or Ctrl-D leaves it",
+            state.vm_name, ssh_target.host, ssh_target.port
+        );
+    }
     let code = runner
         .stream(&cmd)
         .map_err(|e| format!("cannot run ssh: {e}"))?;
@@ -553,6 +563,27 @@ pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_interactive_shell_inherits_stdin_and_a_remote_command_does_not_change_that() {
+        // `stream` gives a child a closed stdin unless the command says
+        // otherwise, which is right for every orchestration step and wrong for
+        // the one command whose purpose is to hand over the terminal.
+        let target = crate::guest::ssh::SshTarget {
+            user: "tester".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 2222,
+            key: std::path::PathBuf::from("/srv/vm/ssh/id_ed25519"),
+        };
+        let shell = crate::guest::ssh::ssh_command(&target, None, true).interactive();
+        assert!(
+            shell.interactive,
+            "a shell nobody can type into is not a shell"
+        );
+        // Every other ssh invocation stays non-interactive on purpose.
+        let probe = crate::guest::ssh::ssh_command(&target, Some("echo hi"), true);
+        assert!(!probe.interactive);
+    }
+
     use super::*;
     use crate::store::manifest::eval_state;
     use crate::util::SECS_PER_DAY;

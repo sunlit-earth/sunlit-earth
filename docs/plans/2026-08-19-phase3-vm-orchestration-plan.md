@@ -219,6 +219,12 @@ Against the success criteria:
 
     The `path_contains` helper now spans the machine and user halves of the persisted `PATH`, because the question every caller asks is whether a new shell would find the thing.
 
+20. **`packer init` is retried three times, and its failure says what usually causes it.** Also from the first live run: the Windows build downloaded the 6.6 GB ISO and then died two seconds later, on `packer init`, with `dial tcp 140.82.121.5:443: connectex: An attempt was made to access a socket in a way forbidden by its access permissions`. The cause was on the host, not in Packer: a per-application firewall had failed to start after the reboot `vm setup` asks for, and was refusing sockets to every executable it did not already know. `curl` was on its list and `packer.exe`, installed minutes earlier, was not, which is why one 6.6 GB download succeeded and the next two-kilobyte request did not.
+
+    Nothing in the xtask can detect that, but two things were wrong with how it reported it. It gave up after one attempt, and it added nothing to Packer's message: `packer init failed with exit code 1` under a Go dial error reads like an outage at the registry. There are now three attempts five seconds apart, and the closing message names a local firewall, a proxy, and an outage as the three usual causes, says that a socket-permission error is the first of those rather than the third, and points out that nothing has been built yet so re-running is free.
+
+    The larger fix was considered and not taken: pinning the plugin version and installing it from `releases.hashicorp.com` the way Packer documents for an air-gapped host (`packer plugins install --path`, with `PACKER_PLUGIN_PATH` pointing into the store) would remove the `api.github.com` dependency from image builds altogether and make the plugin version part of the store rather than "whatever was newest that day". That mechanism was verified by hand on this host, up to `packer validate` succeeding against the real Windows template with no `packer init` at all. It is a bigger change than this failure warranted, and it is recorded here as the option it is.
+
 
 ## Results
 

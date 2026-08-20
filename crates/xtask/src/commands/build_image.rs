@@ -6,6 +6,7 @@
 //! manifest that makes the result auditable afterwards (plan decision 4).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::provider::target::{HostOs, Target};
 use crate::runner::{Cmd, Runner};
@@ -173,6 +174,121 @@ pub fn manifest_for(
     )
 }
 
+/// How many times `packer init` is worth trying.
+///
+/// It is one HTTP conversation with a plugin registry, so a failure is usually
+/// the network rather than anything about the template, and the cost of another
+/// try is seconds against an hour-long build.
+pub const INIT_ATTEMPTS: u32 = 3;
+
+/// How long to wait between those attempts.
+pub const INIT_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// What to say when every attempt failed.
+///
+/// The bare exit code sent one person looking for a Packer problem when what
+/// they had was a local firewall that had not come back up after a reboot and
+/// was refusing sockets to anything it did not recognise. Packer reports that
+/// as a Go dial error, which reads like an outage.
+pub fn init_failure_message(code: i32, attempts: u32) -> String {
+    format!(
+        "packer init failed with exit code {code} after {attempts} \
+         {}.\n\nIt installs the plugins the template requires over HTTPS from \
+         api.github.com, so the cause is usually outside Packer:\n  \
+         - a local firewall or security product that blocks packer.exe. A socket \
+         error such as \"An attempt was made to access a socket in a way \
+         forbidden by its access permissions\" is that, not an outage.\n  \
+         - a proxy, which packer reads from HTTP_PROXY and HTTPS_PROXY\n  \
+         - a genuine outage at the registry\n\n\
+         Nothing has been built, so running the command again is safe.",
+        crate::util::count(attempts as usize, "attempt")
+    )
+}
+
+/// `PATH` with `dir` in front of it.
+///
+/// For handing Packer a tool that is installed but not on this process's
+/// `PATH`, which is what winget's links directory looks like until a new shell
+/// starts.
+pub fn path_with(dir: &Path, current: Option<&str>) -> String {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    match current {
+        Some(current) if !current.is_empty() => {
+            format!("{}{separator}{current}", dir.display())
+        }
+        _ => dir.display().to_string(),
+    }
+}
+
+/// Install the plugins the template requires, retrying a failed attempt.
+pub fn init_plugins(
+    runner: &dyn Runner,
+    plan: &BuildPlan,
+    extra_path: Option<&str>,
+    attempts: u32,
+    delay: Duration,
+) -> Result<(), String> {
+    let mut last = 0;
+    for attempt in 1..=attempts.max(1) {
+        let mut init = Cmd::new("packer")
+            .args([
+                "init".to_owned(),
+                plan.template_dir.to_string_lossy().into_owned(),
+            ])
+            .env("PACKER_CACHE_DIR", plan.cache_dir.to_string_lossy());
+        if let Some(path) = extra_path {
+            init = init.env("PATH", path);
+        }
+        last = runner
+            .stream(&init)
+            .map_err(|e| format!("cannot run packer: {e}"))?;
+        if last == 0 {
+            return Ok(());
+        }
+        if attempt < attempts {
+            println!(
+                "packer init failed with exit code {last}; retrying in {} seconds \
+                 ({attempt} of {attempts} done)",
+                delay.as_secs()
+            );
+            std::thread::sleep(delay);
+        }
+    }
+    Err(init_failure_message(last, attempts.max(1)))
+}
+
+/// The ISO builder Packer will use, and the directory to put on its `PATH` when
+/// this process's own `PATH` cannot see the tool yet.
+///
+/// A tool winget installed during this shell's lifetime is real but invisible
+/// to a `PATH` lookup, because winget appended its links directory to the user
+/// `PATH` after this process inherited its copy. Packer resolves the tool on
+/// `PATH` itself, so the answer is to hand it a `PATH` that has it.
+fn resolve_iso_tool(
+    runner: &dyn Runner,
+    host: HostOs,
+) -> Result<(&'static str, Option<PathBuf>), String> {
+    let on_path: Vec<&'static str> = crate::host::facts::PACKER_ISO_TOOLS
+        .into_iter()
+        .filter(|tool| runner.which(tool).is_some())
+        .collect();
+    if let Some(tool) = crate::host::facts::packer_iso_tool(&on_path) {
+        return Ok((tool, None));
+    }
+    let found = crate::host::facts::PACKER_ISO_TOOLS
+        .into_iter()
+        .find_map(|tool| crate::host::facts::resolve_tool(runner, tool, host).map(|at| (tool, at)));
+    let Some((tool, at)) = found else {
+        return Err(format!(
+            "no ISO builder on PATH, and Packer needs one to make the CD this \
+             template hands the guest. It looks for {}. \
+             `cargo xtask vm setup` installs one.",
+            crate::host::facts::PACKER_ISO_TOOLS.join(", ")
+        ));
+    };
+    Ok((tool, at.parent().map(Path::to_path_buf)))
+}
+
 /// Run a build end to end.
 pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     let store = store::store()?;
@@ -192,18 +308,7 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     // shelling out to one of these. Without one it fails immediately, several
     // seconds into a command that otherwise takes an hour, with an error about
     // a tool nothing here has ever mentioned.
-    let iso_tools: Vec<&str> = crate::host::facts::PACKER_ISO_TOOLS
-        .into_iter()
-        .filter(|tool| runner.which(tool).is_some())
-        .collect();
-    let Some(iso_tool) = crate::host::facts::packer_iso_tool(&iso_tools) else {
-        return Err(format!(
-            "no ISO builder on PATH, and Packer needs one to make the CD this \
-             template hands the guest. It looks for {}. \
-             `cargo xtask vm setup` installs one.",
-            crate::host::facts::PACKER_ISO_TOOLS.join(", ")
-        ));
-    };
+    let (iso_tool, iso_tool_dir) = resolve_iso_tool(runner, host)?;
 
     let public_key = ensure_ssh_key(runner, &store)?;
     if target == Target::Windows {
@@ -243,27 +348,29 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
         );
 
     println!("building the {target} golden image with {version}");
-    println!("  cd images: {iso_tool}");
+    match &iso_tool_dir {
+        None => println!("  cd images: {iso_tool}"),
+        Some(dir) => println!("  cd images: {iso_tool}, from {}", dir.display()),
+    }
     println!("  templates: {}", plan.template_dir.display());
     println!("  output:    {}", plan.output_dir.display());
     println!("  this takes tens of minutes and downloads several gigabytes");
 
-    let init = Cmd::new("packer")
-        .args([
-            "init".to_owned(),
-            plan.template_dir.to_string_lossy().into_owned(),
-        ])
-        .env("PACKER_CACHE_DIR", plan.cache_dir.to_string_lossy());
-    let code = runner
-        .stream(&init)
-        .map_err(|e| format!("cannot run packer: {e}"))?;
-    if code != 0 {
-        return Err(format!("packer init failed with exit code {code}"));
-    }
+    let extra_path = iso_tool_dir
+        .as_deref()
+        .map(|dir| path_with(dir, std::env::var("PATH").ok().as_deref()));
+
+    init_plugins(
+        runner,
+        &plan,
+        extra_path.as_deref(),
+        INIT_ATTEMPTS,
+        INIT_RETRY_DELAY,
+    )?;
 
     let mut vars = plan.vars.clone();
     vars.push(("ssh_public_key".to_owned(), public_key));
-    let build = Cmd::new("packer")
+    let mut build = Cmd::new("packer")
         .args(
             BuildPlan {
                 vars,
@@ -272,6 +379,9 @@ pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
             .build_args(),
         )
         .env("PACKER_CACHE_DIR", plan.cache_dir.to_string_lossy());
+    if let Some(path) = &extra_path {
+        build = build.env("PATH", path);
+    }
     let code = runner
         .stream(&build)
         .map_err(|e| format!("cannot run packer: {e}"))?;
@@ -400,6 +510,57 @@ mod tests {
 
     fn store() -> Store {
         Store::new("/srv/vm")
+    }
+
+    #[test]
+    fn a_failing_init_is_retried_and_then_explained() {
+        use crate::runner::CommandOutput;
+        use crate::runner::fake::FakeRunner;
+
+        let plan = plan(&store(), Target::Linux, "kvm", None);
+        let runner = FakeRunner::new().on("packer init", CommandOutput::failed(1, "dial tcp"));
+        let error = init_plugins(&runner, &plan, None, 3, Duration::ZERO)
+            .expect_err("every attempt failed");
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|call| call.contains("packer init"))
+                .count(),
+            3,
+            "{:?}",
+            runner.calls()
+        );
+        // The bare exit code is what sent someone hunting for a Packer bug.
+        assert!(error.contains("firewall"), "{error}");
+        assert!(error.contains("HTTP_PROXY"), "{error}");
+        assert!(error.contains("3 attempts"), "{error}");
+        assert!(error.contains("safe"), "{error}");
+
+        let good = FakeRunner::new().on("packer init", CommandOutput::ok(""));
+        assert!(init_plugins(&good, &plan, None, 3, Duration::ZERO).is_ok());
+        assert_eq!(
+            good.calls()
+                .iter()
+                .filter(|call| call.contains("packer init"))
+                .count(),
+            1,
+            "a working init is not retried"
+        );
+    }
+
+    #[test]
+    fn a_tool_off_path_is_handed_to_packer_through_path() {
+        let dir = Path::new("/opt/oscdimg");
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        assert_eq!(
+            path_with(dir, Some("/usr/bin")),
+            format!("{}{separator}/usr/bin", dir.display())
+        );
+        // An empty or absent PATH must not produce a leading separator, which
+        // some shells read as "the current directory".
+        assert_eq!(path_with(dir, Some("")), dir.display().to_string());
+        assert_eq!(path_with(dir, None), dir.display().to_string());
     }
 
     #[test]

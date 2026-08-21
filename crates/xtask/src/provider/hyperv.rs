@@ -182,8 +182,8 @@ pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32
 ///
 /// Hedged deliberately. Remote Desktop Services running in a guest nobody handed
 /// over has more than one cause: a golden image built before the one that
-/// disables the service, which is the common one and is true of every image on
-/// this host today; a hand-over that started the service and then failed before
+/// disables the service, which is the usual one and the reason this text exists
+/// at all; a hand-over that started the service and then failed before
 /// the guest confirmed it, which leaves the service running and the record
 /// saying otherwise; and a guest that is still being installed, which has no
 /// golden image behind it at all and whose reader is already running the command

@@ -59,3 +59,11 @@ All eleven were fixed; nothing was declined. Four commits on `feat/phase3-vm-orc
 9. Fixed. The enhanced session's clipboard is stated as a clipboard in both the printed text and the guide; the redirection setting stays on, since a guest handed to a person is the one place it is wanted.
 10. Fixed. The comment in `ci.yml` gives the reason that still applies.
 11. Fixed. The sentence parses.
+
+### Round 2
+
+Validator over `be95772..051eddd` with fresh context, gates all green (run by the validator, clippy re-verified uncached). Verdict: 0 majors, 5 minors. All eleven round 1 findings verified fixed in the code, nothing cosmetically closed; both departures judged sound, with departure 1 rated strictly better than the fix round 1 named, since assigning `Keep` alone would have promised an enhanced session after a failed hand-over. Of the fixer's flagged open items, the unbumped `STATE_VERSION` and the text-only stale-image coverage were judged acceptable and are not findings. The five minors: (A) `commands::vm::view_note`'s basic-session text lost the stale-image caveat its `hyperv` sibling gained, so `vm smoke --keep` on a stale image says "nothing to type" about a console that will ask; (B) the stale-image sentence is unconditional and single-cause, so it misdiagnoses a build guest and a half-completed hand-over; (C) `Prepared.staged` means staging ran, not that the shortcuts arrived, so a failed `handover::prepare` still yields closing text naming them; (D) `hand_over` records `handed_over: true` for a Linux guest, wrong under the `SUNLIT_EARTH_VM_PROVIDER=hyperv` override; (E) `windows_media`'s downloader does not say at the site why it skips `resolve_tool`, which CLAUDE.md claims both bare-`PATH` lookups do. Disposition below.
+
+#### Round 2 disposition
+
+Recorded by the round 2 fixer.

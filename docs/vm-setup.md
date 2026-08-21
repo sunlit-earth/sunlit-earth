@@ -63,20 +63,22 @@ A Windows guest's desktop has two shortcuts on it, written per boot by whatever 
 - `Sunlit Earth` starts the app through `C:\sunlit-e2e\run-app.cmd`, which sets `SLINT_BACKEND=winit-software` and, when the textures were staged, `SUNLIT_EARTH_TEXTURES`. That is the same backend the generated job sets and for the same reason: the guest has no OpenGL, and the app started without it dies before its window appears. The launcher keeps its console window, so the app's log is on screen while it runs.
 - `sunlit-e2e` opens the directory the binaries, fixtures and results are in.
 
-A Windows guest offers one of two consoles, and which one depends on why it was started.
+A Windows guest offers one of two consoles, and which one depends on whether it was handed over. `vm up` and `e2e --keep` hand a guest over and record that they did; nothing else does, so `vm smoke --keep` leaves a guest with the second kind of console and an empty desktop, and says so.
 
 **A guest handed to you**, by `vm up` or by `e2e --keep`, offers an enhanced session. That is the only one that can be resized: drag the window and the guest's desktop follows it. It is RDP underneath, so `vmconnect` asks for credentials, and the hand-over makes that a dialog to dismiss rather than fill in. It blanks the `tester` account's password, clears the LSA policy that otherwise confines a blank-password account to the physical console, and starts Remote Desktop Services. So: username `tester`, password field empty, connect. Nothing is weakened that was not already public: the password was in `Autounattend.xml` in plain text, and the guest is reachable from its own host and nowhere else.
 
-The display-configuration dialog in front of that is answered for you. `vmconnect` files those settings per VM identifier, and every `vm up` creates a VM with a new one, so ticking "save my settings for future connections to this virtual machine" lasts exactly until the next boot. `vm view` writes the file itself before starting `vmconnect`, with the same size the console would have had, and deletes the ones earlier guests of ours left behind.
+The display-configuration dialog in front of that is answered for you. `vmconnect` files those settings per VM identifier, and every `vm up` creates a VM with a new one, so ticking "save my settings for future connections to this virtual machine" lasts exactly until the next boot. `vm view` writes the file itself before starting `vmconnect`, with the same size the console would have had, and deletes the ones earlier guests of ours left behind; taking a guest down deletes its own, since the identifier it is filed under means nothing once the VM is gone.
 
-**A guest with a run in it** offers no enhanced session at all, and `vmconnect` opens a basic session that asks for nothing. That is deliberate rather than an oversight: connecting over RDP moves the console session into the RDP one, and the console session is where the windowed tests keep their desktop. The golden image ships with Remote Desktop Services disabled for exactly this reason, and only a hand-over turns it on.
+**A guest nobody handed over**, which includes every guest with a run in it, offers no enhanced session at all, and `vmconnect` opens a basic session that asks for nothing. That is deliberate rather than an oversight: connecting over RDP moves the console session into the RDP one, and the console session is where the windowed tests keep their desktop. The golden image ships with Remote Desktop Services disabled for exactly this reason, and only a hand-over turns it on.
+
+An image built before that change still has the service enabled, and a stale image only warns at boot rather than refusing to run. So if `vmconnect` does present a credential dialog for a guest with a run in it, that is what has happened: cancel it rather than signing in, for the reason above, and `cargo xtask vm build-image windows` brings the image up to date.
 
 A basic session shows the framebuffer as it is, so its window is the guest's resolution and cannot be dragged. The resolution is therefore chosen before the guest boots and reported on the line that creates it: the largest of 1024x768, 1280x800, 1440x900, 1600x900, 1680x1050 and 1920x1080 that fits this host's screen with room for the window's own frame. `SUNLIT_EARTH_VM_RESOLUTION=2560x1440` asks for something specific, including sizes larger than any on that list, which the guest's synthetic adapter honors. Changing it means taking the guest down and bringing it up again, because `Set-VMVideo` refuses to run against a VM that is on; and the guest is given exactly the one mode, so its own display settings offer nothing else to pick.
 
 Two more things either way:
 
 - Watching a run is harmless. Clicking, typing, or moving the mouse during one perturbs the tests, which is the whole point of them having a desktop to themselves.
-- Neither console carries clipboard integration worth the name. Text and files go in through `vm ssh` and `scp`.
+- A basic session carries no clipboard, and neither does the VNC console of a Linux guest. An enhanced session is RDP, so it does: text can be pasted straight into a guest that was handed over. Files go in through `vm ssh` and `scp` either way.
 
 ## The Windows evaluation expires
 

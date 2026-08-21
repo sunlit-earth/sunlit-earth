@@ -10,8 +10,8 @@ name: CI
 on:
   workflow_dispatch:
 
-# Read-only. Nothing here writes to the repository, and a workflow that runs on
-# every pull request should not be able to.
+# Read-only. Nothing here writes to the repository, so nothing here needs to be
+# able to; `release.yml` is the one workflow that does, and it asks for itself.
 permissions:
   contents: read
 

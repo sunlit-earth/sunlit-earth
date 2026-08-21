@@ -343,6 +343,9 @@ impl CloudUpdater {
         self.mailbox.post(DecodedTextureMessage {
             slot_index: self.slot,
             result: Ok(img),
+            // The cloud overlay is not governed by the texture resolution, so
+            // no generation of it can be stale.
+            generation: None,
         });
         (self.notify)();
     }

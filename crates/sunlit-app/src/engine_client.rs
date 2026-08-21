@@ -39,6 +39,10 @@ pub struct EngineLink {
     tx: Sender<EngineCommand>,
     aa_labels: Arc<Vec<String>>,
     aa_counts: Arc<Vec<u32>>,
+    /// Whether the texture resolution the window shows came from
+    /// `--texture-resolution` rather than from the user or the stored config.
+    /// Shared by every callback that holds a clone of this link.
+    resolution_from_cli: Arc<AtomicBool>,
 }
 
 impl EngineLink {
@@ -47,7 +51,24 @@ impl EngineLink {
             tx,
             aa_labels: Arc::new(aa_labels),
             aa_counts: Arc::new(aa_counts),
+            resolution_from_cli: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Whether a save should leave the stored texture resolution alone.
+    ///
+    /// A `--texture-resolution` override has to reach the window, or the window
+    /// claims a width the engine is not using. It must not reach the config
+    /// file, because the flag is for one run. So while the window's width is
+    /// the flag's, a save keeps what is on disk; the moment the width becomes
+    /// the user's, through the combo box, a reset, or load-defaults, this
+    /// clears and saves behave normally again.
+    pub fn resolution_is_one_run_only(&self) -> bool {
+        self.resolution_from_cli.load(Ordering::Relaxed)
+    }
+
+    pub fn set_resolution_is_one_run_only(&self, value: bool) {
+        self.resolution_from_cli.store(value, Ordering::Relaxed);
     }
 
     pub fn aa_labels(&self) -> &[String] {

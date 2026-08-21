@@ -74,6 +74,12 @@ pub enum EngineCommand {
         height: u32,
         reply: Sender<Result<Vec<u8>, String>>,
     },
+    /// Reload the file-backed textures at a different width.
+    ///
+    /// Not part of `UpdateParams`: the width does not describe what to draw, it
+    /// decides which pixels to load, and acting on it means freeing GPU
+    /// textures and re-reading files, which a parameter push cannot express.
+    SetTextureResolution(u32),
     /// Turn the unattended wallpaper refresh on or off.
     SetAutoRefresh { enabled: bool, interval: Duration },
     /// Re-evaluate the schedule now. Tests send this after advancing a mock
@@ -91,7 +97,9 @@ pub enum EngineEvent {
         width: u32,
         height: u32,
     },
-    /// Every texture the current mode needs has finished loading. Fires once.
+    /// Every texture the current mode needs has finished loading. Fires once
+    /// per set of textures, so again after a resolution change has reloaded
+    /// them.
     TexturesReady,
     /// A wallpaper publish attempt finished.
     WallpaperSet(Result<(), String>),
@@ -604,6 +612,16 @@ impl Engine {
             } => {
                 self.prepare_export();
                 let _ = reply.send(self.renderer.export_image(width, height));
+            }
+            EngineCommand::SetTextureResolution(width) => {
+                if self.renderer.set_texture_resolution(width) {
+                    info!(texture_resolution = width, "surface texture resolution");
+                    // The textures the current mode needs are gone until the
+                    // reload lands, so the readiness latch has to reopen or
+                    // clients would never hear about the new ones.
+                    self.textures_ready = false;
+                    self.dirty = true;
+                }
             }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
                 let now = self.clock.elapsed();

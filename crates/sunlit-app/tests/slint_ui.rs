@@ -383,6 +383,7 @@ fn test_save_reads_the_texture_resolution_from_its_combo_box() {
             &window,
             &[1, 2, 4, 8],
             &stored,
+            false,
         );
         assert_eq!(
             saved.texture_resolution, *width,
@@ -392,9 +393,84 @@ fn test_save_reads_the_texture_resolution_from_its_combo_box() {
 
     // An index the model does not have must not write a width nothing offers.
     window.set_texture_resolution_index(99);
-    let saved =
-        sunlit_earth::ui_callbacks::read_config_from_window_onto(&window, &[1, 2, 4, 8], &stored);
+    let saved = sunlit_earth::ui_callbacks::read_config_from_window_onto(
+        &window,
+        &[1, 2, 4, 8],
+        &stored,
+        false,
+    );
     assert_eq!(saved.texture_resolution, config::DEFAULT_TEXTURE_RESOLUTION);
+}
+
+/// The one-run resolution flag is cleared by the combo box's own callback, so
+/// it matters that setting the index from Rust is not a selection: startup,
+/// reset, and load-defaults all set it that way, and any of them clearing the
+/// flag would put a `--texture-resolution` override back into the config file.
+#[test]
+fn test_setting_a_combo_index_is_not_a_selection() {
+    let window = create_window();
+
+    let fired = Rc::new(RefCell::new(0));
+    let counter = Rc::clone(&fired);
+    window.on_texture_resolution_changed(move || *counter.borrow_mut() += 1);
+    let counter = Rc::clone(&fired);
+    window.on_texture_changed(move || *counter.borrow_mut() += 1);
+    let counter = Rc::clone(&fired);
+    window.on_msaa_changed(move || *counter.borrow_mut() += 1);
+
+    window.set_texture_resolution_index(2);
+    window.set_texture_index(1);
+    window.set_aa_index(0);
+    // Force the bindings to be evaluated rather than left pending.
+    let _ = ElementHandle::find_by_accessible_label(&window, "Europe").count();
+
+    assert_eq!(window.get_texture_resolution_index(), 2);
+    assert_eq!(
+        *fired.borrow(),
+        0,
+        "a combo box index set from Rust must not report a user selection"
+    );
+}
+
+/// `--texture-resolution` is shown in the window, so that the window is not
+/// claiming a width the engine is not using, but it is a one-run flag and a
+/// save has to leave the stored width alone.
+#[test]
+fn test_save_keeps_the_stored_resolution_while_the_cli_owns_the_combo_box() {
+    use sunlit_core::config::{AppConfig, TEXTURE_RESOLUTIONS};
+
+    let window = create_window();
+    let stored = AppConfig {
+        texture_resolution: TEXTURE_RESOLUTIONS[0],
+        ..AppConfig::default()
+    };
+    // The window shows something else, as an override does.
+    window.set_texture_resolution_index(2);
+    window.set_camera_longitude(42.0);
+
+    let saved = sunlit_earth::ui_callbacks::read_config_from_window_onto(
+        &window,
+        &[1, 2, 4, 8],
+        &stored,
+        true,
+    );
+    assert_eq!(
+        saved.texture_resolution, TEXTURE_RESOLUTIONS[0],
+        "a one-run override must not be written to the config"
+    );
+    // Everything else still comes from the window.
+    assert!((saved.longitude - 42.0).abs() < f32::EPSILON);
+
+    let chosen = sunlit_earth::ui_callbacks::read_config_from_window_onto(
+        &window,
+        &[1, 2, 4, 8],
+        &stored,
+        false,
+    );
+    assert_eq!(
+        chosen.texture_resolution, TEXTURE_RESOLUTIONS[2],
+        "once the width is the user's, the window decides again"
+    );
 }
 
 /// `quality_tier` is the current example: it is persisted but has no control in
@@ -418,6 +494,7 @@ fn test_save_preserves_settings_without_a_widget() {
             &window,
             &[1, 2, 4, 8],
             &stored,
+            false,
         );
         assert_eq!(
             saved.quality_tier, tier,

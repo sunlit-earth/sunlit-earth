@@ -426,10 +426,7 @@ fn register_auto_refresh_callback(
             engine.send(EngineCommand::RenderWallpaperNow);
         }
 
-        config::save_config(&ui_callbacks::read_config_from_window(
-            &win,
-            engine.aa_counts(),
-        ));
+        config::save_config(&ui_callbacks::read_config_from_window(&win, &engine));
     });
 }
 
@@ -507,6 +504,8 @@ fn run_app(
     let (aa_labels, aa_counts, _) =
         renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
+    // The window is about to show the override, and a save must not write it.
+    link.set_resolution_is_one_run_only(cli.texture_resolution.is_some());
 
     init_ui(
         &window,

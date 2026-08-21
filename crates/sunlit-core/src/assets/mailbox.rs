@@ -11,6 +11,14 @@ use super::texture_loader;
 pub struct DecodedTextureMessage {
     pub slot_index: usize,
     pub result: Result<texture_loader::DecodedImage, String>,
+    /// The texture generation the decode was spawned in, for the slots the
+    /// resolution setting governs. A switch bumps the generation, so a decode of
+    /// the old width that is still running when the user changes it arrives
+    /// stamped with a generation the consumer no longer wants.
+    ///
+    /// `None` for a producer the resolution does not govern (the cloud
+    /// fetcher), whose posts are never stale.
+    pub generation: Option<u64>,
 }
 
 /// Latest-value mailbox carrying decoded textures from background threads to
@@ -77,6 +85,7 @@ mod tests {
                 width,
                 height: 1,
             }),
+            generation: None,
         }
     }
 

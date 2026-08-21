@@ -162,6 +162,19 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
             engine.push_params(&win);
         }
     });
+
+    // The resolution is the one control that does not go through `push_params`:
+    // it decides which pixels to load rather than what to draw.
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    window.on_texture_resolution_changed(move || {
+        if let Some(win) = window_weak.upgrade() {
+            engine.set_resolution_is_one_run_only(false);
+            engine.send(EngineCommand::SetTextureResolution(
+                config::texture_resolution_at(win.get_texture_resolution_index()),
+            ));
+        }
+    });
 }
 
 /// Register action callbacks: set wallpaper, load defaults, reset.
@@ -174,7 +187,7 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
             let Some(win) = window_weak.upgrade() else {
                 return;
             };
-            config::save_config(&read_config_from_window(&win, engine.aa_counts()));
+            config::save_config(&read_config_from_window(&win, &engine));
             engine.push_params(&win);
             engine.send(EngineCommand::RenderWallpaperNow);
         });
@@ -198,6 +211,10 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
             defaults.texture_index,
             config::find_texture_resolution_index(defaults.texture_resolution),
         );
+        engine.set_resolution_is_one_run_only(false);
+        engine.send(EngineCommand::SetTextureResolution(
+            defaults.texture_resolution,
+        ));
         engine.push_params(&win);
     });
 
@@ -219,6 +236,10 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
             loaded.texture_index,
             config::find_texture_resolution_index(loaded.texture_resolution),
         );
+        engine.set_resolution_is_one_run_only(false);
+        engine.send(EngineCommand::SetTextureResolution(
+            loaded.texture_resolution,
+        ));
         engine.push_params(&win);
     });
 }
@@ -380,27 +401,43 @@ pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
 /// what to preserve.
 ///
 /// Reading from disk also means a `--quality` override is not persisted, which
-/// is the intended behavior for a per-run flag.
+/// is the intended behavior for a per-run flag. `--texture-resolution` does
+/// have a widget, so keeping it out of the file takes the flag `link` carries.
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-pub fn read_config_from_window(window: &MainWindow, aa_counts: &[u32]) -> AppConfig {
-    read_config_from_window_onto(window, aa_counts, &config::load_config())
+pub fn read_config_from_window(window: &MainWindow, link: &EngineLink) -> AppConfig {
+    read_config_from_window_onto(
+        window,
+        link.aa_counts(),
+        &config::load_config(),
+        link.resolution_is_one_run_only(),
+    )
 }
 
 /// The testable half of [`read_config_from_window`]: overwrite the UI-managed
 /// fields of `stored` and leave everything else alone.
+///
+/// `keep_stored_resolution` is the one exception to reading the window: with it
+/// set, the width in the window is a one-run override and the stored one wins.
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window_onto(
     window: &MainWindow,
     aa_counts: &[u32],
     stored: &AppConfig,
+    keep_stored_resolution: bool,
 ) -> AppConfig {
     let pos = window.window().position();
     let size = window.window().size();
 
+    let texture_resolution = if keep_stored_resolution {
+        stored.texture_resolution
+    } else {
+        config::texture_resolution_at(window.get_texture_resolution_index())
+    };
+
     let mut config = AppConfig {
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
         auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
-        texture_resolution: config::texture_resolution_at(window.get_texture_resolution_index()),
+        texture_resolution,
         window_x: Some(pos.x),
         window_y: Some(pos.y),
         window_width: Some(size.width),

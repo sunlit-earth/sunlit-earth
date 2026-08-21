@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::assets::mailbox::DecodedTextureMessage;
 use crate::assets::{texture_cache, texture_loader};
@@ -9,6 +9,12 @@ use crate::assets::{texture_cache, texture_loader};
 pub(super) struct TextureSlot {
     /// The GPU bind group, populated on first use.
     pub bind_group: Option<wgpu::BindGroup>,
+    /// The texture the bind group samples.
+    ///
+    /// Held rather than let go of after its view is made, so that a resolution
+    /// switch can call `Texture::destroy` and release the allocation at a known
+    /// moment instead of whenever the last derived view happens to drop.
+    pub texture: Option<wgpu::Texture>,
     /// Filesystem path to the texture file (`None` for procedural textures).
     pub source_path: Option<PathBuf>,
     /// `true` while a background thread is decoding this slot's texture.
@@ -23,9 +29,18 @@ pub(super) struct TextureSlot {
 /// hasn't changed.
 pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
     let messages = res.texture_mailbox.take_all();
-    let received_any = !messages.is_empty();
-    res.texture_dirty |= received_any;
+    let mut applied_any = false;
     for msg in messages {
+        if !is_current(msg.generation, res.texture_generation) {
+            debug!(
+                slot = msg.slot_index,
+                generation = ?msg.generation,
+                current = res.texture_generation,
+                "discarding a decode from a superseded texture resolution"
+            );
+            continue;
+        }
+        applied_any = true;
         match msg.result {
             Ok(img) => {
                 let tex = create_mipmapped_texture(
@@ -53,8 +68,15 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                     &res.dummy_texture_view,
                     &format!("bind_group_slot_{}", msg.slot_index),
                 );
-                res.texture_slots[msg.slot_index].bind_group = Some(bind_group);
-                res.texture_slots[msg.slot_index].loading = false;
+                let slot = &mut res.texture_slots[msg.slot_index];
+                slot.bind_group = Some(bind_group);
+                slot.loading = false;
+                // Dropping the previous handle here, not destroying it: the
+                // bind group being replaced below may still reference it, and
+                // wgpu's own refcount frees it once nothing does. Destroying is
+                // for the purge, where the point is to release before the
+                // replacement is allocated.
+                slot.texture = Some(tex);
 
                 // Store texture views for composite/cloud bind group creation
                 if msg.slot_index == super::DAY_SLOT {
@@ -76,7 +98,57 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
             }
         }
     }
-    received_any
+    res.texture_dirty |= applied_any;
+    applied_any
+}
+
+/// Whether a decoded texture is still wanted.
+///
+/// A post with no generation is from a producer the resolution setting does not
+/// govern and is always current; one that carries a generation is wanted only
+/// while it is the generation in force.
+fn is_current(posted: Option<u64>, current: u64) -> bool {
+    posted.is_none_or(|g| g == current)
+}
+
+/// Free the textures of every file-backed slot and let them reload.
+///
+/// This is what makes a switch to a lower resolution actually lower the
+/// process's memory: the bind groups and views that reference the old textures
+/// are cleared first, so `Texture::destroy` has nothing left holding the
+/// allocation, and the reload allocates only after that. The same
+/// nil-before-recreate order as `gpu_setup::replace_render_textures`.
+///
+/// A slot is file-backed when it has a source path, which is exactly the slots
+/// the resolution governs: the grid is procedural and the cloud overlay arrives
+/// from the fetcher.
+///
+/// `last_rendered_index` goes back to the grid because it is the one slot that
+/// is always loaded, and `Renderer::render` treats it as a bind group that must
+/// be there. `last_state` is cleared so the next frame is drawn rather than
+/// skipped as unchanged.
+pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
+    res.composite_bind_group = None;
+    res.day_texture_view = None;
+    res.night_texture_view = None;
+    res.last_resolved = None;
+    res.last_state = None;
+    res.last_rendered_index = 0;
+
+    for slot in &mut res.texture_slots {
+        if slot.source_path.is_none() {
+            continue;
+        }
+        slot.bind_group = None;
+        // A decode of the old width may still be running. It is left to finish
+        // and post; the generation it carries is what gets it discarded, and
+        // clearing the flag is what lets the reload start now rather than
+        // waiting for it.
+        slot.loading = false;
+        if let Some(texture) = slot.texture.take() {
+            texture.destroy();
+        }
+    }
 }
 
 /// Create the composite bind group if both day and night texture views are available.
@@ -129,6 +201,7 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
     let notify = std::sync::Arc::clone(&res.notify);
     let target_width = res.texture_resolution;
     let cache_dir = res.texture_cache_dir.clone();
+    let generation = res.texture_generation;
 
     std::thread::spawn(move || {
         texture_loader::register_jxl_hook();
@@ -150,7 +223,11 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
             };
 
         // Park the result for the consumer to pick up, then wake it
-        mailbox.post(DecodedTextureMessage { slot_index, result });
+        mailbox.post(DecodedTextureMessage {
+            slot_index,
+            result,
+            generation: Some(generation),
+        });
         notify();
     });
 }
@@ -280,4 +357,39 @@ fn upload_mip(
             depth_or_array_layers: 1,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_post_from_the_generation_in_force_is_current() {
+        assert!(is_current(Some(0), 0));
+        assert!(is_current(Some(7), 7));
+    }
+
+    /// The whole point: a decode of the previous width finishing after the
+    /// switch must not land on top of its replacement.
+    #[test]
+    fn a_post_from_a_superseded_generation_is_not_current() {
+        assert!(!is_current(Some(0), 1));
+        assert!(!is_current(Some(3), 9));
+    }
+
+    /// A generation ahead of the current one cannot happen, but treating it as
+    /// stale is the safe reading of "not the generation in force".
+    #[test]
+    fn a_post_from_an_unknown_later_generation_is_not_current() {
+        assert!(!is_current(Some(2), 1));
+    }
+
+    /// The cloud fetcher posts without a generation, and its frames keep
+    /// arriving across as many resolution switches as the user makes.
+    #[test]
+    fn a_post_without_a_generation_is_always_current() {
+        for current in [0, 1, 42] {
+            assert!(is_current(None, current));
+        }
+    }
 }

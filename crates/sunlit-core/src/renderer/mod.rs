@@ -150,6 +150,10 @@ pub struct Renderer {
     texture_slots: Vec<TextureSlot>,
     /// Width the file-backed slots load at, as a cap.
     texture_resolution: u32,
+    /// Bumped on every resolution change, and stamped on each load it spawns,
+    /// so a decode that was already running when the width changed is
+    /// recognizable as something nobody asked for any more.
+    texture_generation: u64,
     /// Where downscaled copies of the file-backed textures are kept.
     texture_cache_dir: Option<PathBuf>,
     /// Index of the most recently successfully rendered texture slot.
@@ -244,6 +248,37 @@ impl Renderer {
         }
         debug!(width, height, "viewport size changed");
         rebuild_render_textures(self, width, height);
+    }
+
+    /// Load the file-backed textures at a different width.
+    ///
+    /// Returns whether anything changed. When it did, the textures in memory
+    /// are freed before the reload is spawned, so going down actually lowers
+    /// the process's footprint rather than adding to it; the caller is expected
+    /// to mark itself dirty, since the next frame falls back to the procedural
+    /// grid until the new textures arrive.
+    ///
+    /// Any width is accepted and acts as a cap. Which widths a user may choose
+    /// between is a question for the config and the combo box, not for the
+    /// renderer.
+    pub fn set_texture_resolution(&mut self, width: u32) -> bool {
+        if width == self.texture_resolution {
+            return false;
+        }
+        debug!(
+            from = self.texture_resolution,
+            to = width,
+            "texture resolution changed"
+        );
+        self.texture_resolution = width;
+        self.texture_generation += 1;
+        textures::purge_file_backed_slots(self);
+        true
+    }
+
+    /// The width the file-backed textures are loaded at.
+    pub fn texture_resolution(&self) -> u32 {
+        self.texture_resolution
     }
 
     /// Upload every decoded texture parked in the mailbox.

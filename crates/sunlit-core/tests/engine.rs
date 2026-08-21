@@ -87,6 +87,18 @@ impl Harness {
         panic!("no preview frame within {TIMEOUT:?}");
     }
 
+    /// Block until the textures the current mode needs are loaded, or panic on
+    /// timeout. Preview frames arriving in the meantime are discarded.
+    fn wait_for_textures(&self, what: &str) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if matches!(event, EngineEvent::TexturesReady) {
+                return;
+            }
+        }
+        panic!("{what}: no TexturesReady within {TIMEOUT:?}");
+    }
+
     /// Drain events already queued and report whether any frame was among them.
     fn drained_frame(&self, settle: Duration) -> Option<(u32, u32)> {
         std::thread::sleep(settle);
@@ -105,6 +117,55 @@ impl Harness {
 fn has_lit_pixels(rgba: &[u8]) -> bool {
     rgba.chunks_exact(4)
         .any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40)
+}
+
+/// Two small texture files and a cache directory to go with them.
+///
+/// The resolution tests need file-backed slots, which the headless config
+/// deliberately has none of. Small and bright rather than realistic: what is
+/// being tested is the purge and the reload, and an 8K asset would make every
+/// one of these tests a minute long.
+struct TextureFixtures {
+    dir: std::path::PathBuf,
+}
+
+impl TextureFixtures {
+    /// The width both files are written at. A switch below this halves for real
+    /// and exercises the on-disk cache; these are not one of the widths the
+    /// combo box offers, because the renderer takes any width as a cap and the
+    /// three on offer are the config's business.
+    const WIDTH: u32 = 128;
+
+    fn new(name: &str) -> Self {
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the fixture directory");
+        for file in ["day.png", "night.png"] {
+            let mut img = image::RgbaImage::new(Self::WIDTH, Self::WIDTH / 2);
+            for (x, y, px) in img.enumerate_pixels_mut() {
+                // Bright throughout, so a lit globe is lit whichever texture
+                // and blend the mode picks.
+                #[allow(clippy::cast_possible_truncation)]
+                let v = 160 + ((x + y) % 96) as u8;
+                *px = image::Rgba([v, v, v, 255]);
+            }
+            img.save(dir.join(file)).expect("write a fixture texture");
+        }
+        Self { dir }
+    }
+
+    fn paths(&self) -> Vec<Option<std::path::PathBuf>> {
+        vec![
+            Some(self.dir.join("day.png")),
+            Some(self.dir.join("night.png")),
+        ]
+    }
+}
+
+impl Drop for TextureFixtures {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 #[test]
@@ -432,6 +493,99 @@ fn an_unsupported_sample_count_arriving_later_still_renders() {
         })));
     let (rgba, _, _) = harness.next_frame();
     assert!(has_lit_pixels(&rgba));
+}
+
+/// Start an engine on the fixture textures in day/night blend mode, which is
+/// the mode that needs both file-backed slots and the composite bind group
+/// built from them.
+fn blend_harness(fixtures: &TextureFixtures, width: u32) -> Harness {
+    Harness::start(|config| {
+        config.texture_paths = fixtures.paths();
+        config.texture_resolution = width;
+        config.cache_dir = Some(fixtures.dir.clone());
+        config.params = SceneParams {
+            texture_index: 3,
+            ..test_params()
+        };
+    })
+}
+
+#[test]
+fn a_resolution_switch_reloads_the_textures_in_both_directions() {
+    let fixtures = TextureFixtures::new("engine_resolution_switch");
+    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
+    harness.wait_for_textures("at startup");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(
+        has_lit_pixels(&rgba),
+        "the globe should be visible at first"
+    );
+
+    // Down: the textures in memory are destroyed and the halved ones loaded.
+    harness.engine.send(EngineCommand::SetTextureResolution(
+        TextureFixtures::WIDTH / 2,
+    ));
+    harness.wait_for_textures("after switching down");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(
+        has_lit_pixels(&rgba),
+        "a frame after the switch must come from the new textures, not from nothing"
+    );
+
+    // Up again: the same path in reverse, which is the one that would break if
+    // the purge left a destroyed texture behind in a bind group.
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(TextureFixtures::WIDTH));
+    harness.wait_for_textures("after switching back up");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(has_lit_pixels(&rgba));
+}
+
+/// The switch is idempotent, so a client that re-sends the current width (the
+/// reset and load-defaults callbacks both do) costs nothing.
+#[test]
+fn a_switch_to_the_current_resolution_does_nothing() {
+    let fixtures = TextureFixtures::new("engine_resolution_noop");
+    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
+    harness.wait_for_textures("at startup");
+    harness.next_frame();
+    harness.drained_frame(Duration::from_millis(300));
+
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(TextureFixtures::WIDTH));
+    assert!(
+        harness.drained_frame(Duration::from_millis(500)).is_none(),
+        "a switch to the width already in force must not re-render"
+    );
+}
+
+/// Every switch leaves a decode of the previous width running. The generation
+/// stamp is what keeps one of those from landing on top of its replacement, and
+/// what the engine has to survive is several of them at once.
+#[test]
+fn switches_in_quick_succession_end_on_the_last_one() {
+    let fixtures = TextureFixtures::new("engine_resolution_races");
+    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
+    harness.wait_for_textures("at startup");
+
+    for width in [
+        TextureFixtures::WIDTH / 2,
+        TextureFixtures::WIDTH,
+        TextureFixtures::WIDTH / 4,
+    ] {
+        harness
+            .engine
+            .send(EngineCommand::SetTextureResolution(width));
+    }
+
+    harness.wait_for_textures("after three switches in a row");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(
+        has_lit_pixels(&rgba),
+        "the last switch must be the one that is showing"
+    );
 }
 
 #[test]

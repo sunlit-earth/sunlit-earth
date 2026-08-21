@@ -178,12 +178,14 @@ pub(super) fn create_renderer(
     // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from paths
     let mut texture_slots = vec![TextureSlot {
         bind_group: Some(grid_bind_group),
+        texture: Some(grid_tex),
         source_path: None,
         loading: false,
     }];
     for path in &texture_paths {
         texture_slots.push(TextureSlot {
             bind_group: None,
+            texture: None,
             source_path: path.clone(),
             loading: false,
         });
@@ -191,6 +193,7 @@ pub(super) fn create_renderer(
     // Slot 3 = cloud overlay (populated by the cloud fetcher thread, not file-based)
     texture_slots.push(TextureSlot {
         bind_group: None,
+        texture: None,
         source_path: None,
         loading: false,
     });
@@ -236,6 +239,7 @@ pub(super) fn create_renderer(
         sampler,
         texture_slots,
         texture_resolution,
+        texture_generation: 0,
         texture_cache_dir,
         last_rendered_index: 0,
         depth_texture,

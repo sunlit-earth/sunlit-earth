@@ -401,6 +401,9 @@ struct Engine {
     /// request changes rather than on every slider tick.
     requested_sample_count: u32,
     preview: PreviewState,
+    /// A wallpaper update was asked for while a texture was still on its way,
+    /// and happens as soon as it arrives.
+    wallpaper_owed: bool,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -530,6 +533,7 @@ impl Engine {
                 enabled: preview_enabled,
                 owed: false,
             },
+            wallpaper_owed: false,
             dirty: true,
             textures_ready: false,
             last_status: String::new(),
@@ -713,6 +717,13 @@ impl Engine {
             // If no frame exists yet the debt stands: the first render will
             // pay it.
         }
+
+        // After the render, so that a publish held back by a reload goes out on
+        // the tick the reload lands and in the order the events describe: the
+        // textures became ready, and then the wallpaper was set from them.
+        if self.wallpaper_owed {
+            self.publish_wallpaper();
+        }
     }
 
     /// Replace the requested MSAA count with one the adapter and the tier both
@@ -789,7 +800,29 @@ impl Engine {
     }
 
     /// Render at the sink's native resolution and hand the pixels over.
+    ///
+    /// Held back while a texture the current mode needs is on its way. The
+    /// renderer falls back to the procedural grid while a slot is empty, which
+    /// is fine for a preview and not fine for someone's desktop, and a
+    /// resolution switch empties one for as long as the reload takes. Every
+    /// caller that publishes arrives here, so this covers all of them: the "Set
+    /// as Wallpaper" button, the tray's "Refresh Now", the IPC `set-wallpaper`
+    /// command, and the auto-refresh schedule. `RenderToFile` and
+    /// `ExportPixels` are deliberately not covered; they answer a caller
+    /// holding a reply channel, which decides for itself what it will wait for.
+    ///
+    /// One request is remembered, not a queue of them: two wallpaper updates
+    /// asked for during one reload are the same wallpaper.
     fn publish_wallpaper(&mut self) {
+        if self.renderer.textures_pending(self.params.texture_index) {
+            if !self.wallpaper_owed {
+                info!("wallpaper update deferred until the textures have loaded");
+            }
+            self.wallpaper_owed = true;
+            return;
+        }
+        self.wallpaper_owed = false;
+
         let result = self
             .render_wallpaper_pixels()
             .and_then(|(pixels, w, h)| self.wallpaper.publish(&pixels, w, h));

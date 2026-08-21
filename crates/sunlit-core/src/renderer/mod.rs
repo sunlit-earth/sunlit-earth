@@ -314,6 +314,29 @@ impl Renderer {
         slot.bind_group.is_some() && !slot.loading
     }
 
+    /// Whether a texture the current mode needs is still on its way.
+    ///
+    /// True from the moment a resolution switch purges a slot until its reload
+    /// lands, and from startup until the first load does. Deliberately not the
+    /// negation of `textures_ready`: a slot with no file behind it, and one
+    /// whose decode failed and had its path cleared, are both terminal states
+    /// where nothing further is coming, so there is nothing to wait for. The
+    /// question this answers is "will this get better on its own", which is the
+    /// only sound reason to hold something back.
+    pub fn textures_pending(&self, texture_index: i32) -> bool {
+        let raw_index = slot_of(texture_index);
+        if raw_index == BLEND_MODE_INDEX {
+            self.slot_pending(DAY_SLOT) || self.slot_pending(NIGHT_SLOT)
+        } else {
+            self.slot_pending(raw_index.min(self.texture_slots.len().saturating_sub(1)))
+        }
+    }
+
+    fn slot_pending(&self, slot: usize) -> bool {
+        let slot = &self.texture_slots[slot];
+        slot.source_path.is_some() && slot.bind_group.is_none()
+    }
+
     /// Overwrite the sun direction the export path will use.
     ///
     /// The scheduler calls this before an unattended wallpaper export so the

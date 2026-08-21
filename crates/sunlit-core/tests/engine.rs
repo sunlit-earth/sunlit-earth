@@ -693,6 +693,64 @@ fn a_stale_decode_arriving_after_a_switch_is_never_applied() {
     assert!(has_lit_pixels(&rgba));
 }
 
+/// A wallpaper update asked for during a reload waits for the reload.
+///
+/// The purge leaves the renderer on the procedural grid until the new textures
+/// arrive, and "change the resolution, then click Set as Wallpaper" is a natural
+/// sequence, so without the hold-back the grid is what lands on the desktop.
+/// Asserted on the order of the engine's own events, which is the only place the
+/// distinction shows: a publish from the grid would be reported before the
+/// textures were ready rather than after.
+#[test]
+fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
+    let fixtures = TextureFixtures::new("engine_resolution_wallpaper");
+    let sink = Arc::new(CountingSink::new(64, 32));
+    let published = Arc::clone(&sink);
+    let harness = Harness::start(|config| {
+        config.texture_paths = fixtures.paths();
+        config.texture_resolution = TextureFixtures::WIDTH;
+        config.cache_dir = Some(fixtures.dir.clone());
+        config.wallpaper = published;
+        config.params = SceneParams {
+            texture_index: 3,
+            ..test_params()
+        };
+    });
+    harness.wait_for_textures("at startup");
+    harness.drained_frame(Duration::from_millis(300));
+    assert_eq!(sink.count(), 0, "nothing has asked for a wallpaper yet");
+
+    // Both commands are handled before the engine ticks, so the purge has
+    // already emptied the slots when the publish is asked for.
+    harness.engine.send(EngineCommand::SetTextureResolution(
+        TextureFixtures::WIDTH / 2,
+    ));
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut ready_first = None;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        match event {
+            EngineEvent::TexturesReady => {
+                ready_first.get_or_insert(true);
+            }
+            EngineEvent::WallpaperSet(result) => {
+                assert!(result.is_ok(), "the publish should have succeeded");
+                assert_eq!(
+                    ready_first,
+                    Some(true),
+                    "the wallpaper was published before the textures were loaded, \
+                     which means it was published from the procedural grid"
+                );
+                assert_eq!(sink.count(), 1, "exactly one frame should be published");
+                return;
+            }
+            _ => {}
+        }
+    }
+    panic!("no wallpaper result within {TIMEOUT:?}");
+}
+
 /// Whether `memory::snapshot` has an implementation for this platform.
 ///
 /// Mirrors the cfg on `memory::snapshot` itself, and the same helper in the

@@ -8,7 +8,7 @@
 //! hypervisor owns the VM, the guest gets an address from the Default Switch,
 //! and both liveness and reachability are questions to ask the hypervisor.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::guest::ssh::SshTarget;
@@ -265,6 +265,105 @@ pub fn state_script(name: &str) -> String {
     query_script(name, "if ($vm) { Write-Output \"STATE=$($vm.State)\" }\n")
 }
 
+/// The script that reports the VM's own identifier.
+///
+/// Which is what `vmconnect` files its per-VM settings under, and every `vm up`
+/// creates a VM with a new one.
+pub fn id_script(name: &str) -> String {
+    query_script(name, "if ($vm) { Write-Output \"ID=$($vm.Id)\" }\n")
+}
+
+/// Read the `ID=` line out of that script's output.
+pub fn parse_id(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ID="))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+/// Where `vmconnect` keeps its settings for one VM.
+///
+/// A .NET settings document per VM identifier, in the roaming profile beside
+/// `vmconnect.config`. Found by watching what the connection dialog's "save my
+/// settings for future connections to this virtual machine" checkbox wrote; the
+/// name is upper case there, and the identifier in it is the VM's own, so a
+/// guest recreated under the same name gets a new one and is asked again.
+pub fn vmconnect_settings_path(app_data: &Path, vm_id: &str) -> PathBuf {
+    app_data
+        .join("Microsoft")
+        .join("Windows")
+        .join("Hyper-V")
+        .join("Client")
+        .join("1.0")
+        .join(format!("vmconnect.rdp.{}.config", vm_id.to_uppercase()))
+}
+
+/// Those settings, with the dialog already answered.
+///
+/// `SavedConfigExists` and `SaveButtonChecked` are the two that matter: with
+/// them the dialog does not open, and `vmconnect` goes straight to the session.
+/// Everything else is what the checkbox itself saves, kept as it writes it,
+/// except the desktop size, which is the same size the basic session's console
+/// gets. It is only the starting size in an enhanced session, since dragging the
+/// window changes it, and starting at the size that fits this screen is better
+/// than starting at whatever was last on the dialog's slider.
+///
+/// A whole file rather than an edit: it is written before every connection, for
+/// an identifier that did not exist until this guest booted, so there is never
+/// an existing one of ours to preserve.
+pub fn vmconnect_settings(vm_name: &str, server: &str, (width, height): (u32, u32)) -> String {
+    let setting = |name: &str, kind: &str, value: &str| {
+        format!(
+            "        <setting name=\"{name}\" type=\"{kind}\">\n            \
+             <value>{value}</value>\n        </setting>\n"
+        )
+    };
+    let bool_setting = |name: &str, value: bool| {
+        setting(name, "System.Boolean", if value { "True" } else { "False" })
+    };
+    let string_setting = |name: &str, value: &str| setting(name, "System.String", value);
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <configuration>\n    \
+         <Microsoft.Virtualization.Client.RdpOptions>\n\
+         {saved}{save_button}{size}{name}{host}\
+         {clipboard}{printer}{enable_printer}{smartcards}{webauthn}\
+         {audio_capture}{audio_playback}{full_screen}{all_monitors}\
+         {drives}{usb}{pnp}    \
+         </Microsoft.Virtualization.Client.RdpOptions>\n\
+         </configuration>",
+        saved = bool_setting("SavedConfigExists", true),
+        save_button = bool_setting("SaveButtonChecked", true),
+        size = setting(
+            "DesktopSize",
+            "System.Drawing.Size",
+            &format!("{width}, {height}")
+        ),
+        name = string_setting("VmName", vm_name),
+        host = string_setting("VmServerName", server),
+        clipboard = bool_setting("ClipboardRedirection", true),
+        printer = bool_setting("PrinterRedirection", true),
+        enable_printer = bool_setting("EnablePrinterRedirection", true),
+        smartcards = bool_setting("SmartCardsRedirection", true),
+        webauthn = bool_setting("WebAuthnRedirection", true),
+        audio_capture = bool_setting("AudioCaptureRedirectionMode", false),
+        audio_playback = setting(
+            "AudioPlaybackRedirectionMode",
+            "Microsoft.Virtualization.Client.RdpOptions+AudioPlaybackRedirectionType",
+            "AUDIO_MODE_REDIRECT"
+        ),
+        full_screen = bool_setting("FullScreen", false),
+        all_monitors = bool_setting("UseAllMonitors", false),
+        // Empty, as the dialog leaves them: nothing of the host's is shared
+        // with a guest that exists to be thrown away.
+        drives = string_setting("RedirectedDrives", ""),
+        usb = string_setting("RedirectedUsbDevices", ""),
+        pnp = string_setting("RedirectedPnpDevices", ""),
+    )
+}
+
 /// The script that reports the guest's addresses.
 ///
 /// `Get-VMNetworkAdapter` reads them out of the integration services, which
@@ -425,6 +524,96 @@ impl<'a> HypervProvider<'a> {
         (width, height)
     }
 
+    /// Write `vmconnect`'s settings for this guest, so its connection dialog
+    /// does not open.
+    ///
+    /// The dialog asks which resolution to use and whether to share local
+    /// devices. Neither question has an interesting answer for a guest that will
+    /// be discarded, and the checkbox that remembers them is filed under the
+    /// VM's identifier, which is new every time one boots: answering it by hand
+    /// lasts exactly until the next `vm up`. So the file is written before
+    /// `vmconnect` starts.
+    ///
+    /// Best effort throughout. Every failure in here costs one dialog, so a
+    /// missing `%APPDATA%`, a VM that cannot be found, or an unwritable
+    /// directory are all reasons to carry on quietly rather than to refuse to
+    /// open a console.
+    fn answer_connection_dialog(&self, state: &RunState) {
+        let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) else {
+            return;
+        };
+        let Ok(out) = self.run_script(&id_script(&state.vm_name)) else {
+            return;
+        };
+        let Some(id) = parse_id(&out) else {
+            return;
+        };
+        let path = vmconnect_settings_path(&app_data, &id);
+        if let Some(dir) = path.parent()
+            && std::fs::create_dir_all(dir).is_err()
+        {
+            return;
+        }
+        let server = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_owned());
+        let settings = vmconnect_settings(&state.vm_name, &server, self.console_size_quietly());
+        let _ = std::fs::write(&path, settings);
+        Self::sweep_stale_settings(&app_data, &path, &state.vm_name);
+    }
+
+    /// Delete the settings files left behind by our own earlier guests.
+    ///
+    /// One file per boot, two kilobytes each, in a directory that is the user's
+    /// rather than ours: small, but litter of a kind nothing else would ever
+    /// clean up, since the VM it was named after no longer exists. Only files
+    /// naming this VM name are touched, and only ones that are not the file just
+    /// written, so another VM's settings are never in scope.
+    fn sweep_stale_settings(app_data: &Path, keep: &Path, vm_name: &str) {
+        let Some(dir) = keep.parent() else {
+            return;
+        };
+        debug_assert!(dir.starts_with(app_data));
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == keep
+                || !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("vmconnect.rdp.") && name.ends_with(".config")
+                    })
+            {
+                continue;
+            }
+            // The file says which VM it belongs to, and that is the only thing
+            // that makes it ours to delete.
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains(&format!("<value>{vm_name}</value>")) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// The console size, without repeating the line that explains it.
+    ///
+    /// `view` runs long after the guest was created, so the choice has already
+    /// been made and printed once; saying it again would suggest something had
+    /// changed.
+    fn console_size_quietly(&self) -> (u32, u32) {
+        let requested = crate::util::env_var(RESOLUTION_ENV).and_then(|raw| parse_resolution(&raw));
+        let area = self
+            .runner
+            .capture(&powershell(&work_area_script()))
+            .ok()
+            .filter(crate::runner::CommandOutput::success)
+            .and_then(|out| parse_work_area(&out.stdout));
+        console_resolution(requested, area)
+    }
+
     /// Poll until the guest reports a usable address.
     fn wait_for_address(&self, name: &str, timeout: Duration) -> Result<String, String> {
         let start = Instant::now();
@@ -559,6 +748,12 @@ impl crate::provider::Provider for HypervProvider<'_> {
     fn view(&self, state: &RunState) -> Result<String, String> {
         let viewer = crate::host::facts::resolve_tool(self.runner, "vmconnect", self.host)
             .unwrap_or_else(|| PathBuf::from("vmconnect.exe"));
+        // Only where an enhanced session is on offer, because the dialog this
+        // answers is the enhanced one: a guest with a run in it has no such
+        // session and is never asked.
+        if matches!(state.reason, StartReason::Up | StartReason::Keep) {
+            self.answer_connection_dialog(state);
+        }
         self.runner
             .spawn(
                 &Cmd::new(viewer.to_string_lossy())
@@ -601,6 +796,75 @@ mod tests {
         );
         // Nothing in here may write to the golden image.
         assert!(!script.contains("Set-VHD"), "{script}");
+    }
+
+    /// The two settings that close the connection dialog, and the shape the file
+    /// has to have for `vmconnect` to read it at all.
+    #[test]
+    fn the_saved_connection_settings_answer_the_dialog() {
+        let text = vmconnect_settings("sunlit-e2e-windows", "AORUS", (1920, 1080));
+        assert!(text.starts_with("<?xml version="), "{text}");
+        assert!(
+            text.contains("<Microsoft.Virtualization.Client.RdpOptions>"),
+            "{text}"
+        );
+        for name in ["SavedConfigExists", "SaveButtonChecked"] {
+            let setting = format!("<setting name=\"{name}\" type=\"System.Boolean\">");
+            let at = text.find(&setting).expect("the setting is there");
+            assert!(
+                text[at..].starts_with(&format!("{setting}\n            <value>True</value>")),
+                "{name} is what stops the dialog opening: {text}"
+            );
+        }
+        assert!(text.contains("<value>1920, 1080</value>"), "{text}");
+        assert!(text.contains("<value>sunlit-e2e-windows</value>"), "{text}");
+        assert!(text.contains("<value>AORUS</value>"), "{text}");
+        // Nothing of the host's is handed to a guest that will be discarded.
+        for shared in [
+            "RedirectedDrives",
+            "RedirectedUsbDevices",
+            "RedirectedPnpDevices",
+        ] {
+            let setting = format!("<setting name=\"{shared}\" type=\"System.String\">");
+            let at = text.find(&setting).expect("the setting is there");
+            assert!(
+                text[at..].starts_with(&format!("{setting}\n            <value></value>")),
+                "{shared} should be empty: {text}"
+            );
+        }
+    }
+
+    /// The name is the VM's identifier in upper case, in the roaming profile:
+    /// all three are what `vmconnect` itself looks for.
+    #[test]
+    fn the_settings_file_is_named_after_the_vm_identifier() {
+        let path = vmconnect_settings_path(
+            Path::new(r"C:\Users\me\AppData\Roaming"),
+            "2333c8fa-26e0-41a5-9023-f95fffcc1c53",
+        );
+        assert_eq!(
+            path,
+            Path::new(
+                r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Hyper-V\Client\1.0\vmconnect.rdp.2333C8FA-26E0-41A5-9023-F95FFFCC1C53.config"
+            )
+        );
+    }
+
+    #[test]
+    fn the_vm_identifier_comes_out_of_the_query() {
+        assert!(
+            id_script("sunlit-e2e-windows").contains("$vm.Id"),
+            "the query asks for it"
+        );
+        assert_eq!(
+            parse_id(&format!(
+                "ID=2333c8fa-26e0-41a5-9023-f95fffcc1c53\n{QUERY_OK}\n"
+            )),
+            Some("2333c8fa-26e0-41a5-9023-f95fffcc1c53".to_owned())
+        );
+        // A guest that has gone away prints the marker and nothing else.
+        assert_eq!(parse_id(&format!("{QUERY_OK}\n")), None);
+        assert_eq!(parse_id("ID=\n"), None);
     }
 
     #[test]

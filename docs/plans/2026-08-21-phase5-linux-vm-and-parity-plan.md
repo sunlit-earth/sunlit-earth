@@ -1,0 +1,110 @@
+# Plan: Phase 5, Linux VM Overhaul and Linux Parity
+
+## Summary
+
+Two coupled halves. The Linux guest VM moves from Ubuntu 22.04 with GNOME to Debian 13 with four desktops installed minimally side by side (KDE Plasma primary, GNOME, XFCE, Cinnamon), selected per boot from the host without an image rebuild; the guest gains an absolute pointer device, which fixes the VNC click offset, and a configured console resolution honoring the same override variable the Hyper-V guest uses. The app gains real Linux support: setting the desktop wallpaper through a per-desktop backend matrix, a real monitor query replacing the 2560x1440 placeholder, graceful shutdown when the session ends, and tray enablement as a stretch. The multi-desktop guest is what turns the wallpaper matrix from mostly code-reviewed into live-verified, one boot per desktop.
+
+## Stakes Classification
+
+Medium. The VM half rebuilds an image, which costs an hour and is reproducible from the templates; the app half changes behavior only on platforms that today refuse, so Windows risk is limited to the shared e2e gating code. Nothing touches the host outside the VM store and the app's own data directory.
+
+## Research
+
+Code reconnaissance and two web research passes, all on 2026-08-21. Web claims below carry their sources in the research reports archived with this run; the load-bearing ones are restated here.
+
+Current guest (code recon). Ubuntu 22.04 cloud image plus NoCloud cloud-init; GNOME on Xorg via `vm/linux/scripts/desktop.sh` (gdm3 autologin, Wayland off, dconf quiet-down), first-run wizard suppressed in `finalize.sh`. The hard constraints any replacement keeps: an X11 session with `DISPLAY=:0` reachable from SSH (the comment in `desktop.sh:22-23` names this), XDG autostart (the session-ready marker at `guest-contract.sh:42-50` is a standard entry), and no wizard stealing focus. There is no VNC server in the guest; the console is QEMU's own `-vnc 127.0.0.1:0` (`provider/qemu.rs:202-205`). The launch args configure no pointer device (`qemu.rs:168-226`), so the guest gets QEMU's implicit PS/2 mouse, a relative device, and VNC's absolute PointerEvent coordinates go through a translation layer: the textbook cause of offset clicks. The guest is all-virtio otherwise, cross-checked against the Packer template by the `template_agreement` tests (`qemu.rs:843-1001`). No resolution is configured anywhere on the Linux path; `SUNLIT_EARTH_VM_RESOLUTION` is Hyper-V-only today.
+
+App gaps (code recon). Off Windows, `SystemWallpaper::check_supported` refuses before rendering, `target_size` returns the 2560x1440 placeholder, and no wallpaper-setting code exists (`engine/wallpaper_sink.rs:37-81`). `config::is_position_on_screen` is a coordinate-range check (`config.rs:363-401`); `session_end::install` returns `None` (`session_end.rs:283-299`). The tray is Slint's `SystemTrayIcon`, backed by StatusNotifierItem on Linux, unverified; the e2e suite hardcodes `TRAY_SUPPORTED = cfg!(target_os = "windows")` (`tests/e2e.rs:70`). `test_set_wallpaper` asserts `wallpaper_supported() == cfg!(target_os = "windows")` (`tests/e2e.rs:1587-1591`), which a Linux setter must flip; the Linux guest job deliberately omits `SUNLIT_EARTH_E2E_WALLPAPER`, pinned by a test (`commands/e2e.rs:388-399`). `docs/roadmap.md:12` bundles the setter, the native display query, and the position-check precision as one unit.
+
+Base distro (web research, verified against primary sources). Ubuntu 26.04 LTS is out: GNOME on Xorg was removed in Ubuntu 25.10 and GNOME 50 (March 2026) deleted X11 session support upstream, so 26.04 has no GNOME X11 at all; Kubuntu 26.04's Plasma 6.6 X11 session survives only as the unsupported opt-in package `plasma-session-x11`. Debian 13 "trixie" (released 2025-08-09, full support to 2028-08, LTS to 2030-06) froze before both cutoffs: GNOME 48 with `gnome-session-xsession` and `gnome-xorg.desktop` as a first-class session, Plasma 6.3 with `plasmax11.desktop` shipped inside `plasma-workspace` (but `kwin-x11` is not a dependency and must be installed explicitly, a known Debian packaging gap), XFCE 4.20 with X11 as its only practical session. Official cloud images exist and were verified live: `https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2` resolved to a 341 MB image rebuilt two days before the check, cloud-init with NoCloud supported. Upstream timelines for the record: GNOME 49 soft-disabled X11 (Sept 2025), GNOME 50 removed it (March 2026); Plasma 6.7 (June 2026) is the last Plasma with an X11 session, 6.8 (planned Oct 2026) removes it. Trixie's shipped versions predate all of it, so the image built by this phase is insulated for trixie's whole support window; the exposure returns with Debian 14.
+
+Desktop market (web research; no census exists, proxies only). GNOME (28-45%) and KDE Plasma (28-42%) contest first depending on population, KDE growing everywhere it is measured; XFCE (5-12%) and Cinnamon (5-13%) are the clear second tier; together the four cover roughly 80-90% of every dataset found. MATE (1.5-5%, softening), COSMIC (1-3%, new, Wayland-only), LXQt (1-2%, flagship distro in maintenance), Budgie (statistically invisible). Wayland is now the majority session type across all proxies (55-80%).
+
+Per-boot desktop selection (web research, verified against kernel source). sddm autologin: `/etc/sddm.conf.d/autologin.conf`, `[Autologin]` with `User=` and `Session=`, session names being the `.desktop` basenames from `/usr/share/xsessions` (`plasmax11`, `gnome-xorg`, `xfce`; Cinnamon's to be confirmed on trixie). QEMU's fw_cfg is the host-to-guest channel: the device is ACPI-enumerated (`QEMU0002`) so `qemu_fw_cfg.ko` auto-loads early, `CONFIG_FW_CFG_SYSFS=m` confirmed in trixie's shipped kernel config (6.12), and the value appears at `/sys/firmware/qemu_fw_cfg/by_name/<name>/raw`, root-readable (0400), available well before `display-manager.service`. SMBIOS type 11 OEM strings were evaluated and rejected: current mainline exports no per-string sysfs interface (a patch proposing one never landed), leaving root-only binary parsing or shipping dmidecode. Known multi-DE pitfalls, all with recorded answers: the debconf default-display-manager prompt (preseed sddm, mask any other DM), the `kwin-x11` gap above, session filename drift between distros (verify per base, pin with a test), and per-DE polkit agents whose `OnlyShowIn` gating deserves a smoke test per session.
+
+X11 versus Wayland for this feature set: setting a wallpaper on GNOME, KDE, and Cinnamon is a desktop-shell operation (gsettings, or D-Bus to plasmashell), not a display-server operation, so the same backend command works identically in an X11 and a Wayland session of the same desktop; the X11 requirement in this plan comes from the test harness (the guest contract launches windowed apps over SSH via `DISPLAY`), not from the wallpaper feature. What does differ under Wayland: xrandr answers through XWayland (usable, but display scaling can skew the reported size), and a client cannot position its own windows, which makes saved-position restore a compositor decision there. Both are noted as roadmap follow-ups, not phase work.
+
+## Key Design Decisions
+
+1. **Debian 13 "trixie" is the base.** It is the only current base where Plasma, GNOME, and XFCE all offer first-class X11 sessions at once (Ubuntu 26.04 has zero GNOME X11 and only deprecated opt-in Plasma X11), its versions predate every upstream X11 removal so the image is insulated through Debian 13's support window (2028 full, 2030 LTS), and its genericcloud image is the direct analog of the Ubuntu cloud image the build already uses, verified live with NoCloud support. The template is rewritten for it and renamed; every xtask reference and the template-agreement tests follow.
+
+2. **Four desktops, installed minimally, one display manager.** KDE Plasma (primary, the default session), GNOME, XFCE, and Cinnamon: the market research's top four, covering roughly 80-90% of measured Linux desktop usage. Minimal package sets, never the kitchen-sink metas: `plasma-desktop` plus the explicitly-added `kwin-x11` and sddm; the hand-picked GNOME set the current image already uses plus `gnome-session-xsession`; the `xfce4` core meta without goodies; `cinnamon-core`. One display manager, sddm, runs every session (GDM is the weakest choice for scripted foreign-session autologin and is not installed; the debconf display-manager selection is preseeded). Each desktop gets its quiet-down config at image build: compositor off where it exists as a setting (KWin), screen locker, notification popups, update notifiers, and file indexing off everywhere. Exact Cinnamon package and session names on trixie are confirmed in Step 1's fact check, since the distro research did not cover them.
+
+3. **The boot's desktop is chosen by the host through fw_cfg.** `vm up linux --desktop <kde|gnome|xfce|cinnamon>` (and the same flag on `e2e --target linux`) adds `-fw_cfg name=opt/sunlit/desktop,string=<session-name>` to the launch args. In the guest, a root oneshot systemd unit ordered before `display-manager.service` reads `/sys/firmware/qemu_fw_cfg/by_name/opt/sunlit/desktop/raw` (defensively modprobing `qemu_fw_cfg` first, harmless when already loaded), validates the value against a conservative character set, and writes sddm's `[Autologin] Session=`. No value means the image default, Plasma X11. The host-side flag-to-session-name mapping lives in one Rust constant, and a pinning test asserts the guest unit shipped in the template accepts exactly those names, the same pattern that pins `GUEST_ROOT_LINUX` against the shipped scripts. The chosen desktop is recorded in `RunState`, so `vm status` names it and a run's results say which desktop they ran under.
+
+4. **The guest gets an absolute pointer device.** `-device virtio-tablet-pci` joins the Linux launch args, consistent with the guest's all-virtio device set and driven in-kernel. An absolute pointer is the fix for VNC click offset, independent of the desktop choice. A unit test pins the device in the args the way the loopback VNC test pins the display.
+
+5. **The guest console resolution is a QEMU device property with the Hyper-V override.** The Linux launch switches from `-vga virtio` to the equivalent `-device virtio-vga` carrying `xres`/`yres`, defaulting to 1920x1080, and `SUNLIT_EARTH_VM_RESOLUTION` now applies to both providers, documented as such. Modern Xorg takes virtio-gpu's preferred mode; if the built image does not, the fallback is one xrandr call in a session autostart entry, recorded as a departure if needed.
+
+6. **The Linux wallpaper sink detects the desktop and shells out to its native setter, one backend per desktop family.** `check_supported` reads `XDG_CURRENT_DESKTOP` (a colon-separated list, matched case-insensitively) and probes for the backend's binary before anything renders, keeping the contract that refusal costs no render. The table: the gsettings family (GNOME, Unity, and Budgie on `org.gnome.desktop.background` with both `picture-uri` and `picture-uri-dark`; Cinnamon and MATE on their own schemas), KDE (`plasma-apply-wallpaperimage`, with plasmashell's D-Bus scripting interface as the fallback), XFCE (`xfconf-query` over the `last-image` backdrop properties), and LXQt (`pcmanfm-qt --set-wallpaper`). Anything else gets the honest refusal, naming what was detected. These backends are desktop-shell operations, so each works identically under the desktop's X11 and Wayland sessions; nothing here is X11-specific. The XDG desktop portal is deliberately not the mechanism: it targets sandboxed apps and puts a confirmation dialog in front of each set, which an auto-refreshing wallpaper cannot live with. `publish` writes the PNG the engine already produces and invokes the setter as a subprocess: no new dependencies, no new unsafe. Detection and command construction are pure functions unit-tested against fabricated environments; the four in-image backends are proven live (Decision 9), and the docs say which further backends ship code-reviewed but unexercised (MATE, LXQt, Budgie).
+
+7. **The monitor query is xrandr, and it replaces both placeholders.** `target_size` parses the primary output's current mode from `xrandr --query` (native on X11; through XWayland on Wayland sessions, where display scaling can skew the answer, accepted and documented), falling back to the documented 2560x1440 with a log line when there is no display to ask. The same parsed geometry gives `is_position_on_screen` a real bounds check on Linux, the coupling `docs/roadmap.md:12` already describes. Native Wayland display queries (per-desktop D-Bus) are a recorded roadmap item, not phase work.
+
+8. **Linux session end is SIGTERM handling, not logind.** Desktop sessions deliver SIGTERM on logout and shutdown; handling it to quit the event loop cleanly is the analog of the Win32 listener and needs no D-Bus dependency. The logind inhibitor protocol stays on the roadmap; `session_end`'s docs say which half exists.
+
+9. **Every in-image wallpaper backend is verified live, one boot per desktop.** With Decision 3, `e2e --target linux --desktop <d>` runs the suite, `test_set_wallpaper` included, under each of the four desktops without an image rebuild between them. That is the concrete payoff of the multi-desktop image: KDE, GNOME, XFCE, and Cinnamon backends all graduate from code-reviewed to observed.
+
+10. **Tray on Linux is a stretch: verify, then flip the gate.** Plasma and XFCE host StatusNotifierItem natively, so the guest is the right place to learn whether Slint's Linux tray works. If it does, `TRAY_SUPPORTED` becomes a runtime capability instead of an OS literal and the two tray-gated e2e cases go live on Linux, per desktop where the host protocol exists. If it does not, the finding is recorded with the Slint issue linked.
+
+11. **The X11 sunset is acknowledged in the roadmap, not fought in this phase.** Wayland is already the majority Linux session and both major desktops are removing X11 upstream. The guest contract stays X11 for this phase because trixie makes that safe until 2028+, but `docs/roadmap.md` gains an explicit item: a Wayland guest story (session env capture via `WAYLAND_DISPLAY`, native display query, and whatever the harness needs) becomes necessary work when the base moves past Debian 13, not optional polish.
+
+## Success Criteria
+
+1. The image builds from the Debian 13 genericcloud image and boots into Plasma on Xorg at 1920x1080 (or the override), autologs in, and writes the session-ready marker.
+2. `vm up linux --desktop gnome`, `xfce`, and `cinnamon` each boot into the named session from the same image with no rebuild, confirmed by the recorded desktop in `vm status` and by looking.
+3. Clicks in the VNC viewer land where the cursor is, verified by hand in the guest.
+4. The Linux e2e cases that pass today still pass in the new guest.
+5. `test_set_wallpaper` runs and passes under all four desktops: the wallpaper visibly changes in each, and the capability assertion reflects Linux support. Backend selection for desktops beyond the four is unit-tested against fabricated environments.
+6. `target_size` reports the guest's real resolution instead of the placeholder; the placeholder remains only where there is no display to ask, with a log line saying so.
+7. The windowed app exits cleanly on SIGTERM, decision logic unit-tested; verified live in the guest.
+8. `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check` green on Windows and in WSL.
+9. CLAUDE.md (platform table, environment knobs, VM sections), `docs/vm-setup.md` (Debian base, `--desktop`, resolution variable on both providers, click-offset note), and `docs/roadmap.md` (wallpaper item, Wayland guest item, deferred pieces) reflect the new reality.
+
+## Implementation Steps
+
+### Step 1: Fact confirmation
+
+Confirm on trixie, by reading the archive and the shipped files during template work rather than trusting this plan: the Cinnamon package set and session file name, sddm's autologin syntax as installed, the exact session basenames of all four desktops, and `plasma-apply-wallpaperimage`'s presence in Plasma 6.3's packages. Record anything that differs as a departure.
+
+### Step 2: QEMU launch and CLI changes
+
+`virtio-tablet-pci`; `virtio-vga` with `xres`/`yres` and shared `SUNLIT_EARTH_VM_RESOLUTION` parsing; the `-fw_cfg` argument; `--desktop` on `vm up` and `e2e`; the desktop recorded in `RunState`; unit tests pinning all of it in the args, plus the session-name pinning test against the guest unit. Also the small residual the phase 3 review left: `hyperv::view_note` takes no target, so a Linux guest under `SUNLIT_EARTH_VM_PROVIDER=hyperv` gets Windows-shaped console advice; thread the target through while this code is open.
+
+### Step 3: The multi-desktop template
+
+Rewrite the template for the Debian 13 genericcloud image (renamed file, every xtask reference updated, template-agreement tests moved with it); rewrite `desktop.sh` for the four minimal desktop sets, sddm preseeded as the one display manager, the per-desktop quiet-down configs, and the fw_cfg selector unit; adjust `finalize.sh` (drop the GNOME wizard suppression, keep the contract and compaction parts); keep `guest-contract.sh` unchanged except whatever the fact check demands.
+
+### Step 4: Build and hand verification
+
+Rebuild the image. Verify in the guest: session-ready marker, resolution, click accuracy, `vm view`, each of the four desktops booting by flag, and a polkit smoke check per session (exactly one authentication agent, no stray dialogs).
+
+### Step 5: Wallpaper sink, monitor query, SIGTERM
+
+The backend matrix from Decision 6 behind `cfg(target_os = "linux")` with unit tests against fabricated environments and command runners; the xrandr parse for `target_size` and `is_position_on_screen`; the SIGTERM handler wired to the event loop with its decision logic unit-tested like `session_end::classify`.
+
+### Step 6: E2E gating and the per-desktop runs
+
+Update the `wallpaper_supported` regression assertion to include Linux, opt the Linux guest job into `SUNLIT_EARTH_E2E_WALLPAPER`, update the exclusivity test accordingly, and run the suite under each of the four desktops until `test_set_wallpaper` passes in all of them.
+
+### Step 7: Tray verification (stretch)
+
+Run the app in tray mode under Plasma and XFCE; if the icon appears and the menu works, make `TRAY_SUPPORTED` a runtime probe and enable the two tray cases on Linux; either way record the outcome.
+
+### Step 8: Documentation
+
+Everything in success criterion 9.
+
+## Risks and Mitigations
+
+- Step 1 may contradict this plan's Cinnamon and session-name specifics, which the research did not cover; that is why it exists, and differences become departures, not surprises.
+- Four desktops make a bigger image and a longer build (each adds roughly one to two GB installed). Accepted; the build is a one-time cost per template change and `vm status` reports the disk footprint.
+- Plasma on llvmpipe may be heavy even with compositing off. The image default can move to another of the four desktops as a recorded departure; nothing else changes, since selection is per boot.
+- Polkit agents or other per-desktop autostarts may misbehave in foreign sessions (`OnlyShowIn` gating). Step 4's per-session smoke check exists for this; the fix is usually one override line in the image.
+- Xorg may ignore virtio-gpu's preferred mode; the xrandr autostart fallback in Decision 5 covers it inside the image.
+- `plasma-apply-wallpaperimage` may be missing or may not persist the change; the D-Bus scripting fallback is named in Decision 6, and Step 6's live runs prove whichever path is taken.
+- Backends beyond the four in the image (MATE, LXQt, Budgie) ship unexercised; the docs say so explicitly instead of claiming support that never ran.
+- The X11 basis of the whole guest design has a horizon. Decision 11 records it and trixie's support window (2028 full, 2030 LTS) is the measured room; nothing in this phase deepens the X11 coupling beyond what already exists.
+
+## Rollback Strategy
+
+The app half reverts by commit; nothing migrates persisted state. The VM half is reproducible in both directions: the previous Ubuntu image rebuilds from the previous templates, and the golden-image store keeps exactly one image per target, so rolling back is a git revert plus one rebuild. The `--desktop` flag and fw_cfg value are additive; a guest booted without them behaves like the image default.

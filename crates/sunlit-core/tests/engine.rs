@@ -101,6 +101,22 @@ impl Harness {
         panic!("{what}: no TexturesReady within {TIMEOUT:?}");
     }
 
+    /// Block until a status event whose text `matches`, or panic on timeout.
+    ///
+    /// The status is the loading indicator, so this is how a test observes that
+    /// a background decode has started or finished without guessing at a sleep.
+    fn wait_for_status(&self, matches: impl Fn(&str) -> bool, what: &str) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if let EngineEvent::Status(text) = event
+                && matches(&text)
+            {
+                return;
+            }
+        }
+        panic!("{what}: no matching status within {TIMEOUT:?}");
+    }
+
     /// Drain events already queued and report whether any frame was among them.
     fn drained_frame(&self, settle: Duration) -> Option<(u32, u32)> {
         std::thread::sleep(settle);
@@ -160,6 +176,14 @@ impl TextureFixtures {
             img.save(dir.join(file)).expect("write a fixture texture");
         }
         Self { dir }
+    }
+
+    /// Delete the files, so that a slot backed by one becomes terminal on its
+    /// next load: the decode fails, and a failed decode clears the slot's path.
+    fn remove_files(&self) {
+        for file in ["day.png", "night.png"] {
+            std::fs::remove_file(self.dir.join(file)).expect("remove a fixture texture");
+        }
     }
 
     fn paths(&self) -> Vec<Option<std::path::PathBuf>> {
@@ -601,28 +625,47 @@ fn switches_in_quick_succession_end_on_the_last_one() {
     );
 }
 
-/// A decode of the previous width finishing after the switch must neither reach
-/// the GPU nor leave its slot believing a load is on the way to it.
+/// One decoded texture for a slot, as a background loader would post it.
+fn decoded(slot_index: usize, width: u32, generation: u64, value: u8) -> DecodedTextureMessage {
+    let height = width / 2;
+    DecodedTextureMessage {
+        slot_index,
+        result: Ok(DecodedImage {
+            pixels: vec![value; (width as usize) * (height as usize) * 4],
+            width,
+            height,
+        }),
+        generation: Some(generation),
+    }
+}
+
+/// A stale decode must not destroy the fresh one that replaced it.
 ///
-/// Production produces that ordering with an 8K decode that is still running
-/// when the user changes the setting again, which no amount of waiting makes
-/// reliable in a test. So the mailbox is injected and the stale arrival is
-/// posted directly: the same message, at the same point in the slot's life, with
-/// none of the timing. It carries solid black, so a globe that is still lit
-/// afterwards is proof it was never applied, and the fixtures are wide enough
-/// that the reload it is racing has not finished by the time it is posted.
+/// This is the ordering the mailbox guard exists for and the only one that can
+/// lose a texture permanently: the reload's own post is already parked when the
+/// superseded decode finishes, and the consumer discards a stale post on sight,
+/// so overwriting the parked one would leave nothing for anybody. Reproducing it
+/// needs a decode of the old width to finish after the new width's, which no
+/// waiting can arrange, so both posts are made directly into the injected
+/// mailbox.
+///
+/// The slot is made terminal first, by deleting the file behind it, so that
+/// nothing the engine does can supply a texture afterwards. `TexturesReady` can
+/// then only fire if the fresh post survived, which is what makes this test fail
+/// when the guard is removed.
 #[test]
-fn a_stale_decode_arriving_after_a_switch_is_never_applied() {
-    const WIDE: u32 = 1024;
+fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
+    const WIDE: u32 = 256;
+    const DAY_SLOT: usize = 1;
 
     let fixtures = TextureFixtures::with_width("engine_resolution_stale", WIDE);
     let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
-    let posted = mailbox.clone();
+    let injected = mailbox.clone();
     let harness = Harness::start(|config| {
         config.texture_paths = fixtures.paths();
         config.texture_resolution = WIDE;
         config.cache_dir = Some(fixtures.dir.clone());
-        config.mailbox = Some(posted);
+        config.mailbox = Some(injected);
         config.params = SceneParams {
             // The day texture alone, and no atmosphere: then every lit pixel
             // comes from the texture under test and nothing else can stand in
@@ -639,56 +682,99 @@ fn a_stale_decode_arriving_after_a_switch_is_never_applied() {
         "the globe should be visible at first"
     );
 
-    // The frame after the switch is the one the reload is spawned from, so
-    // waiting for it puts the post after the purge and after the spawn: the
-    // slot has no bind group, a load of the new width is in flight, and the
-    // generation has moved on. That is exactly the state M1 wedged.
+    // Take the file away, then switch. The reload finds nothing to decode and
+    // clears the slot's path, which is terminal: from here the only textures
+    // this slot can ever get are the ones posted below.
+    fixtures.remove_files();
     harness
         .engine
         .send(EngineCommand::SetTextureResolution(WIDE / 2));
-    harness.next_frame();
-    mailbox.post(DecodedTextureMessage {
-        slot_index: 1,
-        result: Ok(DecodedImage {
-            pixels: vec![0; (WIDE as usize / 2) * (WIDE as usize / 4) * 4],
-            width: WIDE / 2,
-            height: WIDE / 4,
-        }),
-        generation: Some(0),
-    });
+    harness.wait_for_status(|text| !text.is_empty(), "the reload should start");
+    harness.wait_for_status(str::is_empty, "the reload should fail and stop loading");
+
+    // The reload's replacement, parked first, and then the superseded decode of
+    // the old width arriving late. Nothing pokes the engine in between, so the
+    // drain that follows sees whatever the mailbox kept.
+    mailbox.post(decoded(DAY_SLOT, WIDE / 2, 1, 255));
+    mailbox.post(decoded(DAY_SLOT, WIDE, 0, 0));
+    harness.engine.send(EngineCommand::Poke);
 
     harness.wait_for_textures("after the stale arrival");
     let (rgba, _, _) = harness.next_frame();
     assert!(
         has_lit_pixels(&rgba),
-        "the stale black texture must never be what is showing"
+        "the surviving texture is the white one, so the globe must be lit"
     );
+}
 
-    // The same arrival again, now with nothing in flight to rescue it. A
-    // discarded message dirties nothing, so no frame follows; were it applied,
-    // the frame it dirtied would be the black globe and nothing would replace
-    // it. That is what makes the assertion above more than a coin flip.
-    harness.drained_frame(Duration::from_millis(300));
-    mailbox.post(DecodedTextureMessage {
-        slot_index: 1,
-        result: Ok(DecodedImage {
-            pixels: vec![0; (WIDE as usize / 2) * (WIDE as usize / 4) * 4],
-            width: WIDE / 2,
-            height: WIDE / 4,
-        }),
-        generation: Some(0),
+/// A stale arrival that nothing is racing is discarded rather than drawn.
+///
+/// Separate from the ordering above because it asserts the other half: not that
+/// the fresh post survives, but that the stale one is never applied. A discarded
+/// message dirties nothing, so no frame follows it; were it applied, the frame it
+/// dirtied would show the black globe it carries.
+#[test]
+fn a_stale_arrival_produces_no_frame_at_all() {
+    const WIDE: u32 = 256;
+    const DAY_SLOT: usize = 1;
+
+    let fixtures = TextureFixtures::with_width("engine_resolution_stale_alone", WIDE);
+    let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
+    let injected = mailbox.clone();
+    let harness = Harness::start(|config| {
+        config.texture_paths = fixtures.paths();
+        config.texture_resolution = WIDE;
+        config.cache_dir = Some(fixtures.dir.clone());
+        config.mailbox = Some(injected);
+        config.params = SceneParams {
+            texture_index: 1,
+            atmo_enabled: false,
+            ..test_params()
+        };
     });
+    harness.wait_for_textures("at startup");
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(WIDE / 2));
+    harness.wait_for_textures("after the switch");
+    harness.drained_frame(Duration::from_millis(300));
+
+    mailbox.post(decoded(DAY_SLOT, WIDE, 0, 0));
     harness.engine.send(EngineCommand::Poke);
     assert!(
         harness.drained_frame(Duration::from_millis(500)).is_none(),
         "a discarded arrival must not reach the GPU, and so must not produce a frame"
     );
+}
 
-    // And the slot must not be stuck: a further switch still completes.
+/// A resolution change while the first load is still running converges.
+///
+/// The purge here happens with a decode genuinely in flight, which is the state
+/// Step 3 promises to survive and the one the quick-succession test above cannot
+/// reach. The in-flight decode's post is discarded when it arrives; what must
+/// still happen is the reload, and the only evidence that it did is the slot
+/// becoming ready at all.
+#[test]
+fn a_switch_while_the_first_load_is_running_still_converges() {
+    const WIDE: u32 = 1024;
+
+    let fixtures = TextureFixtures::with_width("engine_resolution_midload", WIDE);
+    let harness = Harness::start(|config| {
+        config.texture_paths = fixtures.paths();
+        config.texture_resolution = WIDE;
+        config.cache_dir = Some(fixtures.dir.clone());
+        config.params = SceneParams {
+            texture_index: 1,
+            atmo_enabled: false,
+            ..test_params()
+        };
+    });
+    harness.wait_for_status(|text| !text.is_empty(), "the first load should start");
     harness
         .engine
-        .send(EngineCommand::SetTextureResolution(WIDE));
-    harness.wait_for_textures("after switching again");
+        .send(EngineCommand::SetTextureResolution(WIDE / 4));
+
+    harness.wait_for_textures("after a switch mid-load");
     let (rgba, _, _) = harness.next_frame();
     assert!(has_lit_pixels(&rgba));
 }

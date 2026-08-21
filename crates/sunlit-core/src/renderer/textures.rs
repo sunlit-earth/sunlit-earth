@@ -38,14 +38,14 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 current = res.texture_generation,
                 "discarding a decode from a superseded texture resolution"
             );
-            // Nothing was applied, so the slot must not be left believing a
-            // load is on its way to it. The mailbox will not let a stale
-            // arrival overwrite a fresh one, so this is the second line of
-            // defense rather than the first: whatever ordering got us here, a
-            // slot with no bind group and nothing in flight is one the next
-            // render spawns a load for, and the cost of being wrong is one
-            // redundant decode.
-            res.texture_slots[msg.slot_index].loading = false;
+            // Deliberately nothing else. `loading` says a decode is on its way
+            // to this slot, and a discarded post is never that decode: a post is
+            // discarded only when the generation has moved on, which happens
+            // exactly in `set_texture_resolution`, which purges every
+            // file-backed slot in the same breath. So the flag was either
+            // cleared there or has since been set by the reload, and clearing it
+            // here would say a live load is not running, which puts a second
+            // decode of the same 8K source in flight beside the first.
             continue;
         }
         applied_any = true;
@@ -152,6 +152,12 @@ pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
         // and post; the generation it carries is what gets it discarded, and
         // clearing the flag is what lets the reload start now rather than
         // waiting for it.
+        //
+        // This is the only place a load that has not delivered stops being
+        // recorded, and every generation change comes through here, which is
+        // what lets the discard path leave the flag alone: a decode whose post
+        // will be discarded had its flag cleared right here, in the same call
+        // that made it stale.
         slot.loading = false;
         if let Some(texture) = slot.texture.take() {
             texture.destroy();

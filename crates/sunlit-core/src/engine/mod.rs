@@ -464,6 +464,28 @@ impl Engine {
             mailbox,
         } = config;
 
+        // One slot per texture: the grid, one per path, and the cloud overlay.
+        //
+        // Checked rather than trusted, and before the device exists, because
+        // both ways of getting it wrong are bad and neither is visible where it
+        // happens. A mailbox with too few slots drops the posts for the high
+        // ones, leaving those slots waiting for a load that was thrown away; one
+        // with too many hands the consumer a slot index its own array does not
+        // have, which is a panic in the middle of a session. Both were
+        // impossible by construction until the mailbox could be injected.
+        // Failing here means failing before `ready` is sent, which turns it into
+        // a panic in `start` rather than a thread that quietly died.
+        let slot_count = texture_paths.len() + 2;
+        if let Some(mailbox) = &mailbox {
+            assert_eq!(
+                mailbox.slot_count(),
+                slot_count,
+                "the texture mailbox must have one slot per texture: the grid, \
+                 {} file-backed, and the cloud overlay",
+                texture_paths.len()
+            );
+        }
+
         let gpu = crate::wgpu_init::init(force_software);
         let _ = ready.send(AdapterReport {
             info: gpu.adapter_info.clone(),
@@ -472,8 +494,7 @@ impl Engine {
         });
         crate::memory::log_memory_usage("engine: after wgpu init");
 
-        // Slots: grid + one per texture path + clouds.
-        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(texture_paths.len() + 2));
+        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(slot_count));
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
@@ -814,6 +835,16 @@ impl Engine {
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
     fn publish_wallpaper(&mut self) {
+        // Support first, before the size query, the render, and the wait below.
+        // Off Windows this is the whole answer, and everything after it is
+        // something to pay for on the way to a refusal that was already known:
+        // a native-resolution render and its readback, or seconds of waiting for
+        // textures that will not change it.
+        if let Err(e) = self.wallpaper.check_supported() {
+            self.report_wallpaper(Err(e));
+            return;
+        }
+
         if self.renderer.textures_pending(self.params.texture_index) {
             if !self.wallpaper_owed {
                 info!("wallpaper update deferred until the textures have loaded");
@@ -821,11 +852,16 @@ impl Engine {
             self.wallpaper_owed = true;
             return;
         }
-        self.wallpaper_owed = false;
 
         let result = self
             .render_wallpaper_pixels()
             .and_then(|(pixels, w, h)| self.wallpaper.publish(&pixels, w, h));
+        self.report_wallpaper(result);
+    }
+
+    /// Report a finished publish attempt and settle the debt for it.
+    fn report_wallpaper(&mut self, result: Result<(), String>) {
+        self.wallpaper_owed = false;
         if let Err(e) = &result {
             error!(error = %e, "wallpaper update failed");
         }
@@ -833,10 +869,6 @@ impl Engine {
     }
 
     fn render_wallpaper_pixels(&mut self) -> Result<(Vec<u8>, u32, u32), String> {
-        // Before the size query and the render, not after: off Windows this is
-        // the whole answer, and asking the sink afterwards would mean paying
-        // for a native-resolution render and its readback to learn it.
-        self.wallpaper.check_supported()?;
         let (width, height) = self.wallpaper.target_size()?;
         self.prepare_export();
         let pixels = self.renderer.export_image(width, height)?;

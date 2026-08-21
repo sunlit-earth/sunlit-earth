@@ -266,6 +266,42 @@ fn write_cache(
         height = img.height,
         "cached a texture downscale"
     );
+    sweep_unfinished(image_path);
+    sweep_unfinished(meta_path);
+}
+
+/// Delete unfinished versions of `target` that some earlier writer left behind.
+///
+/// A unique temporary name per writer is what stops two of them truncating each
+/// other, and the cost of it is that nothing reuses the name: a process killed
+/// mid-write leaves a file that would otherwise sit in the cache directory
+/// forever, several megabytes at a time. Sweeping after a successful write bounds
+/// that to whatever accumulates between two writes of the same entry.
+///
+/// A writer of this same entry that is still working loses its temporary file
+/// here, and its own rename then fails with a warning; the entry it was building
+/// is the one that just landed, so the next run reads that rather than rebuilding
+/// anything. Orphans that never go away is the worse of the two.
+fn sweep_unfinished(target: &Path) {
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let found = entry.file_name().to_string_lossy().into_owned();
+        if found.starts_with(&prefix) && found.ends_with('~') {
+            let path = entry.path();
+            match fs::remove_file(&path) {
+                Ok(()) => debug!(path = %path.display(), "removed an unfinished cache file"),
+                Err(e) => {
+                    debug!(path = %path.display(), error = %e, "could not remove an unfinished cache file");
+                }
+            }
+        }
+    }
 }
 
 /// A name for the not-yet-finished version of `path`, unique to this writer.
@@ -457,6 +493,38 @@ mod tests {
             leftovers.is_empty(),
             "no unfinished file should be left behind: {leftovers:?}"
         );
+    }
+
+    /// A unique temporary name per writer means nothing reuses it, so a write
+    /// that was killed leaves a file behind. The next successful write of the
+    /// same entry is what clears it.
+    #[test]
+    fn a_write_sweeps_unfinished_files_an_earlier_one_left() {
+        let dir = temp_dir("sweep");
+        let source = dir.join("day.png");
+        write_source(&source, 32, 16, 10);
+        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+
+        fs::create_dir_all(image_path.parent().expect("a parent")).expect("cache directory");
+        let orphans = [
+            unfinished(&image_path),
+            unfinished(&image_path),
+            unfinished(&meta_path),
+        ];
+        for orphan in &orphans {
+            fs::write(orphan, b"half a png").expect("write an orphan");
+        }
+        // Something that is not ours, to prove the sweep is not a wildcard.
+        let bystander = dir.join(CACHE_SUBDIR).join("someone.else.2048.png");
+        fs::write(&bystander, b"not ours").expect("write the bystander");
+
+        load_at_resolution(&source, 8, Some(&dir)).expect("load");
+
+        for orphan in &orphans {
+            assert!(!orphan.exists(), "{} should be swept", orphan.display());
+        }
+        assert!(image_path.exists() && meta_path.exists());
+        assert!(bystander.exists(), "only unfinished files may be swept");
     }
 
     /// Two writers of the same entry must not share a temporary name, or the

@@ -114,6 +114,9 @@ pub struct EngineConfig {
     /// Caps the preview size and the MSAA sample count, and selects the cloud
     /// image variant.
     pub quality: QualityTier,
+    /// Width the file-backed surface textures are loaded at. Independent of the
+    /// quality tier, which governs the cloud variant and the render size.
+    pub texture_resolution: u32,
     pub clock: Arc<dyn Clock>,
     /// `None` disables cloud fetching entirely (the `SUNLIT_EARTH_NO_CLOUDS`
     /// case, and the default for tests that do not care about clouds).
@@ -149,6 +152,7 @@ impl EngineConfig {
             params: SceneParams::default(),
             // Tests always run at the cheap tier, whatever the build profile.
             quality: QualityTier::Low,
+            texture_resolution: crate::config::DEFAULT_TEXTURE_RESOLUTION,
             clock: Arc::new(SystemClock::new()),
             cloud: None,
             cloud_poll_interval: Duration::from_secs(3600),
@@ -425,6 +429,7 @@ impl Engine {
             preview_enabled,
             mut params,
             quality,
+            texture_resolution,
             clock,
             cloud,
             cloud_poll_interval,
@@ -468,6 +473,7 @@ impl Engine {
                 "MSAA sample count is not available, falling back"
             );
         }
+        info!(texture_resolution, "surface texture resolution");
         let (width, height) = preview_target_size(preview_size, quality);
         let renderer = Renderer::new(
             gpu.device,

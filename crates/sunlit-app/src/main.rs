@@ -47,6 +47,12 @@ struct Cli {
     #[arg(long, value_enum)]
     quality: Option<Quality>,
 
+    /// Surface texture width, overriding the saved config [possible values: 8192, 4096, 2048]
+    ///
+    /// Lower widths are downscaled from the 8K sources once and cached.
+    #[arg(long, value_enum)]
+    texture_resolution: Option<TextureResolution>,
+
     /// Path to the textures directory
     #[arg(long)]
     textures_dir: Option<PathBuf>,
@@ -88,6 +94,28 @@ impl From<Quality> for QualityTier {
             Quality::Low => Self::Low,
             Quality::Medium => Self::Medium,
             Quality::High => Self::High,
+        }
+    }
+}
+
+/// CLI mirror of the texture resolution setting, so clap rejects a width that
+/// is not on offer instead of the app correcting it after the fact.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TextureResolution {
+    #[value(name = "8192")]
+    Full,
+    #[value(name = "4096")]
+    Half,
+    #[value(name = "2048")]
+    Quarter,
+}
+
+impl From<TextureResolution> for u32 {
+    fn from(value: TextureResolution) -> Self {
+        match value {
+            TextureResolution::Full => 8192,
+            TextureResolution::Half => 4096,
+            TextureResolution::Quarter => 2048,
         }
     }
 }
@@ -205,6 +233,17 @@ fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBu
     paths
 }
 
+/// The surface texture width this run uses.
+///
+/// The flag wins over the stored setting, and unlike `--quality` the choice has
+/// a widget, so the window shows what the engine actually loaded rather than
+/// what is on disk. A later save therefore persists the override, which is the
+/// price of the window telling the truth.
+fn effective_texture_resolution(cli: &Cli, config: &AppConfig) -> u32 {
+    cli.texture_resolution
+        .map_or(config.texture_resolution, u32::from)
+}
+
 /// Build the engine configuration shared by every startup mode.
 fn engine_config(
     cli: &Cli,
@@ -233,6 +272,7 @@ fn engine_config(
         preview_enabled,
         params: SceneParams::from_config(config),
         quality,
+        texture_resolution: effective_texture_resolution(cli, config),
         clock: Arc::new(SystemClock::new()),
         cloud,
         cloud_poll_interval: cloud_fetcher::poll_interval(),
@@ -305,7 +345,10 @@ fn run_render(
 }
 
 /// Set up the UI models and register every callback.
-fn init_ui(window: &MainWindow, config: &AppConfig, link: &EngineLink) {
+///
+/// `texture_resolution` is what the engine started with, which is the config
+/// value unless `--texture-resolution` overrode it.
+fn init_ui(window: &MainWindow, config: &AppConfig, texture_resolution: u32, link: &EngineLink) {
     let aa_labels: Vec<slint::SharedString> = link
         .aa_labels()
         .iter()
@@ -319,6 +362,14 @@ fn init_ui(window: &MainWindow, config: &AppConfig, link: &EngineLink) {
         .collect();
     window.set_texture_options(slint::ModelRc::new(slint::VecModel::from(texture_labels)));
 
+    let resolution_labels: Vec<slint::SharedString> = config::TEXTURE_RESOLUTIONS
+        .iter()
+        .map(|w| slint::SharedString::from(w.to_string()))
+        .collect();
+    window.set_texture_resolution_options(slint::ModelRc::new(slint::VecModel::from(
+        resolution_labels,
+    )));
+
     let (base_year, end_year) = datetime::year_range();
     let year_labels: Vec<slint::SharedString> = (base_year..=end_year)
         .map(|y| slint::SharedString::from(y.to_string()))
@@ -327,7 +378,12 @@ fn init_ui(window: &MainWindow, config: &AppConfig, link: &EngineLink) {
 
     ui_callbacks::apply_config_to_window(window, config);
     let config_aa_index = config::find_sample_count_index(link.aa_counts(), config.sample_count);
-    ui_callbacks::defer_combobox_indices(&window.as_weak(), config_aa_index, config.texture_index);
+    ui_callbacks::defer_combobox_indices(
+        &window.as_weak(),
+        config_aa_index,
+        config.texture_index,
+        config::find_texture_resolution_index(texture_resolution),
+    );
 
     ui_callbacks::register_change_callbacks(window, base_year, link);
     ui_callbacks::register_mouse_callbacks(window, link);
@@ -452,7 +508,12 @@ fn run_app(
         renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
 
-    init_ui(&window, config, &link);
+    init_ui(
+        &window,
+        config,
+        effective_texture_resolution(&cli, config),
+        &link,
+    );
 
     // The tray icon is a top-level Slint component of its own; it must exist
     // before the auto-refresh callback so the two views of that setting can be
@@ -616,6 +677,7 @@ fn main() -> ExitCode {
 
     debug!(
         software_rendering = cli.software_rendering,
+        texture_resolution = ?cli.texture_resolution,
         textures_dir = ?cli.textures_dir,
         log_level = ?cli.log_level,
         mode = ?cli.mode,

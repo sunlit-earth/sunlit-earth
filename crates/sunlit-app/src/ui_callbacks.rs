@@ -192,7 +192,12 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
 
         let default_aa_index =
             config::find_sample_count_index(engine.aa_counts(), defaults.sample_count);
-        defer_combobox_indices(&win.as_weak(), default_aa_index, defaults.texture_index);
+        defer_combobox_indices(
+            &win.as_weak(),
+            default_aa_index,
+            defaults.texture_index,
+            config::find_texture_resolution_index(defaults.texture_resolution),
+        );
         engine.push_params(&win);
     });
 
@@ -208,7 +213,12 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
 
         let loaded_aa_index =
             config::find_sample_count_index(engine.aa_counts(), loaded.sample_count);
-        defer_combobox_indices(&win.as_weak(), loaded_aa_index, loaded.texture_index);
+        defer_combobox_indices(
+            &win.as_weak(),
+            loaded_aa_index,
+            loaded.texture_index,
+            config::find_texture_resolution_index(loaded.texture_resolution),
+        );
         engine.push_params(&win);
     });
 }
@@ -219,12 +229,14 @@ pub fn defer_combobox_indices(
     window_weak: &slint::Weak<MainWindow>,
     aa_index: i32,
     texture_index: i32,
+    texture_resolution_index: i32,
 ) {
     let weak = window_weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
             win.set_aa_index(aa_index);
             win.set_texture_index(texture_index);
+            win.set_texture_resolution_index(texture_resolution_index);
             win.window().request_redraw();
         }
     })
@@ -388,6 +400,7 @@ pub fn read_config_from_window_onto(
     let mut config = AppConfig {
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
         auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
+        texture_resolution: config::texture_resolution_at(window.get_texture_resolution_index()),
         window_x: Some(pos.x),
         window_y: Some(pos.y),
         window_width: Some(size.width),

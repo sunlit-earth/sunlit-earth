@@ -28,6 +28,8 @@ export component MainWindow inherits Window {
     in-out property <int> aa-index: 1;
     in property <[string]> texture-options: ["Grid", "Day", "Night", "Day/Night Blend"];
     in-out property <int> texture-index: 3;
+    in property <[string]> texture-resolution-options: ["8192", "4096", "2048"];
+    in-out property <int> texture-resolution-index: 1;
     in property <string> loading-text;
 
     in-out property <float> camera-longitude: 0;
@@ -67,6 +69,7 @@ export component MainWindow inherits Window {
     callback sliders-changed();
     callback msaa-changed();
     callback texture-changed();
+    callback texture-resolution-changed();
     callback set-wallpaper();
     in-out property <bool> use-custom-datetime: false;
     in-out property <float> custom-hour: 12.0;
@@ -1050,6 +1053,21 @@ export component MainWindow inherits Window {
                                     current-index <=> root.texture-index;
                                     max-height: 24px;
                                     selected => { root.texture-changed(); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Resolution";
+                                    vertical-alignment: center;
+                                    min-width: 70px;
+                                }
+                                texture-resolution-combo := ComboBox {
+                                    model: texture-resolution-options;
+                                    current-index <=> root.texture-resolution-index;
+                                    max-height: 24px;
+                                    selected => { root.texture-resolution-changed(); }
                                 }
                             }
 

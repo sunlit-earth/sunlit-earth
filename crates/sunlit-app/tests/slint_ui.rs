@@ -367,6 +367,36 @@ fn test_atmosphere_sliders_visible_when_enabled() {
 
 /// Settings without a widget must survive a save.
 ///
+/// The resolution combo box is the one persisted setting whose widget carries
+/// an index rather than a value, so the mapping back to a width is what a save
+/// depends on.
+#[test]
+fn test_save_reads_the_texture_resolution_from_its_combo_box() {
+    use sunlit_core::config::{self, AppConfig, TEXTURE_RESOLUTIONS};
+
+    let window = create_window();
+    let stored = AppConfig::default();
+
+    for (index, width) in TEXTURE_RESOLUTIONS.iter().enumerate() {
+        window.set_texture_resolution_index(i32::try_from(index).unwrap());
+        let saved = sunlit_earth::ui_callbacks::read_config_from_window_onto(
+            &window,
+            &[1, 2, 4, 8],
+            &stored,
+        );
+        assert_eq!(
+            saved.texture_resolution, *width,
+            "the combo box index must decide the saved width"
+        );
+    }
+
+    // An index the model does not have must not write a width nothing offers.
+    window.set_texture_resolution_index(99);
+    let saved =
+        sunlit_earth::ui_callbacks::read_config_from_window_onto(&window, &[1, 2, 4, 8], &stored);
+    assert_eq!(saved.texture_resolution, config::DEFAULT_TEXTURE_RESOLUTION);
+}
+
 /// `quality_tier` is the current example: it is persisted but has no control in
 /// the window, and building the saved config from `AppConfig::default()` meant
 /// every "Set as Wallpaper" in a debug build overwrote a release install's

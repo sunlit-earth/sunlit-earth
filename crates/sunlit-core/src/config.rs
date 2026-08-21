@@ -68,6 +68,67 @@ impl Default for QualityTier {
     }
 }
 
+/// The surface texture widths the user can choose between, widest first.
+///
+/// The two local assets are 8192 wide; the other two entries are exact halvings
+/// of it, which is what lets the loader reach them with the box filter it
+/// already uses for mip levels. This array is also the combo box model, so the
+/// order here is the order on screen.
+pub const TEXTURE_RESOLUTIONS: [u32; 3] = [8192, 4096, 2048];
+
+/// The width a config without a `texture_resolution` key lands on.
+///
+/// Half of what the assets hold. The full 8192 costs about 400 MiB of GPU
+/// memory across the two textures and their mip chains for detail that is
+/// invisible at any sane zoom, so the default is the middle entry and the
+/// widest is opt-in.
+pub const DEFAULT_TEXTURE_RESOLUTION: u32 = 4096;
+
+/// Replace a texture resolution that is not one of [`TEXTURE_RESOLUTIONS`] with
+/// the default.
+///
+/// A config file is a text file: a hand-edited or foreign value arrives here as
+/// a bare number, and the loader is the one place that has to reject it, since
+/// everything downstream treats the value as an exact halving of the source.
+pub fn resolve_texture_resolution(requested: u32) -> u32 {
+    if TEXTURE_RESOLUTIONS.contains(&requested) {
+        return requested;
+    }
+    warn!(
+        requested,
+        using = DEFAULT_TEXTURE_RESOLUTION,
+        allowed = ?TEXTURE_RESOLUTIONS,
+        "texture resolution is not one of the offered widths, falling back"
+    );
+    DEFAULT_TEXTURE_RESOLUTION
+}
+
+/// The combo box index for `width`, falling back to the default's index.
+#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+pub fn find_texture_resolution_index(width: u32) -> i32 {
+    TEXTURE_RESOLUTIONS
+        .iter()
+        .position(|&w| w == width)
+        .or_else(|| {
+            TEXTURE_RESOLUTIONS
+                .iter()
+                .position(|&w| w == DEFAULT_TEXTURE_RESOLUTION)
+        })
+        .unwrap_or(0) as i32
+}
+
+/// The texture width a combo box index selects, falling back to the default.
+#[allow(clippy::cast_sign_loss)]
+pub fn texture_resolution_at(index: i32) -> u32 {
+    if index < 0 {
+        return DEFAULT_TEXTURE_RESOLUTION;
+    }
+    TEXTURE_RESOLUTIONS
+        .get(index as usize)
+        .copied()
+        .unwrap_or(DEFAULT_TEXTURE_RESOLUTION)
+}
+
 /// Top-level config file structure, producing a `[sunlit.earth]` table in TOML.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -106,6 +167,10 @@ pub struct AppConfig {
 
     // Rendering
     pub texture_index: i32,
+    /// Width the two local surface textures are loaded at, one of
+    /// [`TEXTURE_RESOLUTIONS`]. Not part of `SceneParams`: it decides which
+    /// pixels to load, not what to draw.
+    pub texture_resolution: u32,
     pub sample_count: u32,
     /// How much work the renderer and the asset pipeline are allowed to do.
     pub quality_tier: QualityTier,
@@ -163,6 +228,17 @@ fn default_custom_year() -> i32 {
     time::OffsetDateTime::now_utc().year()
 }
 
+impl AppConfig {
+    /// Bring values a file could hold but the app cannot use back into range.
+    ///
+    /// Every load goes through here, so the rest of the app may treat a loaded
+    /// config as valid. Serde's own defaults cover a *missing* field; this
+    /// covers a present one with a value nothing offers.
+    fn sanitize(&mut self) {
+        self.texture_resolution = resolve_texture_resolution(self.texture_resolution);
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         let cam = CameraParams::default();
@@ -176,6 +252,7 @@ impl Default for AppConfig {
             offset_x: cam.offset_x,
             offset_y: cam.offset_y,
             texture_index: 3,
+            texture_resolution: DEFAULT_TEXTURE_RESOLUTION,
             sample_count: 8,
             quality_tier: QualityTier::default_for_build(),
             terminator_width: 0.1,
@@ -267,7 +344,11 @@ pub fn load_config_from(path: &std::path::Path) -> AppConfig {
         }
     };
     match toml::from_str::<ConfigFile>(&contents) {
-        Ok(file) => file.sunlit.earth,
+        Ok(file) => {
+            let mut config = file.sunlit.earth;
+            config.sanitize();
+            config
+        }
         Err(e) => {
             warn!(path = %path.display(), error = %e, "could not parse config file");
             AppConfig::default()
@@ -549,6 +630,7 @@ mod tests {
             offset_x: 0.3,
             offset_y: -0.2,
             texture_index: 1,
+            texture_resolution: 8192,
             sample_count: 4,
             quality_tier: QualityTier::Medium,
             terminator_width: 0.2,
@@ -672,6 +754,7 @@ mod tests {
             offset_x: 0.1,
             offset_y: -0.3,
             texture_index: 2,
+            texture_resolution: 2048,
             sample_count: 4,
             quality_tier: QualityTier::Low,
             terminator_width: 0.15,
@@ -976,6 +1059,109 @@ mod tests {
     fn missing_quality_tier_falls_back_to_the_build_default() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_eq!(config.quality_tier, QualityTier::default_for_build());
+    }
+
+    // --- texture resolution ---
+
+    #[test]
+    fn default_texture_resolution_is_one_of_the_offered_widths() {
+        assert!(TEXTURE_RESOLUTIONS.contains(&DEFAULT_TEXTURE_RESOLUTION));
+        assert_eq!(
+            AppConfig::default().texture_resolution,
+            DEFAULT_TEXTURE_RESOLUTION
+        );
+    }
+
+    #[test]
+    fn offered_widths_are_exact_halvings_of_the_widest() {
+        for pair in TEXTURE_RESOLUTIONS.windows(2) {
+            assert_eq!(
+                pair[0],
+                pair[1] * 2,
+                "each width must be twice the next, so halving reaches it"
+            );
+        }
+    }
+
+    #[test]
+    fn every_offered_width_is_accepted() {
+        for width in TEXTURE_RESOLUTIONS {
+            assert_eq!(resolve_texture_resolution(width), width);
+        }
+    }
+
+    #[test]
+    fn a_width_nothing_offers_falls_back_to_the_default() {
+        for width in [0, 1, 1024, 3000, 4095, 16384, u32::MAX] {
+            assert_eq!(
+                resolve_texture_resolution(width),
+                DEFAULT_TEXTURE_RESOLUTION
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_missing_the_resolution_lands_on_the_default() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_eq!(config.texture_resolution, DEFAULT_TEXTURE_RESOLUTION);
+    }
+
+    /// A config file is a text file, so the loader has to be the guard rather
+    /// than serde.
+    #[test]
+    fn loading_a_config_with_an_impossible_resolution_repairs_it() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_bad_resolution");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        fs::write(&path, "[sunlit.earth]\ntexture_resolution = 12345\n").unwrap();
+        assert_eq!(
+            load_config_from(&path).texture_resolution,
+            DEFAULT_TEXTURE_RESOLUTION
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_offered_resolution_survives_a_file_round_trip() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_resolution_roundtrip");
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+
+        for width in TEXTURE_RESOLUTIONS {
+            let config = AppConfig {
+                texture_resolution: width,
+                ..AppConfig::default()
+            };
+            save_config_to(&config, &path);
+            assert_eq!(load_config_from(&path).texture_resolution, width);
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolution_index_and_width_are_inverses() {
+        for (index, width) in TEXTURE_RESOLUTIONS.iter().enumerate() {
+            let index = i32::try_from(index).unwrap();
+            assert_eq!(find_texture_resolution_index(*width), index);
+            assert_eq!(texture_resolution_at(index), *width);
+        }
+    }
+
+    #[test]
+    fn an_index_outside_the_model_yields_the_default_width() {
+        for index in [-5, -1, 3, 99] {
+            assert_eq!(texture_resolution_at(index), DEFAULT_TEXTURE_RESOLUTION);
+        }
+    }
+
+    #[test]
+    fn a_width_nothing_offers_indexes_the_default() {
+        let expected = find_texture_resolution_index(DEFAULT_TEXTURE_RESOLUTION);
+        assert_eq!(find_texture_resolution_index(1234), expected);
     }
 
     // --- find_sample_count_index ---

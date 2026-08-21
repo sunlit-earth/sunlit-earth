@@ -38,4 +38,6 @@ None yet.
 
 ## Validation rounds
 
-Recorded here per round.
+### Round 1
+
+Validator over `d9875e2..6cad5d7`, gates all green (fmt, clippy, full workspace tests). Verdict: 3 majors, 8 minors. The majors are one shape: text and behavior keyed on a hand-over the code does not confirm happened. (1) `StartReason::Keep` is never assigned, so a guest kept by `e2e --keep` gets `vm view`'s run-in-progress branch: no settings file, wrong note. (2) `vm smoke --keep` prints hand-over instructions for a guest that was never staged or handed over. (3) The stale-image warning `ce97b24` put in `vm view` was deleted by `b35a555`, and the image on this host is stale, so the note claims no credentials will be asked for on a guest that will ask. Minors: vmconnect settings name a different server than vmconnect is launched with; CLAUDE.md's "every host tool goes through resolve_tool" overclaims; `enhanced_session_script` and `id_script` sit outside the parse check the range extended; `sweep_stale_settings` deletes files with no test; the settings file is in no teardown path; the clipboard claims in `vm up`'s output and vm-setup.md were made wrong by `ClipboardRedirection = True`; a stale trigger comment in ci.yml; an unparseable sentence in CLAUDE.md. Disposition of each is recorded in round 2's entry. The validator also listed the guest-side claims it could verify only by reading, noting the current image predates the `TermService` disable so that path has never run in a real build.

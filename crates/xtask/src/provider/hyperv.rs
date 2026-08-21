@@ -374,15 +374,20 @@ pub fn forget_settings(app_data: &Path, vm_name: &str, keep: Option<&Path>) {
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
+    // Kept by name rather than by comparing paths: everything here is in the
+    // one directory, and the file system these names came off is
+    // case-insensitive while `PathBuf` is not. A write to a name that differs
+    // only in case lands in the existing file, which would then not match the
+    // path that wrote it and would be swept as an earlier guest's.
+    let keep = keep
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str());
     for entry in entries.flatten() {
         let path = entry.path();
-        if keep == Some(path.as_path()) {
-            continue;
-        }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !looks_like_settings(name) {
+        if !looks_like_settings(name) || keep.is_some_and(|keep| keep.eq_ignore_ascii_case(name)) {
             continue;
         }
         // The file says which VM it belongs to, and that is the only thing that
@@ -1046,6 +1051,18 @@ mod tests {
         assert!(!stale.exists(), "the file an earlier boot left");
         assert!(foreign.is_file(), "another VM's settings");
         assert!(unrelated.is_file(), "vmconnect's own settings");
+
+        // The name is what identifies the file to keep, on a file system where
+        // two spellings of it are one file.
+        let lower = dir.join(
+            current
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a name")
+                .to_lowercase(),
+        );
+        forget_settings(&app_data, "sunlit-e2e-windows", Some(&lower));
+        assert!(current.is_file(), "the same file under another spelling");
 
         // And when the VM goes, there is nothing left to keep it for.
         forget_settings(&app_data, "sunlit-e2e-windows", None);

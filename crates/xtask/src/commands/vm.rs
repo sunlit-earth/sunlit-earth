@@ -367,7 +367,10 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> 
 /// shortcut to double-click.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prepared {
-    /// The binaries, the launcher and the desktop shortcuts are in the guest.
+    /// Staging ran, so the binaries, the launcher and the desktop shortcuts
+    /// went into the guest. Not that every part of it arrived: the shortcuts are
+    /// convenience, so `artifacts::stage` warns about them and carries on, and
+    /// that warning is on the line above this text rather than a command away.
     pub staged: bool,
     /// The guest confirmed it can offer an enhanced `vmconnect` session.
     pub enhanced_session: bool,

@@ -172,6 +172,38 @@ pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32
     )
 }
 
+/// What to say when a console asks for credentials it was not supposed to ask
+/// for.
+///
+/// Every text that tells somebody a guest offers no enhanced session can be
+/// wrong in this one way, so the sentence lives once and all of them print it:
+/// [`view_note`] below, and the closing text of `vm smoke --keep` and of a
+/// `vm up` or `e2e --keep` whose hand-over failed.
+///
+/// Hedged deliberately. Remote Desktop Services running in a guest nobody handed
+/// over has more than one cause: a golden image built before the one that
+/// disables the service, which is the common one and is true of every image on
+/// this host today; a hand-over that started the service and then failed before
+/// the guest confirmed it, which leaves the service running and the record
+/// saying otherwise; and a guest that is still being installed, which has no
+/// golden image behind it at all and whose reader is already running the command
+/// that fixes the first case. Naming one of them as the cause misdiagnoses the
+/// other two, so the explanation names all three and the advice, which does not
+/// depend on which it is, comes first.
+///
+/// What the dialog wants is not discussed, on purpose. It differs by cause, and
+/// telling somebody how to satisfy a dialog they have just been told to cancel
+/// is an invitation to try.
+pub const CREDENTIAL_DIALOG_CAVEAT: &str = "If a credential dialog appears anyway, cancel it rather than signing in: \
+     connecting takes the console session over, and nothing in this guest was \
+     prepared for anybody to connect to it. What the dialog means is that Remote \
+     Desktop Services is running in there, and that has more than one cause. \
+     Usually it is a golden image built before the one that disables the service, \
+     which `cargo xtask vm build-image windows` replaces. A hand-over that \
+     started the service and then failed before the guest confirmed it looks the \
+     same from here, and so does a guest that is still being installed, which has \
+     no golden image behind it yet.";
+
 /// What to say about the session `vmconnect` is about to open, which depends on
 /// whether this guest was handed over.
 ///
@@ -185,8 +217,8 @@ pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32
 /// Keyed on the hand-over rather than on the reason the guest was started for,
 /// because the reason is decided before the boot and the hand-over is a thing
 /// the guest confirmed afterwards. The advice below is about what a dialog will
-/// ask for, and a hand-over that did not happen or did not work leaves nothing
-/// to type.
+/// ask for, and a hand-over that did not happen leaves no dialog to answer;
+/// [`CREDENTIAL_DIALOG_CAVEAT`] is what covers the guests where that is wrong.
 pub fn view_note(handed_over: bool) -> String {
     if handed_over {
         "It will offer an enhanced session, which is the one that can be \
@@ -198,21 +230,19 @@ pub fn view_note(handed_over: bool) -> String {
          harmless here, because nothing of ours is running in this guest."
             .to_owned()
     } else {
-        // The second paragraph is the stale-image case, and it is not
-        // hypothetical: the image ships with Remote Desktop Services disabled,
-        // but staleness only warns at boot, so a guest built before that change
-        // still offers the enhanced session this text says it does not.
-        "This guest was not handed over, so it offers no enhanced session and \
-         asks for nothing: what opens is a basic session showing the console \
-         desktop as it is. That is deliberate for a guest with a run in it. An \
-         enhanced session is RDP, and connecting would take the console session \
-         out from under the job, which is where its windows are.\n\
-         If a credential dialog appears anyway, this guest's golden image \
-         predates the one that disables Remote Desktop Services: cancel it \
-         rather than signing in, for that same reason, and \
-         `cargo xtask vm build-image windows` brings the image up to date.\n\
-         Watching is harmless; clicking during a run perturbs it."
-            .to_owned()
+        // The second paragraph is not hypothetical: the image ships with Remote
+        // Desktop Services disabled, but staleness only warns at boot, so a
+        // guest built before that change still offers the enhanced session this
+        // text says it does not.
+        format!(
+            "This guest was not handed over, so it offers no enhanced session and \
+             asks for nothing: what opens is a basic session showing the console \
+             desktop as it is. That is deliberate for a guest with a run in it. An \
+             enhanced session is RDP, and connecting would take the console session \
+             out from under the job, which is where its windows are.\n\
+             {CREDENTIAL_DIALOG_CAVEAT}\n\
+             Watching is harmless; clicking during a run perturbs it."
+        )
     }
 }
 
@@ -982,10 +1012,30 @@ mod tests {
         // Not a word about leaving the password blank: there is none to leave
         // blank in a guest that was never handed over.
         assert!(!not.contains("leave that field empty"), "{not}");
-        // And the one case where the sentence above is wrong is named, because
-        // a stale image still offers the session this says it does not.
-        assert!(not.contains("cancel it"), "{not}");
-        assert!(not.contains("build-image windows"), "{not}");
+        // And the case where the sentence above is wrong is covered, from the
+        // shared constant rather than in words of its own.
+        assert!(not.contains(CREDENTIAL_DIALOG_CAVEAT), "{not}");
+    }
+
+    /// The advice is safe whichever guest is reading it; the explanation is a
+    /// guess, so it may not read as a diagnosis. Three guests reach this text
+    /// and only one of them has a stale golden image behind it.
+    #[test]
+    fn the_credential_dialog_caveat_advises_before_it_explains_and_names_every_cause() {
+        let text = CREDENTIAL_DIALOG_CAVEAT;
+        let advice = text.find("cancel it rather than signing in").expect(text);
+        let cause = text.find("more than one cause").expect(text);
+        assert!(advice < cause, "{text}");
+        // The common one, with the command that ends it.
+        assert!(
+            text.contains("cargo xtask vm build-image windows"),
+            "{text}"
+        );
+        // And the two it would misdiagnose: a hand-over that got as far as the
+        // service, and a build guest, whose reader is running that command
+        // already and has no image to rebuild.
+        assert!(text.contains("failed before the guest confirmed"), "{text}");
+        assert!(text.contains("still being installed"), "{text}");
     }
 
     /// The predicate that decides what gets deleted out of the user's roaming

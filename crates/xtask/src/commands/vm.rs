@@ -412,6 +412,12 @@ pub fn lifecycle_explainer(target: Target, prepared: Prepared) -> String {
 /// console resolution and asks for nothing. A VNC viewer on a QEMU guest has no
 /// such choice to explain. The clipboard differs the same way, because an
 /// enhanced session is RDP and carries one.
+///
+/// The not-handed-over case ends in the same
+/// [`CREDENTIAL_DIALOG_CAVEAT`](crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT)
+/// `vm view` prints, from the same constant: the two texts describe the same
+/// console for the same guests, so "nothing to type" needs its exception in both
+/// places or in neither.
 fn view_note(target: Target, enhanced_session: bool) -> String {
     match (target, enhanced_session) {
         (Target::Windows, true) => "\n\nIts desktop opens in an enhanced session, which is the \
@@ -424,13 +430,15 @@ fn view_note(target: Target, enhanced_session: bool) -> String {
              An enhanced session is RDP, so it carries the clipboard: text can \
              be pasted straight in. Files go in over `vm ssh` and scp."
             .to_owned(),
-        (Target::Windows, false) => "\n\nIts desktop opens in a basic session: nothing to type, \
-             and fixed at the console resolution, because only an enhanced \
-             session can be resized and this guest is not offering one. `vm up` \
-             and `e2e --keep` are what turn that on.\n\n\
+        (Target::Windows, false) => format!(
+            "\n\nIts desktop opens in a basic session: nothing to type, and fixed \
+             at the console resolution, because only an enhanced session can be \
+             resized and this guest is not offering one. `vm up` and `e2e --keep` \
+             are what turn that on.\n\n\
              A basic session carries no clipboard, so text and files go in over \
-             `vm ssh` and scp."
-            .to_owned(),
+             `vm ssh` and scp.\n\n{}",
+            crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT
+        ),
         (Target::Linux, _) => "\n\nThe console carries no clipboard integration, so text and \
              files go in over `vm ssh` and scp."
             .to_owned(),
@@ -513,14 +521,18 @@ pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8
 /// Answers whether the guest ended up offering it, and writes that into the
 /// record, because `vm view` runs later as its own command and has no other way
 /// to know: what it decides from it is whether to answer the connection dialog
-/// and what to tell somebody the console will ask them for.
+/// and what to tell somebody the console will ask them for. So the answer is no
+/// for a guest that has no such session to offer at all, and not only for one
+/// where turning it on failed: a Linux guest is looked at through VNC, and a
+/// record claiming otherwise would have `vm view` promise a blank password for
+/// an account that is not in it.
 pub fn hand_over(session: &mut Session, store: &Store) -> bool {
     let enhanced_session = match crate::guest::handover::enable_enhanced_session(
         session.provider.as_ref(),
         &session.state,
         session.target,
     ) {
-        Ok(()) => true,
+        Ok(offered) => offered,
         Err(e) => {
             println!("warning: {e}");
             println!("  the basic session still shows the desktop; it cannot be resized");
@@ -907,6 +919,50 @@ mod tests {
         assert!(text.contains("basic session"), "{text}");
         assert!(!text.contains("leave that field empty"), "{text}");
         assert!(text.contains("no clipboard"), "{text}");
+    }
+
+    /// A guest nobody handed over is the one that can ask for credentials
+    /// anyway, and this text is read by the two commands that leave one: `vm
+    /// smoke --keep`, and a `vm up` whose hand-over did not take. Both get the
+    /// same sentence `vm view` gives, because the alternative is a console the
+    /// two commands describe differently.
+    #[test]
+    fn every_text_about_a_guest_that_offers_no_enhanced_session_carries_the_same_caveat() {
+        let caveat = crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT;
+        for prepared in [
+            Prepared::BARE,
+            Prepared {
+                staged: true,
+                enhanced_session: false,
+            },
+        ] {
+            let text = lifecycle_explainer(Target::Windows, prepared);
+            assert!(text.contains(caveat), "{text}");
+        }
+        assert!(crate::provider::hyperv::view_note(false).contains(caveat));
+
+        // A guest that was handed over expects the dialog and can answer it, so
+        // the caveat would contradict the advice it is printed beside.
+        let handed_over = lifecycle_explainer(
+            Target::Windows,
+            Prepared {
+                staged: true,
+                enhanced_session: true,
+            },
+        );
+        assert!(!handed_over.contains(caveat), "{handed_over}");
+        assert!(!crate::provider::hyperv::view_note(true).contains(caveat));
+        // And a Linux guest has no vmconnect dialog to be surprised by.
+        assert!(
+            !lifecycle_explainer(
+                Target::Linux,
+                Prepared {
+                    staged: true,
+                    enhanced_session: false,
+                }
+            )
+            .contains(caveat)
+        );
     }
 
     /// The same two facts for a guest that was staged but whose hand-over did

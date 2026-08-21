@@ -198,6 +198,14 @@ pub fn enhanced_session_script(user: &str) -> String {
 
 /// Turn it on in a guest that is being handed over.
 ///
+/// Answers whether the guest ends up offering an enhanced session, which is not
+/// the same question as whether this succeeded: a target that has no such
+/// session to offer answers `Ok(false)` without asking the guest anything. Only
+/// Windows guests are looked at through `vmconnect`, and the record this answer
+/// is written into says what was done to the guest rather than what was tried,
+/// so a Linux guest reporting itself handed over would be a false claim about a
+/// blank password and a `tester` account it does not have.
+///
 /// A failure is the caller's to report and not to fail on: what is lost is a
 /// resizable window, and the basic session still shows a desktop that is
 /// already signed in.
@@ -205,9 +213,9 @@ pub fn enable_enhanced_session(
     provider: &dyn Provider,
     state: &RunState,
     target: Target,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if target != Target::Windows {
-        return Ok(());
+        return Ok(false);
     }
     let script = enhanced_session_script(crate::provider::hyperv::GUEST_USER);
     let out = provider.exec(state, &powershell_command(&script))?;
@@ -218,7 +226,7 @@ pub fn enable_enhanced_session(
             out.stderr.trim()
         ));
     }
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -379,5 +387,36 @@ mod tests {
             prepare(&provider, &state, &store, Target::Linux, &paths(true)),
             Ok(())
         );
+    }
+
+    /// A Linux guest is looked at through VNC, so there is no enhanced session
+    /// to turn on and nothing to report as turned on. The answer is what
+    /// `RunState::handed_over` records, and a guest recorded as handed over is
+    /// promised a blank password for an account it does not have: under
+    /// `SUNLIT_EARTH_VM_PROVIDER=hyperv` that promise reaches a reader.
+    ///
+    /// The fake runner has no response registered, so it also proves the guest
+    /// was not asked: any command at all would come back as an error here.
+    #[test]
+    fn a_linux_guest_is_not_recorded_as_offering_a_session_it_has_no_way_to_offer() {
+        let store = Store::new(r"C:\vm store");
+        let runner = crate::runner::fake::FakeRunner::default();
+        let provider = crate::provider::qemu::QemuProvider::new(
+            &runner,
+            &store,
+            crate::provider::target::HostOs::Windows,
+        );
+        let state = crate::store::state::RunState::new(
+            Target::Linux,
+            crate::provider::target::ProviderKind::Qemu,
+            std::path::PathBuf::from("/tmp/overlay.qcow2"),
+            crate::store::state::StartReason::Up,
+            0,
+        );
+        assert_eq!(
+            enable_enhanced_session(&provider, &state, Target::Linux),
+            Ok(false)
+        );
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
     }
 }

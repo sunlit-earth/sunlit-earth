@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::vm::Session;
 use crate::guest::cargo_json::{self, Artifact};
+use crate::guest::handover;
 use crate::provider;
 use crate::provider::target::{HostOs, Target};
 use crate::runner::{Cmd, Runner};
@@ -394,6 +395,21 @@ pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<Gu
             &session.state,
             &format!("chmod +x {} {}", paths.app, paths.harness),
         );
+    }
+
+    // Every guest is one somebody may end up looking at: `vm up` is for that,
+    // `e2e --keep` leaves the same thing behind, and watching a run through
+    // `vm view` is supported. So the launcher and the shortcuts are staged
+    // alongside the binaries rather than only on the interactive path. A
+    // failure here is a warning: it costs convenience, not the run.
+    if let Err(e) = handover::prepare(
+        session.provider.as_ref(),
+        &session.state,
+        store,
+        target,
+        &paths,
+    ) {
+        println!("warning: {e}");
     }
     Ok(paths)
 }

@@ -43,6 +43,16 @@ if ($job -and $job.Principal.LogonType -ne 'Interactive') {
     $problems += "the job task has logon type $($job.Principal.LogonType), not Interactive"
 }
 
+# The one thing that makes this guest's desktop reachable without a password:
+# with Remote Desktop Services enabled, vmconnect offers an enhanced session,
+# asks for credentials, and logs into a session of its own instead of showing
+# the console one. Checked here because the service cannot be stopped once it is
+# running, so the start type is the only evidence available before the shutdown
+# that ends the build.
+if ((Get-Service TermService).StartType -ne 'Disabled') {
+    $problems += 'Remote Desktop Services is not disabled, so vmconnect would offer an enhanced session'
+}
+
 Write-Output '== ensuring a boot path that survives the hypervisor change'
 # This image is installed under OVMF and then booted on Hyper-V generation 2.
 # The boot entry Windows Setup wrote lives in OVMF's own NVMe-backed variable

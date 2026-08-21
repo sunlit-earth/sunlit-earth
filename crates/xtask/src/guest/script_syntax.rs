@@ -77,6 +77,17 @@ fn all_scripts() -> Vec<(String, String)> {
         crate::store::windows_media::dismount_script(iso),
     ));
 
+    // The shortcut script, which is generated per boot and runs in the guest.
+    scripts.push((
+        "handover: shortcuts".to_owned(),
+        crate::guest::handover::shortcut_script(&crate::guest::artifacts::guest_paths(
+            crate::provider::target::Target::Windows,
+            "sunlit-earth.exe",
+            "e2e-1a2b.exe",
+            true,
+        )),
+    ));
+
     // The scripts that ship in the repo and run inside the guest. A typo in
     // one of these surfaces forty minutes into a Windows image build, which is
     // the most expensive place in this phase to find one.
@@ -247,7 +258,18 @@ mod tests {
     fn every_shell_script_the_linux_build_runs_parses() {
         // `bash -n` reads and parses without executing. Every platform this
         // suite runs on has a bash: the Linux and macOS runners natively, the
-        // Windows ones through Git.
+        // Windows ones through Git or WSL.
+        //
+        // The script arrives on stdin rather than as a file name, and that is
+        // not a stylistic choice. On a Windows host `bash` on PATH is as likely
+        // to be `System32\bash.exe`, the WSL launcher, as Git's, and the WSL one
+        // cannot open a path from this side at all: `C:\...` reaches it with the
+        // separators eaten as escapes, and `C:/...` names a directory that does
+        // not exist inside the distribution. Either way the parse that was
+        // supposed to be the test never happened, and it failed as a missing
+        // file rather than as a syntax error. Handing over the text works on
+        // every bash, and the file name appears in the assertion below rather
+        // than in bash's message, which is where it was useful anyway.
         let scripts = linux_guest_scripts();
         assert!(scripts.len() >= 3, "only {} scripts found", scripts.len());
 
@@ -255,14 +277,28 @@ mod tests {
             println!("skipping: no bash on PATH to parse the guest scripts with");
             return;
         };
-
-        for script in scripts {
-            let out = RealRunner
+        let parse = |text: String| {
+            RealRunner
                 .capture(
                     &crate::runner::Cmd::new(bash.to_string_lossy())
-                        .args(["-n".to_owned(), script.to_string_lossy().into_owned()]),
+                        .arg("-n")
+                        .stdin(text),
                 )
-                .expect("bash runs");
+                .expect("bash runs")
+        };
+
+        // A negative control, because everything below now rests on bash
+        // reading its stdin: a pipe that delivered nothing would make every
+        // script in the repository parse perfectly.
+        assert!(
+            !parse("echo 'unterminated\n".to_owned()).success(),
+            "bash accepted an unterminated quote, so it is not reading what it is given"
+        );
+
+        for script in scripts {
+            let text = std::fs::read_to_string(&script)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", script.display()));
+            let out = parse(text);
             assert!(
                 out.success(),
                 "{} does not parse: {}",

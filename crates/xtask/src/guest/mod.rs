@@ -3,6 +3,7 @@
 
 pub mod artifacts;
 pub mod cargo_json;
+pub mod handover;
 pub mod job;
 #[cfg(test)]
 pub mod script_syntax;

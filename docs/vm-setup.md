@@ -56,9 +56,15 @@ The Linux guest skips the two cases that need a tray icon. One of them is the tr
 
 There is no stop or pause, and that is deliberate. A guest holds no state worth keeping, so ending one and discarding it are the same act: `vm down` frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Until you take it down, a running guest holds its RAM allocation. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
 
-Three things to know before you connect:
+A Windows guest's desktop has two shortcuts on it, written per boot by whatever staged the binaries:
 
-- For a Hyper-V guest, use the basic session that `vmconnect` opens by default. Enhanced session mode is RDP underneath and logs into a session of its own, which locks the console session out from under a running job. Plain `mstsc` does the same thing and should be avoided for the same reason.
+- `Sunlit Earth` starts the app through `C:\sunlit-e2e\run-app.cmd`, which sets `SLINT_BACKEND=winit-software` and, when the textures were staged, `SUNLIT_EARTH_TEXTURES`. That is the same backend the generated job sets and for the same reason: the guest has no OpenGL, and the app started without it dies before its window appears. The launcher keeps its console window, so the app's log is on screen while it runs.
+- `sunlit-e2e` opens the directory the binaries, fixtures and results are in.
+
+Four things to know before you connect:
+
+- Nothing asks for a password. The console session is signed in by autologon before `vm up` returns, and a basic `vmconnect` session shows that session as it is.
+- If `vmconnect` does ask, it has switched to an enhanced session, which is RDP into a session of its own and takes the desktop out from under a running job. Dismiss the prompt and use the toolbar button to go back to basic. A guest built from the current templates cannot offer an enhanced session at all: `bootstrap.ps1` disables Remote Desktop Services, so Hyper-V reports enhanced session mode as unavailable and `vmconnect` has nothing to switch to. Being asked means the image predates that and wants a rebuild. Plain `mstsc` is the same problem by hand and should be avoided for the same reason.
 - Watching a run is harmless. Clicking, typing, or moving the mouse during one perturbs the tests, which is the whole point of them having a desktop to themselves.
 - The hypervisor console has essentially no clipboard integration, which is the price of it not being RDP. Text and files go in through `vm ssh` and `scp`.
 
@@ -174,7 +180,9 @@ Then, at the `(qemu)` prompt, which is the human form of the QMP `system_reset` 
 
 **Every case in the guest fails with exit code -1073741515 and an empty log.** That is `0xC0000135`, `STATUS_DLL_NOT_FOUND`: the binary could not start, and nothing prints when that happens. A fresh Windows 11 has only the `_clr0400` copies of `vcruntime140.dll` and `msvcp140.dll`, which belong to .NET, and every Rust MSVC binary links the plain ones. The golden image installs the Visual C++ runtime at first logon and `finalize.ps1` refuses to finish an image without it, so this means an image built before that was added: rebuild it. `cargo xtask vm ssh windows "dir /b C:\Windows\System32\vcruntime140.dll"` answers the question in one line.
 
-**The app in a Windows guest says "Could not locate glCreateShader symbol" and every windowed case times out.** A Hyper-V guest's display adapter has no OpenGL, and Windows ships no software implementation of it, so Slint's default renderer cannot start. The guest job sets `SLINT_BACKEND=winit-software` for exactly this, which keeps the real window and swaps the renderer for the CPU one. Seeing this means something ran the app in the guest without that variable: `vm ssh windows` and a hand-typed command will, and so will an older job script.
+**The app in a Windows guest says "Could not locate glCreateShader symbol" and every windowed case times out.** A Hyper-V guest's display adapter has no OpenGL, and Windows ships no software implementation of it, so Slint's default renderer cannot start. The guest job sets `SLINT_BACKEND=winit-software` for exactly this, which keeps the real window and swaps the renderer for the CPU one. Seeing this means something ran the app in the guest without that variable: a hand-typed command will, and so will an older job script. Start it through the desktop shortcut or `C:\sunlit-e2e\run-app.cmd`, which sets it.
+
+**The app in a Windows guest logs `windows_read_data_files_in_registry: Registry lookup failed to get ICD manifest files. Possibly missing Vulkan driver?`** This one is noise, however it reads: wgpu logs it at error level while probing its Vulkan backend, and the guest has no Vulkan driver because a synthetic display adapter does not come with one. The next line says which adapter was actually selected, which in a guest is `Microsoft Basic Render Driver (Dx12, Cpu)`, WARP, the same software rasterizer the golden tests run on. A `render` in a guest exits 0 and produces a correct PNG with these lines in its log.
 
 **The render case fails on a color, such as "Sahara: expected yellowish/sandy".** The guest has no textures, so it rendered the procedural grid and the sampled points are whatever the grid has there. The run says at the top whether it staged them and why not; `git lfs pull` is the usual answer.
 

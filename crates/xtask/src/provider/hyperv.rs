@@ -368,9 +368,13 @@ impl crate::provider::Provider for HypervProvider<'_> {
             .map_err(|e| format!("cannot start vmconnect: {e}"))?;
         Ok(format!(
             "vmconnect is opening {}.\n\
-             Use the basic session it opens with, not an enhanced one: enhanced \
-             session mode is RDP underneath and logs into a session of its own, \
-             which locks the console session out from under a running job.",
+             A basic session needs no password: the console session it shows is \
+             already signed in. If vmconnect asks for one, it has switched to an \
+             enhanced session, which is RDP into a session of its own and takes \
+             the desktop out from under a running job; dismiss the prompt and use \
+             the toolbar button to go back to a basic session. An image built \
+             from the current templates cannot offer an enhanced session at all, \
+             so being asked at all means this one predates that.",
             state.vm_name
         ))
     }

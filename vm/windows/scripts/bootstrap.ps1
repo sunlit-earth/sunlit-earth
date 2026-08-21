@@ -80,6 +80,25 @@ try {
             -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
     }
 
+    Step 'remote sessions'
+    # Nothing may open a session in this guest except the console one. With
+    # Remote Desktop Services running, Hyper-V reports enhanced session mode as
+    # available, vmconnect switches to it by itself, and the first thing anyone
+    # who wants to look at the desktop sees is a credential prompt. Accepting it
+    # is worse than the prompt: an enhanced session is RDP into a session of its
+    # own, so it takes the desktop out from under whatever is running in the
+    # console session.
+    #
+    # Disabled rather than stopped, because the service refuses to stop once it
+    # is running. The boot that matters is the next one, and every boot of the
+    # finished image is a next one. Measured on 2026-08-21: with the service
+    # disabled the host reports EnhancedSessionModeState 6, "allowed but not
+    # available", vmconnect can then only open a basic session, and a basic
+    # session shows the console desktop the autologon has already signed into,
+    # so no password is asked for anywhere. The console session, the scheduled
+    # tasks that run in it and `qwinsta` are all unaffected.
+    Set-Service -Name TermService -StartupType Disabled
+
     Step 'power and display'
     # Nothing may sleep, blank, or lock under a long test run.
     powercfg /change standby-timeout-ac 0

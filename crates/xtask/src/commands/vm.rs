@@ -376,19 +376,23 @@ pub fn lifecycle_explainer(target: Target) -> String {
     )
 }
 
-/// What someone running the app in this guest by hand has to set, which the
-/// generated job sets for a test run.
+/// What is waiting on the desktop of a guest that has just been handed over.
 ///
 /// A Windows guest has no OpenGL, and the failure that produces names
-/// `glCreateShader` rather than the guest, so the hint belongs where the guest
-/// is handed over. The value comes from the job's own constant, so the two
-/// cannot drift apart.
+/// `glCreateShader` rather than the guest, so what the app needs is said where
+/// the guest is handed over. The launcher behind the desktop shortcut is what
+/// sets it; the value named here comes from the job's own constant, so the
+/// three cannot drift apart.
 fn guest_environment_note(target: Target) -> String {
     match target {
         Target::Windows => format!(
-            "\n\nRunning the app in here by hand needs \
-             `set SLINT_BACKEND={backend}` first: this guest has no OpenGL, and \
-             without it the app exits before a window appears.",
+            "\n\nTwo shortcuts are on its desktop. `{app}` starts the app through \
+             a launcher that sets `SLINT_BACKEND={backend}` for it: this guest has \
+             no OpenGL, and without that the app exits before a window appears. \
+             `{folder}` opens the directory the binaries, fixtures and results \
+             are in.",
+            app = crate::guest::handover::APP_SHORTCUT.trim_end_matches(".lnk"),
+            folder = crate::guest::handover::FOLDER_SHORTCUT.trim_end_matches(".lnk"),
             backend = crate::commands::e2e::WINDOWS_SLINT_BACKEND
         ),
         Target::Linux => String::new(),
@@ -721,7 +725,8 @@ mod tests {
     #[test]
     fn handing_over_a_windows_guest_says_what_the_app_needs_in_it() {
         // The job sets this; a shell does not, and the failure without it names
-        // an OpenGL symbol rather than the guest.
+        // an OpenGL symbol rather than the guest. What sets it for a person is
+        // the desktop launcher, so both shortcuts are named as well.
         let text = lifecycle_explainer(Target::Windows);
         assert!(
             text.contains(&format!(
@@ -731,5 +736,9 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("no OpenGL"), "{text}");
+        assert!(text.contains("Sunlit Earth"), "{text}");
+        assert!(text.contains("sunlit-e2e"), "{text}");
+        // Named the way Explorer shows them, without the extension it hides.
+        assert!(!text.contains(".lnk"), "{text}");
     }
 }

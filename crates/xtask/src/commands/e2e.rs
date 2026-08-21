@@ -182,7 +182,7 @@ fn run_in_guest(
     // guest running with nothing to run in it.
     artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
 
-    let session = vm::boot(runner, &store, target, StartReason::Run, allow_expired)?;
+    let mut session = vm::boot(runner, &store, target, StartReason::Run, allow_expired)?;
 
     // From here on the VM exists, so no failure may return without saying what
     // happened to it.
@@ -232,8 +232,17 @@ fn run_in_guest(
     if keep {
         // The run is over, so the console session is nobody's any more and the
         // guest can offer the enhanced session that would have taken it.
-        vm::hand_over(&session);
-        println!("{}", vm::lifecycle_explainer(target));
+        let enhanced_session = vm::hand_over(&mut session, &store);
+        println!(
+            "{}",
+            vm::lifecycle_explainer(
+                target,
+                vm::Prepared {
+                    staged: true,
+                    enhanced_session
+                }
+            )
+        );
     } else if let Err(e) = session.tear_down(&store) {
         // Reported with the way out, not as a bare warning: a VM that would
         // not go away holds its memory and the ports the next run needs.

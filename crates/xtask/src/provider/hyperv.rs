@@ -173,32 +173,46 @@ pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32
 }
 
 /// What to say about the session `vmconnect` is about to open, which depends on
-/// what the guest was started for.
+/// whether this guest was handed over.
 ///
 /// A guest handed over to a person has been given a passwordless account and a
 /// running Remote Desktop service, so the enhanced session vmconnect prefers is
-/// there for the taking, and it is the only session that can be resized. A
-/// guest with a run in it has neither, so vmconnect opens the basic session that
-/// is safe to watch and asks for nothing. The two cases have opposite advice,
-/// and printing both would leave the reader to work out which applies.
-pub fn view_note(reason: StartReason) -> String {
-    match reason {
-        StartReason::Up | StartReason::Keep => "It will offer an enhanced session, which is the \
-             one that can be resized: the guest's desktop follows the window. \
-             The dialog wants the guest's account, `tester`, and no password at \
-             all, so leave that field empty and connect. A basic session needs \
-             nothing typed but is fixed at the console resolution.\n\
-             Enhanced is RDP, and RDP takes the console session over. That is \
-             harmless here, because nothing of ours is running in this guest."
-            .to_owned(),
-        StartReason::Run | StartReason::Build => "This guest has a job running in it, so it \
-             offers no enhanced session and asks for nothing: what opens is a \
-             basic session showing the console desktop as it is. That is \
-             deliberate. An enhanced session is RDP, and connecting would take \
-             the console session out from under the job, which is where its \
-             windows are.\n\
-             Watching is harmless; clicking during a run perturbs it."
-            .to_owned(),
+/// there for the taking, and it is the only session that can be resized. Any
+/// other guest has neither, so vmconnect opens the basic session that is safe to
+/// watch and asks for nothing. The two cases have opposite advice, and printing
+/// both would leave the reader to work out which applies.
+///
+/// Keyed on the hand-over rather than on the reason the guest was started for,
+/// because the reason is decided before the boot and the hand-over is a thing
+/// the guest confirmed afterwards. The advice below is about what a dialog will
+/// ask for, and a hand-over that did not happen or did not work leaves nothing
+/// to type.
+pub fn view_note(handed_over: bool) -> String {
+    if handed_over {
+        "It will offer an enhanced session, which is the one that can be \
+         resized: the guest's desktop follows the window. The dialog wants the \
+         guest's account, `tester`, and no password at all, so leave that field \
+         empty and connect. A basic session needs nothing typed but is fixed at \
+         the console resolution.\n\
+         Enhanced is RDP, and RDP takes the console session over. That is \
+         harmless here, because nothing of ours is running in this guest."
+            .to_owned()
+    } else {
+        // The second paragraph is the stale-image case, and it is not
+        // hypothetical: the image ships with Remote Desktop Services disabled,
+        // but staleness only warns at boot, so a guest built before that change
+        // still offers the enhanced session this text says it does not.
+        "This guest was not handed over, so it offers no enhanced session and \
+         asks for nothing: what opens is a basic session showing the console \
+         desktop as it is. That is deliberate for a guest with a run in it. An \
+         enhanced session is RDP, and connecting would take the console session \
+         out from under the job, which is where its windows are.\n\
+         If a credential dialog appears anyway, this guest's golden image \
+         predates the one that disables Remote Desktop Services: cancel it \
+         rather than signing in, for that same reason, and \
+         `cargo xtask vm build-image windows` brings the image up to date.\n\
+         Watching is harmless; clicking during a run perturbs it."
+            .to_owned()
     }
 }
 
@@ -283,21 +297,103 @@ pub fn parse_id(stdout: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Where `vmconnect` keeps its settings for one VM.
+/// The host `vmconnect` is pointed at, in both places that name one.
 ///
-/// A .NET settings document per VM identifier, in the roaming profile beside
-/// `vmconnect.config`. Found by watching what the connection dialog's "save my
-/// settings for future connections to this virtual machine" checkbox wrote; the
-/// name is upper case there, and the identifier in it is the VM's own, so a
-/// guest recreated under the same name gets a new one and is asked again.
-pub fn vmconnect_settings_path(app_data: &Path, vm_id: &str) -> PathBuf {
+/// It is the argument `vmconnect` is started with and the `VmServerName` in the
+/// settings it reads, from here so that the two agree. They did not to begin
+/// with: the file said `%COMPUTERNAME%`, which is what the dialog's own checkbox
+/// writes, while the process was started against `localhost`. The dialog was
+/// suppressed anyway, so `vmconnect` keys the settings on the file name, but a
+/// version that ever compared or used the name in the file would have connected
+/// somewhere the caller never asked for. Both spellings reach this same machine,
+/// and this one is the connection actually being made.
+pub const VMCONNECT_SERVER: &str = "localhost";
+
+/// The directory `vmconnect` keeps its per-VM settings in.
+///
+/// In the roaming profile beside `vmconnect.config`. Found by watching what the
+/// connection dialog's "save my settings for future connections to this virtual
+/// machine" checkbox wrote.
+pub fn vmconnect_settings_dir(app_data: &Path) -> PathBuf {
     app_data
         .join("Microsoft")
         .join("Windows")
         .join("Hyper-V")
         .join("Client")
         .join("1.0")
-        .join(format!("vmconnect.rdp.{}.config", vm_id.to_uppercase()))
+}
+
+/// The prefix and suffix of one of those settings files.
+const SETTINGS_PREFIX: &str = "vmconnect.rdp.";
+const SETTINGS_SUFFIX: &str = ".config";
+
+/// Where `vmconnect` keeps its settings for one VM.
+///
+/// A .NET settings document per VM identifier. The name is upper case as the
+/// checkbox writes it, and the identifier in it is the VM's own, so a guest
+/// recreated under the same name gets a new one and is asked again.
+pub fn vmconnect_settings_path(app_data: &Path, vm_id: &str) -> PathBuf {
+    vmconnect_settings_dir(app_data).join(format!(
+        "{SETTINGS_PREFIX}{}{SETTINGS_SUFFIX}",
+        vm_id.to_uppercase()
+    ))
+}
+
+/// Whether a file name in that directory is a per-VM settings document at all.
+///
+/// The name filter comes first because it decides what is worth opening:
+/// everything else in there belongs to the user rather than to us.
+pub fn looks_like_settings(file_name: &str) -> bool {
+    file_name.starts_with(SETTINGS_PREFIX) && file_name.ends_with(SETTINGS_SUFFIX)
+}
+
+/// Whether one such file is a settings document of ours, naming this VM.
+///
+/// Both halves are needed and neither is enough. The name says it is a per-VM
+/// settings document rather than `vmconnect.config` or anything else somebody
+/// keeps in their roaming profile; the VM name inside says the document is one
+/// of ours, since the identifier in the file name is a number nothing on the
+/// host can be matched against once the VM is gone.
+pub fn is_our_settings(file_name: &str, text: &str, vm_name: &str) -> bool {
+    looks_like_settings(file_name) && text.contains(&format!("<value>{vm_name}</value>"))
+}
+
+/// Delete the settings files that name this VM, except one to keep.
+///
+/// One file per boot, two kilobytes each, in a directory that is the user's
+/// rather than ours: small, but litter of a kind nothing else would ever clean
+/// up, since the VM it was named after no longer exists. Called from two places
+/// for the two ways one becomes stale: before a console opens, where the file
+/// about to be used is the one to keep, and when the VM is destroyed, where
+/// there is nothing left to keep it for.
+///
+/// Best effort throughout. A file that cannot be read is not one to delete, and
+/// a directory that cannot be listed holds nothing this is willing to guess at.
+pub fn forget_settings(app_data: &Path, vm_name: &str, keep: Option<&Path>) {
+    let dir = vmconnect_settings_dir(app_data);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if keep == Some(path.as_path()) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !looks_like_settings(name) {
+            continue;
+        }
+        // The file says which VM it belongs to, and that is the only thing that
+        // makes it ours to delete.
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if is_our_settings(name, &text, vm_name) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Those settings, with the dialog already answered.
@@ -313,7 +409,7 @@ pub fn vmconnect_settings_path(app_data: &Path, vm_id: &str) -> PathBuf {
 /// A whole file rather than an edit: it is written before every connection, for
 /// an identifier that did not exist until this guest booted, so there is never
 /// an existing one of ours to preserve.
-pub fn vmconnect_settings(vm_name: &str, server: &str, (width, height): (u32, u32)) -> String {
+pub fn vmconnect_settings(vm_name: &str, (width, height): (u32, u32)) -> String {
     let setting = |name: &str, kind: &str, value: &str| {
         format!(
             "        <setting name=\"{name}\" type=\"{kind}\">\n            \
@@ -342,7 +438,7 @@ pub fn vmconnect_settings(vm_name: &str, server: &str, (width, height): (u32, u3
             &format!("{width}, {height}")
         ),
         name = string_setting("VmName", vm_name),
-        host = string_setting("VmServerName", server),
+        host = string_setting("VmServerName", VMCONNECT_SERVER),
         clipboard = bool_setting("ClipboardRedirection", true),
         printer = bool_setting("PrinterRedirection", true),
         enable_printer = bool_setting("EnablePrinterRedirection", true),
@@ -554,48 +650,9 @@ impl<'a> HypervProvider<'a> {
         {
             return;
         }
-        let server = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_owned());
-        let settings = vmconnect_settings(&state.vm_name, &server, self.console_size_quietly());
+        let settings = vmconnect_settings(&state.vm_name, self.console_size_quietly());
         let _ = std::fs::write(&path, settings);
-        Self::sweep_stale_settings(&app_data, &path, &state.vm_name);
-    }
-
-    /// Delete the settings files left behind by our own earlier guests.
-    ///
-    /// One file per boot, two kilobytes each, in a directory that is the user's
-    /// rather than ours: small, but litter of a kind nothing else would ever
-    /// clean up, since the VM it was named after no longer exists. Only files
-    /// naming this VM name are touched, and only ones that are not the file just
-    /// written, so another VM's settings are never in scope.
-    fn sweep_stale_settings(app_data: &Path, keep: &Path, vm_name: &str) {
-        let Some(dir) = keep.parent() else {
-            return;
-        };
-        debug_assert!(dir.starts_with(app_data));
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path == keep
-                || !path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with("vmconnect.rdp.") && name.ends_with(".config")
-                    })
-            {
-                continue;
-            }
-            // The file says which VM it belongs to, and that is the only thing
-            // that makes it ours to delete.
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if text.contains(&format!("<value>{vm_name}</value>")) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+        forget_settings(&app_data, &state.vm_name, Some(&path));
     }
 
     /// The console size, without repeating the line that explains it.
@@ -694,6 +751,15 @@ impl crate::provider::Provider for HypervProvider<'_> {
         // running. Deleting the disk of a VM that was never unregistered
         // leaves a broken VM that neither status nor destroy can see again.
         let before = self.query_state(&state.vm_name)?;
+
+        // The console settings go with the VM, whether or not there was one left
+        // to stop. They are filed under an identifier that means nothing once
+        // the VM is gone, so this is the last moment anything can recognize
+        // them; the next boot's guest has a new identifier and writes its own.
+        if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            forget_settings(&app_data, &state.vm_name, None);
+        }
+
         if before.is_none() {
             return Ok(Stopped::WasNotRunning);
         }
@@ -749,21 +815,21 @@ impl crate::provider::Provider for HypervProvider<'_> {
         let viewer = crate::host::facts::resolve_tool(self.runner, "vmconnect", self.host)
             .unwrap_or_else(|| PathBuf::from("vmconnect.exe"));
         // Only where an enhanced session is on offer, because the dialog this
-        // answers is the enhanced one: a guest with a run in it has no such
-        // session and is never asked.
-        if matches!(state.reason, StartReason::Up | StartReason::Keep) {
+        // answers is the enhanced one: a guest that was not handed over has no
+        // such session and is never asked.
+        if state.handed_over {
             self.answer_connection_dialog(state);
         }
         self.runner
             .spawn(
                 &Cmd::new(viewer.to_string_lossy())
-                    .args(["localhost".to_owned(), state.vm_name.clone()]),
+                    .args([VMCONNECT_SERVER.to_owned(), state.vm_name.clone()]),
                 None,
             )
             .map_err(|e| format!("cannot start vmconnect: {e}"))?;
         Ok(format!(
             "vmconnect is opening {name}.\n{}",
-            view_note(state.reason),
+            view_note(state.handed_over),
             name = state.vm_name,
         ))
     }
@@ -802,7 +868,7 @@ mod tests {
     /// has to have for `vmconnect` to read it at all.
     #[test]
     fn the_saved_connection_settings_answer_the_dialog() {
-        let text = vmconnect_settings("sunlit-e2e-windows", "AORUS", (1920, 1080));
+        let text = vmconnect_settings("sunlit-e2e-windows", (1920, 1080));
         assert!(text.starts_with("<?xml version="), "{text}");
         assert!(
             text.contains("<Microsoft.Virtualization.Client.RdpOptions>"),
@@ -818,7 +884,12 @@ mod tests {
         }
         assert!(text.contains("<value>1920, 1080</value>"), "{text}");
         assert!(text.contains("<value>sunlit-e2e-windows</value>"), "{text}");
-        assert!(text.contains("<value>AORUS</value>"), "{text}");
+        // The server named in the file is the one vmconnect is started against,
+        // rather than a second spelling of the same machine.
+        assert!(
+            text.contains(&format!("<value>{VMCONNECT_SERVER}</value>")),
+            "{text}"
+        );
         // Nothing of the host's is handed to a guest that will be discarded.
         for shared in [
             "RedirectedDrives",
@@ -894,21 +965,98 @@ mod tests {
 
     /// The two kinds of guest get opposite advice, and each has to get its own.
     #[test]
-    fn what_the_console_offers_depends_on_what_the_guest_is_for() {
-        for handed_over in [StartReason::Up, StartReason::Keep] {
-            let note = view_note(handed_over);
-            assert!(note.contains("resized"), "{note}");
-            assert!(note.contains("tester"), "{note}");
-            assert!(note.contains("no password"), "{note}");
-        }
-        for running in [StartReason::Run, StartReason::Build] {
-            let note = view_note(running);
-            assert!(note.contains("no enhanced session"), "{note}");
-            assert!(note.contains("asks for nothing"), "{note}");
-            // Not a word about leaving the password blank: there is none to
-            // leave blank in a guest that was never handed over.
-            assert!(!note.contains("leave that field empty"), "{note}");
-        }
+    fn what_the_console_offers_depends_on_whether_the_guest_was_handed_over() {
+        let handed_over = view_note(true);
+        assert!(handed_over.contains("resized"), "{handed_over}");
+        assert!(handed_over.contains("tester"), "{handed_over}");
+        assert!(handed_over.contains("no password"), "{handed_over}");
+
+        let not = view_note(false);
+        assert!(not.contains("no enhanced session"), "{not}");
+        assert!(not.contains("asks for nothing"), "{not}");
+        // Not a word about leaving the password blank: there is none to leave
+        // blank in a guest that was never handed over.
+        assert!(!not.contains("leave that field empty"), "{not}");
+        // And the one case where the sentence above is wrong is named, because
+        // a stale image still offers the session this says it does not.
+        assert!(not.contains("cancel it"), "{not}");
+        assert!(not.contains("build-image windows"), "{not}");
+    }
+
+    /// The predicate that decides what gets deleted out of the user's roaming
+    /// profile, against the neighbours it has to leave alone.
+    #[test]
+    fn only_a_settings_document_naming_our_vm_is_ours_to_delete() {
+        let ours = vmconnect_settings("sunlit-e2e-windows", (1920, 1080));
+        assert!(is_our_settings(
+            "vmconnect.rdp.2333C8FA-26E0-41A5-9023-F95FFFCC1C53.config",
+            &ours,
+            "sunlit-e2e-windows"
+        ));
+        // The same file, asked about the other target's VM.
+        assert!(!is_our_settings(
+            "vmconnect.rdp.2333C8FA-26E0-41A5-9023-F95FFFCC1C53.config",
+            &ours,
+            "sunlit-e2e-linux"
+        ));
+        // Somebody else's guest, with its own settings in the same directory.
+        let theirs = vmconnect_settings("dev-box", (1024, 768));
+        assert!(!is_our_settings(
+            "vmconnect.rdp.9E1B0A77-0000-0000-0000-000000000001.config",
+            &theirs,
+            "sunlit-e2e-windows"
+        ));
+        // vmconnect's own settings, which are not per VM and not ours.
+        assert!(!looks_like_settings("vmconnect.config"));
+        assert!(!is_our_settings(
+            "vmconnect.config",
+            &ours,
+            "sunlit-e2e-windows"
+        ));
+        // A truncated file that never got as far as naming a VM.
+        assert!(!is_our_settings(
+            "vmconnect.rdp.2333C8FA-26E0-41A5-9023-F95FFFCC1C53.config",
+            "<?xml version=\"1.0\"?>",
+            "sunlit-e2e-windows"
+        ));
+    }
+
+    /// What the sweep does to a real directory, on both of its call paths.
+    #[test]
+    fn the_sweep_takes_our_stale_files_and_leaves_everything_else() {
+        let app_data = std::env::temp_dir().join("sunlit_xtask_vmconnect_settings");
+        let _ = std::fs::remove_dir_all(&app_data);
+        let dir = vmconnect_settings_dir(&app_data);
+        std::fs::create_dir_all(&dir).expect("temp tree");
+
+        let current = vmconnect_settings_path(&app_data, "2333c8fa-0000-0000-0000-000000000001");
+        let stale = vmconnect_settings_path(&app_data, "2333c8fa-0000-0000-0000-000000000002");
+        let ours = vmconnect_settings("sunlit-e2e-windows", (1920, 1080));
+        std::fs::write(&current, &ours).expect("write");
+        std::fs::write(&stale, &ours).expect("write");
+
+        let foreign = vmconnect_settings_path(&app_data, "aaaaaaaa-0000-0000-0000-000000000003");
+        std::fs::write(&foreign, vmconnect_settings("dev-box", (1024, 768))).expect("write");
+        let unrelated = dir.join("vmconnect.config");
+        std::fs::write(&unrelated, "<configuration/>").expect("write");
+
+        // Before a console opens: the file about to be used stays.
+        forget_settings(&app_data, "sunlit-e2e-windows", Some(&current));
+        assert!(current.is_file(), "the file this boot wrote");
+        assert!(!stale.exists(), "the file an earlier boot left");
+        assert!(foreign.is_file(), "another VM's settings");
+        assert!(unrelated.is_file(), "vmconnect's own settings");
+
+        // And when the VM goes, there is nothing left to keep it for.
+        forget_settings(&app_data, "sunlit-e2e-windows", None);
+        assert!(
+            !current.exists(),
+            "the VM is gone, so its settings are litter"
+        );
+        assert!(foreign.is_file(), "another VM's settings");
+        assert!(unrelated.is_file(), "vmconnect's own settings");
+
+        let _ = std::fs::remove_dir_all(&app_data);
     }
 
     /// The console has to be sized before the VM starts, because the cmdlet

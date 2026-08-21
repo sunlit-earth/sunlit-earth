@@ -356,8 +356,33 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> 
     })
 }
 
+/// What was done to the guest this text is about.
+///
+/// Two of the paragraphs below describe what happens at the end of a command
+/// rather than at the boot: the binaries with their launcher and desktop
+/// shortcuts, and the enhanced session. `vm up` and `e2e --keep` do both,
+/// `vm smoke --keep` does neither, and a hand-over that failed did only the
+/// first. So the text is printed from what happened rather than from the target,
+/// which is what it was doing when it told the owner of an empty desktop which
+/// shortcut to double-click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prepared {
+    /// The binaries, the launcher and the desktop shortcuts are in the guest.
+    pub staged: bool,
+    /// The guest confirmed it can offer an enhanced `vmconnect` session.
+    pub enhanced_session: bool,
+}
+
+impl Prepared {
+    /// A guest left as it stood: nothing staged in it and nothing handed over.
+    pub const BARE: Self = Self {
+        staged: false,
+        enhanced_session: false,
+    };
+}
+
 /// What `vm up` prints when it is done (plan decision 14).
-pub fn lifecycle_explainer(target: Target) -> String {
+pub fn lifecycle_explainer(target: Target, prepared: Prepared) -> String {
     format!(
         "\n\
          {vm} is up.\n  \
@@ -370,35 +395,43 @@ pub fn lifecycle_explainer(target: Target) -> String {
          `vm up` boots something pristine. Until then it holds its RAM.\n\n\
          Watching a run is harmless; clicking during one perturbs it.{session}{extra}",
         vm = target.vm_name(),
-        session = view_note(target),
-        extra = guest_environment_note(target)
+        session = view_note(target, prepared.enhanced_session),
+        extra = guest_environment_note(target, prepared.staged)
     )
 }
 
-/// How to look at a guest that has just been handed over, per hypervisor.
+/// How to look at this guest, per hypervisor and per what it is offering.
 ///
 /// The two consoles are not the same thing to sit in front of. `vmconnect` can
 /// open a session that resizes, at the cost of a dialog to dismiss, and this is
-/// the moment that dialog was made dismissable. A VNC viewer on a QEMU guest has
-/// no such choice to explain, and neither console carries a clipboard, which is
-/// the one thing both of them want said.
-fn view_note(target: Target) -> String {
-    let hypervisor = match target {
-        Target::Windows => {
-            "\n\nIts desktop opens in an enhanced session, which is the one that \
-             can be resized: drag the window and the guest's desktop follows. \
-             The dialog asks for the guest's account, `tester`, with no password \
-             at all, so leave that field empty and connect. A guest with a test \
-             run in it offers none of this and opens a basic session instead, \
-             because an enhanced one would take the console session out from \
-             under the run."
-        }
-        Target::Linux => "",
-    };
-    format!(
-        "{hypervisor}\n\nThe console has no clipboard integration, so text and \
-         files go in over `vm ssh` and scp."
-    )
+/// the moment that dialog was made dismissable, but only for a guest that was
+/// handed over: any other one gets the basic session, which is fixed at the
+/// console resolution and asks for nothing. A VNC viewer on a QEMU guest has no
+/// such choice to explain. The clipboard differs the same way, because an
+/// enhanced session is RDP and carries one.
+fn view_note(target: Target, enhanced_session: bool) -> String {
+    match (target, enhanced_session) {
+        (Target::Windows, true) => "\n\nIts desktop opens in an enhanced session, which is the \
+             one that can be resized: drag the window and the guest's desktop \
+             follows. The dialog asks for the guest's account, `tester`, with no \
+             password at all, so leave that field empty and connect. A guest \
+             with a test run in it offers none of this and opens a basic session \
+             instead, because an enhanced one would take the console session out \
+             from under the run.\n\n\
+             An enhanced session is RDP, so it carries the clipboard: text can \
+             be pasted straight in. Files go in over `vm ssh` and scp."
+            .to_owned(),
+        (Target::Windows, false) => "\n\nIts desktop opens in a basic session: nothing to type, \
+             and fixed at the console resolution, because only an enhanced \
+             session can be resized and this guest is not offering one. `vm up` \
+             and `e2e --keep` are what turn that on.\n\n\
+             A basic session carries no clipboard, so text and files go in over \
+             `vm ssh` and scp."
+            .to_owned(),
+        (Target::Linux, _) => "\n\nThe console carries no clipboard integration, so text and \
+             files go in over `vm ssh` and scp."
+            .to_owned(),
+    }
 }
 
 /// What is waiting on the desktop of a guest that has just been handed over.
@@ -408,9 +441,13 @@ fn view_note(target: Target) -> String {
 /// the guest is handed over. The launcher behind the desktop shortcut is what
 /// sets it; the value named here comes from the job's own constant, so the
 /// three cannot drift apart.
-fn guest_environment_note(target: Target) -> String {
-    match target {
-        Target::Windows => format!(
+///
+/// A guest nothing was staged in has none of that, and is told what would put it
+/// there instead: `vm smoke --keep` leaves an empty desktop, and being told
+/// which shortcut to double-click is worse than being told there is none.
+fn guest_environment_note(target: Target, staged: bool) -> String {
+    match (target, staged) {
+        (Target::Windows, true) => format!(
             "\n\nTwo shortcuts are on its desktop. `{app}` starts the app through \
              a launcher that sets `SLINT_BACKEND={backend}` for it: this guest has \
              no OpenGL, and without that the app exits before a window appears. \
@@ -420,7 +457,14 @@ fn guest_environment_note(target: Target) -> String {
             folder = crate::guest::handover::FOLDER_SHORTCUT.trim_end_matches(".lnk"),
             backend = crate::commands::e2e::WINDOWS_SLINT_BACKEND
         ),
-        Target::Linux => String::new(),
+        (Target::Windows, false) => format!(
+            "\n\nNothing of ours was staged in it, so its desktop is empty and \
+             there is no app in it to start. `cargo xtask vm up {target}` boots a \
+             guest with the binaries, the launcher and the shortcuts, and \
+             `cargo xtask e2e --target {target} --keep` leaves one behind after a \
+             run."
+        ),
+        (Target::Linux, _) => String::new(),
     }
 }
 
@@ -431,7 +475,7 @@ pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8
     // is worse than a refusal.
     crate::guest::artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
 
-    let session = boot(runner, &store, target, StartReason::Up, allow_expired)?;
+    let mut session = boot(runner, &store, target, StartReason::Up, allow_expired)?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
     if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
@@ -440,8 +484,17 @@ pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8
         println!("{}", after_failure(&session, &store, true));
         return Err(e);
     }
-    hand_over(&session);
-    println!("{}", lifecycle_explainer(session.target));
+    let enhanced_session = hand_over(&mut session, &store);
+    println!(
+        "{}",
+        lifecycle_explainer(
+            session.target,
+            Prepared {
+                staged: true,
+                enhanced_session
+            }
+        )
+    );
     Ok(0)
 }
 
@@ -453,14 +506,45 @@ pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8
 /// which is where those tests keep their desktop. `vm up` and `e2e --keep` are
 /// the two moments where nothing of ours is running in the guest and somebody
 /// is about to look at it.
-pub fn hand_over(session: &Session) {
-    if let Err(e) = crate::guest::handover::enable_enhanced_session(
+///
+/// Answers whether the guest ended up offering it, and writes that into the
+/// record, because `vm view` runs later as its own command and has no other way
+/// to know: what it decides from it is whether to answer the connection dialog
+/// and what to tell somebody the console will ask them for.
+pub fn hand_over(session: &mut Session, store: &Store) -> bool {
+    let enhanced_session = match crate::guest::handover::enable_enhanced_session(
         session.provider.as_ref(),
         &session.state,
         session.target,
     ) {
-        println!("warning: {e}");
-        println!("  the basic session still shows the desktop; it cannot be resized");
+        Ok(()) => true,
+        Err(e) => {
+            println!("warning: {e}");
+            println!("  the basic session still shows the desktop; it cannot be resized");
+            false
+        }
+    };
+    session.state.handed_over = enhanced_session;
+    record_kept(session, store);
+    enhanced_session
+}
+
+/// Record what a guest is once the command that booted it is finished with it.
+///
+/// A guest booted for a run and then kept is no longer a run in progress, and
+/// `vm status` reads the reason to say why something is still there. Nothing
+/// used to write [`StartReason::Keep`] at all, so a kept guest reported itself
+/// as a run for as long as it existed.
+fn record_kept(session: &mut Session, store: &Store) {
+    if session.state.reason == StartReason::Run {
+        session.state.reason = StartReason::Keep;
+    }
+    if let Err(e) = write_state(store, session.target, &session.state) {
+        println!("warning: the guest is up, but its record could not be updated: {e}");
+        println!(
+            "  `cargo xtask vm view {}` may open the wrong console",
+            session.target
+        );
     }
 }
 
@@ -595,7 +679,7 @@ fn tear_down(
 pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
-    let session = boot(runner, &store, target, StartReason::Run, false)?;
+    let mut session = boot(runner, &store, target, StartReason::Run, false)?;
 
     let script = match target {
         Target::Windows => concat!(
@@ -659,7 +743,11 @@ pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, Stri
     }
 
     if keep {
-        println!("{}", lifecycle_explainer(target));
+        // Nothing was staged in this guest and nothing was handed over: the
+        // smoke test proves the guest contract and leaves the guest as it found
+        // it, so the text says what is actually in there.
+        record_kept(&mut session, &store);
+        println!("{}", lifecycle_explainer(target, Prepared::BARE));
     } else if let Err(e) = session.tear_down(&store) {
         // The same shape as the other three teardown sites: name the VM and
         // say how to reach it, because it is still there.
@@ -756,7 +844,13 @@ mod tests {
 
     #[test]
     fn the_lifecycle_explainer_says_there_is_no_stop() {
-        let text = lifecycle_explainer(Target::Linux);
+        let text = lifecycle_explainer(
+            Target::Linux,
+            Prepared {
+                staged: true,
+                enhanced_session: false,
+            },
+        );
         assert!(text.contains("no stop or pause"), "{text}");
         assert!(text.contains("golden image untouched"), "{text}");
         assert!(text.contains("holds its RAM"), "{text}");
@@ -772,7 +866,13 @@ mod tests {
         // The job sets this; a shell does not, and the failure without it names
         // an OpenGL symbol rather than the guest. What sets it for a person is
         // the desktop launcher, so both shortcuts are named as well.
-        let text = lifecycle_explainer(Target::Windows);
+        let text = lifecycle_explainer(
+            Target::Windows,
+            Prepared {
+                staged: true,
+                enhanced_session: true,
+            },
+        );
         assert!(
             text.contains(&format!(
                 "SLINT_BACKEND={}",
@@ -785,5 +885,40 @@ mod tests {
         assert!(text.contains("sunlit-e2e"), "{text}");
         // Named the way Explorer shows them, without the extension it hides.
         assert!(!text.contains(".lnk"), "{text}");
+        // An enhanced session is RDP, and RDP brings the clipboard with it.
+        assert!(text.contains("carries the clipboard"), "{text}");
+    }
+
+    /// `vm smoke --keep` stages nothing and hands nothing over, so it may not
+    /// promise either. This is the text a person reads while looking at an empty
+    /// desktop in a session that asks them for nothing.
+    #[test]
+    fn a_guest_that_was_left_as_it_stood_promises_neither_shortcuts_nor_a_session() {
+        let text = lifecycle_explainer(Target::Windows, Prepared::BARE);
+        assert!(text.contains("no stop or pause"), "{text}");
+        // Neither shortcut, and no launcher behind one.
+        assert!(!text.contains("Sunlit Earth"), "{text}");
+        assert!(!text.contains("SLINT_BACKEND"), "{text}");
+        assert!(text.contains("cargo xtask vm up windows"), "{text}");
+        // And the basic session, which is what a guest nobody handed over has.
+        assert!(text.contains("basic session"), "{text}");
+        assert!(!text.contains("leave that field empty"), "{text}");
+        assert!(text.contains("no clipboard"), "{text}");
+    }
+
+    /// The same two facts for a guest that was staged but whose hand-over did
+    /// not take: the shortcuts are there and the enhanced session is not.
+    #[test]
+    fn a_failed_hand_over_still_describes_the_console_the_guest_has() {
+        let text = lifecycle_explainer(
+            Target::Windows,
+            Prepared {
+                staged: true,
+                enhanced_session: false,
+            },
+        );
+        assert!(text.contains("Sunlit Earth"), "{text}");
+        assert!(text.contains("basic session"), "{text}");
+        assert!(!text.contains("leave that field empty"), "{text}");
     }
 }

@@ -99,6 +99,18 @@ pub struct RunState {
     #[serde(default)]
     pub started_unix: u64,
     pub reason: StartReason,
+    /// Whether this guest has been handed to a person, confirmed by the guest
+    /// itself: on Windows an account with no password and Remote Desktop
+    /// Services running, so `vmconnect` can open an enhanced session.
+    ///
+    /// Separate from the reason, because the two answer different questions and
+    /// only one of them can be known in advance. The reason says why the guest
+    /// exists; this says what was done to it, which is what `vm view` has to
+    /// consult before telling somebody what the console will ask them for. A
+    /// hand-over that failed leaves this false and the guest offering the basic
+    /// session it always had.
+    #[serde(default)]
+    pub handed_over: bool,
 }
 
 impl RunState {
@@ -123,6 +135,7 @@ impl RunState {
             pid: None,
             started_unix,
             reason,
+            handed_over: false,
         }
     }
 
@@ -196,6 +209,19 @@ mod tests {
         assert!(parsed.is_ours());
         assert_eq!(parsed.pid, None);
         assert_eq!(parsed.ssh_port, 0);
+        // A record written before the hand-over was recorded at all reads as a
+        // guest nobody was handed, which is the answer that costs a dialog
+        // rather than the one that promises a password nobody blanked.
+        assert!(!parsed.handed_over);
+    }
+
+    #[test]
+    fn a_handed_over_guest_says_so_in_its_record() {
+        let mut state = sample();
+        state.handed_over = true;
+        let json = state.to_json();
+        assert!(json.contains(r#""handed_over": true"#), "{json}");
+        assert_eq!(RunState::from_json(&json).expect("round trip"), state);
     }
 
     #[test]

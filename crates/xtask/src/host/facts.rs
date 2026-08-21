@@ -42,12 +42,22 @@ pub const PACKER_ISO_TOOLS: [&str; 4] = ["xorriso", "mkisofs", "hdiutil", "oscdi
 
 /// VNC clients tried in order for `vm view` of a QEMU guest. Absence is a
 /// warning, never a failure: the address is printed instead.
-pub const VNC_VIEWERS: [&str; 5] = [
-    "vncviewer",
-    "tigervnc",
-    "remmina",
-    "vinagre",
-    "TightVNC.Viewer",
+///
+/// Executable names, which is what makes them findable. `TightVNC.Viewer` used
+/// to be in this list and could never have matched anything: that is a package
+/// identifier, and the program `TightVNC` installs is `tvnviewer`. It takes the
+/// same `host:port` argument the others do, verified against a listening socket
+/// rather than assumed, and accepts the `host::port` spelling too.
+pub const VNC_VIEWERS: [&str; 5] = ["vncviewer", "tigervnc", "tvnviewer", "remmina", "vinagre"];
+
+/// Where `TightVNC`'s own installer puts the viewer.
+///
+/// Its MSI does not touch `PATH`, so a normal `TightVNC` install is invisible to
+/// a `PATH` lookup. The directory is the one the MSI's own layout names, which
+/// is also what the scoop manifest extracts from (`PFiles\TightVNC`).
+pub const WINDOWS_TIGHTVNC_DIRS: [&str; 2] = [
+    r"C:\Program Files\TightVNC",
+    r"C:\Program Files (x86)\TightVNC",
 ];
 
 /// Where the winget QEMU package puts its binaries.
@@ -78,6 +88,54 @@ pub fn winget_link_candidate(tool: &str, local_app_data: Option<&Path>) -> Optio
             .join(WINGET_LINKS_SUBPATH)
             .join(format!("{tool}.exe")),
     )
+}
+
+/// Where scoop puts the shims that stand in for the programs it installs.
+///
+/// Scoop installs into a versioned directory and puts a shim of the same name
+/// as the program in `<root>\shims`, which is the only name worth looking for:
+/// the versioned path changes under an update and the `current` junction beside
+/// it is an implementation detail. It appends the shims directory to the user
+/// `PATH` when it is first set up, so this has the same shape as the winget
+/// problem it sits next to: a shell that started before then, or one where the
+/// user profile was not loaded, sees an installed program and an unchanged
+/// `PATH`.
+///
+/// A shim is a stand-in for running the program and not for its directory,
+/// which matters in exactly one place: QEMU carries the UEFI firmware in a
+/// `share` directory beside the binary, and a shim has no such neighbour. That
+/// case reports where it looked (`provider::firmware::missing_message`), and
+/// `vm setup` installs QEMU through winget into a real directory, so it is a
+/// path nothing here takes.
+pub const SCOOP_SHIMS_SUBPATH: &str = "shims";
+
+/// Both scoop roots for a tool: the per-user one and the global one.
+///
+/// Pure, so the locations are testable without an environment. Each root is
+/// taken from its documented variable and falls back to its documented default
+/// (`~\scoop` for `SCOOP`, `%ProgramData%\scoop` for `SCOOP_GLOBAL`), because a
+/// scoop install that never set either variable is the ordinary case rather
+/// than an exotic one. The per-user root comes first: `scoop install` without
+/// `--global` is what a developer runs, and a machine with both should prefer
+/// the one that user's own commands resolve to.
+pub fn scoop_shim_candidates(
+    tool: &str,
+    scoop: Option<&Path>,
+    user_profile: Option<&Path>,
+    scoop_global: Option<&Path>,
+    program_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    let user_root = scoop
+        .map(Path::to_path_buf)
+        .or_else(|| user_profile.map(|home| home.join("scoop")));
+    let global_root = scoop_global
+        .map(Path::to_path_buf)
+        .or_else(|| program_data.map(|data| data.join("scoop")));
+    [user_root, global_root]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join(SCOOP_SHIMS_SUBPATH).join(format!("{tool}.exe")))
+        .collect()
 }
 
 /// The SID of the local `Hyper-V Administrators` group. Membership in it is
@@ -461,10 +519,17 @@ pub fn fallback_candidates(tool: &str, host: HostOs) -> Vec<PathBuf> {
             out.push(Path::new(r"C:\Windows\System32\OpenSSH").join(format!("{tool}.exe")));
         }
         "wsl" => out.push(PathBuf::from(r"C:\Windows\System32\wsl.exe")),
+        "tvnviewer" => {
+            for dir in WINDOWS_TIGHTVNC_DIRS {
+                out.push(Path::new(dir).join(format!("{tool}.exe")));
+            }
+        }
         _ => {}
     }
     // Last, because a real installation directory is the better answer when
-    // there is one; winget's link is what makes a just-installed tool findable.
+    // there is one; these are what make a just-installed tool findable. Every
+    // path here is a guess that is checked for existence by the only caller, so
+    // naming a package manager the host has never had costs nothing.
     if let Some(link) = winget_link_candidate(
         tool,
         std::env::var_os("LOCALAPPDATA")
@@ -473,6 +538,14 @@ pub fn fallback_candidates(tool: &str, host: HostOs) -> Vec<PathBuf> {
     ) {
         out.push(link);
     }
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    out.extend(scoop_shim_candidates(
+        tool,
+        env("SCOOP").as_deref(),
+        env("USERPROFILE").as_deref(),
+        env("SCOOP_GLOBAL").as_deref(),
+        env("ProgramData").as_deref(),
+    ));
     out
 }
 
@@ -892,6 +965,86 @@ mod tests {
                 .any(|p| p.ends_with(r"Microsoft\WinGet\Links\packer.exe")),
             "a winget package that declares a command lands there"
         );
+    }
+
+    /// Every name here has to be one a `PATH` lookup could return, which is the
+    /// mistake `TightVNC.Viewer` was: a package identifier in a list of
+    /// commands, so the one viewer it was meant to cover was never found.
+    #[test]
+    fn every_vnc_viewer_is_named_the_way_a_command_is() {
+        for viewer in VNC_VIEWERS {
+            assert!(
+                viewer
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{viewer} is not a plain command name"
+            );
+        }
+        assert!(VNC_VIEWERS.contains(&"tvnviewer"), "TightVNC's viewer");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_scoop_installed_tool_is_found_through_its_shims_directory() {
+        // Both roots named, which is the machine that has each kind of install.
+        assert_eq!(
+            scoop_shim_candidates(
+                "tvnviewer",
+                Some(Path::new(r"D:\scoop")),
+                None,
+                Some(Path::new(r"C:\scoop-global")),
+                None
+            ),
+            vec![
+                PathBuf::from(r"D:\scoop\shims\tvnviewer.exe"),
+                PathBuf::from(r"C:\scoop-global\shims\tvnviewer.exe"),
+            ]
+        );
+        // Neither named, which is the ordinary install: scoop sets no variable
+        // and lives under the profile.
+        assert_eq!(
+            scoop_shim_candidates(
+                "tvnviewer",
+                None,
+                Some(Path::new(r"C:\Users\me")),
+                None,
+                Some(Path::new(r"C:\ProgramData"))
+            ),
+            vec![
+                PathBuf::from(r"C:\Users\me\scoop\shims\tvnviewer.exe"),
+                PathBuf::from(r"C:\ProgramData\scoop\shims\tvnviewer.exe"),
+            ]
+        );
+        // Nothing to go on is no candidates rather than a relative path, which
+        // would be resolved against whatever directory the xtask was run from.
+        assert!(scoop_shim_candidates("tvnviewer", None, None, None, None).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_tightvnc_viewer_is_looked_for_where_both_of_its_installers_put_it() {
+        let candidates = fallback_candidates("tvnviewer", HostOs::Windows);
+        assert!(
+            candidates
+                .iter()
+                .any(|p| p == Path::new(r"C:\Program Files\TightVNC\tvnviewer.exe")),
+            "the MSI's own location: {candidates:?}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|p| p.ends_with(r"scoop\shims\tvnviewer.exe")),
+            "a scoop install: {candidates:?}"
+        );
+        // The real installation directory is the better answer, so it is tried
+        // before the shim that only stands in for one.
+        let program_files = candidates
+            .iter()
+            .position(|p| p.ends_with(r"TightVNC\tvnviewer.exe"));
+        let shim = candidates
+            .iter()
+            .position(|p| p.ends_with(r"scoop\shims\tvnviewer.exe"));
+        assert!(program_files < shim, "{candidates:?}");
     }
 
     #[test]

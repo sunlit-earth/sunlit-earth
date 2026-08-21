@@ -400,10 +400,10 @@ fn tool_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
 
     checks.push(match &facts.vnc_viewer {
         Some(path) => Check::new("vnc viewer", Status::Pass, path.display().to_string()),
-        None => Check::new("vnc viewer", Status::Warn, "none found").hint(
-            "only `cargo xtask vm view` of a QEMU guest needs one; \
-             without it the VNC address is printed instead",
-        ),
+        None => Check::new("vnc viewer", Status::Warn, "none found").hint(vnc_viewer_hint(
+            facts.os(),
+            &crate::host::facts::VNC_VIEWERS,
+        )),
     });
 
     if facts.os() == HostOs::Windows {
@@ -415,6 +415,25 @@ fn tool_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
             ),
         });
     }
+}
+
+/// What to install when no VNC viewer was found, and what was looked for.
+///
+/// The names are listed because that is the actionable half: a host may well
+/// have a viewer under a name nothing here knows, and there is no way to tell
+/// that from "none found" alone. `vm setup` does not install one, because a
+/// missing viewer costs a printed address rather than a run.
+fn vnc_viewer_hint(host: HostOs, looked_for: &[&str]) -> String {
+    let install = match host {
+        HostOs::Windows => "`scoop install tightvnc` is one",
+        HostOs::Linux => "`apt install tigervnc-viewer` is one",
+        HostOs::Other => "TigerVNC is one",
+    };
+    format!(
+        "only `cargo xtask vm view` of a QEMU guest needs one; without it the \
+         VNC address is printed instead. {install}. Looked for: {}.",
+        looked_for.join(", ")
+    )
 }
 
 /// Where an ISO builder comes from on this host.
@@ -829,6 +848,31 @@ mod tests {
         let report = evaluate(&facts, &built_images(), now());
         assert_eq!(report.get("vnc viewer").unwrap().status, Status::Warn);
         assert!(!report.failed());
+    }
+
+    /// "none found" on its own cannot be acted on: a host may have a viewer
+    /// under a name this list has never heard of, and the way to find that out
+    /// is to be told what was looked for.
+    #[test]
+    fn a_missing_vnc_viewer_names_what_was_looked_for_and_one_to_install() {
+        let mut facts = good_windows();
+        facts.vnc_viewer = None;
+        let hint = evaluate(&facts, &built_images(), now())
+            .get("vnc viewer")
+            .and_then(|check| check.hint.clone())
+            .expect("a warning carries a hint");
+        for viewer in crate::host::facts::VNC_VIEWERS {
+            assert!(hint.contains(viewer), "{hint}");
+        }
+        assert!(hint.contains("scoop install tightvnc"), "{hint}");
+
+        let mut facts = good_linux();
+        facts.vnc_viewer = None;
+        let hint = evaluate(&facts, &built_images(), now())
+            .get("vnc viewer")
+            .and_then(|check| check.hint.clone())
+            .expect("a warning carries a hint");
+        assert!(hint.contains("tigervnc-viewer"), "{hint}");
     }
 
     #[test]

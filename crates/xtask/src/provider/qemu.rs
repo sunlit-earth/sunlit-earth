@@ -484,8 +484,12 @@ impl crate::provider::Provider for QemuProvider<'_> {
             .vnc
             .clone()
             .unwrap_or_else(|| format!("127.0.0.1:{}", vnc_port(VNC_DISPLAY)));
+        // `resolve_tool` rather than a bare `PATH` lookup, so that the answer
+        // is the same one `vm doctor` reports. A viewer installed by a package
+        // manager that appends to the user `PATH`, which is both winget and
+        // scoop, is invisible to every shell that started before it did.
         for viewer in crate::host::facts::VNC_VIEWERS {
-            if let Some(path) = self.runner.which(viewer) {
+            if let Some(path) = crate::host::facts::resolve_tool(self.runner, viewer, self.host) {
                 self.runner
                     .spawn(&Cmd::new(path.to_string_lossy()).arg(address.clone()), None)
                     .map_err(|e| format!("cannot start {viewer}: {e}"))?;
@@ -493,8 +497,9 @@ impl crate::provider::Provider for QemuProvider<'_> {
             }
         }
         Ok(format!(
-            "no VNC viewer on PATH. The console is at {address}, with no password; \
-             point any VNC client at it."
+            "no VNC viewer found. The console is at {address}, with no password; \
+             point any VNC client at it. `cargo xtask vm doctor` lists the names \
+             looked for."
         ))
     }
 

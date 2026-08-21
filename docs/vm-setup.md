@@ -18,6 +18,8 @@ cargo xtask e2e --target linux
 
 `vm doctor` is the opposite: unelevated, read-only, and the single place that answers "can this host run the suite". It prints a line per check and exits nonzero if any of them failed. Warnings are things that block one target or one convenience; failures block everything.
 
+One convenience it warns about rather than installs is a VNC viewer, which only `vm view` of a QEMU guest needs. It looks for `vncviewer`, `tigervnc`, `tvnviewer`, `remmina` and `vinagre`, by name on `PATH` and then in the places an installer is known to leave a program without putting it there: TightVNC's own directory under Program Files, winget's links directory, and scoop's shims directory. `scoop install tightvnc` on Windows and `apt install tigervnc-viewer` on Linux both satisfy it. A viewer installed in the shell that is running `vm view` still counts, which is the point of not asking `PATH` alone: both winget and scoop append to the user `PATH`, and a shell that started earlier never sees it.
+
 `vm build-image <target>` builds a golden image. Expect twenty minutes or so for Linux and the better part of an hour for Windows, plus several gigabytes of download. It is a one-time cost, repeated only when a template changes or a Windows evaluation expires.
 
 Which mechanism performs the install depends on the host, and it mirrors the hypervisor the finished guest runs on:

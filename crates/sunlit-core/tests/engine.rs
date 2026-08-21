@@ -588,6 +588,135 @@ fn switches_in_quick_succession_end_on_the_last_one() {
     );
 }
 
+/// Whether `memory::snapshot` has an implementation for this platform.
+///
+/// Mirrors the cfg on `memory::snapshot` itself, and the same helper in the
+/// soak test. It is the difference between "this platform cannot answer" and
+/// "this platform failed to answer", and only the first of those may skip.
+fn memory_counters_supported() -> bool {
+    cfg!(any(windows, target_os = "linux", target_os = "macos"))
+}
+
+fn private_bytes() -> Option<u64> {
+    sunlit_core::memory::snapshot().map(|s| s.private_bytes)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// The repository's real 8K assets, if this checkout has them.
+///
+/// `textures/**` is Git LFS, so a checkout without the objects holds pointer
+/// files of a couple of hundred bytes, which exist as far as anything that only
+/// asks about existence is concerned. Size is what tells the two apart, the same
+/// check the guest staging in the xtask makes.
+fn real_textures() -> Result<Vec<Option<std::path::PathBuf>>, String> {
+    /// Smaller than either asset and far larger than an LFS pointer.
+    const MIN_BYTES: u64 = 64 * 1024;
+
+    let dir = sunlit_core::assets::texture_loader::resolve_textures_dir(None)
+        .ok_or_else(|| "there is no textures directory".to_owned())?;
+    let mut paths = Vec::new();
+    for name in ["world.topo.200405.jxl", "BlackMarble_2016.jxl"] {
+        let path = dir.join(name);
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() >= MIN_BYTES => paths.push(Some(path)),
+            Ok(meta) => {
+                return Err(format!(
+                    "{name} is {} bytes, which is a Git LFS pointer rather than the asset",
+                    meta.len()
+                ));
+            }
+            Err(e) => return Err(format!("{name} is not readable: {e}")),
+        }
+    }
+    Ok(paths)
+}
+
+/// Going down a resolution has to give the memory back, which is the whole
+/// point of the setting.
+///
+/// The widest and the narrowest of the offered widths, on the real assets: at
+/// 8192 the two textures and their mip chains are about 341 MiB of pixels, at
+/// 2048 about 21 MiB, and the purge is what decides whether the difference
+/// comes back. A margin well below the expected drop, because what is being
+/// asserted is that the old textures were released, not how promptly an
+/// allocator returns pages to the OS.
+///
+/// Only the software adapter is measured here (the headless config forces it),
+/// which is what puts the textures in process memory in the first place; on a
+/// discrete GPU they would live in VRAM, where this counter cannot see them.
+#[test]
+fn lowering_the_resolution_lowers_the_process_footprint() {
+    /// Drop the measurement must show, out of roughly 320 MiB expected.
+    const MIN_DROP: u64 = 128 * 1024 * 1024;
+    const WIDE: u32 = 8192;
+    const NARROW: u32 = 2048;
+
+    if !memory_counters_supported() {
+        println!("skipped: no memory counters on this platform");
+        return;
+    }
+    let paths = match real_textures() {
+        Ok(paths) => paths,
+        Err(why) => {
+            println!("skipped: {why}; `git lfs pull` fetches the assets");
+            return;
+        }
+    };
+
+    let cache = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("resolution_memory_cache");
+    std::fs::create_dir_all(&cache).expect("create the cache directory");
+
+    // Build the narrow copies before measuring anything. Otherwise the switch
+    // decodes both 8K sources one last time to make them, and those two 128 MiB
+    // buffers are freed but possibly still held by the allocator when the second
+    // snapshot is taken, which would hide the very thing being measured.
+    sunlit_core::assets::texture_loader::register_jxl_hook();
+    for path in paths.iter().flatten() {
+        sunlit_core::assets::texture_cache::load_at_resolution(path, NARROW, Some(&cache))
+            .expect("build the narrow copy");
+    }
+
+    let harness = Harness::start(|config| {
+        config.texture_paths = paths.clone();
+        config.texture_resolution = WIDE;
+        config.cache_dir = Some(cache.clone());
+        config.params = SceneParams {
+            texture_index: 3,
+            ..test_params()
+        };
+    });
+    harness.wait_for_textures("at 8192");
+    harness.next_frame();
+    harness.drained_frame(Duration::from_millis(500));
+    let wide = private_bytes().expect("this platform reports memory counters");
+
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(NARROW));
+    harness.wait_for_textures("at 2048");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(has_lit_pixels(&rgba), "the narrow textures should render");
+    harness.drained_frame(Duration::from_millis(500));
+    let narrow = private_bytes().expect("this platform reports memory counters");
+
+    println!(
+        "private bytes: {:.1} MiB at {WIDE}, {:.1} MiB at {NARROW}, {:.1} MiB returned",
+        mib(wide),
+        mib(narrow),
+        mib(wide.saturating_sub(narrow)),
+    );
+    assert!(
+        wide.saturating_sub(narrow) >= MIN_DROP,
+        "switching from {WIDE} to {NARROW} returned {:.1} MiB, expected at least {:.1} MiB",
+        mib(wide.saturating_sub(narrow)),
+        mib(MIN_DROP),
+    );
+}
+
 #[test]
 fn textures_ready_fires_for_the_procedural_grid() {
     let harness = Harness::start(|_| {});

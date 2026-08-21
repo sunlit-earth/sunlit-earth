@@ -142,13 +142,18 @@ pub fn load_at_resolution(
         }
     }
 
+    // Stamped before the decode rather than after it. A decode of an 8K source
+    // takes seconds, and a source replaced during those seconds would otherwise
+    // be recorded as what the old pixels came from: an entry that validates
+    // forever and holds the wrong image, with nothing left to invalidate it.
+    let before = SourceStamp::of(source);
     let (mut decoded, halved) = load_and_halve(source, target_width)?;
     // Written before the orientation fixes, so what lands on disk is a plain
     // downscale of the source. Caching a file that was not halved would be a
     // second copy of the source in a different container, which costs disk and
     // saves only the difference between the two decoders.
     if halved {
-        write_cache(&image_path, &meta_path, source, &decoded);
+        write_cache(&image_path, &meta_path, before, source, &decoded);
     }
     texture_loader::orient(&mut decoded);
     Ok(decoded)
@@ -180,16 +185,36 @@ fn load_and_halve(source: &Path, target_width: u32) -> Result<(DecodedImage, boo
     Ok((img, steps > 0))
 }
 
-/// Write the downscale and its sidecar, temp-then-rename so a crash or a second
-/// process never leaves a half-written PNG that looks valid.
+/// Write the downscale and its sidecar, temp-then-rename so that a crash, or
+/// another writer of the same entry, never leaves a half-written PNG that looks
+/// valid. The temporary names carry the process and a counter, so two writers
+/// have their own and neither truncates the other's.
+///
+/// `stamped_before` is what the source looked like when the decode that produced
+/// `img` started. It has to still look that way, or these pixels are not what
+/// the sidecar would be claiming they came from.
 ///
 /// Every failure here is a warning and nothing more: the cache is an
 /// optimization, and a run that cannot write it still has its pixels.
-fn write_cache(image_path: &Path, meta_path: &Path, source: &Path, img: &DecodedImage) {
-    let Some(stamp) = SourceStamp::of(source) else {
+fn write_cache(
+    image_path: &Path,
+    meta_path: &Path,
+    stamped_before: Option<SourceStamp>,
+    source: &Path,
+    img: &DecodedImage,
+) {
+    let (Some(before), Some(after)) = (stamped_before, SourceStamp::of(source)) else {
         warn!(path = %source.display(), "no source metadata, not caching the downscale");
         return;
     };
+    if before != after {
+        warn!(
+            path = %source.display(),
+            "the source changed while it was being decoded, not caching the downscale"
+        );
+        return;
+    }
+    let stamp = after;
 
     if let Some(parent) = image_path.parent()
         && let Err(e) = fs::create_dir_all(parent)
@@ -198,16 +223,17 @@ fn write_cache(image_path: &Path, meta_path: &Path, source: &Path, img: &Decoded
         return;
     }
 
-    let tmp_image = with_tilde(image_path);
+    let tmp_image = unfinished(image_path);
     if let Err(e) = save_png(&tmp_image, img) {
         warn!(path = %tmp_image.display(), error = %e, "could not write the texture downscale");
         let _ = fs::remove_file(&tmp_image);
         return;
     }
 
-    // The sidecar goes first and is removed on failure, so the only ordering a
-    // reader can observe is "no sidecar" (rebuild) or "both files".
-    let tmp_meta = with_tilde(meta_path);
+    // Both temporary files are written first, then the PNG is put in place and
+    // the sidecar last. The only orderings a reader can observe are therefore
+    // "no sidecar", which it rebuilds, and "both", which it trusts.
+    let tmp_meta = unfinished(meta_path);
     let toml_str = match toml::to_string_pretty(&stamp) {
         Ok(s) => s,
         Err(e) => {
@@ -242,19 +268,27 @@ fn write_cache(image_path: &Path, meta_path: &Path, source: &Path, img: &Decoded
     );
 }
 
-/// The same path with a `~` appended, following the config save's convention
-/// for a file that is not finished yet.
-fn with_tilde(path: &Path) -> PathBuf {
+/// A name for the not-yet-finished version of `path`, unique to this writer.
+///
+/// The `~` suffix is the config save's convention for a file that is not
+/// finished yet. The process id and counter are what the config save does not
+/// need and this does: two runs of the app, or two loader threads in one run
+/// switching resolutions back and forth, can be building the same cache entry
+/// at the same time, and a shared temporary name means the second `File::create`
+/// truncates the first writer's PNG mid-write.
+fn unfinished(path: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut name = path.as_os_str().to_os_string();
-    name.push("~");
+    name.push(format!(".{}.{nonce}~", std::process::id()));
     PathBuf::from(name)
 }
 
 /// Encode `img` as a PNG at `path`.
 ///
 /// The encoder is named rather than inferred from the file extension, because
-/// the file this writes to is the unfinished one and its extension is `png~`.
-/// Fast compression rather than the default: the file is a cache entry whose
+/// the file this writes to is the unfinished one and its extension is not
+/// `png`. Fast compression rather than the default: the file is a cache entry whose
 /// whole point is to be cheaper than decoding the source again, and the encode
 /// happens on the loader thread while the app is waiting for its first frame.
 fn save_png(path: &Path, img: &DecodedImage) -> Result<(), String> {
@@ -412,10 +446,34 @@ mod tests {
         let (image_path, meta_path) = cache_paths(&dir, &source, 8);
         assert!(image_path.exists(), "the downscale should be cached");
         assert!(meta_path.exists(), "the sidecar should be beside it");
+
+        let leftovers: Vec<_> = fs::read_dir(dir.join(CACHE_SUBDIR))
+            .expect("the cache directory exists")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with('~'))
+            .collect();
         assert!(
-            !with_tilde(&image_path).exists(),
-            "the temporary file should be gone"
+            leftovers.is_empty(),
+            "no unfinished file should be left behind: {leftovers:?}"
         );
+    }
+
+    /// Two writers of the same entry must not share a temporary name, or the
+    /// second `File::create` truncates the first one's PNG mid-write.
+    #[test]
+    fn each_unfinished_name_is_the_writers_own() {
+        let target = Path::new("C:/data/texture_cache/day.2048.png");
+        let first = unfinished(target);
+        let second = unfinished(target);
+
+        assert_ne!(first, second);
+        for name in [&first, &second] {
+            let name = name.to_string_lossy();
+            assert!(name.starts_with(&*target.to_string_lossy()));
+            assert!(name.ends_with('~'), "{name}");
+            assert!(name.contains(&std::process::id().to_string()), "{name}");
+        }
     }
 
     /// Proof that the second load reads the cache rather than the source: the
@@ -502,6 +560,59 @@ mod tests {
 
         assert_eq!(uncached.pixels, written.pixels);
         assert_eq!(uncached.pixels, read_back.pixels);
+    }
+
+    /// A source replaced while it was being decoded must not be recorded as
+    /// where the old pixels came from. That entry would validate on every later
+    /// run and hold the wrong image, and since the source is not going to change
+    /// again there would be nothing left to invalidate it.
+    #[test]
+    fn a_source_that_changed_during_the_decode_is_not_cached() {
+        let dir = temp_dir("changed_mid_decode");
+        let source = dir.join("day.png");
+        write_source(&source, 32, 16, 10);
+
+        // What a decode that started before the replacement would have carried.
+        let stale_stamp = Some(SourceStamp {
+            bytes: 1,
+            modified_ms: Some(0),
+        });
+        let img = load_at_resolution(&source, 8, None).expect("load");
+        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+
+        write_cache(&image_path, &meta_path, stale_stamp, &source, &img);
+        assert!(
+            !image_path.exists() && !meta_path.exists(),
+            "pixels from a source that has since changed must not be cached"
+        );
+
+        // The same call with the stamp the file actually has does write it, so
+        // the check above is the reason nothing was written.
+        write_cache(
+            &image_path,
+            &meta_path,
+            SourceStamp::of(&source),
+            &source,
+            &img,
+        );
+        assert!(image_path.exists() && meta_path.exists());
+    }
+
+    #[test]
+    fn a_source_that_vanished_during_the_decode_is_not_cached() {
+        let dir = temp_dir("gone_mid_decode");
+        let source = dir.join("day.png");
+        write_source(&source, 32, 16, 10);
+        let img = load_at_resolution(&source, 8, None).expect("load");
+        let before = SourceStamp::of(&source);
+        fs::remove_file(&source).expect("remove the source");
+
+        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        write_cache(&image_path, &meta_path, before, &source, &img);
+        assert!(
+            !image_path.exists() && !meta_path.exists(),
+            "a source with no metadata cannot be stamped, so nothing may be cached"
+        );
     }
 
     #[test]

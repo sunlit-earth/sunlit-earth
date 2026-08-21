@@ -365,8 +365,6 @@ fn test_atmosphere_sliders_visible_when_enabled() {
 // Config save round-trip
 // ---------------------------------------------------------------------------
 
-/// Settings without a widget must survive a save.
-///
 /// The resolution combo box is the one persisted setting whose widget carries
 /// an index rather than a value, so the mapping back to a width is what a save
 /// depends on.
@@ -473,6 +471,8 @@ fn test_save_keeps_the_stored_resolution_while_the_cli_owns_the_combo_box() {
     );
 }
 
+/// Settings without a widget must survive a save.
+///
 /// `quality_tier` is the current example: it is persisted but has no control in
 /// the window, and building the saved config from `AppConfig::default()` meant
 /// every "Set as Wallpaper" in a debug build overwrote a release install's

@@ -237,8 +237,9 @@ fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBu
 ///
 /// The flag wins over the stored setting, and unlike `--quality` the choice has
 /// a widget, so the window shows what the engine actually loaded rather than
-/// what is on disk. A later save therefore persists the override, which is the
-/// price of the window telling the truth.
+/// what is on disk. Keeping the override out of the config file then takes the
+/// one-run flag on `EngineLink`, which is what a save consults instead of the
+/// combo box until the user picks a width themselves.
 fn effective_texture_resolution(cli: &Cli, config: &AppConfig) -> u32 {
     cli.texture_resolution
         .map_or(config.texture_resolution, u32::from)

@@ -43,10 +43,11 @@ if ($job -and $job.Principal.LogonType -ne 'Interactive') {
     $problems += "the job task has logon type $($job.Principal.LogonType), not Interactive"
 }
 
-# The one thing that makes this guest's desktop reachable without a password:
-# with Remote Desktop Services enabled, vmconnect offers an enhanced session,
-# asks for credentials, and logs into a session of its own instead of showing
-# the console one. Checked here because the service cannot be stopped once it is
+# What makes this image's desktop reachable without a password, and a test run
+# in it safe from being taken over: with Remote Desktop Services enabled,
+# vmconnect offers an enhanced session, asks for credentials, and moves the
+# console session into an RDP one. A guest handed to a person turns it back on
+# for itself. Checked here because the service cannot be stopped once it is
 # running, so the start type is the only evidence available before the shutdown
 # that ends the build.
 if ((Get-Service TermService).StartType -ne 'Disabled') {

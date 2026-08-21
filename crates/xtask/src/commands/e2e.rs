@@ -230,6 +230,9 @@ fn run_in_guest(
     }
 
     if keep {
+        // The run is over, so the console session is nobody's any more and the
+        // guest can offer the enhanced session that would have taken it.
+        vm::hand_over(&session);
         println!("{}", vm::lifecycle_explainer(target));
     } else if let Err(e) = session.tear_down(&store) {
         // Reported with the way out, not as a bare warning: a VM that would

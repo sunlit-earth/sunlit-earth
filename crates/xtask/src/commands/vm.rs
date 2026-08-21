@@ -368,11 +368,36 @@ pub fn lifecycle_explainer(target: Target) -> String {
          ending it and discarding it are the same act: destroying it frees the \
          memory and the overlay, leaves the golden image untouched, and the next \
          `vm up` boots something pristine. Until then it holds its RAM.\n\n\
-         Watching a run is harmless; clicking during one perturbs it. The \
-         hypervisor console has no clipboard integration, so text and files go \
-         in over `vm ssh` and scp.{extra}",
+         Watching a run is harmless; clicking during one perturbs it.{session}{extra}",
         vm = target.vm_name(),
+        session = view_note(target),
         extra = guest_environment_note(target)
+    )
+}
+
+/// How to look at a guest that has just been handed over, per hypervisor.
+///
+/// The two consoles are not the same thing to sit in front of. `vmconnect` can
+/// open a session that resizes, at the cost of a dialog to dismiss, and this is
+/// the moment that dialog was made dismissable. A VNC viewer on a QEMU guest has
+/// no such choice to explain, and neither console carries a clipboard, which is
+/// the one thing both of them want said.
+fn view_note(target: Target) -> String {
+    let hypervisor = match target {
+        Target::Windows => {
+            "\n\nIts desktop opens in an enhanced session, which is the one that \
+             can be resized: drag the window and the guest's desktop follows. \
+             The dialog asks for the guest's account, `tester`, with no password \
+             at all, so leave that field empty and connect. A guest with a test \
+             run in it offers none of this and opens a basic session instead, \
+             because an enhanced one would take the console session out from \
+             under the run."
+        }
+        Target::Linux => "",
+    };
+    format!(
+        "{hypervisor}\n\nThe console has no clipboard integration, so text and \
+         files go in over `vm ssh` and scp."
     )
 }
 
@@ -415,8 +440,28 @@ pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8
         println!("{}", after_failure(&session, &store, true));
         return Err(e);
     }
+    hand_over(&session);
     println!("{}", lifecycle_explainer(session.target));
     Ok(0)
+}
+
+/// The last thing done to a guest that is being left to a person.
+///
+/// Turning an enhanced `vmconnect` session on belongs here rather than in the
+/// boot or the staging, because it is the one thing a guest with a test suite
+/// running in it must not offer: connecting takes over the console session,
+/// which is where those tests keep their desktop. `vm up` and `e2e --keep` are
+/// the two moments where nothing of ours is running in the guest and somebody
+/// is about to look at it.
+pub fn hand_over(session: &Session) {
+    if let Err(e) = crate::guest::handover::enable_enhanced_session(
+        session.provider.as_ref(),
+        &session.state,
+        session.target,
+    ) {
+        println!("warning: {e}");
+        println!("  the basic session still shows the desktop; it cannot be resized");
+    }
 }
 
 /// `vm ssh`.

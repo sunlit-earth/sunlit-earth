@@ -81,22 +81,28 @@ try {
     }
 
     Step 'remote sessions'
-    # Nothing may open a session in this guest except the console one. With
-    # Remote Desktop Services running, Hyper-V reports enhanced session mode as
-    # available, vmconnect switches to it by itself, and the first thing anyone
-    # who wants to look at the desktop sees is a credential prompt. Accepting it
-    # is worse than the prompt: an enhanced session is RDP into a session of its
-    # own, so it takes the desktop out from under whatever is running in the
-    # console session.
+    # This image boots offering no remote session, and that is the safe default
+    # rather than the final word. With Remote Desktop Services running, Hyper-V
+    # reports enhanced session mode as available and vmconnect switches to it by
+    # itself; an enhanced session is RDP, and connecting takes the console
+    # session over, which is where a windowed test run keeps its desktop. A guest
+    # with a job in it must not offer that.
+    #
+    # A guest handed to a person is a different matter, and there the enhanced
+    # session is the only one that can be resized. So `vm up` and `e2e --keep`
+    # turn this back on per guest (`guest::handover::enable_enhanced_session`),
+    # along with blanking the account's password so the dialog can be dismissed
+    # rather than filled in. Starting the service at runtime works, which is what
+    # makes that possible without a rebuild.
     #
     # Disabled rather than stopped, because the service refuses to stop once it
-    # is running. The boot that matters is the next one, and every boot of the
-    # finished image is a next one. Measured on 2026-08-21: with the service
-    # disabled the host reports EnhancedSessionModeState 6, "allowed but not
-    # available", vmconnect can then only open a basic session, and a basic
-    # session shows the console desktop the autologon has already signed into,
-    # so no password is asked for anywhere. The console session, the scheduled
-    # tasks that run in it and `qwinsta` are all unaffected.
+    # is running: the boot that matters is the next one, and every boot of the
+    # finished image is a next one. Measured on 2026-08-21: disabled, the host
+    # reports EnhancedSessionModeState 6, "allowed but not available", and
+    # vmconnect can only open a basic session, which shows the console desktop
+    # the autologon has already signed into and asks for nothing. Started again,
+    # the host reports 2 within seconds. The console session, the scheduled tasks
+    # that run in it and `qwinsta` are unaffected either way.
     Set-Service -Name TermService -StartupType Disabled
 
     Step 'power and display'

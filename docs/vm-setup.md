@@ -63,13 +63,18 @@ A Windows guest's desktop has two shortcuts on it, written per boot by whatever 
 - `Sunlit Earth` starts the app through `C:\sunlit-e2e\run-app.cmd`, which sets `SLINT_BACKEND=winit-software` and, when the textures were staged, `SUNLIT_EARTH_TEXTURES`. That is the same backend the generated job sets and for the same reason: the guest has no OpenGL, and the app started without it dies before its window appears. The launcher keeps its console window, so the app's log is on screen while it runs.
 - `sunlit-e2e` opens the directory the binaries, fixtures and results are in.
 
-Five things to know before you connect:
+A Windows guest offers one of two consoles, and which one depends on why it was started.
 
-- Nothing asks for a password. The console session is signed in by autologon before `vm up` returns, and a basic `vmconnect` session shows that session as it is.
-- The window is the guest's resolution and cannot be dragged larger. A basic session shows the framebuffer as it is; dynamic resizing is what an enhanced session does, and this guest has none. So the resolution is chosen before the guest boots and reported on the line that creates it: the largest of 1024x768, 1280x800, 1440x900, 1600x900, 1680x1050 and 1920x1080 that fits this host's screen with room for the window's own frame. `SUNLIT_EARTH_VM_RESOLUTION=2560x1440` asks for something specific, including sizes larger than any on that list, which the guest's synthetic adapter honors. Changing it means taking the guest down and bringing it up again, because `Set-VMVideo` refuses to run against a VM that is on; and the guest is given exactly the one mode, so its own display settings offer nothing else to pick.
-- If `vmconnect` does ask, it has switched to an enhanced session, which is RDP into a session of its own and takes the desktop out from under a running job. Dismiss the prompt and use the toolbar button to go back to basic. A guest built from the current templates cannot offer an enhanced session at all: `bootstrap.ps1` disables Remote Desktop Services, so Hyper-V reports enhanced session mode as unavailable and `vmconnect` has nothing to switch to. Being asked means the image predates that and wants a rebuild. Plain `mstsc` is the same problem by hand and should be avoided for the same reason.
+**A guest handed to you**, by `vm up` or by `e2e --keep`, offers an enhanced session. That is the only one that can be resized: drag the window and the guest's desktop follows it. It is RDP underneath, so `vmconnect` asks for credentials, and the hand-over makes that a dialog to dismiss rather than fill in. It blanks the `tester` account's password, clears the LSA policy that otherwise confines a blank-password account to the physical console, and starts Remote Desktop Services. So: username `tester`, password field empty, connect. Nothing is weakened that was not already public: the password was in `Autounattend.xml` in plain text, and the guest is reachable from its own host and nowhere else.
+
+**A guest with a run in it** offers no enhanced session at all, and `vmconnect` opens a basic session that asks for nothing. That is deliberate rather than an oversight: connecting over RDP moves the console session into the RDP one, and the console session is where the windowed tests keep their desktop. The golden image ships with Remote Desktop Services disabled for exactly this reason, and only a hand-over turns it on.
+
+A basic session shows the framebuffer as it is, so its window is the guest's resolution and cannot be dragged. The resolution is therefore chosen before the guest boots and reported on the line that creates it: the largest of 1024x768, 1280x800, 1440x900, 1600x900, 1680x1050 and 1920x1080 that fits this host's screen with room for the window's own frame. `SUNLIT_EARTH_VM_RESOLUTION=2560x1440` asks for something specific, including sizes larger than any on that list, which the guest's synthetic adapter honors. Changing it means taking the guest down and bringing it up again, because `Set-VMVideo` refuses to run against a VM that is on; and the guest is given exactly the one mode, so its own display settings offer nothing else to pick.
+
+Two more things either way:
+
 - Watching a run is harmless. Clicking, typing, or moving the mouse during one perturbs the tests, which is the whole point of them having a desktop to themselves.
-- The hypervisor console has essentially no clipboard integration, which is the price of it not being RDP. Text and files go in through `vm ssh` and `scp`.
+- Neither console carries clipboard integration worth the name. Text and files go in through `vm ssh` and `scp`.
 
 ## The Windows evaluation expires
 

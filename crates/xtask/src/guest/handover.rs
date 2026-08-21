@@ -159,6 +159,68 @@ pub fn prepare(
     Ok(())
 }
 
+/// The marker the enhanced-session script prints when it got all the way
+/// through, because `powershell.exe -EncodedCommand` will not carry that in an
+/// exit code any more reliably here than it does on the host.
+pub const ENHANCED_READY: &str = "ENHANCED=ready";
+
+/// What a guest needs before `vmconnect` can open an enhanced session into it
+/// without anyone typing a password.
+///
+/// An enhanced session is RDP over `VMBus`, and RDP wants credentials. The
+/// three things in here are what turn that into a dismissable dialog: an
+/// account with no password to type, the LSA policy that otherwise confines a
+/// blank-password account to the physical console, and the service that answers
+/// the connection at all. The guest is a throwaway with no secrets, reachable
+/// from its own host and nowhere else, and its password was already in this
+/// repository in plain text (unattend decision 6), so what this gives up is a
+/// formality. What it buys is the thing a basic session cannot do at all: a
+/// window that can be resized, with the guest's desktop resizing to match.
+///
+/// Not part of the boot, and not part of staging. A guest running a test suite
+/// must not offer this: connecting takes the console session over, which is
+/// where the windowed tests have their desktop. So it is done at the two points
+/// where a guest is handed to a person and nothing of ours is running in it,
+/// `vm up` and `e2e --keep`, and a guest in the middle of a run is left as it
+/// was, offering the basic session that is safe to watch.
+pub fn enhanced_session_script(user: &str) -> String {
+    format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         Set-LocalUser -Name {user} -Password (New-Object System.Security.SecureString)\n\
+         New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa' \
+         -Name 'LimitBlankPasswordUse' -PropertyType DWord -Value 0 -Force | Out-Null\n\
+         Set-Service -Name 'TermService' -StartupType Manual\n\
+         Start-Service -Name 'TermService'\n\
+         Write-Output '{ENHANCED_READY}'\n",
+        user = crate::runner::ps_quote(user),
+    )
+}
+
+/// Turn it on in a guest that is being handed over.
+///
+/// A failure is the caller's to report and not to fail on: what is lost is a
+/// resizable window, and the basic session still shows a desktop that is
+/// already signed in.
+pub fn enable_enhanced_session(
+    provider: &dyn Provider,
+    state: &RunState,
+    target: Target,
+) -> Result<(), String> {
+    if target != Target::Windows {
+        return Ok(());
+    }
+    let script = enhanced_session_script(crate::provider::hyperv::GUEST_USER);
+    let out = provider.exec(state, &powershell_command(&script))?;
+    if !out.stdout.contains(ENHANCED_READY) {
+        return Err(format!(
+            "the guest would not make an enhanced session possible: {}{}",
+            out.stdout.trim(),
+            out.stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +320,40 @@ mod tests {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='),
             "{encoded}"
+        );
+    }
+
+    /// The three things that turn the enhanced session's credential dialog into
+    /// something to dismiss rather than fill in.
+    #[test]
+    fn the_enhanced_session_script_removes_the_password_the_dialog_would_want() {
+        let script = enhanced_session_script("tester");
+        // An account with nothing to type.
+        assert!(
+            script.contains("Set-LocalUser -Name 'tester' -Password"),
+            "{script}"
+        );
+        assert!(script.contains("SecureString"), "{script}");
+        // The policy that otherwise confines a blank password to the console.
+        assert!(script.contains("LimitBlankPasswordUse"), "{script}");
+        assert!(script.contains("-Value 0"), "{script}");
+        // And the service that answers the connection.
+        assert!(
+            script.contains("Start-Service -Name 'TermService'"),
+            "{script}"
+        );
+        assert!(script.contains(ENHANCED_READY), "{script}");
+    }
+
+    /// The account is the one the image creates, from the constant that creates
+    /// it: a guest whose account was renamed would otherwise be left with a
+    /// password nobody can type and no way in.
+    #[test]
+    fn the_enhanced_session_script_names_the_guest_account() {
+        let script = enhanced_session_script(crate::provider::hyperv::GUEST_USER);
+        assert!(
+            script.contains(crate::provider::hyperv::GUEST_USER),
+            "{script}"
         );
     }
 

@@ -172,6 +172,36 @@ pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32
     )
 }
 
+/// What to say about the session `vmconnect` is about to open, which depends on
+/// what the guest was started for.
+///
+/// A guest handed over to a person has been given a passwordless account and a
+/// running Remote Desktop service, so the enhanced session vmconnect prefers is
+/// there for the taking, and it is the only session that can be resized. A
+/// guest with a run in it has neither, so vmconnect opens the basic session that
+/// is safe to watch and asks for nothing. The two cases have opposite advice,
+/// and printing both would leave the reader to work out which applies.
+pub fn view_note(reason: StartReason) -> String {
+    match reason {
+        StartReason::Up | StartReason::Keep => "It will offer an enhanced session, which is the \
+             one that can be resized: the guest's desktop follows the window. \
+             The dialog wants the guest's account, `tester`, and no password at \
+             all, so leave that field empty and connect. A basic session needs \
+             nothing typed but is fixed at the console resolution.\n\
+             Enhanced is RDP, and RDP takes the console session over. That is \
+             harmless here, because nothing of ours is running in this guest."
+            .to_owned(),
+        StartReason::Run | StartReason::Build => "This guest has a job running in it, so it \
+             offers no enhanced session and asks for nothing: what opens is a \
+             basic session showing the console desktop as it is. That is \
+             deliberate. An enhanced session is RDP, and connecting would take \
+             the console session out from under the job, which is where its \
+             windows are.\n\
+             Watching is harmless; clicking during a run perturbs it."
+            .to_owned(),
+    }
+}
+
 /// The line that fixes the guest's console resolution.
 ///
 /// Here rather than anywhere later because the cmdlet refuses to run against a
@@ -537,15 +567,9 @@ impl crate::provider::Provider for HypervProvider<'_> {
             )
             .map_err(|e| format!("cannot start vmconnect: {e}"))?;
         Ok(format!(
-            "vmconnect is opening {}.\n\
-             A basic session needs no password: the console session it shows is \
-             already signed in. If vmconnect asks for one, it has switched to an \
-             enhanced session, which is RDP into a session of its own and takes \
-             the desktop out from under a running job; dismiss the prompt and use \
-             the toolbar button to go back to a basic session. An image built \
-             from the current templates cannot offer an enhanced session at all, \
-             so being asked at all means this one predates that.",
-            state.vm_name
+            "vmconnect is opening {name}.\n{}",
+            view_note(state.reason),
+            name = state.vm_name,
         ))
     }
 
@@ -602,6 +626,25 @@ mod tests {
             "{script}"
         );
         assert!(script.contains("-AutomaticStartAction Nothing"), "{script}");
+    }
+
+    /// The two kinds of guest get opposite advice, and each has to get its own.
+    #[test]
+    fn what_the_console_offers_depends_on_what_the_guest_is_for() {
+        for handed_over in [StartReason::Up, StartReason::Keep] {
+            let note = view_note(handed_over);
+            assert!(note.contains("resized"), "{note}");
+            assert!(note.contains("tester"), "{note}");
+            assert!(note.contains("no password"), "{note}");
+        }
+        for running in [StartReason::Run, StartReason::Build] {
+            let note = view_note(running);
+            assert!(note.contains("no enhanced session"), "{note}");
+            assert!(note.contains("asks for nothing"), "{note}");
+            // Not a word about leaving the password blank: there is none to
+            // leave blank in a guest that was never handed over.
+            assert!(!note.contains("leave that field empty"), "{note}");
+        }
     }
 
     /// The console has to be sized before the VM starts, because the cmdlet

@@ -384,12 +384,52 @@ pub fn is_affirmative(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+/// Give the console back line input and echo before reading an answer.
+///
+/// The input mode belongs to the terminal session, not to this process, and
+/// `wsl.exe` and `ssh.exe` are both known to exit without restoring it.
+/// `PSReadLine` repairs the shell's own prompt every time it draws one, so the
+/// session looks healthy while cooked reads stay broken, and the first program
+/// to do a plain line read gets keystrokes without echo and an Enter that
+/// yields a bare carriage return, never the newline the read is waiting for.
+/// This is that program: the one cooked read in the xtask. Redirected stdin is
+/// left alone, since `GetConsoleMode` fails on anything that is not a console,
+/// and a pipe's semantics (an answer, or nothing meaning no) need no repair.
+#[cfg(windows)]
+fn restore_console_line_input() {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, GetConsoleMode, GetStdHandle,
+        STD_INPUT_HANDLE, SetConsoleMode,
+    };
+    let mut mode = 0;
+    // SAFETY: GetStdHandle returns a handle this process may query without
+    // taking ownership, and `mode` outlives both calls. GetConsoleMode failing
+    // (a pipe, the null device, no console at all) leaves `mode` untouched and
+    // skips the set.
+    #[allow(unsafe_code)]
+    unsafe {
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        if GetConsoleMode(handle, &raw mut mode) != 0 {
+            let wanted = mode | ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT;
+            if wanted != mode {
+                let _ = SetConsoleMode(handle, wanted);
+            }
+        }
+    }
+}
+
+/// On Unix the terminal's cooked mode is the shell's to restore, and the
+/// corruption this guards against is a Windows console phenomenon.
+#[cfg(not(windows))]
+fn restore_console_line_input() {}
+
 /// Ask, and read the answer.
 ///
 /// Nothing to read means no. That is the case in a script or a CI job, and
 /// deleting a golden image because nobody was there to object is the wrong
 /// default; `--force` is how such a caller says yes in advance.
 pub fn confirm(prompt: &str) -> bool {
+    restore_console_line_input();
     print!("{prompt}");
     let _ = std::io::stdout().flush();
     let mut answer = String::new();

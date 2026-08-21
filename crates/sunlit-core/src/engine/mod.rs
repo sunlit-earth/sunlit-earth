@@ -122,7 +122,9 @@ pub struct EngineConfig {
     /// case, and the default for tests that do not care about clouds).
     pub cloud: Option<Arc<dyn CloudSource>>,
     pub cloud_poll_interval: Duration,
-    pub cloud_cache_dir: Option<PathBuf>,
+    /// The app's data directory, holding both the cloud image cache and the
+    /// downscaled copies of the surface textures. `None` disables both caches.
+    pub cache_dir: Option<PathBuf>,
     /// Unattended wallpaper refresh interval; `None` disables it.
     pub auto_refresh: Option<Duration>,
     pub wallpaper: Arc<dyn WallpaperSink>,
@@ -156,7 +158,7 @@ impl EngineConfig {
             clock: Arc::new(SystemClock::new()),
             cloud: None,
             cloud_poll_interval: Duration::from_secs(3600),
-            cloud_cache_dir: None,
+            cache_dir: None,
             auto_refresh: None,
             wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
             on_event: Arc::new(|_| {}),
@@ -433,7 +435,7 @@ impl Engine {
             clock,
             cloud,
             cloud_poll_interval,
-            cloud_cache_dir,
+            cache_dir,
             auto_refresh,
             wallpaper,
             on_event,
@@ -483,6 +485,8 @@ impl Engine {
                 width,
                 height,
                 texture_paths,
+                texture_resolution,
+                texture_cache_dir: cache_dir.clone(),
                 mailbox: mailbox.clone(),
                 notify: Arc::clone(&notify),
             },
@@ -490,14 +494,7 @@ impl Engine {
 
         let now = clock.elapsed();
         let cloud = cloud.map(|source| {
-            spawn_cloud_worker(
-                source,
-                mailbox,
-                notify,
-                cloud_cache_dir,
-                cloud_poll_interval,
-                now,
-            )
+            spawn_cloud_worker(source, mailbox, notify, cache_dir, cloud_poll_interval, now)
         });
 
         Self {

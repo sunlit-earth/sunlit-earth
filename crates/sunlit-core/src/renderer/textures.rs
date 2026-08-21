@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::{error, info};
 
 use crate::assets::mailbox::DecodedTextureMessage;
-use crate::assets::texture_loader;
+use crate::assets::{texture_cache, texture_loader};
 
 /// Descriptor for a texture that can be loaded on demand.
 pub(super) struct TextureSlot {
@@ -127,24 +127,27 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
 
     let mailbox = res.texture_mailbox.clone();
     let notify = std::sync::Arc::clone(&res.notify);
+    let target_width = res.texture_resolution;
+    let cache_dir = res.texture_cache_dir.clone();
 
     std::thread::spawn(move || {
         texture_loader::register_jxl_hook();
         let start = std::time::Instant::now();
-        let result = match texture_loader::load(&path) {
-            Ok(img) => {
-                info!(
-                    width = img.width,
-                    height = img.height,
-                    path = %path.display(),
-                    elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
-                    "decoded texture"
-                );
-                crate::memory::log_memory_usage("after texture decode");
-                Ok(img)
-            }
-            Err(e) => Err(e),
-        };
+        let result =
+            match texture_cache::load_at_resolution(&path, target_width, cache_dir.as_deref()) {
+                Ok(img) => {
+                    info!(
+                        width = img.width,
+                        height = img.height,
+                        path = %path.display(),
+                        elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
+                        "loaded texture"
+                    );
+                    crate::memory::log_memory_usage("after texture decode");
+                    Ok(img)
+                }
+                Err(e) => Err(e),
+            };
 
         // Park the result for the consumer to pick up, then wake it
         mailbox.post(DecodedTextureMessage { slot_index, result });
@@ -203,7 +206,7 @@ pub(super) fn create_mipmapped_texture(
     let mut w = width;
     let mut h = height;
     for level in 1..mip_count {
-        pixels = downsample_2x(&pixels, w, h);
+        pixels = texture_loader::downsample_2x(&pixels, w, h);
         w = (w / 2).max(1);
         h = (h / 2).max(1);
         upload_mip(queue, &texture, level, w, h, &pixels);
@@ -277,102 +280,4 @@ fn upload_mip(
             depth_or_array_layers: 1,
         },
     );
-}
-
-/// Box-filter downsample: average each 2x2 block of RGBA pixels.
-#[allow(clippy::cast_possible_truncation)]
-fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
-    let dst_w = (src_w / 2).max(1) as usize;
-    let dst_h = (src_h / 2).max(1) as usize;
-    let sw = src_w as usize;
-    let sh = src_h as usize;
-    let mut dst = vec![0u8; dst_w * dst_h * 4];
-
-    for y in 0..dst_h {
-        for x in 0..dst_w {
-            let sx = x * 2;
-            let sy = y * 2;
-            // Clamp neighbor coordinates to stay within source bounds
-            let sx1 = (sx + 1).min(sw - 1);
-            let sy1 = (sy + 1).min(sh - 1);
-            for c in 0..4 {
-                let tl = u16::from(src[(sy * sw + sx) * 4 + c]);
-                let tr = u16::from(src[(sy * sw + sx1) * 4 + c]);
-                let bl = u16::from(src[(sy1 * sw + sx) * 4 + c]);
-                let br = u16::from(src[(sy1 * sw + sx1) * 4 + c]);
-                dst[(y * dst_w + x) * 4 + c] = ((tl + tr + bl + br + 2) / 4) as u8;
-            }
-        }
-    }
-
-    dst
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // -----------------------------------------------------------------------
-    // downsample_2x
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn downsample_2x2_uniform_red() {
-        let src = vec![
-            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
-        ];
-        let dst = downsample_2x(&src, 2, 2);
-        assert_eq!(dst, [255, 0, 0, 255]);
-    }
-
-    #[test]
-    fn downsample_2x2_checkerboard() {
-        // tl=[0,0,0,255], tr=[100,0,0,255], bl=[0,100,0,255], br=[0,0,100,255]
-        #[rustfmt::skip]
-        let src = vec![
-            0, 0, 0, 255,    100, 0, 0, 255,
-            0, 100, 0, 255,  0, 0, 100, 255,
-        ];
-        let dst = downsample_2x(&src, 2, 2);
-        assert_eq!(dst, [25, 25, 25, 255]);
-    }
-
-    #[test]
-    fn downsample_4x4_uniform_white() {
-        let src = vec![255; 4 * 4 * 4]; // 4x4 RGBA all-white
-        let dst = downsample_2x(&src, 4, 4);
-        assert_eq!(dst.len(), 2 * 2 * 4);
-        for chunk in dst.chunks(4) {
-            assert_eq!(chunk, [255, 255, 255, 255]);
-        }
-    }
-
-    #[test]
-    fn downsample_output_length() {
-        for (w, h) in [(2, 2), (4, 4), (8, 6), (16, 2), (2, 16)] {
-            let src = vec![128u8; (w * h * 4) as usize];
-            let dst = downsample_2x(&src, w, h);
-            let expected_len = ((w / 2).max(1) * (h / 2).max(1) * 4) as usize;
-            assert_eq!(dst.len(), expected_len, "failed for ({w}, {h})");
-        }
-    }
-
-    proptest::proptest! {
-        #[test]
-        fn downsample_output_size_invariant(
-            half_w in 1u32..=64,
-            half_h in 1u32..=64,
-            pixels in proptest::collection::vec(proptest::num::u8::ANY, 1..=128*128*4),
-        ) {
-            let w = half_w * 2;
-            let h = half_h * 2;
-            let expected_input_len = (w as usize) * (h as usize) * 4;
-            proptest::prop_assume!(pixels.len() >= expected_input_len);
-            let src = &pixels[..expected_input_len];
-
-            let dst = downsample_2x(src, w, h);
-            let expected_output_len = (half_w as usize) * (half_h as usize) * 4;
-            proptest::prop_assert_eq!(dst.len(), expected_output_len);
-        }
-    }
 }

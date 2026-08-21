@@ -4,4 +4,5 @@
 pub mod cloud_fetcher;
 pub mod cloud_source;
 pub mod mailbox;
+pub mod texture_cache;
 pub mod texture_loader;

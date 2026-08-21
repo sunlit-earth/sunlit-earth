@@ -276,7 +276,7 @@ fn engine_config(
         clock: Arc::new(SystemClock::new()),
         cloud,
         cloud_poll_interval: cloud_fetcher::poll_interval(),
-        cloud_cache_dir: cloud_fetcher::cache_dir(),
+        cache_dir: cloud_fetcher::cache_dir(),
         auto_refresh: config.auto_refresh_enabled.then(|| {
             Duration::from_secs(u64::from(config.auto_refresh_interval_minutes.max(1)) * 60)
         }),

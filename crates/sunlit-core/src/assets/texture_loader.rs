@@ -17,36 +17,65 @@ pub struct DecodedImage {
     pub height: u32,
 }
 
-/// Load and decode an image file to RGBA8 pixel data.
+/// Load and decode an image file into pixels the sphere can sample.
 ///
 /// The format is auto-detected by the `image` crate (including JXL when the
 /// decoding hook has been registered via [`register_jxl_hook`]).
-///
-/// Two transformations are applied after decoding:
-/// - Horizontal flip: standard equirectangular maps have east-to-the-right,
-///   but our sphere UV winding goes in the opposite direction.
-/// - Horizontal shift left by 1/4 width: aligns the prime meridian with u=0
-///   in our sphere's UV mapping.
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load(path: &Path) -> Result<DecodedImage, String> {
+    let mut img = decode(path)?;
+    orient(&mut img);
+    Ok(img)
+}
+
+/// Decode an image file to RGBA8 exactly as the file stores it.
+///
+/// This is the half of [`load`] the texture cache needs: a cached downscale is
+/// written in the source's own orientation, so that reading one back through
+/// `load` is correct and a human opening the file sees the map the right way
+/// round.
+pub(crate) fn decode(path: &Path) -> Result<DecodedImage, String> {
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
     reader.no_limits();
     let img = reader
         .decode()
         .map_err(|e| format!("Failed to decode {}: {e}", path.display()))?
-        .fliph()
         .into_rgba8();
 
     let (width, height) = img.dimensions();
-    let mut pixels = img.into_raw();
-    shift_horizontal(&mut pixels, width, height);
-
     Ok(DecodedImage {
-        pixels,
+        pixels: img.into_raw(),
         width,
         height,
     })
+}
+
+/// Turn a standard equirectangular map into the sphere's UV layout.
+///
+/// Two transformations, both in place:
+/// - Horizontal flip: standard equirectangular maps have east-to-the-right,
+///   but our sphere UV winding goes in the opposite direction.
+/// - Horizontal shift left by 1/4 width: aligns the prime meridian with u=0
+///   in our sphere's UV mapping.
+pub(crate) fn orient(img: &mut DecodedImage) {
+    flip_horizontal(&mut img.pixels, img.width, img.height);
+    shift_horizontal(&mut img.pixels, img.width, img.height);
+}
+
+/// Mirror every row, so east ends up where the sphere's winding expects it.
+pub(crate) fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+    let w = width as usize;
+    let row_bytes = w * 4;
+    for y in 0..height as usize {
+        let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
+        for x in 0..w / 2 {
+            let (left, right) = (x * 4, (w - 1 - x) * 4);
+            for c in 0..4 {
+                row.swap(left + c, right + c);
+            }
+        }
+    }
 }
 
 /// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
@@ -60,6 +89,39 @@ pub(crate) fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
         let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
         row.rotate_right(shift_bytes);
     }
+}
+
+/// Box-filter downsample: average each 2x2 block of RGBA pixels.
+///
+/// Used for both mip generation in the renderer and the on-disk downscales the
+/// texture cache writes, which is why it lives with the pixel handling rather
+/// than with either caller.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
+    let dst_w = (src_w / 2).max(1) as usize;
+    let dst_h = (src_h / 2).max(1) as usize;
+    let sw = src_w as usize;
+    let sh = src_h as usize;
+    let mut dst = vec![0u8; dst_w * dst_h * 4];
+
+    for y in 0..dst_h {
+        for x in 0..dst_w {
+            let sx = x * 2;
+            let sy = y * 2;
+            // Clamp neighbor coordinates to stay within source bounds
+            let sx1 = (sx + 1).min(sw - 1);
+            let sy1 = (sy + 1).min(sh - 1);
+            for c in 0..4 {
+                let tl = u16::from(src[(sy * sw + sx) * 4 + c]);
+                let tr = u16::from(src[(sy * sw + sx1) * 4 + c]);
+                let bl = u16::from(src[(sy1 * sw + sx) * 4 + c]);
+                let br = u16::from(src[(sy1 * sw + sx1) * 4 + c]);
+                dst[(y * dst_w + x) * 4 + c] = ((tl + tr + bl + br + 2) / 4) as u8;
+            }
+        }
+    }
+
+    dst
 }
 
 /// Resolve the textures directory using the fallback chain:
@@ -169,6 +231,121 @@ mod tests {
         assert_eq!(pixel_at(&buf, 1), px[3]);
         assert_eq!(pixel_at(&buf, 6), px[0]);
         assert_eq!(pixel_at(&buf, 7), px[1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // flip_horizontal
+    // -----------------------------------------------------------------------
+
+    /// The flip replaced `DynamicImage::fliph`, which is what every golden
+    /// reference was generated with, so it has to mean exactly the same thing.
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn flip_matches_the_image_crates_own() {
+        for (w, h) in [(1u32, 1u32), (2, 3), (5, 4), (8, 8), (7, 1)] {
+            let pixels: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
+            let expected = image::imageops::flip_horizontal(
+                &image::RgbaImage::from_raw(w, h, pixels.clone()).expect("buffer fits"),
+            )
+            .into_raw();
+
+            let mut ours = pixels;
+            flip_horizontal(&mut ours, w, h);
+            assert_eq!(ours, expected, "differed at {w}x{h}");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn flip_twice_is_identity() {
+        let mut buf: Vec<u8> = (0..6u32 * 3 * 4).map(|i| (i % 97) as u8).collect();
+        let original = buf.clone();
+        flip_horizontal(&mut buf, 6, 3);
+        assert_ne!(buf, original, "a flip of this row must change something");
+        flip_horizontal(&mut buf, 6, 3);
+        assert_eq!(buf, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // downsample_2x
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn downsample_2x2_uniform_red() {
+        let src = vec![
+            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+        ];
+        let dst = downsample_2x(&src, 2, 2);
+        assert_eq!(dst, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn downsample_2x2_checkerboard() {
+        // tl=[0,0,0,255], tr=[100,0,0,255], bl=[0,100,0,255], br=[0,0,100,255]
+        #[rustfmt::skip]
+        let src = vec![
+            0, 0, 0, 255,    100, 0, 0, 255,
+            0, 100, 0, 255,  0, 0, 100, 255,
+        ];
+        let dst = downsample_2x(&src, 2, 2);
+        assert_eq!(dst, [25, 25, 25, 255]);
+    }
+
+    #[test]
+    fn downsample_4x4_uniform_white() {
+        let src = vec![255; 4 * 4 * 4]; // 4x4 RGBA all-white
+        let dst = downsample_2x(&src, 4, 4);
+        assert_eq!(dst.len(), 2 * 2 * 4);
+        for chunk in dst.chunks(4) {
+            assert_eq!(chunk, [255, 255, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn downsample_output_length() {
+        for (w, h) in [(2, 2), (4, 4), (8, 6), (16, 2), (2, 16)] {
+            let src = vec![128u8; (w * h * 4) as usize];
+            let dst = downsample_2x(&src, w, h);
+            let expected_len = ((w / 2).max(1) * (h / 2).max(1) * 4) as usize;
+            assert_eq!(dst.len(), expected_len, "failed for ({w}, {h})");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn downsample_output_size_invariant(
+            half_w in 1u32..=64,
+            half_h in 1u32..=64,
+            pixels in proptest::collection::vec(proptest::num::u8::ANY, 1..=128*128*4),
+        ) {
+            let w = half_w * 2;
+            let h = half_h * 2;
+            let expected_input_len = (w as usize) * (h as usize) * 4;
+            proptest::prop_assume!(pixels.len() >= expected_input_len);
+            let src = &pixels[..expected_input_len];
+
+            let dst = downsample_2x(src, w, h);
+            let expected_output_len = (half_w as usize) * (half_h as usize) * 4;
+            proptest::prop_assert_eq!(dst.len(), expected_output_len);
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn flip_twice_is_identity_for_any_size(
+            width in 1u32..=64,
+            height in 1u32..=16,
+            pixels in proptest::collection::vec(proptest::num::u8::ANY, 1..=64*16*4),
+        ) {
+            let expected_len = (width as usize) * (height as usize) * 4;
+            proptest::prop_assume!(pixels.len() >= expected_len);
+            let mut buf = pixels[..expected_len].to_vec();
+            let original = buf.clone();
+
+            flip_horizontal(&mut buf, width, height);
+            flip_horizontal(&mut buf, width, height);
+            proptest::prop_assert_eq!(buf, original);
+        }
     }
 
     proptest::proptest! {

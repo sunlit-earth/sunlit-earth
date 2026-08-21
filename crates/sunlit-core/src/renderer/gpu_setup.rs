@@ -30,6 +30,8 @@ pub(super) fn create_renderer(
         width,
         height,
         texture_paths,
+        texture_resolution,
+        texture_cache_dir,
         mailbox: texture_mailbox,
         notify,
     } = config;
@@ -233,6 +235,8 @@ pub(super) fn create_renderer(
         bind_group_layout,
         sampler,
         texture_slots,
+        texture_resolution,
+        texture_cache_dir,
         last_rendered_index: 0,
         depth_texture,
         render_texture,

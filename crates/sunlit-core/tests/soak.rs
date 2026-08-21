@@ -179,7 +179,7 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
     config.clock = clock.clone();
     config.cloud = Some(cloud.clone());
     config.cloud_poll_interval = STEP;
-    config.cloud_cache_dir = None;
+    config.cache_dir = None;
     config.auto_refresh = Some(STEP);
     config.wallpaper = sink.clone();
 

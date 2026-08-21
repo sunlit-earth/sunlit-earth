@@ -126,6 +126,12 @@ pub struct RendererConfig {
     pub height: u32,
     /// One entry per file-backed texture slot, in slot order after the grid.
     pub texture_paths: Vec<Option<PathBuf>>,
+    /// Width the file-backed textures are loaded at, as a cap: a source
+    /// narrower than this is loaded as it is.
+    pub texture_resolution: u32,
+    /// Where downscaled copies of the file-backed textures are kept. `None`
+    /// re-derives them on every run.
+    pub texture_cache_dir: Option<PathBuf>,
     /// Shared with the cloud fetcher and the background decode threads.
     pub mailbox: TextureMailbox,
     /// Invoked from decode threads once a result has been parked.
@@ -142,6 +148,10 @@ pub struct Renderer {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     texture_slots: Vec<TextureSlot>,
+    /// Width the file-backed slots load at, as a cap.
+    texture_resolution: u32,
+    /// Where downscaled copies of the file-backed textures are kept.
+    texture_cache_dir: Option<PathBuf>,
     /// Index of the most recently successfully rendered texture slot.
     /// Used as fallback when the requested slot is not loaded or fails.
     last_rendered_index: usize,

@@ -85,3 +85,20 @@ Recorded during implementation on 2026-08-21.
 5. **Success criterion 4's "the very next frame" is read as "no frame ever shows the old width".** A reload is a file decode on a background thread, so there is no arrangement in which the frame immediately after the command is drawn from textures that do not exist yet; Decision 4 chooses that gap deliberately by purging before spawning the loads. What the implementation guarantees is the part that can be guaranteed: no frame is ever drawn from the old width's textures (they are destroyed), no frame is drawn from a superseded decode (the generation stamp), and the frames in between show the procedural grid, which is the same fallback a cold start shows. `a_resolution_switch_reloads_the_textures_in_both_directions` asserts a lit frame after the reload in both directions.
 
 6. **`EngineConfig::cloud_cache_dir` is now `cache_dir`.** Decision 3 puts the texture cache under the directory the cloud cache uses, and the field is what carries that directory into the engine. Keeping the old name would have meant reading the cloud's field to find where textures go.
+
+## Validation
+
+### Round 1 (2026-08-22)
+
+Scope: the fixed range 70c4dd4..84ba401, a fresh validator, all three Windows gates re-run green by it, the memory criterion reproduced independently (1253.2 MiB at 8192 against 612.8 MiB at 2048). Verdict: 1 major, 7 minors; the round blocks. All six departures verified and endorsed.
+
+- M1: the generation stamp stops a stale decode from being applied but not from clobbering a fresh post in the latest-value mailbox; the discard path never clears `loading`, so the slot can stick on the procedural grid forever. Breaks Decision 5 as written.
+- m1: the quick-succession engine test does not create the in-flight race its comment claims, so Step 3's mid-load promise is untested at integration level.
+- m2: `effective_texture_resolution`'s doc comment still describes the pre-departure-3 persistence behavior, the opposite of the code.
+- m3: CLAUDE.md's "byte-identical at 8192 and 4096" holds on the software adapter only; a real GPU differs by 8 pixels at 1/255 through anisotropic LOD near the limb.
+- m4: the cache sidecar is stamped after the decode, so a source replaced mid-decode poisons the entry permanently and silently.
+- m5: the cache-write doc overclaims cross-process safety of the fixed tilde temp name and describes the rename ordering backwards; the code's ordering is correct.
+- m6: a wallpaper publish during the post-switch reload window puts the procedural grid on the desktop; needs a decision (defer, skip, or a recorded decline).
+- m7: a doc comment spliced into `slint_ui.rs` mislabels two tests.
+
+Disposition: fixes in progress.

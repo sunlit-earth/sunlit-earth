@@ -486,6 +486,52 @@ pub fn ensure_install_media(
     Ok(InstallMedia { boot, source })
 }
 
+/// Delete the prompt-free copy and the record beside it.
+///
+/// It is 6.6 GiB of derived data: the download with one boot image swapped, so
+/// a repack makes it again in minutes against an image build that costs an
+/// hour. Keeping it bought that saving with twice the disk of the download it
+/// came from, for a rebuild that happens when a template changes or an
+/// evaluation expires. So a build that succeeded takes it back out, and what
+/// stays is the one file that cannot be made again from anything on this host.
+///
+/// The record goes first for the same reason [`repack_noprompt`] writes it
+/// last: a record that outlived its copy claims a provenance for a file that is
+/// not there. The other order is safe too, because [`cached_noprompt`] repacks
+/// when either half is missing, but only one of the two can be stated in one
+/// sentence.
+pub fn discard_install_media(store: &Store) {
+    let copy = store.windows_iso_noprompt();
+    let bytes = file_bytes(&copy);
+    let _ = std::fs::remove_file(store.windows_iso_noprompt_source());
+    match std::fs::remove_file(&copy) {
+        Ok(()) => println!(
+            "removed the prompt-free installation media, freeing {}",
+            format_bytes(bytes.unwrap_or(0))
+        ),
+        // Nothing to remove is the ordinary case on a second build.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => println!("warning: cannot remove {}: {e}", copy.display()),
+    }
+}
+
+/// What a build that did not finish is leaving behind, if anything.
+///
+/// A failed build keeps the repack, because the retry is the one occasion when
+/// remaking it is a cost worth avoiding, and says so rather than holding
+/// several gigabytes quietly.
+pub fn kept_install_media(store: &Store) -> Option<String> {
+    let copy = store.windows_iso_noprompt();
+    let bytes = file_bytes(&copy)?;
+    Some(format!(
+        "keeping the prompt-free installation media at {} ({}), which the next \
+         attempt reuses. `cargo xtask vm purge windows --iso` removes it along \
+         with the download.",
+        copy.display(),
+        format_bytes(bytes)
+    ))
+}
+
 /// Make the prompt-free copy, and record what it was made from.
 fn repack_noprompt(
     runner: &dyn Runner,
@@ -1081,6 +1127,48 @@ mod tests {
         assert_eq!(read_source_mark(&dir.join("missing.json")), None);
         std::fs::write(dir.join("broken.json"), b"{").expect("write");
         assert_eq!(read_source_mark(&dir.join("broken.json")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A build that produced an image takes the repack back out: it is the
+    /// largest thing in the store that can simply be made again.
+    #[test]
+    fn a_finished_build_leaves_only_the_download_behind() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_media_discard");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(dir.join("store"));
+        std::fs::create_dir_all(store.iso_dir()).expect("temp tree");
+        let download = store.windows_iso();
+        let copy = store.windows_iso_noprompt();
+        let record = store.windows_iso_noprompt_source();
+        for path in [&download, &copy, &record] {
+            std::fs::write(path, b"pretend").expect("write");
+        }
+
+        // A failed build says what it is keeping, and keeps it.
+        let note = kept_install_media(&store).expect("something is being kept");
+        assert!(
+            note.contains("windows11-enterprise-eval-noprompt.iso"),
+            "{note}"
+        );
+        assert!(note.contains("purge windows --iso"), "{note}");
+        assert!(copy.is_file());
+
+        discard_install_media(&store);
+        assert!(!copy.exists(), "the prompt-free copy is derived data");
+        assert!(
+            !record.exists(),
+            "and so is the record of where it came from"
+        );
+        assert!(
+            download.is_file(),
+            "the download is the one file that cannot be made again from this host"
+        );
+
+        // Nothing left to remove is the ordinary case on the next build, and
+        // nothing to report either.
+        discard_install_media(&store);
+        assert_eq!(kept_install_media(&store), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

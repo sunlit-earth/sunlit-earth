@@ -160,7 +160,13 @@ pub fn builder_label() -> String {
 /// the unattend file and everything the first-logon script needs; Setup finds it
 /// by searching every removable drive, and the bootstrap finds it by its marker
 /// file.
-pub fn create_script(name: &str, disk: &Path, install_iso: &Path, unattend_iso: &Path) -> String {
+pub fn create_script(
+    name: &str,
+    disk: &Path,
+    install_iso: &Path,
+    unattend_iso: &Path,
+    console: (u32, u32),
+) -> String {
     format!(
         "New-VHD -Path {disk} -SizeBytes {size} -Dynamic | Out-Null\n\
          New-VM -Name {name} -Generation 2 -MemoryStartupBytes {memory} \
@@ -174,7 +180,8 @@ pub fn create_script(name: &str, disk: &Path, install_iso: &Path, unattend_iso: 
          $dvd = Get-VMDvdDrive -VMName {name} | \
          Where-Object {{ $_.Path -eq {install} }} | Select-Object -First 1\n\
          if (-not $dvd) {{ throw 'the installation media is not attached to the VM' }}\n\
-         Set-VMFirmware -VMName {name} -FirstBootDevice $dvd\n",
+         Set-VMFirmware -VMName {name} -FirstBootDevice $dvd\n\
+         {video}",
         name = ps_quote(name),
         disk = ps_quote(disk),
         install = ps_quote(install_iso),
@@ -183,6 +190,9 @@ pub fn create_script(name: &str, disk: &Path, install_iso: &Path, unattend_iso: 
         size = BUILD_DISK_BYTES,
         memory = hyperv::MEMORY_BYTES,
         cpus = hyperv::CPUS,
+        // An install is watched as often as a running guest is, and what there
+        // is to watch is Setup's own progress, so it gets the same console.
+        video = hyperv::video_script(name, console),
     )
 }
 
@@ -523,8 +533,30 @@ fn preflight(runner: &dyn Runner, store: &Store) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the Windows golden image on `Hyper-V`.
+/// Build the Windows golden image on `Hyper-V`, and clear up the media it
+/// repacked to do it.
+///
+/// The prompt-free copy is derived data and the largest thing in the store
+/// after the images themselves, so a build that produced an image takes it back
+/// out again; one that did not keeps it for the retry and says so. Both
+/// outcomes go through here rather than through the build itself, because the
+/// build has a dozen ways to fail and every one of them leaves the same
+/// question.
 pub fn run(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, String> {
+    let outcome = build(runner, store, target);
+    match &outcome {
+        Ok(_) => windows_media::discard_install_media(store),
+        Err(_) => {
+            if let Some(note) = windows_media::kept_install_media(store) {
+                println!("{note}");
+            }
+        }
+    }
+    outcome
+}
+
+/// The build itself.
+fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, String> {
     preflight(runner, store)?;
 
     let template_dir = store::template_dir(target);
@@ -602,7 +634,8 @@ fn create_and_install(
     unattend_iso: &Path,
 ) -> Result<(), String> {
     let disk = state.overlay.clone();
-    let create = create_script(&state.vm_name, &disk, install_iso, unattend_iso);
+    let console = hyperv::HypervProvider::new(runner, store, HostOs::Windows).console_size();
+    let create = create_script(&state.vm_name, &disk, install_iso, unattend_iso, console);
     let outcome = match run_script(runner, &create) {
         Ok(_) => {
             println!("{} is created", state.vm_name);
@@ -1061,6 +1094,7 @@ mod tests {
             Path::new(r"C:\vm\run\windows\build.vhdx"),
             Path::new(r"C:\vm\iso\noprompt.iso"),
             Path::new(r"C:\vm\build\windows\unattend.iso"),
+            (1920, 1080),
         )
     }
 

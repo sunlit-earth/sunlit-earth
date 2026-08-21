@@ -37,7 +37,12 @@ fn all_scripts() -> Vec<(String, String)> {
     let name = "sunlit-e2e-windows";
     scripts.push((
         "hyperv: create".to_owned(),
-        hyperv::create_script(name, r"C:\vm\golden.vhdx", r"C:\vm\overlay.vhdx"),
+        hyperv::create_script(
+            name,
+            r"C:\vm\golden.vhdx",
+            r"C:\vm\overlay.vhdx",
+            (1920, 1080),
+        ),
     ));
     scripts.push(("hyperv: state".to_owned(), hyperv::state_script(name)));
     scripts.push(("hyperv: address".to_owned(), hyperv::address_script(name)));
@@ -58,8 +63,14 @@ fn all_scripts() -> Vec<(String, String)> {
             std::path::Path::new(r"C:\vm store\run\windows\build.vhdx"),
             std::path::Path::new(r"C:\vm store\iso\noprompt.iso"),
             std::path::Path::new(r"C:\vm store\build\windows\unattend.iso"),
+            (1920, 1080),
         ),
     ));
+    scripts.push((
+        "hyperv: video".to_owned(),
+        hyperv::video_script(name, (2560, 1440)),
+    ));
+    scripts.push(("hyperv: work area".to_owned(), hyperv::work_area_script()));
     scripts.push(("build: probe".to_owned(), build_hyperv::probe_script(name)));
     scripts.push((
         "build: remove".to_owned(),

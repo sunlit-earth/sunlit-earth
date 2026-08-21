@@ -34,6 +34,113 @@ pub const GUEST_USER: &str = "tester";
 pub const MEMORY_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 pub const CPUS: u32 = 4;
 
+/// Overrides the guest console's resolution, as `WxH`.
+pub const RESOLUTION_ENV: &str = "SUNLIT_EARTH_VM_RESOLUTION";
+
+/// The modes the automatic choice picks from, smallest first.
+///
+/// Every one of them is in the list the guest's synthetic adapter advertises
+/// (`CIM_VideoControllerResolution`, read inside a running guest on
+/// 2026-08-21), and the largest is where that list ends. `Set-VMVideo` accepts
+/// more than that and the guest honours it: 2560x1440 was set and the guest
+/// came up in it. Going past what the adapter offers is a thing to ask for
+/// rather than to be given, so it is reachable through [`RESOLUTION_ENV`] and
+/// not from here.
+pub const CONSOLE_MODES: [(u32, u32); 6] = [
+    (1024, 768),
+    (1280, 800),
+    (1440, 900),
+    (1600, 900),
+    (1680, 1050),
+    (1920, 1080),
+];
+
+/// Room to leave between the guest's framebuffer and the edges of the host's
+/// screen: the window's borders across, and its title bar plus `vmconnect`'s
+/// own toolbar and status bar down. A guest larger than the screen it is shown
+/// on is the same problem as one too small, arrived at from the other side.
+///
+/// The work area this is subtracted from already excludes the host's taskbar.
+const WINDOW_MARGIN: (u32, u32) = (32, 120);
+
+/// What a resolution may be, at both ends.
+///
+/// The floor is the smallest mode in [`CONSOLE_MODES`] and the ceiling is
+/// generous: the point is to catch a transposed or mistyped value, not to have
+/// an opinion about a host with a very large screen.
+const RESOLUTION_BOUNDS: (u32, u32) = (640, 7680);
+
+/// Parse a `WxH` resolution, rejecting anything that is not one.
+pub fn parse_resolution(value: &str) -> Option<(u32, u32)> {
+    let (width, height) = value.trim().split_once(['x', 'X'])?;
+    let width: u32 = width.trim().parse().ok()?;
+    let height: u32 = height.trim().parse().ok()?;
+    let (min, max) = RESOLUTION_BOUNDS;
+    let plausible = (min..=max).contains(&width) && (min..=max).contains(&height);
+    plausible.then_some((width, height))
+}
+
+/// The resolution to give a guest's console, and why.
+///
+/// A Hyper-V guest is seen through a basic `vmconnect` session, which shows the
+/// framebuffer as it is: the window is the resolution, and there is no dragging
+/// it larger. That makes the resolution the only lever, and 1024x768, which is
+/// what a guest picks when nothing tells it otherwise, is a small window on any
+/// screen bought in the last decade.
+///
+/// So the largest mode that fits the host's own screen, which is what makes it
+/// right on a laptop and on a 3440x1440 desktop without either being
+/// configured. An explicit request wins outright, including one larger than
+/// anything here. A host whose screen size could not be read keeps today's
+/// behaviour rather than guessing a size that might not fit, and the caller
+/// says which of the three happened.
+pub fn console_resolution(
+    requested: Option<(u32, u32)>,
+    host_work_area: Option<(u32, u32)>,
+) -> (u32, u32) {
+    if let Some(size) = requested {
+        return size;
+    }
+    let smallest = CONSOLE_MODES[0];
+    let Some((area_width, area_height)) = host_work_area else {
+        return smallest;
+    };
+    let (margin_width, margin_height) = WINDOW_MARGIN;
+    let width_budget = area_width.saturating_sub(margin_width);
+    let height_budget = area_height.saturating_sub(margin_height);
+    CONSOLE_MODES
+        .into_iter()
+        .rfind(|&(width, height)| width <= width_budget && height <= height_budget)
+        .unwrap_or(smallest)
+}
+
+/// The marker the work-area query prints, and the script that prints it.
+///
+/// `Screen.PrimaryScreen.WorkingArea` rather than the whole virtual desktop or
+/// the monitor's raw mode: it is the one that already excludes the taskbar, and
+/// on a multi-monitor host the console window opens on one screen rather than
+/// across all of them.
+pub const WORK_AREA_MARK: &str = "WORKAREA=";
+
+pub fn work_area_script() -> String {
+    format!(
+        "Add-Type -AssemblyName System.Windows.Forms\n\
+         $screen = [System.Windows.Forms.Screen]::PrimaryScreen\n\
+         if ($screen) {{\n  \
+         $area = $screen.WorkingArea\n  \
+         Write-Output ('{WORK_AREA_MARK}{{0}}x{{1}}' -f $area.Width, $area.Height)\n\
+         }}\n"
+    )
+}
+
+/// The work area out of that script's output, if it printed one.
+pub fn parse_work_area(stdout: &str) -> Option<(u32, u32)> {
+    stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(WORK_AREA_MARK))
+        .and_then(parse_resolution)
+}
+
 /// The script that creates the VM.
 ///
 /// A differencing child of the read-only golden VHDX, exactly as the QEMU
@@ -43,7 +150,7 @@ pub const CPUS: u32 = 4;
 /// Generation 2 because Windows 11 needs UEFI. Secure Boot is off: the image
 /// was installed with the requirement bypassed, and turning it on here would
 /// be asserting something about the disk that was never true.
-pub fn create_script(name: &str, golden: &str, overlay: &str) -> String {
+pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32)) -> String {
     format!(
         "New-VHD -Path {overlay} -ParentPath {golden} -Differencing | Out-Null\n\
          New-VM -Name {name} -Generation 2 -MemoryStartupBytes {memory} \
@@ -53,13 +160,38 @@ pub fn create_script(name: &str, golden: &str, overlay: &str) -> String {
          Set-VMFirmware -VMName {name} -EnableSecureBoot Off\n\
          $drive = Get-VMHardDiskDrive -VMName {name}\n\
          Set-VMFirmware -VMName {name} -FirstBootDevice $drive\n\
-         Set-VMMemory -VMName {name} -DynamicMemoryEnabled $false\n",
+         Set-VMMemory -VMName {name} -DynamicMemoryEnabled $false\n\
+         {video}",
         name = ps_quote(name),
         golden = ps_quote(golden),
         overlay = ps_quote(overlay),
         switch = ps_quote(SWITCH),
         memory = MEMORY_BYTES,
         cpus = CPUS,
+        video = video_script(name, console),
+    )
+}
+
+/// The line that fixes the guest's console resolution.
+///
+/// Here rather than anywhere later because the cmdlet refuses to run against a
+/// VM that is on: "the virtual machine must be turned off to set the resolution
+/// type or the horizontal or vertical resolution". Between `New-VM` and
+/// `Start-VM` is the only window either create script has, and it is enough:
+/// the mode is in place before the firmware draws anything, so the console is
+/// the right size from the first frame rather than after a logon.
+///
+/// `Single` and not `Maximum`: `Maximum` advertises a list up to the size given
+/// and leaves the guest to pick, which it does exactly as it does today, at
+/// 1024x768. `Single` advertises one mode, so the guest has nothing else to
+/// choose. What that costs is changing the resolution from inside the guest,
+/// which is a trade worth making: the resolution now comes from the host, where
+/// the screen it has to fit on is.
+pub fn video_script(name: &str, (width, height): (u32, u32)) -> String {
+    format!(
+        "Set-VMVideo -VMName {name} -ResolutionType Single \
+         -HorizontalResolution {width} -VerticalResolution {height}\n",
+        name = ps_quote(name),
     )
 }
 
@@ -226,6 +358,43 @@ impl<'a> HypervProvider<'a> {
         Ok(parse_state(&out))
     }
 
+    /// The console resolution for a guest about to be created, said out loud.
+    ///
+    /// Printed because all three answers are ones somebody would want to know
+    /// about: a size asked for, a size derived from this screen, and the small
+    /// default that means the screen could not be read. Without the line, the
+    /// last of those is indistinguishable from nothing having changed.
+    pub fn console_size(&self) -> (u32, u32) {
+        let requested = crate::util::env_var(RESOLUTION_ENV).and_then(|raw| {
+            let parsed = parse_resolution(&raw);
+            if parsed.is_none() {
+                println!(
+                    "warning: {RESOLUTION_ENV} is {raw:?}, which is not a size like \
+                     1920x1080; choosing one for this host instead"
+                );
+            }
+            parsed
+        });
+        let area = self
+            .runner
+            .capture(&powershell(&work_area_script()))
+            .ok()
+            .filter(crate::runner::CommandOutput::success)
+            .and_then(|out| parse_work_area(&out.stdout));
+        let (width, height) = console_resolution(requested, area);
+        match (requested, area) {
+            (Some(_), _) => println!("console: {width}x{height}, from {RESOLUTION_ENV}"),
+            (None, Some((aw, ah))) => {
+                println!("console: {width}x{height}, the largest that fits this host's {aw}x{ah}");
+            }
+            (None, None) => println!(
+                "console: {width}x{height}; this host's screen size could not be read, \
+                 and {RESOLUTION_ENV} sets it explicitly"
+            ),
+        }
+        (width, height)
+    }
+
     /// Poll until the guest reports a usable address.
     fn wait_for_address(&self, name: &str, timeout: Duration) -> Result<String, String> {
         let start = Instant::now();
@@ -274,6 +443,7 @@ impl crate::provider::Provider for HypervProvider<'_> {
             &name,
             &golden.to_string_lossy(),
             &overlay.to_string_lossy(),
+            self.console_size(),
         ))?;
 
         let mut state = RunState::new(
@@ -398,6 +568,7 @@ mod tests {
             "sunlit-e2e-windows",
             r"C:\vm\images\windows\golden.vhdx",
             r"C:\vm\run\windows\overlay.vhdx",
+            (1920, 1080),
         );
         assert!(script.contains("-Differencing"), "{script}");
         assert!(
@@ -410,7 +581,7 @@ mod tests {
 
     #[test]
     fn the_vm_is_generation_two_because_windows_11_needs_uefi() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx");
+        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
         assert!(script.contains("-Generation 2"), "{script}");
         assert!(script.contains("-EnableSecureBoot Off"), "{script}");
         assert!(script.contains("FirstBootDevice"), "{script}");
@@ -418,14 +589,14 @@ mod tests {
 
     #[test]
     fn the_vm_uses_the_switch_every_client_windows_has() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx");
+        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
         assert!(script.contains("-SwitchName 'Default Switch'"), "{script}");
         assert!(!script.contains("New-VMSwitch"), "{script}");
     }
 
     #[test]
     fn the_vm_never_starts_itself_or_takes_checkpoints() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx");
+        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
         assert!(
             script.contains("-AutomaticCheckpointsEnabled $false"),
             "{script}"
@@ -433,11 +604,88 @@ mod tests {
         assert!(script.contains("-AutomaticStartAction Nothing"), "{script}");
     }
 
+    /// The console has to be sized before the VM starts, because the cmdlet
+    /// refuses to run against one that is on.
+    #[test]
+    fn the_console_is_sized_in_the_create_script() {
+        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
+        assert!(
+            script.contains(
+                "Set-VMVideo -VMName 'sunlit-e2e-windows' -ResolutionType Single \
+                 -HorizontalResolution 1920 -VerticalResolution 1080"
+            ),
+            "{script}"
+        );
+        let video = script.find("Set-VMVideo").expect("the video line is there");
+        let start = script.find("New-VM").expect("the VM is created");
+        assert!(video > start, "{script}");
+        // `Maximum` leaves the guest to pick, and what it picks is 1024x768.
+        assert!(!script.contains("-ResolutionType Maximum"), "{script}");
+    }
+
+    /// The largest mode that fits, and no larger than the screen it will be
+    /// shown on.
+    #[test]
+    fn the_console_grows_to_the_host_screen_and_no_further() {
+        // The 3440x1440 ultrawide this was written on, where the largest mode
+        // fits with room to spare.
+        assert_eq!(console_resolution(None, Some((3440, 1400))), (1920, 1080));
+        // A 1080p screen, where it does not: 1080 plus the window's own
+        // furniture is taller than the screen, and 1600x900 is the next one
+        // down that fits.
+        assert_eq!(console_resolution(None, Some((1920, 1040))), (1600, 900));
+        // A 1366x768 panel has room for none of the larger modes, so it keeps
+        // what a guest would have picked for itself.
+        assert_eq!(console_resolution(None, Some((1366, 728))), (1024, 768));
+        // A screen size nobody could read is not a licence to guess.
+        assert_eq!(console_resolution(None, None), CONSOLE_MODES[0]);
+        // An explicit request wins, including one bigger than any mode here.
+        assert_eq!(
+            console_resolution(Some((2560, 1440)), Some((1366, 728))),
+            (2560, 1440)
+        );
+    }
+
+    #[test]
+    fn a_resolution_is_two_numbers_and_anything_else_is_not_one() {
+        assert_eq!(parse_resolution("1920x1080"), Some((1920, 1080)));
+        assert_eq!(parse_resolution(" 2560 X 1440 "), Some((2560, 1440)));
+        for bad in [
+            "",
+            "1920",
+            "1920x",
+            "x1080",
+            "1920*1080",
+            "1920x1080x60",
+            "huge",
+            // Out of bounds at both ends: a typo rather than a screen.
+            "320x240",
+            "99999x1080",
+        ] {
+            assert_eq!(parse_resolution(bad), None, "{bad}");
+        }
+    }
+
+    /// The query and its parser are two halves of one thing, and the half that
+    /// can be checked here is that the parser reads what the script prints.
+    #[test]
+    fn the_work_area_query_and_its_parser_agree() {
+        let script = work_area_script();
+        assert!(script.contains(WORK_AREA_MARK), "{script}");
+        assert_eq!(
+            parse_work_area(&format!("noise\n{WORK_AREA_MARK}3440x1400\n")),
+            Some((3440, 1400))
+        );
+        // A host with no screen prints no marker, which is not a failure.
+        assert_eq!(parse_work_area("nothing here"), None);
+        assert_eq!(parse_work_area(&format!("{WORK_AREA_MARK}wide")), None);
+    }
+
     #[test]
     fn every_script_names_a_vm_of_ours() {
         let name = Target::Windows.vm_name();
         for script in [
-            create_script(&name, "g", "o"),
+            create_script(&name, "g", "o", (1920, 1080)),
             state_script(&name),
             address_script(&name),
             destroy_script(&name),

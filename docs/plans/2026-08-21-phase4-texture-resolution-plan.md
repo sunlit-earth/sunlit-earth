@@ -109,3 +109,16 @@ Disposition: all eight fixed, none declined.
 - m3: qualified as the software adapter, with the real-GPU measurement beside it, and the cache timings now name the profile they were measured in.
 - m4: the source is stamped before the decode and the stamp re-read in `write_cache`, which caches only if the two agree. Unit-tested against a stale stamp and against a source that vanished.
 - m6: fixed rather than declined. `publish_wallpaper` holds one request back while `Renderer::textures_pending` says a texture the current mode needs is coming, and makes it at the end of the tick it arrives on. It covers the button, the tray, the IPC command, and the auto-refresh schedule, all of which reach that one function, and deliberately not `RenderToFile` or `ExportPixels`, which answer a caller holding a reply channel. `textures_pending` is not the negation of `textures_ready`: a slot with no file, and one whose decode failed, are terminal, and holding a publish for either would wait forever.
+
+### Round 2 (2026-08-22)
+
+Scope: the fix range 84ba401..4720015, a fresh validator, all three Windows gates re-run green by it, the memory criterion reproduced twice more (1259.7 MiB at 8192 against 613.0 MiB at 2048). Verdict: 0 majors, 6 minors; the round does not block. M1 and m2 through m7 verified fixed, M1's impossibility argument endorsed (a parked message can only outrank an arrival that was already stale), and the hold-back, the cache stamping, and the never-defers-forever property probed and found sound.
+
+- m1 (carried): the new engine test does not exercise either half of the M1 fix; it parks the stale message first, so fixed and unfixed code behave identically, and two recorded claims (that removing either half fails a test, and that the test recreates M1's wedge) are false as written. The `loading` clear at the discard site has no test that fails without it.
+- m8: clearing `loading` on a stale discard can put a second decode of the same slot in flight; in blend mode up to four concurrent 8K decodes, ~128 MB each, self-healing but expensive, and the comment undersells it.
+- m9: the pid-and-counter temp names made orphans unbounded; nothing sweeps the cache directory, so every crash mid-write leaves a multi-MB file forever.
+- m10: the injected mailbox's slot count is a prose-only contract; too small drops posts and wedges "Loading...", too large panics the engine thread on an out-of-range index.
+- m11: CLAUDE.md says the grid-gap sentence twice in adjacent paragraphs.
+- m12: the pending check runs before `wallpaper.check_supported()`, so an unsupported platform now waits out a reload to hear a refusal it could have gotten immediately.
+
+Disposition: fixes in progress.

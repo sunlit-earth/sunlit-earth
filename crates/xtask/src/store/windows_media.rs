@@ -106,6 +106,16 @@ pub fn ensure_iso(runner: &dyn Runner, store: &Store) -> Result<PathBuf, String>
 
 /// Pick a downloader. `curl` ships with Windows 10 and later and with most
 /// Linux distributions; `wget` covers the rest.
+///
+/// A bare `PATH` lookup, unlike the host tools the VM commands run through
+/// `host::facts::resolve_tool`. That fallback list is the places an installer
+/// leaves a program off the `PATH` this process inherited, and all of them are
+/// Windows-only and named for a tool `vm setup` installs there: QEMU's and
+/// `TightVNC`'s directories, winget's links, scoop's shims. Neither of these two
+/// arrives that way. On Windows `curl.exe` lives in `System32`, which has to be
+/// on `PATH` or nothing here works, since `powershell.exe` is next to it; on
+/// Linux `resolve_tool` has no fallbacks at all and would be this same lookup
+/// spelled longer, apt having put the program in `/usr/bin`.
 pub fn download_command(runner: &dyn Runner, url: &str, destination: &Path) -> Option<Cmd> {
     let out = destination.to_string_lossy().into_owned();
     if runner.which("curl").is_some() {

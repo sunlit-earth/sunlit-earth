@@ -45,6 +45,7 @@ fn all_scripts() -> Vec<(String, String)> {
         ),
     ));
     scripts.push(("hyperv: state".to_owned(), hyperv::state_script(name)));
+    scripts.push(("hyperv: id".to_owned(), hyperv::id_script(name)));
     scripts.push(("hyperv: address".to_owned(), hyperv::address_script(name)));
     scripts.push(("hyperv: destroy".to_owned(), hyperv::destroy_script(name)));
 
@@ -88,7 +89,10 @@ fn all_scripts() -> Vec<(String, String)> {
         crate::store::windows_media::dismount_script(iso),
     ));
 
-    // The shortcut script, which is generated per boot and runs in the guest.
+    // The hand-over scripts, which are generated per boot and run in the guest.
+    // A syntax error in either is invisible from the host: the shortcuts fail
+    // as a warning and the enhanced session as a console that asks for a
+    // password nobody blanked.
     scripts.push((
         "handover: shortcuts".to_owned(),
         crate::guest::handover::shortcut_script(&crate::guest::artifacts::guest_paths(
@@ -97,6 +101,10 @@ fn all_scripts() -> Vec<(String, String)> {
             "e2e-1a2b.exe",
             true,
         )),
+    ));
+    scripts.push((
+        "handover: enhanced session".to_owned(),
+        crate::guest::handover::enhanced_session_script(hyperv::GUEST_USER),
     ));
 
     // The scripts that ship in the repo and run inside the guest. A typo in

@@ -60,6 +60,8 @@ The app looks for `world.topo.200405.jxl` (day side) and `BlackMarble_2016.jxl` 
 
 With no textures at all, the renderer falls back to a procedural grid, which is enough to check that the pipeline works. Leaving unfetched LFS pointer files in place is worse than having no textures: they look like assets and then fail to decode as JPEG XL. If you do not want the assets, point at an empty directory rather than at the pointer files.
 
+The Rendering group in the settings window chooses the width they are loaded at: 8192, 4096, or 2048. The default is 4096, which halves the sources once and keeps the result in a cache beside the config, so later launches are quicker than the full width and cost about a quarter of the memory. Settings saved before this existed have no entry for it and land on 4096 too; pick 8192 once and it persists. The cache is disposable and can be deleted at any time.
+
 Cloud imagery is downloaded at runtime from [clouds.matteason.co.uk](https://clouds.matteason.co.uk) and cached; nothing needs to be prepared up front. Set `SUNLIT_EARTH_NO_CLOUDS` to skip it entirely.
 
 ## Build and run
@@ -70,6 +72,7 @@ cargo build --release              # release build (LTO, stripped)
 cargo run                          # run the app
 cargo run -- --software-rendering  # force CPU rendering
 cargo run -- --quality high        # override the quality tier for one run
+cargo run -- --texture-resolution 2048   # load the surface textures narrower, for one run
 ```
 
 Render a single frame without opening a window, on any of the three platforms:
@@ -78,11 +81,11 @@ Render a single frame without opening a window, on any of the three platforms:
 cargo run -- render --output earth.png --width 1920 --height 1080
 ```
 
-The main flags are `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--quality <low|medium|high>`, `--software-rendering`, `--textures-dir`, `--log-level`, and `--ipc-socket`. `cargo run -- --help` has the full list.
+The main flags are `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, and `--ipc-socket`. `cargo run -- --help` has the full list.
 
 ## Where files are written
 
-`config.toml`, the cloud cache, the exported `wallpaper.png`, and the memory metrics CSV all live in the platform local data directory under `SunlitEarth`: `%LOCALAPPDATA%\SunlitEarth` on Windows, `~/.local/share/SunlitEarth` on Linux, `~/Library/Application Support/SunlitEarth` on macOS.
+`config.toml`, the cloud cache, the downscaled surface textures in `texture_cache/`, the exported `wallpaper.png`, and the memory metrics CSV all live in the platform local data directory under `SunlitEarth`: `%LOCALAPPDATA%\SunlitEarth` on Windows, `~/.local/share/SunlitEarth` on Linux, `~/Library/Application Support/SunlitEarth` on macOS.
 
 ### Environment overrides
 
@@ -92,7 +95,7 @@ Every one of those locations can be moved, which is also how the tests stay out 
 |---|---|
 | `SUNLIT_EARTH_CONFIG` | Path to the config file |
 | `SUNLIT_EARTH_TEXTURES` | Textures directory |
-| `SUNLIT_EARTH_CACHE_DIR` | Cloud cache directory |
+| `SUNLIT_EARTH_CACHE_DIR` | Cache directory, for the cloud image and the downscaled textures |
 | `SUNLIT_EARTH_METRICS_DIR` | Memory metrics directory |
 | `SUNLIT_EARTH_CLOUD_URL` | Cloud image URL, winning over the quality tier |
 | `SUNLIT_EARTH_CLOUD_POLL_SECS` | Cloud poll interval in seconds |

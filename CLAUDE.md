@@ -95,7 +95,7 @@ sunlit-earth/
   crates/
     sunlit-core/     # headless: no Slint, no window, no event loop
       shaders/       # WGSL, included at compile time by renderer/gpu_setup.rs
-      src/assets/    # texture loading, cloud source + updater, texture mailbox
+      src/assets/    # texture loading + downscale cache, cloud source + updater, texture mailbox
       src/engine/    # the engine thread, injectable clock, wallpaper sink
       src/geometry/  # sphere mesh, procedural grid texture
       src/renderer/  # wgpu pipeline, offscreen render, readback
@@ -123,7 +123,7 @@ The organizing principle is **headless first**. The engine runs to completion wi
 
 One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the schedule. Clients send `EngineCommand`s and receive `EngineEvent`s.
 
-- **Commands**: `UpdateParams`, `SetPreviewSize`, `SetPreviewEnabled`, `RenderWallpaperNow`, `RenderToFile`, `ExportPixels`, `SetAutoRefresh`, `Poke`, `Shutdown`.
+- **Commands**: `UpdateParams`, `SetPreviewSize`, `SetPreviewEnabled`, `RenderWallpaperNow`, `RenderToFile`, `ExportPixels`, `SetTextureResolution`, `SetAutoRefresh`, `Poke`, `Shutdown`.
 - **Events**: `PreviewFrame { rgba, width, height }`, `TexturesReady`, `WallpaperSet(Result)`, `Status(String)`.
 - **The loop never sleeps on wall time to decide what is due.** It blocks on the command channel with a 50 ms timeout and, on each wake, asks `clock.elapsed()` what is due: the texture drain (5 s), the sun-position refresh (120 s), the cloud poll, the memory metrics sample (600 s), and the auto-refresh export. `Schedule::due` recomputes its deadline from `now` rather than accumulating, so a long stall produces one run and not a burst of catch-up runs.
 - **Injected `Clock`.** `SystemClock` in production, `MockClock` in tests. `MockClock` advances UTC too, so simulated days really do rotate the Earth. This is what makes 14 simulated days run in 13 seconds.
@@ -141,6 +141,8 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 
 Adding a shader parameter means: the `.slint` property and slider, the `AppConfig` field, `SceneParams` + its `ParamsDigest`, `Uniforms`, and the WGSL. The bridge functions and the dirty check follow from the struct. `params.rs` has a table-driven test that walks every parameter and asserts it changes the digest, so forgetting the dirty check is a test failure rather than a stale-frame bug.
 
+A setting that is not a shader parameter takes a different route, and `texture_resolution` is the example: it is an `AppConfig` field with a widget, but it stays out of `SceneParams` and the digest because it does not describe what to draw, and acting on it means re-reading files and swapping GPU textures, which `push_params` cannot express. Such a setting gets its own `EngineCommand` and its own callback, and is read back in `read_config_from_window_onto` rather than in `write_to_config`.
+
 `ParamsDigest` is the quantized snapshot used for dirty checking: camera floats compare exactly, everything else is rounded to integer thousandths. `datetime` is deliberately not in the digest; what the shader consumes is the sun direction derived from it, and `FrameState` compares that separately along with the render size.
 
 ### The renderer (`sunlit_core::renderer`)
@@ -151,7 +153,7 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 
 ### The app (`sunlit-app`)
 
-- `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand.
+- `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand.
 - `engine_client.rs`: `EngineLink` (send commands, push window state as `SceneParams`) and `event_forwarder` (engine events to the window). Preview frames cross the thread boundary through a latest-value mailbox with a single pending wake-up: the newest frame replaces the parked one and only one `invoke_from_event_loop` closure is ever in flight.
 - `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
 - `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`, `set-wallpaper`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test` and `query-memory` are answered on the listener thread, so they work while the event loop is idle.
@@ -168,6 +170,18 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 ### Quality tiers
 
 `QualityTier` (low, medium, high) is persisted in the config and overridable per run with `--quality` (the override is not written back). It has no widget in the settings window, which is why `read_config_from_window` is a read-modify-write against the stored config rather than a fresh `AppConfig::default()`: any persisted setting the UI does not manage has to survive a save untouched. It caps the MSAA sample count (1, 4, unlimited), the preview width (1280, 1920, unlimited, aspect preserved), and selects the cloud image variant (2048x1024, 4096x2048, 8192x4096). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile.
+
+### Texture resolution
+
+The two local surface textures are 8192 wide. `AppConfig::texture_resolution` decides what width they are loaded at, from the three in `config::TEXTURE_RESOLUTIONS` (8192, 4096, 2048), and the Rendering group offers them as a combo box. The default is 4096, so an install whose config predates the setting moves to 4096 and anyone who wants the full width picks it once. `--texture-resolution <8192|4096|2048>` overrides it for one run; clap validates the three values, and a config file holding anything else is repaired to the default by `AppConfig::sanitize` on load, which is where the check belongs since a config file is a text file.
+
+Below 8192 the width is reached by halving, and the result is cached on disk: `assets::texture_cache::load_at_resolution` looks for `texture_cache/<stem>.<width>.png` under the same directory the cloud cache uses (so `SUNLIT_EARTH_CACHE_DIR` covers both) and validates it against a sidecar TOML recording the source's size and modification time. On a miss it decodes the source, halves it with the same box filter the mip chain uses, and writes the PNG temp-then-rename. Measured on the real assets: 3.17 s to 0.20 s per texture on the second run, with the render byte-identical either way. A cached file is a plain downscale in the source's own orientation, which is why the orientation fixes are a separate `texture_loader::orient` rather than part of the decode: reading a cached file back is the same `load` a source goes through. The width is a cap, so a source narrower than the chosen width is loaded as it is.
+
+Changing the setting at runtime is `EngineCommand::SetTextureResolution`, not a params push: it decides which pixels to load rather than what to draw. The renderer clears the bind groups and views of the file-backed slots, calls `Texture::destroy` on the textures they held, and only then lets the reload allocate, in the same nil-before-recreate order as `gpu_setup::replace_render_textures`. `TextureSlot` keeps its `wgpu::Texture` so there is something to destroy, and `last_rendered_index` goes back to the grid, which is the one slot `render` may assume is loaded; the frames between the purge and the reload therefore show the procedural grid. `tests/engine.rs` measures the point of all this on the real assets: 1251.5 MiB of private bytes at 8192 against 610.9 MiB at 2048, and it skips with a printed reason where `textures/**` is still Git LFS pointers.
+
+A decode of the old width can still be running when the width changes, so every load carries the `texture_generation` it was spawned in and `process_decoded_textures` discards a post from a superseded one. The cloud fetcher posts no generation at all, because the resolution does not govern its slot; the grid stays procedural at 2048 and the cloud variant stays tier-driven.
+
+The setting has a widget, which makes the CLI override awkward in a way `--quality` is not: the window has to show what the engine actually loaded, but a one-run flag must not reach the config file. `EngineLink` therefore carries a flag, set at startup when the argument was given, that makes a save keep the stored width instead of reading the combo box; the combo box's own callback, Reset, and Load Defaults each clear it. That rests on a Slint property set from Rust not counting as a selection, which `test_setting_a_combo_index_is_not_a_selection` pins.
 
 ### Sample counts
 
@@ -197,7 +211,7 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 |---|---|
 | `SUNLIT_EARTH_CLOUD_URL` | Overrides the cloud image URL. Wins over the quality tier. |
 | `SUNLIT_EARTH_CLOUD_POLL_SECS` | Overrides the poll interval. |
-| `SUNLIT_EARTH_CACHE_DIR` | Overrides the cloud cache directory. |
+| `SUNLIT_EARTH_CACHE_DIR` | Overrides the cache directory, holding both the cloud image and the downscaled surface textures. |
 | `SUNLIT_EARTH_CONFIG` | Overrides the config file path. |
 | `SUNLIT_EARTH_METRICS_DIR` | Overrides the memory metrics directory. |
 | `SUNLIT_EARTH_TEXTURES` | Overrides the textures directory. |
@@ -279,6 +293,7 @@ The tenth case, `test_session_end_shuts_down_promptly`, is the one exception to 
 - **One wgpu instance per process, ever.** `wgpu_init::instance()` holds it in a `OnceLock` and nothing else may call `wgpu::Instance::new`; `clippy.toml` enforces that through `disallowed-methods`, so a second call site has to allow the lint by name. An instance owns the loaded driver libraries, and dropping the last one `dlclose`s the Vulkan loader while Mesa's pthread TLS destructors still point into it, so the next thread to exit dies in `__nptl_deallocate_tsd`. That is not theoretical: it killed all 14 engine tests on lavapipe.
 - **Golden images** force the software adapter where the platform has one, so a developer machine and a CI runner compare against the same references. References are per adapter (`tests/golden/warp/`, `lavapipe/`, `metal/`), keyed by `wgpu_init::adapter_key`; the reasoning and the measured cross-adapter deltas are on that function. Which adapters have a set is listed in the test's `GENERATED_ADAPTERS`, not inferred from the filesystem: an adapter on the list whose directory is missing fails, and only an adapter that has genuinely never been generated skips. A missing single case fails every run, with its render written under `CARGO_TARGET_TMPDIR` for review rather than into the tracked tree. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
 - **Soak measurements** take their baseline after warm-up (the first cloud texture and wgpu's allocator pools are a one-off ~85 MiB); the assertion is on the remaining simulated days.
+- **A test that needs the real 8K assets skips with a printed reason without them**, rather than failing or passing vacuously: `textures/**` is Git LFS, and a checkout without the objects holds pointer files that exist as far as anything that only asks about existence is concerned, so the check is on size. `lowering_the_resolution_lowers_the_process_footprint` in `tests/engine.rs` is the one such case, and it costs about 25 seconds where the assets are present.
 
 ### Resource-flow rules (from the retrospective, section 8.2)
 

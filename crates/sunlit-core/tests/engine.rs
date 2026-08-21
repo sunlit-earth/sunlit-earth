@@ -14,6 +14,8 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
+use sunlit_core::assets::mailbox::{DecodedTextureMessage, TextureMailbox};
+use sunlit_core::assets::texture_loader::DecodedImage;
 use sunlit_core::config::QualityTier;
 use sunlit_core::engine::wallpaper_sink::CountingSink;
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent, EngineHandle};
@@ -137,11 +139,17 @@ impl TextureFixtures {
     const WIDTH: u32 = 128;
 
     fn new(name: &str) -> Self {
+        Self::with_width(name, Self::WIDTH)
+    }
+
+    /// Fixtures at a chosen width, for the one test that needs a decode slow
+    /// enough to still be running a moment after it was spawned.
+    fn with_width(name: &str, width: u32) -> Self {
         let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create the fixture directory");
         for file in ["day.png", "night.png"] {
-            let mut img = image::RgbaImage::new(Self::WIDTH, Self::WIDTH / 2);
+            let mut img = image::RgbaImage::new(width, width / 2);
             for (x, y, px) in img.enumerate_pixels_mut() {
                 // Bright throughout, so a lit globe is lit whichever texture
                 // and blend the mode picks.
@@ -561,9 +569,14 @@ fn a_switch_to_the_current_resolution_does_nothing() {
     );
 }
 
-/// Every switch leaves a decode of the previous width running. The generation
-/// stamp is what keeps one of those from landing on top of its replacement, and
-/// what the engine has to survive is several of them at once.
+/// Three purges with no reload in between, ending on the last width.
+///
+/// The run loop drains every queued command before it ticks, and a reload is
+/// only spawned from inside `render`, so all three purges here happen before
+/// the first spawn and no decode is ever in flight during them. That makes this
+/// a test of the purge being repeatable and of the last command winning, not of
+/// the stale-arrival ordering; `a_stale_decode_arriving_after_a_switch_is_never_applied`
+/// is that one.
 #[test]
 fn switches_in_quick_succession_end_on_the_last_one() {
     let fixtures = TextureFixtures::new("engine_resolution_races");
@@ -586,6 +599,98 @@ fn switches_in_quick_succession_end_on_the_last_one() {
         has_lit_pixels(&rgba),
         "the last switch must be the one that is showing"
     );
+}
+
+/// A decode of the previous width finishing after the switch must neither reach
+/// the GPU nor leave its slot believing a load is on the way to it.
+///
+/// Production produces that ordering with an 8K decode that is still running
+/// when the user changes the setting again, which no amount of waiting makes
+/// reliable in a test. So the mailbox is injected and the stale arrival is
+/// posted directly: the same message, at the same point in the slot's life, with
+/// none of the timing. It carries solid black, so a globe that is still lit
+/// afterwards is proof it was never applied, and the fixtures are wide enough
+/// that the reload it is racing has not finished by the time it is posted.
+#[test]
+fn a_stale_decode_arriving_after_a_switch_is_never_applied() {
+    const WIDE: u32 = 1024;
+
+    let fixtures = TextureFixtures::with_width("engine_resolution_stale", WIDE);
+    let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
+    let posted = mailbox.clone();
+    let harness = Harness::start(|config| {
+        config.texture_paths = fixtures.paths();
+        config.texture_resolution = WIDE;
+        config.cache_dir = Some(fixtures.dir.clone());
+        config.mailbox = Some(posted);
+        config.params = SceneParams {
+            // The day texture alone, and no atmosphere: then every lit pixel
+            // comes from the texture under test and nothing else can stand in
+            // for it.
+            texture_index: 1,
+            atmo_enabled: false,
+            ..test_params()
+        };
+    });
+    harness.wait_for_textures("at startup");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(
+        has_lit_pixels(&rgba),
+        "the globe should be visible at first"
+    );
+
+    // The frame after the switch is the one the reload is spawned from, so
+    // waiting for it puts the post after the purge and after the spawn: the
+    // slot has no bind group, a load of the new width is in flight, and the
+    // generation has moved on. That is exactly the state M1 wedged.
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(WIDE / 2));
+    harness.next_frame();
+    mailbox.post(DecodedTextureMessage {
+        slot_index: 1,
+        result: Ok(DecodedImage {
+            pixels: vec![0; (WIDE as usize / 2) * (WIDE as usize / 4) * 4],
+            width: WIDE / 2,
+            height: WIDE / 4,
+        }),
+        generation: Some(0),
+    });
+
+    harness.wait_for_textures("after the stale arrival");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(
+        has_lit_pixels(&rgba),
+        "the stale black texture must never be what is showing"
+    );
+
+    // The same arrival again, now with nothing in flight to rescue it. A
+    // discarded message dirties nothing, so no frame follows; were it applied,
+    // the frame it dirtied would be the black globe and nothing would replace
+    // it. That is what makes the assertion above more than a coin flip.
+    harness.drained_frame(Duration::from_millis(300));
+    mailbox.post(DecodedTextureMessage {
+        slot_index: 1,
+        result: Ok(DecodedImage {
+            pixels: vec![0; (WIDE as usize / 2) * (WIDE as usize / 4) * 4],
+            width: WIDE / 2,
+            height: WIDE / 4,
+        }),
+        generation: Some(0),
+    });
+    harness.engine.send(EngineCommand::Poke);
+    assert!(
+        harness.drained_frame(Duration::from_millis(500)).is_none(),
+        "a discarded arrival must not reach the GPU, and so must not produce a frame"
+    );
+
+    // And the slot must not be stuck: a further switch still completes.
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(WIDE));
+    harness.wait_for_textures("after switching again");
+    let (rgba, _, _) = harness.next_frame();
+    assert!(has_lit_pixels(&rgba));
 }
 
 /// Whether `memory::snapshot` has an implementation for this platform.

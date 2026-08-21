@@ -141,6 +141,15 @@ pub struct EngineConfig {
     pub on_event: Arc<dyn Fn(EngineEvent) + Send + Sync>,
     /// Write periodic memory samples to the metrics CSV.
     pub record_metrics: bool,
+    /// The mailbox decoded textures are parked in, with one slot per texture
+    /// (`texture_paths.len() + 2`). `None` builds one.
+    ///
+    /// Injectable for the same reason the clock and the cloud source are. A
+    /// caller holding the same mailbox the engine drains can produce an arrival
+    /// order that otherwise needs a decode still running when the resolution
+    /// changes, which is the ordering the generation stamp exists for and the
+    /// one no amount of waiting makes reliable.
+    pub mailbox: Option<TextureMailbox>,
 }
 
 impl EngineConfig {
@@ -171,6 +180,7 @@ impl EngineConfig {
             wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
             on_event: Arc::new(|_| {}),
             record_metrics: false,
+            mailbox: None,
         }
     }
 }
@@ -448,6 +458,7 @@ impl Engine {
             wallpaper,
             on_event,
             record_metrics,
+            mailbox,
         } = config;
 
         let gpu = crate::wgpu_init::init(force_software);
@@ -459,7 +470,7 @@ impl Engine {
         crate::memory::log_memory_usage("engine: after wgpu init");
 
         // Slots: grid + one per texture path + clouds.
-        let mailbox = TextureMailbox::new(texture_paths.len() + 2);
+        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(texture_paths.len() + 2));
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to

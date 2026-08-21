@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::texture_loader;
 
@@ -44,12 +44,21 @@ impl TextureMailbox {
         }
     }
 
-    /// Park a message in its slot, replacing anything not yet consumed.
+    /// Park a message in its slot, replacing anything not yet consumed, unless
+    /// what is parked is from a newer generation than the arrival.
     ///
     /// The slot count is fixed at construction, so an out-of-range index is a
     /// producer bug. The message is dropped with a `warn!` rather than growing
     /// the mailbox, which would turn that bug into an index-out-of-bounds panic
     /// in the consumer when it indexes its own slot array.
+    ///
+    /// The generation guard is what makes "latest value" mean the newest thing
+    /// anyone still wants rather than the last thing to arrive. A decode of a
+    /// superseded texture resolution can finish after its own replacement has
+    /// already been parked, and overwriting it there would lose the only copy of
+    /// a texture the consumer wants: it discards the stale one on arrival and
+    /// the fresh one no longer exists. Within one generation the newest arrival
+    /// still wins, which is what the cloud fetcher relies on.
     pub fn post(&self, msg: DecodedTextureMessage) {
         let index = msg.slot_index;
         let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
@@ -61,6 +70,17 @@ impl TextureMailbox {
             );
             return;
         }
+        if let Some(parked) = &slots[index]
+            && supersedes(parked.generation, msg.generation)
+        {
+            debug!(
+                slot = index,
+                parked = ?parked.generation,
+                arriving = ?msg.generation,
+                "keeping the newer parked texture, dropping a superseded arrival"
+            );
+            return;
+        }
         slots[index] = Some(msg);
     }
 
@@ -69,6 +89,16 @@ impl TextureMailbox {
         let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
         slots.iter_mut().filter_map(Option::take).collect()
     }
+}
+
+/// Whether what is already parked is from a newer generation than what is
+/// arriving, and must therefore be kept.
+///
+/// Only two stamped messages can be ordered. A producer that carries no
+/// generation is one the ordering does not apply to (the cloud fetcher), and
+/// nothing it posts is ever held back or held onto.
+fn supersedes(parked: Option<u64>, arriving: Option<u64>) -> bool {
+    matches!((parked, arriving), (Some(parked), Some(arriving)) if parked > arriving)
 }
 
 #[cfg(test)]
@@ -87,6 +117,22 @@ mod tests {
             }),
             generation: None,
         }
+    }
+
+    /// The same, stamped with the generation it was spawned in.
+    fn stamped(slot_index: usize, width: u32, generation: u64) -> DecodedTextureMessage {
+        DecodedTextureMessage {
+            generation: Some(generation),
+            ..message(slot_index, width)
+        }
+    }
+
+    /// Extract the generation of the single message parked in `slot`.
+    fn parked_generation(mailbox: &TextureMailbox, slot: usize) -> Option<u64> {
+        let taken = mailbox.take_all();
+        assert_eq!(taken.len(), 1, "expected exactly one parked message");
+        assert_eq!(taken[0].slot_index, slot);
+        taken[0].generation
     }
 
     /// Extract the tag written by `message`.
@@ -136,6 +182,68 @@ mod tests {
         assert_eq!(taken.len(), 2);
         assert_eq!(tag(&taken[0]), 2, "slot 0 keeps the newer frame");
         assert_eq!(tag(&taken[1]), 1, "slot 1 is untouched");
+    }
+
+    /// The failure this guard exists for: a decode of a superseded resolution
+    /// finishing after its own replacement is already parked. Overwriting it
+    /// would lose the only copy of the texture anyone wants, since the consumer
+    /// discards the stale one on sight.
+    #[test]
+    fn mailbox_keeps_the_newer_parked_message_over_a_stale_arrival() {
+        let mailbox = TextureMailbox::new(4);
+        mailbox.post(stamped(1, 2048, 2));
+        mailbox.post(stamped(1, 8192, 1));
+
+        assert_eq!(
+            parked_generation(&mailbox, 1),
+            Some(2),
+            "the stale arrival must not replace its own replacement"
+        );
+    }
+
+    #[test]
+    fn mailbox_replaces_a_stale_parked_message_with_a_newer_arrival() {
+        let mailbox = TextureMailbox::new(4);
+        mailbox.post(stamped(1, 8192, 1));
+        mailbox.post(stamped(1, 2048, 2));
+
+        assert_eq!(parked_generation(&mailbox, 1), Some(2));
+    }
+
+    /// Within one generation nothing is ordered and the newest arrival wins,
+    /// which is the plain latest-value behavior the cloud fetcher depends on.
+    #[test]
+    fn mailbox_still_takes_the_newest_message_of_the_same_generation() {
+        let mailbox = TextureMailbox::new(4);
+        mailbox.post(stamped(1, 1, 7));
+        mailbox.post(stamped(1, 2, 7));
+
+        let taken = mailbox.take_all();
+        assert_eq!(tag(&taken[0]), 2);
+    }
+
+    #[test]
+    fn mailbox_never_holds_back_an_unstamped_producer() {
+        let mailbox = TextureMailbox::new(4);
+        // An unstamped arrival replaces a stamped parked message,
+        mailbox.post(stamped(3, 1, 9));
+        mailbox.post(message(3, 2));
+        assert_eq!(parked_generation(&mailbox, 3), None);
+
+        // and a stamped arrival replaces an unstamped parked message.
+        mailbox.post(message(3, 3));
+        mailbox.post(stamped(3, 4, 1));
+        assert_eq!(parked_generation(&mailbox, 3), Some(1));
+    }
+
+    #[test]
+    fn only_two_stamped_messages_are_ordered() {
+        assert!(supersedes(Some(2), Some(1)));
+        assert!(!supersedes(Some(1), Some(2)));
+        assert!(!supersedes(Some(1), Some(1)));
+        assert!(!supersedes(None, Some(1)));
+        assert!(!supersedes(Some(1), None));
+        assert!(!supersedes(None, None));
     }
 
     #[test]

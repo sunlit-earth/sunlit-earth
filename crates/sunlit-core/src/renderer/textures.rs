@@ -38,6 +38,14 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 current = res.texture_generation,
                 "discarding a decode from a superseded texture resolution"
             );
+            // Nothing was applied, so the slot must not be left believing a
+            // load is on its way to it. The mailbox will not let a stale
+            // arrival overwrite a fresh one, so this is the second line of
+            // defense rather than the first: whatever ordering got us here, a
+            // slot with no bind group and nothing in flight is one the next
+            // render spawns a load for, and the cost of being wrong is one
+            // redundant decode.
+            res.texture_slots[msg.slot_index].loading = false;
             continue;
         }
         applied_any = true;

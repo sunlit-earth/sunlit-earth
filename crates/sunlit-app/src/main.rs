@@ -283,6 +283,7 @@ fn engine_config(
         wallpaper: Arc::new(SystemWallpaper),
         on_event: Arc::new(|_| {}),
         record_metrics: true,
+        mailbox: None,
     }
 }
 

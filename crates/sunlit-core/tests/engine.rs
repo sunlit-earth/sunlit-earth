@@ -1230,9 +1230,11 @@ fn the_cloud_variant_follows_the_texture_resolution() {
 /// The whole chain matters here and the unit tests cannot reach it: the command
 /// retargets the worker, the worker calls `set_resolution` before its next
 /// poll, that poll is answered with a 304 because the entry it just adopted is
-/// current, and nothing in production calls `post_cached` after startup. The
-/// other engine tests run with no cache directory at all, so this is the only
-/// one that exercises the disk-cache branch end to end.
+/// current, and nothing in production calls `post_cached` after startup. This
+/// is the only engine test with both a cache directory and a cloud source, and
+/// it takes both to reach the cloud disk cache: the resolution tests have a
+/// directory but no cloud, and the other cloud tests have a cloud but no
+/// directory.
 #[test]
 fn a_switch_back_to_a_cached_variant_shows_it_again() {
     const WIDE: u32 = 8192;

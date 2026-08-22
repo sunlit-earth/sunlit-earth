@@ -205,6 +205,43 @@ fn save_cache_meta(meta: &CacheMeta, path: &Path) {
     }
 }
 
+/// Write the cached JPEG, reporting whether the entry now holds it.
+///
+/// A failure takes the partial file with it. `fs::write` truncates before it
+/// writes, so a half-written JPEG can be left behind, and the caller must be
+/// able to read the answer as "there is an image here" or "there is not"
+/// without a third state: it decides whether to keep the freshness sidecar on
+/// that answer alone.
+fn save_cache_image(bytes: &[u8], path: &Path) -> bool {
+    if let Some(parent) = path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        warn!(path = %parent.display(), error = %e, "could not create cloud cache directory");
+        return false;
+    }
+    if let Err(e) = fs::write(path, bytes) {
+        warn!(path = %path.display(), error = %e, "could not cache cloud image");
+        let _ = fs::remove_file(path);
+        return false;
+    }
+    true
+}
+
+/// Remove a cache entry's freshness sidecar, if it has one.
+///
+/// Called when the image beside it could not be written, so that what is left
+/// on disk is an entry with nothing in it rather than an `ETag` claiming an
+/// image that is not there.
+fn discard_cache_meta(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "could not discard cloud cache meta");
+        }
+    }
+}
+
 /// Decode a JPEG cloud image from raw bytes into RGBA8 pixel data.
 ///
 /// Applies the same transforms as equirectangular texture loading:
@@ -428,21 +465,32 @@ impl CloudUpdater {
             "downloaded cloud image"
         );
 
-        if let Some(path) = &self.image_path {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Err(e) = fs::write(path, &fetched.bytes) {
-                warn!(error = %e, "could not cache cloud image");
-            }
-        }
+        let cached = self
+            .image_path
+            .as_deref()
+            .is_some_and(|path| save_cache_image(&fetched.bytes, path));
+
         let meta = CacheMeta {
             etag: fetched.etag,
             last_modified: fetched.last_modified,
         };
-        if let Some(path) = &self.meta_path {
-            save_cache_meta(&meta, path);
+        if let Some(path) = self.meta_path.as_deref() {
+            // The sidecar goes only where its image went. A present sidecar is
+            // read as "the image for this ETag is on disk": `set_resolution`
+            // adopts the entry and posts what it finds, and the poll that
+            // follows sends that ETag and is answered with a 304, which posts
+            // nothing. One without an image is therefore a switch that silently
+            // does nothing, and on a fresh process, no clouds at all until
+            // upstream publishes. An entry with neither costs one download.
+            if cached {
+                save_cache_meta(&meta, path);
+            } else {
+                discard_cache_meta(path);
+            }
         }
+        // Kept in memory whatever the disk did. The frame below is about to be
+        // on the GPU, so a 304 on the next poll is the right answer either way,
+        // and with no cache directory at all this is the only copy there is.
         self.cached_meta = Some(meta);
 
         match decode_cloud_jpeg(&fetched.bytes) {
@@ -1139,6 +1187,62 @@ mod tests {
             "the entry is still fresh, so the poll posts nothing"
         );
         assert_eq!(source.fetches(), 2, "and costs no third download");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An image that could not be cached must leave no freshness claim behind,
+    /// including one an earlier poll left there.
+    ///
+    /// The switch path reads a present sidecar as "the image for this `ETag` is
+    /// on disk": it adopts the entry, posts what it finds, and the poll that
+    /// follows sends that `ETag` and is answered with a 304. A sidecar with no
+    /// image behind it is therefore a switch that does nothing, and a fresh
+    /// process with no clouds at all until upstream publishes.
+    ///
+    /// The write is made to fail by putting a directory where the JPEG goes,
+    /// which fails on both platforms and, unlike an unwritable parent, leaves
+    /// the sidecar beside it perfectly writable. That is what makes the two
+    /// halves separable here.
+    #[test]
+    fn an_image_that_could_not_be_cached_leaves_no_freshness_claim() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_cloud_failed_image_write");
+        let _ = fs::remove_dir_all(&dir);
+        let stem = cache_stem(cloud_variant(8192), false);
+        let image = dir.join(format!("{stem}.jpg"));
+        let meta = dir.join(format!("{stem}_meta.toml"));
+
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = cached_updater(&source, &mailbox, &dir, 8192);
+
+        // A healthy poll first, so there is an entry for the failure to have to
+        // clear rather than merely decline to create.
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+        assert!(image.is_file() && meta.is_file());
+
+        fs::remove_file(&image).expect("remove the cached image");
+        fs::create_dir(&image).expect("occupy the image path with a directory");
+        source.publish();
+
+        assert_eq!(
+            updater.poll_once(),
+            PollOutcome::Updated,
+            "a cache that cannot be written must not stop the frame reaching the screen"
+        );
+        assert_eq!(mailbox.take_all().len(), 1);
+        assert!(
+            !meta.is_file(),
+            "an ETag was recorded for an image that is not on disk"
+        );
+
+        // A restart is a fresh updater reading that entry: it has to download
+        // rather than revalidate into a 304 with nothing to post.
+        let mut restarted = cached_updater(&source, &mailbox, &dir, 8192);
+        assert!(!restarted.post_cached(), "there is no image to post");
+        assert_eq!(restarted.poll_once(), PollOutcome::Updated);
+        assert_eq!(source.fetches(), 3);
 
         let _ = fs::remove_dir_all(&dir);
     }

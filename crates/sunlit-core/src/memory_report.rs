@@ -98,7 +98,7 @@ impl ExpectedTexture {
 ///
 /// A format with no fixed texel size contributes nothing rather than a guess;
 /// the two this renderer uses (`Rgba8Unorm` and `Depth32Float`) both have one.
-pub fn texture_bytes(
+fn texture_bytes(
     width: u32,
     height: u32,
     format: wgpu::TextureFormat,
@@ -137,12 +137,6 @@ impl MemoryReport {
     pub fn expected_bytes(&self) -> u64 {
         self.expected.iter().map(ExpectedTexture::bytes).sum()
     }
-
-    /// The largest single expected texture, for a caller checking that a
-    /// resolution switch really let go of the wide ones.
-    pub fn largest_expected(&self) -> Option<&ExpectedTexture> {
-        self.expected.iter().max_by_key(|t| t.bytes())
-    }
 }
 
 /// Assemble a report from a device, the adapter that opened it, and what the
@@ -151,7 +145,7 @@ impl MemoryReport {
 /// Both wgpu queries are cheap but not free: the allocator report walks every
 /// live allocation behind the allocator's own lock. This runs on demand, on the
 /// thread that owns the device, between frames.
-pub fn collect(
+pub(crate) fn collect(
     device: &wgpu::Device,
     adapter: &str,
     expected: Vec<ExpectedTexture>,
@@ -180,21 +174,20 @@ pub fn collect(
 
 /// Reduce a wgpu allocator report to two totals, the top groups, and a rollup.
 ///
-/// The grouping itself is [`group_allocations`]; this only adds the figures
-/// wgpu states for itself, which are the allocator's own answer rather than a
-/// sum of what happened to be reported.
+/// The grouping is [`group_allocations`]; the three figures replaced here are
+/// the allocator's own answer rather than a sum of what it happened to list,
+/// and the difference between the two totals is the pool slack.
 fn summarize_allocator(report: &wgpu::AllocatorReport) -> AllocatorSection {
-    AllocatorSection {
-        total_allocated_bytes: report.total_allocated_bytes,
-        total_reserved_bytes: report.total_reserved_bytes,
-        blocks: report.blocks.len(),
-        ..group_allocations(
-            report
-                .allocations
-                .iter()
-                .map(|allocation| (allocation.name.as_str(), allocation.size)),
-        )
-    }
+    let mut section = group_allocations(
+        report
+            .allocations
+            .iter()
+            .map(|allocation| (allocation.name.as_str(), allocation.size)),
+    );
+    section.total_allocated_bytes = report.total_allocated_bytes;
+    section.total_reserved_bytes = report.total_reserved_bytes;
+    section.blocks = report.blocks.len();
+    section
 }
 
 /// Group live allocations by label, keep the top few, roll the rest up.
@@ -206,8 +199,10 @@ fn summarize_allocator(report: &wgpu::AllocatorReport) -> AllocatorSection {
 /// understate the total it prints one line above.
 ///
 /// Takes pairs rather than wgpu's own `AllocationReport`, which wgpu does not
-/// re-export and a test therefore cannot build.
-pub fn group_allocations<'a>(
+/// re-export and a test therefore cannot build. Both totals come out as the sum
+/// of what was passed in and `blocks` as zero, since nothing here knows about
+/// the pool behind the allocations; [`summarize_allocator`] replaces all three.
+fn group_allocations<'a>(
     allocations: impl IntoIterator<Item = (&'a str, u64)>,
 ) -> AllocatorSection {
     let mut groups: BTreeMap<&str, AllocationGroup> = BTreeMap::new();
@@ -233,10 +228,11 @@ pub fn group_allocations<'a>(
         .take_while(|group| group.bytes >= REPORT_FLOOR_BYTES)
         .count();
     let rolled_up = &groups[listed..];
+    let total: u64 = groups.iter().map(|group| group.bytes).sum();
 
     AllocatorSection {
-        total_allocated_bytes: groups.iter().map(|group| group.bytes).sum(),
-        total_reserved_bytes: 0,
+        total_allocated_bytes: total,
+        total_reserved_bytes: total,
         blocks: 0,
         rolled_up_count: rolled_up.iter().map(|group| group.count).sum(),
         rolled_up_bytes: rolled_up.iter().map(|group| group.bytes).sum(),
@@ -311,14 +307,24 @@ impl fmt::Display for MemoryReport {
             )?,
         }
 
-        let expected_bytes = self.expected_bytes();
+        // The measured half of the comparison is the point of the section, so
+        // it goes on the same line; a backend with no texture counter reports
+        // zero, which as a comparison would read as a disagreement rather than
+        // an absence, so it is left off instead.
+        let against = if self.counters.texture_bytes == 0 {
+            String::new()
+        } else {
+            format!(
+                ", against {:.1} MiB measured",
+                mib_signed(self.counters.texture_bytes)
+            )
+        };
         writeln!(
             f,
-            "expected: {:.1} MiB in {} textures, against {:.1} MiB measured; \
+            "expected: {:.1} MiB in {} textures{against}; \
              rows under {:.0} MiB are omitted",
-            mib(expected_bytes),
+            mib(self.expected_bytes()),
             self.expected.len(),
-            mib_signed(self.counters.texture_bytes),
             mib(REPORT_FLOOR_BYTES)
         )?;
         for texture in &self.expected {
@@ -618,19 +624,18 @@ mod tests {
         );
     }
 
+    /// Zero is what a backend with no texture counter reports, and printing it
+    /// as a comparison would read as a disagreement rather than an absence.
     #[test]
-    fn the_largest_expected_texture_is_found() {
-        let report = MemoryReport {
-            expected: vec![
-                expected("small", 64, 32),
-                expected("large", 4096, 2048),
-                expected("middle", 1024, 512),
-            ],
-            ..fabricated()
-        };
-        assert_eq!(
-            report.largest_expected().map(|t| t.label.as_str()),
-            Some("large")
+    fn a_backend_without_a_texture_counter_makes_no_comparison() {
+        let mut report = fabricated();
+        assert!(report.to_string().contains("against 90.0 MiB measured"));
+        report.counters.texture_bytes = 0;
+        let text = report.to_string();
+        assert!(
+            !text.contains("measured"),
+            "unexpected comparison in:\n{text}"
         );
+        assert!(text.contains("expected: "), "the section is still there");
     }
 }

@@ -275,7 +275,7 @@ Windows is the platform that ships. Linux and macOS build, test, and render head
 | `render` subcommand | yes | yes | yes |
 | Settings window | yes | untested | untested |
 | Set the desktop wallpaper | yes | no | no |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (9 of 10 cases) or in a local VM (all 10) | yes, in a local VM (6 of 9 cases) | compiles, unrun |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (10 of 11 cases) or in a local VM (all 11) | yes, in a local VM (7 of 10 cases) | compiles, unrun |
 
 Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:
 
@@ -288,7 +288,9 @@ The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three
 
 Three cases inside it are gated at runtime rather than by `cfg`, following the same convention as `software_adapter_produces_correct_results`. The tray-start-hidden lifecycle and single-instance enforcement need a tray icon, which the app has on Windows only, and single-instance is additionally tray-mode-only in the product. `test_set_wallpaper` sets a real desktop wallpaper, so it is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the generated Windows guest job sets; it asks `SystemWallpaper::check_supported` for the capability itself and asserts that answer matches the platform, so a Windows regression fails rather than skips. All three print why they skipped. Two further cases pick their startup mode by the tray capability, running windowed where there is no tray, which tests the same thing minus the icon. macOS has no VM story: it stays on hosted runners.
 
-The tenth case, `test_session_end_shuts_down_promptly`, is the one exception to "`#[ignore]`d, not `cfg`-gated": it delivers `WM_QUERYENDSESSION` and `WM_ENDSESSION` to the running binary, which are Win32 calls, so the body does not compile elsewhere. It asserts the app exits successfully and in under five seconds, which is the number Windows gives an application before it names it on the shutdown screen.
+`test_memory_report` is deliberately not gated at all: the report degrades section by section on its own, so a backend with no allocator report produces a shorter line rather than a missing section, and the case asserts the four section names and prints the whole report. Printing is half the point, since the suite runs with `--nocapture` on both paths and that is where a real report from a real GPU or from a guest is captured.
+
+`test_session_end_shuts_down_promptly` is the one exception to "`#[ignore]`d, not `cfg`-gated": it delivers `WM_QUERYENDSESSION` and `WM_ENDSESSION` to the running binary, which are Win32 calls, so the body does not compile elsewhere. It asserts the app exits successfully and in under five seconds, which is the number Windows gives an application before it names it on the shutdown screen.
 
 ## Testing
 

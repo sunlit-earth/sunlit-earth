@@ -173,7 +173,7 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 
 `QualityTier` (low, medium, high) is persisted in the config and overridable per run with `--quality` (the override is not written back). It has no widget in the settings window, which is why `read_config_from_window` is a read-modify-write against the stored config rather than a fresh `AppConfig::default()`: any persisted setting the UI does not manage has to survive a save untouched. It caps the MSAA sample count (1, 4, unlimited) and the preview width (1280, 1920, unlimited, aspect preserved). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile.
 
-The tier used to select the cloud image variant too. That moved to the texture resolution: the tier says how much work a frame is allowed to be, and the cloud overlay is texture memory, which is what the other setting is for.
+The tier does not select the cloud image variant; the texture resolution does. The tier says how much work a frame is allowed to be, and the cloud overlay is texture memory, which is what the other setting is for.
 
 ### Texture resolution
 

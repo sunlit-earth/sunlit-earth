@@ -615,7 +615,7 @@ impl Engine {
         info!("engine started");
         if self.metrics.is_some() {
             // Leave a startup baseline so a short run is still comparable.
-            crate::memory::record_metrics_sample();
+            crate::memory::record_metrics_sample(self.renderer.texture_resolution());
         }
         loop {
             match self.rx.recv_timeout(TICK) {
@@ -773,7 +773,7 @@ impl Engine {
         if let Some(metrics) = &mut self.metrics
             && metrics.due(now)
         {
-            crate::memory::record_metrics_sample();
+            crate::memory::record_metrics_sample(self.renderer.texture_resolution());
         }
 
         if let Some(schedule) = &mut self.auto_refresh

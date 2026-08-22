@@ -34,17 +34,53 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
+/// What a cold-cache launch costs in private bytes before any surface texture
+/// or cloud image is resident.
+///
+/// The measured startup peak at the widest resolution is about 2.43 GiB in a
+/// release build, of which 512 MiB is the three resident textures. The rest is
+/// the two 8K JXL decodes, wgpu, the driver, and the process itself. The
+/// decodes happen at every resolution, because a cold downscale cache reads
+/// the full-width source whatever width it is asked for, so this part of the
+/// budget does not shrink with the setting. Rounded up from about 1.93 GiB.
+const COLD_START_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Slack above a cold start before the budget is crossed.
+///
+/// A warning that fires during normal operation is a warning nobody reads, so
+/// this has to clear the measurement above on a machine that is not the one it
+/// was taken on. It is also what stops the budget from being unreachable: at
+/// every resolution the budget stays under twice the cold start, which
+/// `the_budget_is_low_enough_to_catch_a_runaway` pins.
+const BUDGET_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Bytes the resident textures cost at `texture_resolution`.
+///
+/// Three textures at `width` by `width / 2` RGBA8: the day and night surfaces
+/// and the cloud overlay, which follows the same setting. Each carries a full
+/// mip chain, which is four thirds of its base level. Saturating, because the
+/// renderer takes any width as a cap and a nonsense one must produce a large
+/// budget rather than a panic.
+fn resident_texture_bytes(texture_resolution: u32) -> u64 {
+    /// The day surface, the night surface, and the cloud overlay.
+    const RESIDENT_TEXTURES: u64 = 3;
+
+    let width = u64::from(texture_resolution);
+    let base_level = width.saturating_mul(width / 2).saturating_mul(4);
+    base_level.saturating_mul(RESIDENT_TEXTURES * 4 / 3)
+}
+
 /// Soft budget for committed private memory. Crossing it emits a `warn!`.
 ///
-/// 3 GiB, not 2: decoding the two 8K JXL textures at the High tier pushes
-/// private bytes to about 2.43 GiB transiently at startup (observed in a
-/// release build), so a 2 GiB budget warned about normal operation. A warning
-/// that fires every launch is a warning nobody reads.
-///
-/// This is a single number for every tier, which is the crude version. A
-/// budget derived from the tier (the Low tier never goes near this) belongs
-/// with the texture-tier work in retrospective section 9.
-pub const PRIVATE_BYTES_BUDGET: u64 = 3 * 1024 * 1024 * 1024;
+/// A cold start plus its headroom plus whatever the chosen resolution keeps
+/// resident, so the Low end of the setting is not judged against the High end's
+/// footprint. At the widest resolution this is 3 GiB, which is the single
+/// number it replaces.
+pub fn private_bytes_budget(texture_resolution: u32) -> u64 {
+    COLD_START_BYTES
+        .saturating_add(BUDGET_HEADROOM_BYTES)
+        .saturating_add(resident_texture_bytes(texture_resolution))
+}
 
 /// Size at which the metrics file is rotated, roughly 145 days of samples at
 /// the watchdog cadence.
@@ -405,12 +441,13 @@ pub fn append_metrics_sample(path: &Path, snap: &MemorySnapshot) {
 }
 
 /// Take a sample, write it to the metrics file, and warn when private memory
-/// exceeds `PRIVATE_BYTES_BUDGET`.
+/// exceeds the budget for `texture_resolution`.
 ///
 /// Called from the engine's metrics schedule (once at startup, then every ten
-/// minutes). Does nothing on platforms without a memory snapshot
-/// implementation.
-pub fn record_metrics_sample() {
+/// minutes) with the width the renderer is currently loading at, which is what
+/// most of the budget is spent on. Does nothing on platforms without a memory
+/// snapshot implementation.
+pub fn record_metrics_sample(texture_resolution: u32) {
     let Some(snap) = snapshot() else {
         return;
     };
@@ -419,10 +456,12 @@ pub fn record_metrics_sample() {
         append_metrics_sample(&path, &snap);
     }
 
-    if snap.private_bytes > PRIVATE_BYTES_BUDGET {
+    let budget = private_bytes_budget(texture_resolution);
+    if snap.private_bytes > budget {
         warn!(
             private_bytes = snap.private_bytes,
-            budget_bytes = PRIVATE_BYTES_BUDGET,
+            budget_bytes = budget,
+            texture_resolution,
             rss_bytes = snap.rss_bytes,
             "memory budget exceeded"
         );
@@ -432,6 +471,19 @@ pub fn record_metrics_sample() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TEXTURE_RESOLUTIONS;
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// The measured cold-cache startup peak in private bytes, per resolution.
+    ///
+    /// 2.43 GiB observed at 8192 in a release build. The two 8K decodes cost
+    /// the same at every width, so the lower ones sit below it by exactly what
+    /// they save in resident texture memory.
+    fn measured_cold_start_peak(texture_resolution: u32) -> u64 {
+        const AT_WIDEST: u64 = 2488 * MIB;
+        AT_WIDEST - (resident_texture_bytes(8192) - resident_texture_bytes(texture_resolution))
+    }
 
     /// Build a snapshot with known values for format and rotation tests.
     fn sample_snapshot() -> MemorySnapshot {
@@ -624,6 +676,86 @@ mod tests {
     #[test]
     fn rollup_parser_returns_none_when_a_field_is_absent() {
         assert_eq!(parse_private_bytes("Private_Clean:\t 256 kB\n"), None);
+    }
+
+    // --- the private-bytes budget ---
+
+    /// 3 GiB is the number that was measured against, and the widest
+    /// resolution is where it was measured. The refactor must not have moved
+    /// it.
+    #[test]
+    fn the_widest_resolution_keeps_the_budget_it_had() {
+        assert_eq!(private_bytes_budget(8192), 3 * 1024 * MIB);
+    }
+
+    #[test]
+    fn the_budget_grows_with_the_resolution() {
+        let mut widths = TEXTURE_RESOLUTIONS;
+        widths.sort_unstable();
+        for pair in widths.windows(2) {
+            assert!(
+                private_bytes_budget(pair[0]) < private_bytes_budget(pair[1]),
+                "the budget at {} should be below the one at {}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// The rule from the original comment: a warning that fires during normal
+    /// operation is a warning nobody reads. A cold cache at any resolution
+    /// still decodes both 8K sources, so that launch is the worst normal
+    /// operation gets and the budget has to clear it everywhere.
+    #[test]
+    fn the_budget_stays_above_a_cold_cache_first_run_at_every_resolution() {
+        for width in TEXTURE_RESOLUTIONS {
+            let peak = measured_cold_start_peak(width);
+            let budget = private_bytes_budget(width);
+            assert!(
+                budget > peak,
+                "at {width} the budget is {} MiB and a cold start peaks at {} MiB",
+                budget / MIB,
+                peak / MIB
+            );
+        }
+    }
+
+    /// The other half of the same rule: a budget nothing can reach reports
+    /// nothing. At every resolution it stays under twice a cold start, so a
+    /// process that has doubled its startup footprint is named.
+    #[test]
+    fn the_budget_is_low_enough_to_catch_a_runaway() {
+        for width in TEXTURE_RESOLUTIONS {
+            let peak = measured_cold_start_peak(width);
+            let budget = private_bytes_budget(width);
+            assert!(
+                budget < peak * 2,
+                "at {width} the budget is {} MiB, twice a cold start is {} MiB",
+                budget / MIB,
+                peak * 2 / MIB
+            );
+        }
+    }
+
+    /// The resident half is what the setting actually buys, so it has to be
+    /// the three textures the app holds and not a number someone typed.
+    #[test]
+    fn the_resident_half_is_three_mipped_textures() {
+        for width in TEXTURE_RESOLUTIONS {
+            let one_base_level = u64::from(width) * u64::from(width / 2) * 4;
+            assert_eq!(resident_texture_bytes(width), 3 * one_base_level * 4 / 3);
+        }
+        assert_eq!(resident_texture_bytes(8192), 512 * MIB);
+        assert_eq!(resident_texture_bytes(4096), 128 * MIB);
+        assert_eq!(resident_texture_bytes(2048), 32 * MIB);
+    }
+
+    /// The renderer accepts any width as a cap, so the budget has to answer for
+    /// one no config offers rather than overflow on it.
+    #[test]
+    fn an_absurd_resolution_still_yields_a_budget() {
+        assert!(private_bytes_budget(0) >= COLD_START_BYTES);
+        assert!(private_bytes_budget(u32::MAX) >= COLD_START_BYTES);
     }
 
     #[test]

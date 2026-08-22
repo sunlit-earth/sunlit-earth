@@ -62,7 +62,7 @@ With no textures at all, the renderer falls back to a procedural grid, which is 
 
 The Rendering group in the settings window chooses the width they are loaded at: 8192, 4096, or 2048. The default is 4096, which halves the sources once and keeps the result in a cache beside the config, so later launches are quicker than the full width and cost about a quarter of the memory. Settings saved before this existed have no entry for it and land on 4096 too; pick 8192 once and it persists. The cache is disposable and can be deleted at any time.
 
-Cloud imagery is downloaded at runtime from [clouds.matteason.co.uk](https://clouds.matteason.co.uk) and cached; nothing needs to be prepared up front. Set `SUNLIT_EARTH_NO_CLOUDS` to skip it entirely.
+Cloud imagery is downloaded at runtime from [clouds.matteason.co.uk](https://clouds.matteason.co.uk) and cached; nothing needs to be prepared up front. Set `SUNLIT_EARTH_NO_CLOUDS` to skip it entirely. The same Rendering setting picks which of the three published cloud sizes is downloaded, so lowering the width lowers the download and the largest texture the app holds along with the two surface ones. Changing it does not blank the clouds while the new image arrives: the one on screen stays until the download lands, and if the network is down it stays until it comes back.
 
 ## Build and run
 
@@ -97,7 +97,7 @@ Every one of those locations can be moved, which is also how the tests stay out 
 | `SUNLIT_EARTH_TEXTURES` | Textures directory |
 | `SUNLIT_EARTH_CACHE_DIR` | Cache directory, for the cloud image and the downscaled textures |
 | `SUNLIT_EARTH_METRICS_DIR` | Memory metrics directory |
-| `SUNLIT_EARTH_CLOUD_URL` | Cloud image URL, winning over the quality tier |
+| `SUNLIT_EARTH_CLOUD_URL` | Cloud image URL, winning over the size the texture resolution picks |
 | `SUNLIT_EARTH_CLOUD_POLL_SECS` | Cloud poll interval in seconds |
 | `SUNLIT_EARTH_NO_CLOUDS` | Presence only: disable cloud fetching entirely |
 

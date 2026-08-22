@@ -73,3 +73,39 @@ CLAUDE.md: the cloud variant row in the env table ("wins over the quality tier" 
 ## Rollback Strategy
 
 Reverts cleanly by commit. No config schema change, no cache format change the old binary cannot ignore: the texture cache is untouched, and a cloud cache entry for a variant the old code never fetches is dead weight it never reads.
+
+## Departures
+
+None. Every design decision held as written. The two places the plan left a choice open were closed rather than departed from: decision 2's "keyed by variant or invalidated when the URL changes" was settled as variant-keyed, which is what the rollback note above already describes, and `cloud_variant`'s behavior for a width outside the three the config offers (take the widest variant that does not exceed it) is an extension the plan does not speak to rather than a contradiction of it.
+
+## Validation
+
+### Round 1 (2026-08-22)
+
+Scope: the range b77b191..c38a9d9, a fresh validator, all three Windows gates re-run green by it (873 passed, 11 ignored, clippy clean after a fresh `cargo clean -p`), criterion 3 reproduced live on the real assets. Verdict: 1 major, 3 minors; the round blocks.
+
+- M1: a switch back to a variant whose cache entry was still fresh never reached the screen. `set_resolution` adopted the new entry's `CacheMeta`, so the poll it asked for revalidated, was answered with a 304, and posted nothing; since the switch deliberately does not purge the cloud slot, the previous variant's overlay stayed until upstream published again, possibly hours. Nothing in production calls `post_cached` after startup, so the bytes were on disk and unreachable. Breaks decision 2 and criterion 1.
+- m1: the comment on the cloud mailbox post still justified `generation: None` with the pre-change reason, that the resolution does not govern the overlay. It does now.
+- m2: the variant-keyed cache name was a promise nothing enforced. `CloudUpdater::new` derived the file name from the resolution but never pointed the source anywhere, so a run under `SUNLIT_EARTH_CLOUD_URL` filed whatever the override served under a name claiming a variant, and the next run without the override would show it.
+- m3: the per-resolution budget tests derived their peak from the budget's own decomposition, so `budget(w) - peak(w)` was a constant and the loop over the three widths asserted one inequality three times. Dropping `COLD_START_BYTES` from 2 GiB to 1.5 GiB passed everything except the exact-3-GiB test.
+
+Disposition: all four fixed, none declined. M1, m1 and m2 in 86f48d0; m3 in 71d629f.
+
+- M1: `set_resolution` posts the entry as it adopts it, which is what the worker already does at startup with the entry it finds. A variant with nothing on disk still posts nothing, which is the clause that keeps the old clouds up while a download runs, so the offline behavior decision 2 asks for is unchanged. Two tests, both verified by removing the line: a unit test on the updater, and `a_switch_back_to_a_cached_variant_shows_it_again`, the only engine test with a cache directory and a cloud source together, which is what it takes to reach the disk-cache branch at all.
+- m1: replaced with the true reason. The slot is never purged, so there is nothing for a stamp to protect; a fetch of the old variant landing after a switch is one poll of exactly the picture the switch deliberately leaves up.
+- m2: made true by construction rather than documented away. `CloudUpdater::new` points the source at the URL its entry is named after, and an override run caches under `clouds_cache_override` instead of a name claiming a size nobody checked. `set_resolution` now compares URLs rather than variants, so under the override a switch moves no entry and keeps its `ETag`. `SUNLIT_EARTH_CLOUD_URL` still wins: `cloud_url` applies it before any of this runs, so both retargets resolve to it.
+- m3: the derived peak is gone. Every resolution is held to the one peak that was measured, 2.43 GiB at 8192 in a release build, because the peak is dominated by the two 8K decodes that happen at every width and how much of the resident saving reaches the peak is exactly what nobody checked. That makes 2048 the binding case, at 104 MiB of margin against 584 at 8192, and the same mutation now fails at 4096 and 2048 while the widest, where the 3 GiB total is anchored, still passes.
+
+### Round 2 (2026-08-22)
+
+Scope: the fix range c38a9d9..71d629f, all three Windows gates re-run green. Verdict: 0 majors, 2 minors; the round does not block. All four round 1 fixes verified, M1 and m3 by mutation.
+
+- m4: `poll_once` saved the `CacheMeta` sidecar whether or not the image write succeeded, so a failed `fs::write` left an `ETag` with no image behind it. The code predates this range and is identical at 0304514, but the M1 fix made the invariant load-bearing: `post_cached` finds nothing, the poll sends the saved `ETag`, gets a 304, and the M1 symptom is back, with no clouds at all on a fresh process.
+- m5: the doc comment on the new engine test said the other engine tests run with no cache directory. Six of them do have one.
+
+Disposition: both fixed in 4f7f63b.
+
+- m4: the image write now reports whether the entry holds the image and takes any partial file with it on the way out, and a failure discards the sidecar rather than refreshing it, including one an earlier poll left there. The in-memory copy is kept either way, because the frame is about to be on the GPU and with no cache directory it is the only copy there is, which is also the case every engine test runs in. The test puts a directory where the JPEG goes, which fails the write on both platforms while leaving the sidecar beside it writable, so the two halves are separable; it fails on both of its assertions against the old clause.
+- m5: reworded. What makes that test the only route to the cloud disk cache is having a cache directory and a cloud source together, not the absence of directories elsewhere.
+
+One observation from the round is recorded rather than fixed: `CloudUpdater::new` reads `SUNLIT_EARTH_CLOUD_URL`, both through `cloud_url` and to decide what the cache entry is named after, so the tests that assert on the variant-keyed URL or the variant-keyed entry fail in a shell that exports the variable. Measured rather than reasoned: five of the forty-one `cloud_fetcher` cases fail under `SUNLIT_EARTH_CLOUD_URL=http://127.0.0.1:9/never-fetched.jpg`, namely `construction_points_the_source_at_the_variant_it_will_cache_under`, `set_resolution_points_the_source_at_the_new_variant`, `each_variant_keeps_its_own_cached_image`, `a_switch_back_to_a_fresh_cache_entry_puts_its_pixels_on_screen`, and `an_image_that_could_not_be_cached_leaves_no_freshness_claim`. All five are new in this range, and they fail because the override is doing exactly what it promises: replacing the variant with one fixed URL. Nothing in CI, the VM jobs, or the cargo aliases exports the variable into a `cargo test` run; the e2e suite sets it per spawned child, not in the shell. The two ways out are both worse than the exposure: setting and clearing a process-wide variable from a test binary that runs its cases in parallel, or threading the resolved URL in from the caller on both `new` and `set_resolution`, which moves the env read to the worker and rebuilds a seam that is otherwise sound. If a third test ever wants the same guarantee, the second option is the one to take.

@@ -517,6 +517,10 @@ mod tests {
         // Something that is not ours, to prove the sweep is not a wildcard.
         let bystander = dir.join(CACHE_SUBDIR).join("someone.else.2048.png");
         fs::write(&bystander, b"not ours").expect("write the bystander");
+        // An orphan of the same source at another width: unfinished, but not
+        // this target's, so only the prefix check keeps it alive.
+        let other_width = unfinished(&cache_paths(&dir, &source, 4).0);
+        fs::write(&other_width, b"half a png").expect("write the other width");
 
         load_at_resolution(&source, 8, Some(&dir)).expect("load");
 
@@ -525,6 +529,10 @@ mod tests {
         }
         assert!(image_path.exists() && meta_path.exists());
         assert!(bystander.exists(), "only unfinished files may be swept");
+        assert!(
+            other_width.exists(),
+            "another width's orphan is not this write's to sweep"
+        );
     }
 
     /// Two writers of the same entry must not share a temporary name, or the

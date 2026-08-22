@@ -57,20 +57,6 @@ impl TextureMailbox {
             .len()
     }
 
-    /// Whether a message is parked in `slot`, without taking it.
-    ///
-    /// For tests and diagnostics: the consumer takes everything at once and has
-    /// no reason to ask. What a test gets from it is the one thing it cannot
-    /// otherwise know, that a background decode has delivered, which is what
-    /// puts a later arrival second in a way no sleep can guarantee.
-    pub fn is_parked(&self, slot: usize) -> bool {
-        self.slots
-            .lock()
-            .expect("texture mailbox lock poisoned")
-            .get(slot)
-            .is_some_and(Option::is_some)
-    }
-
     /// Park a message in its slot, replacing anything not yet consumed, unless
     /// what is parked is from a newer generation than the arrival.
     ///

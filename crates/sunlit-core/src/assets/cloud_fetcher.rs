@@ -247,25 +247,46 @@ pub struct CloudUpdater {
     notify: NotifyFn,
     slot: usize,
     cache_dir: Option<PathBuf>,
+    /// Whether `SUNLIT_EARTH_CLOUD_URL` is in force, which decides what the
+    /// cache entry is named after. Read once: the environment does not change
+    /// under a running process.
+    overridden: bool,
     /// Which image variant is being fetched, and which cache entry belongs to
     /// it. Follows the texture resolution through [`Self::set_resolution`].
     variant: (u32, u32),
+    /// The URL the source is pointed at, which is what actually decides both
+    /// the bytes and the cache entry. Kept because the variant alone cannot
+    /// answer whether a switch changes anything: under the environment override
+    /// every variant resolves to the same URL.
+    url: String,
     image_path: Option<PathBuf>,
     meta_path: Option<PathBuf>,
     cached_meta: Option<CacheMeta>,
 }
 
-/// Where a variant's cached JPEG and its metadata sidecar live.
+/// What a cache entry is named after.
 ///
-/// Keyed by variant, so a resolution switch can never be answered with the
+/// The variant, so that a resolution switch can never be answered with the
 /// previous variant's bytes and a switch back finds what it left behind. An
 /// entry a run at another resolution wrote is dead weight this one never reads,
 /// which is also what makes the change safe to roll back.
-fn cache_paths(
-    cache_dir: Option<&Path>,
-    (width, height): (u32, u32),
-) -> (Option<PathBuf>, Option<PathBuf>) {
-    let stem = format!("clouds_cache_{width}x{height}");
+///
+/// `SUNLIT_EARTH_CLOUD_URL` wins over the variant, and what it serves has no
+/// variant at all, so its bytes get an entry of their own rather than a name
+/// claiming a size nobody checked. Without that, a run with the override would
+/// leave an image of any size in `clouds_cache_4096x2048.jpg`, and the next run
+/// without the override would put that image on screen and keep it there until
+/// its first poll returned.
+fn cache_stem(variant: (u32, u32), overridden: bool) -> String {
+    if overridden {
+        return "clouds_cache_override".to_owned();
+    }
+    let (width, height) = variant;
+    format!("clouds_cache_{width}x{height}")
+}
+
+/// Where a cache entry's JPEG and its metadata sidecar live.
+fn cache_paths(cache_dir: Option<&Path>, stem: &str) -> (Option<PathBuf>, Option<PathBuf>) {
     (
         cache_dir.map(|dir| dir.join(format!("{stem}.jpg"))),
         cache_dir.map(|dir| dir.join(format!("{stem}_meta.toml"))),
@@ -275,6 +296,11 @@ fn cache_paths(
 impl CloudUpdater {
     /// Build an updater against `source`, fetching the variant that goes with
     /// `resolution` and caching into `cache_dir` (skipped entirely when `None`).
+    ///
+    /// The source is pointed at the URL the cache entry is named after, so the
+    /// name and the bytes behind it cannot disagree. In production that is the
+    /// URL the caller already built from the same resolution; the point is that
+    /// this function, not the caller, is what decides what the entry holds.
     pub fn new(
         source: Arc<dyn CloudSource>,
         mailbox: TextureMailbox,
@@ -284,7 +310,11 @@ impl CloudUpdater {
         resolution: u32,
     ) -> Self {
         let variant = cloud_variant(resolution);
-        let (image_path, meta_path) = cache_paths(cache_dir.as_deref(), variant);
+        let url = cloud_url(resolution);
+        source.retarget(&url);
+        let overridden = crate::env_override(ENV_CLOUD_URL).is_some();
+        let (image_path, meta_path) =
+            cache_paths(cache_dir.as_deref(), &cache_stem(variant, overridden));
         let cached_meta = meta_path.as_ref().and_then(|p| load_cache_meta(p));
         Self {
             source,
@@ -292,7 +322,9 @@ impl CloudUpdater {
             notify,
             slot,
             cache_dir,
+            overridden,
             variant,
+            url,
             image_path,
             meta_path,
             cached_meta,
@@ -302,9 +334,17 @@ impl CloudUpdater {
     /// Follow a change of texture resolution to the cloud variant that goes
     /// with it.
     ///
-    /// Retargets the source, moves to that variant's cache entry, and picks up
-    /// whatever freshness metadata was left there. Nothing is thrown away: the
-    /// image already on the GPU stays until a poll delivers the new variant, so
+    /// Retargets the source, moves to that variant's cache entry, picks up
+    /// whatever freshness metadata was left there, and posts whatever image was
+    /// left there. That last step is what makes the switch visible: the poll
+    /// that follows sends the new entry's `ETag` to the new entry's URL, and a
+    /// switch back inside the upstream refresh window is answered with a 304,
+    /// which posts nothing. Without posting the bytes already on disk the globe
+    /// would keep the previous variant's overlay until upstream published
+    /// again, which can be hours.
+    ///
+    /// Nothing is thrown away, and a variant with nothing on disk posts nothing:
+    /// the image already on the GPU stays until a poll delivers the new one, so
     /// a switch made offline keeps showing the old clouds rather than none, for
     /// as long as the network stays down.
     ///
@@ -316,13 +356,27 @@ impl CloudUpdater {
             return;
         }
         self.variant = variant;
+
         let url = cloud_url(resolution);
-        info!(url = %url, resolution, "cloud variant follows the texture resolution");
-        self.source.retarget(&url);
-        let (image_path, meta_path) = cache_paths(self.cache_dir.as_deref(), variant);
+        if url == self.url {
+            // `SUNLIT_EARTH_CLOUD_URL` is in force, so the variant selected
+            // nothing: the same image is served either way, and moving the
+            // cache entry or dropping the ETag would only cost a re-download of
+            // bytes already in hand.
+            return;
+        }
+        self.url = url;
+        info!(url = %self.url, resolution, "cloud variant follows the texture resolution");
+        self.source.retarget(&self.url);
+
+        let (image_path, meta_path) = cache_paths(
+            self.cache_dir.as_deref(),
+            &cache_stem(variant, self.overridden),
+        );
         self.image_path = image_path;
         self.meta_path = meta_path;
         self.cached_meta = self.meta_path.as_ref().and_then(|p| load_cache_meta(p));
+        self.post_cached();
     }
 
     /// Decode the cached image, if any, and post it so clouds appear without
@@ -413,8 +467,11 @@ impl CloudUpdater {
         self.mailbox.post(DecodedTextureMessage {
             slot_index: self.slot,
             result: Ok(img),
-            // The cloud overlay is not governed by the texture resolution, so
-            // no generation of it can be stale.
+            // The texture resolution does govern which variant this is, but the
+            // cloud slot is never purged, so there is nothing for a stamp to
+            // protect. A fetch of the old variant landing after a switch is one
+            // poll of exactly the picture the switch deliberately leaves up,
+            // and the next poll replaces it.
             generation: None,
         });
         (self.notify)();
@@ -572,7 +629,7 @@ mod tests {
         let dir = PathBuf::from("C:/tmp/sunlit");
         let mut seen = std::collections::HashSet::new();
         for &width in &TEXTURE_RESOLUTIONS {
-            let (image, meta) = cache_paths(Some(&dir), cloud_variant(width));
+            let (image, meta) = cache_paths(Some(&dir), &cache_stem(cloud_variant(width), false));
             let image = image.expect("a cache dir was given");
             let meta = meta.expect("a cache dir was given");
             assert_ne!(image, meta);
@@ -581,9 +638,24 @@ mod tests {
         }
     }
 
+    /// What the override serves has no variant, so it must not be filed under a
+    /// name that claims one: the next run without the override would read that
+    /// entry and show whatever the override was pointed at.
+    #[test]
+    fn the_environment_override_gets_a_cache_entry_of_its_own() {
+        let overridden = cache_stem(cloud_variant(4096), true);
+        for &width in &TEXTURE_RESOLUTIONS {
+            assert_ne!(cache_stem(cloud_variant(width), false), overridden);
+        }
+        // And one entry whatever the resolution, since the URL is the same.
+        for &width in &TEXTURE_RESOLUTIONS {
+            assert_eq!(cache_stem(cloud_variant(width), true), overridden);
+        }
+    }
+
     #[test]
     fn no_cache_directory_means_no_cache_paths() {
-        let (image, meta) = cache_paths(None, cloud_variant(4096));
+        let (image, meta) = cache_paths(None, &cache_stem(cloud_variant(4096), false));
         assert!(image.is_none());
         assert!(meta.is_none());
     }
@@ -689,6 +761,12 @@ mod tests {
 
         fn retargets(&self) -> Vec<String> {
             self.retargets.lock().expect("retarget log").clone()
+        }
+
+        /// Drop the retarget construction performed, so a test can talk about
+        /// the ones a switch performs.
+        fn forget_retargets(&self) {
+            self.retargets.lock().expect("retarget log").clear();
         }
 
         /// Make the next `count` calls fail, as an offline service would.
@@ -946,11 +1024,36 @@ mod tests {
     // Following the texture resolution
     // -----------------------------------------------------------------------
 
+    /// Construction points the source at the URL the cache entry is named
+    /// after, so the two cannot disagree whatever the caller built the source
+    /// with.
+    #[test]
+    fn construction_points_the_source_at_the_variant_it_will_cache_under() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let _updater = CloudUpdater::new(
+            Arc::clone(&source) as Arc<dyn CloudSource>,
+            mailbox,
+            no_notify(),
+            3,
+            None,
+            8192,
+        );
+        let retargets = source.retargets();
+        assert_eq!(retargets.len(), 1, "expected one retarget: {retargets:?}");
+        assert!(
+            retargets[0].contains("8192x4096"),
+            "unexpected URL: {}",
+            retargets[0]
+        );
+    }
+
     #[test]
     fn set_resolution_points_the_source_at_the_new_variant() {
         let source = Arc::new(ScriptedSource::new());
         let mailbox = TextureMailbox::new(4);
         let mut updater = updater_for(Arc::clone(&source), &mailbox);
+        source.forget_retargets();
 
         updater.set_resolution(2048);
         let retargets = source.retargets();
@@ -969,6 +1072,7 @@ mod tests {
         let source = Arc::new(ScriptedSource::new());
         let mailbox = TextureMailbox::new(4);
         let mut updater = updater_for(Arc::clone(&source), &mailbox);
+        source.forget_retargets();
 
         for _ in 0..3 {
             updater.set_resolution(DEFAULT_TEXTURE_RESOLUTION);
@@ -986,9 +1090,81 @@ mod tests {
 
         assert_eq!(cloud_variant(2048), cloud_variant(2049));
         updater.set_resolution(2048);
-        source.retargets.lock().expect("retarget log").clear();
+        source.forget_retargets();
         updater.set_resolution(2049);
         assert!(source.retargets().is_empty());
+    }
+
+    /// A switch back to a variant whose entry is still fresh has to put those
+    /// bytes on screen.
+    ///
+    /// The poll that follows the switch sends the entry's own `ETag` to the
+    /// entry's own URL and is answered with a 304, which posts nothing at all.
+    /// The slot is never purged either, so without the switch itself posting
+    /// what is on disk the overlay would stay at the previous variant until
+    /// upstream published again, which can be hours. Nothing in production
+    /// calls `post_cached` after startup, so the switch is the only place this
+    /// can happen.
+    #[test]
+    fn a_switch_back_to_a_fresh_cache_entry_puts_its_pixels_on_screen() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_cloud_switch_back");
+        let _ = fs::remove_dir_all(&dir);
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+
+        let mut updater = cached_updater(&source, &mailbox, &dir, 8192);
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+
+        // Down to a variant with nothing on disk: the switch posts nothing,
+        // which is what leaves the wide overlay up while the download runs.
+        updater.set_resolution(2048);
+        assert!(
+            mailbox.take_all().is_empty(),
+            "a variant with no cache entry has nothing to post"
+        );
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+
+        // Back up, inside the upstream refresh window.
+        updater.set_resolution(8192);
+        assert_eq!(
+            mailbox.take_all().len(),
+            1,
+            "the switch must post the cached wide image"
+        );
+        assert_eq!(
+            updater.poll_once(),
+            PollOutcome::Unchanged,
+            "the entry is still fresh, so the poll posts nothing"
+        );
+        assert_eq!(source.fetches(), 2, "and costs no third download");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of the same rule: with no cache entry and no network,
+    /// a switch posts nothing rather than blanking the overlay.
+    #[test]
+    fn a_switch_with_nothing_cached_and_no_network_posts_nothing() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_cloud_switch_offline");
+        let _ = fs::remove_dir_all(&dir);
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+
+        let mut updater = cached_updater(&source, &mailbox, &dir, 8192);
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+
+        source.fail_next(1);
+        updater.set_resolution(2048);
+        assert_eq!(updater.poll_once(), PollOutcome::Failed);
+        assert!(
+            mailbox.take_all().is_empty(),
+            "nothing to post means nothing posted, so the old overlay stays"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A switch must not be answered out of the previous variant's cache, and a
@@ -1016,14 +1192,11 @@ mod tests {
         mailbox.take_all();
 
         // Up again: the wide entry is still on disk with its own ETag, so this
-        // is a 304 rather than a third download.
+        // is a 304 rather than a third download. What reaches the screen in
+        // that case is `a_switch_back_to_a_fresh_cache_entry_puts_its_pixels_on_screen`.
         updater.set_resolution(8192);
         assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
         assert_eq!(source.fetches(), 2);
-        assert!(
-            updater.post_cached(),
-            "the wide variant's cached JPEG should still be there"
-        );
 
         let _ = fs::remove_dir_all(&dir);
     }

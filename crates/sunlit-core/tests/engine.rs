@@ -1059,8 +1059,16 @@ impl VariantCloud {
         self.fetches.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn retargets(&self) -> Vec<String> {
-        self.retargets.lock().expect("retarget log").clone()
+    /// The variant width of every URL this source has been pointed at, in
+    /// order. The first is the one construction sets, which is how the updater
+    /// makes the cache entry's name and its contents agree.
+    fn retarget_widths(&self) -> Vec<u32> {
+        self.retargets
+            .lock()
+            .expect("retarget log")
+            .iter()
+            .map(|url| variant_width_of(url).expect("a cloud URL names its variant"))
+            .collect()
     }
 }
 
@@ -1154,9 +1162,10 @@ fn the_cloud_variant_follows_the_texture_resolution() {
     harness.next_frame();
     let before = harness.engine.memory_report().expect("a report");
     assert_eq!(source.fetches(), 1);
-    assert!(
-        source.retargets().is_empty(),
-        "the initial variant comes from the configuration, not from a retarget"
+    assert_eq!(
+        source.retarget_widths(),
+        [WIDE],
+        "construction points the source at the configured variant"
     );
 
     harness
@@ -1175,9 +1184,7 @@ fn the_cloud_variant_follows_the_texture_resolution() {
         2,
         "the switch must cost a fetch of the new variant"
     );
-    let retargets = source.retargets();
-    assert_eq!(retargets.len(), 1, "expected one retarget: {retargets:?}");
-    assert_eq!(variant_width_of(&retargets[0]), Some(NARROW));
+    assert_eq!(source.retarget_widths(), [WIDE, NARROW]);
 
     // One cloud texture, at the new size: the replacement went through the
     // slot rather than beside it.
@@ -1217,6 +1224,62 @@ fn the_cloud_variant_follows_the_texture_resolution() {
     );
 }
 
+/// A switch back to a variant whose cache entry is still fresh has to show
+/// that variant again, through the engine rather than by hand.
+///
+/// The whole chain matters here and the unit tests cannot reach it: the command
+/// retargets the worker, the worker calls `set_resolution` before its next
+/// poll, that poll is answered with a 304 because the entry it just adopted is
+/// current, and nothing in production calls `post_cached` after startup. The
+/// other engine tests run with no cache directory at all, so this is the only
+/// one that exercises the disk-cache branch end to end.
+#[test]
+fn a_switch_back_to_a_cached_variant_shows_it_again() {
+    const WIDE: u32 = 8192;
+    const NARROW: u32 = 2048;
+
+    let cache = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cloud_switch_back_cache");
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&cache).expect("create the cache directory");
+
+    let source = Arc::new(VariantCloud::new(WIDE));
+    let cloud = Arc::clone(&source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+    let cache_dir = cache.clone();
+    let harness = Harness::start(move |config| {
+        config.texture_resolution = WIDE;
+        config.cloud = Some(cloud);
+        config.cache_dir = Some(cache_dir);
+    });
+
+    wait_for_cloud_size(&harness, VariantCloud::image_size(WIDE), "at startup");
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(NARROW));
+    wait_for_cloud_size(
+        &harness,
+        VariantCloud::image_size(NARROW),
+        "after switching down",
+    );
+
+    // Both entries are now on disk and neither has gone stale, so the switch
+    // back is answered with a 304 and has to fall back to what it cached.
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(WIDE));
+    wait_for_cloud_size(
+        &harness,
+        VariantCloud::image_size(WIDE),
+        "after switching back up",
+    );
+    assert_eq!(
+        source.fetches(),
+        2,
+        "the switch back is served from disk, not downloaded again"
+    );
+
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
 /// A switch must not empty the cloud slot: a cloudless globe while a download
 /// runs is a worse picture than one at the previous variant, and offline the
 /// gap would never close.
@@ -1243,8 +1306,8 @@ fn a_switch_keeps_the_old_cloud_texture_until_the_new_one_lands() {
     std::thread::sleep(SETTLE);
 
     assert_eq!(
-        source.retargets().len(),
-        1,
+        source.retarget_widths(),
+        [WIDE, NARROW],
         "the switch should still have reached the cloud pipeline"
     );
     let report = harness.engine.memory_report().expect("a report");

@@ -15,6 +15,7 @@ use slint::ComponentHandle;
 use tracing::info;
 
 use sunlit_core::engine::{EngineCommand, EngineEvent};
+use sunlit_core::memory_report::MemoryReport;
 
 use crate::MainWindow;
 
@@ -111,6 +112,17 @@ impl EngineLink {
         replies
             .recv()
             .map_err(|_| "engine stopped before answering".to_owned())?
+    }
+
+    /// Ask the engine thread for a memory report and wait for it.
+    pub fn memory_report(&self) -> Result<Box<MemoryReport>, String> {
+        let (reply, replies) = crossbeam_channel::bounded(1);
+        self.tx
+            .send(EngineCommand::ReportMemory { reply })
+            .map_err(|_| "engine has stopped".to_owned())?;
+        replies
+            .recv()
+            .map_err(|_| "engine stopped before answering".to_owned())
     }
 
     /// Read the window into `SceneParams` and push it to the engine.

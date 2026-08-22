@@ -15,6 +15,16 @@ const PREVIEW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMEN
     .union(wgpu::TextureUsages::TEXTURE_BINDING)
     .union(wgpu::TextureUsages::COPY_SRC);
 
+/// Format of every color target, resolve and MSAA alike.
+pub(super) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Format of every depth target.
+///
+/// Named alongside the color one so the memory report can price the depth and
+/// MSAA targets, which are kept as views rather than textures and so cannot be
+/// asked what they are.
+pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
 const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
@@ -154,7 +164,7 @@ pub(super) fn create_renderer(
     let grid_tex = create_mipmapped_texture(
         &device,
         &queue,
-        "grid_texture",
+        &super::slot_label(0),
         GRID_TEX_WIDTH,
         GRID_TEX_HEIGHT,
         grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
@@ -552,7 +562,7 @@ pub(super) fn create_render_textures(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: COLOR_FORMAT,
         usage: color_usage,
         view_formats: &[],
     });
@@ -564,7 +574,7 @@ pub(super) fn create_render_textures(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format: DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         })
@@ -578,7 +588,7 @@ pub(super) fn create_render_textures(
                 mip_level_count: 1,
                 sample_count,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: COLOR_FORMAT,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             })
@@ -591,7 +601,7 @@ pub(super) fn create_render_textures(
                 mip_level_count: 1,
                 sample_count,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth32Float,
+                format: DEPTH_FORMAT,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             })

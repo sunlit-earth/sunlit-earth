@@ -54,7 +54,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 let tex = create_mipmapped_texture(
                     &res.device,
                     &res.queue,
-                    &format!("texture_slot_{}", msg.slot_index),
+                    &super::slot_label(msg.slot_index),
                     img.width,
                     img.height,
                     img.pixels,

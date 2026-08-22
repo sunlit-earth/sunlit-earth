@@ -984,6 +984,161 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The memory report
+// ---------------------------------------------------------------------------
+
+/// The width of every texture the report says the renderer owns under `label`.
+fn expected_widths(report: &sunlit_core::memory_report::MemoryReport, label: &str) -> Vec<u32> {
+    report
+        .expected
+        .iter()
+        .filter(|texture| texture.label == label)
+        .map(|texture| texture.width)
+        .collect()
+}
+
+#[test]
+fn the_report_names_the_textures_the_renderer_owns() {
+    let fixtures = TextureFixtures::new("engine_memory_report");
+    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
+    harness.wait_for_textures("at startup");
+    harness.next_frame();
+
+    let report = harness
+        .engine
+        .memory_report()
+        .expect("the engine should answer with a report");
+    println!("{report}");
+
+    assert_eq!(
+        expected_widths(&report, "day_texture"),
+        [TextureFixtures::WIDTH]
+    );
+    assert_eq!(
+        expected_widths(&report, "night_texture"),
+        [TextureFixtures::WIDTH]
+    );
+    assert_eq!(
+        expected_widths(&report, "grid_texture").len(),
+        1,
+        "the procedural grid is always resident"
+    );
+    // The preview target, at the size the harness asked for.
+    assert_eq!(expected_widths(&report, "render_texture"), [512]);
+    assert!(report.expected_bytes() > 0);
+}
+
+/// The measured and computed columns are the point of the report, so they have
+/// to agree.
+///
+/// The tolerance is loose in both directions on purpose. wgpu's counter is the
+/// backend allocator's figure, which rounds every texture up to an alignment
+/// and may cover objects the renderer does not know it owns, so it sits above
+/// the computed total; a backend that attributes some of its textures
+/// elsewhere would sit below it. What the band is tight enough to catch is the
+/// thing worth catching: a surface texture that was never freed, which is an
+/// order of magnitude, not a factor of two.
+#[test]
+fn the_measured_and_computed_texture_totals_agree() {
+    let fixtures = TextureFixtures::new("engine_memory_report_totals");
+    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
+    harness.wait_for_textures("at startup");
+    harness.next_frame();
+
+    let report = harness.engine.memory_report().expect("a report");
+    let expected = report.expected_bytes();
+    let Ok(measured) = u64::try_from(report.counters.texture_bytes) else {
+        panic!("wgpu reported negative texture memory: {report}");
+    };
+    println!(
+        "expected {:.1} MiB, wgpu counter {:.1} MiB",
+        mib(expected),
+        mib(measured)
+    );
+    if measured == 0 {
+        println!("skipping the comparison: this backend maintains no texture counter");
+        return;
+    }
+    assert!(
+        measured >= expected / 2 && measured <= expected * 2 + 16 * 1024 * 1024,
+        "wgpu says {:.1} MiB of textures, the renderer expects {:.1} MiB:\n{report}",
+        mib(measured),
+        mib(expected)
+    );
+}
+
+/// Criterion 3: after a switch down, nothing of the old width is left in the
+/// report, and both the computed and the measured totals have fallen.
+#[test]
+fn a_switch_down_leaves_no_texture_at_the_old_width() {
+    const WIDE: u32 = 256;
+    const NARROW: u32 = 32;
+
+    let fixtures = TextureFixtures::with_width("engine_memory_report_switch", WIDE);
+    let harness = blend_harness(&fixtures, WIDE);
+    harness.wait_for_textures("at startup");
+    harness.next_frame();
+
+    let before = harness.engine.memory_report().expect("a report");
+    assert_eq!(expected_widths(&before, "day_texture"), [WIDE]);
+
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(NARROW));
+    harness.wait_for_textures("after switching down");
+    harness.next_frame();
+
+    let after = harness.engine.memory_report().expect("a report");
+    println!("{after}");
+    assert_eq!(expected_widths(&after, "day_texture"), [NARROW]);
+    assert_eq!(expected_widths(&after, "night_texture"), [NARROW]);
+    assert!(
+        !after
+            .expected
+            .iter()
+            .any(|texture| texture.label.ends_with("_texture")
+                && texture.width == WIDE
+                && texture.mip_levels > 1),
+        "a texture at the old width survived the switch:\n{after}"
+    );
+    assert!(
+        after.expected_bytes() < before.expected_bytes(),
+        "the computed total should fall with the width"
+    );
+}
+
+/// Pool slack is what the allocator holds but nothing is using, and the report
+/// shows it as the difference between the two totals it prints.
+#[test]
+fn the_allocator_section_reports_reserved_at_least_as_large_as_allocated() {
+    let harness = Harness::start(|_| {});
+    harness.next_frame();
+    let report = harness.engine.memory_report().expect("a report");
+
+    let Some(allocator) = &report.allocator else {
+        println!(
+            "skipping: {} has no allocator report, and the section says so",
+            report.adapter
+        );
+        assert!(
+            report.to_string().contains("no allocator report"),
+            "a backend without a report must still print the section:\n{report}"
+        );
+        return;
+    };
+    assert!(
+        allocator.total_reserved_bytes >= allocator.total_allocated_bytes,
+        "reserved {} is below allocated {}",
+        allocator.total_reserved_bytes,
+        allocator.total_allocated_bytes
+    );
+    assert!(
+        allocator.total_allocated_bytes > 0,
+        "a live device holds something:\n{report}"
+    );
+}
+
 #[test]
 fn textures_ready_fires_for_the_procedural_grid() {
     let harness = Harness::start(|_| {});

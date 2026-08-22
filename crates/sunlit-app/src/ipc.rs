@@ -15,6 +15,7 @@
 //! - `hide-window` — hides the main window
 //! - `export-test` — attempts a small GPU export, signals success/failure
 //! - `query-memory` — reports the current process memory counters
+//! - `memory-report` — prints the full memory report between two signal lines
 //! - `set-wallpaper` — renders and publishes the wallpaper, signalling the
 //!   outcome once the engine reports it
 
@@ -145,6 +146,29 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
                     snap.rss_bytes, snap.peak_rss_bytes, snap.private_bytes
                 )),
                 None => signal("memory_unavailable"),
+            }
+        }
+        "memory-report" => {
+            debug!("ipc: received memory-report command");
+            // Answered on this thread for the same reason `export-test` is: the
+            // engine owns the device and replies on its own channel, so the
+            // report arrives whether or not the event loop has anything to do.
+            //
+            // A separate command from `query-memory`, whose single line is a
+            // parsing contract the e2e suite depends on. This one brackets its
+            // own output instead, because the report is many lines and only the
+            // section names are promised.
+            match engine.memory_report() {
+                Ok(report) => {
+                    signal("memory_report_begin");
+                    print!("{report}");
+                    let _ = std::io::stdout().flush();
+                    signal("memory_report_end");
+                }
+                Err(e) => {
+                    debug!("ipc: memory-report failed: {e}");
+                    signal("memory_report_failed");
+                }
             }
         }
         "" => {}

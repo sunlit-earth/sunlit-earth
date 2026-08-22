@@ -22,6 +22,7 @@ use crate::assets::cloud_fetcher::{CloudUpdater, PollOutcome, RetryBackoff};
 use crate::assets::cloud_source::CloudSource;
 use crate::assets::mailbox::TextureMailbox;
 use crate::config::QualityTier;
+use crate::memory_report::MemoryReport;
 use crate::params::SceneParams;
 use crate::renderer::{
     CLOUDS_SLOT, RenderOutcome, Renderer, RendererConfig, quantize_to_granularity,
@@ -80,6 +81,11 @@ pub enum EngineCommand {
     /// decides which pixels to load, and acting on it means freeing GPU
     /// textures and re-reading files, which a parameter push cannot express.
     SetTextureResolution(u32),
+    /// Assemble a memory report and hand it back.
+    ///
+    /// Answered on the engine thread because the device is owned there, in the
+    /// same reply-channel shape as `ExportPixels`.
+    ReportMemory { reply: Sender<Box<MemoryReport>> },
     /// Turn the unattended wallpaper refresh on or off.
     SetAutoRefresh { enabled: bool, interval: Duration },
     /// Re-evaluate the schedule now. Tests send this after advancing a mock
@@ -251,6 +257,17 @@ impl EngineHandle {
             .map_err(|_| "engine stopped before answering".to_owned())?
     }
 
+    /// Ask the engine thread for a memory report and block until it answers.
+    pub fn memory_report(&self) -> Result<Box<MemoryReport>, String> {
+        let (reply, replies) = bounded(1);
+        self.tx
+            .send(EngineCommand::ReportMemory { reply })
+            .map_err(|_| "engine has stopped".to_owned())?;
+        replies
+            .recv()
+            .map_err(|_| "engine stopped before answering".to_owned())
+    }
+
     /// Render a PNG at `width` x `height` and block until it is written.
     pub fn render_to_file(&self, path: PathBuf, width: u32, height: u32) -> Result<(), String> {
         let (reply, replies) = bounded(1);
@@ -386,6 +403,10 @@ impl Schedule {
 }
 
 /// The engine's own state, private to its thread.
+///
+/// The bools are independent latches on a private struct rather than
+/// parameters anyone passes, which is the confusion the lint is about.
+#[allow(clippy::struct_excessive_bools)]
 struct Engine {
     rx: Receiver<EngineCommand>,
     clock: Arc<dyn Clock>,
@@ -394,6 +415,8 @@ struct Engine {
     renderer: Renderer,
     params: SceneParams,
     quality: QualityTier,
+    /// The adapter slug the memory report names itself after.
+    adapter_key: String,
     /// MSAA sample counts the adapter supports for the render format. Every
     /// requested count is resolved against this before it can reach wgpu.
     supported_sample_counts: Vec<u32>,
@@ -407,6 +430,10 @@ struct Engine {
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
+    /// Whether the one debug-level memory dump has already been written. It
+    /// goes out the first time the textures are ready, which is the first
+    /// moment the numbers describe a loaded scene rather than a half-built one.
+    memory_dumped: bool,
     last_status: String,
     drain: Schedule,
     sun: Schedule,
@@ -548,6 +575,7 @@ impl Engine {
             renderer,
             params,
             quality,
+            adapter_key: gpu.adapter_key,
             supported_sample_counts: gpu.supported_sample_counts,
             requested_sample_count,
             preview: PreviewState {
@@ -557,6 +585,7 @@ impl Engine {
             wallpaper_owed: false,
             dirty: true,
             textures_ready: false,
+            memory_dumped: false,
             last_status: String::new(),
             drain: Schedule::new(DRAIN_INTERVAL, now),
             sun: Schedule::new(SUN_INTERVAL, now),
@@ -658,6 +687,9 @@ impl Engine {
                     self.textures_ready = false;
                     self.dirty = true;
                 }
+            }
+            EngineCommand::ReportMemory { reply } => {
+                let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
             }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
                 let now = self.clock.elapsed();
@@ -799,6 +831,7 @@ impl Engine {
         if !self.textures_ready && self.renderer.textures_ready(self.params.texture_index) {
             self.textures_ready = true;
             debug!("textures ready");
+            self.dump_memory_report();
             self.emit(EngineEvent::TexturesReady);
         }
 
@@ -807,6 +840,20 @@ impl Engine {
             return true;
         }
         false
+    }
+
+    /// Write the memory report to the log once, the first time the scene is
+    /// fully loaded.
+    ///
+    /// Behind the level check because assembling the report walks the
+    /// allocator's live allocations behind its own lock, and a release build
+    /// compiles `debug!` out without compiling out what feeds it.
+    fn dump_memory_report(&mut self) {
+        if self.memory_dumped || !tracing::enabled!(tracing::Level::DEBUG) {
+            return;
+        }
+        self.memory_dumped = true;
+        debug!("\n{}", self.renderer.memory_report(&self.adapter_key));
     }
 
     /// Read the preview target back and hand the pixels to the client.

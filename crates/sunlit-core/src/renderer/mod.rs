@@ -21,10 +21,14 @@ use tracing::debug;
 
 use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
+use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
 
 use frame::{FrameState, build_frame_state};
-use gpu_setup::{create_render_textures, rebuild_msaa_resources, rebuild_render_textures};
+use gpu_setup::{
+    COLOR_FORMAT, DEPTH_FORMAT, create_render_textures, rebuild_msaa_resources,
+    rebuild_render_textures,
+};
 use textures::{TextureSlot, process_decoded_textures};
 
 /// Render dimensions are rounded to this granularity to avoid
@@ -47,6 +51,27 @@ pub const CLOUDS_SLOT: usize = 3;
 /// Display names of the texture modes, in combo box order. The index into this
 /// array is `SceneParams::texture_index`.
 pub const TEXTURE_LABELS: [&str; 4] = ["Grid", "Day", "Night", "Day/Night Blend"];
+
+/// What each texture slot's GPU texture is called.
+///
+/// The allocator report the memory report is built from names allocations by
+/// their GPU label, so a row that reads `day_texture` is worth more than one
+/// that reads `texture_slot_1`. Slots past this array fall back to the index,
+/// which only a configuration with more file-backed slots than production's two
+/// can reach.
+const SLOT_LABELS: [&str; 4] = [
+    "grid_texture",
+    "day_texture",
+    "night_texture",
+    "cloud_texture",
+];
+
+/// The GPU label the texture in `slot` carries.
+fn slot_label(slot: usize) -> String {
+    SLOT_LABELS
+        .get(slot)
+        .map_or_else(|| format!("texture_slot_{slot}"), |name| (*name).to_owned())
+}
 
 /// Build the anti-aliasing option labels and find the default index
 /// (preferring 8x MSAA).
@@ -279,6 +304,77 @@ impl Renderer {
     /// The width the file-backed textures are loaded at.
     pub fn texture_resolution(&self) -> u32 {
         self.texture_resolution
+    }
+
+    /// A memory report for this renderer's device, with the expected table
+    /// filled in from what the renderer knows it owns.
+    ///
+    /// `adapter` is the slug from `wgpu_init::adapter_key`, which the renderer
+    /// is not told and the engine is.
+    pub fn memory_report(&self, adapter: &str) -> MemoryReport {
+        crate::memory_report::collect(&self.device, adapter, self.expected_textures())
+    }
+
+    /// Every texture this renderer owns, and the shape each one should be.
+    ///
+    /// Slot textures report their own shape, because the renderer holds them.
+    /// The depth and MSAA targets and the 1x1 placeholder are kept only as
+    /// views, so their rows are computed from the size, format, and sample
+    /// count they were created with; `create_render_textures` is the other side
+    /// of that agreement, and the two formats are shared constants so the rows
+    /// cannot drift from the descriptors.
+    fn expected_textures(&self) -> Vec<ExpectedTexture> {
+        let target = |label: &str, format, sample_count| ExpectedTexture {
+            label: label.to_owned(),
+            width: self.render_width,
+            height: self.render_height,
+            format,
+            mip_levels: 1,
+            sample_count,
+        };
+
+        let mut expected: Vec<ExpectedTexture> = self
+            .texture_slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let texture = slot.texture.as_ref()?;
+                Some(ExpectedTexture {
+                    label: slot_label(index),
+                    width: texture.width(),
+                    height: texture.height(),
+                    format: texture.format(),
+                    mip_levels: texture.mip_level_count(),
+                    sample_count: texture.sample_count(),
+                })
+            })
+            .collect();
+
+        expected.push(ExpectedTexture {
+            label: "dummy_1x1".to_owned(),
+            width: 1,
+            height: 1,
+            format: COLOR_FORMAT,
+            mip_levels: 1,
+            sample_count: 1,
+        });
+        expected.push(target("render_texture", COLOR_FORMAT, 1));
+        expected.push(target("depth_texture", DEPTH_FORMAT, 1));
+        if self.msaa_texture_view.is_some() {
+            expected.push(target(
+                "msaa_color_texture",
+                COLOR_FORMAT,
+                self.sample_count,
+            ));
+        }
+        if self.msaa_depth_view.is_some() {
+            expected.push(target(
+                "msaa_depth_texture",
+                DEPTH_FORMAT,
+                self.sample_count,
+            ));
+        }
+        expected
     }
 
     /// Upload every decoded texture parked in the mailbox.

@@ -9,6 +9,7 @@ pub mod config;
 pub mod engine;
 pub mod geometry;
 pub mod memory;
+pub mod memory_report;
 pub mod params;
 pub mod renderer;
 pub mod scene;

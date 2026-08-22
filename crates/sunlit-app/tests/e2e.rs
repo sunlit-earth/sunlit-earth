@@ -541,6 +541,22 @@ impl StdoutWatcher {
         self.wait_for_signal_line_from(name, 0, timeout);
     }
 
+    /// The lines strictly between the first `begin` and the first `end` at or
+    /// after index `from`. Panics when either marker is missing.
+    fn lines_between(&self, begin: &str, end: &str, from: usize) -> Vec<String> {
+        let lines = self.lines.lock().expect("stdout watcher lock poisoned");
+        let tail = &lines[from.min(lines.len())..];
+        let start = tail
+            .iter()
+            .position(|line| line.contains(begin))
+            .unwrap_or_else(|| panic!("no '{begin}' in stdout:\n{}", tail.join("\n")));
+        let stop = tail[start..]
+            .iter()
+            .position(|line| line.contains(end))
+            .unwrap_or_else(|| panic!("no '{end}' after '{begin}':\n{}", tail.join("\n")));
+        tail[start + 1..start + stop].to_vec()
+    }
+
     /// Number of stdout lines collected so far. Used as a cursor so repeated
     /// queries do not match the reply to an earlier request.
     fn line_count(&self) -> usize {
@@ -614,6 +630,27 @@ fn query_memory(socket_name: &str, watcher: &StdoutWatcher) -> MemoryQuery {
 #[allow(clippy::cast_precision_loss)]
 fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// The section headers `memory-report` promises. Only these are a contract;
+/// the numbers on them and the rows beneath them are free to change.
+const REPORT_SECTIONS: [&str; 4] = [
+    "process:",
+    "wgpu counters:",
+    "gpu allocations:",
+    "expected:",
+];
+
+/// Send `memory-report` over IPC and return the lines between the two markers.
+fn memory_report(socket_name: &str, watcher: &StdoutWatcher) -> Vec<String> {
+    let from = watcher.line_count();
+    send_ipc_command(socket_name, "memory-report");
+    watcher.wait_for_signal_line_from("memory_report_end", from, Duration::from_secs(30));
+    watcher.lines_between(
+        "SIGNAL:memory_report_begin",
+        "SIGNAL:memory_report_end",
+        from,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,6 +1596,89 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         output.status
     );
 
+    for line in stderr_watcher.lines() {
+        assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
+    }
+}
+
+/// Verify that `memory-report` answers with the four sections, and print what
+/// it said.
+///
+/// The printing is the point as much as the assertions are: this is the one
+/// place a real report from a real GPU (a host desktop) or a real guest (the VM
+/// job) is captured, and both run the suite with `--nocapture`. The assertions
+/// are on the structure only, because the report promises stable section names
+/// and nothing else.
+///
+/// Not gated on anything. The report degrades section by section on its own: a
+/// backend with no allocator report says so on the line where the allocations
+/// would be, which the prefix check below accepts.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_memory_report() {
+    let socket_name = unique_socket_name();
+    let mut guard = ChildGuard::new(
+        Command::new(binary())
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+            .args(["--log-level", "debug"])
+            .args(lifecycle_mode_args())
+            .args(["--ipc-socket", &socket_name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+    let stdout_watcher = StdoutWatcher::new(child);
+    let stderr_watcher = StderrWatcher::new(child);
+
+    let ready_timeout = Duration::from_secs(60);
+    stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
+    stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
+
+    let report = memory_report(&socket_name, &stdout_watcher);
+
+    println!("--- memory report ---");
+    for line in &report {
+        println!("{line}");
+    }
+    println!("--- end of memory report ---");
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+
+    // Section headers start at column zero; rows beneath them are indented.
+    let headers: Vec<&String> = report
+        .iter()
+        .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
+        .collect();
+    assert_eq!(
+        headers.len(),
+        REPORT_SECTIONS.len(),
+        "expected {} sections, got:\n{}",
+        REPORT_SECTIONS.len(),
+        report.join("\n")
+    );
+    for (header, expected) in headers.iter().zip(REPORT_SECTIONS) {
+        assert!(
+            header.starts_with(expected),
+            "expected a '{expected}' section, got '{header}'"
+        );
+    }
+    assert!(
+        report.iter().any(|line| line.contains("render_texture")),
+        "the expected table should list the preview render target:\n{}",
+        report.join("\n")
+    );
+
+    assert!(
+        output.status.success(),
+        "process exited with non-zero status: {:?}",
+        output.status
+    );
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }

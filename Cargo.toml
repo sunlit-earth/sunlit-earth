@@ -12,7 +12,11 @@ license = "GPL-3.0-or-later"
 # feature (and with it the coupling between the Slint and wgpu versions) is gone.
 slint = "~1.17"
 slint-build = "~1.17"
-wgpu = "28"
+# `counters` turns wgpu's internal byte and object counters from compiled-out
+# no-ops into relaxed atomic adds on resource create and destroy, which is what
+# gives `memory-report` two totals measured by wgpu itself rather than only the
+# ones we compute. Backends that do not maintain a counter keep reporting zero.
+wgpu = { version = "28", features = ["counters"] }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }

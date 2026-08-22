@@ -3,6 +3,7 @@
 //! The engine talks to a `CloudSource` rather than to HTTP directly, so tests
 //! can publish frames on a simulated schedule without a network or a server.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tracing::info;
@@ -26,12 +27,24 @@ pub trait CloudSource: Send + Sync {
 
     /// Human-readable description for logs.
     fn describe(&self) -> String;
+
+    /// Point this source at a different URL.
+    ///
+    /// The texture resolution selects which cloud image variant to fetch, and
+    /// the variant is a path segment of the URL, so a resolution switch has to
+    /// move the source rather than replace it: the engine holds it behind an
+    /// `Arc` shared with a worker thread that is mid-poll as often as not.
+    /// Takes `&self` for that reason, and does nothing by default, which is the
+    /// right answer for every source that serves one fixed thing.
+    fn retarget(&self, _url: &str) {}
 }
 
 /// The production source: an HTTP endpoint polled with HEAD + `If-None-Match`.
 pub struct HttpCloudSource {
     agent: ureq::Agent,
-    url: String,
+    /// Behind a lock because [`CloudSource::retarget`] moves it while the
+    /// worker thread owns the only handle.
+    url: Mutex<String>,
 }
 
 impl HttpCloudSource {
@@ -42,7 +55,22 @@ impl HttpCloudSource {
             .timeout_global(Some(Duration::from_secs(120)))
             .build()
             .new_agent();
-        Self { agent, url }
+        Self {
+            agent,
+            url: Mutex::new(url),
+        }
+    }
+
+    /// The URL as of right now.
+    ///
+    /// A copy rather than a guard: the request below outlives any sensible
+    /// lock hold, and a poisoned lock means a panic elsewhere rather than a
+    /// reason to stop fetching clouds.
+    fn url(&self) -> String {
+        self.url
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Check if the remote image has changed using HEAD + `If-None-Match`.
@@ -53,7 +81,7 @@ impl HttpCloudSource {
     fn check_freshness(&self, etag: &str) -> Result<bool, String> {
         let response = self
             .agent
-            .head(&self.url)
+            .head(&self.url())
             .header("If-None-Match", etag)
             .call()
             .map_err(|e| format!("Cloud freshness check failed: {e}"))?;
@@ -66,7 +94,7 @@ impl HttpCloudSource {
     fn download(&self) -> Result<CloudImage, String> {
         let mut response = self
             .agent
-            .get(&self.url)
+            .get(&self.url())
             .call()
             .map_err(|e| format!("Cloud download failed: {e}"))?;
 
@@ -111,6 +139,15 @@ impl CloudSource for HttpCloudSource {
     }
 
     fn describe(&self) -> String {
-        self.url.clone()
+        self.url()
+    }
+
+    fn retarget(&self, url: &str) {
+        let mut current = self
+            .url
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        current.clear();
+        current.push_str(url);
     }
 }

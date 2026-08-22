@@ -254,6 +254,7 @@ fn engine_config(
 ) -> EngineConfig {
     let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
     info!(?quality, "quality tier");
+    let texture_resolution = effective_texture_resolution(cli, config);
 
     // Skip cloud fetching entirely when SUNLIT_EARTH_NO_CLOUDS is set; e2e
     // tests use it to keep the network out of the picture.
@@ -261,7 +262,7 @@ fn engine_config(
         info!("cloud fetcher disabled (SUNLIT_EARTH_NO_CLOUDS)");
         None
     } else {
-        let url = cloud_fetcher::cloud_url(quality);
+        let url = cloud_fetcher::cloud_url(texture_resolution);
         info!(url = %url, "cloud source configured");
         Some(Arc::new(HttpCloudSource::new(url)) as Arc<_>)
     };
@@ -273,7 +274,7 @@ fn engine_config(
         preview_enabled,
         params: SceneParams::from_config(config),
         quality,
-        texture_resolution: effective_texture_resolution(cli, config),
+        texture_resolution,
         clock: Arc::new(SystemClock::new()),
         cloud,
         cloud_poll_interval: cloud_fetcher::poll_interval(),

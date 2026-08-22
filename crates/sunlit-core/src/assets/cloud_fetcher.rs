@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::config::QualityTier;
+use crate::config::{DEFAULT_TEXTURE_RESOLUTION, TEXTURE_RESOLUTIONS};
 
 use super::cloud_source::CloudSource;
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
@@ -34,8 +34,8 @@ pub fn no_notify() -> NotifyFn {
 }
 
 /// Base of the upstream cloud service. The path segment before `clouds.jpg`
-/// selects the resolution variant, which is how the quality tiers get a
-/// cheaper download without any new asset work.
+/// selects the resolution variant, which is how the texture resolution setting
+/// gets a cheaper download without any new asset work.
 const CLOUD_URL_TEMPLATE: &str = "https://clouds.matteason.co.uk/images/{size}/clouds.jpg";
 const POLL_INTERVAL: Duration = Duration::from_secs(3600);
 /// First delay after a failed poll. Doubles up to [`MAX_RETRY_DELAY`].
@@ -98,20 +98,40 @@ struct CacheMeta {
     last_modified: Option<String>,
 }
 
-/// The upstream URL for a quality tier's image variant.
-fn tier_cloud_url(tier: QualityTier) -> String {
-    let (w, h) = tier.cloud_size();
+/// The cloud image variant that goes with a surface texture resolution.
+///
+/// The upstream service publishes exactly the three widths
+/// [`TEXTURE_RESOLUTIONS`] offers, each at 2:1, so on those three the mapping
+/// is one to one and the clouds are as detailed as the surface under them. The
+/// renderer takes any width as a cap, though, so a width from outside the three
+/// takes the widest variant that does not exceed it, and one below all of them
+/// takes the smallest: sharper clouds than surface is the one combination worth
+/// ruling out.
+pub fn cloud_variant(resolution: u32) -> (u32, u32) {
+    let width = TEXTURE_RESOLUTIONS
+        .iter()
+        .copied()
+        .filter(|&offered| offered <= resolution)
+        .max()
+        .or_else(|| TEXTURE_RESOLUTIONS.iter().copied().min())
+        .unwrap_or(DEFAULT_TEXTURE_RESOLUTION);
+    (width, width / 2)
+}
+
+/// The upstream URL for a texture resolution's image variant.
+fn variant_cloud_url(resolution: u32) -> String {
+    let (w, h) = cloud_variant(resolution);
     CLOUD_URL_TEMPLATE.replace("{size}", &format!("{w}x{h}"))
 }
 
-/// Resolve the cloud image URL: the environment override wins over the tier.
-fn resolve_cloud_url(raw: Option<&str>, tier: QualityTier) -> String {
-    raw.map_or_else(|| tier_cloud_url(tier), ToOwned::to_owned)
+/// Resolve the cloud image URL: the environment override wins over the variant.
+fn resolve_cloud_url(raw: Option<&str>, resolution: u32) -> String {
+    raw.map_or_else(|| variant_cloud_url(resolution), ToOwned::to_owned)
 }
 
-/// The configured cloud image URL for `tier`, honoring `SUNLIT_EARTH_CLOUD_URL`.
-pub fn cloud_url(tier: QualityTier) -> String {
-    resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref(), tier)
+/// The cloud image URL for `resolution`, honoring `SUNLIT_EARTH_CLOUD_URL`.
+pub fn cloud_url(resolution: u32) -> String {
+    resolve_cloud_url(crate::env_override(ENV_CLOUD_URL).as_deref(), resolution)
 }
 
 /// Resolve the poll interval from an optional environment override.
@@ -226,33 +246,83 @@ pub struct CloudUpdater {
     mailbox: TextureMailbox,
     notify: NotifyFn,
     slot: usize,
+    cache_dir: Option<PathBuf>,
+    /// Which image variant is being fetched, and which cache entry belongs to
+    /// it. Follows the texture resolution through [`Self::set_resolution`].
+    variant: (u32, u32),
     image_path: Option<PathBuf>,
     meta_path: Option<PathBuf>,
     cached_meta: Option<CacheMeta>,
 }
 
+/// Where a variant's cached JPEG and its metadata sidecar live.
+///
+/// Keyed by variant, so a resolution switch can never be answered with the
+/// previous variant's bytes and a switch back finds what it left behind. An
+/// entry a run at another resolution wrote is dead weight this one never reads,
+/// which is also what makes the change safe to roll back.
+fn cache_paths(
+    cache_dir: Option<&Path>,
+    (width, height): (u32, u32),
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let stem = format!("clouds_cache_{width}x{height}");
+    (
+        cache_dir.map(|dir| dir.join(format!("{stem}.jpg"))),
+        cache_dir.map(|dir| dir.join(format!("{stem}_meta.toml"))),
+    )
+}
+
 impl CloudUpdater {
-    /// Build an updater against `source`, caching into `cache_dir` (skipped
-    /// entirely when `None`).
+    /// Build an updater against `source`, fetching the variant that goes with
+    /// `resolution` and caching into `cache_dir` (skipped entirely when `None`).
     pub fn new(
         source: Arc<dyn CloudSource>,
         mailbox: TextureMailbox,
         notify: NotifyFn,
         slot: usize,
         cache_dir: Option<PathBuf>,
+        resolution: u32,
     ) -> Self {
-        let image_path = cache_dir.as_ref().map(|d| d.join("clouds_cache.jpg"));
-        let meta_path = cache_dir.map(|d| d.join("clouds_cache_meta.toml"));
+        let variant = cloud_variant(resolution);
+        let (image_path, meta_path) = cache_paths(cache_dir.as_deref(), variant);
         let cached_meta = meta_path.as_ref().and_then(|p| load_cache_meta(p));
         Self {
             source,
             mailbox,
             notify,
             slot,
+            cache_dir,
+            variant,
             image_path,
             meta_path,
             cached_meta,
         }
+    }
+
+    /// Follow a change of texture resolution to the cloud variant that goes
+    /// with it.
+    ///
+    /// Retargets the source, moves to that variant's cache entry, and picks up
+    /// whatever freshness metadata was left there. Nothing is thrown away: the
+    /// image already on the GPU stays until a poll delivers the new variant, so
+    /// a switch made offline keeps showing the old clouds rather than none, for
+    /// as long as the network stays down.
+    ///
+    /// A resolution that maps to the variant already in force is a no-op, which
+    /// is what lets the worker call this before every poll.
+    pub fn set_resolution(&mut self, resolution: u32) {
+        let variant = cloud_variant(resolution);
+        if variant == self.variant {
+            return;
+        }
+        self.variant = variant;
+        let url = cloud_url(resolution);
+        info!(url = %url, resolution, "cloud variant follows the texture resolution");
+        self.source.retarget(&url);
+        let (image_path, meta_path) = cache_paths(self.cache_dir.as_deref(), variant);
+        self.image_path = image_path;
+        self.meta_path = meta_path;
+        self.cached_meta = self.meta_path.as_ref().and_then(|p| load_cache_meta(p));
     }
 
     /// Decode the cached image, if any, and post it so clouds appear without
@@ -433,28 +503,89 @@ mod tests {
     }
 
     #[test]
-    fn cloud_url_follows_the_quality_tier() {
-        assert!(tier_cloud_url(QualityTier::Low).contains("2048x1024"));
-        assert!(tier_cloud_url(QualityTier::Medium).contains("4096x2048"));
-        assert!(tier_cloud_url(QualityTier::High).contains("8192x4096"));
+    fn every_offered_resolution_has_its_own_variant() {
+        assert_eq!(cloud_variant(2048), (2048, 1024));
+        assert_eq!(cloud_variant(4096), (4096, 2048));
+        assert_eq!(cloud_variant(8192), (8192, 4096));
+    }
+
+    /// The mapping has to be injective on the three offered widths, or lowering
+    /// the resolution would not lower the download.
+    #[test]
+    fn the_variant_grows_with_the_resolution() {
+        let mut widths: Vec<u32> = TEXTURE_RESOLUTIONS
+            .iter()
+            .map(|&w| cloud_variant(w).0)
+            .collect();
+        widths.sort_unstable();
+        widths.dedup();
+        assert_eq!(widths.len(), TEXTURE_RESOLUTIONS.len());
+    }
+
+    /// Every variant is 2:1, which is what an equirectangular projection is.
+    #[test]
+    fn every_variant_is_two_to_one() {
+        for &width in &TEXTURE_RESOLUTIONS {
+            let (w, h) = cloud_variant(width);
+            assert_eq!(w, h * 2);
+        }
+    }
+
+    /// The renderer takes any width as a cap, so a width from outside the three
+    /// still has to land on a variant that exists, and never on a sharper one
+    /// than the surface it sits over.
+    #[test]
+    fn a_width_outside_the_offered_three_takes_the_widest_that_fits() {
+        assert_eq!(cloud_variant(9000), (8192, 4096));
+        assert_eq!(cloud_variant(8191), (4096, 2048));
+        assert_eq!(cloud_variant(2049), (2048, 1024));
+        assert_eq!(cloud_variant(128), (2048, 1024));
+        assert_eq!(cloud_variant(0), (2048, 1024));
     }
 
     #[test]
-    fn resolve_cloud_url_without_override_uses_the_tier() {
-        assert_eq!(
-            resolve_cloud_url(None, QualityTier::Low),
-            tier_cloud_url(QualityTier::Low)
-        );
+    fn the_url_names_the_variant() {
+        assert!(variant_cloud_url(2048).contains("2048x1024"));
+        assert!(variant_cloud_url(4096).contains("4096x2048"));
+        assert!(variant_cloud_url(8192).contains("8192x4096"));
     }
 
     #[test]
-    fn environment_override_wins_over_the_tier() {
-        for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+    fn resolve_cloud_url_without_override_uses_the_variant() {
+        assert_eq!(resolve_cloud_url(None, 2048), variant_cloud_url(2048));
+    }
+
+    #[test]
+    fn environment_override_wins_over_the_variant() {
+        for resolution in TEXTURE_RESOLUTIONS {
             assert_eq!(
-                resolve_cloud_url(Some("http://127.0.0.1:8080/clouds.jpg"), tier),
+                resolve_cloud_url(Some("http://127.0.0.1:8080/clouds.jpg"), resolution),
                 "http://127.0.0.1:8080/clouds.jpg"
             );
         }
+    }
+
+    /// Two variants must not share a cache entry, or a switch could be answered
+    /// with the previous variant's bytes.
+    #[test]
+    fn each_variant_has_its_own_cache_entry() {
+        let dir = PathBuf::from("C:/tmp/sunlit");
+        let mut seen = std::collections::HashSet::new();
+        for &width in &TEXTURE_RESOLUTIONS {
+            let (image, meta) = cache_paths(Some(&dir), cloud_variant(width));
+            let image = image.expect("a cache dir was given");
+            let meta = meta.expect("a cache dir was given");
+            assert_ne!(image, meta);
+            assert!(seen.insert(image), "two variants share a JPEG path");
+            assert!(seen.insert(meta), "two variants share a meta path");
+        }
+    }
+
+    #[test]
+    fn no_cache_directory_means_no_cache_paths() {
+        let (image, meta) = cache_paths(None, cloud_variant(4096));
+        assert!(image.is_none());
+        assert!(meta.is_none());
     }
 
     #[test]
@@ -532,6 +663,8 @@ mod tests {
         fetches: std::sync::atomic::AtomicU64,
         /// Number of upcoming calls that report a transport error.
         failures: std::sync::atomic::AtomicU64,
+        /// Every URL this source has been pointed at, in order.
+        retargets: std::sync::Mutex<Vec<String>>,
     }
 
     impl ScriptedSource {
@@ -550,7 +683,12 @@ mod tests {
                 version: std::sync::atomic::AtomicU64::new(1),
                 fetches: std::sync::atomic::AtomicU64::new(0),
                 failures: std::sync::atomic::AtomicU64::new(0),
+                retargets: std::sync::Mutex::new(Vec::new()),
             }
+        }
+
+        fn retargets(&self) -> Vec<String> {
+            self.retargets.lock().expect("retarget log").clone()
         }
 
         /// Make the next `count` calls fail, as an offline service would.
@@ -601,12 +739,26 @@ mod tests {
         fn describe(&self) -> String {
             "scripted".to_owned()
         }
+
+        fn retarget(&self, url: &str) {
+            self.retargets
+                .lock()
+                .expect("retarget log")
+                .push(url.to_owned());
+        }
     }
 
     use super::super::cloud_source::CloudImage;
 
     fn updater_for(source: Arc<ScriptedSource>, mailbox: &TextureMailbox) -> CloudUpdater {
-        CloudUpdater::new(source, mailbox.clone(), no_notify(), 3, None)
+        CloudUpdater::new(
+            source,
+            mailbox.clone(),
+            no_notify(),
+            3,
+            None,
+            DEFAULT_TEXTURE_RESOLUTION,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -736,7 +888,8 @@ mod tests {
         let notify: NotifyFn = Arc::new(move || {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
-        let mut updater = CloudUpdater::new(source, mailbox, notify, 3, None);
+        let mut updater =
+            CloudUpdater::new(source, mailbox, notify, 3, None, DEFAULT_TEXTURE_RESOLUTION);
 
         updater.poll_once();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -758,28 +911,119 @@ mod tests {
         let source = Arc::new(ScriptedSource::new());
         let mailbox = TextureMailbox::new(4);
 
-        let mut first = CloudUpdater::new(
-            Arc::clone(&source) as Arc<dyn CloudSource>,
-            mailbox.clone(),
-            no_notify(),
-            3,
-            Some(dir.clone()),
-        );
+        let mut first = cached_updater(&source, &mailbox, &dir, DEFAULT_TEXTURE_RESOLUTION);
         first.poll_once();
         mailbox.take_all();
 
         // A fresh updater reads the ETag back and does not re-download.
-        let mut second = CloudUpdater::new(
-            Arc::clone(&source) as Arc<dyn CloudSource>,
-            mailbox.clone(),
-            no_notify(),
-            3,
-            Some(dir.clone()),
-        );
+        let mut second = cached_updater(&source, &mailbox, &dir, DEFAULT_TEXTURE_RESOLUTION);
         assert_eq!(second.poll_once(), PollOutcome::Unchanged);
         assert_eq!(source.fetches(), 1);
         assert!(second.post_cached(), "the cached JPEG should decode");
         assert_eq!(mailbox.take_all().len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An updater on a disk cache at a chosen resolution.
+    fn cached_updater(
+        source: &Arc<ScriptedSource>,
+        mailbox: &TextureMailbox,
+        dir: &Path,
+        resolution: u32,
+    ) -> CloudUpdater {
+        CloudUpdater::new(
+            Arc::clone(source) as Arc<dyn CloudSource>,
+            mailbox.clone(),
+            no_notify(),
+            3,
+            Some(dir.to_path_buf()),
+            resolution,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Following the texture resolution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_resolution_points_the_source_at_the_new_variant() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        updater.set_resolution(2048);
+        let retargets = source.retargets();
+        assert_eq!(retargets.len(), 1, "expected one retarget: {retargets:?}");
+        assert!(
+            retargets[0].contains("2048x1024"),
+            "unexpected URL: {}",
+            retargets[0]
+        );
+    }
+
+    /// The worker calls this before every poll, so the common case has to be
+    /// free of both a retarget and a cache reload.
+    #[test]
+    fn set_resolution_to_the_variant_in_force_does_nothing() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        for _ in 0..3 {
+            updater.set_resolution(DEFAULT_TEXTURE_RESOLUTION);
+        }
+        assert!(source.retargets().is_empty());
+    }
+
+    /// Two resolutions that share a variant share everything: the URL does not
+    /// change, so neither should anything else.
+    #[test]
+    fn two_resolutions_with_one_variant_do_not_retarget() {
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = updater_for(Arc::clone(&source), &mailbox);
+
+        assert_eq!(cloud_variant(2048), cloud_variant(2049));
+        updater.set_resolution(2048);
+        source.retargets.lock().expect("retarget log").clear();
+        updater.set_resolution(2049);
+        assert!(source.retargets().is_empty());
+    }
+
+    /// A switch must not be answered out of the previous variant's cache, and a
+    /// switch back must find what it left behind.
+    #[test]
+    fn each_variant_keeps_its_own_cached_image() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_cloud_variant_cache");
+        let _ = fs::remove_dir_all(&dir);
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+
+        let mut updater = cached_updater(&source, &mailbox, &dir, 8192);
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+
+        // Down: the ETag that satisfied the wide variant must not satisfy the
+        // narrow one, so the switch costs a real download.
+        updater.set_resolution(2048);
+        assert_eq!(
+            updater.poll_once(),
+            PollOutcome::Updated,
+            "the new variant must be fetched, not served from the old entry"
+        );
+        assert_eq!(source.fetches(), 2);
+        mailbox.take_all();
+
+        // Up again: the wide entry is still on disk with its own ETag, so this
+        // is a 304 rather than a third download.
+        updater.set_resolution(8192);
+        assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
+        assert_eq!(source.fetches(), 2);
+        assert!(
+            updater.post_cached(),
+            "the wide variant's cached JPEG should still be there"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

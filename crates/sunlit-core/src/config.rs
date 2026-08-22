@@ -9,9 +9,15 @@ use crate::scene::camera::CameraParams;
 /// How much the app is allowed to spend on looking good.
 ///
 /// The point of the tiers is that the cheap one is the default while
-/// developing and testing: an 8x MSAA 4K preview plus an 8K cloud download is
-/// not what anyone wants on every `cargo run`, and it used to be exactly what
-/// they got. Release builds still default to the full-quality path.
+/// developing and testing: an 8x MSAA 4K preview is not what anyone wants on
+/// every `cargo run`, and it used to be exactly what they got. Release builds
+/// still default to the full-quality path.
+///
+/// The tier used to pick the cloud image variant too. That moved to
+/// [`TEXTURE_RESOLUTIONS`], where the rest of the texture memory is decided:
+/// the cloud overlay is the largest texture the app holds, and it belongs with
+/// the setting that says how much texture memory to spend rather than with the
+/// one that says how much to spend on rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QualityTier {
@@ -48,16 +54,6 @@ impl QualityTier {
             Self::Low => 1280,
             Self::Medium => 1920,
             Self::High => u32::MAX,
-        }
-    }
-
-    /// Which cloud image variant to download. The upstream service publishes
-    /// all three, so the low tier costs no new asset work.
-    pub fn cloud_size(self) -> (u32, u32) {
-        match self {
-            Self::Low => (2048, 1024),
-            Self::Medium => (4096, 2048),
-            Self::High => (8192, 4096),
         }
     }
 }
@@ -981,10 +977,6 @@ mod tests {
             assert!(
                 pair[0].max_preview_width() < pair[1].max_preview_width(),
                 "preview cap should grow with the tier"
-            );
-            assert!(
-                pair[0].cloud_size().0 < pair[1].cloud_size().0,
-                "cloud image should grow with the tier"
             );
         }
     }

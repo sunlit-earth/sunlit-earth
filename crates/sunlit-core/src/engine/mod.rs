@@ -11,7 +11,7 @@ pub mod wallpaper_sink;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -125,11 +125,12 @@ pub struct EngineConfig {
     pub preview_enabled: bool,
     /// Initial scene parameters.
     pub params: SceneParams,
-    /// Caps the preview size and the MSAA sample count, and selects the cloud
-    /// image variant.
+    /// Caps the preview size and the MSAA sample count.
     pub quality: QualityTier,
-    /// Width the file-backed surface textures are loaded at. Independent of the
-    /// quality tier, which governs the cloud variant and the render size.
+    /// Width the file-backed surface textures are loaded at, and the cloud
+    /// image variant that goes with it. Independent of the quality tier, which
+    /// governs how much work a frame is allowed to be rather than how much
+    /// texture memory the app holds.
     pub texture_resolution: u32,
     pub clock: Arc<dyn Clock>,
     /// `None` disables cloud fetching entirely (the `SUNLIT_EARTH_NO_CLOUDS`
@@ -456,6 +457,13 @@ struct PreviewState {
 struct CloudWorker {
     tx: Sender<()>,
     busy: Arc<AtomicBool>,
+    /// The texture resolution the worker should be fetching the variant of.
+    ///
+    /// Read by the worker before every poll rather than sent as a message, so a
+    /// switch that lands while a fetch is in flight (or while a failed poll is
+    /// backing off) takes effect on the next attempt instead of queueing behind
+    /// one that may be minutes from finishing.
+    target: Arc<AtomicU32>,
     schedule: Schedule,
     /// A poll came due but the worker was busy, so it still owes one. Kept
     /// separate from the schedule so a busy worker does not drag the deadline
@@ -564,7 +572,15 @@ impl Engine {
 
         let now = clock.elapsed();
         let cloud = cloud.map(|source| {
-            spawn_cloud_worker(source, mailbox, notify, cache_dir, cloud_poll_interval, now)
+            spawn_cloud_worker(
+                source,
+                mailbox,
+                notify,
+                cache_dir,
+                cloud_poll_interval,
+                now,
+                texture_resolution,
+            )
         });
 
         Self {
@@ -686,6 +702,18 @@ impl Engine {
                     // clients would never hear about the new ones.
                     self.textures_ready = false;
                     self.dirty = true;
+                    // The cloud variant follows the same setting, but its slot
+                    // is deliberately not purged: the switch must not depend on
+                    // the network, and a cloudless gap while a download runs
+                    // would be a worse picture than a cloud layer at the
+                    // previous variant. Asking for a poll now is the whole of
+                    // the change; the existing update path replaces texture,
+                    // view, and bind group together when it lands.
+                    if let Some(cloud) = &mut self.cloud
+                        && cloud.retarget(width)
+                    {
+                        cloud.owed = true;
+                    }
                 }
             }
             EngineCommand::ReportMemory { reply } => {
@@ -951,6 +979,14 @@ impl Engine {
 }
 
 impl CloudWorker {
+    /// Point the worker at a different texture resolution's cloud variant.
+    ///
+    /// Returns whether that changed anything, so the caller can decide whether
+    /// a poll is worth asking for.
+    fn retarget(&self, resolution: u32) -> bool {
+        self.target.swap(resolution, Ordering::SeqCst) != resolution
+    }
+
     /// Ask the worker for one poll. Returns `false` when the worker is still
     /// busy with the previous one, so the caller can retry soon.
     fn request(&self) -> bool {
@@ -976,17 +1012,27 @@ fn spawn_cloud_worker(
     cache_dir: Option<PathBuf>,
     interval: Duration,
     now: Duration,
+    texture_resolution: u32,
 ) -> CloudWorker {
     info!(source = %source.describe(), poll_secs = interval.as_secs(), "cloud source configured");
 
     let (tx, rx) = bounded::<()>(1);
     let busy = Arc::new(AtomicBool::new(false));
     let worker_busy = Arc::clone(&busy);
+    let target = Arc::new(AtomicU32::new(texture_resolution));
+    let worker_target = Arc::clone(&target);
 
     let thread = std::thread::Builder::new()
         .name("sunlit-cloud".into())
         .spawn(move || {
-            let mut updater = CloudUpdater::new(source, mailbox, notify, CLOUDS_SLOT, cache_dir);
+            let mut updater = CloudUpdater::new(
+                source,
+                mailbox,
+                notify,
+                CLOUDS_SLOT,
+                cache_dir,
+                texture_resolution,
+            );
             let mut backoff = RetryBackoff::new();
             // Show whatever is on disk before touching the network.
             updater.post_cached();
@@ -997,6 +1043,11 @@ fn spawn_cloud_worker(
                 // stale clouds. The engine's own requests are dropped while
                 // this runs (the worker is busy) and retried on the next tick.
                 loop {
+                    // Inside the retry loop, not outside it: an outage can hold
+                    // this thread for minutes at a time, and a resolution
+                    // switch made during one should change what the next
+                    // attempt asks for rather than wait its turn.
+                    updater.set_resolution(worker_target.load(Ordering::SeqCst));
                     match updater.poll_once() {
                         PollOutcome::Updated => {
                             debug!("cloud frame updated");
@@ -1029,6 +1080,7 @@ fn spawn_cloud_worker(
     CloudWorker {
         tx,
         busy,
+        target,
         // Poll immediately on the first tick, then on the configured interval.
         schedule: Schedule {
             interval,

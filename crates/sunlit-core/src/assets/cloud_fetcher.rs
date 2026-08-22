@@ -446,7 +446,7 @@ impl CloudUpdater {
         }
     }
 
-    /// One freshness check, download, decode, and post cycle.
+    /// One freshness check, download, decode, cache, and post cycle.
     pub fn poll_once(&mut self) -> PollOutcome {
         let known_etag = self.cached_meta.as_ref().and_then(|m| m.etag.as_deref());
         let start = std::time::Instant::now();
@@ -464,6 +464,28 @@ impl CloudUpdater {
             elapsed_secs = format_args!("{:.1}", start.elapsed().as_secs_f64()),
             "downloaded cloud image"
         );
+
+        // Decoded before anything is persisted. The sidecar is a claim that a
+        // decodable image for its ETag is on disk, and a body that does not
+        // decode (a captive portal answering 200 with an error page and an
+        // ETag, say) must not leave that claim anywhere: on disk it defeats
+        // `post_cached` and every later switch, and in memory it turns the
+        // retry the backoff exists for into a 304 with nothing to post.
+        // Failing here keeps the previous entry and the previous ETag, so the
+        // retry is a genuine re-download.
+        let img = match decode_cloud_jpeg(&fetched.bytes) {
+            Ok(img) => img,
+            Err(e) => {
+                warn!(error = %e, "cloud image decode failed");
+                return PollOutcome::Failed;
+            }
+        };
+        info!(
+            width = img.width,
+            height = img.height,
+            "decoded cloud image"
+        );
+        crate::memory::log_memory_usage("after cloud decode");
 
         let cached = self
             .image_path
@@ -493,22 +515,8 @@ impl CloudUpdater {
         // and with no cache directory at all this is the only copy there is.
         self.cached_meta = Some(meta);
 
-        match decode_cloud_jpeg(&fetched.bytes) {
-            Ok(img) => {
-                info!(
-                    width = img.width,
-                    height = img.height,
-                    "decoded cloud image"
-                );
-                crate::memory::log_memory_usage("after cloud decode");
-                self.post(img);
-                PollOutcome::Updated
-            }
-            Err(e) => {
-                warn!(error = %e, "cloud image decode failed");
-                PollOutcome::Failed
-            }
-        }
+        self.post(img);
+        PollOutcome::Updated
     }
 
     fn post(&self, img: DecodedImage) {
@@ -783,6 +791,8 @@ mod tests {
         fetches: std::sync::atomic::AtomicU64,
         /// Number of upcoming calls that report a transport error.
         failures: std::sync::atomic::AtomicU64,
+        /// Number of upcoming calls that serve a body that is not a JPEG.
+        corrupt: std::sync::atomic::AtomicU64,
         /// Every URL this source has been pointed at, in order.
         retargets: std::sync::Mutex<Vec<String>>,
     }
@@ -803,6 +813,7 @@ mod tests {
                 version: std::sync::atomic::AtomicU64::new(1),
                 fetches: std::sync::atomic::AtomicU64::new(0),
                 failures: std::sync::atomic::AtomicU64::new(0),
+                corrupt: std::sync::atomic::AtomicU64::new(0),
                 retargets: std::sync::Mutex::new(Vec::new()),
             }
         }
@@ -820,6 +831,13 @@ mod tests {
         /// Make the next `count` calls fail, as an offline service would.
         fn fail_next(&self, count: u64) {
             self.failures
+                .store(count, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        /// Make the next `count` calls serve a body that is not a JPEG, as a
+        /// captive portal answering 200 with an error page would.
+        fn corrupt_next(&self, count: u64) {
+            self.corrupt
                 .store(count, std::sync::atomic::Ordering::SeqCst);
         }
 
@@ -855,8 +873,21 @@ mod tests {
             }
             self.fetches
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let bytes = if self
+                .corrupt
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| (n > 0).then(|| n - 1),
+                )
+                .is_ok()
+            {
+                b"an error page, not a JPEG".to_vec()
+            } else {
+                self.jpeg.clone()
+            };
             Ok(Some(CloudImage {
-                bytes: self.jpeg.clone(),
+                bytes,
                 etag: Some(current),
                 last_modified: None,
             }))
@@ -1242,6 +1273,59 @@ mod tests {
         let mut restarted = cached_updater(&source, &mailbox, &dir, 8192);
         assert!(!restarted.post_cached(), "there is no image to post");
         assert_eq!(restarted.poll_once(), PollOutcome::Updated);
+        assert_eq!(source.fetches(), 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The same rule one door further in: a body that downloads but does not
+    /// decode must leave no freshness claim behind, on disk or in memory.
+    ///
+    /// The in-memory half is what keeps the retry alive: recording the bad
+    /// body's `ETag` would turn the backoff's next poll into a 304 with
+    /// nothing to post, and the session would have no clouds until upstream
+    /// published. The disk half keeps the last good entry intact, so a
+    /// restart or a switch still shows the newest image that ever decoded.
+    #[test]
+    fn an_undecodable_body_leaves_no_freshness_claim() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_cloud_undecodable_body");
+        let _ = fs::remove_dir_all(&dir);
+        let stem = cache_stem(cloud_variant(8192), false);
+        let image = dir.join(format!("{stem}.jpg"));
+        let meta = dir.join(format!("{stem}_meta.toml"));
+
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(4);
+        let mut updater = cached_updater(&source, &mailbox, &dir, 8192);
+
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        mailbox.take_all();
+        let good_image = fs::read(&image).expect("the healthy poll cached its image");
+        let good_meta = fs::read(&meta).expect("and its sidecar");
+
+        source.publish();
+        source.corrupt_next(1);
+        assert_eq!(
+            updater.poll_once(),
+            PollOutcome::Failed,
+            "a body that does not decode is a failed poll, not an update"
+        );
+        assert!(mailbox.take_all().is_empty());
+        assert_eq!(
+            fs::read(&image).expect("the last good image stays"),
+            good_image
+        );
+        assert_eq!(
+            fs::read(&meta).expect("with the sidecar that matches it"),
+            good_meta
+        );
+
+        assert_eq!(
+            updater.poll_once(),
+            PollOutcome::Updated,
+            "the retry must re-download, not revalidate into a 304"
+        );
+        assert_eq!(mailbox.take_all().len(), 1);
         assert_eq!(source.fetches(), 3);
 
         let _ = fs::remove_dir_all(&dir);

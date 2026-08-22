@@ -130,3 +130,13 @@ Disposition: all six addressed. m8 was fixed by deleting the line rather than na
 - m9: `sweep_unfinished` removes `<target>.*~` in the cache directory after a successful write, with a unit test that plants orphans and a bystander and checks only the orphans go.
 - m10: `TextureMailbox::slot_count` plus an assertion in `Engine::new`, placed before the adapter report so a mismatched seam panics in `start` rather than dying quietly on the engine thread.
 - m11, m12: corrected. The support check is back in front of everything, including the wait, and says so.
+
+### Round 3 (2026-08-22)
+
+Scope: the closing-pass commits, re-reviewed by the round 2 validator with its context intact. Verdict: 0 majors, 3 minors; the round does not block, and every round 2 finding is verified fixed. The load-bearing claims were checked by mutation: reverting the mailbox guard, the generation check, and the purge's `loading` clear each fails exactly the test that claims to protect it, and the engine target passed three consecutive unmutated runs. Departure 7's argument was audited exhaustively (every write to `texture_generation`, `loading`, and `source_path` in the tree) and found stronger than it claims: the deleted clear was strictly redundant, not merely unreachable-when-narrowed, and the m10 assertion is load-bearing for that argument, since an out-of-range post was the one non-panic route back to the wedge.
+
+- m13: the sweep test's bystander only pinned the tilde-suffix half of the sweep's scoping; a sweep that ignored the target prefix would still have passed.
+- m14: one closing commit carried all six findings while its message described two, and the follow-up's title described the previous commit's assertion rather than its own content; this repository keeps reasoning in commit messages, so both mattered.
+- m15: `TextureMailbox::is_parked` had no callers and a doc describing a test strategy the final tests do not use.
+
+Disposition: all three fixed by the orchestrator. m13 and m15 in one commit (a different-width orphan now proves the prefix check; the dead helper is gone). m14 by rewording the two commits, which had not been pushed anywhere: the closing commit's message now covers everything it carries, and the should-panic commit is titled as the pin it is. Two observations from the round are recorded here for the future rather than fixed: the should-panic test's expectation string matches any engine-thread death, so it pins the panic's existence rather than its placement, and the m12 ordering (support before pending) has no test of its own because the harness config has no file-backed slots.

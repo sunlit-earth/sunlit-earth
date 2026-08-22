@@ -475,15 +475,18 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
-    /// The measured cold-cache startup peak in private bytes, per resolution.
+    /// The one cold-cache startup peak anyone has measured: about 2.43 GiB of
+    /// private bytes, at 8192, in a release build.
     ///
-    /// 2.43 GiB observed at 8192 in a release build. The two 8K decodes cost
-    /// the same at every width, so the lower ones sit below it by exactly what
-    /// they save in resident texture memory.
-    fn measured_cold_start_peak(texture_resolution: u32) -> u64 {
-        const AT_WIDEST: u64 = 2488 * MIB;
-        AT_WIDEST - (resident_texture_bytes(8192) - resident_texture_bytes(texture_resolution))
-    }
+    /// Every resolution is held to this figure rather than to a smaller one
+    /// derived from it, and that is the point. The peak is dominated by the two
+    /// 8K JXL decodes, which a cold downscale cache performs whatever width it
+    /// was asked for; how much of the resident saving at a lower width also
+    /// shows up in the peak is exactly what nobody has measured. Deriving a
+    /// per-resolution peak from the budget's own decomposition would make the
+    /// two move together and assert nothing, and it would let the budget rest
+    /// on a saving that may not be there.
+    const MEASURED_COLD_START_PEAK: u64 = 2488 * MIB;
 
     /// Build a snapshot with known values for format and rotation tests.
     fn sample_snapshot() -> MemorySnapshot {
@@ -706,16 +709,22 @@ mod tests {
     /// operation is a warning nobody reads. A cold cache at any resolution
     /// still decodes both 8K sources, so that launch is the worst normal
     /// operation gets and the budget has to clear it everywhere.
+    ///
+    /// The narrow end is the binding case, not a restatement of the wide one:
+    /// it gets the smallest resident allowance and has the same decode to pay
+    /// for. 2048 clears the measurement by 104 MiB where 8192 clears it by 584,
+    /// so a cold-start figure set too low fails here at the two lower widths
+    /// while the widest, which is where the 3 GiB total is anchored, still
+    /// passes.
     #[test]
     fn the_budget_stays_above_a_cold_cache_first_run_at_every_resolution() {
         for width in TEXTURE_RESOLUTIONS {
-            let peak = measured_cold_start_peak(width);
             let budget = private_bytes_budget(width);
             assert!(
-                budget > peak,
-                "at {width} the budget is {} MiB and a cold start peaks at {} MiB",
+                budget > MEASURED_COLD_START_PEAK,
+                "at {width} the budget is {} MiB and a cold start was measured at {} MiB",
                 budget / MIB,
-                peak / MIB
+                MEASURED_COLD_START_PEAK / MIB
             );
         }
     }
@@ -726,13 +735,12 @@ mod tests {
     #[test]
     fn the_budget_is_low_enough_to_catch_a_runaway() {
         for width in TEXTURE_RESOLUTIONS {
-            let peak = measured_cold_start_peak(width);
             let budget = private_bytes_budget(width);
             assert!(
-                budget < peak * 2,
+                budget < MEASURED_COLD_START_PEAK * 2,
                 "at {width} the budget is {} MiB, twice a cold start is {} MiB",
                 budget / MIB,
-                peak * 2 / MIB
+                MEASURED_COLD_START_PEAK * 2 / MIB
             );
         }
     }

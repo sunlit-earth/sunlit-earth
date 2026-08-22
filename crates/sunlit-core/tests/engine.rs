@@ -960,6 +960,8 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
     harness.next_frame();
     harness.drained_frame(Duration::from_millis(500));
     let wide = private_bytes().expect("this platform reports memory counters");
+    let wide_report = harness.engine.memory_report().expect("a report");
+    println!("at {WIDE}:\n{wide_report}");
 
     harness
         .engine
@@ -969,6 +971,8 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
     assert!(has_lit_pixels(&rgba), "the narrow textures should render");
     harness.drained_frame(Duration::from_millis(500));
     let narrow = private_bytes().expect("this platform reports memory counters");
+    let narrow_report = harness.engine.memory_report().expect("a report");
+    println!("at {NARROW}:\n{narrow_report}");
 
     println!(
         "private bytes: {:.1} MiB at {WIDE}, {:.1} MiB at {NARROW}, {:.1} MiB returned",
@@ -981,6 +985,19 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
         "switching from {WIDE} to {NARROW} returned {:.1} MiB, expected at least {:.1} MiB",
         mib(wide.saturating_sub(narrow)),
         mib(MIN_DROP),
+    );
+
+    // The report has to agree with the measurement, on the real widths rather
+    // than on the small fixtures the other resolution tests use.
+    assert_eq!(expected_widths(&wide_report, "day_texture"), [WIDE]);
+    assert_eq!(expected_widths(&narrow_report, "day_texture"), [NARROW]);
+    assert_eq!(expected_widths(&narrow_report, "night_texture"), [NARROW]);
+    assert!(
+        !narrow_report
+            .expected
+            .iter()
+            .any(|texture| texture.width == WIDE),
+        "the report still lists a texture at {WIDE}:\n{narrow_report}"
     );
 }
 
@@ -1119,8 +1136,8 @@ fn wait_for_cloud_size(harness: &Harness, expected: (u32, u32), what: &str) {
     }
 }
 
-/// Criterion 1: the fetched cloud variant follows the resolution, a switch
-/// triggers a refetch, and the replacement leaves the old texture behind.
+/// The fetched cloud variant follows the resolution: a switch costs a refetch
+/// of the new variant, and the replacement frees the texture it replaced.
 #[test]
 fn the_cloud_variant_follows_the_texture_resolution() {
     const WIDE: u32 = 8192;
@@ -1328,8 +1345,14 @@ fn the_measured_and_computed_texture_totals_agree() {
     );
 }
 
-/// Criterion 3: after a switch down, nothing of the old width is left in the
-/// report, and both the computed and the measured totals have fallen.
+/// After a switch down, nothing of the old width is left in the report and the
+/// computed total has fallen.
+///
+/// The widths are the fixtures' rather than the 8192 and 2048 a user picks
+/// between, for the reason every other resolution test uses small fixtures: the
+/// property is about the purge and the reload, and real 8K assets would make
+/// this a minute long. `lowering_the_resolution_lowers_the_process_footprint`
+/// is the one that measures the real pair, where they are present.
 #[test]
 fn a_switch_down_leaves_no_texture_at_the_old_width() {
     const WIDE: u32 = 256;

@@ -272,6 +272,15 @@ pub fn linux_install_script(paths: &GuestPaths) -> String {
     format!(
         "#!/usr/bin/env bash\n\
          set -eu\n\
+         # The blessing below is written by the session's own metadata daemon,\n\
+         # over the session bus a process started from outside the session does\n\
+         # not have. The guest writes that environment out at logon for exactly\n\
+         # this class of process, and the job runner sources the same file.\n\
+         if [ -f {session_env} ]; then\n\
+         \x20 set -a\n\
+         \x20 . {session_env}\n\
+         \x20 set +a\n\
+         fi\n\
          launcher={launcher}\n\
          apps=\"${{HOME}}/.local/share/applications\"\n\
          desktop=\"$(xdg-user-dir DESKTOP 2>/dev/null || true)\"\n\
@@ -299,14 +308,19 @@ pub fn linux_install_script(paths: &GuestPaths) -> String {
          \x20 chmod 0755 \"${{desktop}}/${{entry}}\"\n\
          \x20 # Plasma, xfdesktop and Nemo each quarantine a desktop launcher\n\
          \x20 # they have not blessed. The executable bit is what the first two\n\
-         \x20 # ask for; Nemo wants gio metadata, which the others ignore, and a\n\
-         \x20 # desktop without gio must not fail the hand-over over it.\n\
+         \x20 # ask for; Nemo wants gio metadata, which the others ignore, and\n\
+         \x20 # where no metadata daemon answers it fails and is no reason to\n\
+         \x20 # fail the hand-over.\n\
          \x20 gio set -t string \"${{desktop}}/${{entry}}\" metadata::trusted true \
          >/dev/null 2>&1 || true\n\
          done\n\
          \n\
          update-desktop-database \"${{apps}}\" >/dev/null 2>&1 || true\n\
          printf '%s\\n' '{LINUX_HANDOVER_READY}'\n",
+        session_env = shell_quote(&format!(
+            "{}/session.env",
+            crate::provider::GUEST_ROOT_LINUX
+        )),
         launcher = shell_quote(&linux_launcher_path()),
         launcher_script = linux_launcher_script(paths),
         app_entry_name = APP_ENTRY,
@@ -724,6 +738,13 @@ mod tests {
 
     /// The two blessings, and the fact that neither may fail the hand-over: a
     /// desktop that ignores one of them is the normal case rather than an error.
+    ///
+    /// The gio half needs the session bus, which a process started over SSH does
+    /// not have: measured in the guest, `gio set` without it answers "Setting
+    /// attribute `metadata::trusted` not supported" and with it writes the
+    /// attribute. So the script sources the environment the session wrote out at
+    /// logon, and that file's name is pinned against the script that writes it,
+    /// since nothing else connects the two.
     #[test]
     fn the_desktop_entries_are_blessed_the_way_each_desktop_asks_for() {
         let script = linux_install_script(&linux_paths(true));
@@ -737,6 +758,25 @@ mod tests {
             .find(|line| line.contains("metadata::trusted"))
             .expect("the gio line");
         assert!(gio.trim_end().ends_with("|| true"), "{gio}");
+
+        let session_env = format!("{}/session.env", crate::provider::GUEST_ROOT_LINUX);
+        assert!(script.contains(&format!(". '{session_env}'")), "{script}");
+        let sourced = script.find(". '").expect("the source line");
+        let blessing = script.find("metadata::trusted").expect("the gio line");
+        assert!(sourced < blessing, "{script}");
+
+        let contract = std::fs::read_to_string(
+            crate::store::repo_root().join("vm/linux/scripts/guest-contract.sh"),
+        )
+        .expect("the Linux guest contract script");
+        assert!(
+            contract.contains("${root}/session.env"),
+            "the guest no longer writes the environment this sources"
+        );
+        assert!(
+            contract.contains("DBUS_SESSION_BUS_ADDRESS"),
+            "the environment it writes no longer carries the session bus"
+        );
     }
 
     /// One token again, and for the same reason the Windows side has one: the

@@ -69,12 +69,23 @@ variable "disk_size" {
   description = "The virtual size. A qcow2 only occupies what it holds."
 }
 
-# Debian publishes the current trixie cloud image behind a stable `latest` path
-# with a SHA512SUMS file beside it, so the checksum follows the image instead of
-# pinning a hash that goes stale on every respin.
+# Debian publishes the current trixie cloud images behind a stable `latest` path
+# with one SHA512SUMS file covering all of them, so the checksum follows the
+# image instead of pinning a hash that goes stale on every respin.
+#
+# `generic` and not `genericcloud`, which is the smaller image and was the
+# obvious choice until it was tried. The difference between them is the kernel:
+# `genericcloud` ships `linux-image-cloud-amd64`, built without drivers for
+# physical hardware, and DRM is one of the things that goes with them. There is
+# no `CONFIG_DRM`, no `virtio_gpu` module on disk, and so no `/dev/dri` however
+# the display device is spelled on the command line. logind then has a seat0
+# that is not graphical, and sddm waits for one forever: the guest sits on the
+# text console with the display manager running and no X server ever started.
+# `generic` carries `linux-image-amd64` and is otherwise the same image, same
+# cloud-init, same NoCloud seed.
 variable "base_image_url" {
   type    = string
-  default = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+  default = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
 }
 
 variable "base_image_checksum" {
@@ -135,6 +146,12 @@ source "qemu" "debian" {
   disk_interface = "virtio"
   machine_type   = "q35"
 
+  # Discards from the guest reach the qcow2 and free the clusters behind them,
+  # which is what makes `finalize.sh`'s `fstrim` the whole of what compaction
+  # used to do here. Without it a trim is a no-op and every cluster the build
+  # ever wrote stays allocated, apt's caches included.
+  disk_discard = "unmap"
+
   output_directory = var.output_dir
   vm_name          = var.vm_name
 
@@ -145,8 +162,15 @@ source "qemu" "debian" {
   # after a build that had otherwise run every provisioner to completion, and
   # Packer deletes its output directory on failure, so there is nothing to retry
   # but the whole hour. What compaction buys is a smaller file; what it costs
-  # here is the build. `finalize.sh` already zeroes the free space, which is the
-  # half that makes a qcow2 hold only what it holds.
+  # here is the build.
+  #
+  # The smaller file is bought back another way instead. `disk_discard` above
+  # plus `fstrim` in `finalize.sh` frees the clusters behind deleted files inside
+  # the running guest, which is the same end state a convert pass produces and
+  # needs no second copy of the disk and no rename. The zero-fill that used to
+  # sit in `finalize.sh` did the opposite: it exists to make a *converted* image
+  # small, and on its own it allocates every free cluster instead, which is how
+  # the first build with this flag ended up at 31.4 GiB of a 32 GiB disk.
   skip_compaction = true
 
   qemuargs = [

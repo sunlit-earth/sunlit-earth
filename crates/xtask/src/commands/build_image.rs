@@ -580,7 +580,7 @@ fn finish(
 
     let source = match target {
         Target::Windows => store.windows_iso().to_string_lossy().into_owned(),
-        Target::Linux => "debian 13 genericcloud image".to_owned(),
+        Target::Linux => "debian 13 generic image".to_owned(),
     };
     write_manifest(
         store,

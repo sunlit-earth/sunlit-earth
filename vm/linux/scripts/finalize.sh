@@ -43,7 +43,10 @@ WantedBy=multi-user.target
 EOF
 systemctl enable sunlit-e2e-sshkeys.service
 
-# Zero the free space so the qcow2 compresses down to what it actually holds.
-dd if=/dev/zero of=/zero.fill bs=1M 2>/dev/null || true
-rm -f /zero.fill
+# Hand the free space back to the qcow2 rather than zeroing it. The disk is
+# attached with `discard=unmap`, so a trim punches holes in the image file and it
+# ends up holding what the filesystem holds. Zeroing would do the opposite: it is
+# what makes a *converted* image small, and this build skips Packer's convert
+# pass, so writing a zero to every free cluster would only allocate them all.
 sync
+fstrim -av

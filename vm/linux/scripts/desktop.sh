@@ -23,6 +23,23 @@ export DEBIAN_FRONTEND=noninteractive
 systemctl disable --now unattended-upgrades.service 2>/dev/null || true
 systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
+# The one property of the base image that decides whether any of this can work,
+# checked before six gigabytes of desktops are installed on top of it. sddm waits
+# for logind to report a graphical seat, logind calls a seat graphical when it has
+# a DRM device, and the run-time display device is virtio-vga, so what has to
+# exist is a `virtio_gpu` module for this kernel. Debian's `genericcloud` image
+# has none: its `linux-image-cloud-amd64` is built without drivers for physical
+# hardware and DRM goes with them, and the symptom an hour later is a guest
+# sitting on the text console with sddm running and no X server, which is not a
+# symptom that names its cause. `generic` carries `linux-image-amd64`.
+if ! modinfo virtio_gpu >/dev/null 2>&1; then
+  echo "this kernel ($(uname -r)) has no virtio_gpu module, so the guest will" \
+    "have no /dev/dri, no graphical seat, and no X session. The base image is" \
+    "wrong: it needs to be debian-13-generic, not debian-13-genericcloud." >&2
+  exit 1
+fi
+ls -l /dev/dri || echo "no /dev/dri under the build's own display device"
+
 apt-get update
 
 # sddm on its own and first, for two reasons. It answers the shared debconf

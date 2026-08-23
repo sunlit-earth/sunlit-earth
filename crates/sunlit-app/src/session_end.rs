@@ -419,6 +419,25 @@ mod tests {
         assert_eq!(classify(WM_QUERYENDSESSION, false), Action::Permit);
     }
 
+    /// The Linux decision, which is one signal and not the others.
+    ///
+    /// SIGHUP is the one worth pinning rather than merely leaving out: it arrives
+    /// when a controlling terminal goes away, and the e2e suite starts this
+    /// application from a process whose terminal is not its own, so treating it
+    /// as the session ending would end a run in the middle of a test. SIGINT is
+    /// left to its default, because Ctrl-C in a terminal already ends the process
+    /// and a developer pressing it is not a session ending.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_sigterm_means_the_linux_session_is_ending() {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
+
+        assert_eq!(classify_signal(SIGTERM), Action::End);
+        for other in [SIGHUP, SIGINT, SIGUSR1] {
+            assert_eq!(classify_signal(other), Action::Ignore, "{other}");
+        }
+    }
+
     #[test]
     fn only_a_session_that_is_really_ending_shuts_the_app_down() {
         assert_eq!(classify(WM_ENDSESSION, true), Action::End);

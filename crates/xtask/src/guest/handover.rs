@@ -757,6 +757,23 @@ mod tests {
     /// Both blessings, and the fact that neither may fail the hand-over: a
     /// desktop that ignores one is the normal case rather than an error. The
     /// executable bit is what Plasma and Nemo ask for, and
+    /// Both entries run the launcher as their `Exec`, so a launcher written
+    /// and never made executable fails every activation with a permission
+    /// error, and nothing else in the suite would notice: the harness never
+    /// clicks an icon.
+    #[test]
+    fn the_install_script_makes_the_launcher_executable() {
+        let script = linux_install_script(&linux_paths(true));
+        assert!(script.contains("chmod 0755 \"${launcher}\""), "{script}");
+        // After the write, not before it: `cat >` creates the file whose mode
+        // is being set.
+        let written = script.find("cat > \"${launcher}\"").expect("the write");
+        let blessed = script
+            .find("chmod 0755 \"${launcher}\"")
+            .expect("the chmod");
+        assert!(written < blessed, "{script}");
+    }
+
     /// `metadata::xfce-exe-checksum`, the file's own sha256, is what xfdesktop
     /// asks for on top of it.
     ///

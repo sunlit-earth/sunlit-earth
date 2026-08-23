@@ -91,7 +91,7 @@ A Windows guest's desktop has two shortcuts on it, written per boot by whatever 
 A Linux guest gets the same pair as XDG desktop entries, in the applications menu and on the desktop directory, plus the launcher they run:
 
 - `Sunlit Earth` starts the app through `/var/lib/sunlit-e2e/run-app.sh`, which names `SUNLIT_EARTH_TEXTURES` when the textures were staged and sets no renderer backend, because Mesa answers OpenGL in here. Started from an icon it has no terminal to print to, so its output goes to `/var/lib/sunlit-e2e/run-app.log`; started from a shell it prints there instead, which is why the closing text gives you the path to type.
-- `sunlit-e2e` opens the same directory through `xdg-open`, which every desktop in the image routes to its own file manager.
+- `sunlit-e2e` opens the same directory through `xdg-open`, which finds a file manager in all four sessions. Not necessarily that desktop's own: in this image even the KDE session opens Thunar, and all the entry needs is that the directory appears.
 
 Where you find them differs by desktop, and that is the desktop's doing rather than ours. Plasma, XFCE and Cinnamon draw desktop icons and all three show both entries; GNOME draws none at all, so there the applications menu is the whole hand-over: press Super and type "sunlit". Only xfdesktop asks a question before running one, and it is answered in advance: it treats the desktop as an insecure location whatever the file's mode bits, and the mark it wants is a checksum of the entry itself, the same one its own "Mark As Secure And Launch" button would write. If you ever do see that dialog, the hand-over's `gio set` failed, and `Launch Anyway` is the way past it.
 

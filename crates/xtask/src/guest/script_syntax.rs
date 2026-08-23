@@ -349,14 +349,26 @@ mod tests {
             !parse("echo 'unterminated\n".to_owned()).success(),
             "bash accepted an unterminated quote, so it is not reading what it is given"
         );
+        // And a control for the failure bash only warns about: a heredoc whose
+        // terminator never matches parses with exit 0 and a warning on stderr,
+        // so an exit-code check alone would wave through a script the heredoc
+        // has swallowed whole. The warning check below is what catches it.
+        let swallowed = parse("cat <<'EOF'\nhello\nEOFX\n".to_owned());
+        assert!(
+            swallowed.success() && swallowed.stderr.contains("warning:"),
+            "bash -n changed how it reports an unterminated heredoc \
+             (exit {:?}, stderr {:?}); the warning check below rests on this",
+            swallowed.code,
+            swallowed.stderr.trim()
+        );
 
         for script in scripts {
             let text = std::fs::read_to_string(&script)
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", script.display()));
             let out = parse(text);
             assert!(
-                out.success(),
-                "{} does not parse: {}",
+                out.success() && !out.stderr.contains("warning:"),
+                "{} does not parse cleanly: {}",
                 script.display(),
                 out.stderr.trim()
             );
@@ -370,8 +382,8 @@ mod tests {
         for (name, text) in generated {
             let out = parse(text);
             assert!(
-                out.success(),
-                "{name} does not parse: {}",
+                out.success() && !out.stderr.contains("warning:"),
+                "{name} does not parse cleanly: {}",
                 out.stderr.trim()
             );
         }

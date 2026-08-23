@@ -88,4 +88,6 @@ Two things worth writing down for whoever gathers this kind of evidence next:
 
 Suite: `cargo xtask e2e --target linux --desktop kde` after the last hand-over change, 10 passed and 0 failed in 46 s, guest exit code 0 (criterion 6).
 
-Gates at `<tip>`: see the status log for the run they were taken in.
+Both closing texts were read off a live command rather than a test: `vm up linux --desktop kde` printed the root, the launcher and the shell command, and `vm smoke linux --keep` printed that nothing was staged and named `vm up`, on a guest whose desktop was in fact empty.
+
+Gates at f876369: `cargo test` on Windows exit 0 (381 core unit, 31 engine, 6 golden, 19 render_pipeline, 12 shading, 1 soak, 42 and 20 in the app, 433 xtask); `cargo clippy --all-targets` no warnings; `cargo fmt --check` clean; the WSL leg exit 0 with all 13 suites ok and no `tests/shading.rs` flake.

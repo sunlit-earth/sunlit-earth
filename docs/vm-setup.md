@@ -2,7 +2,7 @@
 
 The desktop end-to-end suite opens real windows, uses a real tray icon, and sets a real wallpaper. On a development machine that means it takes the desktop over for a minute; anywhere without an interactive desktop, including every hosted CI runner, it cannot run at all. This is how to run it in a local virtual machine instead.
 
-Everything goes through `cargo xtask`. The design is in [plans/2026-08-19-phase3-vm-orchestration-plan.md](plans/2026-08-19-phase3-vm-orchestration-plan.md).
+Everything goes through `cargo xtask`. The design is in [plans/2026-08-19-phase3-vm-orchestration-plan.md](plans/2026-08-19-phase3-vm-orchestration-plan.md), and the Linux guest's overhaul in [plans/2026-08-21-phase5-linux-vm-and-parity-plan.md](plans/2026-08-21-phase5-linux-vm-and-parity-plan.md).
 
 ## The four steps
 
@@ -20,7 +20,7 @@ cargo xtask e2e --target linux
 
 One convenience it warns about rather than installs is a VNC viewer, which only `vm view` of a QEMU guest needs. It looks for `vncviewer`, `tigervnc`, `tvnviewer`, `remmina` and `vinagre`, by name on `PATH` and then in the places an installer is known to leave a program without putting it there: TightVNC's own directory under Program Files, winget's links directory, and scoop's shims directory. `scoop install tightvnc` on Windows and `apt install tigervnc-viewer` on Linux both satisfy it. A viewer installed in the shell that is running `vm view` still counts, which is the point of not asking `PATH` alone: both winget and scoop append to the user `PATH`, and a shell that started earlier never sees it.
 
-`vm build-image <target>` builds a golden image. Expect twenty minutes or so for Linux and the better part of an hour for Windows, plus several gigabytes of download. It is a one-time cost, repeated only when a template changes or a Windows evaluation expires.
+`vm build-image <target>` builds a golden image. Expect the better part of an hour either way, plus several gigabytes of download: the Linux image installs four desktops, and the Windows one installs Windows. It is a one-time cost, repeated only when a template changes or a Windows evaluation expires.
 
 Which mechanism performs the install depends on the host, and it mirrors the hypervisor the finished guest runs on:
 
@@ -42,15 +42,34 @@ What goes into a guest is the app, the test harness, the fixtures, and the `text
 | | Windows guest | Linux guest | This desktop |
 |---|---|---|---|
 | Hypervisor | Hyper-V | QEMU | none |
+| Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops | whatever you are on |
 | Host it runs from | Windows only | Windows or Linux | any |
-| Cases | all 10 | 6 of 9 | 9 of 10 |
+| Cases | all 11 | 8 of 10 | 10 of 11 |
 | GPU | WARP | lavapipe | the real one |
 
 The Windows guest needs a Windows host, because its binaries have to be built somewhere and a Linux host has no toolchain for Windows executables. `e2e --target windows` says so and stops before creating anything.
 
-The Windows guest runs one case the others do not: it sets a real desktop wallpaper. That case is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the guest job sets, so running the suite on your own desktop leaves your wallpaper alone and says so.
+Both guests run the case that sets a real desktop wallpaper. It is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the guest jobs set, so running the suite on your own desktop leaves your wallpaper alone and says so. In the Linux guest that case is the one that proves a desktop's wallpaper backend, which is why the guest carries four desktops: `--desktop <kde|gnome|xfce|cinnamon>` runs the suite under each of them in turn, from one image, and each run exercises a different setter.
 
-The Linux guest skips the two cases that need a tray icon. One of them is the tray-start-hidden lifecycle; the other is single-instance enforcement, which the app performs in tray mode only, so on a platform without a tray there is nothing for it to enforce. Both print why they skipped. Linux tray support waits on the StatusNotifier work that comes after this phase.
+The Linux guest skips the two cases that need a tray icon. One of them is the tray-start-hidden lifecycle; the other is single-instance enforcement, which the app performs in tray mode only, so on a platform without a tray there is nothing for it to enforce. Both print why they skipped.
+
+## Choosing the Linux guest's desktop
+
+The Linux image carries KDE Plasma, GNOME, XFCE and Cinnamon, installed minimally and side by side, and the boot decides which one it logs into:
+
+```
+cargo xtask vm up linux --desktop gnome
+cargo xtask e2e --target linux --desktop xfce
+cargo xtask vm smoke linux --desktop cinnamon
+```
+
+With no flag it is KDE Plasma, which is the image's default. Every one of them is that desktop's X11 session and not its Wayland one, deliberately: the guest contract starts windowed processes over SSH through `DISPLAY`, and a Wayland session has none to hand out.
+
+Nothing in the image decides this, so switching desktops costs a boot rather than a rebuild. The host adds `-fw_cfg name=opt/sunlit/desktop,string=<session>` to QEMU's command line; in the guest, a oneshot unit ordered before the display manager reads the value out of `/sys/firmware/qemu_fw_cfg`, checks it against its own allowlist of four names, and writes sddm's `[Autologin] Session=`. Which desktop a guest is running goes into its run record, so `cargo xtask vm status` names it and a run's results say which desktop they came from.
+
+`--desktop` is a Linux guest option and the Windows image has one desktop, so asking for one there is refused rather than ignored: a run whose flag did nothing is a run whose results are about a desktop nobody chose.
+
+Only Windows has one setter for every session. Linux has one per desktop, so `check_supported` there reads `XDG_CURRENT_DESKTOP` and looks for that desktop's own tool before anything is rendered. The four in the image are exercised by the runs above; MATE, LXQt and Budgie have table rows written from their documented setters and have never run, which `docs/roadmap.md` says rather than the docs claiming support nothing produced.
 
 ## Interactive access
 
@@ -74,6 +93,10 @@ The display-configuration dialog in front of that is answered for you. `vmconnec
 A credential dialog can appear for such a guest anyway, and the answer is the same whatever produced it: cancel it rather than signing in, for the reason above. Usually the image is one built before that change, which still has the service enabled, since a stale image only warns at boot rather than refusing to run; `cargo xtask vm build-image windows` replaces it. Two other guests present the same dialog with no stale image behind them: one whose hand-over started the service and then failed before the guest confirmed it, and one that is still being installed by `vm build-image`, which has no golden image yet at all. Every text that says a guest offers no enhanced session says this too, `vm view`'s and the closing lines of `vm smoke --keep` alike, from one constant.
 
 A basic session shows the framebuffer as it is, so its window is the guest's resolution and cannot be dragged. The resolution is therefore chosen before the guest boots and reported on the line that creates it: the largest of 1024x768, 1280x800, 1440x900, 1600x900, 1680x1050 and 1920x1080 that fits this host's screen with room for the window's own frame. `SUNLIT_EARTH_VM_RESOLUTION=2560x1440` asks for something specific, including sizes larger than any on that list, which the guest's synthetic adapter honors. Changing it means taking the guest down and bringing it up again, because `Set-VMVideo` refuses to run against a VM that is on; and the guest is given exactly the one mode, so its own display settings offer nothing else to pick.
+
+`SUNLIT_EARTH_VM_RESOLUTION` applies to the Linux guest too, where it overrides a fixed 1920x1080 rather than a size derived from this host's screen: a VNC viewer scales, so there is nothing there that has to fit. It reaches the guest as `xres` and `yres` on the `virtio-vga` device, which is what sets virtio-gpu's preferred mode, and Xorg takes that mode when it starts. A guest already running keeps the size it booted with, the same as on Hyper-V.
+
+Clicks in the Linux guest's VNC console land where the cursor is, which they did not before this phase: the guest has a `virtio-tablet-pci`, an absolute pointer. VNC's own protocol carries absolute coordinates and QEMU's implicit PS/2 mouse is a relative device, so without an absolute pointer in the guest every click went through a translation layer and landed somewhere else.
 
 Two more things either way:
 

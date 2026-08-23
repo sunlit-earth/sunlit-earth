@@ -20,6 +20,13 @@ install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 \
 # Written by the desktop session at logon. Two jobs: it is the marker that says
 # a desktop now exists, and it carries the session's environment out to
 # processes the orchestrator starts over SSH, which inherit none of it.
+#
+# `XDG_CURRENT_DESKTOP` is in that set because the app reads it: which desktop
+# this is decides which wallpaper setter exists, so a process that does not have
+# it cannot set a wallpaper and correctly says so. The two `XDG_*_DIRS` are there
+# for the setters themselves, which are Qt and GTK programs that look for their
+# own data where the session says it is. The other four are what makes a window
+# and a D-Bus call possible at all.
 cat > /usr/local/bin/sunlit-e2e-session-ready <<'EOF'
 #!/bin/sh
 set -e
@@ -33,6 +40,11 @@ xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
   echo "XAUTHORITY=${XAUTHORITY}"
   echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}"
   echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+  echo "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP}"
+  echo "XDG_SESSION_TYPE=${XDG_SESSION_TYPE}"
+  echo "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP}"
+  echo "XDG_DATA_DIRS=${XDG_DATA_DIRS}"
+  echo "XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS}"
 } > "${root}/session.env"
 rm -f "${root}/ready"
 date +%s > "${root}/ready"

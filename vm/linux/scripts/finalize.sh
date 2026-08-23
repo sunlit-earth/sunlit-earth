@@ -28,7 +28,9 @@ rm -f /etc/ssh/ssh_host_*
 cat > /etc/systemd/system/sunlit-e2e-sshkeys.service <<'EOF'
 [Unit]
 Description=Generate SSH host keys on first boot
-Before=ssh.service
+# Both, because Debian is moving from the service to socket activation and this
+# has to come first whichever of the two this image ended up with.
+Before=ssh.service ssh.socket
 ConditionPathExistsGlob=!/etc/ssh/ssh_host_*_key
 
 [Service]

@@ -36,20 +36,27 @@ apt-get install -y --no-install-recommends sddm
 # preseeding it is that nothing later gets to ask. If it says anything else, the
 # session would come up under a display manager none of this configures, so the
 # build stops here rather than forty minutes later at a greeter.
-grep -q sddm /etc/X11/default-display-manager
+if ! grep -q sddm /etc/X11/default-display-manager 2>/dev/null; then
+  echo "the session's display manager is '$(cat /etc/X11/default-display-manager 2>/dev/null)'," \
+    "not sddm, so the preseed above did not take" >&2
+  exit 1
+fi
 
 # The X server, the software GL and Vulkan stacks the tests render on, the
-# libraries the app links against, and the tools the guest contract and the
-# monitor query use: `xdpyinfo` from x11-utils, `xrandr` from
-# x11-xserver-utils, and `gsettings` from libglib2.0-bin, which is the wallpaper
-# backend for two of the four desktops. `xdotool` is here to answer questions
+# libraries the app links against, and the tools the guest contract, the monitor
+# query and the wallpaper setters use. Each of the last four is a package away
+# from being missing, and none of them arrives on its own with
+# --no-install-recommends: `xdpyinfo` from x11-utils, `xrandr` from
+# x11-xserver-utils, `gsettings` from libglib2.0-bin, which is the wallpaper
+# backend for two of the four desktops, and `dconf` from dconf-cli, which is what
+# compiles the system-wide defaults below. `xdotool` is here to answer questions
 # about the guest rather than to run the suite: it is what can say where a
 # pointer actually is.
 apt-get install -y --no-install-recommends \
   xserver-xorg xserver-xorg-core xinit dbus-x11 xauth \
-  x11-xserver-utils x11-utils xdotool libglib2.0-bin \
+  x11-xserver-utils x11-utils xdotool libglib2.0-bin dconf-cli \
   mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools \
-  libfontconfig1 libxkbcommon0 libxcb-shape0 libxcb-xfixes0 \
+  libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libxcb-shape0 libxcb-xfixes0 \
   fonts-dejavu-core openssh-server ca-certificates
 
 # The four desktops. `plasma-workspace` is named alongside `plasma-desktop`,
@@ -169,21 +176,19 @@ EOF
 
 # XFCE's defaults, as xfconf channel files in the same system directory.
 #
-# Only xfwm4 is actually installed: the screensaver, the power manager and the
-# notification daemon are all Recommends of the `xfce4` metapackage, and this
-# build takes none of its recommends, so this session has nothing that blanks a
-# screen or pops a banner. The three files for them are written anyway, dormant,
-# so that a Debian which promotes any of the three to a dependency does not
-# quietly bring its behaviour with it.
+# None of the three packages these configure is installed: the screensaver, the
+# power manager and the notification daemon are all Recommends of the `xfce4`
+# metapackage, and this build takes none of its recommends, so this session has
+# nothing that blanks a screen or pops a banner. The files are written anyway,
+# dormant, so that a Debian which promotes any of the three to a dependency does
+# not quietly bring its behaviour with it.
+#
+# xfwm4's own channel is deliberately not written here, though it is the one
+# package of the four that is installed. xfconf reads one file per channel rather
+# than merging across the search path, so a file of ours would replace the one
+# xfwm4 ships and take its theme and keybindings with it. Compositing is turned
+# off from inside the session instead, further down.
 install -d -m 0755 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml
-cat > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfwm4" version="1.0">
-  <property name="general" type="empty">
-    <property name="use_compositing" type="bool" value="false"/>
-  </property>
-</channel>
-EOF
 cat > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-screensaver" version="1.0">
@@ -214,6 +219,28 @@ cat > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml <<'EOF'
 <channel name="xfce4-notifyd" version="1.0">
   <property name="do-not-disturb" type="bool" value="true"/>
 </channel>
+EOF
+
+# xfwm4's compositing, turned off from inside the session rather than from a
+# channel file, for the reason given above: this talks to a running xfconfd,
+# which is a per-property write and leaves everything else xfwm4 shipped alone.
+# `OnlyShowIn` keeps it out of the other three sessions, where the channel does
+# not exist and the call would be a stray error in a log.
+cat > /usr/local/bin/sunlit-e2e-xfce-quiet <<'EOF'
+#!/bin/sh
+# xfwm4 composites through llvmpipe in here, which is the one compositor of the
+# four desktops that can be turned off at all.
+exec xfconf-query -c xfwm4 -p /general/use_compositing -s false
+EOF
+chmod 0755 /usr/local/bin/sunlit-e2e-xfce-quiet
+install -d -m 0755 /etc/xdg/autostart
+cat > /etc/xdg/autostart/sunlit-e2e-xfce-quiet.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Sunlit e2e XFCE compositing off
+Exec=/usr/local/bin/sunlit-e2e-xfce-quiet
+NoDisplay=true
+OnlyShowIn=XFCE;
 EOF
 
 # The one first-run dialog among the four. xfce4-panel with no configuration at
@@ -304,4 +331,10 @@ systemctl enable sunlit-e2e-desktop.service
 
 systemctl set-default graphical.target
 systemctl enable sddm
-systemctl enable ssh
+
+# SSH is left as openssh-server set it up rather than enabled again. Debian is
+# in the middle of moving from `ssh.service` to socket activation, and the two
+# conflict: enabling the one the package did not choose is how a guest ends up
+# with no SSH at all. Packer is talking to this guest over SSH right now, so what
+# is worth doing is confirming the enablement survives a reboot.
+systemctl is-enabled ssh.service || systemctl is-enabled ssh.socket

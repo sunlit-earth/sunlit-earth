@@ -121,6 +121,15 @@ pub fn wait_for_session(
         {
             return Ok(start.elapsed());
         }
+        // A probe that did not answer has two causes: a session still coming
+        // up, or a guest that died on the way. Only the provider can tell them
+        // apart, and the second has no session coming, so waiting it out would
+        // be dead time with the reason sitting unread in the VM's log.
+        if let Some(reason) = provider.defunct(state) {
+            return Err(format!(
+                "the guest stopped before its desktop session appeared: {reason}"
+            ));
+        }
         if start.elapsed() >= timeout {
             return Err(format!(
                 "no desktop session in the guest after {:.0}s; the autologon did not \
@@ -187,6 +196,14 @@ pub fn wait_for_exit_code(
                     return Err(e);
                 }
             }
+        }
+        // No exit code yet also has two causes: a job still running, or a
+        // guest that died and took the job with it. The second has no exit
+        // code coming, so the rest of the timeout would be dead time.
+        if let Some(reason) = provider.defunct(state) {
+            return Err(format!(
+                "the guest stopped while the job was running: {reason}"
+            ));
         }
         if start.elapsed() >= timeout {
             return Err(format!(
@@ -266,5 +283,145 @@ mod tests {
             );
             assert!(session_ready_command(target).contains("ready"), "{target}");
         }
+    }
+
+    use crate::provider::target::ProviderKind;
+    use crate::runner::CommandOutput;
+    use crate::runner::fake::FakeRunner;
+    use crate::store::state::StartReason;
+
+    /// A provider whose guest answers whatever the runner's table says and
+    /// whose death verdict is fixed. Only what the waits consult is real;
+    /// everything a wait has no business calling is unreachable.
+    struct FakeProvider<'a> {
+        runner: &'a FakeRunner,
+        defunct: Option<String>,
+    }
+
+    impl crate::provider::Provider for FakeProvider<'_> {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Qemu
+        }
+        fn create_from_golden(&self, _: Target, _: StartReason) -> Result<RunState, String> {
+            unreachable!("the waits create nothing")
+        }
+        fn start(&self, _: &mut RunState) -> Result<(), String> {
+            unreachable!("the waits start nothing")
+        }
+        fn destroy(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+            unreachable!("the waits destroy nothing")
+        }
+        fn is_running(&self, _: &RunState) -> bool {
+            self.defunct.is_none()
+        }
+        fn defunct(&self, _: &RunState) -> Option<String> {
+            self.defunct.clone()
+        }
+        fn view(&self, _: &RunState) -> Result<String, String> {
+            unreachable!("the waits view nothing")
+        }
+        fn ssh_target(&self, state: &RunState) -> crate::guest::ssh::SshTarget {
+            crate::guest::ssh::SshTarget::from_state(state, "/srv/vm/ssh/id_ed25519")
+        }
+        fn runner(&self) -> &dyn crate::runner::Runner {
+            self.runner
+        }
+    }
+
+    fn state() -> RunState {
+        let mut state = RunState::new(
+            Target::Linux,
+            ProviderKind::Qemu,
+            std::path::PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        );
+        state.ssh_host = "127.0.0.1".to_owned();
+        state.ssh_port = 2222;
+        state.ssh_user = "tester".to_owned();
+        state
+    }
+
+    #[test]
+    fn a_dead_guest_ends_the_session_wait_with_the_providers_reason() {
+        // Refused, which is what a dead guest's forwarded port answers with.
+        // The timeout is short only so that a regression fails in seconds
+        // instead of hanging; the death verdict must win long before it.
+        let runner = FakeRunner::new().on(
+            SESSION_READY_MARKER,
+            CommandOutput::failed(255, "Connection refused"),
+        );
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: Some("qemu has exited: port taken".to_owned()),
+        };
+        let err = wait_for_session(
+            &provider,
+            &state(),
+            Target::Linux,
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("stopped before its desktop session"), "{err}");
+        assert!(err.contains("qemu has exited: port taken"), "{err}");
+    }
+
+    #[test]
+    fn a_session_that_answers_outranks_a_stale_death_verdict() {
+        // The probe settles it: a guest that answered is alive whatever the
+        // process table said a poll ago.
+        let runner = FakeRunner::new().on(
+            SESSION_READY_MARKER,
+            CommandOutput::ok("SUNLIT_SESSION_READY\n"),
+        );
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: Some("a stale verdict".to_owned()),
+        };
+        wait_for_session(
+            &provider,
+            &state(),
+            Target::Linux,
+            Duration::from_millis(200),
+        )
+        .expect("the marker answers");
+    }
+
+    #[test]
+    fn a_dead_guest_ends_the_job_wait_rather_than_the_timeout() {
+        // An empty exit-code file reads as "still running", which is exactly
+        // the answer a dead guest would leave in place forever.
+        let runner = FakeRunner::new().on("exit_code.txt", CommandOutput::ok(""));
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: Some("qemu has exited".to_owned()),
+        };
+        let err = wait_for_exit_code(
+            &provider,
+            &state(),
+            Target::Linux,
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("stopped while the job was running"), "{err}");
+        assert!(err.contains("qemu has exited"), "{err}");
+    }
+
+    #[test]
+    fn an_exit_code_outranks_a_stale_death_verdict() {
+        let runner = FakeRunner::new().on("exit_code.txt", CommandOutput::ok("0\n"));
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: Some("a stale verdict".to_owned()),
+        };
+        assert_eq!(
+            wait_for_exit_code(
+                &provider,
+                &state(),
+                Target::Linux,
+                Duration::from_millis(200)
+            ),
+            Ok(0)
+        );
     }
 }

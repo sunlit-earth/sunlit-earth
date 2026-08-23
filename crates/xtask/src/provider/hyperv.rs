@@ -839,6 +839,29 @@ impl crate::provider::Provider for HypervProvider<'_> {
         }
     }
 
+    fn defunct(&self, state: &RunState) -> Option<String> {
+        match self.query_state(&state.vm_name) {
+            // `Off` on a single reading is a verdict here, unlike in the build
+            // watcher: `Start-VM` has already returned by the time anyone
+            // waits, and a `Hyper-V` guest stays `Running` through the reboots
+            // a boot performs, so `Off` means it stopped rather than booted.
+            Ok(Some(found)) if found.eq_ignore_ascii_case("Off") => Some(format!(
+                "Hyper-V reports {} as Off: it stopped rather than booted. \
+                 `Get-WinEvent -LogName Microsoft-Windows-Hyper-V-Worker-Admin` \
+                 has the hypervisor's own account of why.",
+                state.vm_name
+            )),
+            Ok(None) => Some(format!(
+                "{} is no longer registered with Hyper-V",
+                state.vm_name
+            )),
+            // `Starting`, `Running`, and a query that failed all keep the wait
+            // going: an unknown is not a verdict, and the wait's own timeout
+            // still bounds it.
+            _ => None,
+        }
+    }
+
     fn view(&self, state: &RunState) -> Result<String, String> {
         let viewer = crate::host::facts::resolve_tool(self.runner, "vmconnect", self.host)
             .unwrap_or_else(|| PathBuf::from("vmconnect.exe"));
@@ -877,6 +900,51 @@ impl crate::provider::Provider for HypervProvider<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::Provider as _;
+    use crate::provider::target::ProviderKind;
+    use crate::runner::CommandOutput;
+    use crate::runner::fake::FakeRunner;
+    use crate::store::state::{RunState, StartReason};
+
+    /// What the state query answers decides whether a wait keeps going, and
+    /// only a verdict may end one: `Off` and "not registered" are verdicts,
+    /// while `Starting` is a guest on its way and a failed query is an
+    /// unknown, not a death.
+    #[test]
+    fn only_a_guest_that_is_off_or_gone_is_defunct() {
+        let store = Store::new(r"C:\vm");
+        let state = || {
+            RunState::new(
+                Target::Windows,
+                ProviderKind::HyperV,
+                PathBuf::from(r"C:\vm\run\windows\overlay.vhdx"),
+                StartReason::Run,
+                0,
+            )
+        };
+        let verdict = |answer: &str| {
+            let runner = FakeRunner::new().on(
+                "STATE=$($vm.State)",
+                CommandOutput::ok(format!("{answer}\n{QUERY_OK}\n")),
+            );
+            HypervProvider::new(&runner, &store, HostOs::Windows).defunct(&state())
+        };
+
+        let off = verdict("STATE=Off").expect("Off is a verdict");
+        assert!(off.contains("stopped rather than booted"), "{off}");
+        let gone = verdict("").expect("an unregistered VM is a verdict");
+        assert!(gone.contains("no longer registered"), "{gone}");
+        assert_eq!(verdict("STATE=Starting"), None);
+        assert_eq!(verdict("STATE=Running"), None);
+
+        // A query that failed is an unknown: the wait keeps going, bounded by
+        // its own timeout, rather than being ended on a guess.
+        let runner = FakeRunner::new();
+        assert_eq!(
+            HypervProvider::new(&runner, &store, HostOs::Windows).defunct(&state()),
+            None
+        );
+    }
 
     #[test]
     fn the_vm_is_a_differencing_child_of_the_golden_image() {

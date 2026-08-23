@@ -68,6 +68,19 @@ pub trait Provider {
     /// Whether the VM is alive right now.
     fn is_running(&self, state: &RunState) -> bool;
 
+    /// Why the guest conclusively cannot come up any more, if that is known.
+    ///
+    /// `None` is "still coming, as far as anyone can tell", and it deliberately
+    /// covers a `Hyper-V` guest that is still `Starting` and a state query that
+    /// failed: an unknown is not a verdict, and the waits that consult this are
+    /// bounded by their own timeouts anyway. `Some` ends those waits at once,
+    /// so it is returned only for a guest that is past answering: a QEMU
+    /// process that has exited, or a `Hyper-V` VM that is `Off` or gone.
+    /// Without it, a QEMU that failed at startup (over a port that would not
+    /// bind, say) was waited for until the SSH timeout: ten minutes for a
+    /// two-second failure whose reason sat unread in the VM's log.
+    fn defunct(&self, state: &RunState) -> Option<String>;
+
     /// Open the guest's console, or explain how to.
     fn view(&self, state: &RunState) -> Result<String, String>;
 
@@ -77,13 +90,14 @@ pub trait Provider {
     /// The runner, so the default methods can reach a process.
     fn runner(&self) -> &dyn Runner;
 
-    /// Block until the guest's SSH server answers.
+    /// Block until the guest's SSH server answers, or until the guest is gone.
     fn wait_ssh(&self, state: &RunState, timeout: Duration) -> Result<Duration, String> {
         ssh::wait_ready(
             self.runner(),
             &self.ssh_target(state),
             timeout,
             ssh::POLL_INTERVAL,
+            &|| self.defunct(state),
         )
     }
 

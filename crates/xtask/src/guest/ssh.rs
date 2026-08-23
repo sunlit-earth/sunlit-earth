@@ -202,11 +202,18 @@ pub fn probe_ready(runner: &dyn Runner, target: &SshTarget) -> Result<(), String
 }
 
 /// Block until the guest answers, or give up.
+///
+/// `dead` is consulted after every failed probe, and a `Some` from it ends the
+/// wait at once: a guest whose process has already exited turns the rest of
+/// the timeout into dead time, and its reason is better told the moment it is
+/// known. Asked only after a failure, so a guest that answers is never
+/// second-guessed by a stale process table.
 pub fn wait_ready(
     runner: &dyn Runner,
     target: &SshTarget,
     timeout: Duration,
     poll: Duration,
+    dead: &dyn Fn() -> Option<String>,
 ) -> Result<Duration, String> {
     let start = Instant::now();
     let mut last;
@@ -214,6 +221,9 @@ pub fn wait_ready(
         match probe_ready(runner, target) {
             Ok(()) => return Ok(start.elapsed()),
             Err(e) => last = e,
+        }
+        if let Some(reason) = dead() {
+            return Err(format!("the guest is not coming up: {reason}"));
         }
         if start.elapsed() >= timeout {
             return Err(format!(
@@ -382,6 +392,7 @@ mod tests {
             &target(),
             Duration::from_millis(50),
             Duration::from_millis(1),
+            &|| None,
         )
         .expect("ready");
         assert!(elapsed < Duration::from_secs(1));
@@ -398,9 +409,48 @@ mod tests {
             &target(),
             Duration::from_millis(5),
             Duration::from_millis(1),
+            &|| None,
         )
         .unwrap_err();
         assert!(err.contains("127.0.0.1:2222"), "{err}");
         assert!(err.contains("Connection refused"), "{err}");
+    }
+
+    #[test]
+    fn a_guest_reported_dead_ends_the_wait_with_the_reason() {
+        let runner = FakeRunner::new().on(
+            "sunlit-e2e-ssh-ready",
+            CommandOutput::failed(255, "Connection refused"),
+        );
+        // An hour of timeout and an hour of poll: reaching the assertions at
+        // all proves the wait ended on the verdict rather than on either.
+        let err = wait_ready(
+            &runner,
+            &target(),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            &|| Some("qemu has exited".to_owned()),
+        )
+        .unwrap_err();
+        assert!(err.contains("not coming up"), "{err}");
+        assert!(err.contains("qemu has exited"), "{err}");
+    }
+
+    #[test]
+    fn a_guest_that_answers_is_never_asked_whether_it_died() {
+        // The probe settles it: a guest that answered is alive whatever a
+        // stale process table would have said.
+        let runner = FakeRunner::new().on(
+            "sunlit-e2e-ssh-ready",
+            CommandOutput::ok("sunlit-e2e-ssh-ready\n"),
+        );
+        wait_ready(
+            &runner,
+            &target(),
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            &|| unreachable!("a successful probe settles it"),
+        )
+        .expect("ready");
     }
 }

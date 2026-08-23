@@ -18,16 +18,98 @@ use crate::store::Store;
 use crate::store::state::{RunState, StartReason};
 use crate::util;
 
-/// One VM at a time (plan decision 7), so the ports are fixed rather than
-/// allocated. Fixed ports also mean a crashed orchestrator leaves a guest
-/// somebody can still reach.
+/// One VM at a time (plan decision 7), so every guest asks for the same,
+/// recognizable ports first. Preferred rather than fixed: on a Windows host
+/// `WinNAT` reserves 100-port blocks for `Hyper-V` and WSL at moments of its own
+/// choosing (they move on reboot and whenever those services restart), a
+/// reserved port refuses to bind, and QEMU exits over that before it has built
+/// the machine. So [`QemuProvider::create_from_golden`] records the first
+/// bindable port at or after each of these, `start` builds the command line
+/// from the record, and a crashed orchestrator's guest is still reachable
+/// because the ports are in its state file.
 pub const SSH_PORT: u16 = 2222;
 pub const QMP_PORT: u16 = 4444;
 pub const VNC_DISPLAY: u16 = 0;
 
 /// VNC display 0 is TCP port 5900, and so on.
+pub const VNC_BASE_PORT: u16 = 5900;
+
 pub fn vnc_port(display: u16) -> u16 {
-    5900 + display
+    VNC_BASE_PORT + display
+}
+
+/// How far past its preferred port a pick may walk before giving up.
+///
+/// Windows reserves ports in blocks of 100, so a walk has to clear one block
+/// that covers the preferred port plus a second that starts right after it.
+/// 250 does, and it keeps the three walks disjoint: each preferred port is
+/// more than a whole walk away from the next, which a test pins, so the picks
+/// can never hand out the same port however far they move.
+pub const PORT_WALK: u16 = 250;
+
+/// The first port at or after `preferred` that can be bound on loopback now.
+///
+/// Found by doing what QEMU is about to do, because the two ways a port can be
+/// refused look identical from anywhere else: something is listening on it, or
+/// Windows has reserved it (`netsh interface ipv4 show excludedportrange
+/// protocol=tcp` lists those blocks). The listener is dropped again, so
+/// something else can still take the port before QEMU does; that race is
+/// accepted, and losing it is one of the failures the SSH wait reports by
+/// reading the exited process's log.
+pub fn free_port_from(preferred: u16) -> Result<u16, String> {
+    let end = preferred.saturating_add(PORT_WALK);
+    for port in preferred..end {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    Err(format!(
+        "no bindable TCP port on 127.0.0.1 between {preferred} and {end}: every one \
+         is in use or reserved. On a Windows host, `netsh interface ipv4 show \
+         excludedportrange protocol=tcp` lists the reserved blocks."
+    ))
+}
+
+/// Pick a port, saying so when the preferred one could not be had: the answer
+/// changes what a person points a VNC viewer or an ssh client at, so a silent
+/// move would read as the fixed port everyone remembers.
+fn pick_port(label: &str, preferred: u16) -> Result<u16, String> {
+    let port = free_port_from(preferred)?;
+    if port != preferred {
+        println!("  the usual {label} port {preferred} is in use or reserved; using {port}");
+    }
+    Ok(port)
+}
+
+/// The `-vnc` display number behind a record's viewer address.
+///
+/// The record stores what a viewer connects to (`127.0.0.1:5903`); QEMU wants
+/// the display number, which is the port minus 5900. A record with no address,
+/// or an unreadable one, is display 0, which is what the address said before
+/// it could vary.
+pub fn vnc_display_of(state: &RunState) -> u16 {
+    state
+        .vnc
+        .as_deref()
+        .and_then(|address| address.rsplit(':').next())
+        .and_then(|port| port.parse::<u16>().ok())
+        .map_or(VNC_DISPLAY, |port| port.saturating_sub(VNC_BASE_PORT))
+}
+
+/// How much of a dead QEMU's log its post-mortem quotes.
+pub const LOG_TAIL_LINES: usize = 5;
+
+/// The last words in a VM log: up to [`LOG_TAIL_LINES`] non-empty lines,
+/// without the first line, which is the command line the runner wrote there
+/// rather than anything QEMU said.
+pub fn log_tail(text: &str) -> Vec<&str> {
+    let lines: Vec<&str> = text
+        .lines()
+        .skip(1)
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(LOG_TAIL_LINES)..].to_vec()
 }
 
 /// The account the golden images create.
@@ -343,6 +425,38 @@ impl<'a> QemuProvider<'a> {
         state.target().unwrap_or(Target::Linux)
     }
 
+    /// What there is to say about a QEMU that is no longer running: its last
+    /// words. `start` points the process's output at the log, so a refused
+    /// bind, a rejected option, and an accelerator failure all end up there,
+    /// and this is the only place they can be read back from.
+    fn post_mortem(&self, state: &RunState) -> String {
+        let name = &state.vm_name;
+        let log = self.store.vm_log(Self::target_of(state));
+        match std::fs::read_to_string(&log) {
+            Ok(text) => {
+                let tail = log_tail(&text);
+                if tail.is_empty() {
+                    format!(
+                        "{name}'s qemu process has exited without printing anything; \
+                         its command line is the first line of {}",
+                        log.display()
+                    )
+                } else {
+                    format!(
+                        "{name}'s qemu process has exited. Its log ends with:\n    {}\n  \
+                         the full log is {}",
+                        tail.join("\n    "),
+                        log.display()
+                    )
+                }
+            }
+            Err(_) => format!(
+                "{name}'s qemu process has exited, and there is no log at {}",
+                log.display()
+            ),
+        }
+    }
+
     /// Poll until the process is gone, up to `grace`.
     fn wait_for_exit(&self, state: &RunState, grace: Duration) -> bool {
         let start = std::time::Instant::now();
@@ -371,8 +485,14 @@ impl<'a> QemuProvider<'a> {
             .ok_or_else(|| "qemu-img is not available; run `cargo xtask vm doctor`".to_owned())
     }
 
-    /// The launch parameters for a target.
-    pub fn launch_for(&self, target: Target, overlay: PathBuf, desktop: Option<Desktop>) -> Launch {
+    /// The launch parameters for a target, from its record.
+    ///
+    /// The ports come off the record rather than out of the constants, because
+    /// `create_from_golden` may have had to move off a preferred port that
+    /// would not bind. The fallbacks are for a record written before ports
+    /// could move, whose serde defaults left `0` and `None` behind; no guest
+    /// was ever forwarded on port 0.
+    pub fn launch_for(&self, target: Target, state: &RunState) -> Launch {
         let (memory_mb, cpus) = resources_for(target);
         let firmware = if target == Target::Windows {
             self.per_vm_firmware(target)
@@ -381,17 +501,21 @@ impl<'a> QemuProvider<'a> {
         };
         Launch {
             name: target.vm_name(),
-            overlay,
+            overlay: state.overlay.clone(),
             target,
             memory_mb,
             cpus,
             accelerator: crate::commands::build_image::accelerator_for(self.host).to_owned(),
-            ssh_port: SSH_PORT,
-            qmp_port: QMP_PORT,
-            vnc_display: VNC_DISPLAY,
+            ssh_port: if state.ssh_port == 0 {
+                SSH_PORT
+            } else {
+                state.ssh_port
+            },
+            qmp_port: state.qmp_port.unwrap_or(QMP_PORT),
+            vnc_display: vnc_display_of(state),
             firmware,
             console: console::requested_resolution(true).unwrap_or(DEFAULT_CONSOLE),
-            desktop,
+            desktop: state.desktop.as_deref().and_then(Desktop::parse),
         }
     }
 
@@ -466,10 +590,15 @@ impl crate::provider::Provider for QemuProvider<'_> {
             util::now_unix(),
         );
         "127.0.0.1".clone_into(&mut state.ssh_host);
-        state.ssh_port = SSH_PORT;
         GUEST_USER.clone_into(&mut state.ssh_user);
-        state.qmp_port = Some(QMP_PORT);
-        state.vnc = Some(format!("127.0.0.1:{}", vnc_port(VNC_DISPLAY)));
+        // Picked now and recorded, rather than fixed: `start` builds the
+        // command line from the record, and everything later reads it too.
+        state.ssh_port = pick_port("ssh", SSH_PORT)?;
+        state.qmp_port = Some(pick_port("qmp", QMP_PORT)?);
+        state.vnc = Some(format!(
+            "127.0.0.1:{}",
+            pick_port("vnc", vnc_port(VNC_DISPLAY))?
+        ));
         Ok(state)
     }
 
@@ -478,16 +607,15 @@ impl crate::provider::Provider for QemuProvider<'_> {
             .target()
             .ok_or_else(|| format!("unknown target '{}'", state.target))?;
         let binary = self.qemu_binary()?;
-        // The desktop comes off the record rather than out of a parameter: the
-        // command that chose it is finished by the time anything starts a
-        // process, and `vm status` has to be able to say which one this guest
-        // was booted into.
-        let desktop = state.desktop.as_deref().and_then(Desktop::parse);
-        let launch = self.launch_for(target, state.overlay.clone(), desktop);
+        // Everything about how to reach the guest, the desktop and the ports,
+        // comes off the record rather than out of parameters: the command that
+        // chose them is finished by the time anything starts a process, and
+        // `vm status` has to be able to say the same things about this guest.
+        let launch = self.launch_for(target, state);
         launch.validate()?;
         if target == Target::Linux {
             let (width, height) = launch.console;
-            let session = desktop.map_or_else(
+            let session = launch.desktop.map_or_else(
                 || "the image's own default desktop".to_owned(),
                 |d| format!("the {} session", d.label()),
             );
@@ -550,6 +678,15 @@ impl crate::provider::Provider for QemuProvider<'_> {
 
     fn is_running(&self, state: &RunState) -> bool {
         matches!(self.ownership(state), Ownership::Ours)
+    }
+
+    fn defunct(&self, state: &RunState) -> Option<String> {
+        // `Foreign` means the pid was reused, which is the same verdict as
+        // `Gone`: our process has exited, and what it had to say is in the log.
+        match self.ownership(state) {
+            Ownership::Ours => None,
+            Ownership::Gone | Ownership::Foreign(_) => Some(self.post_mortem(state)),
+        }
     }
 
     fn view(&self, state: &RunState) -> Result<String, String> {
@@ -754,6 +891,179 @@ mod tests {
     fn vnc_display_zero_is_port_5900() {
         assert_eq!(vnc_port(0), 5900);
         assert_eq!(vnc_port(3), 5903);
+    }
+
+    #[test]
+    fn a_free_port_is_taken_as_it_is() {
+        // An OS-assigned port, freed the moment before it is asked about, so
+        // the test never depends on what else this machine runs.
+        let free = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind")
+            .local_addr()
+            .expect("addr")
+            .port();
+        assert_eq!(free_port_from(free), Ok(free));
+    }
+
+    #[test]
+    fn a_taken_port_is_walked_past() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let taken = held.local_addr().expect("addr").port();
+        if taken > 65_000 {
+            // At the very top of the range there may be no room left to walk
+            // into; the OS hands ports out from the middle of it, so this is
+            // one draw in tens of thousands.
+            println!("skipping: the OS handed back {taken}, too near the top of the range");
+            return;
+        }
+        let picked = free_port_from(taken).expect("a later port is free");
+        assert!(picked > taken, "{picked} is not past {taken}");
+        assert!(picked < taken + PORT_WALK, "{picked} left the walk");
+        drop(held);
+    }
+
+    #[test]
+    fn the_three_port_walks_cannot_meet() {
+        // Each preferred port is more than a whole walk from the next, so the
+        // three picks can never hand out the same port however far the ones
+        // before them had to move.
+        assert!(u32::from(SSH_PORT) + u32::from(PORT_WALK) <= u32::from(QMP_PORT));
+        assert!(u32::from(QMP_PORT) + u32::from(PORT_WALK) <= u32::from(vnc_port(VNC_DISPLAY)));
+    }
+
+    fn recorded_state() -> RunState {
+        RunState::new(
+            Target::Linux,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        )
+    }
+
+    #[test]
+    fn the_command_line_is_built_from_the_record() {
+        // The record is where `create_from_golden` put the ports it could
+        // actually bind, so a launch built from the constants would undo the
+        // picking exactly where it matters.
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = recorded_state();
+        state.ssh_port = 2224;
+        state.qmp_port = Some(4446);
+        state.vnc = Some("127.0.0.1:5903".to_owned());
+        let text = provider.launch_for(Target::Linux, &state).args().join(" ");
+        assert!(text.contains("hostfwd=tcp:127.0.0.1:2224-:22"), "{text}");
+        assert!(
+            text.contains("-qmp tcp:127.0.0.1:4446,server=on,wait=off"),
+            "{text}"
+        );
+        assert!(text.contains("-vnc 127.0.0.1:3"), "{text}");
+    }
+
+    #[test]
+    fn a_record_from_before_ports_could_move_launches_on_the_usual_ones() {
+        // serde's defaults for an old vm.json leave 0 and None behind, and no
+        // guest was ever forwarded on port 0.
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = recorded_state();
+        state.ssh_port = 0;
+        state.qmp_port = None;
+        state.vnc = None;
+        let text = provider.launch_for(Target::Linux, &state).args().join(" ");
+        assert!(text.contains("hostfwd=tcp:127.0.0.1:2222-:22"), "{text}");
+        assert!(text.contains("tcp:127.0.0.1:4444,server=on"), "{text}");
+        assert!(text.contains("-vnc 127.0.0.1:0"), "{text}");
+    }
+
+    #[test]
+    fn the_recorded_vnc_address_names_the_display_qemu_is_given() {
+        let mut state = recorded_state();
+        state.vnc = Some("127.0.0.1:5903".to_owned());
+        assert_eq!(vnc_display_of(&state), 3);
+        state.vnc = Some("127.0.0.1:5900".to_owned());
+        assert_eq!(vnc_display_of(&state), 0);
+        state.vnc = None;
+        assert_eq!(vnc_display_of(&state), 0);
+        state.vnc = Some("not an address".to_owned());
+        assert_eq!(vnc_display_of(&state), 0);
+    }
+
+    #[test]
+    fn the_log_tail_skips_the_command_line_and_keeps_the_last_words() {
+        use std::fmt::Write as _;
+
+        let text = "qemu-system-x86_64 -name x\n\nline one\nline two\n";
+        assert_eq!(log_tail(text), vec!["line one", "line two"]);
+
+        let mut long = String::from("the command line\n");
+        for i in 0..20 {
+            let _ = writeln!(long, "line {i}");
+        }
+        let tail = log_tail(&long);
+        assert_eq!(tail.len(), LOG_TAIL_LINES);
+        assert_eq!(tail.last(), Some(&"line 19"));
+
+        // A log holding only the command line has no last words.
+        assert!(log_tail("the command line\n").is_empty());
+        assert!(log_tail("").is_empty());
+    }
+
+    #[test]
+    fn a_running_guest_is_not_defunct() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new().with_process(
+            4242,
+            "qemu-system-x86_64",
+            Some("qemu-system-x86_64 -name sunlit-e2e-linux"),
+        );
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = recorded_state();
+        state.pid = Some(4242);
+        assert_eq!(provider.defunct(&state), None);
+    }
+
+    #[test]
+    fn a_dead_qemu_reports_its_last_words_from_the_log() {
+        // The message that ends the SSH wait: QEMU's own words, not the
+        // command line the runner wrote as the log's first line.
+        let dir = std::env::temp_dir().join("sunlit_xtask_post_mortem");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let log = store.vm_log(Target::Linux);
+        std::fs::create_dir_all(log.parent().expect("run dir")).expect("create");
+        std::fs::write(
+            &log,
+            "qemu-system-x86_64.exe -name sunlit-e2e-linux -qmp tcp:127.0.0.1:4444\n\
+             qemu-system-x86_64.exe: -qmp tcp:127.0.0.1:4444,server=on,wait=off: \
+             Failed to bind socket: Input/output error\n",
+        )
+        .expect("write");
+
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Windows);
+        let mut state = recorded_state();
+        state.pid = Some(37380);
+        let reason = provider.defunct(&state).expect("the process is gone");
+        assert!(reason.contains("Failed to bind socket"), "{reason}");
+        assert!(reason.contains(&log.display().to_string()), "{reason}");
+        assert!(!reason.contains("-name sunlit-e2e-linux"), "{reason}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dead_qemu_with_no_log_still_names_where_it_would_be() {
+        let store = Store::new("/srv/vm/nowhere");
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = recorded_state();
+        state.pid = Some(37380);
+        let reason = provider.defunct(&state).expect("the process is gone");
+        assert!(reason.contains("has exited"), "{reason}");
+        assert!(reason.contains("vm.log"), "{reason}");
     }
 
     #[test]

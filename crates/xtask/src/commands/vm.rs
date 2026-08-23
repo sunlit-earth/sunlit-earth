@@ -236,7 +236,8 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
                 .map_or_else(String::new, |cost| format!(", which {cost}"));
             return Err(format!(
                 "{} is already running, and this phase runs one VM at a time \
-                 (they share the same forwarded ports).\n\
+                 (plan decision 7: every guest assumes the whole host's memory \
+                 and cores).\n\
                  `cargo xtask vm down {other}` frees it{cost}.",
                 state.vm_name
             ));

@@ -138,6 +138,17 @@ source "qemu" "debian" {
   output_directory = var.output_dir
   vm_name          = var.vm_name
 
+  # Packer's compaction pass fails on this host, reproducibly and at the very
+  # end: it converts the finished disk to `golden.qcow2.convert` and then renames
+  # that over `golden.qcow2`, and on Windows the rename is refused with "Access
+  # is denied" because something still holds the original open. Twice in a row,
+  # after a build that had otherwise run every provisioner to completion, and
+  # Packer deletes its output directory on failure, so there is nothing to retry
+  # but the whole hour. What compaction buys is a smaller file; what it costs
+  # here is the build. `finalize.sh` already zeroes the free space, which is the
+  # half that makes a qcow2 hold only what it holds.
+  skip_compaction = true
+
   qemuargs = [
     ["-m", "${var.memory}"],
     ["-smp", "${var.cpus}"],

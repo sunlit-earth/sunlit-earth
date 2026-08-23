@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{build_image, doctor, e2e, setup, teardown, vm};
+use crate::commands::{bake_icon, build_image, doctor, e2e, setup, teardown, vm};
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
 use crate::provider::target::{HostOs, Target};
@@ -62,6 +62,9 @@ enum Command {
         #[arg(long)]
         desktop: Option<Desktop>,
     },
+    /// Rasterize the icon SVGs into the outputs the app ships. The results are
+    /// committed; rerun this when a source SVG changes.
+    BakeIcon,
 }
 
 #[derive(Subcommand)]
@@ -164,6 +167,7 @@ fn main() -> ExitCode {
             allow_expired_image,
             desktop,
         } => e2e::run(&runner, target, keep, allow_expired_image, desktop),
+        Command::BakeIcon => bake_icon::run(),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { target } => build_image::run(&runner, target),

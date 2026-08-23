@@ -4,6 +4,7 @@
 //! `provider`, `guest`) and everything effectful goes through
 //! `runner::Runner`.
 
+pub mod bake_icon;
 pub mod build_hyperv;
 pub mod build_image;
 pub mod build_watch;

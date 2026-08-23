@@ -27,6 +27,8 @@ cargo run -- --software-rendering  # Force CPU rendering
 cargo run -- --quality high        # Override the quality tier for one run
 cargo run -- render --output x.png --width 640 --height 360   # Headless render, works on all three OSes
 cargo llvm-cov --html              # HTML coverage report (target/llvm-cov/html/)
+cargo xtask bake-icon              # Rasterize the icon SVGs into the committed outputs under assets/icon/baked/
+cargo xtask bake-icon --review DIR # The small-size contact sheet, for the judgement no test can make
 
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden  # Regenerate goldens for this machine's adapter
 ```
@@ -122,7 +124,10 @@ sunlit-earth/
     sunlit-app/      # Slint shell: window, tray, IPC, config bridge
       ui/main.slint  # MainWindow and TrayIcon
       tests/         # e2e (desktop-gated), slint_ui
-    xtask/           # developer tooling: VM orchestration for the desktop e2e suite
+    xtask/           # developer tooling: VM orchestration, the icon bake
+  assets/
+    icon/            # the mark: SVG master plus 32/24/16 variants, and baked/ (committed)
+    linux/           # sunlit-earth.desktop and the user-local install script
   textures/          # local 8K JXL assets, not part of the build
   vm/                # Packer templates and guest assets for the test VMs
     linux/           # Debian 13, four desktops on Xorg, cloud-init seed
@@ -173,7 +178,7 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 - `engine_client.rs`: `EngineLink` (send commands, push window state as `SceneParams`) and `event_forwarder` (engine events to the window). Preview frames cross the thread boundary through a latest-value mailbox with a single pending wake-up: the newest frame replaces the parked one and only one `invoke_from_event_loop` closure is ever in flight.
 - `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
 - `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`, `memory-report`, `set-wallpaper`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test`, `query-memory` and `memory-report` are answered on the listener thread, so they work while the event loop is idle. `query-memory`'s single `SIGNAL:memory rss_bytes=... peak_rss_bytes=... private_bytes=...` line is a parsing contract the e2e suite depends on and must stay byte-identical; `memory-report` is a separate command for that reason, and brackets its many lines with `SIGNAL:memory_report_begin` and `SIGNAL:memory_report_end` rather than promising a line format.
-- `tray.rs`: the procedurally generated 32x32 icon, the tray callback wiring, and single-instance enforcement. The tray icon itself is a `SystemTrayIcon` component in `ui/main.slint`, so Slint owns the platform integration.
+- `tray.rs`: the baked 32x32 icon bytes, the tray callback wiring, and single-instance enforcement. The tray icon itself is a `SystemTrayIcon` component in `ui/main.slint`, so Slint owns the platform integration.
 - `session_end.rs`: Windows only. An invisible top-level window on its own thread that answers `WM_QUERYENDSESSION` and quits the event loop on `WM_ENDSESSION`, so a reboot does not have to wait for Windows to kill the process. winit handles neither message, so without this nothing in the app ever learned the session was ending. The decision is a pure function (`classify`), unit-tested everywhere; the Win32 window is tested by sending it both messages.
 - `mouse_math.rs`: pure functions for mouse interaction (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; unit-tested with `proptest` invariants.
 
@@ -182,6 +187,23 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 `MainWindow`: resizable split layout, controls panel in a `ScrollView`. Top-level controls are "Set as Wallpaper", "Load Defaults" and "Reset", and a 3x3 grid of camera presets. Below is a collapsible "Advanced" section with `GroupBox`es for Camera Position, Camera Orientation, Framing, Date / Time, Clouds, Atmosphere, Lighting, Color Correction, and Rendering. Camera properties are `in-out` with `<=>` slider bindings. A `TouchArea` over the image handles drag and scroll.
 
 `TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
+
+### The app icon
+
+The mark is four SVGs under `assets/icon/`: a master and three variants for 32, 24 and 16, built on one rule. What cannot survive the raster drops (the dawn band and the warm limb arc at 16, the aurora's soft glow layer below 48) and everything that stays grows in canvas units as the raster shrinks (the outline, the aurora arcs, the glare's reach, the sun core), so no element fades into sub-pixel noise. All four share the master's 64-unit viewBox, so one uniform scale renders any of them. `commands::bake_icon::source_for` is the mapping, and it takes the largest variant at or below the target size rather than the nearest: a variant carries the detail its own size can resolve and no more, so borrowing from above is the resample the variants exist to avoid.
+
+`cargo xtask bake-icon` is the only thing that turns SVG into pixels, and its outputs are committed. A build therefore gains no rasterizer and nothing runs one on a user's machine; the bake reruns when a source SVG changes, and `the_committed_bake_matches_a_fresh_one` fails when one changed without it, comparing the whole tree byte for byte against a fresh render. That is what makes the committed bytes trustworthy as data. `bake` returns the bytes rather than writing them, which is the seam that test uses.
+
+It writes four kinds of thing into `assets/icon/baked/`. `sunlit-earth.ico` carries nine sizes, 16 through 256, as 32-bit BMP below 256 and PNG at 256, which is the layout every Windows icon tool produces and the only encoding the shell reads at the largest size. The hicolor set is seven PNGs laid out as the freedesktop theme spec wants them, ready to be copied into a theme directory. `tray-32.rgba` is raw straight-alpha pixels. `about-256.png` is for the About window the celestial phase A plan introduces.
+
+Each surface consumes one of those, and each choice is about who resamples:
+
+- **The exe**, and through it Explorer, the desktop shortcut, and the taskbar. `crates/sunlit-app/sunlit-earth.rc` names the ICO at ordinal 1, since the shell shows the lowest-ordinal icon resource, and `embed-resource` compiles it in the build script that already existed. `manifest_required()` rather than the optional form: a build that quietly produced an icon-less exe because no `rc.exe` was found is worse than one that stops.
+- **The tray**, on both platforms, through Slint's `SystemTrayIcon`. `tray::create_icon` is `include_bytes!` of `tray-32.rgba` wrapped in a `SharedPixelBuffer`. Raw pixels rather than a PNG because this is the app's only image and the bake owns the pixels at exactly the size the tray wants; a const assertion on the length makes a bake at another size a compile error rather than a startup failure in tray mode, which is the one path no headless test reaches.
+- **The settings window**, through `Window`'s `icon` property in `ui/main.slint`, bound to the master SVG rather than to a raster. The winit backend renders the icon at 64 logical pixels times the scale factor, so a vector source lands exactly on whatever that comes to, and every size it can ask for is inside the master's range. Slint already carries resvg for `@image-url`, and the Rust build embeds such resources by default, so this costs the app nothing new and the binary reads no path at runtime. Measured on Windows: `WM_GETICON` returns a 64x64 `ICON_SMALL` and no `ICON_BIG`, because winit sets only the small one from `set_window_icon`; the taskbar takes the exe resource, which is the point of having both.
+- **Linux launchers, docks and app switchers**, through `assets/linux/sunlit-earth.desktop` and the hicolor set. `Icon=sunlit-earth` is a lookup by name and nothing else connects the entry to the files, so `the_desktop_entry_asks_for_the_icon_the_bake_writes` compares the key against the names the bake files under; a mismatch is a generic placeholder with no error raised anywhere. There is no package yet, so `install-user.sh` beside the entry copies both into `$XDG_DATA_HOME`, with `--exec` to rewrite the `Exec` line for a binary that is not on `PATH`. The scalable slot is the master SVG itself, copied rather than baked. `assets/linux` is inside what the shell-script syntax check walks, because that script runs on someone else's machine.
+
+Two things the bake is not. It is not a fidelity guarantee: the mark leans on a radial gradient with a displaced focus and an alpha mask that hides the sun behind the globe, both of which renderers disagree about, so the master was checked against Blink at 256 and the two agree to a mean channel difference of 0.175/255 over the opaque pixels, with 0.55% of channel samples over 8 and all of those on antialiased edges. And it is not a taste check: `bake-icon --review DIR` writes the small rasters and a contact sheet, both shell chromes at 1x and magnified six times with nearest neighbour, and the judgement about whether 16 and 24 read is still a person's.
 
 ### Quality tiers
 

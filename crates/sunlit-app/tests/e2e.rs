@@ -9,7 +9,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -54,25 +54,64 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Whether this platform gives the app a working tray icon.
+/// Whether this session gives the app a working tray icon.
 ///
-/// Unlike the wallpaper setter, which answers for itself at runtime through
-/// `SystemWallpaper::check_supported`, there is nothing to ask about the tray:
-/// it is Slint's `SystemTrayIcon`, and whether it has a backend is a property
-/// of the platform rather than of the running system. Windows is where it
-/// ships. Linux needs the `StatusNotifier` work that retrospective section 10
-/// defers until after the VM phase, and the app has no macOS tray either.
+/// A session and not a platform, which is the same shape the wallpaper answer
+/// took and for a related reason. Windows has a tray in every session. Linux has
+/// one when the desktop runs a `StatusNotifierItem` host: Slint registers its icon
+/// over D-Bus through `ksni`, so what decides the answer is whether anything on
+/// the session bus owns `org.kde.StatusNotifierWatcher`. Plasma does, and the
+/// icon and its menu were both observed there; GNOME ships no host at all
+/// without a shell extension. macOS has no tray in this app either way.
+///
+/// The probe is `gdbus`, which is a program rather than a dependency, and a
+/// session where it is absent or answers anything but `true` is read as having
+/// no tray. That is the safe direction: the cases this gates skip rather than
+/// fail when the answer is wrong, and a Windows regression cannot hide behind it
+/// because Windows never reaches the probe.
 ///
 /// Cases below split three ways on this. Ones that exercise the tray itself
 /// skip where there is none; ones that merely need a window and a hide-and-show
 /// cycle run windowed instead, which tests the same thing minus the icon; the
 /// rest do not care.
-const TRAY_SUPPORTED: bool = cfg!(target_os = "windows");
+fn tray_supported() -> bool {
+    static ANSWER: OnceLock<bool> = OnceLock::new();
+    *ANSWER.get_or_init(|| {
+        if cfg!(target_os = "windows") {
+            return true;
+        }
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        status_notifier_watcher_present()
+    })
+}
+
+/// Does anything on this session bus own the `StatusNotifier` watcher name?
+fn status_notifier_watcher_present() -> bool {
+    let output = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.NameHasOwner",
+            "org.kde.StatusNotifierWatcher",
+        ])
+        .output();
+    match output {
+        Ok(done) => String::from_utf8_lossy(&done.stdout).contains("true"),
+        Err(_) => false,
+    }
+}
 
 /// Startup arguments for a case that needs a window and an IPC-driven
 /// hide-and-show cycle, but not the tray icon itself.
 fn lifecycle_mode_args() -> [&'static str; 2] {
-    if TRAY_SUPPORTED {
+    if tray_supported() {
         ["--tray-start", "visible"]
     } else {
         ["--mode", "window"]
@@ -981,10 +1020,10 @@ fn test_render_and_exit() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_tray_mode_ipc_lifecycle() {
-    if !TRAY_SUPPORTED {
+    if !tray_supported() {
         skip_case(
             "test_tray_mode_ipc_lifecycle",
-            "--tray-start hidden needs tray mode, and this platform has no tray",
+            "--tray-start hidden needs tray mode, and this session hosts no tray",
         );
         return;
     }
@@ -1254,11 +1293,11 @@ fn test_windowed_mode_graceful_shutdown() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_single_instance_second_exits() {
-    if !TRAY_SUPPORTED {
+    if !tray_supported() {
         skip_case(
             "test_single_instance_second_exits",
             "the app takes the single-instance mutex in tray mode only, so there \
-             is nothing to enforce on a platform without a tray",
+             is nothing to enforce in a session that hosts no tray",
         );
         return;
     }

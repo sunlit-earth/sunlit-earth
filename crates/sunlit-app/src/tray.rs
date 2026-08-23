@@ -3,8 +3,7 @@
 //! The tray icon itself is a `SystemTrayIcon` declared in `ui/main.slint`, so
 //! Slint owns the platform integration (Shell notification area on Windows,
 //! `NSStatusItem` on macOS, `StatusNotifierItem` on Linux). What is left here
-//! is the procedurally generated icon, the callback wiring, and the
-//! single-instance mutex.
+//! is the icon bytes, the callback wiring, and the single-instance mutex.
 
 use slint::ComponentHandle;
 use tracing::{debug, info};
@@ -17,42 +16,22 @@ use crate::{MainWindow, TrayIcon};
 /// Icon dimensions (width and height in pixels).
 const ICON_SIZE: u32 = 32;
 
-/// Generate a 32x32 RGBA tray icon with an Earth-like blue-green gradient.
+/// The Sunlit Earth mark at [`ICON_SIZE`], as straight RGBA8.
 ///
-/// The icon is a filled circle on a transparent background. The left side
-/// is ocean blue, the right side is land green, giving an Earth-like feel.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+/// Raw pixels rather than a PNG, because this is the only image the app owns
+/// and decoding one would put an image decoder in its dependency list for a
+/// single 4 KiB asset. `cargo xtask bake-icon` writes the file from
+/// `assets/icon/sunlit-earth-32.svg`, the variant authored for this size.
+const TRAY_RGBA: &[u8] = include_bytes!("../../../assets/icon/baked/tray-32.rgba");
+
+// A bake at another size would otherwise fail inside Slint at startup, in tray
+// mode only, which is the one path a headless test never reaches.
+const _: () = assert!(TRAY_RGBA.len() == (ICON_SIZE * ICON_SIZE * 4) as usize);
+
+/// The tray icon: the baked mark wrapped in the buffer Slint wants.
 pub fn create_icon() -> slint::Image {
-    let size = ICON_SIZE as usize;
-    let mut rgba = vec![0u8; size * size * 4];
-    let center = size as f32 / 2.0;
-    let radius = center - 1.0;
-
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let dist = (dx * dx + dy * dy).sqrt();
-
-            let idx = (y * size + x) * 4;
-            if dist <= radius {
-                // Blend from ocean blue (left) to land green (right)
-                let t = dx / radius * 0.5 + 0.5; // 0.0 = left, 1.0 = right
-                rgba[idx] = (30.0 + t * 30.0) as u8; // R: 30-60
-                rgba[idx + 1] = (80.0 + t * 100.0) as u8; // G: 80-180
-                rgba[idx + 2] = (180.0 - t * 120.0) as u8; // B: 180-60
-                rgba[idx + 3] = 255;
-            }
-            // else: transparent (already zeroed)
-        }
-    }
-
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-        &rgba, ICON_SIZE, ICON_SIZE,
+        TRAY_RGBA, ICON_SIZE, ICON_SIZE,
     );
     slint::Image::from_rgba8(buffer)
 }
@@ -142,5 +121,15 @@ mod tests {
         let icon = create_icon();
         assert_eq!(icon.size().width, ICON_SIZE);
         assert_eq!(icon.size().height, ICON_SIZE);
+    }
+
+    #[test]
+    fn the_tray_icon_is_a_disk_on_a_transparent_field() {
+        // The length assertion above catches a bake at the wrong size; this
+        // catches the other way a swap goes wrong, an all-zero or an
+        // edge-to-edge buffer, which is a tray icon nobody can see either way.
+        let alpha_at = |x: u32, y: u32| TRAY_RGBA[((y * ICON_SIZE + x) * 4 + 3) as usize];
+        assert_eq!(alpha_at(ICON_SIZE / 2, ICON_SIZE / 2), 255);
+        assert_eq!(alpha_at(0, ICON_SIZE - 1), 0);
     }
 }

@@ -306,18 +306,16 @@ pub fn linux_install_script(paths: &GuestPaths) -> String {
          \x20 chmod 0755 \"${{apps}}/${{entry}}\"\n\
          \x20 cp -f \"${{apps}}/${{entry}}\" \"${{desktop}}/${{entry}}\"\n\
          \x20 chmod 0755 \"${{desktop}}/${{entry}}\"\n\
-         \x20 # Each of the three desktops that draw icons quarantines a\n\
-         \x20 # launcher it has not blessed, and each asks for something\n\
-         \x20 # different. Plasma is satisfied by the executable bit above.\n\
-         \x20 # xfdesktop calls the desktop an insecure location and wants its\n\
-         \x20 # own mark, which is the file's sha256 under the name below: that\n\
-         \x20 # is what its \"Mark As Secure And Launch\" button writes, so\n\
-         \x20 # writing it here is the dialog answered in advance. Nemo wants\n\
-         \x20 # metadata::trusted. Both are ignored by the desktops that do not\n\
-         \x20 # use them, and a guest with no metadata daemon to write them is\n\
-         \x20 # no reason to fail the hand-over.\n\
-         \x20 gio set -t string \"${{desktop}}/${{entry}}\" metadata::trusted true \
-         >/dev/null 2>&1 || true\n\
+         \x20 # The executable bit above is the whole blessing for two of the\n\
+         \x20 # three desktops that draw icons: measured in the guest, Plasma\n\
+         \x20 # and Nemo both run an executable entry without asking. xfdesktop\n\
+         \x20 # is the one that does not: it calls the desktop an insecure\n\
+         \x20 # location whatever the mode bits say, and wants its own mark,\n\
+         \x20 # which is the file's sha256 under the name below. That is exactly\n\
+         \x20 # what its \"Mark As Secure And Launch\" button writes, so writing\n\
+         \x20 # it here is that dialog answered in advance. Every other desktop\n\
+         \x20 # ignores the attribute, and a guest with no metadata daemon to\n\
+         \x20 # write it is no reason to fail the hand-over.\n\
          \x20 gio set -t string \"${{desktop}}/${{entry}}\" \
          metadata::xfce-exe-checksum \
          \"$(sha256sum \"${{desktop}}/${{entry}}\" | cut -d' ' -f1)\" \
@@ -745,18 +743,18 @@ mod tests {
         assert!(!script.contains("sudo"), "{script}");
     }
 
-    /// All three blessings, and the fact that none of them may fail the
-    /// hand-over: a desktop that ignores one is the normal case rather than an
-    /// error. The executable bit is Plasma's, `metadata::xfce-exe-checksum` is
-    /// xfdesktop's and is the file's own sha256, and `metadata::trusted` is
-    /// Nemo's.
+    /// Both blessings, and the fact that neither may fail the hand-over: a
+    /// desktop that ignores one is the normal case rather than an error. The
+    /// executable bit is what Plasma and Nemo ask for, and
+    /// `metadata::xfce-exe-checksum`, the file's own sha256, is what xfdesktop
+    /// asks for on top of it.
     ///
     /// The gio half needs the session bus, which a process started over SSH does
-    /// not have: measured in the guest, `gio set` without it answers "Setting
-    /// attribute `metadata::trusted` not supported" and with it writes the
-    /// attribute. So the script sources the environment the session wrote out at
-    /// logon, and that file's name is pinned against the script that writes it,
-    /// since nothing else connects the two.
+    /// not have: measured in the guest, `gio set` without one answers "Setting
+    /// attribute ... not supported" and with one writes the attribute. So the
+    /// script sources the environment the session wrote out at logon, and that
+    /// file's name is pinned against the script that writes it, since nothing
+    /// else connects the two.
     #[test]
     fn the_desktop_entries_are_blessed_the_way_each_desktop_asks_for() {
         let script = linux_install_script(&linux_paths(true));
@@ -764,7 +762,6 @@ mod tests {
             script.contains("chmod 0755 \"${desktop}/${entry}\""),
             "{script}"
         );
-        assert!(script.contains("metadata::trusted true"), "{script}");
         // xfdesktop compares the mark against the file it is on, so the value
         // has to be computed from that file rather than written as a constant.
         assert!(
@@ -776,7 +773,7 @@ mod tests {
             .lines()
             .filter(|line| line.contains("gio set"))
             .collect();
-        assert_eq!(blessings.len(), 2, "{blessings:?}");
+        assert_eq!(blessings.len(), 1, "{blessings:?}");
         for line in blessings {
             assert!(
                 line.trim_end().ends_with("|| true"),
@@ -787,7 +784,7 @@ mod tests {
         let session_env = format!("{}/session.env", crate::provider::GUEST_ROOT_LINUX);
         assert!(script.contains(&format!(". '{session_env}'")), "{script}");
         let sourced = script.find(". '").expect("the source line");
-        let blessing = script.find("metadata::trusted").expect("the gio line");
+        let blessing = script.find("gio set").expect("the gio line");
         assert!(sourced < blessing, "{script}");
 
         let contract = std::fs::read_to_string(

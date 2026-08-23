@@ -57,7 +57,7 @@ X11 versus Wayland for this feature set: setting a wallpaper on GNOME, KDE, and 
 5. `test_set_wallpaper` runs and passes under all four desktops: the wallpaper visibly changes in each, and the capability assertion reflects Linux support. Backend selection for desktops beyond the four is unit-tested against fabricated environments.
 6. `target_size` reports the guest's real resolution instead of the placeholder; the placeholder remains only where there is no display to ask, with a log line saying so.
 7. The windowed app exits cleanly on SIGTERM, decision logic unit-tested; verified live in the guest.
-8. `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check` green on Windows and in WSL.
+8. `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check` green on Windows and in WSL. The WSL leg's pre-existing failures recorded in `docs/roadmap.md` are absorbed rather than ignored: Step 2 fixes the two xtask path-separator tests, and the `tests/shading.rs` BadAccess flake does not fail the gate when a rerun passes.
 9. CLAUDE.md (platform table, environment knobs, VM sections), `docs/vm-setup.md` (Debian base, `--desktop`, resolution variable on both providers, click-offset note), and `docs/roadmap.md` (wallpaper item, Wayland guest item, deferred pieces) reflect the new reality.
 
 ## Implementation Steps
@@ -68,7 +68,7 @@ Confirm on trixie, by reading the archive and the shipped files during template 
 
 ### Step 2: QEMU launch and CLI changes
 
-`virtio-tablet-pci`; `virtio-vga` with `xres`/`yres` and shared `SUNLIT_EARTH_VM_RESOLUTION` parsing; the `-fw_cfg` argument; `--desktop` on `vm up` and `e2e`; the desktop recorded in `RunState`; unit tests pinning all of it in the args, plus the session-name pinning test against the guest unit. Also the small residual the phase 3 review left: `hyperv::view_note` takes no target, so a Linux guest under `SUNLIT_EARTH_VM_PROVIDER=hyperv` gets Windows-shaped console advice; thread the target through while this code is open.
+`virtio-tablet-pci`; `virtio-vga` with `xres`/`yres` and shared `SUNLIT_EARTH_VM_RESOLUTION` parsing; the `-fw_cfg` argument; `--desktop` on `vm up` and `e2e`; the desktop recorded in `RunState`; unit tests pinning all of it in the args, plus the session-name pinning test against the guest unit. Also the small residual the phase 3 review left: `hyperv::view_note` takes no target, so a Linux guest under `SUNLIT_EARTH_VM_PROVIDER=hyperv` gets Windows-shaped console advice; thread the target through while this code is open. And fix the two xtask tests that assert Windows path separators against `Path::join` output (`provider::hyperv::tests::the_settings_file_is_named_after_the_vm_identifier`, `store::windows_media::tests::the_efi_boot_image_is_required_and_the_bios_one_is_not`): they fail on every Linux run of the suite, and criterion 8 gates on the WSL leg.
 
 ### Step 3: The multi-desktop template
 
@@ -93,6 +93,14 @@ Run the app in tray mode under Plasma and XFCE; if the icon appears and the menu
 ### Step 8: Documentation
 
 Everything in success criterion 9.
+
+## Kickoff Update (2026-08-23)
+
+Phase 4.1 landed between this plan's research (2026-08-21) and this run's kickoff, as commits b77b191 through cc9c8f9 on the branch this run stacks on. Nothing in it collides with this design: it changed cloud variant selection, memory reporting, and the memory budget, none of which this phase touches. Three consequences are absorbed here rather than discovered mid-run:
+
+1. The line references in the Research section predate phase 4.1 and may have drifted; verify against the working tree rather than trusting the numbers. `docs/roadmap.md:12` was re-checked at kickoff and still points at the wallpaper item.
+2. `docs/roadmap.md` now records three pre-existing WSL failures. Criterion 8 and Step 2 were updated at kickoff to absorb them: the two xtask path-separator tests get fixed in Step 2, and the shading flake is tolerated as a rerun.
+3. The Windows e2e suite gained `test_memory_report` in phase 4.1, taking it to 11 cases. Criterion 4 is phrased against behavior, so it already covers whatever the Linux guest runs today.
 
 ## Risks and Mitigations
 

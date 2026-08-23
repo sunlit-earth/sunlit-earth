@@ -306,12 +306,21 @@ pub fn linux_install_script(paths: &GuestPaths) -> String {
          \x20 chmod 0755 \"${{apps}}/${{entry}}\"\n\
          \x20 cp -f \"${{apps}}/${{entry}}\" \"${{desktop}}/${{entry}}\"\n\
          \x20 chmod 0755 \"${{desktop}}/${{entry}}\"\n\
-         \x20 # Plasma, xfdesktop and Nemo each quarantine a desktop launcher\n\
-         \x20 # they have not blessed. The executable bit is what the first two\n\
-         \x20 # ask for; Nemo wants gio metadata, which the others ignore, and\n\
-         \x20 # where no metadata daemon answers it fails and is no reason to\n\
-         \x20 # fail the hand-over.\n\
+         \x20 # Each of the three desktops that draw icons quarantines a\n\
+         \x20 # launcher it has not blessed, and each asks for something\n\
+         \x20 # different. Plasma is satisfied by the executable bit above.\n\
+         \x20 # xfdesktop calls the desktop an insecure location and wants its\n\
+         \x20 # own mark, which is the file's sha256 under the name below: that\n\
+         \x20 # is what its \"Mark As Secure And Launch\" button writes, so\n\
+         \x20 # writing it here is the dialog answered in advance. Nemo wants\n\
+         \x20 # metadata::trusted. Both are ignored by the desktops that do not\n\
+         \x20 # use them, and a guest with no metadata daemon to write them is\n\
+         \x20 # no reason to fail the hand-over.\n\
          \x20 gio set -t string \"${{desktop}}/${{entry}}\" metadata::trusted true \
+         >/dev/null 2>&1 || true\n\
+         \x20 gio set -t string \"${{desktop}}/${{entry}}\" \
+         metadata::xfce-exe-checksum \
+         \"$(sha256sum \"${{desktop}}/${{entry}}\" | cut -d' ' -f1)\" \
          >/dev/null 2>&1 || true\n\
          done\n\
          \n\
@@ -736,8 +745,11 @@ mod tests {
         assert!(!script.contains("sudo"), "{script}");
     }
 
-    /// The two blessings, and the fact that neither may fail the hand-over: a
-    /// desktop that ignores one of them is the normal case rather than an error.
+    /// All three blessings, and the fact that none of them may fail the
+    /// hand-over: a desktop that ignores one is the normal case rather than an
+    /// error. The executable bit is Plasma's, `metadata::xfce-exe-checksum` is
+    /// xfdesktop's and is the file's own sha256, and `metadata::trusted` is
+    /// Nemo's.
     ///
     /// The gio half needs the session bus, which a process started over SSH does
     /// not have: measured in the guest, `gio set` without it answers "Setting
@@ -753,11 +765,24 @@ mod tests {
             "{script}"
         );
         assert!(script.contains("metadata::trusted true"), "{script}");
-        let gio = script
+        // xfdesktop compares the mark against the file it is on, so the value
+        // has to be computed from that file rather than written as a constant.
+        assert!(
+            script.contains("metadata::xfce-exe-checksum")
+                && script.contains("sha256sum \"${desktop}/${entry}\""),
+            "{script}"
+        );
+        let blessings: Vec<&str> = script
             .lines()
-            .find(|line| line.contains("metadata::trusted"))
-            .expect("the gio line");
-        assert!(gio.trim_end().ends_with("|| true"), "{gio}");
+            .filter(|line| line.contains("gio set"))
+            .collect();
+        assert_eq!(blessings.len(), 2, "{blessings:?}");
+        for line in blessings {
+            assert!(
+                line.trim_end().ends_with("|| true"),
+                "a blessing that can fail the hand-over: {line}"
+            );
+        }
 
         let session_env = format!("{}/session.env", crate::provider::GUEST_ROOT_LINUX);
         assert!(script.contains(&format!(". '{session_env}'")), "{script}");

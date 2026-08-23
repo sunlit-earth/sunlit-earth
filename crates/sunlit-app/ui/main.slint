@@ -19,6 +19,10 @@ component Splitter inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "Sunlit Earth — MVP";
+    // The SVG master rather than a baked raster: Slint asks for the icon at 64
+    // logical pixels times the scale factor, so a vector source lands exactly
+    // on whatever that comes to, and 64 and up is the master's own range.
+    icon: @image-url("../../../assets/icon/sunlit-earth.svg");
     preferred-width: 1000px;
     preferred-height: 600px;
 

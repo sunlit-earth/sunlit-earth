@@ -71,7 +71,7 @@ Nothing in the image decides this, so switching desktops costs a boot rather tha
 
 Only Windows has one setter for every session. Linux has one per desktop, so `check_supported` there reads `XDG_CURRENT_DESKTOP` and looks for that desktop's own tool before anything is rendered. All four in the image have been run and the wallpaper looked at afterwards in each; MATE, LXQt and Budgie have table rows written from their documented setters and have never run, which `docs/roadmap.md` says rather than the docs claiming support nothing produced.
 
-Looking is not optional, and XFCE is why. Its setter exited zero, the case passed, and the desktop went on showing xfdesktop's default image, because the property xfdesktop reads is named after the connected monitor and does not exist until something creates it. A run that only reads test output would have called that a pass.
+Looking is not optional, and XFCE is why. Its setter exited zero, the case passed, and the desktop went on showing xfdesktop's default image, because the property xfdesktop reads is named after the connected monitor and does not exist until something creates it. A run that only reads test output would have called that a pass, which is why the case now reads the setting back on Linux and requires the backdrop named after a connected monitor to be the one holding the image. Looking is still what settles whether a person sees a globe.
 
 The case count differs by desktop because the tray does. `tests/e2e.rs` asks `gdbus` who owns `org.kde.StatusNotifierWatcher`, and Plasma and xfce4-panel answer while GNOME and Cinnamon do not, so the two cases that need a tray icon run under the first two and skip under the other two, saying so.
 

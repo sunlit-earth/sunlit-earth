@@ -318,6 +318,28 @@ mod tests {
         assert_eq!(Where::Windows.guest(), Some(Target::Windows));
     }
 
+    /// `--desktop` chooses a session in a guest, and a host run has no session
+    /// to choose: the one it uses is the one the developer is sitting in.
+    ///
+    /// The refusal comes before anything runs, which is the half worth pinning:
+    /// a run that took the flag, ignored it, and then replaced the developer's
+    /// wallpaper would have obeyed neither reading of the command line.
+    #[test]
+    fn a_host_run_refuses_a_desktop_rather_than_ignoring_it() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        for desktop in Desktop::ALL {
+            let refusal = run(&runner, Where::Host, false, false, Some(desktop))
+                .expect_err("a host run cannot choose a desktop");
+            assert!(refusal.contains("--desktop"), "{refusal}");
+            assert!(refusal.contains("Linux guest"), "{refusal}");
+        }
+        assert!(
+            runner.calls().is_empty(),
+            "the refusal ran something first: {:?}",
+            runner.calls()
+        );
+    }
+
     #[test]
     fn the_windows_guest_gets_more_time_than_the_linux_one() {
         assert!(job_timeout(Target::Windows) > job_timeout(Target::Linux));

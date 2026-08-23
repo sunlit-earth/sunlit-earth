@@ -1005,6 +1005,35 @@ mod tests {
         );
     }
 
+    /// Only one image carries four desktops, so only one guest can be asked
+    /// which to use, and the other refuses rather than ignoring the flag.
+    ///
+    /// Ignoring it is the failure this guards: a Windows run that recorded a
+    /// desktop nobody could boot into would have `vm status` naming an XFCE
+    /// session on a guest that has no such thing, and the run's results would be
+    /// about a desktop nobody chose.
+    #[test]
+    fn only_the_linux_guest_can_be_asked_which_desktop_to_boot() {
+        for desktop in Desktop::ALL {
+            assert_eq!(
+                desktop_for(Target::Linux, Some(desktop)),
+                Ok(Some(desktop)),
+                "{desktop}"
+            );
+            let refusal = desktop_for(Target::Windows, Some(desktop))
+                .expect_err("the Windows image has one desktop");
+            // What was asked for and why it cannot be, both in the message: the
+            // flag is right for the other target rather than wrong everywhere.
+            assert!(refusal.contains(desktop.flag()), "{refusal}");
+            assert!(refusal.contains("Linux guest option"), "{refusal}");
+        }
+        // Neither guest has to be asked. On Linux that is the image's own
+        // default session, which is the whole point of the flag being optional.
+        for target in Target::ALL {
+            assert_eq!(desktop_for(target, None), Ok(None), "{target}");
+        }
+    }
+
     /// The same two facts for a guest that was staged but whose hand-over did
     /// not take: the shortcuts are there and the enhanced session is not.
     #[test]

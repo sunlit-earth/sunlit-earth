@@ -136,6 +136,8 @@ Phase 4.1 landed between this plan's research (2026-08-21) and this run's kickof
 
     Criterion 5 is still met for Cinnamon, by the narrow route: `gsettings` shows `org.cinnamon.desktop.background picture-uri` holding the app's own PNG with `picture-options` at `zoom`, and `cinnamon --replace` over `vm ssh` brings the shell back with the rendered globe filling the screen. So the backend is verified and the session is not, which is the honest split. Two roadmap items carry the rest: the crash itself, and that installing `metacity` would turn the fallback into a working window manager rather than a traceback, which is a better symptom and not a fix. Chasing the signal would cost several image builds against a desktop whose own backend is already proven, and the same code path is what GNOME uses and what is proven visible there.
 
+13. **The KDE D-Bus fallback named in decision 6 was not built.** Decision 6's table reads "KDE (`plasma-apply-wallpaperimage`, with plasmashell's D-Bus scripting interface as the fallback)", and the code has the tool and no fallback: a session without the program is refused by `check_supported` rather than routed through plasmashell. The Risks section frames it as a contingency against the tool being missing or not persisting the change, and the live KDE runs proved the primary path on both counts, so the contingency was never reached; it stays one, and the day the tool goes away it is one more row rather than a rewrite.
+
 ## Risks and Mitigations
 
 - Step 1 may contradict this plan's Cinnamon and session-name specifics, which the research did not cover; that is why it exists, and differences become departures, not surprises.

@@ -1749,6 +1749,14 @@ fn test_memory_report() {
 /// and fails here instead of agreeing with itself. Two backends have no store to
 /// ask, Plasma's tool and `LXQt`'s file manager, and those say so rather than
 /// failing.
+///
+/// Derivation alone would not have caught the XFCE case, though, and that is
+/// what the last assertion is for: the old row wrote the properties the session
+/// listed, so reading those same properties back would have found the path in
+/// them and agreed that all was well. What was missing is the property named
+/// after the connected monitor, which is the only one xfdesktop reads. So a
+/// desktop whose settings are named after its own monitors has to hold the image
+/// in one of those, and nothing else counts.
 #[cfg(target_os = "linux")]
 fn assert_the_desktop_holds_the_wallpaper() {
     let image = sunlit_core::wallpaper::wallpaper_file().expect("a local data directory");
@@ -1773,7 +1781,7 @@ fn assert_the_desktop_holds_the_wallpaper() {
         .map(|output| output.name)
         .collect();
 
-    let mut checked = 0;
+    let mut holders: Vec<String> = Vec::new();
     for command in backend.commands(&image, &discovered, &monitors) {
         // The fill-mode writes carry a mode rather than a path, and the mode is
         // not what this is about.
@@ -1801,17 +1809,39 @@ fn assert_the_desktop_holds_the_wallpaper() {
             query.program,
             query.args.join(" ")
         );
-        checked += 1;
+        holders.push(query.args.join(" "));
     }
     assert!(
-        checked > 0,
+        !holders.is_empty(),
         "{} set a wallpaper without writing the image anywhere",
         backend.desktop
     );
+
+    // The XFCE clause, expressed as what makes XFCE different rather than by
+    // name: asking the session which properties it has is the same thing as
+    // those properties being named after this session's own monitors.
+    if backend.discovery().is_some() {
+        assert!(
+            !monitors.is_empty(),
+            "{} names its settings after the monitors, and xrandr named none",
+            backend.desktop
+        );
+        assert!(
+            monitors.iter().any(|monitor| holders
+                .iter()
+                .any(|holder| holder.contains(&format!("monitor{monitor}")))),
+            "{} holds the wallpaper in {holders:?}, none of which is named after \
+             a connected monitor ({monitors:?}), which is the only kind its \
+             desktop reads",
+            backend.desktop
+        );
+    }
+
     println!(
-        "{} reports the app's {name} as its wallpaper, read back from {checked} \
-         setting(s)",
-        backend.desktop
+        "{} reports the app's {name} as its wallpaper, read back from {} \
+         setting(s): {holders:?}",
+        backend.desktop,
+        holders.len()
     );
 }
 

@@ -91,3 +91,13 @@ Suite: `cargo xtask e2e --target linux --desktop kde` after the last hand-over c
 Both closing texts were read off a live command rather than a test: `vm up linux --desktop kde` printed the root, the launcher and the shell command, and `vm smoke linux --keep` printed that nothing was staged and named `vm up`, on a guest whose desktop was in fact empty.
 
 Gates at f876369: `cargo test` on Windows exit 0 (381 core unit, 31 engine, 6 golden, 19 render_pipeline, 12 shading, 1 soak, 42 and 20 in the app, 433 xtask); `cargo clippy --all-targets` no warnings; `cargo fmt --check` clean; the WSL leg exit 0 with all 13 suites ok and no `tests/shading.rs` flake.
+
+### Adversarial review, 2026-08-23, range 77c6efc..bdb82a6: 0 MAJOR, 3 MINOR, all fixed
+
+A validator with fresh context re-ran the four gates at bdb82a6 itself, checked all five departures against the code, re-verified every acceptance criterion live (one boot per desktop, its own clicks, plus a negative control: clearing `metadata::xfce-exe-checksum` brought xfdesktop's dialog back on the next double click, so the blessing is load-bearing), re-ran the KDE e2e suite (10 passed in 46 s), and mutation-tested the new tests: 11 mutations, 9 killed, 2 survived. The survivors became two of the three minors; none was a major, so the round did not block completion.
+
+1. **The generated-script parse gate could not catch a mismatched heredoc delimiter.** `bash -n` reports an unterminated here-document as a warning while exiting 0, so a terminator typo would swallow the rest of the install script and every test would stay green (in production the missing `HANDOVER=ready` marker still fails the hand-over, but the gate meant to catch it first would not fire). Fixed in 3668ba9: the check also rejects a `warning:` on stderr, with a control pinning that bash still reports the case that way.
+2. **Nothing failed if the launcher was never made executable.** Replacing its `chmod 0755` with `true` survived the whole suite, and both entries run the launcher as their `Exec`, so every activation would fail with a permission error. Fixed in 3668ba9: a test pins the chmod, placed after the write that creates the file.
+3. **Two doc sentences claimed `xdg-open` reaches each desktop's own file manager**, while the KDE guest opens Thunar. Both now claim only what was seen: one `xdg-open` finds a file manager in all four sessions. Fixed in 3668ba9.
+
+Both surviving mutations were re-run against 3668ba9 in a throwaway worktree and died. Gates at 3668ba9: `cargo test` on Windows exit 0 (434 xtask, one test more), `cargo clippy --all-targets` no warnings, `cargo fmt --check` clean, WSL leg complete with every suite ok.

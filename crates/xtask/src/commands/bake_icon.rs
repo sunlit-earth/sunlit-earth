@@ -50,6 +50,19 @@ pub const TRAY_SIZE: u32 = 32;
 /// The About window's logo edge.
 pub const ABOUT_SIZE: u32 = 256;
 
+/// The sizes a taste check looks at: the ones a shell draws small enough that
+/// the pixel grid decides whether the mark reads at all.
+const REVIEW_SIZES: [u32; 6] = [16, 20, 24, 32, 40, 48];
+
+/// The two fields the review sheet lays them on, a dark and a light shell
+/// chrome. An icon is judged against what is behind it, and a mark tuned on
+/// one of these can lose an edge on the other.
+const REVIEW_BACKDROPS: [[u8; 3]; 2] = [[0x1C, 0x1D, 0x22], [0xF2, 0xF3, 0xF5]];
+
+/// How far the sheet magnifies the second row. Nearest-neighbour, so it shows
+/// the pixels the shell will actually draw rather than a smoothed idea of them.
+const REVIEW_ZOOM: u32 = 6;
+
 /// One baked file: where it goes under [`BAKED_DIR`], and what is in it.
 pub struct Output {
     pub path: PathBuf,
@@ -179,10 +192,114 @@ fn png(rgba: Vec<u8>, size: u32) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub fn run() -> Result<u8, String> {
+/// The contact sheet for the small-size taste check: every [`REVIEW_SIZES`]
+/// raster at 1x and magnified, on both of [`REVIEW_BACKDROPS`].
+///
+/// The judgement this supports cannot be automated, and the sheet does not try
+/// to make it: what it removes is the part that is only tedious, which is
+/// getting the same rasters onto both fields at a scale where the grid is
+/// visible, every time an SVG is nudged.
+fn review_sheet(source_dir: &Path) -> Result<Vec<u8>, String> {
+    const MARGIN: u32 = 16;
+    const GAP: u32 = 16;
+
+    let rasters = REVIEW_SIZES
+        .iter()
+        .map(|&size| render(source_dir, size).map(|rgba| (size, rgba)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let tallest = REVIEW_SIZES.into_iter().max().unwrap_or(0);
+    let (mut row, mut zoomed) = (0, 0);
+    for size in REVIEW_SIZES {
+        row += size + GAP;
+        zoomed += size * REVIEW_ZOOM + GAP;
+    }
+    let content = row.max(zoomed) - GAP;
+    let strip = MARGIN + tallest + GAP + tallest * REVIEW_ZOOM + MARGIN;
+    let strips = u32::try_from(REVIEW_BACKDROPS.len()).expect("a handful of backdrops");
+
+    let mut sheet = image::RgbaImage::new(MARGIN * 2 + content, strip * strips);
+    let mut top = 0;
+    for backdrop in REVIEW_BACKDROPS {
+        for y in top..top + strip {
+            for x in 0..sheet.width() {
+                sheet.put_pixel(
+                    x,
+                    y,
+                    image::Rgba([backdrop[0], backdrop[1], backdrop[2], 255]),
+                );
+            }
+        }
+
+        // Bottom-aligned in each row, the way a shell seats icons of different
+        // sizes on one baseline.
+        let plain_foot = top + MARGIN + tallest;
+        let zoomed_foot = plain_foot + GAP + tallest * REVIEW_ZOOM;
+        let (mut plain_x, mut zoomed_x) = (MARGIN, MARGIN);
+        for (size, rgba) in &rasters {
+            blit(&mut sheet, rgba, *size, 1, plain_x, plain_foot - size);
+            blit(
+                &mut sheet,
+                rgba,
+                *size,
+                REVIEW_ZOOM,
+                zoomed_x,
+                zoomed_foot - size * REVIEW_ZOOM,
+            );
+            plain_x += size + GAP;
+            zoomed_x += size * REVIEW_ZOOM + GAP;
+        }
+        top += strip;
+    }
+
+    let mut bytes = Vec::new();
+    sheet
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| format!("encoding the review sheet: {e}"))?;
+    Ok(bytes)
+}
+
+/// Composite one raster over the sheet, magnified by whole pixels.
+fn blit(sheet: &mut image::RgbaImage, rgba: &[u8], size: u32, zoom: u32, ox: u32, oy: u32) {
+    for y in 0..size * zoom {
+        for x in 0..size * zoom {
+            let i = (((y / zoom) * size + (x / zoom)) * 4) as usize;
+            let alpha = u32::from(rgba[i + 3]);
+            let under = *sheet.get_pixel(ox + x, oy + y);
+            let mut over = [0u8; 4];
+            for c in 0..3 {
+                let blended =
+                    (u32::from(rgba[i + c]) * alpha + u32::from(under[c]) * (255 - alpha) + 127)
+                        / 255;
+                over[c] = u8::try_from(blended).unwrap_or(u8::MAX);
+            }
+            over[3] = 255;
+            sheet.put_pixel(ox + x, oy + y, image::Rgba(over));
+        }
+    }
+}
+
+pub fn run(review: Option<PathBuf>) -> Result<u8, String> {
     let repo = store::repo_root();
     let source_dir = repo.join("assets").join("icon");
     let baked_dir = repo.join(BAKED_DIR);
+
+    if let Some(dir) = review {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+        for size in REVIEW_SIZES {
+            let path = dir.join(format!("review-{size}.png"));
+            std::fs::write(&path, png(render(&source_dir, size)?, size)?)
+                .map_err(|e| format!("writing {}: {e}", path.display()))?;
+        }
+        let path = dir.join("review-sheet.png");
+        std::fs::write(&path, review_sheet(&source_dir)?)
+            .map_err(|e| format!("writing {}: {e}", path.display()))?;
+        println!("review rasters and {} written", path.display());
+        return Ok(0);
+    }
 
     println!("baking from {}", source_dir.display());
     let outputs = bake(&source_dir)?;
@@ -270,6 +387,34 @@ mod tests {
         // than shipping as an invisible or a square icon.
         assert_eq!(at(size / 2, size / 2)[3], 255, "the disk centre is opaque");
         assert_eq!(at(0, size - 1)[3], 0, "the far corner is clear");
+    }
+
+    #[test]
+    fn the_desktop_entry_asks_for_the_icon_the_bake_writes() {
+        // `Icon=` is a theme lookup by name, and nothing else connects the
+        // entry to the files: a mismatch is a launcher showing a generic
+        // placeholder, with no error raised anywhere along the way.
+        let path = store::repo_root()
+            .join("assets")
+            .join("linux")
+            .join("sunlit-earth.desktop");
+        let entry = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let icon = entry
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Icon="))
+            .expect("the entry has an Icon= key");
+
+        assert_eq!(icon, ICON_NAME);
+        for size in HICOLOR_SIZES {
+            let installed = hicolor_path(size);
+            assert_eq!(
+                installed.file_stem().and_then(std::ffi::OsStr::to_str),
+                Some(icon),
+                "{} is not what the entry asks for",
+                installed.display()
+            );
+        }
     }
 
     #[test]

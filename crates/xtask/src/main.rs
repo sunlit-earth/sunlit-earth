@@ -64,7 +64,12 @@ enum Command {
     },
     /// Rasterize the icon SVGs into the outputs the app ships. The results are
     /// committed; rerun this when a source SVG changes.
-    BakeIcon,
+    BakeIcon {
+        /// Write the small-size review sheet into this directory instead of
+        /// baking. For the judgement a test cannot make.
+        #[arg(long, value_name = "DIR")]
+        review: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,7 +172,7 @@ fn main() -> ExitCode {
             allow_expired_image,
             desktop,
         } => e2e::run(&runner, target, keep, allow_expired_image, desktop),
-        Command::BakeIcon => bake_icon::run(),
+        Command::BakeIcon { review } => bake_icon::run(review),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { target } => build_image::run(&runner, target),

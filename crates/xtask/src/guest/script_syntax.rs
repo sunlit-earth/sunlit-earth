@@ -185,13 +185,15 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
     ]
 }
 
-/// The shell scripts the Linux image build runs.
+/// Every shell script the repository ships: the ones the Linux image build
+/// runs, and the user-local icon install that goes out beside the desktop
+/// entry. The second one runs on someone else's machine, which is the worst
+/// place for a syntax error to surface.
 fn linux_guest_scripts() -> Vec<std::path::PathBuf> {
-    let dir = crate::store::repo_root()
-        .join("vm")
-        .join("linux")
-        .join("scripts");
-    scripts_in(&dir, "sh")
+    let repo = crate::store::repo_root();
+    let mut scripts = scripts_in(&repo.join("vm").join("linux").join("scripts"), "sh");
+    scripts.extend(scripts_in(&repo.join("assets").join("linux"), "sh"));
+    scripts
 }
 
 #[cfg(windows)]

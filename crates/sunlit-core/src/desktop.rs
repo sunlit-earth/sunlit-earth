@@ -55,6 +55,16 @@ enum Kind {
         schema: &'static str,
         keys: &'static [&'static str],
         uri: bool,
+        /// The key and value that make the image fill the screen, where the
+        /// schema has one.
+        ///
+        /// Set for the same reason the Windows sink writes `WallpaperStyle=10`
+        /// before applying: the frame was rendered at this display's exact
+        /// resolution, and a desktop set to centre or tile it would show it at
+        /// the wrong size on a background of its own. It is set before the image
+        /// rather than after, so that the write which makes the shell repaint is
+        /// the one carrying the new picture.
+        fill: Option<(&'static str, &'static str)>,
     },
     /// `plasma-apply-wallpaperimage <path>`, which is Plasma's own tool for
     /// exactly this and does the plasmashell scripting itself.
@@ -84,12 +94,20 @@ pub struct Backend {
     kind: Kind,
 }
 
-/// The XFCE backdrop properties that hold an image path.
+/// The XFCE backdrop property that holds an image path.
 ///
-/// `last-image` is the one xfdesktop reads. The list also contains
+/// `last-image` is the one xfdesktop reads. The listing also contains
 /// `image-style`, `color-style` and per-workspace colours, so the suffix is what
 /// picks the right ones out.
 const XFCE_IMAGE_PROPERTY: &str = "last-image";
+
+/// The one beside it that says how to fit the image, and the value that fills.
+///
+/// xfdesktop's enum, in which 0 is None and shows no image at all. This is set
+/// only where the listing already has it, so nothing is created: a session with
+/// no style property is one where xfdesktop uses its own default, which is this.
+const XFCE_STYLE_PROPERTY: &str = "image-style";
+const XFCE_ZOOMED: &str = "5";
 
 /// The channel those properties live in.
 const XFCE_CHANNEL: &str = "xfce4-desktop";
@@ -118,25 +136,32 @@ impl Backend {
     pub fn commands(&self, image: &Path, discovered: &str) -> Vec<Invocation> {
         let path = image.to_string_lossy().into_owned();
         match self.kind {
-            Kind::Gsettings { schema, keys, uri } => {
+            Kind::Gsettings {
+                schema,
+                keys,
+                uri,
+                fill,
+            } => {
                 let value = if uri { file_uri(image) } else { path.clone() };
-                keys.iter()
-                    .map(|key| {
-                        Invocation::new(
-                            "gsettings",
-                            [
-                                "set".to_owned(),
-                                schema.to_owned(),
-                                (*key).to_owned(),
-                                value.clone(),
-                            ],
-                        )
-                    })
+                let set = |key: &str, value: &str| {
+                    Invocation::new(
+                        "gsettings",
+                        [
+                            "set".to_owned(),
+                            schema.to_owned(),
+                            key.to_owned(),
+                            value.to_owned(),
+                        ],
+                    )
+                };
+                fill.map(|(key, mode)| set(key, mode))
+                    .into_iter()
+                    .chain(keys.iter().map(|key| set(key, &value)))
                     .collect()
             }
             Kind::Kde => vec![Invocation::new("plasma-apply-wallpaperimage", [path])],
-            Kind::Xfce => xfce_backdrop_properties(discovered)
-                .map(|property| {
+            Kind::Xfce => {
+                let set = |property: String, value: String| {
                     Invocation::new(
                         "xfconf-query",
                         [
@@ -145,11 +170,27 @@ impl Backend {
                             "-p".to_owned(),
                             property,
                             "-s".to_owned(),
-                            path.clone(),
+                            value,
                         ],
                     )
-                })
-                .collect(),
+                };
+                let mut commands: Vec<Invocation> =
+                    xfce_properties(discovered, XFCE_STYLE_PROPERTY)
+                        .map(|property| set(property, XFCE_ZOOMED.to_owned()))
+                        .collect();
+                commands.extend(
+                    xfce_properties(discovered, XFCE_IMAGE_PROPERTY)
+                        .map(|property| set(property, path.clone())),
+                );
+                // The image is the last write either way, and it is also the one
+                // that decides whether there is anything to run at all: a style
+                // set on a desktop with no image property would report a
+                // wallpaper nothing is showing.
+                if !commands.iter().any(|c| c.args[5] == path) {
+                    return Vec::new();
+                }
+                commands
+            }
             Kind::Lxqt => vec![Invocation::new(
                 "pcmanfm-qt",
                 ["--set-wallpaper".to_owned(), path],
@@ -173,12 +214,15 @@ impl Backend {
     }
 }
 
-/// The properties out of `xfconf-query -c xfce4-desktop -l` that hold an image.
-fn xfce_backdrop_properties(listing: &str) -> impl Iterator<Item = String> + '_ {
+/// The backdrop properties in `xfconf-query -c xfce4-desktop -l` with one suffix.
+fn xfce_properties<'a>(
+    listing: &'a str,
+    suffix: &'a str,
+) -> impl Iterator<Item = String> + use<'a> {
     listing
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("/backdrop/") && line.ends_with(XFCE_IMAGE_PROPERTY))
+        .filter(move |line| line.starts_with("/backdrop/") && line.ends_with(suffix))
         .map(ToOwned::to_owned)
 }
 
@@ -242,6 +286,7 @@ const BACKENDS: &[(&[&str], Backend)] = &[
                 schema: "org.cinnamon.desktop.background",
                 keys: &["picture-uri"],
                 uri: true,
+                fill: Some(("picture-options", "zoom")),
             },
         },
     ),
@@ -255,6 +300,7 @@ const BACKENDS: &[(&[&str], Backend)] = &[
                 // A path, not a URI: the key is named for what it holds.
                 keys: &["picture-filename"],
                 uri: false,
+                fill: Some(("picture-options", "zoom")),
             },
         },
     ),
@@ -294,6 +340,7 @@ const GNOME_BACKGROUND: Kind = Kind::Gsettings {
     schema: "org.gnome.desktop.background",
     keys: &["picture-uri", "picture-uri-dark"],
     uri: true,
+    fill: Some(("picture-options", "zoom")),
 };
 
 /// The backend for a desktop, from the value of [`DESKTOP_ENV`].
@@ -355,8 +402,9 @@ mod tests {
     #[test]
     fn gnome_sets_both_keys_as_uris() {
         let cmds = commands("GNOME", "/home/tester/w.png", "");
-        assert_eq!(cmds.len(), 2, "{cmds:?}");
-        for (cmd, key) in cmds.iter().zip(["picture-uri", "picture-uri-dark"]) {
+        // The fill mode first, then the two image keys.
+        assert_eq!(cmds.len(), 3, "{cmds:?}");
+        for (cmd, key) in cmds[1..].iter().zip(["picture-uri", "picture-uri-dark"]) {
             assert_eq!(cmd.program, "gsettings");
             assert_eq!(
                 cmd.args,
@@ -380,6 +428,39 @@ mod tests {
             .map(|c| c.args[2].clone())
             .collect();
         assert!(keys.contains(&"picture-uri-dark".to_owned()), "{keys:?}");
+        // Cinnamon's schema has only the one key, so this is per row rather than
+        // a rule.
+        let cinnamon: Vec<String> = commands("X-Cinnamon", "/w.png", "")
+            .into_iter()
+            .map(|c| c.args[2].clone())
+            .collect();
+        assert!(
+            !cinnamon.contains(&"picture-uri-dark".to_owned()),
+            "{cinnamon:?}"
+        );
+    }
+
+    /// The frame is rendered at the display's exact resolution, so a desktop set
+    /// to centre or tile it shows it at the wrong size on a background of its
+    /// own. The Windows sink writes `WallpaperStyle=10` for the same reason.
+    #[test]
+    fn the_image_is_made_to_fill_the_screen_before_it_is_set() {
+        for desktop in ["GNOME", "X-Cinnamon", "MATE", "Budgie"] {
+            let cmds = commands(desktop, "/w.png", "");
+            assert_eq!(cmds[0].args[2], "picture-options", "{desktop}: {cmds:?}");
+            assert_eq!(cmds[0].args[3], "zoom", "{desktop}: {cmds:?}");
+            // And the write that carries the picture comes after it, so the
+            // repaint it triggers is the one showing the new image.
+            assert!(cmds.len() > 1, "{desktop}: {cmds:?}");
+            assert!(
+                cmds.last().expect("a command").args[3].contains("/w.png"),
+                "{desktop}: {cmds:?}"
+            );
+        }
+        // Plasma's own tool decides its fill mode itself, and LXQt's row is one
+        // that has never run, so neither gets an option invented for it.
+        assert_eq!(commands("KDE", "/w.png", "").len(), 1);
+        assert_eq!(commands("LXQt", "/w.png", "").len(), 1);
     }
 
     #[test]
@@ -438,9 +519,10 @@ mod tests {
         // The key is `picture-filename`, and a URI in it leaves the desktop with
         // no wallpaper and no complaint.
         let cmds = commands("MATE", "/home/tester/w.png", "");
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].args[3], "/home/tester/w.png");
-        assert!(!cmds[0].args[3].contains("file://"));
+        let image = cmds.last().expect("the image is set");
+        assert_eq!(image.args[2], "picture-filename");
+        assert_eq!(image.args[3], "/home/tester/w.png");
+        assert!(!image.args[3].contains("file://"));
     }
 
     #[test]
@@ -470,20 +552,37 @@ mod tests {
 /backdrop/single-workspace-mode
 ";
         let cmds = commands("XFCE", "/home/tester/w.png", listing);
-        assert_eq!(cmds.len(), 2, "{cmds:?}");
+        // One style property in the listing, two image ones, and nothing for the
+        // colours or the workspace-mode flag.
+        assert_eq!(cmds.len(), 3, "{cmds:?}");
         for cmd in &cmds {
             assert_eq!(cmd.program, "xfconf-query");
-            assert!(cmd.args[3].ends_with("last-image"), "{cmd:?}");
-            assert_eq!(cmd.args[5], "/home/tester/w.png");
+            assert!(cmd.args[3].starts_with("/backdrop/"), "{cmd:?}");
         }
+        // The style comes first, so the write carrying the image is the one that
+        // makes xfdesktop repaint.
+        assert!(cmds[0].args[3].ends_with("image-style"), "{cmds:?}");
+        assert_eq!(cmds[0].args[5], "5", "zoomed, which is what fills");
         assert_eq!(
-            cmds[0].args[3],
+            cmds[1].args[3],
             "/backdrop/screen0/monitorVirtual-1/workspace0/last-image"
         );
         assert_eq!(
-            cmds[1].args[3],
+            cmds[2].args[3],
             "/backdrop/screen0/monitorVirtual-1/workspace1/last-image"
         );
+        for cmd in &cmds[1..] {
+            assert_eq!(cmd.args[5], "/home/tester/w.png");
+        }
+    }
+
+    #[test]
+    fn an_xfce_session_with_a_style_but_no_image_property_is_still_a_refusal() {
+        // Setting a fill mode on a desktop with nowhere to put the image would
+        // report a wallpaper nothing is showing.
+        let backend = detect("XFCE").expect("a backend");
+        let listing = "/backdrop/screen0/monitor0/workspace0/image-style\n";
+        assert!(backend.commands(Path::new("/w.png"), listing).is_empty());
     }
 
     #[test]
@@ -524,7 +623,8 @@ mod tests {
         // the program the commands will actually invoke.
         for (names, backend) in BACKENDS {
             let desktop = names[0];
-            let discovered = "/backdrop/screen0/monitor0/workspace0/last-image";
+            let discovered = "/backdrop/screen0/monitor0/workspace0/image-style\n\
+                              /backdrop/screen0/monitor0/workspace0/last-image";
             let cmds = backend.commands(Path::new("/w.png"), discovered);
             assert!(!cmds.is_empty(), "{desktop} produced no command");
             for cmd in &cmds {

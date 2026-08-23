@@ -147,8 +147,14 @@ pub const HYPERV_ADMINS_SID: &str = "S-1-5-32-578";
 pub const FEATURE_HYPERV: &str = "Microsoft-Hyper-V-All";
 pub const FEATURE_WHPX: &str = "HypervisorPlatform";
 
-/// The WSL distribution the Linux guest's binaries are built in. It matches the
-/// guest's base image so glibc agrees.
+/// The WSL distribution the Linux guest's binaries are built in.
+///
+/// Deliberately older than the guest, not the same as it: the guest is Debian 13
+/// with glibc 2.41 and this is Ubuntu 22.04 with glibc 2.35, and old-builds-run-
+/// on-new is the direction glibc's compatibility works in. The reverse is what
+/// breaks, so the thing to keep an eye on is the guest moving above this rather
+/// than this drifting below the guest. It used to be true that the two matched,
+/// and the claim outlived the guest's move off Ubuntu by a phase.
 pub const WSL_DISTRO: &str = "Ubuntu-22.04";
 
 /// Which of the ISO builders Packer would pick from those present.

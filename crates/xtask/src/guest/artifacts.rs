@@ -260,7 +260,13 @@ fn build_in_wsl(
     let distro = crate::host::facts::WSL_DISTRO;
     let repo_wsl = wslpath(runner, distro, "-u", &repo.to_string_lossy())?;
 
-    println!("building the e2e suite for the linux guest in {distro} (a few minutes if cold)");
+    // Says whose userland this is, because the distribution named here is not
+    // the guest's and reads as though it were: what makes it the right builder
+    // is being older than the guest rather than being the same as it.
+    println!(
+        "building the e2e suite for the linux guest in {distro}, an older \
+         userland than the guest's (a few minutes if cold)"
+    );
     let out = runner
         .capture(&wsl_build_command(distro, &repo_wsl).show_stderr())
         .map_err(|e| format!("cannot run wsl.exe: {e}"))?;

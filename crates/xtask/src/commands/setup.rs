@@ -309,7 +309,10 @@ fn windows_access_steps(inputs: &SetupInputs) -> Vec<Step> {
         if distro_present {
             format!("{WSL_DISTRO} is already registered")
         } else {
-            format!("{WSL_DISTRO} builds the Linux guest's binaries, and matches its glibc")
+            format!(
+                "{WSL_DISTRO} builds the Linux guest's binaries, against an \
+                 older glibc than the guest's"
+            )
         },
     ));
 

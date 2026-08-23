@@ -159,6 +159,9 @@ pub const FOLDER_ENTRY: &str = "sunlit-e2e.desktop";
 /// code that says nothing.
 pub const LINUX_HANDOVER_READY: &str = "HANDOVER=ready";
 
+/// Where the launcher is written inside the guest: beside the binaries, in the
+/// root the closing text names, so that what a person is told to type and what
+/// the desktop entry runs are the same path.
 pub fn linux_launcher_path() -> String {
     format!("{}/{LINUX_LAUNCHER}", crate::provider::GUEST_ROOT_LINUX)
 }
@@ -251,7 +254,7 @@ pub fn folder_entry() -> String {
          Icon=folder\n\
          Terminal=false\n\
          Categories=Utility;\n",
-        name = FOLDER_SHORTCUT.trim_end_matches(".lnk"),
+        name = FOLDER_ENTRY.trim_end_matches(".desktop"),
         root = crate::provider::GUEST_ROOT_LINUX,
     )
 }
@@ -691,6 +694,15 @@ mod tests {
         }
         assert!(app_entry().contains(&format!("Exec={}", linux_launcher_path())));
         assert!(app_entry().contains(&format!("Name={ENTRY_NAME}")));
+        // The same offer in both guests is the same name in both guests: what a
+        // Windows desktop shows and what a Linux menu shows come from one
+        // constant and one directory name, so a rename on either side is this
+        // assertion rather than two guests that disagree.
+        assert!(APP_SHORTCUT.starts_with(ENTRY_NAME), "{APP_SHORTCUT}");
+        assert_eq!(
+            FOLDER_SHORTCUT.trim_end_matches(".lnk"),
+            FOLDER_ENTRY.trim_end_matches(".desktop")
+        );
         // The folder entry is an application entry running `xdg-open` rather
         // than a `Type=Link`: a menu shows nothing but application entries, and
         // GNOME's menu is the whole hand-over there.

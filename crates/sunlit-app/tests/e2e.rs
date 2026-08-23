@@ -1735,6 +1735,140 @@ fn test_memory_report() {
     }
 }
 
+/// Ask this desktop what its wallpaper is, and check the answer is ours.
+///
+/// A setter that exited zero is a weaker claim than a wallpaper that changed,
+/// and the difference is not theoretical: the XFCE backend passed this case
+/// while the desktop went on showing xfdesktop's own default, because it wrote a
+/// property no current xfdesktop reads. Only a screenshot caught that, and a
+/// screenshot is not standing regression cover. Reading the setting back is the
+/// part of it a test can do by itself.
+///
+/// The read-back is derived from the writes the sink performs rather than
+/// written out again, so a row that sets the wrong key reads the wrong key back
+/// and fails here instead of agreeing with itself. Two backends have no store to
+/// ask, Plasma's tool and `LXQt`'s file manager, and those say so rather than
+/// failing.
+#[cfg(target_os = "linux")]
+fn assert_the_desktop_holds_the_wallpaper() {
+    let image = sunlit_core::wallpaper::wallpaper_file().expect("a local data directory");
+    // The file name rather than the whole path, because what a write carries is
+    // the path in that desktop's own spelling: a `file://` URI for the gsettings
+    // rows and a plain path for the rest.
+    let name = image
+        .file_name()
+        .expect("the wallpaper is a file")
+        .to_string_lossy()
+        .into_owned();
+    let backend = sunlit_core::desktop::detect_current()
+        .expect("a session with no backend could not have got this far");
+
+    let discovered = match backend.discovery() {
+        Some(query) => read_setting(&query),
+        None => String::new(),
+    };
+    let monitors: Vec<String> = sunlit_core::display::outputs()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|output| output.name)
+        .collect();
+
+    let mut checked = 0;
+    for command in backend.commands(&image, &discovered, &monitors) {
+        // The fill-mode writes carry a mode rather than a path, and the mode is
+        // not what this is about.
+        let Some(written) = command.args.iter().find(|arg| arg.contains(&name)) else {
+            continue;
+        };
+        let written = written.clone();
+        let Some(query) = readback_of(&command) else {
+            skip_case(
+                "test_set_wallpaper's read-back",
+                &format!(
+                    "{}'s setter is `{}`, which sets a wallpaper and has nothing \
+                     to ask what one is",
+                    backend.desktop, command.program
+                ),
+            );
+            return;
+        };
+        let value = read_setting(&query);
+        assert!(
+            value.contains(&written),
+            "{} reports its wallpaper as {value:?} after the setter said it set \
+             {written}: `{} {}`",
+            backend.desktop,
+            query.program,
+            query.args.join(" ")
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "{} set a wallpaper without writing the image anywhere",
+        backend.desktop
+    );
+    println!(
+        "{} reports the app's {name} as its wallpaper, read back from {checked} \
+         setting(s)",
+        backend.desktop
+    );
+}
+
+/// The command that reads back what one of the sink's writes set.
+///
+/// `None` where the desktop's setter is a one-way action: `plasma-apply-wallpaperimage`
+/// and `pcmanfm-qt --set-wallpaper` both take an image and neither answers with
+/// one.
+#[cfg(target_os = "linux")]
+fn readback_of(
+    command: &sunlit_core::desktop::Invocation,
+) -> Option<sunlit_core::desktop::Invocation> {
+    let args: Vec<String> = match command.program {
+        // `set <schema> <key> <value>` is read back by `get <schema> <key>`.
+        "gsettings" => match command.args.as_slice() {
+            [set, schema, key, _value] if set == "set" => {
+                vec!["get".to_owned(), schema.clone(), key.clone()]
+            }
+            _ => return None,
+        },
+        // The channel and the property, which is everything before the write:
+        // `-s` carries the value and `-n -t <type>` creates the property.
+        "xfconf-query" => command
+            .args
+            .iter()
+            .take_while(|arg| *arg != "-n" && *arg != "-s")
+            .cloned()
+            .collect(),
+        _ => return None,
+    };
+    Some(sunlit_core::desktop::Invocation {
+        program: command.program,
+        args,
+    })
+}
+
+/// Run one read-back and answer with its output, trimmed of the quoting
+/// `gsettings` puts around a string.
+#[cfg(target_os = "linux")]
+fn read_setting(query: &sunlit_core::desktop::Invocation) -> String {
+    let out = Command::new(query.program)
+        .args(&query.args)
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {}: {e}", query.program));
+    assert!(
+        out.status.success(),
+        "{} {} failed: {}",
+        query.program,
+        query.args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_matches('\'')
+        .to_owned()
+}
+
 /// Verify that the app renders and publishes a real desktop wallpaper.
 ///
 /// This is the one case that changes something outside the process, which is
@@ -1851,4 +1985,9 @@ fn test_set_wallpaper() {
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
+
+    // Everything above is the app's own account of what it did. This is the
+    // desktop's.
+    #[cfg(target_os = "linux")]
+    assert_the_desktop_holds_the_wallpaper();
 }

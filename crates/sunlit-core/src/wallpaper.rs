@@ -38,6 +38,16 @@ pub fn wallpaper_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// The file every published wallpaper is written to.
+///
+/// One name rather than one per publish, so that a desktop whose setting still
+/// names the previous frame is showing a stale file rather than a missing one.
+/// It is also what a desktop's own store holds once the setter has run, which is
+/// what lets a test read the setting back and recognize it.
+pub fn wallpaper_file() -> Result<PathBuf, String> {
+    Ok(wallpaper_dir()?.join("wallpaper.png"))
+}
+
 /// Detect the primary monitor's physical resolution in pixels.
 ///
 /// Uses `EnumDisplayMonitors` + `GetMonitorInfoW` to find the primary
@@ -220,8 +230,7 @@ pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<Pa
     use image::ImageEncoder;
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 
-    let dir = wallpaper_dir()?;
-    let path = dir.join("wallpaper.png");
+    let path = wallpaper_file()?;
     debug!(path = %path.display(), "saving wallpaper PNG");
 
     let file =
@@ -254,8 +263,7 @@ mod tests {
 
     #[test]
     fn wallpaper_path_is_png() {
-        let dir = wallpaper_dir().unwrap();
-        let path = dir.join("wallpaper.png");
+        let path = wallpaper_file().unwrap();
         assert!(
             path.to_string_lossy().ends_with(".png"),
             "wallpaper path should end with .png"

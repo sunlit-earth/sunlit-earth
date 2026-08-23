@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use crate::guest::ssh::SshTarget;
 use crate::provider::Stopped;
+use crate::provider::console;
+use crate::provider::desktop::Desktop;
 use crate::provider::qmp;
 use crate::provider::target::{HostOs, ProviderKind, Target};
 use crate::runner::{Cmd, Runner};
@@ -82,7 +84,16 @@ pub fn resources_for(target: Target) -> (u32, u32) {
     }
 }
 
-/// The display device.
+/// The default console resolution for a QEMU guest that can be told one.
+///
+/// A VNC viewer scales, unlike a basic `vmconnect` session, so there is nothing
+/// here to fit to the host's screen: what this has to be is large enough for the
+/// app's settings window and small enough to be a window on a laptop, and
+/// 1920x1080 is both. [`console::RESOLUTION_ENV`] overrides it, the same
+/// variable and the same spelling the `Hyper-V` guest reads.
+pub const DEFAULT_CONSOLE: (u32, u32) = (1920, 1080);
+
+/// The display device model.
 ///
 /// The Linux guest has the virtio DRM driver in-kernel; the Windows guest is a
 /// stock install with no virtio drivers, so it gets the emulated VGA that
@@ -90,7 +101,44 @@ pub fn resources_for(target: Target) -> (u32, u32) {
 pub fn vga_for(target: Target) -> &'static str {
     match target {
         Target::Windows => "std",
-        Target::Linux => "virtio",
+        Target::Linux => "virtio-vga",
+    }
+}
+
+/// How the guest's display is attached, and at what size.
+///
+/// `-device virtio-vga` rather than `-vga virtio` for the Linux guest: the same
+/// device either way, but only the `-device` form takes properties, and
+/// `xres`/`yres` are what set virtio-gpu's preferred mode. Modern Xorg takes that
+/// mode, so this is what decides the console's size before the guest has booted
+/// far enough to have an opinion. No resolution is passed to the Windows guest,
+/// whose emulated VGA has no such property; its console size is a `Hyper-V`
+/// matter, and this cell of the matrix exists to reproduce a Linux host rather
+/// than to be looked at.
+pub fn display_args(target: Target, console: (u32, u32)) -> Vec<String> {
+    let device = vga_for(target);
+    match target {
+        Target::Windows => vec!["-vga".to_owned(), device.to_owned()],
+        Target::Linux => vec![
+            "-device".to_owned(),
+            format!("{device},xres={},yres={}", console.0, console.1),
+        ],
+    }
+}
+
+/// The pointer device, where the guest has a driver for one.
+///
+/// An absolute pointer, which is the fix for clicks landing away from the
+/// cursor in a VNC viewer: VNC's `PointerEvent` carries absolute coordinates,
+/// QEMU's implicit PS/2 mouse is a relative device, and the translation between
+/// the two is what puts a click somewhere else on the screen. virtio because the
+/// Linux guest drives it in-kernel and the rest of its devices are virtio
+/// anyway; the Windows guest has no virtio driver at all and keeps the PS/2
+/// mouse it does have one for.
+pub fn pointer_device_for(target: Target) -> Option<&'static str> {
+    match target {
+        Target::Windows => None,
+        Target::Linux => Some("virtio-tablet-pci"),
     }
 }
 
@@ -161,6 +209,14 @@ pub struct Launch {
     /// The copy is still per-VM, because the firmware writes to it during
     /// boot and two VMs sharing one store is a corruption waiting to happen.
     pub firmware: Option<crate::provider::firmware::Firmware>,
+    /// The console's size, which the Linux guest is told and the Windows guest
+    /// is not. See [`display_args`].
+    pub console: (u32, u32),
+    /// Which desktop the Linux guest logs into, when the host asked for one.
+    ///
+    /// `None` leaves the image's own default, so a guest booted by anything that
+    /// does not know about this behaves as it always did.
+    pub desktop: Option<Desktop>,
 }
 
 impl Launch {
@@ -194,8 +250,6 @@ impl Launch {
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", self.ssh_port),
             "-device".into(),
             format!("{},netdev=net0", nic_device_for(self.target)),
-            "-vga".into(),
-            vga_for(self.target).to_owned(),
             // No local window, and a VNC server on loopback that costs nothing
             // until somebody attaches (plan decision 7). This is what makes the
             // console available at any moment without a decision up front.
@@ -208,6 +262,14 @@ impl Launch {
             "-rtc".into(),
             "base=utc".into(),
         ];
+        args.extend(display_args(self.target, self.console));
+        if let Some(pointer) = pointer_device_for(self.target) {
+            args.push("-device".into());
+            args.push(pointer.to_owned());
+        }
+        if let Some(desktop) = self.desktop {
+            args.extend(crate::provider::desktop::fw_cfg_args(desktop));
+        }
         if let Some(firmware) = &self.firmware {
             // pflash rather than -bios: -bios gives the firmware nowhere to
             // keep its variables, and an installed Windows then has no boot
@@ -278,10 +340,7 @@ impl<'a> QemuProvider<'a> {
     /// The target a state file names, defaulting to the Linux one only so the
     /// message-building path cannot panic on a corrupt file.
     fn target_of(state: &RunState) -> Target {
-        Target::ALL
-            .into_iter()
-            .find(|t| t.slug() == state.target)
-            .unwrap_or(Target::Linux)
+        state.target().unwrap_or(Target::Linux)
     }
 
     /// Poll until the process is gone, up to `grace`.
@@ -313,7 +372,7 @@ impl<'a> QemuProvider<'a> {
     }
 
     /// The launch parameters for a target.
-    pub fn launch_for(&self, target: Target, overlay: PathBuf) -> Launch {
+    pub fn launch_for(&self, target: Target, overlay: PathBuf, desktop: Option<Desktop>) -> Launch {
         let (memory_mb, cpus) = resources_for(target);
         let firmware = if target == Target::Windows {
             self.per_vm_firmware(target)
@@ -331,6 +390,8 @@ impl<'a> QemuProvider<'a> {
             qmp_port: QMP_PORT,
             vnc_display: VNC_DISPLAY,
             firmware,
+            console: console::requested_resolution(true).unwrap_or(DEFAULT_CONSOLE),
+            desktop,
         }
     }
 
@@ -413,13 +474,25 @@ impl crate::provider::Provider for QemuProvider<'_> {
     }
 
     fn start(&self, state: &mut RunState) -> Result<(), String> {
-        let target = Target::ALL
-            .into_iter()
-            .find(|t| t.slug() == state.target)
+        let target = state
+            .target()
             .ok_or_else(|| format!("unknown target '{}'", state.target))?;
         let binary = self.qemu_binary()?;
-        let launch = self.launch_for(target, state.overlay.clone());
+        // The desktop comes off the record rather than out of a parameter: the
+        // command that chose it is finished by the time anything starts a
+        // process, and `vm status` has to be able to say which one this guest
+        // was booted into.
+        let desktop = state.desktop.as_deref().and_then(Desktop::parse);
+        let launch = self.launch_for(target, state.overlay.clone(), desktop);
         launch.validate()?;
+        if target == Target::Linux {
+            let (width, height) = launch.console;
+            let session = desktop.map_or_else(
+                || "the image's own default desktop".to_owned(),
+                |d| format!("the {} session", d.label()),
+            );
+            println!("console: {width}x{height}, into {session}");
+        }
         let log = self.store.vm_log(target);
         let pid = self
             .runner
@@ -531,6 +604,8 @@ mod tests {
             qmp_port: QMP_PORT,
             vnc_display: VNC_DISPLAY,
             firmware: None,
+            console: DEFAULT_CONSOLE,
+            desktop: None,
         }
     }
 
@@ -722,7 +797,7 @@ mod tests {
     #[test]
     fn the_windows_guest_gets_devices_it_has_drivers_for() {
         assert_eq!(vga_for(Target::Windows), "std");
-        assert_eq!(vga_for(Target::Linux), "virtio");
+        assert_eq!(vga_for(Target::Linux), "virtio-vga");
         // ide-hd lands on q35's built-in AHCI controller, which Windows has an
         // in-box driver for; virtio-blk needs one the Linux guest has and
         // Windows does not.
@@ -823,6 +898,68 @@ mod tests {
     }
 
     #[test]
+    fn the_linux_guest_gets_an_absolute_pointer_so_clicks_land_where_the_cursor_is() {
+        // VNC sends absolute coordinates and QEMU's implicit PS/2 mouse is a
+        // relative device, so without this a click in the viewer lands somewhere
+        // else on the guest's screen. The Windows guest has no virtio driver, so
+        // it keeps the mouse it does have one for.
+        assert_eq!(pointer_device_for(Target::Linux), Some("virtio-tablet-pci"));
+        assert_eq!(pointer_device_for(Target::Windows), None);
+        assert!(
+            joined(Target::Linux).contains("-device virtio-tablet-pci"),
+            "{}",
+            joined(Target::Linux)
+        );
+        assert!(!joined(Target::Windows).contains("tablet"));
+    }
+
+    #[test]
+    fn the_linux_console_is_a_size_the_host_chose_rather_than_one_the_guest_picked() {
+        // `-device virtio-vga` rather than `-vga virtio`, because only the
+        // device form carries the properties that set the preferred mode.
+        let args = launch(Target::Linux).args();
+        assert!(
+            args.join(" ")
+                .contains("-device virtio-vga,xres=1920,yres=1080"),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|arg| arg == "-vga"), "{args:?}");
+
+        let mut small = launch(Target::Linux);
+        small.console = (1280, 800);
+        assert!(
+            small.args().join(" ").contains("xres=1280,yres=800"),
+            "{:?}",
+            small.args()
+        );
+
+        // The Windows guest's emulated VGA has no such property, and its console
+        // is a Hyper-V matter anyway.
+        let windows = joined(Target::Windows);
+        assert!(windows.contains("-vga std"), "{windows}");
+        assert!(!windows.contains("xres="), "{windows}");
+    }
+
+    #[test]
+    fn the_desktop_reaches_the_guest_through_fw_cfg_and_only_when_one_was_asked_for() {
+        // No flag means the image's own default, so a guest booted by anything
+        // that does not know about this behaves as it always did.
+        assert!(
+            !joined(Target::Linux).contains("fw_cfg"),
+            "{}",
+            joined(Target::Linux)
+        );
+
+        let mut with_desktop = launch(Target::Linux);
+        with_desktop.desktop = Some(Desktop::Gnome);
+        let text = with_desktop.args().join(" ");
+        assert!(
+            text.contains("-fw_cfg name=opt/sunlit/desktop,string=gnome-xorg"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_overlay_is_a_child_with_the_backing_format_stated() {
         let args = overlay_args(
             Path::new("/srv/vm/images/linux/golden.qcow2"),
@@ -850,7 +987,7 @@ mod template_agreement {
     //! ten minutes later with nothing on the host to point at. Nothing but a
     //! convention connected the two sides, so this reads the templates.
 
-    use super::{disk_device_for, nic_device_for, vga_for};
+    use super::{disk_device_for, display_args, nic_device_for};
     use crate::provider::target::Target;
     use crate::store::template_dir;
 
@@ -858,7 +995,7 @@ mod template_agreement {
         let dir = template_dir(target);
         let name = match target {
             Target::Windows => "windows11.pkr.hcl",
-            Target::Linux => "ubuntu-2204.pkr.hcl",
+            Target::Linux => "debian-13.pkr.hcl",
         };
         std::fs::read_to_string(dir.join(name))
             .unwrap_or_else(|e| panic!("cannot read the {target} template: {e}"))
@@ -978,11 +1115,13 @@ mod template_agreement {
             assert_eq!(setting(&text, "machine_type"), "q35", "{target}");
 
             // The display is runtime-only: Packer never sees it, so this only
-            // checks the value is one QEMU knows.
+            // checks the device is one QEMU knows, in the form it takes it.
+            let display = display_args(target, (1920, 1080)).join(" ");
             assert!(
-                ["std", "virtio", "qxl", "vmware", "cirrus"].contains(&vga_for(target)),
-                "{target}: unknown -vga value {}",
-                vga_for(target)
+                ["-vga std", "-device virtio-vga,"]
+                    .iter()
+                    .any(|known| display.starts_with(known)),
+                "{target}: unknown display arguments {display}"
             );
         }
     }

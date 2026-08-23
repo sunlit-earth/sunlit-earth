@@ -2,8 +2,14 @@
 //!
 //! Plan decision 8: build on the host, copy the artifacts in. A Windows host
 //! builds the Windows guest's binaries natively and the Linux guest's through
-//! WSL, whose distribution is pinned to the same Ubuntu 22.04 the guest runs so
-//! that glibc agrees.
+//! WSL.
+//!
+//! The WSL distribution is Ubuntu 22.04 and the guest is now Debian 13, so the
+//! two are no longer the same userland. What has to hold is only the direction:
+//! glibc is backwards compatible, so a binary linked against the older one runs
+//! against the newer, and Ubuntu 22.04's glibc 2.35 is comfortably the older of
+//! the pair. The reverse would not work, which is why the builder is the old
+//! distribution and not the guest.
 
 use std::path::{Path, PathBuf};
 
@@ -173,8 +179,8 @@ pub fn shell_quote(value: &str) -> String {
 pub fn check_can_build(host: HostOs, target: Target) -> Result<bool, String> {
     match (host, target) {
         (HostOs::Windows, Target::Windows) | (HostOs::Linux, Target::Linux) => Ok(true),
-        // WSL builds the Linux guest's binaries against the same Ubuntu the
-        // guest runs.
+        // WSL builds the Linux guest's binaries, against an older glibc than
+        // the guest has, which is the direction that works.
         (HostOs::Windows, Target::Linux) => Ok(false),
         (HostOs::Linux, Target::Windows) => Err(
             "the Windows guest's binaries cannot be built on a Linux host, so \

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::guest::ssh::SshTarget;
 use crate::provider::Stopped;
+use crate::provider::console;
 use crate::provider::target::{HostOs, ProviderKind, Target};
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
 use crate::store::Store;
@@ -33,9 +34,6 @@ pub const GUEST_USER: &str = "tester";
 /// Memory and processors for the guest.
 pub const MEMORY_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 pub const CPUS: u32 = 4;
-
-/// Overrides the guest console's resolution, as `WxH`.
-pub const RESOLUTION_ENV: &str = "SUNLIT_EARTH_VM_RESOLUTION";
 
 /// The modes the automatic choice picks from, smallest first.
 ///
@@ -62,23 +60,6 @@ pub const CONSOLE_MODES: [(u32, u32); 6] = [
 ///
 /// The work area this is subtracted from already excludes the host's taskbar.
 const WINDOW_MARGIN: (u32, u32) = (32, 120);
-
-/// What a resolution may be, at both ends.
-///
-/// The floor is the smallest mode in [`CONSOLE_MODES`] and the ceiling is
-/// generous: the point is to catch a transposed or mistyped value, not to have
-/// an opinion about a host with a very large screen.
-const RESOLUTION_BOUNDS: (u32, u32) = (640, 7680);
-
-/// Parse a `WxH` resolution, rejecting anything that is not one.
-pub fn parse_resolution(value: &str) -> Option<(u32, u32)> {
-    let (width, height) = value.trim().split_once(['x', 'X'])?;
-    let width: u32 = width.trim().parse().ok()?;
-    let height: u32 = height.trim().parse().ok()?;
-    let (min, max) = RESOLUTION_BOUNDS;
-    let plausible = (min..=max).contains(&width) && (min..=max).contains(&height);
-    plausible.then_some((width, height))
-}
 
 /// The resolution to give a guest's console, and why.
 ///
@@ -138,7 +119,7 @@ pub fn parse_work_area(stdout: &str) -> Option<(u32, u32)> {
     stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix(WORK_AREA_MARK))
-        .and_then(parse_resolution)
+        .and_then(console::parse_resolution)
 }
 
 /// The script that creates the VM.
@@ -219,7 +200,27 @@ pub const CREDENTIAL_DIALOG_CAVEAT: &str = "If a credential dialog appears anywa
 /// the guest confirmed afterwards. The advice below is about what a dialog will
 /// ask for, and a hand-over that did not happen leaves no dialog to answer;
 /// [`CREDENTIAL_DIALOG_CAVEAT`] is what covers the guests where that is wrong.
-pub fn view_note(handed_over: bool) -> String {
+///
+/// The target is asked about because this hypervisor can hold either guest:
+/// `SUNLIT_EARTH_VM_PROVIDER=hyperv` moves the Linux one onto it, and every
+/// sentence below about accounts, passwords and Remote Desktop Services is about
+/// the Windows guest's hand-over, which is not implemented for the other one.
+pub fn view_note(target: Target, handed_over: bool) -> String {
+    if target != Target::Windows {
+        // A guest on this hypervisor that no hand-over touches, which is what
+        // the override produces. It has an enhanced session's dialog to answer
+        // for nobody and no blank password to promise, so it is described as the
+        // console it opens rather than as a Windows guest that failed at
+        // something.
+        return format!(
+            "This is a {target} guest on Hyper-V, which is what \
+             SUNLIT_EARTH_VM_PROVIDER=hyperv produces. Nothing prepared it for \
+             anybody to sign in to, so what opens is the basic console session, \
+             fixed at the console resolution and carrying no clipboard: text and \
+             files go in over `vm ssh` and scp. The account keeps whatever \
+             password the image gave it."
+        );
+    }
     if handed_over {
         "It will offer an enhanced session, which is the one that can be \
          resized: the guest's desktop follows the window. The dialog wants the \
@@ -625,16 +626,7 @@ impl<'a> HypervProvider<'a> {
     /// default that means the screen could not be read. Without the line, the
     /// last of those is indistinguishable from nothing having changed.
     pub fn console_size(&self) -> (u32, u32) {
-        let requested = crate::util::env_var(RESOLUTION_ENV).and_then(|raw| {
-            let parsed = parse_resolution(&raw);
-            if parsed.is_none() {
-                println!(
-                    "warning: {RESOLUTION_ENV} is {raw:?}, which is not a size like \
-                     1920x1080; choosing one for this host instead"
-                );
-            }
-            parsed
-        });
+        let requested = console::requested_resolution(true);
         let area = self
             .runner
             .capture(&powershell(&work_area_script()))
@@ -642,14 +634,15 @@ impl<'a> HypervProvider<'a> {
             .filter(crate::runner::CommandOutput::success)
             .and_then(|out| parse_work_area(&out.stdout));
         let (width, height) = console_resolution(requested, area);
+        let env = console::RESOLUTION_ENV;
         match (requested, area) {
-            (Some(_), _) => println!("console: {width}x{height}, from {RESOLUTION_ENV}"),
+            (Some(_), _) => println!("console: {width}x{height}, from {env}"),
             (None, Some((aw, ah))) => {
                 println!("console: {width}x{height}, the largest that fits this host's {aw}x{ah}");
             }
             (None, None) => println!(
                 "console: {width}x{height}; this host's screen size could not be read, \
-                 and {RESOLUTION_ENV} sets it explicitly"
+                 and {env} sets it explicitly"
             ),
         }
         (width, height)
@@ -696,7 +689,7 @@ impl<'a> HypervProvider<'a> {
     /// been made and printed once; saying it again would suggest something had
     /// changed.
     fn console_size_quietly(&self) -> (u32, u32) {
-        let requested = crate::util::env_var(RESOLUTION_ENV).and_then(|raw| parse_resolution(&raw));
+        let requested = console::requested_resolution(false);
         let area = self
             .runner
             .capture(&powershell(&work_area_script()))
@@ -864,7 +857,10 @@ impl crate::provider::Provider for HypervProvider<'_> {
             .map_err(|e| format!("cannot start vmconnect: {e}"))?;
         Ok(format!(
             "vmconnect is opening {name}.\n{}",
-            view_note(state.handed_over),
+            // The guest this hypervisor holds unless the override moved another
+            // one onto it, which is also the safe answer for a record too
+            // corrupt to name one.
+            view_note(state.target().unwrap_or(Target::Windows), state.handed_over),
             name = state.vm_name,
         ))
     }
@@ -942,18 +938,20 @@ mod tests {
 
     /// The name is the VM's identifier in upper case, in the roaming profile:
     /// all three are what `vmconnect` itself looks for.
+    ///
+    /// Compared as components rather than as one string. Only a Windows host
+    /// ever writes this file, but the suite is compiled and run on Linux too,
+    /// and the separator `Path::join` puts between these five directories is the
+    /// host's own.
     #[test]
     fn the_settings_file_is_named_after_the_vm_identifier() {
-        let path = vmconnect_settings_path(
-            Path::new(r"C:\Users\me\AppData\Roaming"),
-            "2333c8fa-26e0-41a5-9023-f95fffcc1c53",
-        );
-        assert_eq!(
-            path,
-            Path::new(
-                r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Hyper-V\Client\1.0\vmconnect.rdp.2333C8FA-26E0-41A5-9023-F95FFFCC1C53.config"
-            )
-        );
+        let app_data = Path::new(r"C:\Users\me\AppData\Roaming");
+        let path = vmconnect_settings_path(app_data, "2333c8fa-26e0-41a5-9023-f95fffcc1c53");
+        let expected = ["Microsoft", "Windows", "Hyper-V", "Client", "1.0"]
+            .iter()
+            .fold(PathBuf::new(), |acc, part| acc.join(part))
+            .join("vmconnect.rdp.2333C8FA-26E0-41A5-9023-F95FFFCC1C53.config");
+        assert_eq!(path.strip_prefix(app_data), Ok(expected.as_path()));
     }
 
     #[test]
@@ -1001,12 +999,12 @@ mod tests {
     /// The two kinds of guest get opposite advice, and each has to get its own.
     #[test]
     fn what_the_console_offers_depends_on_whether_the_guest_was_handed_over() {
-        let handed_over = view_note(true);
+        let handed_over = view_note(Target::Windows, true);
         assert!(handed_over.contains("resized"), "{handed_over}");
         assert!(handed_over.contains("tester"), "{handed_over}");
         assert!(handed_over.contains("no password"), "{handed_over}");
 
-        let not = view_note(false);
+        let not = view_note(Target::Windows, false);
         assert!(not.contains("no enhanced session"), "{not}");
         assert!(not.contains("asks for nothing"), "{not}");
         // Not a word about leaving the password blank: there is none to leave
@@ -1015,6 +1013,22 @@ mod tests {
         // And the case where the sentence above is wrong is covered, from the
         // shared constant rather than in words of its own.
         assert!(not.contains(CREDENTIAL_DIALOG_CAVEAT), "{not}");
+    }
+
+    /// The override can put the Linux guest on this hypervisor, and every
+    /// sentence about accounts, blank passwords and Remote Desktop Services is
+    /// about the Windows guest's hand-over, which that guest never gets.
+    #[test]
+    fn a_linux_guest_on_this_hypervisor_is_not_described_as_a_windows_one() {
+        for handed_over in [false, true] {
+            let text = view_note(Target::Linux, handed_over);
+            assert!(text.contains("linux"), "{text}");
+            assert!(text.contains("basic console session"), "{text}");
+            assert!(!text.contains("tester"), "{text}");
+            assert!(!text.contains("leave that field empty"), "{text}");
+            assert!(!text.contains(CREDENTIAL_DIALOG_CAVEAT), "{text}");
+            assert!(!text.contains("Remote Desktop Services"), "{text}");
+        }
     }
 
     /// The advice is safe whichever guest is reading it; the explanation is a
@@ -1166,26 +1180,6 @@ mod tests {
             console_resolution(Some((2560, 1440)), Some((1366, 728))),
             (2560, 1440)
         );
-    }
-
-    #[test]
-    fn a_resolution_is_two_numbers_and_anything_else_is_not_one() {
-        assert_eq!(parse_resolution("1920x1080"), Some((1920, 1080)));
-        assert_eq!(parse_resolution(" 2560 X 1440 "), Some((2560, 1440)));
-        for bad in [
-            "",
-            "1920",
-            "1920x",
-            "x1080",
-            "1920*1080",
-            "1920x1080x60",
-            "huge",
-            // Out of bounds at both ends: a typo rather than a screen.
-            "320x240",
-            "99999x1080",
-        ] {
-            assert_eq!(parse_resolution(bad), None, "{bad}");
-        }
     }
 
     /// The query and its parser are two halves of one thing, and the half that

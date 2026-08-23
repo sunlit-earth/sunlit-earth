@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# Last pass over the golden image: suppress the first-run wizards, stop
-# cloud-init from looking for a datasource that will not be there, and shrink
-# what the qcow2 has to carry.
+# Last pass over the golden image: stop cloud-init from looking for a datasource
+# that will not be there, and shrink what the qcow2 has to carry.
+#
+# The first-run wizard suppression that used to be here is gone with the base:
+# `gnome-initial-setup` is a package this image does not install, and the one
+# first-run dialog among the four desktops is xfce4-panel's, which `desktop.sh`
+# answers by giving the account the layout the dialog offers.
 set -euxo pipefail
-
-home="$(getent passwd "${TEST_USER}" | cut -d: -f6)"
-
-# GNOME's welcome tour and initial-setup wizard both open a window over the
-# session and steal focus, which is fatal to a test that clicks anything.
-install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 "${home}/.config"
-touch "${home}/.config/gnome-initial-setup-done"
-chown "${TEST_USER}:${TEST_USER}" "${home}/.config/gnome-initial-setup-done"
 
 # Every run boots a throwaway overlay of this image with no seed CD attached.
 # Left enabled, cloud-init would spend its datasource timeout looking for one

@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::commands::status;
 use crate::commands::teardown::{self, Selection};
 use crate::guest::job;
+use crate::provider::desktop::Desktop;
 use crate::provider::target::Target;
 use crate::provider::{self, Provider};
 use crate::runner::Runner;
@@ -263,6 +264,23 @@ pub fn load_state(store: &Store, target: Target) -> Option<RunState> {
     RunState::from_json(&text).ok().filter(RunState::is_ours)
 }
 
+/// Which desktop a guest may be asked to boot into, and whether it may be
+/// asked at all.
+///
+/// Only the Linux image carries more than one, so the flag is refused for the
+/// Windows guest rather than ignored: a run whose `--desktop` did nothing is a
+/// run whose results are about a desktop nobody chose.
+pub fn desktop_for(target: Target, requested: Option<Desktop>) -> Result<Option<Desktop>, String> {
+    match (target, requested) {
+        (Target::Linux, chosen) => Ok(chosen),
+        (Target::Windows, None) => Ok(None),
+        (Target::Windows, Some(desktop)) => Err(format!(
+            "--desktop {desktop} is a Linux guest option; the Windows image has \
+             one desktop and no way to choose another"
+        )),
+    }
+}
+
 /// Boot a pristine overlay and wait for it to be usable.
 pub fn boot<'a>(
     runner: &'a dyn Runner,
@@ -270,14 +288,19 @@ pub fn boot<'a>(
     target: Target,
     reason: StartReason,
     allow_expired: bool,
+    desktop: Option<Desktop>,
 ) -> Result<Session<'a>, String> {
+    let desktop = desktop_for(target, desktop)?;
     check_image(store, target, allow_expired)?;
     check_no_other_vm(runner, store, target)?;
     clear_stale_state(runner, store, target)?;
 
     let provider = provider::for_target(runner, store, target)?;
     println!("creating a throwaway overlay of the {target} golden image");
-    let state = provider.create_from_golden(target, reason)?;
+    let mut state = provider.create_from_golden(target, reason)?;
+    // Recorded before the VM is started, because the provider builds the guest's
+    // fw_cfg argument out of the record rather than out of a parameter.
+    state.desktop = desktop.map(|d| d.flag().to_owned());
 
     // From here the VM exists: for Hyper-V it is registered, for QEMU its
     // overlay is on disk. Everything after this point goes through
@@ -480,13 +503,25 @@ fn guest_environment_note(target: Target, staged: bool) -> String {
 }
 
 /// `vm up`.
-pub fn up(runner: &dyn Runner, target: Target, allow_expired: bool) -> Result<u8, String> {
+pub fn up(
+    runner: &dyn Runner,
+    target: Target,
+    allow_expired: bool,
+    desktop: Option<Desktop>,
+) -> Result<u8, String> {
     let store = store::store()?;
     // Asked before anything is created: a guest with no binaries to put in it
     // is worse than a refusal.
     crate::guest::artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
 
-    let mut session = boot(runner, &store, target, StartReason::Up, allow_expired)?;
+    let mut session = boot(
+        runner,
+        &store,
+        target,
+        StartReason::Up,
+        allow_expired,
+        desktop,
+    )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
     if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
@@ -691,10 +726,15 @@ fn tear_down(
 /// This is where the contract is proved and where boot and poll timings get
 /// calibrated, deliberately separate from the e2e suite so that a failure here
 /// means the plumbing and a failure there means the product.
-pub fn smoke(runner: &dyn Runner, target: Target, keep: bool) -> Result<u8, String> {
+pub fn smoke(
+    runner: &dyn Runner,
+    target: Target,
+    keep: bool,
+    desktop: Option<Desktop>,
+) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
-    let mut session = boot(runner, &store, target, StartReason::Run, false)?;
+    let mut session = boot(runner, &store, target, StartReason::Run, false, desktop)?;
 
     let script = match target {
         Target::Windows => concat!(
@@ -939,7 +979,7 @@ mod tests {
             let text = lifecycle_explainer(Target::Windows, prepared);
             assert!(text.contains(caveat), "{text}");
         }
-        assert!(crate::provider::hyperv::view_note(false).contains(caveat));
+        assert!(crate::provider::hyperv::view_note(Target::Windows, false).contains(caveat));
 
         // A guest that was handed over expects the dialog and can answer it, so
         // the caveat would contradict the advice it is printed beside.
@@ -951,7 +991,7 @@ mod tests {
             },
         );
         assert!(!handed_over.contains(caveat), "{handed_over}");
-        assert!(!crate::provider::hyperv::view_note(true).contains(caveat));
+        assert!(!crate::provider::hyperv::view_note(Target::Windows, true).contains(caveat));
         // And a Linux guest has no vmconnect dialog to be surprised by.
         assert!(
             !lifecycle_explainer(

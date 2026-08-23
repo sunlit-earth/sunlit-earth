@@ -6,6 +6,7 @@
 
 use std::fmt::Write as _;
 
+use crate::provider::desktop::Desktop;
 use crate::provider::target::Target;
 use crate::store::inventory::{Inventory, TargetInventory};
 use crate::store::state::{RunState, StartReason};
@@ -216,6 +217,16 @@ fn running_vm(target: Target, state: &RunState) -> String {
         format_unix_utc(state.started_unix),
         state.reason.label()
     );
+    // Named because a run's results are about whichever desktop it ran under,
+    // and the flag that chose it belongs to the command that has already
+    // finished by the time anybody reads this.
+    if let Some(desktop) = state.desktop.as_deref() {
+        let _ = writeln!(
+            out,
+            "    desktop session: {}",
+            Desktop::parse(desktop).map_or_else(|| desktop.to_owned(), |d| d.label().to_owned())
+        );
+    }
     if state.ssh_port > 0 {
         let _ = writeln!(
             out,

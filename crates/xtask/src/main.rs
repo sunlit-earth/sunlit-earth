@@ -24,6 +24,7 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{build_image, doctor, e2e, setup, teardown, vm};
 use crate::host::facts;
+use crate::provider::desktop::Desktop;
 use crate::provider::target::{HostOs, Target};
 use crate::runner::RealRunner;
 
@@ -56,6 +57,10 @@ enum Command {
         /// Run even though the image's evaluation licence has expired.
         #[arg(long)]
         allow_expired_image: bool,
+        /// Which desktop to run the suite under. Linux guest only; the image
+        /// default is KDE Plasma.
+        #[arg(long)]
+        desktop: Option<Desktop>,
     },
 }
 
@@ -78,6 +83,10 @@ enum VmCommand {
         /// Boot even though the image's evaluation licence has expired.
         #[arg(long)]
         allow_expired_image: bool,
+        /// Which desktop to log into. Linux guest only; the image default is
+        /// KDE Plasma.
+        #[arg(long)]
+        desktop: Option<Desktop>,
     },
     /// Open a shell in the running guest, or run one command in it.
     Ssh {
@@ -94,6 +103,10 @@ enum VmCommand {
         /// Leave the VM running afterwards.
         #[arg(long)]
         keep: bool,
+        /// Which desktop to log into. Linux guest only; the image default is
+        /// KDE Plasma.
+        #[arg(long)]
+        desktop: Option<Desktop>,
     },
     /// List the images, media, overlays, and VMs the xtask owns.
     Status,
@@ -149,7 +162,8 @@ fn main() -> ExitCode {
             target,
             keep,
             allow_expired_image,
-        } => e2e::run(&runner, target, keep, allow_expired_image),
+            desktop,
+        } => e2e::run(&runner, target, keep, allow_expired_image, desktop),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { target } => build_image::run(&runner, target),
@@ -157,10 +171,15 @@ fn main() -> ExitCode {
             VmCommand::Up {
                 target,
                 allow_expired_image,
-            } => vm::up(&runner, target, allow_expired_image),
+                desktop,
+            } => vm::up(&runner, target, allow_expired_image, desktop),
             VmCommand::Ssh { target, command } => vm::ssh(&runner, target, &command),
             VmCommand::View { target } => vm::view(&runner, target),
-            VmCommand::Smoke { target, keep } => vm::smoke(&runner, target, keep),
+            VmCommand::Smoke {
+                target,
+                keep,
+                desktop,
+            } => vm::smoke(&runner, target, keep, desktop),
             VmCommand::Status => vm::status(&runner),
             VmCommand::Down { target } => vm::down(&runner, target.into()),
             VmCommand::Purge {

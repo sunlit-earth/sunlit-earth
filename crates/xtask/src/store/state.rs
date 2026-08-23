@@ -111,6 +111,18 @@ pub struct RunState {
     /// session it always had.
     #[serde(default)]
     pub handed_over: bool,
+    /// Which desktop this guest was booted into, as
+    /// [`Desktop::flag`](crate::provider::desktop::Desktop::flag).
+    ///
+    /// Recorded rather than derived, and stored rather than passed, because the
+    /// choice is made by the command that boots the guest and read twice
+    /// afterwards by things that run later: the provider, which builds the
+    /// `fw_cfg` argument from it on every start, and `vm status`, which is a
+    /// separate process and has nowhere else to learn it from. `None` is a guest
+    /// left on the image's own default, which is every Windows guest and every
+    /// Linux one booted before this existed.
+    #[serde(default)]
+    pub desktop: Option<String>,
 }
 
 impl RunState {
@@ -136,6 +148,7 @@ impl RunState {
             started_unix,
             reason,
             handed_over: false,
+            desktop: None,
         }
     }
 
@@ -149,6 +162,15 @@ impl RunState {
 
     pub fn provider_kind(&self) -> Option<ProviderKind> {
         ProviderKind::parse(&self.provider)
+    }
+
+    /// The guest this record is about, if it names one this xtask knows.
+    ///
+    /// `None` for a hand-edited or corrupted file. Callers that only need it to
+    /// choose a sentence supply their own fallback rather than panicking on a
+    /// file they were reading in order to explain something.
+    pub fn target(&self) -> Option<Target> {
+        Target::ALL.into_iter().find(|t| t.slug() == self.target)
     }
 
     /// Whether this record describes something the xtask created.
@@ -213,6 +235,26 @@ mod tests {
         // guest nobody was handed, which is the answer that costs a dialog
         // rather than the one that promises a password nobody blanked.
         assert!(!parsed.handed_over);
+        // And one written before the desktop was recorded reads as a guest on
+        // the image's own default, which is what it is.
+        assert_eq!(parsed.desktop, None);
+    }
+
+    #[test]
+    fn a_guest_booted_into_a_named_desktop_says_which_in_its_record() {
+        let mut state = sample();
+        state.desktop = Some(crate::provider::desktop::Desktop::Xfce.flag().to_owned());
+        let json = state.to_json();
+        assert!(json.contains(r#""desktop": "xfce""#), "{json}");
+        let parsed = RunState::from_json(&json).expect("round trip");
+        assert_eq!(parsed, state);
+        assert_eq!(
+            parsed
+                .desktop
+                .as_deref()
+                .and_then(crate::provider::desktop::Desktop::parse),
+            Some(crate::provider::desktop::Desktop::Xfce)
+        );
     }
 
     #[test]

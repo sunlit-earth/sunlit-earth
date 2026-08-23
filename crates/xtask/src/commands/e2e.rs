@@ -12,6 +12,7 @@ use crate::commands::vm;
 use crate::guest::artifacts::{self, GuestPaths};
 use crate::guest::job;
 use crate::provider;
+use crate::provider::desktop::Desktop;
 use crate::provider::target::Target;
 use crate::runner::{Cmd, Runner};
 use crate::store;
@@ -133,10 +134,16 @@ pub fn run(
     location: Where,
     keep: bool,
     allow_expired: bool,
+    desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     match location.guest() {
+        None if desktop.is_some() => Err(
+            "--desktop chooses a session in the Linux guest; a run on this host \
+             uses the desktop you are sitting in front of"
+                .to_owned(),
+        ),
         None => run_on_host(runner),
-        Some(target) => run_in_guest(runner, target, keep, allow_expired),
+        Some(target) => run_in_guest(runner, target, keep, allow_expired, desktop),
     }
 }
 
@@ -172,6 +179,7 @@ fn run_in_guest(
     target: Target,
     keep: bool,
     allow_expired: bool,
+    desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
@@ -182,7 +190,14 @@ fn run_in_guest(
     // guest running with nothing to run in it.
     artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
 
-    let mut session = vm::boot(runner, &store, target, StartReason::Run, allow_expired)?;
+    let mut session = vm::boot(
+        runner,
+        &store,
+        target,
+        StartReason::Run,
+        allow_expired,
+        desktop,
+    )?;
 
     // From here on the VM exists, so no failure may return without saying what
     // happened to it.

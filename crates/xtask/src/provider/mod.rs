@@ -5,6 +5,8 @@
 //! everything that speaks to the guest rather than to the hypervisor is a
 //! default method here, implemented once over SSH.
 
+pub mod console;
+pub mod desktop;
 pub mod firmware;
 pub mod hyperv;
 pub mod qemu;

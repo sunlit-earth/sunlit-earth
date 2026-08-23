@@ -1,13 +1,22 @@
-# The Linux golden image: Ubuntu 22.04 with GNOME on Xorg, autologin, and an
-# OpenSSH server. `cargo xtask vm build-image linux` drives this; the variables
-# it passes are the ones without a default.
+# The Linux golden image: Debian 13 "trixie" with four desktops installed side
+# by side, sddm autologin, and an OpenSSH server. `cargo xtask vm build-image
+# linux` drives this; the variables it passes are the ones without a default.
 #
-# The base is the Ubuntu cloud image rather than the installer ISO, so there is
+# The base is the Debian cloud image rather than the installer ISO, so there is
 # no installer to automate: the image boots, cloud-init reads a NoCloud seed
 # from an attached CD and creates the test user with our key, and Packer takes
 # it from there over SSH. cloud-init is kept to the user account on purpose.
 # Everything else runs in provisioner scripts, where a failure names itself in
 # Packer's output instead of disappearing into a guest log.
+#
+# Debian 13 rather than a current Ubuntu (phase 5 decision 1). It is the only
+# base where Plasma, GNOME, XFCE and Cinnamon all have a first-class X11 session
+# at once: GNOME 50 deleted X11 upstream in March 2026 and Ubuntu 25.10 had
+# already dropped the GNOME Xorg session, while trixie froze on GNOME 48 and
+# Plasma 6.3, both of which predate every X11 removal. That insulates this image
+# for trixie's whole support window (full support to 2028-08, LTS to 2030-06);
+# the exposure returns with Debian 14, which is what the roadmap's Wayland guest
+# item is about.
 
 packer {
   required_plugins {
@@ -56,21 +65,21 @@ variable "memory" {
 
 variable "disk_size" {
   type        = string
-  default     = "24G"
+  default     = "32G"
   description = "The virtual size. A qcow2 only occupies what it holds."
 }
 
-# Ubuntu publishes the current 22.04 cloud image behind a stable path and a
-# SHA256SUMS file beside it, so the checksum follows the image instead of
+# Debian publishes the current trixie cloud image behind a stable `latest` path
+# with a SHA512SUMS file beside it, so the checksum follows the image instead of
 # pinning a hash that goes stale on every respin.
 variable "base_image_url" {
   type    = string
-  default = "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+  default = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 }
 
 variable "base_image_checksum" {
   type    = string
-  default = "file:https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS"
+  default = "file:https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS"
 }
 
 variable "test_user" {
@@ -86,7 +95,7 @@ variable "test_password" {
   default = "tester"
 }
 
-source "qemu" "ubuntu" {
+source "qemu" "debian" {
   iso_url          = var.base_image_url
   iso_checksum     = var.base_image_checksum
   disk_image       = true
@@ -137,7 +146,7 @@ source "qemu" "ubuntu" {
 
 build {
   name    = "sunlit-e2e-linux"
-  sources = ["source.qemu.ubuntu"]
+  sources = ["source.qemu.debian"]
 
   provisioner "shell" {
     execute_command = "chmod +x {{ .Path }}; sudo -E env TEST_USER='${var.test_user}' {{ .Vars }} {{ .Path }}"

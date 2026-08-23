@@ -11,7 +11,8 @@ pub enum Target {
     /// The Windows 11 Enterprise evaluation guest: the full suite, including
     /// everything that needs a real Windows desktop session.
     Windows,
-    /// The Ubuntu 22.04 GNOME guest: the windowed-mode subset.
+    /// The Debian 13 guest, which carries four desktops and logs into whichever
+    /// one the boot asked for: the windowed-mode subset.
     Linux,
 }
 

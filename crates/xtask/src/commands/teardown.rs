@@ -326,7 +326,7 @@ pub fn plan(
     if scope.iso {
         // Installation media is shared, so it only goes when the target that
         // consumes it does. The Windows evaluation ISO is the only cached
-        // download; the Ubuntu cloud image is fetched into the build directory.
+        // download; the Debian cloud image is fetched into the build directory.
         // Attributed to Windows rather than to nothing. It is only ever
         // deleted when Windows is in scope, so a Windows teardown that failed
         // has to keep it too: otherwise a destroy that reported "nothing was

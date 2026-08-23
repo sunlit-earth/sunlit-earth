@@ -44,7 +44,7 @@ What goes into a guest is the app, the test harness, the fixtures, and the `text
 | Hypervisor | Hyper-V | QEMU | none |
 | Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops | whatever you are on |
 | Host it runs from | Windows only | Windows or Linux | any |
-| Cases | all 11 | 8 of 10 | 10 of 11 |
+| Cases | all 11 | 10 of 10 under KDE and XFCE, 8 of 10 under GNOME and Cinnamon | 10 of 11 |
 | GPU | WARP | lavapipe | the real one |
 
 The Windows guest needs a Windows host, because its binaries have to be built somewhere and a Linux host has no toolchain for Windows executables. `e2e --target windows` says so and stops before creating anything.
@@ -69,7 +69,13 @@ Nothing in the image decides this, so switching desktops costs a boot rather tha
 
 `--desktop` is a Linux guest option and the Windows image has one desktop, so asking for one there is refused rather than ignored: a run whose flag did nothing is a run whose results are about a desktop nobody chose.
 
-Only Windows has one setter for every session. Linux has one per desktop, so `check_supported` there reads `XDG_CURRENT_DESKTOP` and looks for that desktop's own tool before anything is rendered. The four in the image are exercised by the runs above; MATE, LXQt and Budgie have table rows written from their documented setters and have never run, which `docs/roadmap.md` says rather than the docs claiming support nothing produced.
+Only Windows has one setter for every session. Linux has one per desktop, so `check_supported` there reads `XDG_CURRENT_DESKTOP` and looks for that desktop's own tool before anything is rendered. All four in the image have been run and the wallpaper looked at afterwards in each; MATE, LXQt and Budgie have table rows written from their documented setters and have never run, which `docs/roadmap.md` says rather than the docs claiming support nothing produced.
+
+Looking is not optional, and XFCE is why. Its setter exited zero, the case passed, and the desktop went on showing xfdesktop's default image, because the property xfdesktop reads is named after the connected monitor and does not exist until something creates it. A run that only reads test output would have called that a pass.
+
+The case count differs by desktop because the tray does. `tests/e2e.rs` asks `gdbus` who owns `org.kde.StatusNotifierWatcher`, and Plasma and xfce4-panel answer while GNOME and Cinnamon do not, so the two cases that need a tray icon run under the first two and skip under the other two, saying so.
+
+Cinnamon's session has a defect worth knowing before looking at one: the shell starts, is signalled a second later, and `cinnamon-launcher` falls back to `metacity`, which this image does not install, so what is left on screen is a modal "Cinnamon just crashed" dialog over a black desktop. The suite is unaffected, since it runs over SSH through `DISPLAY`, and `cinnamon --replace` over `vm ssh` brings the shell and the wallpaper back. `docs/roadmap.md` carries it.
 
 ## Interactive access
 

@@ -149,8 +149,21 @@ pub const ISO_BUILDER: &str = "oscdimg";
 /// The prompting one is `efisys.bin`, next to the one used here. Two boot
 /// images rather than one because the media is bootable on both firmwares, and
 /// keeping the BIOS entry costs nothing.
-pub const EFI_BOOT_IMAGE: &str = r"efi\microsoft\boot\efisys_noprompt.bin";
-pub const BIOS_BOOT_IMAGE: &str = r"boot\etfsboot.com";
+///
+/// Components rather than one string spelled with backslashes. Only a Windows
+/// host ever packs media, but the whole suite is compiled and run on Linux too,
+/// and `Path::join` there treats `efi\microsoft\boot\efisys_noprompt.bin` as a
+/// single file name with backslashes in it: a path that matches nothing,
+/// wherever the media was extracted.
+pub const EFI_BOOT_IMAGE: [&str; 4] = ["efi", "microsoft", "boot", "efisys_noprompt.bin"];
+pub const BIOS_BOOT_IMAGE: [&str; 2] = ["boot", "etfsboot.com"];
+
+/// One of those relative paths under an extracted media tree.
+fn under(tree: &Path, relative: &[&str]) -> PathBuf {
+    relative
+        .iter()
+        .fold(tree.to_path_buf(), |path, part| path.join(part))
+}
 
 /// The boot images to make an ISO bootable with, absolute paths into a tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,16 +178,17 @@ impl BootImages {
     /// Find them in an extracted media tree. The EFI image is required; a
     /// medium without the BIOS one is packed for UEFI alone.
     pub fn locate(tree: &Path) -> Result<Self, String> {
-        let efi = tree.join(EFI_BOOT_IMAGE);
+        let efi = under(tree, &EFI_BOOT_IMAGE);
         if !efi.is_file() {
             return Err(format!(
-                "this installation media has no {EFI_BOOT_IMAGE}, so the boot \
+                "this installation media has no {name}, so the boot \
                  prompt cannot be removed from it. Every Windows 10 and 11 \
                  medium carries one next to efisys.bin; a medium without it is \
-                 not one this build knows how to use."
+                 not one this build knows how to use.",
+                name = EFI_BOOT_IMAGE.join("\\")
             ));
         }
-        let bios = tree.join(BIOS_BOOT_IMAGE);
+        let bios = under(tree, &BIOS_BOOT_IMAGE);
         Ok(Self {
             bios: bios.is_file().then_some(bios),
             efi,

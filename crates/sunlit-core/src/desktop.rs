@@ -103,14 +103,37 @@ const XFCE_IMAGE_PROPERTY: &str = "last-image";
 
 /// The one beside it that says how to fit the image, and the value that fills.
 ///
-/// xfdesktop's enum, in which 0 is None and shows no image at all. This is set
-/// only where the listing already has it, so nothing is created: a session with
-/// no style property is one where xfdesktop uses its own default, which is this.
+/// xfdesktop's enum, in which 0 is None and shows no image at all.
 const XFCE_STYLE_PROPERTY: &str = "image-style";
 const XFCE_ZOOMED: &str = "5";
 
 /// The channel those properties live in.
 const XFCE_CHANNEL: &str = "xfce4-desktop";
+
+/// The workspace whose backdrop the properties below belong to.
+///
+/// xfdesktop can give every workspace its own background, and by default does
+/// not: `/backdrop/single-workspace-mode` is true out of the box and
+/// `/backdrop/single-workspace-number` is 0, so workspace 0 is the one backdrop
+/// the whole session shows. A session that turned that off and is sitting on
+/// another workspace is the case this does not cover, and it is also a session
+/// whose own listing already has the per-workspace properties, which the write
+/// below covers because it writes every one of them.
+const XFCE_WORKSPACE: &str = "workspace0";
+
+/// The property xfdesktop reads for one monitor, by the monitor's own name.
+///
+/// This has to be built rather than only read out of the listing, and that is
+/// the whole reason it exists. xfdesktop creates these lazily: a session where
+/// nobody has ever changed the wallpaper has none of them, and the ones its
+/// channel file does ship (`/backdrop/screen0/monitor0/...`, from a much older
+/// xfdesktop) it does not read. Writing only what the listing offers is
+/// therefore a set that reports success and changes nothing, which is what the
+/// XFCE guest did: `last-image` held the right path under `monitor0` and the
+/// desktop went on showing xfdesktop's built-in default.
+fn xfce_live_property(monitor: &str, suffix: &str) -> String {
+    format!("/backdrop/screen0/monitor{monitor}/{XFCE_WORKSPACE}/{suffix}")
+}
 
 impl Backend {
     /// The command whose output the commands need, if this backend asks
@@ -133,7 +156,11 @@ impl Backend {
     /// Empty means the desktop was asked something and answered with nothing
     /// usable, which is a refusal rather than a success: the caller must not
     /// report a wallpaper it did not set.
-    pub fn commands(&self, image: &Path, discovered: &str) -> Vec<Invocation> {
+    ///
+    /// `monitors` are the connected outputs' own names, which only XFCE uses and
+    /// which it cannot do without: see `xfce_live_property`. An empty slice
+    /// leaves it with whatever its listing offered.
+    pub fn commands(&self, image: &Path, discovered: &str, monitors: &[String]) -> Vec<Invocation> {
         let path = image.to_string_lossy().into_owned();
         match self.kind {
             Kind::Gsettings {
@@ -161,35 +188,64 @@ impl Backend {
             }
             Kind::Kde => vec![Invocation::new("plasma-apply-wallpaperimage", [path])],
             Kind::Xfce => {
-                let set = |property: String, value: String| {
-                    Invocation::new(
-                        "xfconf-query",
-                        [
-                            "-c".to_owned(),
-                            XFCE_CHANNEL.to_owned(),
-                            "-p".to_owned(),
-                            property,
-                            "-s".to_owned(),
-                            value,
-                        ],
-                    )
+                let write = |property: String, create: Option<&str>, value: String| {
+                    let mut args = vec![
+                        "-c".to_owned(),
+                        XFCE_CHANNEL.to_owned(),
+                        "-p".to_owned(),
+                        property,
+                    ];
+                    // `-n` creates a property and fails on one that exists, so
+                    // the two cases cannot share one command line.
+                    if let Some(kind) = create {
+                        args.push("-n".to_owned());
+                        args.push("-t".to_owned());
+                        args.push(kind.to_owned());
+                    }
+                    args.push("-s".to_owned());
+                    args.push(value);
+                    Invocation::new("xfconf-query", args)
                 };
-                let mut commands: Vec<Invocation> =
-                    xfce_properties(discovered, XFCE_STYLE_PROPERTY)
-                        .map(|property| set(property, XFCE_ZOOMED.to_owned()))
+                // Every property of each kind that has to end up carrying the
+                // value: the ones the session already has, plus the one
+                // xfdesktop reads for each connected monitor, which a session
+                // that has never had its wallpaper changed does not have yet.
+                let plan = |suffix: &str, create_kind: &'static str| {
+                    let listed: Vec<String> = xfce_properties(discovered, suffix).collect();
+                    let missing: Vec<String> = monitors
+                        .iter()
+                        .map(|monitor| xfce_live_property(monitor, suffix))
+                        .filter(|property| !listed.contains(property))
                         .collect();
-                commands.extend(
-                    xfce_properties(discovered, XFCE_IMAGE_PROPERTY)
-                        .map(|property| set(property, path.clone())),
-                );
-                // The image is the last write either way, and it is also the one
-                // that decides whether there is anything to run at all: a style
-                // set on a desktop with no image property would report a
-                // wallpaper nothing is showing.
-                if !commands.iter().any(|c| c.args[5] == path) {
+                    listed
+                        .into_iter()
+                        .map(|property| (property, None))
+                        .chain(
+                            missing
+                                .into_iter()
+                                .map(move |property| (property, Some(create_kind))),
+                        )
+                        .collect::<Vec<_>>()
+                };
+                let images = plan(XFCE_IMAGE_PROPERTY, "string");
+                // A set with nowhere to put the image would report a wallpaper
+                // nothing is showing, so it is a refusal rather than a success.
+                // Reachable only where the session lists no image property and
+                // named no monitor, which is a session with no display to ask.
+                if images.is_empty() {
                     return Vec::new();
                 }
-                commands
+                // The style first, so the write that makes xfdesktop repaint is
+                // the one carrying the new picture.
+                plan(XFCE_STYLE_PROPERTY, "int")
+                    .into_iter()
+                    .map(|(property, create)| write(property, create, XFCE_ZOOMED.to_owned()))
+                    .chain(
+                        images
+                            .into_iter()
+                            .map(|(property, create)| write(property, create, path.clone())),
+                    )
+                    .collect()
             }
             Kind::Lxqt => vec![Invocation::new(
                 "pcmanfm-qt",
@@ -201,14 +257,15 @@ impl Backend {
     /// Why this backend produced nothing to run, in the desktop's own terms.
     ///
     /// Only reachable for XFCE, and worth its own sentence rather than a generic
-    /// failure: a session whose backdrop channel is empty has never had a
-    /// wallpaper set by anything, which is a different problem from a setter that
-    /// ran and did not work.
+    /// failure: it means the session listed no backdrop property and named no
+    /// monitor either, so there was nowhere to put the image and nowhere to
+    /// create one, which is a different problem from a setter that ran and did
+    /// not work.
     pub fn nothing_to_run(&self) -> String {
         format!(
             "{} has no wallpaper property to set: `xfconf-query -c {XFCE_CHANNEL} -l` \
-             listed nothing ending in `{XFCE_IMAGE_PROPERTY}`, which means this \
-             session's desktop has never had a background of its own",
+             listed nothing ending in `{XFCE_IMAGE_PROPERTY}` and no connected \
+             monitor was named, so there is no backdrop to write to",
             self.desktop
         )
     }
@@ -394,9 +451,19 @@ mod tests {
     use super::*;
 
     fn commands(desktop: &str, path: &str, discovered: &str) -> Vec<Invocation> {
+        commands_on(desktop, path, discovered, &[])
+    }
+
+    fn commands_on(
+        desktop: &str,
+        path: &str,
+        discovered: &str,
+        monitors: &[&str],
+    ) -> Vec<Invocation> {
+        let monitors: Vec<String> = monitors.iter().map(|m| (*m).to_owned()).collect();
         detect(desktop)
             .unwrap_or_else(|| panic!("{desktop} has a backend"))
-            .commands(Path::new(path), discovered)
+            .commands(Path::new(path), discovered, &monitors)
     }
 
     #[test]
@@ -576,13 +643,83 @@ mod tests {
         }
     }
 
+    /// The XFCE guest set its wallpaper, reported success, and went on showing
+    /// xfdesktop's own default. Its listing had `last-image` only under
+    /// `/backdrop/screen0/monitor0`, which is a much older xfdesktop's property
+    /// and one this one does not read; the property it does read is named after
+    /// the connected monitor and does not exist until something creates it.
+    #[test]
+    fn xfce_creates_the_property_its_own_monitor_is_named_after() {
+        let listing = "\
+/backdrop/screen0/monitor0/image-path
+/backdrop/screen0/monitor0/last-image
+/backdrop/single-workspace-mode
+";
+        let cmds = commands_on("XFCE", "/home/tester/w.png", listing, &["Virtual-1"]);
+        let line = |cmd: &Invocation| cmd.args.join(" ");
+        let all: Vec<String> = cmds.iter().map(line).collect();
+        // The live image property is created, with a type, because a property
+        // that does not exist cannot be set.
+        assert!(
+            all.contains(
+                &"-c xfce4-desktop -p /backdrop/screen0/monitorVirtual-1/workspace0/last-image \
+                  -n -t string -s /home/tester/w.png"
+                    .replace("  ", " ")
+            ),
+            "{all:?}"
+        );
+        // So is its fill mode, since the session has none for that monitor.
+        assert!(
+            all.contains(
+                &"-c xfce4-desktop -p /backdrop/screen0/monitorVirtual-1/workspace0/image-style \
+                  -n -t int -s 5"
+                    .replace("  ", " ")
+            ),
+            "{all:?}"
+        );
+        // The legacy property is still written, since a session that reads it is
+        // a session this would otherwise stop working on.
+        assert!(
+            all.contains(
+                &"-c xfce4-desktop -p /backdrop/screen0/monitor0/last-image -s /home/tester/w.png"
+                    .to_owned()
+            ),
+            "{all:?}"
+        );
+        // Fill mode before image, still.
+        assert!(cmds[0].args[3].ends_with(XFCE_STYLE_PROPERTY), "{all:?}");
+        assert!(
+            cmds.last().expect("a command").args[3].ends_with(XFCE_IMAGE_PROPERTY),
+            "{all:?}"
+        );
+    }
+
+    /// A property the session already has must not be created again: `-n` fails
+    /// on one that exists, and xfconf-query's failure would fail the publish.
+    #[test]
+    fn xfce_does_not_create_a_property_the_session_already_has() {
+        let listing = "\
+/backdrop/screen0/monitorVirtual-1/workspace0/image-style
+/backdrop/screen0/monitorVirtual-1/workspace0/last-image
+";
+        let cmds = commands_on("XFCE", "/w.png", listing, &["Virtual-1"]);
+        assert_eq!(cmds.len(), 2, "{cmds:?}");
+        for cmd in &cmds {
+            assert!(!cmd.args.contains(&"-n".to_owned()), "{cmd:?}");
+        }
+    }
+
     #[test]
     fn an_xfce_session_with_a_style_but_no_image_property_is_still_a_refusal() {
         // Setting a fill mode on a desktop with nowhere to put the image would
         // report a wallpaper nothing is showing.
         let backend = detect("XFCE").expect("a backend");
         let listing = "/backdrop/screen0/monitor0/workspace0/image-style\n";
-        assert!(backend.commands(Path::new("/w.png"), listing).is_empty());
+        assert!(
+            backend
+                .commands(Path::new("/w.png"), listing, &[])
+                .is_empty()
+        );
     }
 
     #[test]
@@ -591,10 +728,14 @@ mod tests {
         let backend = detect("XFCE").expect("a backend");
         assert!(
             backend
-                .commands(Path::new("/w.png"), "/backdrop/single-workspace-mode\n")
+                .commands(
+                    Path::new("/w.png"),
+                    "/backdrop/single-workspace-mode\n",
+                    &[]
+                )
                 .is_empty()
         );
-        assert!(backend.commands(Path::new("/w.png"), "").is_empty());
+        assert!(backend.commands(Path::new("/w.png"), "", &[]).is_empty());
         let message = backend.nothing_to_run();
         assert!(message.contains("XFCE"), "{message}");
         assert!(message.contains("last-image"), "{message}");
@@ -625,7 +766,7 @@ mod tests {
             let desktop = names[0];
             let discovered = "/backdrop/screen0/monitor0/workspace0/image-style\n\
                               /backdrop/screen0/monitor0/workspace0/last-image";
-            let cmds = backend.commands(Path::new("/w.png"), discovered);
+            let cmds = backend.commands(Path::new("/w.png"), discovered, &[]);
             assert!(!cmds.is_empty(), "{desktop} produced no command");
             for cmd in &cmds {
                 assert_eq!(cmd.program, backend.program, "{desktop}");

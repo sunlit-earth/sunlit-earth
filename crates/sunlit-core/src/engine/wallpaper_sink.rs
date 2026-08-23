@@ -145,7 +145,15 @@ impl WallpaperSink for SystemWallpaper {
             Some(query) => run(&query)?,
             None => String::new(),
         };
-        let commands = backend.commands(&path, &discovered);
+        // The monitors' own names, which XFCE needs to build the property
+        // xfdesktop actually reads. No display to ask is not a failure here: the
+        // backend falls back to whatever its own listing offered.
+        let monitors: Vec<String> = crate::display::outputs()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|output| output.name)
+            .collect();
+        let commands = backend.commands(&path, &discovered, &monitors);
         if commands.is_empty() {
             return Err(backend.nothing_to_run());
         }

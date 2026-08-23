@@ -191,13 +191,19 @@ Virtual-2 disconnected (normal left inverted right x axis y axis)
 
     /// Two monitors, the second above and to the left of the origin, and a
     /// connected output with no mode assigned.
+    ///
+    /// The primary is deliberately not the first output listed, and the
+    /// disconnected `DP-3` deliberately still carries geometry: an output that
+    /// was configured and then unplugged with its CRTC still assigned prints
+    /// exactly that, and it is the one line the connected check alone keeps out.
     const DESK: &str = "\
 Screen 0: minimum 8 x 8, current 5120 x 1440, maximum 32767 x 32767
-DP-1 connected primary 3440x1440+1680+0 (normal left inverted right x axis y axis) 800mm x 335mm
+DP-1 connected 3440x1440+1680+0 (normal left inverted right x axis y axis) 800mm x 335mm
    3440x1440    143.92*+
-HDMI-1 connected 1680x1050+0-200 right (normal left inverted right x axis y axis) 474mm x 296mm
+HDMI-1 connected primary 1680x1050+0-200 right (normal left inverted right x axis y axis) 474mm x 296mm
    1680x1050     59.95*+
 DP-2 connected (normal left inverted right x axis y axis)
+DP-3 disconnected 1920x1080+5120+0 (normal left inverted right x axis y axis) 0mm x 0mm
 eDP-1 disconnected (normal left inverted right x axis y axis)
 ";
 
@@ -228,6 +234,12 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         let outputs = parse_outputs(DESK);
         let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(names, vec!["DP-1", "HDMI-1"]);
+        // DP-3 is the one only this excludes: disconnected and still holding a
+        // mode, which is what xrandr prints for an output that was configured
+        // and then unplugged. The geometry filter lets it through, and a monitor
+        // nobody can see is neither somewhere to put a window nor something to
+        // size a wallpaper for.
+        assert!(!outputs.iter().any(|o| o.name == "DP-3"), "{outputs:?}");
     }
 
     #[test]
@@ -250,8 +262,37 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
             .find(|o| o.name == "DP-1")
             .expect("the first");
         assert_eq!((dp.x, dp.y), (1680, 0));
-        // And the primary is the one xrandr marked, not the first listed.
-        assert_eq!(primary_of(&outputs).map(|o| o.name.as_str()), Some("DP-1"));
+    }
+
+    #[test]
+    fn the_primary_is_the_one_xrandr_marked_and_not_the_first_listed() {
+        // The two are the same on most sessions, which is why this fixture makes
+        // them differ: xrandr lists outputs in the X server's own order, and the
+        // monitor a person is looking at is whichever one is marked.
+        let outputs = parse_outputs(DESK);
+        assert_eq!(outputs[0].name, "DP-1", "{outputs:?}");
+        assert_eq!(
+            primary_of(&outputs).map(|o| o.name.as_str()),
+            Some("HDMI-1")
+        );
+        // The resolution too, because that is what taking the first costs: a
+        // wallpaper rendered for the wrong monitor, which the desktop's own zoom
+        // fill then crops.
+        assert_eq!(
+            primary_of(&outputs).map(|o| (o.width, o.height)),
+            Some((1680, 1050))
+        );
+        // With nothing marked the first is the answer, which is the commonest
+        // case here: XFCE marks no output at all, and neither does a
+        // single-output session.
+        let unmarked: Vec<Output> = outputs
+            .iter()
+            .map(|o| Output {
+                primary: false,
+                ..o.clone()
+            })
+            .collect();
+        assert_eq!(primary_of(&unmarked).map(|o| o.name.as_str()), Some("DP-1"));
     }
 
     #[test]

@@ -38,6 +38,10 @@ dirs = "6"
 # geometry only, has no use for.
 resvg = { version = "0.48", default-features = false }
 ico = "0.5"
+# Compiles the app's one Windows resource, the exe icon, in the build script.
+# It finds the toolchain's `rc.exe` or `windres` and vendors a fallback, and it
+# no-ops for a non-Windows target, so the build script needs no cfg of its own.
+embed-resource = "3"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_warn"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"

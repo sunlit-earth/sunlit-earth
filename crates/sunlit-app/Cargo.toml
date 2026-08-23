@@ -48,5 +48,8 @@ interprocess.workspace = true
 [build-dependencies]
 slint-build.workspace = true
 
+[target.'cfg(windows)'.build-dependencies]
+embed-resource.workspace = true
+
 [lints]
 workspace = true

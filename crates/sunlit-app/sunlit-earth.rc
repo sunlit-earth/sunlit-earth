@@ -1,0 +1,8 @@
+// The exe's icon, and through it the desktop shortcut, Explorer, and the
+// taskbar: the shell shows the icon resource with the lowest ordinal, so this
+// is 1 and there is no second one.
+//
+// The path is relative to this file. The .ico is baked from the SVGs by
+// `cargo xtask bake-icon` and committed, so this is a plain read at build time
+// with no rasterizer involved.
+1 ICON "../../assets/icon/baked/sunlit-earth.ico"

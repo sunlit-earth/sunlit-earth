@@ -81,12 +81,19 @@ Cinnamon's session has a defect worth knowing before looking at one: the shell s
 
 `cargo xtask vm up <target>` boots a guest and copies the current binaries in without running anything. `cargo xtask vm view <target>` opens its desktop, and `cargo xtask vm ssh <target>` opens a shell in it. To look at the aftermath of a test run instead, use `cargo xtask e2e --target <target> --keep` and then the same two commands.
 
-There is no stop or pause, and that is deliberate. A guest holds no state worth keeping, so ending one and discarding it are the same act: `vm down` frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Until you take it down, a running guest holds its RAM allocation. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
+`vm down` is the stop, and an idle guest is worth stopping: it holds 4 GiB of this machine's memory while a Linux guest is up and 6 GiB while a Windows one is. What there is no way to do is save or pause a guest, and nothing in one is worth saving, so ending it and discarding it are the same act: the teardown frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
 
 A Windows guest's desktop has two shortcuts on it, written per boot by whatever staged the binaries:
 
 - `Sunlit Earth` starts the app through `C:\sunlit-e2e\run-app.cmd`, which sets `SLINT_BACKEND=winit-software` and, when the textures were staged, `SUNLIT_EARTH_TEXTURES`. That is the same backend the generated job sets and for the same reason: the guest has no OpenGL, and the app started without it dies before its window appears. The launcher keeps its console window, so the app's log is on screen while it runs.
 - `sunlit-e2e` opens the directory the binaries, fixtures and results are in.
+
+A Linux guest gets the same pair as XDG desktop entries, in the applications menu and on the desktop directory, plus the launcher they run:
+
+- `Sunlit Earth` starts the app through `/var/lib/sunlit-e2e/run-app.sh`, which names `SUNLIT_EARTH_TEXTURES` when the textures were staged and sets no renderer backend, because Mesa answers OpenGL in here. Started from an icon it has no terminal to print to, so its output goes to `/var/lib/sunlit-e2e/run-app.log`; started from a shell it prints there instead, which is why the closing text gives you the path to type.
+- `sunlit-e2e` opens the same directory through `xdg-open`, which every desktop in the image routes to its own file manager.
+
+Where you find them differs by desktop, and that is the desktop's doing rather than ours. Plasma, XFCE and Cinnamon draw desktop icons and all three show both entries; GNOME draws none at all, so there the applications menu is the whole hand-over: press Super and type "sunlit". Only xfdesktop asks a question before running one, and it is answered in advance: it treats the desktop as an insecure location whatever the file's mode bits, and the mark it wants is a checksum of the launcher, the same one its own "Mark As Secure And Launch" button would write. If you ever do see that dialog, the hand-over's `gio set` failed, and `Launch Anyway` is the way past it.
 
 A Windows guest offers one of two consoles, and which one depends on whether it was handed over. `vm up` and `e2e --keep` hand a guest over and record that they did; nothing else does, so `vm smoke --keep` leaves a guest with the second kind of console and an empty desktop, and says so.
 

@@ -60,8 +60,32 @@ Two texts also went stale. The `vm up` lifecycle explainer opens with "There is 
 
 ## Departures
 
-(numbered, appended as they happen)
+1. **The closing text shipped with the launcher rather than with the other two wording fixes.** Step 1 groups three texts and step 2 the launcher, but the Linux arm of `guest_environment_note` names the launcher's path, and it takes it from `handover::linux_launcher_path` rather than spelling it again. So the commits are: the `WSL_DISTRO` truth on its own, then the launcher, the entries' first cut and the closing text together with the lifecycle reword, then the two live fixes. The steps all happened; only the commit boundaries moved.
+
+2. **The launcher writes a log when nobody started it from a terminal.** Decision 1 lists what the script does, and this is one line more than it lists: `exec >>/var/lib/sunlit-e2e/run-app.log 2>&1` when stdout is not a tty. The Windows launcher holds its console window open on a failure, which is that guest's answer to the same problem, and a desktop entry started from an icon has no terminal at all, so without this a launch that failed would leave a person with nothing whatever to read. Started from a shell the redirect does not happen, because there the terminal is the better place and a log would hide it. Both directions are pinned by a test.
+
+3. **The folder entry is an `xdg-open` application entry, not a `Type=Link`.** Decision 2 leaves the choice open. A menu shows `Type=Application` entries and nothing else, and GNOME draws no desktop icons at all, so a link would be invisible on the one desktop where the menu is the whole hand-over. One `xdg-open` covers all four desktops, and it was seen to open a file manager in a KDE guest (Thunar, which is what `xdg-open` resolves to in this image) and in a Cinnamon one (Nemo).
+
+4. **One trust blessing, not the two or three the risk section expected.** Decision 3's guess was that each desktop would want something different. Measured, one boot per desktop: Plasma runs an executable entry with no dialog, Nemo runs one with no dialog and with `metadata::trusted` deliberately unset, and only xfdesktop refuses, calling the desktop an insecure location whatever the mode bits say and putting up an "Untrusted application launcher" dialog with the launch behind it timing out. What it wants is `metadata::xfce-exe-checksum`, the file's own sha256, which is what its "Mark As Secure And Launch" button writes; writing that during the hand-over is the dialog answered in advance, verified by clearing the mark and watching the dialog come back. `metadata::trusted` was written for one commit and then removed, because a line whose desktop was never seen to want it is a claim the code cannot support.
+
+5. **The stretch `SUNLIT_EARTH_WSL_DISTRO` override was skipped.** `WSL_DISTRO` is read by four things, and only one of them is the build: `vm doctor` checks that distribution's registration and WSL version, and `vm setup`'s install step pairs `wsl.exe --install -d Ubuntu-22.04` with `ubuntu2204.exe install --root`, an Appx launcher named after this distribution and no other. An override that moved the build would leave the doctor reporting on a distribution the build does not use and the setup step installing one nobody asked for, which is a worse state than having no override. Doing it properly means splitting the constant into "what the build uses" and "what setup can install", which is more than the "stays small" the decision allows.
 
 ## Validation record
 
-(appended per round)
+### Round 1, 2026-08-23, live in the Linux guest, one boot per desktop
+
+Every boot was `cargo xtask vm up linux --desktop <d>` on the QEMU provider, with the assets staged, and every activation was a real double click or menu click in the guest's own session rather than a command that skipped the desktop. The QMP screendumps are the evidence; the app's own log in `/var/lib/sunlit-e2e/run-app.log` says which launcher started it.
+
+- **KDE Plasma.** Both entries drawn on the desktop. A double click on `Sunlit Earth` launched the app with the globe textured, no dialog of any kind. The folder entry opened Thunar on `/var/lib/sunlit-e2e`, which is what `xdg-open` resolves to in this image. `kioclient exec` on the entry does the same thing and says nothing, which is what said the entry itself was fine while the injected click was not (below).
+- **GNOME.** No desktop icons, as expected: the two files sit in `~/Desktop` and nothing draws them. Super, then typing "sunlit", showed both entries in the overview's search, with the app under the stock `applications-graphics` icon; clicking it launched the app with the globe textured. No dialog.
+- **XFCE.** Both entries drawn. The first double click produced "Untrusted application launcher": *the desktop file is in an insecure location and not marked as secure*, with `Launch Anyway`, `Mark As Secure And Launch` and `Cancel`, and behind it a "Failed to run" whose reason was a timeout, the launch having waited for the dialog. `Mark As Secure And Launch` started the app and wrote `metadata::xfce-exe-checksum`, which is exactly `sha256sum` of the entry. With the hand-over writing that mark itself, a fresh double click launched the app with no dialog.
+- **Cinnamon.** Both entries drawn, even in the fallback mode the phase 5 defect leaves the session in; `cinnamon --replace` over `vm ssh` restored the shell as documented. A double click launched the app with the globe textured and no prompt, and the same held with `metadata::trusted` cleared, which is what retired that attribute (departure 4).
+
+Two things worth writing down for whoever gathers this kind of evidence next:
+
+- A QMP-injected double click does not activate a desktop icon. Single clicks land exactly where they are sent (`xdotool getmouselocation` read back 56,40 for the coordinates computed from the screendump) and select the icon, but two of them, whether batched in one `input-send-event` or sent over two connections a couple of hundred milliseconds apart, never became a double click. `xdotool click --repeat 2 --delay 180` inside the guest does, and it is the desktop's own activation path either way. What a real VNC viewer's clicks do was not tested.
+- `gio set` writes nothing without a session bus: over SSH it answers "Setting attribute metadata::trusted not supported", and with `/var/lib/sunlit-e2e/session.env` sourced it writes the attribute. The metadata daemon is reached over the bus, and the guest already writes that environment out at logon for processes the orchestrator starts.
+
+Suite: `cargo xtask e2e --target linux --desktop kde` after the last hand-over change, 10 passed and 0 failed in 46 s, guest exit code 0 (criterion 6).
+
+Gates at `<tip>`: see the status log for the run they were taken in.

@@ -302,20 +302,19 @@ pub fn linux_install_script(paths: &GuestPaths) -> String {
          {folder_entry}\
          SUNLIT_FOLDER_EOF\n\
          \n\
+         # The executable bit is the whole blessing for two of the three\n\
+         # desktops that draw icons: measured in the guest, Plasma and Nemo both\n\
+         # run an executable entry without asking. xfdesktop is the one that\n\
+         # does not: it calls the desktop an insecure location whatever the mode\n\
+         # bits say, and wants its own mark, which is the file's sha256 under the\n\
+         # name below. That is exactly what its \"Mark As Secure And Launch\"\n\
+         # button writes, so writing it here is that dialog answered in advance.\n\
+         # Every other desktop ignores the attribute, and a guest with no\n\
+         # metadata daemon to write it is no reason to fail the hand-over.\n\
          for entry in {app_entry_name} {folder_entry_name}; do\n\
          \x20 chmod 0755 \"${{apps}}/${{entry}}\"\n\
          \x20 cp -f \"${{apps}}/${{entry}}\" \"${{desktop}}/${{entry}}\"\n\
          \x20 chmod 0755 \"${{desktop}}/${{entry}}\"\n\
-         \x20 # The executable bit above is the whole blessing for two of the\n\
-         \x20 # three desktops that draw icons: measured in the guest, Plasma\n\
-         \x20 # and Nemo both run an executable entry without asking. xfdesktop\n\
-         \x20 # is the one that does not: it calls the desktop an insecure\n\
-         \x20 # location whatever the mode bits say, and wants its own mark,\n\
-         \x20 # which is the file's sha256 under the name below. That is exactly\n\
-         \x20 # what its \"Mark As Secure And Launch\" button writes, so writing\n\
-         \x20 # it here is that dialog answered in advance. Every other desktop\n\
-         \x20 # ignores the attribute, and a guest with no metadata daemon to\n\
-         \x20 # write it is no reason to fail the hand-over.\n\
          \x20 gio set -t string \"${{desktop}}/${{entry}}\" \
          metadata::xfce-exe-checksum \
          \"$(sha256sum \"${{desktop}}/${{entry}}\" | cut -d' ' -f1)\" \

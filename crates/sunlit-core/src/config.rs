@@ -437,39 +437,57 @@ fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
     !monitor.is_null()
 }
 
-/// Non-Windows: a coordinate-range check rather than a monitor query.
+/// Non-Windows: the real outputs where there are any, and a coordinate-range
+/// check where there is nothing to ask.
 ///
-/// There is no portable way to enumerate displays from this crate. `sunlit-core`
-/// owns no window, and Slint's public `Window` API reports the window's own
-/// size and scale factor but nothing about the display behind it, so the exact
-/// answer Win32 gives is not available here.
+/// On Linux `display::outputs` parses `xrandr --query`, which gives the same
+/// shape of answer Win32 gives: a set of rectangles in one coordinate space, so
+/// the title bar can be tested against each. That is the precise check the
+/// roadmap paired with the wallpaper work, and it arrives with it.
 ///
-/// What is available is a sanity range. X11's core protocol carries window
-/// coordinates as `INT16`, so on that display server -32768..=32767 is the
-/// whole of what a position can express; Wayland and macOS impose no such
-/// limit, but a coordinate outside it is far outside any desktop either way.
-/// The bound is chosen for being the one platform-defined number in the
-/// neighbourhood, not because every platform enforces it.
-///
-/// This is much coarser than the Win32 check (a position inside the range but
-/// on a monitor that has since been unplugged still passes here) but it is the
-/// part that matters most: it stops a config carried from a large multi-monitor
-/// desk to a laptop from restoring a window into nowhere, with no way to get it
-/// back.
-///
-/// The precise per-monitor check arrives on each platform with that platform's
-/// windowing work; see the wallpaper entries in `docs/roadmap.md`.
+/// The coarse half remains, and not only for the platforms with no query. A run
+/// with no display at all still loads a config, and refusing every saved position
+/// there would move a window on the next run that has one. So what is left is a
+/// sanity range: X11's core protocol carries window coordinates as `INT16`, so on
+/// that display server -32768..=32767 is the whole of what a position can
+/// express; Wayland and macOS impose no such limit, but a coordinate outside it is
+/// far outside any desktop either way. The bound is chosen for being the one
+/// platform-defined number in the neighbourhood, not because every platform
+/// enforces it.
 #[cfg(not(windows))]
+#[allow(clippy::cast_possible_truncation)]
 fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
-    const MIN: i32 = i16::MIN as i32;
-    const MAX: i32 = i16::MAX as i32;
-
     let Ok(width) = i32::try_from(width) else {
         return false;
     };
     let Ok(height) = i32::try_from(height) else {
         return false;
     };
+    if let Some(outputs) = crate::display::outputs()
+        && !outputs.is_empty()
+    {
+        // The same rectangle the Win32 branch tests: a window is reachable if
+        // its title bar is, and a window whose body hangs off the bottom of a
+        // screen can still be dragged back.
+        let title_bar_height = 30.min(height);
+        return outputs
+            .iter()
+            .any(|output| output.overlaps(x, y, width, title_bar_height));
+    }
+    plausible_coordinates(x, y, width, height)
+}
+
+/// Whether a saved geometry is inside the range a window position can express.
+///
+/// Much coarser than a monitor query: a position inside the range but on a
+/// monitor that has since been unplugged passes here. It is the part that matters
+/// most, though, which is stopping a config carried from a large multi-monitor
+/// desk to a laptop from restoring a window into nowhere with no way to get it
+/// back.
+#[cfg(not(windows))]
+fn plausible_coordinates(x: i32, y: i32, width: i32, height: i32) -> bool {
+    const MIN: i32 = i16::MIN as i32;
+    const MAX: i32 = i16::MAX as i32;
 
     (MIN..=MAX).contains(&x)
         && (MIN..=MAX).contains(&y)
@@ -922,6 +940,21 @@ mod tests {
             ..AppConfig::default()
         };
         assert!(validated_window_geometry(&config).is_none());
+    }
+
+    /// The coarse half, which is what a run with no display to ask falls back
+    /// to, and which is still the only answer on a platform with no query.
+    #[test]
+    #[cfg(not(windows))]
+    fn the_coordinate_range_is_the_one_a_window_position_can_express() {
+        assert!(plausible_coordinates(0, 0, 800, 600));
+        assert!(plausible_coordinates(-1000, -1000, 800, 600));
+        // X11 carries these as INT16, so a coordinate outside that is not a desk
+        // anybody has: it is a config that came from somewhere else.
+        assert!(!plausible_coordinates(-50_000, 0, 800, 600));
+        assert!(!plausible_coordinates(0, 40_000, 800, 600));
+        // And a window whose far edge leaves the range goes with it.
+        assert!(!plausible_coordinates(32_000, 0, 800, 600));
     }
 
     #[test]

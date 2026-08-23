@@ -24,34 +24,57 @@ pub trait WallpaperSink: Send + Sync {
     fn publish(&self, pixels: &[u8], width: u32, height: u32) -> Result<(), String>;
 }
 
-/// Render size used off Windows, where there is no monitor query yet.
+/// Render size used where there is no display to ask.
 ///
-/// Windows enumerates the real monitors (`wallpaper::get_primary_monitor_resolution`).
-/// The obvious non-Windows equivalent would be to ask the windowing layer, but
-/// Slint 1.17's public `Window` API reports the window's own size and scale
-/// factor and nothing about the display it sits on, and adding a second
-/// windowing dependency to serve a code path that currently ends in
-/// "unsupported" would be the wrong trade. A common desktop resolution is
-/// therefore the documented placeholder until the real Linux and macOS setters
-/// land, at which point each of them brings its own native query.
+/// Windows enumerates the real monitors (`wallpaper::get_primary_monitor_resolution`)
+/// and Linux parses `xrandr --query` (`display::outputs`). This is what is left
+/// when neither answers: a headless run, a session with no output that has a mode
+/// assigned, or a platform with no query at all. A common desktop resolution,
+/// because the alternative is refusing to render a file somebody asked for.
+///
+/// Every use of it is logged where it happens, so a wallpaper at this size is
+/// never silently a guess.
 pub const DEFAULT_TARGET_SIZE: (u32, u32) = (2560, 1440);
 
-/// Message returned by the non-Windows `publish`.
+/// Message returned where there is no wallpaper setter at all.
 ///
 /// Deliberately a plain error rather than a stub that writes a PNG somewhere
 /// and reports success: the UI shows this string in the status line, and a
 /// wallpaper that silently did not change is worse than one that says so.
-#[cfg(not(windows))]
+///
+/// macOS only, now that Linux has a setter. It keeps the platform's name out of
+/// it because what it says is true of any platform that reaches it.
+#[cfg(not(any(windows, target_os = "linux")))]
 const UNSUPPORTED: &str = "setting the desktop wallpaper is not supported on this platform yet";
 
 /// The real desktop: save a PNG and hand it to the OS.
 pub struct SystemWallpaper;
 
 impl WallpaperSink for SystemWallpaper {
-    /// Off Windows there is nothing to publish to, and saying so here is what
-    /// keeps the refusal cheap: `publish` alone would refuse only after a
-    /// full-resolution render and readback had already happened.
-    #[cfg(not(windows))]
+    /// Whether this desktop has a setter, asked before anything is rendered.
+    ///
+    /// On Linux both halves of the answer are cheap and both matter: which
+    /// desktop this is, and whether its setter is installed. Finding out after a
+    /// full-resolution render and readback is what this exists to avoid.
+    #[cfg(target_os = "linux")]
+    fn check_supported(&self) -> Result<(), String> {
+        let backend = crate::desktop::detect_current().ok_or_else(|| {
+            crate::desktop::no_backend_message(
+                &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
+            )
+        })?;
+        if which(backend.program).is_none() {
+            return Err(format!(
+                "this is {desktop}, whose wallpaper is set with `{program}`, and \
+                 that program is not on PATH",
+                desktop = backend.desktop,
+                program = backend.program,
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn check_supported(&self) -> Result<(), String> {
         Err(UNSUPPORTED.to_owned())
     }
@@ -61,9 +84,38 @@ impl WallpaperSink for SystemWallpaper {
         crate::wallpaper::get_primary_monitor_resolution()
     }
 
+    /// The primary output's current mode, or the documented default.
+    ///
+    /// Never an error: a wallpaper render at a plausible size is worth more than
+    /// a refusal, and the two ways of not knowing are logged differently because
+    /// they mean different things. No display to ask is ordinary; a display that
+    /// answered with no usable output is not.
     #[cfg(not(windows))]
     fn target_size(&self) -> Result<(u32, u32), String> {
-        Ok(DEFAULT_TARGET_SIZE)
+        let (default_width, default_height) = DEFAULT_TARGET_SIZE;
+        match crate::display::outputs().as_deref() {
+            Some(outputs) => match crate::display::primary_of(outputs) {
+                Some(output) => Ok((output.width, output.height)),
+                None => {
+                    tracing::warn!(
+                        width = default_width,
+                        height = default_height,
+                        "no display output has a mode assigned; rendering the \
+                         wallpaper at the documented default size"
+                    );
+                    Ok(DEFAULT_TARGET_SIZE)
+                }
+            },
+            None => {
+                tracing::info!(
+                    width = default_width,
+                    height = default_height,
+                    "no display to ask about its resolution; rendering the \
+                     wallpaper at the documented default size"
+                );
+                Ok(DEFAULT_TARGET_SIZE)
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -75,10 +127,78 @@ impl WallpaperSink for SystemWallpaper {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    /// Write the PNG and run the desktop's own setter.
+    ///
+    /// The backend is looked up again rather than cached from `check_supported`:
+    /// the sink outlives a session change, and running the previous desktop's
+    /// setter would fail in a way that named the wrong desktop.
+    #[cfg(target_os = "linux")]
+    fn publish(&self, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
+        let backend = crate::desktop::detect_current().ok_or_else(|| {
+            crate::desktop::no_backend_message(
+                &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
+            )
+        })?;
+        let path = crate::wallpaper::save_wallpaper_image(pixels, width, height)?;
+
+        let discovered = match backend.discovery() {
+            Some(query) => run(&query)?,
+            None => String::new(),
+        };
+        let commands = backend.commands(&path, &discovered);
+        if commands.is_empty() {
+            return Err(backend.nothing_to_run());
+        }
+        for command in &commands {
+            run(command)?;
+        }
+
+        tracing::info!(
+            path = %path.display(),
+            desktop = backend.desktop,
+            commands = commands.len(),
+            "wallpaper set successfully"
+        );
+        crate::memory::log_memory_usage("after wallpaper set");
+        Ok(())
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn publish(&self, _pixels: &[u8], _width: u32, _height: u32) -> Result<(), String> {
         Err(UNSUPPORTED.to_owned())
     }
+}
+
+/// Whether a program is on `PATH`, and where.
+///
+/// Written out rather than shelling out to `which`, which is one more program
+/// that has to be installed for the check to work.
+#[cfg(target_os = "linux")]
+fn which(program: &str) -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Run one of the desktop's commands, and answer with its output.
+///
+/// A failure carries the program's own stderr, because the useful half of
+/// "gsettings failed" is always what gsettings said.
+#[cfg(target_os = "linux")]
+fn run(command: &crate::desktop::Invocation) -> Result<String, String> {
+    let out = std::process::Command::new(command.program)
+        .args(&command.args)
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", command.program))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{} {} failed: {}",
+            command.program,
+            command.args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A sink that renders at a fixed size and throws the pixels away, counting
@@ -134,23 +254,49 @@ mod tests {
         assert_eq!(sink.count(), 2);
     }
 
-    /// The desktop sink is available on Windows and nowhere else yet.
+    /// The desktop sink accepts frames on the platforms that can publish them.
     ///
-    /// Split by cfg rather than skipped, because both halves are assertions:
-    /// the platform that has a setter must not report itself unsupported, and
-    /// the platforms that do not must refuse before anything is rendered.
+    /// Split by cfg rather than skipped, because each half is an assertion: a
+    /// platform with a setter must not report itself unsupported, and one
+    /// without must refuse before anything is rendered.
     #[test]
     #[cfg(windows)]
     fn system_wallpaper_accepts_frames_on_windows() {
         assert!(SystemWallpaper.check_supported().is_ok());
     }
 
+    /// On Linux the answer depends on the session, which a unit test does not
+    /// have, so what is asserted is that the refusal explains itself. Both
+    /// causes are refusals with something to act on: no desktop, and a desktop
+    /// whose setter is not installed.
     #[test]
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    fn a_linux_refusal_names_the_desktop_or_the_missing_program() {
+        match SystemWallpaper.check_supported() {
+            Ok(()) => {
+                // A desktop with its setter present, which is what the guest
+                // has: then the backend was found and probed.
+                let backend =
+                    crate::desktop::detect_current().expect("supported means a backend was found");
+                assert!(which(backend.program).is_some());
+            }
+            Err(refusal) => {
+                assert!(
+                    refusal.contains(crate::desktop::DESKTOP_ENV)
+                        || refusal.contains("not supported on")
+                        || refusal.contains("not on PATH"),
+                    "{refusal}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn system_wallpaper_refuses_before_anything_is_rendered() {
         let refusal = SystemWallpaper
             .check_supported()
-            .expect_err("there is no wallpaper setter off Windows yet");
+            .expect_err("there is no wallpaper setter on this platform yet");
         assert_eq!(refusal, UNSUPPORTED);
         // And it stays refused at the far end, so a caller that ignores the
         // check still cannot believe a wallpaper was set.
@@ -160,17 +306,22 @@ mod tests {
         );
     }
 
-    /// The documented placeholder resolution, which nothing else pins.
+    /// Off Windows the render size is an answer or the documented default, and
+    /// never an error: a wallpaper at a plausible size beats a refusal.
     #[test]
     #[cfg(not(windows))]
-    fn system_wallpaper_target_size_is_the_documented_default() {
+    fn the_render_size_is_the_display_or_the_documented_default() {
         let (width, height) = SystemWallpaper
             .target_size()
-            .expect("the placeholder size is always available");
-        assert_eq!((width, height), DEFAULT_TARGET_SIZE);
+            .expect("a size is always available");
         assert!(
             width > 0 && height > 0,
             "a render size of zero renders nothing"
         );
+        // With no display to ask, which is what a test run is, it is the one
+        // documented constant rather than a guess of its own.
+        if crate::display::outputs().is_none() {
+            assert_eq!((width, height), DEFAULT_TARGET_SIZE);
+        }
     }
 }

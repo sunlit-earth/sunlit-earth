@@ -79,15 +79,27 @@ fn lifecycle_mode_args() -> [&'static str; 2] {
     }
 }
 
-/// Whether this platform can set the desktop wallpaper.
+/// Whether this session can set the desktop wallpaper.
 ///
 /// Unlike the tray, this one answers for itself: `SystemWallpaper` reports
 /// whether it has anywhere to publish to, which is the same query the engine
 /// makes before it renders anything.
+///
+/// A session and not a platform, which is the change Linux support brought.
+/// Windows has one setter and every session has it; Linux has one per desktop
+/// and a process outside a desktop session has none, so the answer here is about
+/// where this run is and not only about what it was compiled for.
 fn wallpaper_supported() -> bool {
     use sunlit_core::engine::wallpaper_sink::{SystemWallpaper, WallpaperSink};
     SystemWallpaper.check_supported().is_ok()
 }
+
+/// Whether this platform has a wallpaper setter at all.
+///
+/// The half of the question that is still a compile-time fact, and the one worth
+/// pinning: a platform on this list that refuses is a regression, and one off it
+/// that succeeds is a setter nobody wrote.
+const WALLPAPER_PLATFORM: bool = cfg!(any(target_os = "windows", target_os = "linux"));
 
 /// Whether this run is allowed to replace the desktop wallpaper.
 ///
@@ -1700,23 +1712,47 @@ fn test_memory_report() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_set_wallpaper() {
-    // `check_supported` is the product's own answer, checked against the
-    // platform it is running on: absence is expected off Windows and would be
-    // a regression on it, so the two are compared rather than one of them
-    // being trusted.
-    assert_eq!(
-        wallpaper_supported(),
-        cfg!(target_os = "windows"),
-        "the wallpaper sink disagrees with the platform it is running on"
-    );
+    // `check_supported` is the product's own answer, and what it can be checked
+    // against differs by platform. Windows has one setter and every session has
+    // it, so absence there is a regression. A platform with no setter at all
+    // must not claim one. Linux has a setter per desktop, so the answer belongs
+    // to the session rather than to the build, and the guarantee is the narrower
+    // one below.
+    if cfg!(target_os = "windows") {
+        assert!(
+            wallpaper_supported(),
+            "the wallpaper sink refuses on the platform that ships it"
+        );
+    }
+    if !WALLPAPER_PLATFORM {
+        assert!(
+            !wallpaper_supported(),
+            "the wallpaper sink claims support on a platform with no setter"
+        );
+    }
+
+    let opted_in = std::env::var_os(WALLPAPER_OPT_IN).is_some();
+    // The opt-in is set by the guest jobs and by nothing else, and a guest job
+    // runs inside a desktop session that was chosen for having a setter. So on
+    // Linux this is where a broken backend has to fail rather than skip: without
+    // it, a session whose setter went missing would report itself unsupported
+    // and this case would quietly pass.
+    if opted_in && cfg!(target_os = "linux") {
+        assert!(
+            wallpaper_supported(),
+            "this run opted in to replacing the wallpaper, so its desktop is one \
+             that can: {:?} reports no setter",
+            std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()
+        );
+    }
     if !wallpaper_supported() {
         skip_case(
             "test_set_wallpaper",
-            "the wallpaper sink reports no platform support here",
+            "the wallpaper sink reports no setter for this session",
         );
         return;
     }
-    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+    if !opted_in {
         skip_case(
             "test_set_wallpaper",
             "this case replaces the desktop wallpaper, so it runs only where \

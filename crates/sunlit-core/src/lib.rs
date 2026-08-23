@@ -6,6 +6,8 @@
 
 pub mod assets;
 pub mod config;
+pub mod desktop;
+pub mod display;
 pub mod engine;
 pub mod geometry;
 pub mod memory;
@@ -13,7 +15,6 @@ pub mod memory_report;
 pub mod params;
 pub mod renderer;
 pub mod scene;
-#[cfg(windows)]
 pub mod wallpaper;
 pub mod wgpu_init;
 

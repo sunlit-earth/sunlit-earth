@@ -79,9 +79,12 @@ pub const WINDOWS_SLINT_BACKEND: &str = "winit-software";
 /// has one desktop session, and two windowed tests sharing it is not a race
 /// worth having.
 ///
-/// The Windows job opts the wallpaper case in. That case replaces the desktop
-/// wallpaper of whatever machine runs it, which is the whole reason it is
-/// opt-in: a throwaway guest is the one place where doing so costs nothing.
+/// Both jobs opt the wallpaper case in. That case replaces the desktop wallpaper
+/// of whatever machine runs it, which is the whole reason it is opt-in: a
+/// throwaway guest is the one place where doing so costs nothing. The Linux job
+/// used to leave it out because there was no Linux setter to exercise; there is
+/// one now, per desktop, and the guest boots one of the four the setter table
+/// covers, which is what makes those four observed rather than reviewed.
 ///
 /// `SUNLIT_EARTH_TEXTURES` appears only when the textures were staged. The
 /// render case samples the Sahara and the Atlantic, so it needs the real map;
@@ -94,6 +97,7 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
              set -uo pipefail\n\
              export SUNLIT_EARTH_BIN={app}\n\
              export SUNLIT_EARTH_E2E_FIXTURES={fixtures}\n\
+             export SUNLIT_EARTH_E2E_WALLPAPER=1\n\
              {textures}\
              export RUST_BACKTRACE=1\n\
              {harness} --ignored --test-threads=1 --nocapture\n",
@@ -409,17 +413,20 @@ mod tests {
     }
 
     #[test]
-    fn only_the_windows_job_opts_into_replacing_the_wallpaper() {
-        // The Linux guest cannot set a wallpaper, and a developer's desktop
-        // must not have one set behind their back, so the guest that can is
-        // the one place it is switched on.
+    fn both_guest_jobs_opt_into_replacing_the_wallpaper() {
+        // A developer's desktop must not have its wallpaper replaced behind
+        // their back, so this is opt-in and a throwaway guest is where it is
+        // switched on. Both guests can set one now, so both jobs do.
         let windows = job_script(Target::Windows, &paths(Target::Windows));
         assert!(
             windows.contains("set SUNLIT_EARTH_E2E_WALLPAPER=1"),
             "{windows}"
         );
         let linux = job_script(Target::Linux, &paths(Target::Linux));
-        assert!(!linux.contains("SUNLIT_EARTH_E2E_WALLPAPER"), "{linux}");
+        assert!(
+            linux.contains("export SUNLIT_EARTH_E2E_WALLPAPER=1"),
+            "{linux}"
+        );
     }
 
     #[test]

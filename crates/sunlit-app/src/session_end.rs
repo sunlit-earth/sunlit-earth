@@ -1,4 +1,10 @@
-//! Reacting to Windows ending the session: a reboot, a shutdown, or a sign-out.
+//! Reacting to the session ending: a reboot, a shutdown, or a sign-out.
+//!
+//! Two mechanisms, because the two platforms ask in completely different ways.
+//! Windows sends window messages, which is most of this file. A Linux desktop
+//! sends SIGTERM and then kills what has not exited, so the Linux half is a
+//! signal listener and is much shorter. Both end in the same place: quit the
+//! event loop once, and exit anyway if that does not take.
 //!
 //! Windows asks every top-level window for permission first
 //! (`WM_QUERYENDSESSION`) and then tells it the session is going
@@ -22,8 +28,11 @@
 //! torn down until `WM_ENDSESSION` says the session is really ending, because
 //! a proposed shutdown can still be cancelled.
 //!
-//! Other platforms get nothing yet. A Linux desktop asks over the session bus
-//! rather than with window messages, and the settings window is untested there.
+//! What the Linux half is not is the whole conversation. A desktop that wants to
+//! know whether an application is *ready* to be closed asks over the session bus,
+//! through logind's inhibitor protocol; SIGTERM arrives after that decision has
+//! been made. So this uses the grace period rather than participating in the
+//! question, and the inhibitor half stays on the roadmap. macOS gets nothing yet.
 
 use std::time::Duration;
 
@@ -280,17 +289,117 @@ mod platform {
     }
 }
 
+/// What a caught signal means for us.
+///
+/// The Linux analog of [`classify`], and a pure function for the same reason: the
+/// decision is the part worth testing, and the delivery mechanism is not
+/// something a test can produce on demand without ending the test process.
+///
+/// SIGTERM only. A desktop session ending sends SIGTERM and then, after its own
+/// grace period, SIGKILL, which nothing can answer. SIGHUP is deliberately not
+/// treated as the session ending: it arrives when a controlling terminal goes
+/// away, and the e2e suite starts this application from a process whose terminal
+/// is not its own, so answering it would end a run in the middle of a test.
+/// SIGINT is left to its default, because Ctrl-C in a terminal already ends the
+/// process and a developer pressing it is not a session ending.
+#[cfg(target_os = "linux")]
+pub fn classify_signal(signal: i32) -> Action {
+    if signal == signal_hook::consts::SIGTERM {
+        Action::End
+    } else {
+        Action::Ignore
+    }
+}
+
 #[cfg(windows)]
 pub use platform::{CLASS_NAME, Watcher, install};
 
-/// Nothing to install off Windows.
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub use unix::{Watcher, install};
+
+/// SIGTERM, on its own thread, which is the Linux session's way of saying it is
+/// going (phase 5 decision 8).
+///
+/// The same shape as the Windows listener and for the same reasons: its own
+/// thread, so the answer does not wait on whatever the main thread is doing, and
+/// one shutdown however many times the question is asked. What it is not is the
+/// whole of the story. A desktop that wants to know whether an application is
+/// ready to be closed asks over the session bus, through logind's inhibitor
+/// protocol, and this answers nothing there: what it does is take the ten to
+/// ninety seconds of grace the session gives a process it has already decided to
+/// end, and use them to exit cleanly rather than be killed. The inhibitor half is
+/// a roadmap item.
+///
+/// A signal handler may call almost nothing, and quitting a Slint event loop is
+/// not on that list, so nothing here runs in a handler: `signal-hook`'s iterator
+/// blocks on a self-pipe the handler writes one byte to, and everything below
+/// happens on an ordinary thread.
+#[cfg(target_os = "linux")]
+mod unix {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use signal_hook::consts::SIGTERM;
+    use signal_hook::iterator::Signals;
+    use tracing::{debug, info, warn};
+
+    use super::{Action, classify_signal};
+
+    /// The installed listener. Nothing to reach into, unlike the Windows one,
+    /// which owns a window a test delivers messages to.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Watcher;
+
+    /// Start listening. `None` if the signal could not be hooked at all.
+    pub fn install(
+        force_exit_after: Option<Duration>,
+        on_end: impl Fn() + Send + Sync + 'static,
+    ) -> Option<Watcher> {
+        let mut signals = match Signals::new([SIGTERM]) {
+            Ok(signals) => signals,
+            Err(e) => {
+                warn!(error = %e, "could not listen for SIGTERM");
+                return None;
+            }
+        };
+        std::thread::Builder::new()
+            .name("session-end".to_owned())
+            .spawn(move || {
+                let started = AtomicBool::new(false);
+                for signal in &mut signals {
+                    if classify_signal(signal) != Action::End {
+                        continue;
+                    }
+                    if started.swap(true, Ordering::SeqCst) {
+                        continue;
+                    }
+                    info!(signal, "the session is ending; shutting down");
+                    on_end();
+                    if let Some(after) = force_exit_after {
+                        // The same trade the Windows listener makes: the session
+                        // is going either way, so the choice is between exiting
+                        // and being killed partway through doing it.
+                        std::thread::sleep(after);
+                        warn!("the event loop did not stop in {after:?}; exiting now");
+                        std::process::exit(0);
+                    }
+                    return;
+                }
+            })
+            .ok()?;
+        debug!("session-end listener running");
+        Some(Watcher)
+    }
+}
+
+/// Nothing to install where neither mechanism exists.
+#[cfg(not(any(windows, target_os = "linux")))]
 #[derive(Debug, Clone, Copy)]
 pub struct Watcher;
 
-/// Off Windows there is nothing to listen to yet, and saying so is better than
-/// a listener that never fires.
-#[cfg(not(windows))]
+/// macOS asks over its own notification centre, which is not wired up, and
+/// saying so is better than a listener that never fires.
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn install(
     _force_exit_after: Option<Duration>,
     _on_end: impl Fn() + Send + Sync + 'static,

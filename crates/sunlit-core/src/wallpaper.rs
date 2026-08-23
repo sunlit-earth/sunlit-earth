@@ -1,20 +1,38 @@
-//! Windows-only wallpaper export: monitor resolution detection, PNG save,
-//! and `SystemParametersInfoW` to set the desktop wallpaper.
+//! Wallpaper export: where the file goes, how it is encoded, and on Windows the
+//! monitor query and `SystemParametersInfoW` that make it the desktop.
+//!
+//! The first two halves are the same everywhere, which is why this module is no
+//! longer Windows-only: every platform with a setter writes the same PNG to the
+//! same place in its own data directory, and only the act of handing it to the
+//! desktop differs. The Linux side of that act is a table of per-desktop
+//! commands in [`crate::desktop`], because there is no system call to make
+//! there; the Win32 half is here, behind a `cfg`, because it is one.
 
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 
-use tracing::{debug, info};
+use tracing::debug;
+#[cfg(windows)]
+use tracing::info;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::GetLastError;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SPI_SETDESKWALLPAPER, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SystemParametersInfoW,
 };
 
-/// Return the wallpaper output directory (`%LOCALAPPDATA%\SunlitEarth\`),
-/// creating it if it does not exist.
+/// Return the wallpaper output directory, creating it if it does not exist.
+///
+/// `%LOCALAPPDATA%\SunlitEarth` on Windows and `~/.local/share/SunlitEarth` on
+/// Linux, which is what `dirs::data_local_dir` answers on each and the same
+/// directory the config file and the texture cache already live in. Asked through
+/// `dirs` rather than through `LOCALAPPDATA` directly so that the three agree
+/// wherever the app runs.
 pub fn wallpaper_dir() -> Result<PathBuf, String> {
-    let local_app_data =
-        std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set".to_owned())?;
-    let dir = PathBuf::from(local_app_data).join("SunlitEarth");
+    let dir = dirs::data_local_dir()
+        .ok_or_else(|| "no local data directory on this system".to_owned())?
+        .join("SunlitEarth");
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create wallpaper directory: {e}"))?;
     Ok(dir)
@@ -24,6 +42,10 @@ pub fn wallpaper_dir() -> Result<PathBuf, String> {
 ///
 /// Uses `EnumDisplayMonitors` + `GetMonitorInfoW` to find the primary
 /// monitor and read its pixel dimensions from `rcMonitor`.
+///
+/// Off Windows the same question is answered by [`crate::display`], which parses
+/// `xrandr --query`: there is no API in this crate to ask, so it asks a program.
+#[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
     use std::ptr;
@@ -104,6 +126,7 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the
 /// registry keys `HKCU\Control Panel\Desktop\WallpaperStyle` and
 /// `HKCU\Control Panel\Desktop\TileWallpaper`.
+#[cfg(windows)]
 fn ensure_fill_style() -> Result<(), String> {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
@@ -127,6 +150,7 @@ fn ensure_fill_style() -> Result<(), String> {
 ///
 /// Verifies the file exists and is non-empty, sets "Fill" display style,
 /// then calls `SystemParametersInfoW` with `SPI_SETDESKWALLPAPER`.
+#[cfg(windows)]
 pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -217,7 +241,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wallpaper_dir_uses_localappdata() {
+    fn the_wallpaper_lives_under_this_systems_local_data_directory() {
         let result = wallpaper_dir();
         assert!(result.is_ok(), "wallpaper_dir should succeed");
         let dir = result.unwrap();
@@ -239,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn primary_resolution_is_nonzero() {
         let (w, h) = get_primary_monitor_resolution().expect("should detect primary monitor");
         assert!(w > 0, "width should be > 0");
@@ -246,6 +271,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn primary_resolution_is_reasonable() {
         let (w, h) = get_primary_monitor_resolution().expect("should detect primary monitor");
         assert!(w >= 640, "width should be >= 640, got {w}");
@@ -253,12 +279,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn set_wallpaper_rejects_missing_file() {
         let result = set_wallpaper(Path::new(r"C:\nonexistent\fake_wallpaper.png"));
         assert!(result.is_err(), "should reject missing file");
     }
 
     #[test]
+    #[cfg(windows)]
     fn set_wallpaper_rejects_empty_file() {
         let dir = std::env::temp_dir().join("sunlit_earth_test");
         std::fs::create_dir_all(&dir).unwrap();

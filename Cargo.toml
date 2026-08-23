@@ -41,6 +41,11 @@ crossbeam-channel = "0.5"
 windows-sys = "0.59"
 winreg = "0.56"
 mach2 = "0.6"
+# The Linux half of `session_end`. A signal handler may call almost nothing, and
+# quitting a Slint event loop is not on the list, so the delivery has to reach an
+# ordinary thread first: this crate's iterator does that with a self-pipe, which
+# is why it is here rather than a scoped `unsafe` around `libc::signal`.
+signal-hook = "0.3"
 
 # dev-dependencies
 approx = "0.5"

@@ -615,9 +615,10 @@ fn run_app(
     }
 
     // Windows asks its top-level windows for permission before a reboot and
-    // then tells them the session is ending; nothing here used to answer, so
-    // the shutdown screen named this process as the one preventing it. The
-    // listener quits the loop, and the ordinary teardown below then runs.
+    // then tells them the session is ending; a Linux session sends SIGTERM and
+    // kills what has not gone. Nothing here used to answer either, so the
+    // shutdown screen named this process as the one preventing it. The listener
+    // quits the loop, and the ordinary teardown below then runs.
     let _session_end = sunlit_earth::session_end::install(
         Some(sunlit_earth::session_end::FORCE_EXIT_AFTER),
         || {

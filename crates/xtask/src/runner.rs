@@ -486,6 +486,16 @@ pub fn encode_command(script: &str) -> String {
     base64(&utf16)
 }
 
+/// Encode a script as `base64 -d` on the far side expects: UTF-8, then base64.
+///
+/// The Unix counterpart of [`encode_command`]. What both are for is a script that
+/// has to cross a command line and a remote shell without a quote in it surviving
+/// either one; the only difference is which encoding the decoder on the other end
+/// assumes.
+pub fn encode_text(script: &str) -> String {
+    base64(script.as_bytes())
+}
+
 /// Standard base64 with padding. Four lines of table lookup, against pulling in
 /// a dependency for it.
 fn base64(bytes: &[u8]) -> String {

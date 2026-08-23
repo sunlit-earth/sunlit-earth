@@ -409,6 +409,13 @@ impl Prepared {
 }
 
 /// What `vm up` prints when it is done (plan decision 14).
+///
+/// `vm down` is the stop, and this text used to open by denying that a stop
+/// existed at all, which argues with a reader whose mental model is right. What
+/// is missing is a save or a pause, and what makes their absence cost nothing is
+/// that a guest holds nothing worth saving. The memory figure is the guest's
+/// own, because an idle guest holding gigabytes is the reason to take it down
+/// rather than leave it up.
 pub fn lifecycle_explainer(target: Target, prepared: Prepared) -> String {
     format!(
         "\n\
@@ -416,15 +423,30 @@ pub fn lifecycle_explainer(target: Target, prepared: Prepared) -> String {
          ssh:     cargo xtask vm ssh {target}\n  \
          desktop: cargo xtask vm view {target}\n  \
          down:    cargo xtask vm down {target}\n\n\
-         There is no stop or pause. This guest holds no state worth keeping, so \
-         ending it and discarding it are the same act: destroying it frees the \
-         memory and the overlay, leaves the golden image untouched, and the next \
-         `vm up` boots something pristine. Until then it holds its RAM.\n\n\
+         `vm down` is the stop, and an idle guest is worth stopping: it holds \
+         {memory} of this host's memory for as long as it is up. What there is no \
+         way to do is save or pause one, and nothing in here is worth saving, so \
+         ending a guest and discarding it are the same act: the teardown frees \
+         the memory and the overlay, leaves the golden image untouched, and the \
+         next `vm up` boots something pristine.\n\n\
          Watching a run is harmless; clicking during one perturbs it.{session}{extra}",
         vm = target.vm_name(),
+        memory = guest_memory(target),
         session = view_note(target, prepared.enhanced_session),
         extra = guest_environment_note(target, prepared.staged)
     )
+}
+
+/// How much of the host a guest of this target holds while it is up.
+///
+/// Taken from the QEMU launch parameters, which both providers agree with:
+/// `provider::hyperv::MEMORY_BYTES` is the same 6 GiB a Windows guest gets
+/// there, and `the_memory_a_guest_is_said_to_hold_is_the_memory_it_gets` pins
+/// that, because a figure printed to argue for a teardown has to be the real
+/// one.
+fn guest_memory(target: Target) -> String {
+    let mib = u64::from(crate::provider::qemu::resources_for(target).0);
+    util::format_bytes(mib * 1024 * 1024)
 }
 
 /// How to look at this guest, per hypervisor and per what it is offering.
@@ -480,6 +502,13 @@ fn view_note(target: Target, enhanced_session: bool) -> String {
 /// A guest nothing was staged in has none of that, and is told what would put it
 /// there instead: `vm smoke --keep` leaves an empty desktop, and being told
 /// which shortcut to double-click is worse than being told there is none.
+///
+/// The Linux arm has the opposite problem to solve. Nothing there needs an
+/// environment override, so what a person is missing is not a variable but the
+/// guest's root: it is outside any home directory on purpose, and the first
+/// person handed a KDE guest could not find the app. It also cannot promise a
+/// desktop icon, because GNOME shows none at all, so it names the menu and the
+/// desktop separately.
 fn guest_environment_note(target: Target, staged: bool) -> String {
     match (target, staged) {
         (Target::Windows, true) => format!(
@@ -499,7 +528,26 @@ fn guest_environment_note(target: Target, staged: bool) -> String {
              `cargo xtask e2e --target {target} --keep` leaves one behind after a \
              run."
         ),
-        (Target::Linux, _) => String::new(),
+        (Target::Linux, true) => format!(
+            "\n\nWhat this boot staged is in `{root}`, which is outside any home \
+             directory: the app and the test harness in `bin/`, the fixtures, and \
+             a run's results. `{launcher}` starts the app from there, naming the \
+             staged textures directory when there is one, and it is what the \
+             `{app}` entry runs. Both entries are in the applications menu, and on \
+             the desktop itself where the desktop shows icons, which Plasma, XFCE \
+             and Cinnamon do and GNOME does not. From a shell: `{launcher}`.",
+            root = crate::provider::GUEST_ROOT_LINUX,
+            launcher = crate::guest::handover::linux_launcher_path(),
+            app = crate::guest::handover::ENTRY_NAME,
+        ),
+        (Target::Linux, false) => format!(
+            "\n\nNothing of ours was staged in it, so there is no app in \
+             `{root}` to start and no entry for one. `cargo xtask vm up {target}` \
+             boots a guest with the binaries, the launcher and the desktop \
+             entries, and `cargo xtask e2e --target {target} --keep` leaves one \
+             behind after a run.",
+            root = crate::provider::GUEST_ROOT_LINUX,
+        ),
     }
 }
 
@@ -898,8 +946,12 @@ mod tests {
         }
     }
 
+    /// The text used to open by denying that a stop existed, which argues with
+    /// a reader who is right: `vm down` is the stop, and an idle guest is worth
+    /// stopping. What is missing is a save or a pause, and the rest of what the
+    /// old wording said is true and stays.
     #[test]
-    fn the_lifecycle_explainer_says_there_is_no_stop() {
+    fn the_lifecycle_explainer_names_the_stop_and_what_it_frees() {
         let text = lifecycle_explainer(
             Target::Linux,
             Prepared {
@@ -907,14 +959,77 @@ mod tests {
                 enhanced_session: false,
             },
         );
-        assert!(text.contains("no stop or pause"), "{text}");
+        assert!(text.contains("`vm down` is the stop"), "{text}");
+        assert!(!text.contains("no stop or pause"), "{text}");
+        assert!(text.contains("no way to do is save or pause"), "{text}");
+        // The reason to take an idle one down, in the guest's own numbers.
+        assert!(text.contains("4.0 GiB of this host's memory"), "{text}");
         assert!(text.contains("golden image untouched"), "{text}");
-        assert!(text.contains("holds its RAM"), "{text}");
         assert!(text.contains("cargo xtask vm down linux"), "{text}");
         assert!(text.contains("clicking during one perturbs it"), "{text}");
         assert!(text.contains("clipboard"), "{text}");
         // Mesa answers in the Linux guest, so there is nothing to set there.
         assert!(!text.contains("SLINT_BACKEND"), "{text}");
+    }
+
+    /// A figure printed to argue for a teardown has to be the one the guest
+    /// actually holds, and two providers hand out that memory. They agree today,
+    /// which is what makes reading it off one of them honest; the day they
+    /// disagree, the Windows text starts lying about six gigabytes.
+    #[test]
+    fn the_memory_a_guest_is_said_to_hold_is_the_memory_it_gets() {
+        let (windows_mib, _) = crate::provider::qemu::resources_for(Target::Windows);
+        assert_eq!(
+            u64::from(windows_mib) * 1024 * 1024,
+            crate::provider::hyperv::MEMORY_BYTES,
+            "the two providers give a Windows guest different amounts of memory, \
+             so the lifecycle text cannot name one figure for both"
+        );
+        assert!(
+            lifecycle_explainer(Target::Windows, Prepared::BARE).contains("6.0 GiB"),
+            "the Windows guest's own figure"
+        );
+    }
+
+    /// The Linux guest's root is outside any home directory on purpose, and
+    /// until the hand-over existed nothing ever named it: the first person handed
+    /// a KDE guest had nowhere to look for the app. So the closing text names the
+    /// root, the launcher, and how to start it without an icon.
+    #[test]
+    fn handing_over_a_linux_guest_says_where_the_app_is_and_how_to_start_it() {
+        let text = lifecycle_explainer(
+            Target::Linux,
+            Prepared {
+                staged: true,
+                enhanced_session: false,
+            },
+        );
+        assert!(text.contains(crate::provider::GUEST_ROOT_LINUX), "{text}");
+        assert!(
+            text.contains(&crate::guest::handover::linux_launcher_path()),
+            "{text}"
+        );
+        assert!(text.contains(crate::guest::handover::ENTRY_NAME), "{text}");
+        // GNOME draws no desktop icons at all, so the menu and the desktop are
+        // named separately rather than a launcher promised on every desktop.
+        assert!(text.contains("applications menu"), "{text}");
+        assert!(text.contains("GNOME does not"), "{text}");
+    }
+
+    /// `vm smoke --keep` leaves a Linux guest with nothing of ours in it either,
+    /// and being told which entry to click is worse than being told there is
+    /// none. The Windows arm has said so since it existed; this is the same rule.
+    #[test]
+    fn a_bare_linux_guest_promises_no_launcher_and_names_what_would_stage_one() {
+        let text = lifecycle_explainer(Target::Linux, Prepared::BARE);
+        assert!(text.contains("Nothing of ours was staged"), "{text}");
+        assert!(!text.contains(crate::guest::handover::ENTRY_NAME), "{text}");
+        assert!(
+            !text.contains(&crate::guest::handover::linux_launcher_path()),
+            "{text}"
+        );
+        assert!(text.contains("cargo xtask vm up linux"), "{text}");
+        assert!(text.contains("--target linux --keep"), "{text}");
     }
 
     #[test]
@@ -951,7 +1066,7 @@ mod tests {
     #[test]
     fn a_guest_that_was_left_as_it_stood_promises_neither_shortcuts_nor_a_session() {
         let text = lifecycle_explainer(Target::Windows, Prepared::BARE);
-        assert!(text.contains("no stop or pause"), "{text}");
+        assert!(text.contains("`vm down` is the stop"), "{text}");
         // Neither shortcut, and no launcher behind one.
         assert!(!text.contains("Sunlit Earth"), "{text}");
         assert!(!text.contains("SLINT_BACKEND"), "{text}");

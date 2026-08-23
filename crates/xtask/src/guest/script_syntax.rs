@@ -149,6 +149,42 @@ fn scripts_in(dir: &std::path::Path, extension: &str) -> Vec<std::path::PathBuf>
     out
 }
 
+/// Every shell script this crate generates for the Linux guest, with a name to
+/// report it under.
+///
+/// The same class of mistake as the `PowerShell` half, and the same check for it:
+/// these are built by string formatting, one of them carries three heredocs, and
+/// a syntax error in either is invisible from the host. The hand-over fails as a
+/// warning, and what it costs is a guest with no launcher in it.
+fn generated_linux_scripts() -> Vec<(String, String)> {
+    let paths = crate::guest::artifacts::guest_paths(
+        crate::provider::target::Target::Linux,
+        "sunlit-earth",
+        "e2e-1a2b",
+        true,
+    );
+    let bare = crate::guest::artifacts::guest_paths(
+        crate::provider::target::Target::Linux,
+        "sunlit-earth",
+        "e2e-1a2b",
+        false,
+    );
+    vec![
+        (
+            "handover: launcher".to_owned(),
+            crate::guest::handover::linux_launcher_script(&paths),
+        ),
+        (
+            "handover: launcher without textures".to_owned(),
+            crate::guest::handover::linux_launcher_script(&bare),
+        ),
+        (
+            "handover: desktop entries".to_owned(),
+            crate::guest::handover::linux_install_script(&paths),
+        ),
+    ]
+}
+
 /// The shell scripts the Linux image build runs.
 fn linux_guest_scripts() -> Vec<std::path::PathBuf> {
     let dir = crate::store::repo_root()
@@ -322,6 +358,20 @@ mod tests {
                 out.success(),
                 "{} does not parse: {}",
                 script.display(),
+                out.stderr.trim()
+            );
+        }
+
+        // And the generated ones, which get the check for the same reason: the
+        // hand-over's install script is three heredocs built by formatting, and
+        // a syntax error in it reaches nobody but the guest.
+        let generated = generated_linux_scripts();
+        assert!(generated.len() >= 3, "only {} generated", generated.len());
+        for (name, text) in generated {
+            let out = parse(text);
+            assert!(
+                out.success(),
+                "{name} does not parse: {}",
                 out.stderr.trim()
             );
         }

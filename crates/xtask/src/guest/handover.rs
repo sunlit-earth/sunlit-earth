@@ -12,14 +12,20 @@
 //! rather than about the image. It also means neither of these ever needs an
 //! image rebuild to change.
 //!
-//! Windows only. The Linux guest needs no backend override, because Mesa
-//! answers there, and its root is not a place a desktop file would point at.
+//! Both guests get the same two things, and almost none of the mechanism is
+//! shared. A Windows guest needs a batch file that sets `SLINT_BACKEND` and a
+//! pair of `.lnk` shortcuts written by `WScript.Shell`; a Linux guest needs
+//! neither the override, because Mesa answers GL there, nor a COM object,
+//! because its shortcuts are text files. What it does need is to be told where
+//! its root is: `/var/lib/sunlit-e2e` is outside any home directory on purpose,
+//! and until this existed the first person handed a KDE guest had nowhere to
+//! look for the app.
 
 use crate::commands::e2e::WINDOWS_SLINT_BACKEND;
-use crate::guest::artifacts::GuestPaths;
+use crate::guest::artifacts::{GuestPaths, shell_quote};
 use crate::provider::Provider;
 use crate::provider::target::Target;
-use crate::runner::encode_command;
+use crate::runner::{encode_command, encode_text};
 use crate::store::Store;
 use crate::store::state::RunState;
 
@@ -33,6 +39,13 @@ pub const LAUNCHER: &str = "run-app.cmd";
 /// disk read as the same place.
 pub const APP_SHORTCUT: &str = "Sunlit Earth.lnk";
 pub const FOLDER_SHORTCUT: &str = "sunlit-e2e.lnk";
+
+/// What the app is called wherever a person is offered it.
+///
+/// One constant for both guests: a shortcut on a Windows desktop and a desktop
+/// entry in a Linux menu are the same offer, and the closing text names it from
+/// here rather than from either platform's file name.
+pub const ENTRY_NAME: &str = "Sunlit Earth";
 
 /// Where the launcher is written inside the guest.
 pub fn launcher_path() -> String {
@@ -126,6 +139,193 @@ pub fn powershell_command(script: &str) -> String {
     )
 }
 
+/// The Linux launcher's name, and where it sits inside the guest.
+pub const LINUX_LAUNCHER: &str = "run-app.sh";
+
+/// Where the app's own output goes when nobody started it from a terminal.
+pub const LINUX_LAUNCHER_LOG: &str = "run-app.log";
+
+/// The desktop entries' file names.
+///
+/// Both are written twice, into the applications directory and onto the desktop,
+/// under the same name in each: an entry that appears in the menu under one name
+/// and on the desktop under another is two things as far as a reader is
+/// concerned.
+pub const APP_ENTRY: &str = "sunlit-earth.desktop";
+pub const FOLDER_ENTRY: &str = "sunlit-e2e.desktop";
+
+/// What the install script prints once it is through, for the same reason the
+/// enhanced-session script has a marker: the interesting failures leave an exit
+/// code that says nothing.
+pub const LINUX_HANDOVER_READY: &str = "HANDOVER=ready";
+
+pub fn linux_launcher_path() -> String {
+    format!("{}/{LINUX_LAUNCHER}", crate::provider::GUEST_ROOT_LINUX)
+}
+
+fn linux_launcher_log() -> String {
+    format!("{}/{LINUX_LAUNCHER_LOG}", crate::provider::GUEST_ROOT_LINUX)
+}
+
+/// The shell script that starts the app the way this guest has to start it.
+///
+/// No `SLINT_BACKEND`: Mesa is a software GL implementation and llvmpipe answers
+/// in here, which is the whole reason only the Windows launcher sets one. So what
+/// is left is the textures directory, named exactly when this boot staged one,
+/// and the two things a person clicking an icon cannot get for themselves: a
+/// place for the app's output to go, and a sentence saying what is missing when
+/// the binaries are not there.
+pub fn linux_launcher_script(paths: &GuestPaths) -> String {
+    let textures = paths.textures.as_ref().map_or_else(String::new, |dir| {
+        format!("export SUNLIT_EARTH_TEXTURES={}\n", shell_quote(dir))
+    });
+    format!(
+        "#!/usr/bin/env bash\n\
+         # Written by `cargo xtask vm up`. This guest is a throwaway overlay,\n\
+         # so an edit here lasts until it is taken down.\n\
+         set -u\n\
+         app={app}\n\
+         # Started from a desktop entry there is no terminal for anything below\n\
+         # to print to, so it all goes to the log instead. Started from a shell\n\
+         # the terminal is the better place, and a log would hide it there.\n\
+         if [ ! -t 1 ]; then\n\
+         \x20 exec >>{log} 2>&1\n\
+         fi\n\
+         if [ ! -x \"${{app}}\" ]; then\n\
+         \x20 echo \"${{app}} is not here.\"\n\
+         \x20 echo 'cargo xtask vm up linux on the host copies the binaries in.'\n\
+         \x20 exit 1\n\
+         fi\n\
+         {textures}\
+         exec \"${{app}}\" \"$@\"\n",
+        app = shell_quote(&paths.app),
+        log = shell_quote(&linux_launcher_log()),
+    )
+}
+
+/// The entry that starts the app, through the launcher.
+///
+/// `Exec` is absolute, because a desktop entry is run with whatever working
+/// directory the shell that launched it had, and on GNOME that is the session's
+/// own. Through the launcher rather than the binary for the same reason the
+/// Windows shortcut is: the environment the app needs is the launcher's whole
+/// purpose, and an entry that skipped it would be the one thing in the guest
+/// that starts the app differently from everything else.
+///
+/// `Icon` is a stock name from the icon theme. The app ships no icon file, and
+/// every desktop in the image has an icon theme, so a name that resolves in all
+/// four is better than a missing file in each.
+pub fn app_entry() -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Version=1.0\n\
+         Name={ENTRY_NAME}\n\
+         Comment=Start sunlit earth with what this boot staged in the guest\n\
+         Exec={launcher}\n\
+         Path={root}\n\
+         Icon=applications-graphics\n\
+         Terminal=false\n\
+         Categories=Graphics;\n",
+        launcher = linux_launcher_path(),
+        root = crate::provider::GUEST_ROOT_LINUX,
+    )
+}
+
+/// The entry that opens the guest's root in a file manager.
+///
+/// An application entry running `xdg-open` rather than a `Type=Link`, which
+/// would be the more obvious spelling for a place: a menu shows `Type=Application`
+/// entries and nothing else, and GNOME has no desktop icons at all, so a link
+/// would be invisible on the one desktop where the menu is the whole hand-over.
+/// `xdg-open` is what every desktop in the image routes to its own file manager,
+/// so one entry covers all four.
+pub fn folder_entry() -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Version=1.0\n\
+         Name={name}\n\
+         Comment=The binaries, fixtures and results this run staged\n\
+         Exec=xdg-open {root}\n\
+         Icon=folder\n\
+         Terminal=false\n\
+         Categories=Utility;\n",
+        name = FOLDER_SHORTCUT.trim_end_matches(".lnk"),
+        root = crate::provider::GUEST_ROOT_LINUX,
+    )
+}
+
+/// The script that puts all three files where the desktop will find them.
+///
+/// Run over SSH as the account the console session belongs to, so `HOME` is the
+/// home whose desktop is on screen and nothing here needs root; the guest's root
+/// is owned by that account too, which is what lets the launcher be written
+/// beside the binaries.
+///
+/// The desktop directory is asked for rather than assumed: it is localized, and
+/// `xdg-user-dir` answers `$HOME` for a home with no user-dirs configuration at
+/// all, which is not a desktop to write two launchers into. Both entries are
+/// written into the applications directory as well, and that copy is the only
+/// one GNOME will ever show, because GNOME draws no desktop icons.
+pub fn linux_install_script(paths: &GuestPaths) -> String {
+    format!(
+        "#!/usr/bin/env bash\n\
+         set -eu\n\
+         launcher={launcher}\n\
+         apps=\"${{HOME}}/.local/share/applications\"\n\
+         desktop=\"$(xdg-user-dir DESKTOP 2>/dev/null || true)\"\n\
+         if [ -z \"${{desktop}}\" ] || [ \"${{desktop}}\" = \"${{HOME}}\" ]; then\n\
+         \x20 desktop=\"${{HOME}}/Desktop\"\n\
+         fi\n\
+         mkdir -p \"${{apps}}\" \"${{desktop}}\"\n\
+         \n\
+         cat > \"${{launcher}}\" <<'SUNLIT_LAUNCHER_EOF'\n\
+         {launcher_script}\
+         SUNLIT_LAUNCHER_EOF\n\
+         chmod 0755 \"${{launcher}}\"\n\
+         \n\
+         cat > \"${{apps}}/{app_entry_name}\" <<'SUNLIT_APP_EOF'\n\
+         {app_entry}\
+         SUNLIT_APP_EOF\n\
+         \n\
+         cat > \"${{apps}}/{folder_entry_name}\" <<'SUNLIT_FOLDER_EOF'\n\
+         {folder_entry}\
+         SUNLIT_FOLDER_EOF\n\
+         \n\
+         for entry in {app_entry_name} {folder_entry_name}; do\n\
+         \x20 chmod 0755 \"${{apps}}/${{entry}}\"\n\
+         \x20 cp -f \"${{apps}}/${{entry}}\" \"${{desktop}}/${{entry}}\"\n\
+         \x20 chmod 0755 \"${{desktop}}/${{entry}}\"\n\
+         \x20 # Plasma, xfdesktop and Nemo each quarantine a desktop launcher\n\
+         \x20 # they have not blessed. The executable bit is what the first two\n\
+         \x20 # ask for; Nemo wants gio metadata, which the others ignore, and a\n\
+         \x20 # desktop without gio must not fail the hand-over over it.\n\
+         \x20 gio set -t string \"${{desktop}}/${{entry}}\" metadata::trusted true \
+         >/dev/null 2>&1 || true\n\
+         done\n\
+         \n\
+         update-desktop-database \"${{apps}}\" >/dev/null 2>&1 || true\n\
+         printf '%s\\n' '{LINUX_HANDOVER_READY}'\n",
+        launcher = shell_quote(&linux_launcher_path()),
+        launcher_script = linux_launcher_script(paths),
+        app_entry_name = APP_ENTRY,
+        app_entry = app_entry(),
+        folder_entry_name = FOLDER_ENTRY,
+        folder_entry = folder_entry(),
+    )
+}
+
+/// The command that runs a script in the guest without quoting it twice.
+///
+/// The Linux counterpart of [`powershell_command`], and there for the same
+/// reason: the script has quotes, newlines, `$` and heredocs in it, and every
+/// one of them would have to survive both the local command line and the guest's
+/// login shell. Base64 has none of those characters in it.
+pub fn bash_command(script: &str) -> String {
+    format!("printf %s '{}' | base64 -d | bash -s", encode_text(script))
+}
+
 /// Put the launcher and the shortcuts in the guest.
 ///
 /// The caller treats a failure as a warning: a guest that staged its binaries
@@ -138,9 +338,36 @@ pub fn prepare(
     target: Target,
     paths: &GuestPaths,
 ) -> Result<(), String> {
-    if target != Target::Windows {
-        return Ok(());
+    match target {
+        Target::Windows => prepare_windows(provider, state, store, target, paths),
+        Target::Linux => prepare_linux(provider, state, paths),
     }
+}
+
+/// The Linux half: one script, and a marker to prove it ran all the way through.
+fn prepare_linux(
+    provider: &dyn Provider,
+    state: &RunState,
+    paths: &GuestPaths,
+) -> Result<(), String> {
+    let out = provider.exec(state, &bash_command(&linux_install_script(paths)))?;
+    if !out.stdout.contains(LINUX_HANDOVER_READY) {
+        return Err(format!(
+            "the guest would not take the launcher and the desktop entries: {}{}",
+            out.stdout.trim(),
+            out.stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_windows(
+    provider: &dyn Provider,
+    state: &RunState,
+    store: &Store,
+    target: Target,
+    paths: &GuestPaths,
+) -> Result<(), String> {
     let scratch = store.run_dir(target).join("handover");
     std::fs::create_dir_all(&scratch)
         .map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
@@ -365,13 +592,188 @@ mod tests {
         );
     }
 
-    /// Nothing is written into a Linux guest, which has neither the backend
-    /// problem nor a desktop to put a shortcut on.
+    fn linux_paths(textures: bool) -> GuestPaths {
+        crate::guest::artifacts::guest_paths(Target::Linux, "sunlit-earth", "e2e-1a2b", textures)
+    }
+
+    /// The Linux launcher exists for the opposite reason to the Windows one:
+    /// there is no backend to set, because Mesa answers GL in the guest, and
+    /// setting one anyway would be the app running differently there than it
+    /// does under the suite.
     #[test]
-    fn a_linux_guest_gets_nothing() {
+    fn the_linux_launcher_sets_no_backend_and_execs_the_staged_binary() {
+        let script = linux_launcher_script(&linux_paths(true));
+        assert!(!script.contains("SLINT_BACKEND"), "{script}");
+        assert!(
+            script.contains("exec \"${app}\" \"$@\""),
+            "the app is what it ends in: {script}"
+        );
+        assert!(
+            script.contains("app='/var/lib/sunlit-e2e/bin/sunlit-earth'"),
+            "{script}"
+        );
+        assert!(script.starts_with("#!/usr/bin/env bash\n"), "{script}");
+        // LF, because a shell script with CRLF fails on its shebang.
+        assert!(!script.contains('\r'), "{script}");
+    }
+
+    /// Same rule as the job script and the Windows launcher: name the textures
+    /// directory when this boot staged one, and say nothing when it did not.
+    #[test]
+    fn the_linux_launcher_names_the_textures_only_when_they_were_staged() {
+        assert!(
+            linux_launcher_script(&linux_paths(true))
+                .contains("export SUNLIT_EARTH_TEXTURES='/var/lib/sunlit-e2e/textures'"),
+            "with textures"
+        );
+        assert!(
+            !linux_launcher_script(&linux_paths(false)).contains("SUNLIT_EARTH_TEXTURES"),
+            "without textures"
+        );
+    }
+
+    /// Clicked from an icon there is no terminal, so a failure would be
+    /// invisible; run from a shell a log file would hide what the terminal was
+    /// about to show. The launcher decides which of the two it is in.
+    #[test]
+    fn the_linux_launcher_keeps_its_output_where_whoever_started_it_can_read_it() {
+        let script = linux_launcher_script(&linux_paths(true));
+        assert!(script.contains("if [ ! -t 1 ]; then"), "{script}");
+        assert!(
+            script.contains("exec >>'/var/lib/sunlit-e2e/run-app.log' 2>&1"),
+            "{script}"
+        );
+        // And the redirect is decided before anything that could fail runs.
+        let redirect = script.find("-t 1").expect("the terminal test");
+        let missing = script.find("is not here").expect("the missing-app branch");
+        assert!(redirect < missing, "{script}");
+    }
+
+    /// A desktop entry is run with whatever working directory the session had,
+    /// so every path in one has to be absolute, and the app is reached through
+    /// the launcher rather than directly for the same reason it is on Windows.
+    #[test]
+    fn both_desktop_entries_are_absolute_and_declare_themselves() {
+        for entry in [app_entry(), folder_entry()] {
+            assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
+            assert!(entry.contains("Type=Application"), "{entry}");
+            assert!(entry.contains("Terminal=false"), "{entry}");
+            let exec = entry
+                .lines()
+                .find_map(|line| line.strip_prefix("Exec="))
+                .expect("an Exec line");
+            assert!(
+                exec.split_whitespace()
+                    .last()
+                    .is_some_and(|arg| arg.starts_with('/')),
+                "{exec}"
+            );
+        }
+        assert!(app_entry().contains(&format!("Exec={}", linux_launcher_path())));
+        assert!(app_entry().contains(&format!("Name={ENTRY_NAME}")));
+        // The folder entry is an application entry running `xdg-open` rather
+        // than a `Type=Link`: a menu shows nothing but application entries, and
+        // GNOME's menu is the whole hand-over there.
+        assert!(
+            folder_entry().contains(&format!(
+                "Exec=xdg-open {}",
+                crate::provider::GUEST_ROOT_LINUX
+            )),
+            "{}",
+            folder_entry()
+        );
+    }
+
+    /// Every one of the three files the script writes ends up somewhere the
+    /// desktop looks, under a name that is the same in both places.
+    #[test]
+    fn the_install_script_writes_the_launcher_and_both_entries_where_each_is_found() {
+        let script = linux_install_script(&linux_paths(true));
+        assert!(script.contains("cat > \"${launcher}\""), "{script}");
+        assert!(
+            script.contains("apps=\"${HOME}/.local/share/applications\""),
+            "{script}"
+        );
+        for entry in [APP_ENTRY, FOLDER_ENTRY] {
+            assert!(
+                script.contains(&format!("cat > \"${{apps}}/{entry}\"")),
+                "{entry}"
+            );
+        }
+        // Both names go through the one loop that copies onto the desktop, so
+        // the menu copy and the desktop copy cannot end up named differently.
+        assert!(
+            script.contains(&format!("for entry in {APP_ENTRY} {FOLDER_ENTRY}; do")),
+            "{script}"
+        );
+        assert!(
+            script.contains("cp -f \"${apps}/${entry}\" \"${desktop}/${entry}\""),
+            "{script}"
+        );
+        // The desktop directory is asked for, and the answer that means "no
+        // user-dirs at all" is not treated as a desktop.
+        assert!(script.contains("xdg-user-dir DESKTOP"), "{script}");
+        assert!(
+            script.contains("[ \"${desktop}\" = \"${HOME}\" ]"),
+            "{script}"
+        );
+        // Nothing in it needs root: the account it runs as owns both the home
+        // directory and the guest root.
+        assert!(!script.contains("sudo"), "{script}");
+    }
+
+    /// The two blessings, and the fact that neither may fail the hand-over: a
+    /// desktop that ignores one of them is the normal case rather than an error.
+    #[test]
+    fn the_desktop_entries_are_blessed_the_way_each_desktop_asks_for() {
+        let script = linux_install_script(&linux_paths(true));
+        assert!(
+            script.contains("chmod 0755 \"${desktop}/${entry}\""),
+            "{script}"
+        );
+        assert!(script.contains("metadata::trusted true"), "{script}");
+        let gio = script
+            .lines()
+            .find(|line| line.contains("metadata::trusted"))
+            .expect("the gio line");
+        assert!(gio.trim_end().ends_with("|| true"), "{gio}");
+    }
+
+    /// One token again, and for the same reason the Windows side has one: the
+    /// script has quotes, newlines and heredocs in it, and it has to survive
+    /// both a local command line and the guest's login shell.
+    #[test]
+    fn the_linux_guest_command_carries_the_script_base64_encoded() {
+        let command = bash_command(&linux_install_script(&linux_paths(true)));
+        assert!(command.contains("base64 -d | bash -s"), "{command}");
+        let encoded = command
+            .split('\'')
+            .nth(1)
+            .expect("the payload is the quoted part");
+        assert!(!encoded.is_empty());
+        assert!(
+            encoded
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='),
+            "{encoded}"
+        );
+    }
+
+    /// A Linux guest is asked exactly once, and the answer is the marker rather
+    /// than the exit code: the shell that runs this is the guest's login shell,
+    /// and what a failed heredoc leaves behind is a zero exit and no files.
+    #[test]
+    fn a_linux_guest_is_asked_for_the_launcher_and_the_entries() {
         let store = Store::new(r"C:\vm store");
-        let runner = crate::runner::fake::FakeRunner::default();
-        let provider = crate::provider::hyperv::HypervProvider::new(
+        let runner = crate::runner::fake::FakeRunner::default().on(
+            "base64 -d",
+            crate::runner::CommandOutput {
+                code: Some(0),
+                stdout: format!("{LINUX_HANDOVER_READY}\n"),
+                stderr: String::new(),
+            },
+        );
+        let provider = crate::provider::qemu::QemuProvider::new(
             &runner,
             &store,
             crate::provider::target::HostOs::Windows,
@@ -384,9 +786,29 @@ mod tests {
             0,
         );
         assert_eq!(
-            prepare(&provider, &state, &store, Target::Linux, &paths(true)),
+            prepare(&provider, &state, &store, Target::Linux, &linux_paths(true)),
             Ok(())
         );
+        assert_eq!(runner.calls().len(), 1, "{:?}", runner.calls());
+
+        // And a guest that answered without the marker is a failure to report,
+        // not a hand-over to claim.
+        let silent = crate::runner::fake::FakeRunner::default().on(
+            "base64 -d",
+            crate::runner::CommandOutput {
+                code: Some(0),
+                stdout: String::new(),
+                stderr: "bash: xdg-user-dir: not found".to_owned(),
+            },
+        );
+        let provider = crate::provider::qemu::QemuProvider::new(
+            &silent,
+            &store,
+            crate::provider::target::HostOs::Windows,
+        );
+        let err = prepare(&provider, &state, &store, Target::Linux, &linux_paths(true))
+            .expect_err("no marker is no hand-over");
+        assert!(err.contains("xdg-user-dir"), "{err}");
     }
 
     /// A Linux guest is looked at through VNC, so there is no enhanced session

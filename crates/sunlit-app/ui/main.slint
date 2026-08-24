@@ -68,11 +68,12 @@ export component MainWindow inherits Window {
     in-out property <float> nightglow-intensity: 0.25;
     in-out property <float> nightglow-balance: 0.37;
     in-out property <float> nightglow-falloff: 15.0;
+    in-out property <float> sky-fov: 140.0;
     in-out property <float> star-intensity: 2.0;
     in-out property <float> star-size: 1.0;
     in-out property <float> star-glow-strength: 0.5;
     in-out property <float> star-glow-radius: 8.0;
-    in-out property <float> star-contrast: 0.0;
+    in-out property <float> star-contrast: 0.3;
     in-out property <float> star-mag-limit: 6.5;
 
     in property <float> zoom-display-distance: 8.0;
@@ -635,6 +636,26 @@ export component MainWindow inherits Window {
                         title: "Celestial";
                         VerticalLayout {
                             spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Sky field of view";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                sky-fov-slider := Slider {
+                                    minimum: 60.0;
+                                    maximum: 180.0;
+                                    value <=> root.sky-fov;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.sky-fov) + "°";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
 
                             HorizontalLayout {
                                 spacing: 4px;

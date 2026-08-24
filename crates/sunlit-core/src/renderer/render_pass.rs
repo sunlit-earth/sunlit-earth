@@ -75,7 +75,7 @@ pub(super) fn write_uniforms(
     camera.yaw_deg = cam.yaw_deg;
     camera.pitch_deg = cam.pitch_deg;
     let mvp = camera.mvp_matrix(aspect);
-    let sky_view_projection = camera.projection_matrix(aspect) * camera.view_matrix();
+    let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();
     let sky_rotation = inputs.sky.world_from_eqj;
     let uniforms = Uniforms {
@@ -116,7 +116,7 @@ pub(super) fn write_uniforms(
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
-        sky_view_projection: sky_view_projection.to_cols_array(),
+        sky_view: sky_view.to_cols_array(),
         world_from_eqj: [
             sky_rotation.x_axis.extend(0.0).into(),
             sky_rotation.y_axis.extend(0.0).into(),
@@ -130,7 +130,7 @@ pub(super) fn write_uniforms(
         star_glow_strength: params.star_glow_strength,
         star_glow_radius: params.star_glow_radius,
         star_contrast: params.star_contrast,
-        _pad6: 0.0,
+        sky_fov: params.sky_fov,
         _pad7: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));

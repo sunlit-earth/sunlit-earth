@@ -18,7 +18,7 @@ There is no fullscreen pass in the tree; every pipeline draws the shared UV sphe
 
 ## Key Design Decisions
 
-1. **A fullscreen triangle, drawn first, no depth interaction.** The vertex shader emits the standard oversized triangle; the fragment shader takes the NDC position, undoes the screen offset, unprojects through the inverse projection, rotates by the transposed view rotation and then by the transposed `R_world_from_eqj` into EQJ, and converts the direction to equirectangular UV. This is exact at every zoom and immune to the far plane, which is why it wins over an inside-out sphere whose radius would have to thread between the maximum camera distance and the far plane forever (research document, section 8.2). Stars draw second and sit on top; the Earth and everything after overdraw it by depth or order as today.
+1. **A fullscreen triangle, drawn first, no depth interaction.** The vertex shader emits the standard oversized triangle; the fragment shader takes the NDC position, undoes the screen offset, analytically inverts phase A's stereographic sky projection, rotates by the transposed view rotation and then by the transposed `R_world_from_eqj` into EQJ, and converts the direction to equirectangular UV. This is exact at every zoom and immune to the far plane, which is why it wins over an inside-out sphere whose radius would have to thread between the maximum camera distance and the far plane forever (research document, section 8.2). Stars draw second and sit on top; the Earth and everything after overdraw it by depth or order as today.
 
 2. **The wrap seam is handled with explicit gradients from the start.** The atan2-derived U coordinate jumps a full texture width at the wrap column, which makes hardware mip selection pick the smallest level for one pixel column; the shader computes UV gradients from the direction's derivatives (or equivalently samples with `textureSampleGrad` using gradients built from a continuous auxiliary coordinate) rather than shipping the artifact and patching it later. One golden is framed to cross the seam so the fix is pinned, not asserted.
 
@@ -51,7 +51,7 @@ Offline prep with the exposure decided against screenshots, provenance and credi
 
 ### Step 2: The fullscreen pipeline
 
-The triangle, ray reconstruction with offset compensation, the EQJ rotation, equirect sampling with explicit gradients, draw placement before the stars, and an engine test that a frame arrives with the layer configured against a small fixture panorama.
+The triangle, inverse stereographic ray reconstruction with offset compensation, the EQJ rotation, equirect sampling with explicit gradients, draw placement before the stars, and an engine test that a frame arrives with the layer configured against a small fixture panorama.
 
 ### Step 3: Slot, cap, and parameter
 

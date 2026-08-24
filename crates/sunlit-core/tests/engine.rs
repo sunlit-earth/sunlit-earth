@@ -191,6 +191,30 @@ fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
     );
 }
 
+#[test]
+fn wider_sky_fov_reveals_more_catalog_directions() {
+    const CLEAR: [u8; 4] = [5, 5, 13, 255];
+
+    let harness = Harness::start(|config| config.params.sky_fov = 60.0);
+    let (narrow_sky, _, _) = harness.next_frame();
+    let mut wide_params = test_params();
+    wide_params.sky_fov = 140.0;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(wide_params)));
+    let (wide_sky, _, _) = harness.next_frame();
+
+    let newly_visible_pixels = narrow_sky
+        .chunks_exact(4)
+        .zip(wide_sky.chunks_exact(4))
+        .filter(|(narrow, wide)| *narrow == CLEAR && *wide != CLEAR)
+        .count();
+    assert!(
+        newly_visible_pixels > 50,
+        "wider sky FOV revealed only {newly_visible_pixels} background pixels"
+    );
+}
+
 /// Two small texture files and a cache directory to go with them.
 ///
 /// The resolution tests need file-backed slots, which the headless config

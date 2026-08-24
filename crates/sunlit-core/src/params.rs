@@ -61,6 +61,7 @@ pub struct SceneParams {
     pub nightglow_balance: f32,
 
     // Celestial background
+    pub sky_fov: f32,
     pub star_intensity: f32,
     pub star_size: f32,
     pub star_glow_strength: f32,
@@ -118,6 +119,7 @@ impl SceneParams {
             nightglow_intensity: config.nightglow_intensity,
             nightglow_falloff: config.nightglow_falloff,
             nightglow_balance: config.nightglow_balance,
+            sky_fov: config.sky_fov,
             star_intensity: config.star_intensity,
             star_size: config.star_size,
             star_glow_strength: config.star_glow_strength,
@@ -170,6 +172,7 @@ impl SceneParams {
         config.nightglow_intensity = self.nightglow_intensity;
         config.nightglow_falloff = self.nightglow_falloff;
         config.nightglow_balance = self.nightglow_balance;
+        config.sky_fov = self.sky_fov;
         config.star_intensity = self.star_intensity;
         config.star_size = self.star_size;
         config.star_glow_strength = self.star_glow_strength;
@@ -232,6 +235,7 @@ impl SceneParams {
             nightglow_intensity: q(self.effective_nightglow_intensity()),
             nightglow_falloff: q(self.nightglow_falloff),
             nightglow_balance: q(self.nightglow_balance),
+            sky_fov: q(self.sky_fov),
             star_intensity: q(self.star_intensity),
             star_size: q(self.star_size),
             star_glow_strength: q(self.star_glow_strength),
@@ -284,6 +288,7 @@ pub struct ParamsDigest {
     pub nightglow_intensity: i32,
     pub nightglow_falloff: i32,
     pub nightglow_balance: i32,
+    pub sky_fov: i32,
     pub star_intensity: i32,
     pub star_size: i32,
     pub star_glow_strength: i32,
@@ -672,6 +677,13 @@ mod tests {
                 },
             ),
             (
+                "sky_fov",
+                SceneParams {
+                    sky_fov: 160.0,
+                    ..base
+                },
+            ),
+            (
                 "star_intensity",
                 SceneParams {
                     star_intensity: 0.8,
@@ -695,7 +707,7 @@ mod tests {
             (
                 "star_glow_radius",
                 SceneParams {
-                    star_glow_radius: 8.0,
+                    star_glow_radius: 9.0,
                     ..base
                 },
             ),

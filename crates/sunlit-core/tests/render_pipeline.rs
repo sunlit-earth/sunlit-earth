@@ -50,7 +50,7 @@ struct Uniforms {
     _pad3: f32,
     _pad4: f32,
     _pad5: f32,
-    sky_view_projection: [f32; 16],
+    sky_view: [f32; 16],
     world_from_eqj: [[f32; 4]; 3],
     viewport_size: [f32; 2],
     screen_offset: [f32; 2],
@@ -60,7 +60,7 @@ struct Uniforms {
     star_glow_strength: f32,
     star_glow_radius: f32,
     star_contrast: f32,
-    _pad6: f32,
+    sky_fov: f32,
     _pad7: f32,
 }
 
@@ -558,7 +558,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
-        sky_view_projection: test_mvp(size, size),
+        sky_view: glam::Mat4::IDENTITY.to_cols_array(),
         world_from_eqj: [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -571,8 +571,8 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         star_size: 1.0,
         star_glow_strength: 0.5,
         star_glow_radius: 8.0,
-        star_contrast: 0.0,
-        _pad6: 0.0,
+        star_contrast: 0.3,
+        sky_fov: 140.0,
         _pad7: 0.0,
     }
 }
@@ -703,7 +703,7 @@ struct Uniforms {
     _pad3: f32,
     _pad4: f32,
     _pad5: f32,
-    sky_view_projection: mat4x4<f32>,
+    sky_view: mat4x4<f32>,
     world_from_eqj: mat3x3<f32>,
     viewport_size: vec2<f32>,
     screen_offset: vec2<f32>,
@@ -713,7 +713,7 @@ struct Uniforms {
     star_glow_strength: f32,
     star_glow_radius: f32,
     star_contrast: f32,
-    _pad6: f32,
+    sky_fov: f32,
     _pad7: f32,
 };
 
@@ -776,6 +776,7 @@ fn main() {
     output[38] = uniforms.star_glow_strength;
     output[39] = uniforms.star_glow_radius;
     output[40] = uniforms.star_contrast;
+    output[41] = uniforms.sky_fov;
 }
 ";
 
@@ -845,7 +846,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
-        sky_view_projection: mvp,
+        sky_view: mvp,
         world_from_eqj: [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -859,7 +860,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         star_glow_strength: 0.35,
         star_glow_radius: 6.0,
         star_contrast: 0.4,
-        _pad6: 0.0,
+        sky_fov: 123.0,
         _pad7: 0.0,
     };
 
@@ -871,8 +872,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 41 floats
-    let output_size = (41 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 42 floats
+    let output_size = (42 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1117,6 +1118,11 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (values[40] - 0.4).abs() < eps,
         "star_contrast: got {}, expected 0.4",
         values[40]
+    );
+    assert!(
+        (values[41] - 123.0).abs() < eps,
+        "sky_fov: got {}, expected 123.0",
+        values[41]
     );
 }
 

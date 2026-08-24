@@ -32,7 +32,7 @@ struct Uniforms {
     _pad3: f32,                    // 4 bytes, offset 196
     _pad4: f32,                    // 4 bytes, offset 200
     _pad5: f32,                    // 4 bytes, offset 204
-    sky_view_projection: mat4x4<f32>, // 64 bytes, offset 208
+    sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
     viewport_size: vec2<f32>,         // 8 bytes, offset 320
     screen_offset: vec2<f32>,         // 8 bytes, offset 328
@@ -42,7 +42,7 @@ struct Uniforms {
     star_glow_strength: f32,          // 4 bytes, offset 348
     star_glow_radius: f32,            // 4 bytes, offset 352
     star_contrast: f32,               // 4 bytes, offset 356
-    _pad6: f32,                       // 4 bytes, offset 360
+    sky_fov: f32,                     // 4 bytes, offset 360
     _pad7: f32,                       // 4 bytes, offset 364
 };
 
@@ -85,6 +85,7 @@ const STAR_FAINT_CORE_RADIUS_PIXELS: f32 = 0.5;
 const STAR_BRIGHT_CORE_RADIUS_PIXELS: f32 = 1.0;
 const STAR_CORE_EDGE_PIXELS: f32 = 0.55;
 const STAR_HALO_PEAK_AT_FULL_STRENGTH: f32 = 0.2;
+const PI: f32 = 3.141592653589793;
 
 fn star_prominence(magnitude: f32) -> f32 {
     return 1.0 - smoothstep(0.0, 4.0, magnitude);
@@ -123,13 +124,22 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
     let corner = corners[vertex_index];
     let magnitude = in.color_magnitude.a * 10.0 - 2.0;
     let world_direction = uniforms.world_from_eqj * in.direction;
-    var clip = uniforms.sky_view_projection * vec4<f32>(world_direction, 0.0);
-    let visible = clip.w > 0.0 && magnitude <= uniforms.star_mag_limit;
+    let view_direction = normalize((uniforms.sky_view * vec4<f32>(world_direction, 0.0)).xyz);
+    let theta = acos(clamp(-view_direction.z, -1.0, 1.0));
+    let transverse_length = length(view_direction.xy);
+    var radial_direction = vec2<f32>(0.0);
+    if transverse_length > 0.000001 {
+        radial_direction = view_direction.xy / transverse_length;
+    }
+    let projected_radius = tan(min(theta, PI - 0.001) * 0.5);
+    let edge_radius = tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let center = radial_direction * projected_radius / edge_radius * vec2<f32>(1.0, aspect);
+    let visible = theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
     let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
     let sprite_radius = star_sprite_radius_pixels(magnitude, pixel_scale);
-    let sprite_offset = (uniforms.screen_offset
-        + corner * (2.0 * sprite_radius / uniforms.viewport_size)) * clip.w;
-    clip = vec4<f32>(clip.xy + sprite_offset, clip.w, clip.w);
+    let sprite_offset = corner * (2.0 * sprite_radius / uniforms.viewport_size);
+    let clip = vec4<f32>(center + uniforms.screen_offset + sprite_offset, 1.0, 1.0);
 
     var out: StarOutput;
     out.clip_position = select(vec4<f32>(2.0, 2.0, 1.0, 1.0), clip, visible);

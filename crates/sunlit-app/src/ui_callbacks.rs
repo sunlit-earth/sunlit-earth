@@ -315,6 +315,7 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_nightglow_intensity(params.nightglow_intensity);
     window.set_nightglow_falloff(params.nightglow_falloff);
     window.set_nightglow_balance(params.nightglow_balance);
+    window.set_sky_fov(params.sky_fov);
     window.set_star_intensity(params.star_intensity);
     window.set_star_size(params.star_size);
     window.set_star_glow_strength(params.star_glow_strength);
@@ -372,6 +373,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         nightglow_intensity: window.get_nightglow_intensity(),
         nightglow_falloff: window.get_nightglow_falloff(),
         nightglow_balance: window.get_nightglow_balance(),
+        sky_fov: window.get_sky_fov(),
         star_intensity: window.get_star_intensity(),
         star_size: window.get_star_size(),
         star_glow_strength: window.get_star_glow_strength(),

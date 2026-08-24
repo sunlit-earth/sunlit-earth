@@ -196,6 +196,8 @@ pub struct AppConfig {
     pub nightglow_balance: f32,
 
     // Celestial background
+    /// Horizontal field of view for the stereographic sky lens, in degrees.
+    pub sky_fov: f32,
     /// Display brightness gain for stars and naked eye planets. A value of
     /// `1.0` is the renderer's neutral artistic exposure, while zero disables
     /// the sprite draw.
@@ -287,11 +289,12 @@ impl Default for AppConfig {
             nightglow_intensity: 0.25,
             nightglow_falloff: 15.0,
             nightglow_balance: 0.37,
+            sky_fov: 140.0,
             star_intensity: 2.0,
             star_size: 1.0,
             star_glow_strength: 0.5,
             star_glow_radius: 8.0,
-            star_contrast: 0.0,
+            star_contrast: 0.3,
             star_mag_limit: 6.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
@@ -618,12 +621,17 @@ mod tests {
     }
 
     #[test]
+    fn default_sky_fov_is_reviewed_wide_angle() {
+        assert_relative_eq!(AppConfig::default().sky_fov, 140.0);
+    }
+
+    #[test]
     fn default_star_tuning_uses_balanced_profile() {
         let config = AppConfig::default();
         assert_relative_eq!(config.star_size, 1.0);
         assert_relative_eq!(config.star_glow_strength, 0.5);
         assert_relative_eq!(config.star_glow_radius, 8.0);
-        assert_relative_eq!(config.star_contrast, 0.0);
+        assert_relative_eq!(config.star_contrast, 0.3);
     }
 
     #[test]
@@ -633,12 +641,18 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_missing_sky_fov_uses_reviewed_wide_angle() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.sky_fov, 140.0);
+    }
+
+    #[test]
     fn deserialize_missing_star_tuning_uses_balanced_profile() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.star_size, 1.0);
         assert_relative_eq!(config.star_glow_strength, 0.5);
         assert_relative_eq!(config.star_glow_radius, 8.0);
-        assert_relative_eq!(config.star_contrast, 0.0);
+        assert_relative_eq!(config.star_contrast, 0.3);
     }
 
     #[test]
@@ -718,6 +732,7 @@ mod tests {
             nightglow_intensity: 0.5,
             nightglow_falloff: 6.0,
             nightglow_balance: 0.3,
+            sky_fov: 110.0,
             star_intensity: 0.7,
             star_size: 1.4,
             star_glow_strength: 0.6,
@@ -848,6 +863,7 @@ mod tests {
             nightglow_intensity: 0.4,
             nightglow_falloff: 5.0,
             nightglow_balance: 0.6,
+            sky_fov: 155.0,
             star_intensity: 0.8,
             star_size: 1.6,
             star_glow_strength: 0.5,

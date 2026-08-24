@@ -290,6 +290,24 @@ fn golden_close_up() {
     check_golden("close_up", &params);
 }
 
+#[test]
+fn golden_night_side_with_stars() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.85,
+        star_mag_limit: 6.0,
+        ..base
+    };
+    check_golden("night_side_with_stars", &params);
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a
@@ -360,7 +378,13 @@ fn every_golden_case_is_distinguishable() {
         return;
     }
 
-    let names = ["default", "nightglow", "rayleigh", "close_up"];
+    let names = [
+        "default",
+        "nightglow",
+        "rayleigh",
+        "close_up",
+        "night_side_with_stars",
+    ];
     let mut images = Vec::new();
     for name in names {
         let path = dir.join(format!("{name}.png"));

@@ -29,6 +29,7 @@ cargo run -- render --output x.png --width 640 --height 360   # Headless render,
 cargo llvm-cov --html              # HTML coverage report (target/llvm-cov/html/)
 cargo xtask bake-icon              # Rasterize the icon SVGs into the committed outputs under assets/icon/baked/
 cargo xtask bake-icon --review DIR # The small-size contact sheet, for the judgment no test can make
+cargo xtask bake-stars --input hyg_v44.csv --output crates/sunlit-core/src/assets/stars/hyg_v4_4_mag7.bin
 
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden  # Regenerate goldens for this machine's adapter
 ```
@@ -146,7 +147,7 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 
 - **Commands**: `UpdateParams`, `SetPreviewSize`, `SetPreviewEnabled`, `RenderWallpaperNow`, `RenderToFile`, `ExportPixels`, `SetTextureResolution`, `ReportMemory`, `SetAutoRefresh`, `Poke`, `Shutdown`.
 - **Events**: `PreviewFrame { rgba, width, height }`, `TexturesReady`, `WallpaperSet(Result)`, `Status(String)`.
-- **The loop never sleeps on wall time to decide what is due.** It blocks on the command channel with a 50 ms timeout and, on each wake, asks `clock.elapsed()` what is due: the texture drain (5 s), the sun-position refresh (120 s), the cloud poll, the memory metrics sample (600 s), and the auto-refresh export. `Schedule::due` recomputes its deadline from `now` rather than accumulating, so a long stall produces one run and not a burst of catch-up runs.
+- **The loop never sleeps on wall time to decide what is due.** It blocks on the command channel with a 50 ms timeout and, on each wake, asks `clock.elapsed()` what is due: the texture drain (5 s), the sky state refresh (120 s), the cloud poll, the memory metrics sample (600 s), and the auto-refresh export. `Schedule::due` recomputes its deadline from `now` rather than accumulating, so a long stall produces one run and not a burst of catch-up runs.
 - **Injected `Clock`.** `SystemClock` in production, `MockClock` in tests. `MockClock` advances UTC too, so simulated days really do rotate the Earth. This is what makes 14 simulated days run in 13 seconds.
 - **Injected `CloudSource`.** `HttpCloudSource` in production, fixtures in tests. A dedicated cloud worker thread does network I/O and JPEG decoding and never touches the GPU; it parks frames in the mailbox and pokes the engine, which uploads on its own schedule. A poll skipped because the worker is busy retries on the next tick. Which variant it fetches follows the texture resolution rather than the quality tier; see the Texture resolution section.
 - **Injected `WallpaperSink`.** `SystemWallpaper` writes a PNG and calls the Win32 API; `CountingSink` lets the soak test run for simulated weeks without touching the desktop.
@@ -155,10 +156,18 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 
 ### Parameters (`sunlit_core::params`)
 
-`SceneParams` is the single description of what to draw: camera, texture selection, sample count, lighting, clouds, atmosphere, color correction, and the datetime input. There are exactly two translation points:
+`SceneParams` is the single description of what to draw: camera, texture selection, sample count, lighting, clouds, atmosphere, celestial controls, color correction, and the datetime input. There are exactly two translation points:
 
 1. `ui_callbacks::read_params_from_window` / `apply_params_to_window` in the app.
 2. `renderer::render_pass::write_uniforms` in core.
+
+### Celestial sky
+
+`scene::sky::SkyState` is the one astronomy result for each frame. From the selected datetime it builds the J2000 equatorial to world rotation, rotates a geocentric Astronomy Engine sun vector, and computes directions and apparent magnitudes for Mercury, Venus, Mars, Jupiter, and Saturn. The engine passes the whole state to the renderer and the dirty check compares the sun plus two quantized rotation basis vectors. The older subsolar calculation in `scene::sun` remains as an independent equivalence test.
+
+`cargo xtask bake-stars` reads HYG v4.4, excludes its `Sol` row, propagates proper motion to epoch 2026.0, bakes B minus V color and magnitude, and writes 16 byte records after a 12 byte header. `assets::stars` validates the embedded blob and lends its payload directly to wgpu as the static instance buffer. The blob with 15,597 stars and its `ATTRIBUTION.md` ship together under `assets/stars/`; xtask does not depend on `sunlit-core`.
+
+The star pipeline draws first. Four generated triangle strip vertices expand every catalog record into a Gaussian sprite with a fixed size in pixels, transformed by the shared sky rotation and camera rotation. Magnitude filtering happens in the vertex shader and brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline and is rewritten whenever `SkyState` refreshes. Intensity zero omits both draws. Earth then covers the sky, followed by clouds and the atmosphere shells.
 
 Adding a shader parameter means: the `.slint` property and slider, the `AppConfig` field, `SceneParams` + its `ParamsDigest`, `Uniforms`, and the WGSL. The bridge functions and the dirty check follow from the struct. `params.rs` has a table-driven test that walks every parameter and asserts it changes the digest, so forgetting the dirty check is a test failure rather than a stale-frame bug.
 
@@ -184,9 +193,11 @@ Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass`
 
 ### UI (`ui/main.slint`)
 
-`MainWindow`: resizable split layout, controls panel in a `ScrollView`. Top-level controls are "Set as Wallpaper", "Load Defaults" and "Reset", and a 3x3 grid of camera presets. Below is a collapsible "Advanced" section with `GroupBox`es for Camera Position, Camera Orientation, Framing, Date / Time, Clouds, Atmosphere, Lighting, Color Correction, and Rendering. Camera properties are `in-out` with `<=>` slider bindings. A `TouchArea` over the image handles drag and scroll.
+`MainWindow`: resizable split layout, controls panel in a `ScrollView`. Top-level controls are "Set as Wallpaper", "Load Defaults" and "Reset", and a 3x3 grid of camera presets. Below is a collapsible "Advanced" section with `GroupBox`es for Camera Position, Camera Orientation, Framing, Date / Time, Clouds, Celestial, Atmosphere, Lighting, Color Correction, and Rendering. Camera properties are `in-out` with `<=>` slider bindings. A `TouchArea` over the image handles drag and scroll.
 
-`TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
+`AboutWindow` is an ordinary exported window component. `about::AboutController` creates it on first use, supplies the package version and one attribution list owned by Rust, then reuses the handle. The settings control and tray callback clone the same controller.
+
+`TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, About, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
 
 ### The app icon
 
@@ -247,7 +258,7 @@ The rule is "the highest supported count at most the requested one, otherwise th
 `shaders/blend.wgsl` and `shaders/sphere.wgsl` are concatenated at load time by `renderer/gpu_setup.rs`.
 
 - `blend.wgsl`: `blend_fragment()` (day/night blending with diffuse shading and a per-channel `min(night, day)` clamp), plus `apply_gamma()` and `adjust_saturation()`.
-- `sphere.wgsl`: vertex transform, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). Draw order: Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green.
+- `sphere.wgsl`: star sprite and sphere vertex transforms, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). Draw order: Stars and Planets, Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green.
 
 ### Wallpaper export
 

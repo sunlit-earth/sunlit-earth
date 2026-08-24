@@ -93,12 +93,24 @@ Validator against `41ac458..897abe7`: one MAJOR, seven MINORs, zero departures. 
 
 ### Fix round, 2026-08-24
 
-M1 is closed by running the suite where those cases are live. `cargo xtask e2e --target linux --desktop kde`: 10 passed, 0 failed, 0 ignored, 48.65 s. `cargo xtask e2e --target linux --desktop xfce`: 10 passed, 0 failed, 0 ignored, 49.00 s. Both runs include `test_tray_hide_show_cycle`, `test_tray_mode_ipc_lifecycle` and `test_single_instance_second_exits`, which are the three that skip in a session with no tray, and both guests were torn down afterwards.
+M1 is closed by running the suite where those cases are live. `cargo xtask e2e --target linux --desktop kde`: 10 passed, 0 failed, 0 ignored, 48.65 s. `cargo xtask e2e --target linux --desktop xfce`: 10 passed, 0 failed, 0 ignored, 49.00 s. Both runs include `test_tray_mode_ipc_lifecycle` and `test_single_instance_second_exits`, the two cases that skip in a session with no tray, and `test_tray_hide_show_cycle`, which does not skip but falls back to windowed mode where there is no tray and so ran as a tray case only here. Both guests were torn down afterwards.
 
-- m3: the roadmap item names the small-raster judgement as the half still open.
+- m3: the roadmap item names the small-raster judgment as the half still open.
 - m4: the roadmap and CLAUDE.md now say the KDE launcher search returned the running window rather than the installed entry, and `install-user.sh` rebuilds sycoca through whichever of `kbuildsycoca6` and `kbuildsycoca5` exists. Checked in the guest's Plasma 6 session: the first is there, the second is not, and a bare invocation exits zero.
-- m5: documented rather than traded away, with the artifact measured. On the baked 64 px raster 7.4% of pixels carry partial alpha and lose a mean of 26.8/255 on their brightest channel, which is 1.98/255 over the whole icon; composited and scaled to the 16 px a title bar draws, that is a mean of 1.67/255 with three pixels off by up to 50. Not visible at normal size, and the alternative costs the vector source that exists because the backend asks for 64 times the scale factor.
+- m5: documented rather than traded away, with the artifact measured. On the baked 64 px raster 7.4% of pixels carry partial alpha and lose a mean of 26.8/255 on their brightest channel, which is 1.98/255 over the whole icon; composited and scaled to the 16 px a title bar draws, that is a mean of 1.67/255 with seven pixels off by up to 50. Not visible at normal size. Switching to the baked PNG would not remove it, since every encoded image Slint loads lands in the same premultiplied buffer; the one straight-alpha route is `Image::from_rgba8` from Rust, which the tray already uses, so the raster route would keep the artifact and give up the vector source too.
 - m6: the comment now says what the code does, which is that cargo resolves a `cfg(windows)` build dependency against the host, so the build script gates the call to match.
 - m7: the file is mode 755 in the index.
 
-Open, and not for an agent to close: m1 and m2 need a look at the user's own Windows shell and tray. Criterion 5, the judgement on the 16 and 24 px rasters, is the user's; `bake-icon --review` writes the sheet it is made from.
+Open, and not for an agent to close: m1 and m2 need a look at the user's own Windows shell and tray. Criterion 5, the judgment on the 16 and 24 px rasters, is the user's; `bake-icon --review` writes the sheet it is made from. Also open, and agent-closable: the launcher half of criterion 4, whether Kickoff lists a freshly installed entry after the sycoca rebuild, which one KDE guest boot with `install-user.sh` and a menu screenshot would answer.
+
+### Round 2, 2026-08-24
+
+Validator against `897abe7..8219d1a`: zero MAJORs, five MINORs, all documentation accuracy. Every round 1 fix verified: the M1 guest logs were corroborated against the xtask's own results directory under the VM store, the sycoca guard was read for correctness under `set -euo pipefail`, the premultiply measurements were reproduced from the scripts, and the mode bit was checked in the tree. Gates re-run independently on Windows and green.
+
+- NEW-1: the recorded alternative to the window icon's double premultiply (feeding the baked PNG) would not work, because every encoded image Slint loads lands premultiplied; the record above and CLAUDE.md now name `Image::from_rgba8` as the one straight-alpha route.
+- NEW-2: `test_tray_hide_show_cycle` does not skip without a tray, it falls back to windowed mode; the fix-round record above is corrected.
+- NEW-3: the 16 px deviation touches seven pixels, not three; corrected above and in CLAUDE.md.
+- NEW-4: the open list omitted the launcher half of criterion 4; it is recorded above.
+- NEW-5: three new occurrences of the British "judgement"; the files this plan touches now spell it "judgment".
+
+Closed by the user on 2026-08-24, after the round: criterion 5 (the 16 and 24 px rasters judged good enough to ship, with the 16 px variant noted as a candidate for a later nudge) and m1 and m2 (the user confirmed the mark on their own Windows and Linux desktops).

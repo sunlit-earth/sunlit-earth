@@ -66,7 +66,7 @@ enum Command {
     /// committed; rerun this when a source SVG changes.
     BakeIcon {
         /// Write the small-size review sheet into this directory instead of
-        /// baking. For the judgement a test cannot make.
+        /// baking. For the judgment a test cannot make.
         #[arg(long, value_name = "DIR")]
         review: Option<std::path::PathBuf>,
     },

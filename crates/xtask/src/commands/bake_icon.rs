@@ -195,7 +195,7 @@ fn png(rgba: Vec<u8>, size: u32) -> Result<Vec<u8>, String> {
 /// The contact sheet for the small-size taste check: every [`REVIEW_SIZES`]
 /// raster at 1x and magnified, on both of [`REVIEW_BACKDROPS`].
 ///
-/// The judgement this supports cannot be automated, and the sheet does not try
+/// The judgment this supports cannot be automated, and the sheet does not try
 /// to make it: what it removes is the part that is only tedious, which is
 /// getting the same rasters onto both fields at a scale where the grid is
 /// visible, every time an SVG is nudged.

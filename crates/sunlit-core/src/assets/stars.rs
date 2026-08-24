@@ -30,6 +30,30 @@ impl StarCatalog<'_> {
     pub fn instance_bytes(&self) -> &[u8] {
         self.payload
     }
+
+    /// Number of leading records at or brighter than `magnitude_limit`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the magnitude is clamped to the encoded byte range"
+    )]
+    pub fn visible_count(&self, magnitude_limit: f32) -> u32 {
+        let encoded_limit =
+            (((magnitude_limit.clamp(-2.0, 8.0) + 2.0) / 10.0) * 255.0).round() as u8;
+        let mut low = 0_usize;
+        let mut high = usize::try_from(self.count)
+            .map_or(self.payload.len() / RECORD_SIZE, |count| count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let magnitude = self.payload[middle * RECORD_SIZE + 15];
+            if magnitude <= encoded_limit {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        u32::try_from(low).map_or(self.count, |count| count)
+    }
 }
 
 /// Why an embedded star catalog could not be read.
@@ -118,6 +142,12 @@ mod tests {
     }
 
     #[test]
+    fn visible_count_uses_the_magnitude_sorted_prefix() {
+        let catalog = parse_catalog(FIXTURE).expect("fixture catalog is valid");
+        assert_eq!(catalog.visible_count(2.0), 2);
+    }
+
+    #[test]
     fn wrong_magic_is_rejected() {
         let mut bytes = FIXTURE.to_vec();
         bytes[0] = b'X';
@@ -185,5 +215,17 @@ mod tests {
                     (-2.0..=7.02).contains(&magnitude)
                 });
         assert!(every_magnitude_is_valid);
+    }
+
+    #[test]
+    fn shipped_magnitudes_are_sorted_brightest_first() {
+        let catalog = embedded_catalog();
+        assert!(
+            catalog
+                .instance_bytes()
+                .chunks_exact(RECORD_SIZE)
+                .map(|record| record[15])
+                .is_sorted()
+        );
     }
 }

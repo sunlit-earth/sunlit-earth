@@ -168,7 +168,6 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     star_pipeline: wgpu::RenderPipeline,
     star_buffer: wgpu::Buffer,
-    star_count: u32,
     planet_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,

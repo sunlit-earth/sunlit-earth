@@ -255,7 +255,6 @@ pub(super) fn create_renderer(
         pipeline,
         star_pipeline,
         star_buffer,
-        star_count: star_catalog.len(),
         planet_buffer,
         vertex_buffer,
         index_buffer,

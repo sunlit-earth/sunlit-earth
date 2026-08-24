@@ -312,7 +312,8 @@ impl<'a> Stars<'a> {
             pipeline: &res.star_pipeline,
             bind_group,
             catalog_buffer: &res.star_buffer,
-            catalog_count: res.star_count,
+            catalog_count: crate::assets::stars::embedded_catalog()
+                .visible_count(params.star_mag_limit),
             planet_buffer: &res.planet_buffer,
         })
     }

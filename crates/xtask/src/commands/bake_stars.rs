@@ -69,6 +69,7 @@ pub fn run(input: &Path, output: &Path) -> Result<u8, String> {
             stars.push(star);
         }
     }
+    stars.sort_by_key(|star| star.magnitude);
 
     let parent = output
         .parent()

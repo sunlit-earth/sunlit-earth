@@ -41,8 +41,8 @@ impl StarCatalog<'_> {
         let encoded_limit =
             (((magnitude_limit.clamp(-2.0, 8.0) + 2.0) / 10.0) * 255.0).round() as u8;
         let mut low = 0_usize;
-        let mut high = usize::try_from(self.count)
-            .map_or(self.payload.len() / RECORD_SIZE, |count| count);
+        let mut high =
+            usize::try_from(self.count).map_or(self.payload.len() / RECORD_SIZE, |count| count);
         while low < high {
             let middle = low + (high - low) / 2;
             let magnitude = self.payload[middle * RECORD_SIZE + 15];

@@ -102,10 +102,50 @@ fn test_int_property_roundtrip() {
 fn test_celestial_properties_roundtrip_through_scene_params() {
     let window = create_window();
     window.set_star_intensity(0.73);
+    window.set_star_size(1.6);
+    window.set_star_glow_strength(2.4);
+    window.set_star_glow_radius(26.0);
+    window.set_star_contrast(-0.67);
     window.set_star_mag_limit(5.4);
     let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
     approx::assert_relative_eq!(params.star_intensity, 0.73);
+    approx::assert_relative_eq!(params.star_size, 1.6);
+    approx::assert_relative_eq!(params.star_glow_strength, 2.4);
+    approx::assert_relative_eq!(params.star_glow_radius, 26.0);
+    approx::assert_relative_eq!(params.star_contrast, -0.67);
     approx::assert_relative_eq!(params.star_mag_limit, 5.4);
+}
+
+#[test]
+fn test_celestial_properties_apply_from_scene_params() {
+    let window = create_window();
+    let params = sunlit_core::params::SceneParams {
+        star_intensity: 3.2,
+        star_size: 2.1,
+        star_glow_strength: 2.8,
+        star_glow_radius: 29.0,
+        star_contrast: -0.76,
+        star_mag_limit: 5.9,
+        ..sunlit_core::params::SceneParams::default()
+    };
+    sunlit_earth::ui_callbacks::apply_params_to_window(&window, &params);
+    approx::assert_relative_eq!(window.get_star_intensity(), 3.2);
+    approx::assert_relative_eq!(window.get_star_size(), 2.1);
+    approx::assert_relative_eq!(window.get_star_glow_strength(), 2.8);
+    approx::assert_relative_eq!(window.get_star_glow_radius(), 29.0);
+    approx::assert_relative_eq!(window.get_star_contrast(), -0.76);
+    approx::assert_relative_eq!(window.get_star_mag_limit(), 5.9);
+}
+
+#[test]
+fn test_default_star_tuning_uses_balanced_profile() {
+    let window = create_window();
+    approx::assert_relative_eq!(window.get_star_intensity(), 1.0);
+    approx::assert_relative_eq!(window.get_star_size(), 1.0);
+    approx::assert_relative_eq!(window.get_star_glow_strength(), 0.35);
+    approx::assert_relative_eq!(window.get_star_glow_radius(), 6.0);
+    approx::assert_relative_eq!(window.get_star_contrast(), 0.4);
+    approx::assert_relative_eq!(window.get_star_mag_limit(), 6.5);
 }
 
 // ---------------------------------------------------------------------------

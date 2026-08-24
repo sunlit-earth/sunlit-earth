@@ -56,11 +56,15 @@ struct Uniforms {
     screen_offset: [f32; 2],
     star_intensity: f32,
     star_mag_limit: f32,
+    star_size: f32,
+    star_glow_strength: f32,
+    star_glow_radius: f32,
+    star_contrast: f32,
     _pad6: f32,
     _pad7: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 352);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 368);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -562,8 +566,12 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         ],
         viewport_size: [size as f32, size as f32],
         screen_offset: [0.0, 0.0],
-        star_intensity: 0.45,
+        star_intensity: 1.0,
         star_mag_limit: 6.5,
+        star_size: 1.0,
+        star_glow_strength: 0.35,
+        star_glow_radius: 6.0,
+        star_contrast: 0.4,
         _pad6: 0.0,
         _pad7: 0.0,
     }
@@ -701,6 +709,10 @@ struct Uniforms {
     screen_offset: vec2<f32>,
     star_intensity: f32,
     star_mag_limit: f32,
+    star_size: f32,
+    star_glow_strength: f32,
+    star_glow_radius: f32,
+    star_contrast: f32,
     _pad6: f32,
     _pad7: f32,
 };
@@ -757,6 +769,13 @@ fn main() {
     output[32] = uniforms.nightglow_orange_radius;
     output[33] = uniforms.nightglow_green_radius;
     output[34] = uniforms.rayleigh_haze;
+    // star params
+    output[35] = uniforms.star_intensity;
+    output[36] = uniforms.star_mag_limit;
+    output[37] = uniforms.star_size;
+    output[38] = uniforms.star_glow_strength;
+    output[39] = uniforms.star_glow_radius;
+    output[40] = uniforms.star_contrast;
 }
 ";
 
@@ -834,8 +853,12 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         ],
         viewport_size: [128.0, 128.0],
         screen_offset: [0.0, 0.0],
-        star_intensity: 0.45,
+        star_intensity: 1.0,
         star_mag_limit: 6.5,
+        star_size: 1.25,
+        star_glow_strength: 0.35,
+        star_glow_radius: 6.0,
+        star_contrast: 0.4,
         _pad6: 0.0,
         _pad7: 0.0,
     };
@@ -848,8 +871,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 34 floats
-    let output_size = (35 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 41 floats
+    let output_size = (41 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1064,6 +1087,36 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (values[34] - 0.55).abs() < eps,
         "rayleigh_haze: got {}, expected 0.55",
         values[34]
+    );
+    assert!(
+        (values[35] - 1.0).abs() < eps,
+        "star_intensity: got {}, expected 1.0",
+        values[35]
+    );
+    assert!(
+        (values[36] - 6.5).abs() < eps,
+        "star_mag_limit: got {}, expected 6.5",
+        values[36]
+    );
+    assert!(
+        (values[37] - 1.25).abs() < eps,
+        "star_size: got {}, expected 1.25",
+        values[37]
+    );
+    assert!(
+        (values[38] - 0.35).abs() < eps,
+        "star_glow_strength: got {}, expected 0.35",
+        values[38]
+    );
+    assert!(
+        (values[39] - 6.0).abs() < eps,
+        "star_glow_radius: got {}, expected 6.0",
+        values[39]
+    );
+    assert!(
+        (values[40] - 0.4).abs() < eps,
+        "star_contrast: got {}, expected 0.4",
+        values[40]
     );
 }
 

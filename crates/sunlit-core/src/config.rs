@@ -196,7 +196,21 @@ pub struct AppConfig {
     pub nightglow_balance: f32,
 
     // Celestial background
+    /// Display brightness gain for stars and naked eye planets. A value of
+    /// `1.0` is the renderer's neutral artistic exposure, while zero disables
+    /// the sprite draw.
     pub star_intensity: f32,
+    /// Multiplier for the compact star core. Glow size is controlled
+    /// independently by `star_glow_radius`.
+    pub star_size: f32,
+    /// Strength of the soft halo around visually prominent stars. The UI
+    /// offers zero through three times the nominal maximum.
+    pub star_glow_strength: f32,
+    /// Halo extent in pixels at 1080p. Output resolution scaling is automatic.
+    pub star_glow_radius: f32,
+    /// Separation between bright and faint stars, from minus one through one.
+    /// Zero is neutral and negative values make magnitudes more uniform.
+    pub star_contrast: f32,
     pub star_mag_limit: f32,
 
     // Color correction
@@ -273,7 +287,11 @@ impl Default for AppConfig {
             nightglow_intensity: 0.25,
             nightglow_falloff: 15.0,
             nightglow_balance: 0.37,
-            star_intensity: 0.45,
+            star_intensity: 1.0,
+            star_size: 1.0,
+            star_glow_strength: 0.35,
+            star_glow_radius: 6.0,
+            star_contrast: 0.4,
             star_mag_limit: 6.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
@@ -595,6 +613,35 @@ mod tests {
     }
 
     #[test]
+    fn default_star_brightness_is_neutral_gain() {
+        assert_relative_eq!(AppConfig::default().star_intensity, 1.0);
+    }
+
+    #[test]
+    fn default_star_tuning_uses_balanced_profile() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.star_size, 1.0);
+        assert_relative_eq!(config.star_glow_strength, 0.35);
+        assert_relative_eq!(config.star_glow_radius, 6.0);
+        assert_relative_eq!(config.star_contrast, 0.4);
+    }
+
+    #[test]
+    fn deserialize_missing_star_brightness_uses_neutral_gain() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.star_intensity, 1.0);
+    }
+
+    #[test]
+    fn deserialize_missing_star_tuning_uses_balanced_profile() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.star_size, 1.0);
+        assert_relative_eq!(config.star_glow_strength, 0.35);
+        assert_relative_eq!(config.star_glow_radius, 6.0);
+        assert_relative_eq!(config.star_contrast, 0.4);
+    }
+
+    #[test]
     fn deserialize_missing_auto_refresh_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert!(!config.auto_refresh_enabled);
@@ -672,6 +719,10 @@ mod tests {
             nightglow_falloff: 6.0,
             nightglow_balance: 0.3,
             star_intensity: 0.7,
+            star_size: 1.4,
+            star_glow_strength: 0.6,
+            star_glow_radius: 8.0,
+            star_contrast: 0.7,
             star_mag_limit: 5.8,
             day_gamma: 1.5,
             day_saturation: 0.8,
@@ -798,6 +849,10 @@ mod tests {
             nightglow_falloff: 5.0,
             nightglow_balance: 0.6,
             star_intensity: 0.8,
+            star_size: 1.6,
+            star_glow_strength: 0.5,
+            star_glow_radius: 7.5,
+            star_contrast: 0.65,
             star_mag_limit: 6.2,
             day_gamma: 1.8,
             day_saturation: 0.6,

@@ -68,7 +68,11 @@ export component MainWindow inherits Window {
     in-out property <float> nightglow-intensity: 0.25;
     in-out property <float> nightglow-balance: 0.37;
     in-out property <float> nightglow-falloff: 15.0;
-    in-out property <float> star-intensity: 0.45;
+    in-out property <float> star-intensity: 1.0;
+    in-out property <float> star-size: 1.0;
+    in-out property <float> star-glow-strength: 0.35;
+    in-out property <float> star-glow-radius: 6.0;
+    in-out property <float> star-contrast: 0.4;
     in-out property <float> star-mag-limit: 6.5;
 
     in property <float> zoom-display-distance: 8.0;
@@ -635,18 +639,18 @@ export component MainWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 4px;
                                 Text {
-                                    text: "Stars";
+                                    text: "Star brightness";
                                     vertical-alignment: center;
-                                    min-width: 70px;
+                                    min-width: 100px;
                                 }
                                 star-intensity-slider := Slider {
                                     minimum: 0.0;
-                                    maximum: 2.0;
+                                    maximum: 5.0;
                                     value <=> root.star-intensity;
                                     changed => { root.sliders-changed(); }
                                 }
                                 Text {
-                                    text: round(root.star-intensity * 100) + "%";
+                                    text: round(root.star-intensity * 100) / 100 + "×";
                                     vertical-alignment: center;
                                     min-width: 35px;
                                 }
@@ -655,9 +659,89 @@ export component MainWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 4px;
                                 Text {
-                                    text: "Magnitude";
+                                    text: "Star size";
                                     vertical-alignment: center;
-                                    min-width: 70px;
+                                    min-width: 100px;
+                                }
+                                star-size-slider := Slider {
+                                    minimum: 0.5;
+                                    maximum: 3.0;
+                                    value <=> root.star-size;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.star-size * 100) / 100 + "×";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Glow strength";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                star-glow-strength-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 3.0;
+                                    value <=> root.star-glow-strength;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.star-glow-strength * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Glow radius";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                star-glow-radius-slider := Slider {
+                                    minimum: 1.0;
+                                    maximum: 30.0;
+                                    value <=> root.star-glow-radius;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.star-glow-radius * 10) / 10 + " px";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Magnitude contrast";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                star-contrast-slider := Slider {
+                                    minimum: -1.0;
+                                    maximum: 1.0;
+                                    value <=> root.star-contrast;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.star-contrast * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 35px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Faintest stars";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
                                 }
                                 star-mag-limit-slider := Slider {
                                     minimum: 0.0;
@@ -666,9 +750,9 @@ export component MainWindow inherits Window {
                                     changed => { root.sliders-changed(); }
                                 }
                                 Text {
-                                    text: round(root.star-mag-limit * 10) / 10;
+                                    text: round(root.star-mag-limit * 10) / 10 + " mag";
                                     vertical-alignment: center;
-                                    min-width: 35px;
+                                    min-width: 45px;
                                 }
                             }
                         }

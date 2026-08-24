@@ -126,6 +126,10 @@ pub(super) fn write_uniforms(
         screen_offset: [-cam.offset_x, -cam.offset_y],
         star_intensity: params.star_intensity,
         star_mag_limit: params.star_mag_limit,
+        star_size: params.star_size,
+        star_glow_strength: params.star_glow_strength,
+        star_glow_radius: params.star_glow_radius,
+        star_contrast: params.star_contrast,
         _pad6: 0.0,
         _pad7: 0.0,
     };

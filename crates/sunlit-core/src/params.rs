@@ -62,6 +62,10 @@ pub struct SceneParams {
 
     // Celestial background
     pub star_intensity: f32,
+    pub star_size: f32,
+    pub star_glow_strength: f32,
+    pub star_glow_radius: f32,
+    pub star_contrast: f32,
     pub star_mag_limit: f32,
 
     // Color correction (gamma values, not slider positions)
@@ -115,6 +119,10 @@ impl SceneParams {
             nightglow_falloff: config.nightglow_falloff,
             nightglow_balance: config.nightglow_balance,
             star_intensity: config.star_intensity,
+            star_size: config.star_size,
+            star_glow_strength: config.star_glow_strength,
+            star_glow_radius: config.star_glow_radius,
+            star_contrast: config.star_contrast,
             star_mag_limit: config.star_mag_limit,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
@@ -163,6 +171,10 @@ impl SceneParams {
         config.nightglow_falloff = self.nightglow_falloff;
         config.nightglow_balance = self.nightglow_balance;
         config.star_intensity = self.star_intensity;
+        config.star_size = self.star_size;
+        config.star_glow_strength = self.star_glow_strength;
+        config.star_glow_radius = self.star_glow_radius;
+        config.star_contrast = self.star_contrast;
         config.star_mag_limit = self.star_mag_limit;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
@@ -221,6 +233,10 @@ impl SceneParams {
             nightglow_falloff: q(self.nightglow_falloff),
             nightglow_balance: q(self.nightglow_balance),
             star_intensity: q(self.star_intensity),
+            star_size: q(self.star_size),
+            star_glow_strength: q(self.star_glow_strength),
+            star_glow_radius: q(self.star_glow_radius),
+            star_contrast: q(self.star_contrast),
             star_mag_limit: q(self.star_mag_limit),
             day_gamma: q(self.day_gamma),
             day_saturation: q(self.day_saturation),
@@ -269,6 +285,10 @@ pub struct ParamsDigest {
     pub nightglow_falloff: i32,
     pub nightglow_balance: i32,
     pub star_intensity: i32,
+    pub star_size: i32,
+    pub star_glow_strength: i32,
+    pub star_glow_radius: i32,
+    pub star_contrast: i32,
     pub star_mag_limit: i32,
     pub day_gamma: i32,
     pub day_saturation: i32,
@@ -655,6 +675,34 @@ mod tests {
                 "star_intensity",
                 SceneParams {
                     star_intensity: 0.8,
+                    ..base
+                },
+            ),
+            (
+                "star_size",
+                SceneParams {
+                    star_size: 1.5,
+                    ..base
+                },
+            ),
+            (
+                "star_glow_strength",
+                SceneParams {
+                    star_glow_strength: 0.7,
+                    ..base
+                },
+            ),
+            (
+                "star_glow_radius",
+                SceneParams {
+                    star_glow_radius: 8.0,
+                    ..base
+                },
+            ),
+            (
+                "star_contrast",
+                SceneParams {
+                    star_contrast: -0.8,
                     ..base
                 },
             ),

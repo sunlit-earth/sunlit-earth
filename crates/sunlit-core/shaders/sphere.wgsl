@@ -38,8 +38,12 @@ struct Uniforms {
     screen_offset: vec2<f32>,         // 8 bytes, offset 328
     star_intensity: f32,              // 4 bytes, offset 336
     star_mag_limit: f32,              // 4 bytes, offset 340
-    _pad6: f32,                       // 4 bytes, offset 344
-    _pad7: f32,                       // 4 bytes, offset 348
+    star_size: f32,                   // 4 bytes, offset 344
+    star_glow_strength: f32,          // 4 bytes, offset 348
+    star_glow_radius: f32,            // 4 bytes, offset 352
+    star_contrast: f32,               // 4 bytes, offset 356
+    _pad6: f32,                       // 4 bytes, offset 360
+    _pad7: f32,                       // 4 bytes, offset 364
 };
 
 @group(0) @binding(0)
@@ -77,6 +81,37 @@ struct StarOutput {
     @location(2) magnitude: f32,
 };
 
+const STAR_FAINT_CORE_RADIUS_PIXELS: f32 = 0.5;
+const STAR_BRIGHT_CORE_RADIUS_PIXELS: f32 = 1.0;
+const STAR_CORE_EDGE_PIXELS: f32 = 0.55;
+const STAR_HALO_PEAK_AT_FULL_STRENGTH: f32 = 0.2;
+
+fn star_prominence(magnitude: f32) -> f32 {
+    return 1.0 - smoothstep(0.0, 4.0, magnitude);
+}
+
+fn star_core_radius_pixels(magnitude: f32, pixel_scale: f32) -> f32 {
+    let radius = mix(
+        STAR_FAINT_CORE_RADIUS_PIXELS,
+        STAR_BRIGHT_CORE_RADIUS_PIXELS,
+        star_prominence(magnitude),
+    );
+    return radius * max(uniforms.star_size, 0.1) * pixel_scale;
+}
+
+fn star_sprite_radius_pixels(magnitude: f32, pixel_scale: f32) -> f32 {
+    let core_extent = star_core_radius_pixels(magnitude, pixel_scale)
+        + STAR_CORE_EDGE_PIXELS * pixel_scale;
+    let has_halo = uniforms.star_glow_strength > 0.0
+        && star_prominence(magnitude) > 0.0;
+    let halo_extent = select(
+        0.0,
+        max(uniforms.star_glow_radius, 0.5) * pixel_scale,
+        has_halo,
+    );
+    return max(core_extent, halo_extent);
+}
+
 @vertex
 fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutput {
     let corners = array<vec2<f32>, 4>(
@@ -90,8 +125,10 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
     let world_direction = uniforms.world_from_eqj * in.direction;
     var clip = uniforms.sky_view_projection * vec4<f32>(world_direction, 0.0);
     let visible = clip.w > 0.0 && magnitude <= uniforms.star_mag_limit;
-    let sprite_offset =
-        (uniforms.screen_offset + corner * (12.0 / uniforms.viewport_size)) * clip.w;
+    let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+    let sprite_radius = star_sprite_radius_pixels(magnitude, pixel_scale);
+    let sprite_offset = (uniforms.screen_offset
+        + corner * (2.0 * sprite_radius / uniforms.viewport_size)) * clip.w;
     clip = vec4<f32>(clip.xy + sprite_offset, clip.w, clip.w);
 
     var out: StarOutput;
@@ -104,10 +141,24 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
 
 @fragment
 fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
-    let radius_squared = dot(in.local_position, in.local_position);
-    let gaussian = exp(-4.5 * radius_squared);
-    let compressed_flux = pow(10.0, -0.1 * in.magnitude);
-    let amplitude = uniforms.star_intensity * compressed_flux * gaussian;
+    let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+    let sprite_radius = star_sprite_radius_pixels(in.magnitude, pixel_scale);
+    let position_pixels = in.local_position * sprite_radius;
+    let radius = length(position_pixels);
+    let radius_squared = dot(position_pixels, position_pixels);
+    let prominence = star_prominence(in.magnitude);
+    let core_radius = star_core_radius_pixels(in.magnitude, pixel_scale);
+    let core_edge = STAR_CORE_EDGE_PIXELS * pixel_scale;
+    let core = 1.0 - smoothstep(core_radius, core_radius + core_edge, radius);
+    let halo_extent = max(uniforms.star_glow_radius, 0.5) * pixel_scale;
+    let halo_sigma = halo_extent / 2.5;
+    let halo = STAR_HALO_PEAK_AT_FULL_STRENGTH
+        * clamp(uniforms.star_glow_strength, 0.0, 3.0)
+        * prominence
+        * exp(-0.5 * radius_squared / (halo_sigma * halo_sigma));
+    let contrast_exponent = 0.1 + 0.1 * clamp(uniforms.star_contrast, -1.0, 1.0);
+    let compressed_flux = pow(10.0, -contrast_exponent * in.magnitude);
+    let amplitude = uniforms.star_intensity * compressed_flux * (core + halo);
     return vec4<f32>(in.color * amplitude, amplitude);
 }
 

@@ -160,6 +160,37 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     );
 }
 
+#[test]
+fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
+    const CLEAR: [u8; 4] = [5, 5, 13, 255];
+
+    let harness = Harness::start(|config| {
+        config.params.star_intensity = 2.0;
+        config.params.star_size = 0.5;
+        config.params.star_glow_strength = 0.0;
+        config.params.star_mag_limit = 4.0;
+    });
+    let (small_stars, _, _) = harness.next_frame();
+    let mut large_params = test_params();
+    large_params.star_intensity = 2.0;
+    large_params.star_size = 3.0;
+    large_params.star_glow_strength = 0.0;
+    large_params.star_mag_limit = 4.0;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(large_params)));
+    let (large_stars, _, _) = harness.next_frame();
+
+    let expanded_core = small_stars
+        .chunks_exact(4)
+        .zip(large_stars.chunks_exact(4))
+        .any(|(small, large)| small == CLEAR && large != CLEAR);
+    assert!(
+        expanded_core,
+        "increasing star size should expand a core without relying on glow"
+    );
+}
+
 /// Two small texture files and a cache directory to go with them.
 ///
 /// The resolution tests need file-backed slots, which the headless config

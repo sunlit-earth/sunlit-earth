@@ -316,6 +316,10 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_nightglow_falloff(params.nightglow_falloff);
     window.set_nightglow_balance(params.nightglow_balance);
     window.set_star_intensity(params.star_intensity);
+    window.set_star_size(params.star_size);
+    window.set_star_glow_strength(params.star_glow_strength);
+    window.set_star_glow_radius(params.star_glow_radius);
+    window.set_star_contrast(params.star_contrast);
     window.set_star_mag_limit(params.star_mag_limit);
     window.set_day_gamma(gamma_value_to_slider(params.day_gamma));
     window.set_day_saturation(params.day_saturation);
@@ -369,6 +373,10 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         nightglow_falloff: window.get_nightglow_falloff(),
         nightglow_balance: window.get_nightglow_balance(),
         star_intensity: window.get_star_intensity(),
+        star_size: window.get_star_size(),
+        star_glow_strength: window.get_star_glow_strength(),
+        star_glow_radius: window.get_star_glow_radius(),
+        star_contrast: window.get_star_contrast(),
         star_mag_limit: window.get_star_mag_limit(),
         day_gamma: gamma_slider_to_value(window.get_day_gamma()),
         day_saturation: window.get_day_saturation(),

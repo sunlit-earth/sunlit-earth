@@ -363,11 +363,52 @@ fn rgb_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 3] {
     [p[0], p[1], p[2]]
 }
 
-/// Assert that a pixel is approximately black (background/space).
-/// Threshold accounts for slight nightglow/atmosphere bleed at edges.
-fn assert_black(rgb: [u8; 3], label: &str) {
-    let sum = u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]);
-    assert!(sum < 40, "{label}: expected black, got {rgb:?} (sum={sum})");
+/// Assert that a corner of the render is empty space rather than globe.
+///
+/// A patch and not a pixel, because the sky is drawn there. A single sample
+/// asks whether one point happens to be free of stars, and the answer moved to
+/// within four pixels of the top-left corner the moment stars were turned on
+/// by default: a nudge to a star default, the catalog, or the fixture's date
+/// would eventually land one on the sample and report "expected black" about a
+/// globe that is exactly where it should be. What the case actually means is
+/// that the corner is mostly empty, which a patch can say and a pixel cannot.
+/// Stars are small and sparse; a globe filling the corner is neither.
+const CORNER_PATCH: u32 = 16;
+const CORNER_BLACK_FRACTION: f64 = 0.5;
+
+fn assert_space_corner(img: &image::RgbaImage, right: bool, bottom: bool, label: &str) {
+    let x0 = if right { img.width() - CORNER_PATCH } else { 0 };
+    let y0 = if bottom {
+        img.height() - CORNER_PATCH
+    } else {
+        0
+    };
+    let mut black = 0_u32;
+    let mut brightest = ([0_u8; 3], 0_u32, (0_u32, 0_u32));
+    for y in y0..y0 + CORNER_PATCH {
+        for x in x0..x0 + CORNER_PATCH {
+            let rgb = rgb_at(img, x, y);
+            let sum = u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]);
+            if sum < 40 {
+                black += 1;
+            }
+            if sum > brightest.1 {
+                brightest = (rgb, sum, (x, y));
+            }
+        }
+    }
+    let fraction = f64::from(black) / f64::from(CORNER_PATCH * CORNER_PATCH);
+    assert!(
+        fraction >= CORNER_BLACK_FRACTION,
+        "{label}: expected mostly empty space, only {:.0}% of the \
+         {CORNER_PATCH}x{CORNER_PATCH} patch at ({x0}, {y0}) is black \
+         (limit {:.0}%). Brightest pixel {:?} sum {} at {:?}.",
+        fraction * 100.0,
+        CORNER_BLACK_FRACTION * 100.0,
+        brightest.0,
+        brightest.1,
+        brightest.2
+    );
 }
 
 /// Assert that a pixel is dark ocean on the night side (nearly black).
@@ -940,11 +981,12 @@ fn test_render_and_exit() {
     //    terminator runs through eastern Europe with India/Tibet in night.
     let rgba = img.to_rgba8();
 
-    // Corners should be black (space/background)
-    assert_black(rgb_at(&rgba, 0, 0), "top-left corner");
-    assert_black(rgb_at(&rgba, 799, 0), "top-right corner");
-    assert_black(rgb_at(&rgba, 0, 799), "bottom-left corner");
-    assert_black(rgb_at(&rgba, 799, 799), "bottom-right corner");
+    // Corners should be space: empty background, with whatever stars the sky
+    // put there.
+    assert_space_corner(&rgba, false, false, "top-left corner");
+    assert_space_corner(&rgba, true, false, "top-right corner");
+    assert_space_corner(&rgba, false, true, "bottom-left corner");
+    assert_space_corner(&rgba, true, true, "bottom-right corner");
 
     // Center: Central Europe — should be greenish (vegetation)
     assert_greenish(rgb_at(&rgba, 400, 400), "center (Central Europe)");

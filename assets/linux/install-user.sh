@@ -80,6 +80,15 @@ fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f "$theme/index.theme" ]; then
     gtk-update-icon-cache -f -t "$theme" || true
 fi
+# KDE serves its menu out of sycoca rather than reading the directory, so
+# Kickoff finds a new entry only once that cache has been rebuilt. Plasma 6
+# renamed the tool; a session with neither is one that is not KDE.
+for sycoca in kbuildsycoca6 kbuildsycoca5; do
+    if command -v "$sycoca" >/dev/null 2>&1; then
+        "$sycoca" >/dev/null 2>&1 || true
+        break
+    fi
+done
 
 echo
 echo "to remove it again:"

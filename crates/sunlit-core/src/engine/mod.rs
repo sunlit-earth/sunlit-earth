@@ -42,8 +42,9 @@ const TICK: Duration = Duration::from_millis(50);
 /// what keeps cloud updates flowing while no window is visible.
 const DRAIN_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How often the sun position is recomputed when rendering live time.
-const SUN_INTERVAL: Duration = Duration::from_mins(2);
+/// How often the sky state (the sun, the sky rotation, the planets) is
+/// recomputed when rendering live time.
+const SKY_INTERVAL: Duration = Duration::from_mins(2);
 
 /// How often a memory sample is appended to the metrics CSV.
 const METRICS_INTERVAL: Duration = Duration::from_mins(10);
@@ -437,7 +438,7 @@ struct Engine {
     memory_dumped: bool,
     last_status: String,
     drain: Schedule,
-    sun: Schedule,
+    sky: Schedule,
     metrics: Option<Schedule>,
     auto_refresh: Option<Schedule>,
     cloud: Option<CloudWorker>,
@@ -604,7 +605,7 @@ impl Engine {
             memory_dumped: false,
             last_status: String::new(),
             drain: Schedule::new(DRAIN_INTERVAL, now),
-            sun: Schedule::new(SUN_INTERVAL, now),
+            sky: Schedule::new(SKY_INTERVAL, now),
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
@@ -765,8 +766,9 @@ impl Engine {
         }
 
         // Live time keeps moving even when nothing else changes, so the
-        // terminator has to be recomputed on a schedule of its own.
-        if self.sun.due(now) && !self.params.datetime.use_custom {
+        // terminator and the sky have to be recomputed on a schedule of their
+        // own.
+        if self.sky.due(now) && !self.params.datetime.use_custom {
             self.dirty = true;
         }
 

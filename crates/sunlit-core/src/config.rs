@@ -287,11 +287,11 @@ impl Default for AppConfig {
             nightglow_intensity: 0.25,
             nightglow_falloff: 15.0,
             nightglow_balance: 0.37,
-            star_intensity: 1.0,
+            star_intensity: 2.0,
             star_size: 1.0,
-            star_glow_strength: 0.35,
-            star_glow_radius: 6.0,
-            star_contrast: 0.4,
+            star_glow_strength: 0.5,
+            star_glow_radius: 8.0,
+            star_contrast: 0.0,
             star_mag_limit: 6.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
@@ -613,32 +613,32 @@ mod tests {
     }
 
     #[test]
-    fn default_star_brightness_is_neutral_gain() {
-        assert_relative_eq!(AppConfig::default().star_intensity, 1.0);
+    fn default_star_brightness_is_two_times_gain() {
+        assert_relative_eq!(AppConfig::default().star_intensity, 2.0);
     }
 
     #[test]
     fn default_star_tuning_uses_balanced_profile() {
         let config = AppConfig::default();
         assert_relative_eq!(config.star_size, 1.0);
-        assert_relative_eq!(config.star_glow_strength, 0.35);
-        assert_relative_eq!(config.star_glow_radius, 6.0);
-        assert_relative_eq!(config.star_contrast, 0.4);
+        assert_relative_eq!(config.star_glow_strength, 0.5);
+        assert_relative_eq!(config.star_glow_radius, 8.0);
+        assert_relative_eq!(config.star_contrast, 0.0);
     }
 
     #[test]
-    fn deserialize_missing_star_brightness_uses_neutral_gain() {
+    fn deserialize_missing_star_brightness_uses_two_times_gain() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.star_intensity, 1.0);
+        assert_relative_eq!(config.star_intensity, 2.0);
     }
 
     #[test]
     fn deserialize_missing_star_tuning_uses_balanced_profile() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.star_size, 1.0);
-        assert_relative_eq!(config.star_glow_strength, 0.35);
-        assert_relative_eq!(config.star_glow_radius, 6.0);
-        assert_relative_eq!(config.star_contrast, 0.4);
+        assert_relative_eq!(config.star_glow_strength, 0.5);
+        assert_relative_eq!(config.star_glow_radius, 8.0);
+        assert_relative_eq!(config.star_contrast, 0.0);
     }
 
     #[test]

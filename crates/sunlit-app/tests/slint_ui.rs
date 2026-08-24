@@ -140,11 +140,11 @@ fn test_celestial_properties_apply_from_scene_params() {
 #[test]
 fn test_default_star_tuning_uses_balanced_profile() {
     let window = create_window();
-    approx::assert_relative_eq!(window.get_star_intensity(), 1.0);
+    approx::assert_relative_eq!(window.get_star_intensity(), 2.0);
     approx::assert_relative_eq!(window.get_star_size(), 1.0);
-    approx::assert_relative_eq!(window.get_star_glow_strength(), 0.35);
-    approx::assert_relative_eq!(window.get_star_glow_radius(), 6.0);
-    approx::assert_relative_eq!(window.get_star_contrast(), 0.4);
+    approx::assert_relative_eq!(window.get_star_glow_strength(), 0.5);
+    approx::assert_relative_eq!(window.get_star_glow_radius(), 8.0);
+    approx::assert_relative_eq!(window.get_star_contrast(), 0.0);
     approx::assert_relative_eq!(window.get_star_mag_limit(), 6.5);
 }
 

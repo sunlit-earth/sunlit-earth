@@ -235,6 +235,60 @@ mod tests {
         assert!(jupiter.direction.angle_between(expected_world).to_degrees() < 0.05);
     }
 
+    /// A custom date and time selects the instant the widgets name.
+    ///
+    /// The branching `time_for_input` does used to sit on the sun path, and
+    /// these three cases moved here with it.
+    #[test]
+    fn a_custom_datetime_selects_the_instant_it_names() {
+        let dt = DateTimeInput {
+            use_custom: true,
+            custom_hour: 12.0,
+            // June 21 in a non-leap year.
+            custom_day_of_year: 172,
+            custom_year: 2025,
+        };
+        let selected = compute_sky_state_at(&dt, time::OffsetDateTime::UNIX_EPOCH);
+        let expected = compute_sky_state_from_time(make_time(2025, 6, 21, 12, 0, 0.0));
+        assert_eq!(selected, expected);
+    }
+
+    #[test]
+    fn a_custom_day_of_year_of_zero_is_clamped_to_january_first() {
+        let dt = DateTimeInput {
+            use_custom: true,
+            custom_hour: 12.0,
+            custom_day_of_year: 0,
+            custom_year: 2025,
+        };
+        let selected = compute_sky_state_at(&dt, time::OffsetDateTime::UNIX_EPOCH);
+        let expected = compute_sky_state_from_time(make_time(2025, 1, 1, 12, 0, 0.0));
+        assert_eq!(selected, expected);
+    }
+
+    /// Live time reads the injected `now`, which is what lets the mock clock in
+    /// the soak test rotate the Earth for fourteen simulated days.
+    #[test]
+    fn live_time_follows_the_injected_now() {
+        let dt = DateTimeInput {
+            use_custom: false,
+            custom_hour: 0.0,
+            custom_day_of_year: 1,
+            custom_year: 2025,
+        };
+        let now = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let selected = compute_sky_state_at(&dt, now);
+        let expected = compute_sky_state_from_time(make_time(
+            now.year(),
+            i32::from(u8::from(now.month())),
+            i32::from(now.day()),
+            i32::from(now.hour()),
+            i32::from(now.minute()),
+            f64::from(now.second()),
+        ));
+        assert_eq!(selected, expected);
+    }
+
     #[test]
     fn venus_is_brighter_than_magnitude_negative_three() {
         let state = compute_sky_state_from_time(pinned_time());

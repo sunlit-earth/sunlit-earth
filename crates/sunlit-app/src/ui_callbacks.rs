@@ -391,8 +391,9 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// Extract datetime parameters from the Slint window for astronomical
 /// computations.
 ///
-/// This is the thin UI-reading layer; the actual computation lives in
-/// `scene::sun::compute_sun_direction()`.
+/// This is the thin UI-reading layer; the engine turns the result into a
+/// `scene::sky::SkyState` once per frame, which is where the sun direction,
+/// the sky rotation and the planets all come from.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
     DateTimeInput {

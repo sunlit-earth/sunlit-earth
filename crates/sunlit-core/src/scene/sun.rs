@@ -1,30 +1,38 @@
+//! The subsolar-point sun direction, kept as the reference implementation.
+//!
+//! Production reads the sun off [`crate::scene::sky::SkyState`], which rotates
+//! one geocentric Astronomy Engine vector through the same frame the stars and
+//! planets use. This module computes the same direction the other way, from
+//! right ascension and declination of date plus sidereal time, and
+//! `sky::tests::production_sun_agrees_with_reference_path` is what holds the
+//! two together. Two independent derivations agreeing is worth more than one
+//! of them being called twice, which is why this one was not deleted when the
+//! sky took over the frame.
+//!
+//! [`DateTimeInput`] and [`make_time`] are production plumbing and live here
+//! because this is where they started; `sky` takes both.
+
 use astronomy_engine_bindings::{
-    Astronomy_CurrentTime, Astronomy_Equator, Astronomy_MakeObserver, Astronomy_SiderealTime,
+    Astronomy_Equator, Astronomy_MakeObserver, Astronomy_SiderealTime,
     astro_aberration_t_ABERRATION, astro_body_t_BODY_SUN, astro_equator_date_t_EQUATOR_OF_DATE,
     astro_status_t_ASTRO_SUCCESS, astro_time_t,
 };
 use glam::Vec3;
 
-/// Compute the sun's direction as a unit vector in the renderer's
-/// world-space coordinate frame (Y-up, +X = prime meridian at equator,
-/// -Z = 90 degrees East) for the current UTC time.
-pub fn sun_direction_now() -> Vec3 {
-    // SAFETY: Astronomy_CurrentTime is a pure C function with no
-    // preconditions. It reads the system clock and returns a value type.
-    #[allow(unsafe_code)]
-    let time = unsafe { Astronomy_CurrentTime() };
-    sun_direction_from_time(time)
-}
-
-/// Compute the sun direction for a specific `astro_time_t`.
-///
-/// This is the core implementation shared by `sun_direction_now`,
-/// `sun_direction_at`, and tests.
+/// Compute the sun's direction as a unit vector in the renderer's world-space
+/// coordinate frame (Y-up, +X = prime meridian at equator, -Z = 90 degrees
+/// East) for a specific `astro_time_t`.
 pub fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     // Get the sun's equatorial coordinates (right ascension and declination)
     // referred to the equator of date, with aberration correction.
-    // We use a geocentric observer (lat=0, lon=0, height=0) because
-    // we want the direction from Earth's center, not a surface point.
+    //
+    // The observer is a surface point at 0N 0E, not the geocenter: that is a
+    // topocentric answer, and for the sun it differs from the geocentric one
+    // by at most 8.8 arcseconds. Production takes the geocentric vector
+    // instead, which is one of the two reasons this path is a reference rather
+    // than the source; the other is that the sky needs a rotation and not just
+    // a direction. The tolerance in the equivalence test is set well above
+    // this difference on purpose.
     //
     // SAFETY: Astronomy_MakeObserver is a pure C function that constructs a
     // value type from three doubles.
@@ -85,27 +93,6 @@ pub fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     dir.normalize()
 }
 
-/// Compute the sun's direction as a unit vector for a specific UTC date/time.
-///
-/// :param year: Calendar year (e.g. 2025).
-/// :param month: Month, 1-12.
-/// :param day: Day of month, 1-31.
-/// :param hour: Hour, 0-23.
-/// :param minute: Minute, 0-59.
-/// :param second: Fractional second, 0.0..60.0.
-/// :returns: Unit vector in the renderer's world-space coordinate frame.
-pub fn sun_direction_at(
-    year: i32,
-    month: i32,
-    day: i32,
-    hour: i32,
-    minute: i32,
-    second: f64,
-) -> Vec3 {
-    let time = make_time(year, month, day, hour, minute, second);
-    sun_direction_from_time(time)
-}
-
 /// Create an `astro_time_t` from calendar components (UTC).
 pub fn make_time(
     year: i32,
@@ -140,42 +127,6 @@ pub struct DateTimeInput {
     pub custom_day_of_year: u16,
     /// Custom calendar year (e.g. 2025), only used when `use_custom` is true.
     pub custom_year: i32,
-}
-
-/// Compute the sun direction from datetime parameters.
-///
-/// When `dt.use_custom` is true, computes the sun direction for the specified
-/// custom date/time. Otherwise, computes it for the current UTC time.
-///
-/// This encapsulates the custom-vs-now branching that was previously inline
-/// in `BeforeRendering`, making it callable from both the rendering callback
-/// and the wallpaper scheduler timer.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn compute_sun_direction(dt: &DateTimeInput) -> Vec3 {
-    compute_sun_direction_at(dt, time::OffsetDateTime::now_utc())
-}
-
-/// Compute the sun direction for datetime parameters at a given "now".
-///
-/// The engine passes its injected clock's reading here, so a mock clock that
-/// jumps fourteen days really does rotate the Earth fourteen times.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn compute_sun_direction_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> Vec3 {
-    if dt.use_custom {
-        let doy = dt.custom_day_of_year.max(1);
-        let (month, day) = super::datetime::day_of_year_to_month_day(doy, dt.custom_year);
-        let (h, m, s) = super::datetime::hour_float_to_hms(dt.custom_hour);
-        sun_direction_at(dt.custom_year, i32::from(month), i32::from(day), h, m, s)
-    } else {
-        sun_direction_at(
-            now_utc.year(),
-            i32::from(u8::from(now_utc.month())),
-            i32::from(now_utc.day()),
-            i32::from(now_utc.hour()),
-            i32::from(now_utc.minute()),
-            f64::from(now_utc.second()),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -231,105 +182,7 @@ mod tests {
     /// The returned vector should always have unit length.
     #[test]
     fn unit_vector() {
-        let dir = sun_direction_now();
+        let dir = sun_dir_at(2025, 3, 20, 12, 0);
         assert_relative_eq!(dir.length(), 1.0, epsilon = 1e-4);
-    }
-
-    // --- sun_direction_at ---
-
-    /// `sun_direction_at` matches the test helper for the March equinox.
-    #[test]
-    fn direction_at_matches_helper_equinox() {
-        let via_at = sun_direction_at(2025, 3, 20, 12, 0, 0.0);
-        let via_helper = sun_dir_at(2025, 3, 20, 12, 0);
-        assert_relative_eq!(via_at.x, via_helper.x, epsilon = 1e-5);
-        assert_relative_eq!(via_at.y, via_helper.y, epsilon = 1e-5);
-        assert_relative_eq!(via_at.z, via_helper.z, epsilon = 1e-5);
-    }
-
-    /// `sun_direction_at` matches the test helper for the June solstice.
-    #[test]
-    fn direction_at_matches_helper_solstice() {
-        let via_at = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
-        let via_helper = sun_dir_at(2025, 6, 21, 12, 0);
-        assert_relative_eq!(via_at.x, via_helper.x, epsilon = 1e-5);
-        assert_relative_eq!(via_at.y, via_helper.y, epsilon = 1e-5);
-        assert_relative_eq!(via_at.z, via_helper.z, epsilon = 1e-5);
-    }
-
-    /// `sun_direction_at` always returns a unit vector.
-    #[test]
-    fn direction_at_unit_vector() {
-        let dir = sun_direction_at(2025, 3, 20, 12, 0, 0.0);
-        assert_relative_eq!(dir.length(), 1.0, epsilon = 1e-4);
-    }
-
-    /// March equinox noon expectations for `sun_direction_at`.
-    #[test]
-    fn direction_at_equinox_expectations() {
-        let dir = sun_direction_at(2025, 3, 20, 12, 0, 0.0);
-        assert_relative_eq!(dir.z, 1.0, epsilon = 0.1);
-        assert_relative_eq!(dir.y, 0.0, epsilon = 0.1);
-        assert_relative_eq!(dir.x, 0.0, epsilon = 0.15);
-    }
-
-    /// June solstice noon: y ~ 0.40 (northern declination).
-    #[test]
-    fn direction_at_june_solstice() {
-        let dir = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
-        assert_relative_eq!(dir.y, 0.40, epsilon = 0.1);
-    }
-
-    // --- compute_sun_direction ---
-
-    /// `compute_sun_direction` with `use_custom: false` matches `sun_direction_now()`.
-    #[test]
-    fn compute_sun_direction_live() {
-        let dt = DateTimeInput {
-            use_custom: false,
-            custom_hour: 0.0,
-            custom_day_of_year: 1,
-            custom_year: 2025,
-        };
-        let a = compute_sun_direction(&dt);
-        let b = sun_direction_now();
-        // Both called within microseconds — should be nearly identical.
-        assert_relative_eq!(a.x, b.x, epsilon = 1e-3);
-        assert_relative_eq!(a.y, b.y, epsilon = 1e-3);
-        assert_relative_eq!(a.z, b.z, epsilon = 1e-3);
-    }
-
-    /// `compute_sun_direction` with custom datetime matches `sun_direction_at`.
-    #[test]
-    fn compute_sun_direction_custom() {
-        let dt = DateTimeInput {
-            use_custom: true,
-            custom_hour: 12.0,
-            // June 21 = day 172
-            custom_day_of_year: 172,
-            custom_year: 2025,
-        };
-        let a = compute_sun_direction(&dt);
-        let b = sun_direction_at(2025, 6, 21, 12, 0, 0.0);
-        assert_relative_eq!(a.x, b.x, epsilon = 1e-5);
-        assert_relative_eq!(a.y, b.y, epsilon = 1e-5);
-        assert_relative_eq!(a.z, b.z, epsilon = 1e-5);
-    }
-
-    /// `compute_sun_direction` clamps `day_of_year` 0 to 1.
-    #[test]
-    fn compute_sun_direction_clamps_doy_zero() {
-        let dt = DateTimeInput {
-            use_custom: true,
-            custom_hour: 12.0,
-            custom_day_of_year: 0,
-            custom_year: 2025,
-        };
-        let a = compute_sun_direction(&dt);
-        // Day 0 clamped to day 1 = January 1.
-        let b = sun_direction_at(2025, 1, 1, 12, 0, 0.0);
-        assert_relative_eq!(a.x, b.x, epsilon = 1e-5);
-        assert_relative_eq!(a.y, b.y, epsilon = 1e-5);
-        assert_relative_eq!(a.z, b.z, epsilon = 1e-5);
     }
 }

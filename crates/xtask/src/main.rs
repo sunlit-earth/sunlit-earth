@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{bake_icon, build_image, doctor, e2e, setup, teardown, vm};
+use crate::commands::{bake_icon, bake_stars, build_image, doctor, e2e, setup, teardown, vm};
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
 use crate::provider::target::{HostOs, Target};
@@ -69,6 +69,15 @@ enum Command {
         /// baking. For the judgment a test cannot make.
         #[arg(long, value_name = "DIR")]
         review: Option<std::path::PathBuf>,
+    },
+    /// Bake the HYG star catalog into the runtime instance buffer format.
+    BakeStars {
+        /// HYG v4.4 CSV input.
+        #[arg(long, value_name = "CSV")]
+        input: std::path::PathBuf,
+        /// Binary catalog output.
+        #[arg(long, value_name = "BIN")]
+        output: std::path::PathBuf,
     },
 }
 
@@ -173,6 +182,7 @@ fn main() -> ExitCode {
             desktop,
         } => e2e::run(&runner, target, keep, allow_expired_image, desktop),
         Command::BakeIcon { review } => bake_icon::run(review),
+        Command::BakeStars { input, output } => bake_stars::run(&input, &output),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { target } => build_image::run(&runner, target),

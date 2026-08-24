@@ -30,6 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 crc32fast = "1"
+csv = "1"
 dirs = "6"
 # The icon bake, xtask-only. `resvg` rasterizes the SVG masters and `ico`
 # assembles the multi-size Windows icon; both are pure Rust, so the bake runs

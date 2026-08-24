@@ -16,6 +16,7 @@ dirs = { workspace = true }
 # someone substitute it", and the doctor has to be able to answer it without
 # reading tens of gigabytes at 500 MB/s. See `checksum` in `hash.rs`.
 crc32fast = { workspace = true }
+csv = { workspace = true }
 # The icon bake: SVG in, PNG and ICO out. Nothing else in the xtask draws.
 resvg = { workspace = true }
 ico = { workspace = true }

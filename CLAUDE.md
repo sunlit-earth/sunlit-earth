@@ -113,10 +113,11 @@ sunlit-earth/
     sunlit-core/     # headless: no Slint, no window, no event loop
       shaders/       # WGSL, included at compile time by renderer/gpu_setup.rs
       src/assets/    # texture loading + downscale cache, cloud source + updater, texture mailbox
+      src/assets/stars/  # the baked HYG blob and its ATTRIBUTION.md (committed data)
       src/engine/    # the engine thread, injectable clock, wallpaper sink
       src/geometry/  # sphere mesh, procedural grid texture
       src/renderer/  # wgpu pipeline, offscreen render, readback
-      src/scene/     # camera, sun (astronomy FFI), datetime
+      src/scene/     # camera, sky state (astronomy FFI), sun reference path, datetime
       src/config.rs  # AppConfig, QualityTier, persistence
       src/memory.rs  # per-OS process counters, the metrics CSV, the budget
       src/memory_report.rs  # the four-section report of where the memory is
@@ -165,9 +166,9 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 
 `scene::sky::SkyState` is the one astronomy result for each frame. From the selected datetime it builds the J2000 equatorial to world rotation, rotates a geocentric Astronomy Engine sun vector, and computes directions and apparent magnitudes for Mercury, Venus, Mars, Jupiter, and Saturn. The engine passes the whole state to the renderer and the dirty check compares the sun plus two quantized rotation basis vectors. The older subsolar calculation in `scene::sun` remains as an independent equivalence test.
 
-`cargo xtask bake-stars` reads HYG v4.4, excludes its `Sol` row, propagates proper motion to epoch 2026.0, bakes B minus V color and magnitude, and writes 16 byte records after a 12 byte header. `assets::stars` validates the embedded blob and lends its payload directly to wgpu as the static instance buffer. The blob with 15,597 stars and its `ATTRIBUTION.md` ship together under `assets/stars/`; xtask does not depend on `sunlit-core`.
+`cargo xtask bake-stars` reads HYG v4.4, excludes its `Sol` row, propagates proper motion to epoch 2026.0, bakes B minus V color and magnitude, and writes 16 byte records after a 12 byte header. `assets::stars` validates the embedded blob and lends its payload directly to wgpu as the static instance buffer. The blob with 15,597 stars and its `ATTRIBUTION.md` ship together under `crates/sunlit-core/src/assets/stars/`; xtask does not depend on `sunlit-core`. The format contract between the two crates is held by a fixture in `crates/sunlit-core/tests/fixtures/`, a CSV and a BIN checked in side by side: the reader's tests load the BIN, and `the_committed_fixture_matches_a_fresh_bake` in xtask bakes the CSV and compares, so a layout change that lands on one side and not the other fails there rather than in whatever the sky looked like afterwards.
 
-The star pipeline draws first. Four generated triangle strip vertices expand every catalog record into an analytic sprite with a crisp core and independently controlled glow, transformed by the shared sky rotation and camera rotation. Earth retains the camera's 20 degree perspective lens; celestial directions use a separate stereographic lens with a configurable horizontal field of view. Records are sorted by magnitude, so the runtime submits only the prefix inside the selected limit; the shader keeps the same cutoff as a boundary check. Brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline and is rewritten whenever `SkyState` refreshes. Intensity zero omits both draws. Earth then covers the sky, followed by clouds and the atmosphere shells.
+The star pipeline draws first. Four generated triangle strip vertices expand every catalog record into an analytic sprite with a crisp core and independently controlled glow, transformed by the shared sky rotation and camera rotation. The glow is a Gaussian with the value at `star_glow_radius` subtracted and the remainder renormalized, so it reaches zero exactly where the sprite quad ends: a bare Gaussian still carries 4.4% of its peak there, and with brightness, glow strength and glow radius all at their maxima that residual draws the quad's own edge as a straight line and puts bright stars in visible squares. `golden_bright_star_halos` is that corner of the parameter space, and `large_crisp_stars` is the other end of the same axis with no halo at all. Earth retains the camera's 20 degree perspective lens; celestial directions use a separate stereographic lens with a configurable horizontal field of view. Records are sorted by magnitude, so the runtime submits only the prefix inside the selected limit; the shader keeps the same cutoff as a boundary check. Brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline, rewritten by the two calls that move the renderer's stored sky and by neither of them when it did not move: the buffer is what the draw reads and the stored inputs are what a replayed export re-encodes, so the two have to name the same instant. Intensity zero omits both draws. Earth then covers the sky, followed by clouds and the atmosphere shells.
 
 Adding a shader parameter means: the `.slint` property and slider, the `AppConfig` field, `SceneParams` + its `ParamsDigest`, `Uniforms`, and the WGSL. The bridge functions and the dirty check follow from the struct. `params.rs` has a table-driven test that walks every parameter and asserts it changes the digest, so forgetting the dirty check is a test failure rather than a stale-frame bug.
 
@@ -177,9 +178,9 @@ A setting that is not a shader parameter takes a different route, and `texture_r
 
 ### The renderer (`sunlit_core::renderer`)
 
-`Renderer` owns every GPU object and renders offscreen into its own texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`). It knows nothing about windows. Key methods: `render(&SceneParams, sun_dir) -> RenderOutcome`, `resize`, `drain_texture_updates`, `export_image`, `read_preview_pixels`, `textures_ready`, `loading_text`.
+`Renderer` owns every GPU object and renders offscreen into its own texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`). It knows nothing about windows. Key methods: `render(&SceneParams, &SkyState) -> RenderOutcome`, `resize`, `drain_texture_updates`, `export_image`, `read_preview_pixels`, `textures_ready`, `loading_text`.
 
-Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass` (uniform encoding, pass encoding, `Overlays::select`, `read_texture_rgba8`), `textures` (slots, mailbox draining, mipmapped upload, `downsample_2x`), `texture_routing` (which bind group and blend mode), `frame` (`FrameState` dirty check), `uniforms` (the 192-byte `#[repr(C)]` struct).
+Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass` (uniform encoding, pass encoding, `Overlays::select`, `read_texture_rgba8`), `textures` (slots, mailbox draining, mipmapped upload, `downsample_2x`), `texture_routing` (which bind group and blend mode), `frame` (`FrameState` dirty check), `uniforms` (the 368-byte `#[repr(C)]` struct).
 
 ### The app (`sunlit-app`)
 

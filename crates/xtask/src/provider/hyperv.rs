@@ -26,7 +26,7 @@ use crate::util;
 pub const SWITCH: &str = "Default Switch";
 
 /// How long to wait for the guest to report an address.
-pub const ADDRESS_TIMEOUT: Duration = Duration::from_secs(300);
+pub const ADDRESS_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// The account the golden image creates.
 pub const GUEST_USER: &str = "tester";

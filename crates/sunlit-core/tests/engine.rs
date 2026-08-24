@@ -31,7 +31,7 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 }
 
 /// How long to wait for the engine to produce something before giving up.
-const TIMEOUT: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Deterministic test parameters: the procedural grid texture, no MSAA, a
 /// fixed date so the sun does not move between runs.

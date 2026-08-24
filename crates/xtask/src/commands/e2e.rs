@@ -47,8 +47,8 @@ impl Where {
 /// too short is a false failure, and the cost of one too long is waiting.
 pub fn job_timeout(target: Target) -> Duration {
     match target {
-        Target::Windows => Duration::from_secs(45 * 60),
-        Target::Linux => Duration::from_secs(30 * 60),
+        Target::Windows => Duration::from_mins(45),
+        Target::Linux => Duration::from_mins(30),
     }
 }
 
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn the_windows_guest_gets_more_time_than_the_linux_one() {
         assert!(job_timeout(Target::Windows) > job_timeout(Target::Linux));
-        assert!(job_timeout(Target::Linux) >= Duration::from_secs(600));
+        assert!(job_timeout(Target::Linux) >= Duration::from_mins(10));
     }
 
     #[test]

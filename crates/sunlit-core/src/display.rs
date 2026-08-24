@@ -152,9 +152,7 @@ pub fn outputs() -> Option<Vec<Output>> {
     // `DISPLAY` unset is the ordinary headless case: the `render` subcommand,
     // CI, the golden suite. Running xrandr there costs a process and a message
     // on stderr to learn what the missing variable already said.
-    if crate::env_override("DISPLAY").is_none() {
-        return None;
-    }
+    crate::env_override("DISPLAY")?;
     let out = std::process::Command::new("xrandr")
         .arg("--query")
         .output()

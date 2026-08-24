@@ -38,7 +38,7 @@ pub const POLL: Duration = Duration::from_secs(5);
 /// How often a line is printed when nothing is happening.
 ///
 /// An hour of build is 60 lines, which is a heartbeat rather than a log.
-pub const HEARTBEAT: Duration = Duration::from_secs(60);
+pub const HEARTBEAT: Duration = Duration::from_mins(1);
 
 /// How finely the poll sleep is cut, so a build that ends does not have to wait
 /// out a poll before its watcher notices.

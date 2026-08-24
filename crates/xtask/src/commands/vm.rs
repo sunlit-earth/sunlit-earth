@@ -20,10 +20,10 @@ use crate::store::{self, Store};
 use crate::util;
 
 /// How long a cold boot may take before the SSH server answers.
-pub const BOOT_TIMEOUT: Duration = Duration::from_secs(600);
+pub const BOOT_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// How long the desktop session may take after that.
-pub const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
+pub const SESSION_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// A booted guest and the provider that owns it.
 pub struct Session<'a> {
@@ -227,8 +227,7 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
             continue;
         }
         let running = provider::for_state(runner, store, state)
-            .map(|p| p.is_running(state))
-            .unwrap_or(false);
+            .is_ok_and(|provider| provider.is_running(state));
         if running {
             let cost = state
                 .reason
@@ -815,7 +814,7 @@ pub fn smoke(
         target,
         script,
         &scratch,
-        Duration::from_secs(300),
+        Duration::from_mins(5),
     ) {
         Ok(code) => code,
         Err(e) => {

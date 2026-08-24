@@ -28,7 +28,7 @@ use sunlit_earth::engine_client::{self, EngineLink};
 use sunlit_earth::ui_callbacks;
 
 /// How long the render subcommand waits for textures before exporting anyway.
-const RENDER_TEXTURE_TIMEOUT: Duration = Duration::from_secs(120);
+const RENDER_TEXTURE_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// How often the app checks whether the preview viewport changed size.
 const VIEWPORT_POLL: Duration = Duration::from_millis(200);
@@ -279,9 +279,9 @@ fn engine_config(
         cloud,
         cloud_poll_interval: cloud_fetcher::poll_interval(),
         cache_dir: cloud_fetcher::cache_dir(),
-        auto_refresh: config.auto_refresh_enabled.then(|| {
-            Duration::from_secs(u64::from(config.auto_refresh_interval_minutes.max(1)) * 60)
-        }),
+        auto_refresh: config
+            .auto_refresh_enabled
+            .then(|| Duration::from_mins(u64::from(config.auto_refresh_interval_minutes.max(1)))),
         wallpaper: Arc::new(SystemWallpaper),
         on_event: Arc::new(|_| {}),
         record_metrics: true,
@@ -416,10 +416,10 @@ fn register_auto_refresh_callback(
         }
 
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let interval_secs = u64::from(win.get_auto_refresh_interval().max(1.0) as u32) * 60;
+        let interval_minutes = u64::from(win.get_auto_refresh_interval().max(1.0) as u32);
         engine.send(EngineCommand::SetAutoRefresh {
             enabled,
-            interval: Duration::from_secs(interval_secs),
+            interval: Duration::from_mins(interval_minutes),
         });
 
         // Refresh immediately when toggling on (not on slider change)

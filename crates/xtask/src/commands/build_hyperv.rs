@@ -90,16 +90,16 @@ pub const BUILD_DISK_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 /// until a live run calibrates it: an install that reaches SSH in half an hour
 /// makes this a bound on a build that has gone wrong rather than a deadline a
 /// healthy one approaches.
-pub const INSTALL_DEADLINE: Duration = Duration::from_secs(2 * 60 * 60);
+pub const INSTALL_DEADLINE: Duration = Duration::from_hours(2);
 
 /// How long the first-logon bootstrap may take after SSH answers.
 ///
 /// It answers from the middle of that script, so what is left is a handful of
 /// registry writes and two scheduled tasks.
-pub const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(20 * 60);
+pub const BOOTSTRAP_DEADLINE: Duration = Duration::from_mins(20);
 
 /// How long the guest may take to shut itself down.
-pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30 * 60);
+pub const SHUTDOWN_DEADLINE: Duration = Duration::from_mins(30);
 
 /// How often the install's signals are read.
 pub const POLL: Duration = Duration::from_secs(10);
@@ -374,7 +374,7 @@ fn build_unattend_cd(
     println!(
         "unattend CD at {} ({})",
         iso.display(),
-        format_bytes(std::fs::metadata(&iso).map(|m| m.len()).unwrap_or(0))
+        format_bytes(std::fs::metadata(&iso).map_or(0, |metadata| metadata.len()))
     );
     Ok(iso)
 }

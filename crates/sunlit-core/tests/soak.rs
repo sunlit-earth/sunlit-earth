@@ -35,7 +35,7 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 /// shaving wall-clock time. Measured effect was modest (about 10%), because
 /// the per-step cost is dominated by the render and the engine wake-up, not
 /// the export itself.
-const STEP: Duration = Duration::from_secs(60 * 60);
+const STEP: Duration = Duration::from_hours(1);
 /// 14 simulated days at one step per hour.
 const STEPS: u64 = 14 * 24;
 /// The upstream cloud service publishes every three hours.
@@ -263,7 +263,7 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
     // STEPS (fewer simulated days, proportionally fewer publications) or
     // shrink the render sizes; do not raise the bound.
     assert!(
-        elapsed < Duration::from_secs(120),
+        elapsed < Duration::from_mins(2),
         "14 simulated days took {:.1}s, which defeats the purpose",
         elapsed.as_secs_f64()
     );

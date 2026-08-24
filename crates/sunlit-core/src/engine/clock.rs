@@ -104,11 +104,11 @@ mod tests {
     #[test]
     fn mock_clock_advances_both_measures_together() {
         let clock = MockClock::new(OffsetDateTime::UNIX_EPOCH);
-        clock.advance(Duration::from_secs(3600));
-        assert_eq!(clock.elapsed(), Duration::from_secs(3600));
+        clock.advance(Duration::from_hours(1));
+        assert_eq!(clock.elapsed(), Duration::from_hours(1));
         assert_eq!(
             clock.now_utc(),
-            OffsetDateTime::UNIX_EPOCH + Duration::from_secs(3600)
+            OffsetDateTime::UNIX_EPOCH + Duration::from_hours(1)
         );
     }
 
@@ -116,9 +116,9 @@ mod tests {
     fn mock_clock_advances_are_cumulative() {
         let clock = MockClock::new(OffsetDateTime::UNIX_EPOCH);
         for _ in 0..14 {
-            clock.advance(Duration::from_secs(24 * 3600));
+            clock.advance(Duration::from_hours(24));
         }
-        assert_eq!(clock.elapsed(), Duration::from_secs(14 * 24 * 3600));
+        assert_eq!(clock.elapsed(), Duration::from_hours(14 * 24));
     }
 
     #[test]

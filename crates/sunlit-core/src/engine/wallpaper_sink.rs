@@ -93,29 +93,26 @@ impl WallpaperSink for SystemWallpaper {
     #[cfg(not(windows))]
     fn target_size(&self) -> Result<(u32, u32), String> {
         let (default_width, default_height) = DEFAULT_TARGET_SIZE;
-        match crate::display::outputs().as_deref() {
-            Some(outputs) => match crate::display::primary_of(outputs) {
-                Some(output) => Ok((output.width, output.height)),
-                None => {
-                    tracing::warn!(
-                        width = default_width,
-                        height = default_height,
-                        "no display output has a mode assigned; rendering the \
-                         wallpaper at the documented default size"
-                    );
-                    Ok(DEFAULT_TARGET_SIZE)
-                }
-            },
-            None => {
-                tracing::info!(
-                    width = default_width,
-                    height = default_height,
-                    "no display to ask about its resolution; rendering the \
-                     wallpaper at the documented default size"
-                );
-                Ok(DEFAULT_TARGET_SIZE)
-            }
-        }
+        let outputs = crate::display::outputs();
+        let Some(outputs) = outputs.as_deref() else {
+            tracing::info!(
+                width = default_width,
+                height = default_height,
+                "no display to ask about its resolution; rendering the \
+                 wallpaper at the documented default size"
+            );
+            return Ok(DEFAULT_TARGET_SIZE);
+        };
+        let Some(output) = crate::display::primary_of(outputs) else {
+            tracing::warn!(
+                width = default_width,
+                height = default_height,
+                "no display output has a mode assigned; rendering the \
+                 wallpaper at the documented default size"
+            );
+            return Ok(DEFAULT_TARGET_SIZE);
+        };
+        Ok((output.width, output.height))
     }
 
     #[cfg(windows)]

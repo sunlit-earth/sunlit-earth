@@ -427,8 +427,8 @@ mod tests {
         let err = wait_ready(
             &runner,
             &target(),
-            Duration::from_secs(3600),
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
+            Duration::from_hours(1),
             &|| Some("qemu has exited".to_owned()),
         )
         .unwrap_err();

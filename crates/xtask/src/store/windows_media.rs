@@ -94,9 +94,7 @@ pub fn ensure_iso(runner: &dyn Runner, store: &Store) -> Result<PathBuf, String>
         .stream(&command)
         .map_err(|e| format!("cannot run the downloader: {e}"))?;
 
-    let size = std::fs::metadata(&destination)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let size = std::fs::metadata(&destination).map_or(0, |metadata| metadata.len());
     if code != 0 || !plausible_iso(size) {
         let _ = std::fs::remove_file(&destination);
         return Err(manual_instructions(&destination));

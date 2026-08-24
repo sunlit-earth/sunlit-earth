@@ -1557,7 +1557,7 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
 
     // 2. Wait for startup and for the first cloud image to be downloaded and
     //    uploaded to the GPU while the window is still visible.
-    let ready_timeout = Duration::from_secs(60);
+    let ready_timeout = Duration::from_mins(1);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
     wait_for_downloads(&stub, 1, ready_timeout);
@@ -1686,7 +1686,7 @@ fn test_memory_report() {
     let stdout_watcher = StdoutWatcher::new(child);
     let stderr_watcher = StderrWatcher::new(child);
 
-    let ready_timeout = Duration::from_secs(60);
+    let ready_timeout = Duration::from_mins(1);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
@@ -1992,7 +1992,7 @@ fn test_set_wallpaper() {
     let line = stdout_watcher.wait_for_signal_line_from(
         "wallpaper_",
         stdout_watcher.line_count().saturating_sub(1),
-        Duration::from_secs(120),
+        Duration::from_mins(2),
     );
     assert!(
         line.contains("wallpaper_set"),

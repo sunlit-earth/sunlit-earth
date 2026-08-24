@@ -37,12 +37,12 @@ pub fn no_notify() -> NotifyFn {
 /// selects the resolution variant, which is how the texture resolution setting
 /// gets a cheaper download without any new asset work.
 const CLOUD_URL_TEMPLATE: &str = "https://clouds.matteason.co.uk/images/{size}/clouds.jpg";
-const POLL_INTERVAL: Duration = Duration::from_secs(3600);
+const POLL_INTERVAL: Duration = Duration::from_hours(1);
 /// First delay after a failed poll. Doubles up to [`MAX_RETRY_DELAY`].
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
 /// Ceiling for the retry backoff, so a service outage does not turn into an
 /// hourly poll that misses the recovery by 59 minutes.
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+const MAX_RETRY_DELAY: Duration = Duration::from_mins(5);
 
 /// Exponential backoff for failed cloud polls.
 ///

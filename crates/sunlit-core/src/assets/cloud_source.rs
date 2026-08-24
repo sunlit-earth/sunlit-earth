@@ -52,7 +52,7 @@ impl HttpCloudSource {
         let user_agent = format!("sunlit.earth/{}", env!("CARGO_PKG_VERSION"));
         let agent = ureq::Agent::config_builder()
             .user_agent(&user_agent)
-            .timeout_global(Some(Duration::from_secs(120)))
+            .timeout_global(Some(Duration::from_mins(2)))
             .build()
             .new_agent();
         Self {

@@ -43,10 +43,10 @@ const TICK: Duration = Duration::from_millis(50);
 const DRAIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How often the sun position is recomputed when rendering live time.
-const SUN_INTERVAL: Duration = Duration::from_secs(120);
+const SUN_INTERVAL: Duration = Duration::from_mins(2);
 
 /// How often a memory sample is appended to the metrics CSV.
-const METRICS_INTERVAL: Duration = Duration::from_secs(600);
+const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 
 /// Things a client asks the engine to do.
 pub enum EngineCommand {
@@ -181,7 +181,7 @@ impl EngineConfig {
             texture_resolution: crate::config::DEFAULT_TEXTURE_RESOLUTION,
             clock: Arc::new(SystemClock::new()),
             cloud: None,
-            cloud_poll_interval: Duration::from_secs(3600),
+            cloud_poll_interval: Duration::from_hours(1),
             cache_dir: None,
             auto_refresh: None,
             wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
@@ -1139,15 +1139,15 @@ mod tests {
     fn schedule_does_not_burst_after_a_long_stall() {
         let mut s = Schedule::new(Duration::from_secs(10), Duration::ZERO);
         // One jump of a simulated day must produce one run, not 8640.
-        assert!(s.due(Duration::from_secs(86_400)));
-        assert!(!s.due(Duration::from_secs(86_400)));
+        assert!(s.due(Duration::from_hours(24)));
+        assert!(!s.due(Duration::from_hours(24)));
         assert!(s.due(Duration::from_secs(86_410)));
     }
 
     #[test]
     fn schedule_interval_change_restarts_the_countdown() {
-        let mut s = Schedule::new(Duration::from_secs(600), Duration::ZERO);
-        s.set_interval(Duration::from_secs(60), Duration::from_secs(30));
+        let mut s = Schedule::new(Duration::from_mins(10), Duration::ZERO);
+        s.set_interval(Duration::from_mins(1), Duration::from_secs(30));
         assert!(!s.due(Duration::from_secs(89)));
         assert!(s.due(Duration::from_secs(90)));
     }

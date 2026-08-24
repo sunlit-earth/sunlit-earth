@@ -152,10 +152,10 @@ mod tests {
         use std::time::Duration;
         assert_eq!(format_duration(Duration::from_secs(0)), "0s");
         assert_eq!(format_duration(Duration::from_secs(45)), "45s");
-        assert_eq!(format_duration(Duration::from_secs(60)), "1m00s");
+        assert_eq!(format_duration(Duration::from_mins(1)), "1m00s");
         assert_eq!(format_duration(Duration::from_secs(250)), "4m10s");
-        assert_eq!(format_duration(Duration::from_secs(3600)), "1h00m");
-        assert_eq!(format_duration(Duration::from_secs(4500)), "1h15m");
+        assert_eq!(format_duration(Duration::from_hours(1)), "1h00m");
+        assert_eq!(format_duration(Duration::from_mins(75)), "1h15m");
     }
 
     #[test]

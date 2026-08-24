@@ -85,6 +85,10 @@ const STAR_FAINT_CORE_RADIUS_PIXELS: f32 = 0.5;
 const STAR_BRIGHT_CORE_RADIUS_PIXELS: f32 = 1.0;
 const STAR_CORE_EDGE_PIXELS: f32 = 0.55;
 const STAR_HALO_PEAK_AT_FULL_STRENGTH: f32 = 0.2;
+/// Gaussian sigmas the halo spans before `star_glow_radius` ends it. The
+/// truncation is subtracted rather than clipped (see `star_halo_profile`), so
+/// this is the whole halo and not the part of it the sprite quad had room for.
+const STAR_HALO_SIGMAS: f32 = 2.5;
 const PI: f32 = 3.141592653589793;
 
 fn star_prominence(magnitude: f32) -> f32 {
@@ -111,6 +115,23 @@ fn star_sprite_radius_pixels(magnitude: f32, pixel_scale: f32) -> f32 {
         has_halo,
     );
     return max(core_extent, halo_extent);
+}
+
+/// Halo falloff, zero at `star_glow_radius` and normalized to peak at one.
+///
+/// A bare Gaussian still carries `exp(-STAR_HALO_SIGMAS^2 / 2)` of its peak
+/// where the sprite quad ends, and at the top of the brightness, strength and
+/// radius sliders together that residual is well above the visible threshold:
+/// the quad's own edge then draws as a straight line and bright stars sit in
+/// squares. Subtracting the value at the boundary is what makes the halo reach
+/// zero there instead of being cut off, and dividing by what is left keeps the
+/// center at full strength.
+fn star_halo_profile(radius_squared: f32, pixel_scale: f32) -> f32 {
+    let halo_extent = max(uniforms.star_glow_radius, 0.5) * pixel_scale;
+    let halo_sigma = halo_extent / STAR_HALO_SIGMAS;
+    let boundary = exp(-0.5 * STAR_HALO_SIGMAS * STAR_HALO_SIGMAS);
+    let falloff = exp(-0.5 * radius_squared / (halo_sigma * halo_sigma));
+    return max(falloff - boundary, 0.0) / (1.0 - boundary);
 }
 
 @vertex
@@ -160,12 +181,10 @@ fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
     let core_radius = star_core_radius_pixels(in.magnitude, pixel_scale);
     let core_edge = STAR_CORE_EDGE_PIXELS * pixel_scale;
     let core = 1.0 - smoothstep(core_radius, core_radius + core_edge, radius);
-    let halo_extent = max(uniforms.star_glow_radius, 0.5) * pixel_scale;
-    let halo_sigma = halo_extent / 2.5;
     let halo = STAR_HALO_PEAK_AT_FULL_STRENGTH
         * clamp(uniforms.star_glow_strength, 0.0, 3.0)
         * prominence
-        * exp(-0.5 * radius_squared / (halo_sigma * halo_sigma));
+        * star_halo_profile(radius_squared, pixel_scale);
     let contrast_exponent = 0.1 + 0.1 * clamp(uniforms.star_contrast, -1.0, 1.0);
     let compressed_flux = pow(10.0, -contrast_exponent * in.magnitude);
     let amplitude = uniforms.star_intensity * compressed_flux * (core + halo);

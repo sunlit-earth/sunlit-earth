@@ -453,7 +453,6 @@ impl Renderer {
     /// Kicks off background texture loads for the selected mode whether or not
     /// the frame is skipped, so a mode switch starts loading immediately.
     pub fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
-        self.update_planets(sky);
         if params.sample_count != self.sample_count {
             debug!(
                 sample_count = params.sample_count,
@@ -488,6 +487,7 @@ impl Renderer {
             sky: sky.clone(),
             use_blend,
         });
+        self.update_planets(sky);
 
         let first_frame = self.last_state.is_none();
         render_pass::execute_render_pass(
@@ -501,6 +501,12 @@ impl Renderer {
         RenderOutcome::Rendered { first_frame }
     }
 
+    /// Rewrite the planet instance buffer to match `sky`.
+    ///
+    /// Called from the two places that move `last_inputs.sky`, and from
+    /// neither of them when the sky did not move: the buffer is what the draw
+    /// reads and `last_inputs` is what a replayed export re-encodes, so the
+    /// two have to name the same instant.
     fn update_planets(&self, sky: &SkyState) {
         self.queue
             .write_buffer(&self.planet_buffer, 0, &planet_instance_bytes(sky));

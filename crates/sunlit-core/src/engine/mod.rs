@@ -960,8 +960,15 @@ impl Engine {
     fn prepare_export(&mut self) {
         self.renderer.drain_texture_updates();
         let sky = self.sky_state();
-        self.renderer.render(&self.params, &sky);
-        self.renderer.set_sky_state(sky);
+        if matches!(
+            self.renderer.render(&self.params, &sky),
+            RenderOutcome::Skipped
+        ) {
+            // A skipped frame kept the sky the last render was drawn with, and
+            // for a hidden window that can be hours old. A rendered one is
+            // already holding this one.
+            self.renderer.set_sky_state(sky);
+        }
     }
 
     fn render_to_file(

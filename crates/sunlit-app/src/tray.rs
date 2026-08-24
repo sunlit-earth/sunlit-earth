@@ -10,6 +10,7 @@ use tracing::{debug, info};
 
 use sunlit_core::engine::EngineCommand;
 
+use crate::about::AboutController;
 use crate::engine_client::EngineLink;
 use crate::{MainWindow, TrayIcon};
 
@@ -52,7 +53,7 @@ pub fn acquire_single_instance(mutex_name: &str) -> Option<single_instance::Sing
 ///
 /// The returned handle must be kept alive: dropping it removes the icon from
 /// the tray.
-pub fn create_tray(window: &MainWindow, engine: &EngineLink) -> TrayIcon {
+pub fn create_tray(window: &MainWindow, engine: &EngineLink, about: &AboutController) -> TrayIcon {
     let tray = TrayIcon::new().expect("failed to create tray icon");
     tray.set_tray_image(create_icon());
     tray.set_auto_refresh_enabled(window.get_auto_refresh_enabled());
@@ -101,6 +102,11 @@ pub fn create_tray(window: &MainWindow, engine: &EngineLink) -> TrayIcon {
             win.set_auto_refresh_enabled(checked);
             win.invoke_auto_refresh_changed();
         }
+    });
+
+    let about = about.clone();
+    tray.on_show_about(move || {
+        let _ = about.show();
     });
 
     tray.on_exit_app(|| {

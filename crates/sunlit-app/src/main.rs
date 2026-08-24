@@ -516,11 +516,14 @@ fn run_app(
         effective_texture_resolution(&cli, config),
         &link,
     );
+    let about = sunlit_earth::about::AboutController::default();
+    about.register_settings_callback(&window);
 
     // The tray icon is a top-level Slint component of its own; it must exist
     // before the auto-refresh callback so the two views of that setting can be
     // kept in step.
-    let tray = use_tray.then(|| std::rc::Rc::new(sunlit_earth::tray::create_tray(&window, &link)));
+    let tray =
+        use_tray.then(|| std::rc::Rc::new(sunlit_earth::tray::create_tray(&window, &link, &about)));
     register_auto_refresh_callback(&window, &link, config, tray.clone());
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
         window

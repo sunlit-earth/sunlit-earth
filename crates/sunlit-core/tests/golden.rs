@@ -301,11 +301,32 @@ fn golden_night_side_with_stars() {
             ..base.camera
         },
         atmo_enabled: false,
-        star_intensity: 0.85,
+        star_intensity: 1.0,
         star_mag_limit: 6.0,
         ..base
     };
     check_golden("night_side_with_stars", &params);
+}
+
+#[test]
+fn golden_large_crisp_stars_without_glow() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 3.0,
+        star_size: 3.0,
+        star_glow_strength: 0.0,
+        star_contrast: 0.0,
+        star_mag_limit: 6.0,
+        ..base
+    };
+    check_golden("large_crisp_stars", &params);
 }
 
 /// Render every camera preset into one image for human review.
@@ -384,6 +405,7 @@ fn every_golden_case_is_distinguishable() {
         "rayleigh",
         "close_up",
         "night_side_with_stars",
+        "large_crisp_stars",
     ];
     let mut images = Vec::new();
     for name in names {

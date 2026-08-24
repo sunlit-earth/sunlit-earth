@@ -50,9 +50,17 @@ struct Uniforms {
     _pad3: f32,
     _pad4: f32,
     _pad5: f32,
+    sky_view_projection: [f32; 16],
+    world_from_eqj: [[f32; 4]; 3],
+    viewport_size: [f32; 2],
+    screen_offset: [f32; 2],
+    star_intensity: f32,
+    star_mag_limit: f32,
+    _pad6: f32,
+    _pad7: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 208);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 352);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -507,6 +515,10 @@ fn avg_luminance_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1
 }
 
 /// Helper: default uniforms with identity color correction and no clouds.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "test viewport dimensions are small integers"
+)]
 fn default_test_uniforms(size: u32) -> Uniforms {
     Uniforms {
         mvp: test_mvp(size, size),
@@ -542,6 +554,18 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
+        sky_view_projection: test_mvp(size, size),
+        world_from_eqj: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        viewport_size: [size as f32, size as f32],
+        screen_offset: [0.0, 0.0],
+        star_intensity: 0.45,
+        star_mag_limit: 6.5,
+        _pad6: 0.0,
+        _pad7: 0.0,
     }
 }
 
@@ -671,6 +695,14 @@ struct Uniforms {
     _pad3: f32,
     _pad4: f32,
     _pad5: f32,
+    sky_view_projection: mat4x4<f32>,
+    world_from_eqj: mat3x3<f32>,
+    viewport_size: vec2<f32>,
+    screen_offset: vec2<f32>,
+    star_intensity: f32,
+    star_mag_limit: f32,
+    _pad6: f32,
+    _pad7: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -794,6 +826,18 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
+        sky_view_projection: mvp,
+        world_from_eqj: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        viewport_size: [128.0, 128.0],
+        screen_offset: [0.0, 0.0],
+        star_intensity: 0.45,
+        star_mag_limit: 6.5,
+        _pad6: 0.0,
+        _pad7: 0.0,
     };
 
     let uniform_buf = ctx

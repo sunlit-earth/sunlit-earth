@@ -62,9 +62,11 @@ pub(super) fn write_uniforms(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
     params: &SceneParams,
-    aspect: f32,
+    viewport_width: u32,
+    viewport_height: u32,
     inputs: &FrameInputs,
 ) {
+    let aspect = viewport_width as f32 / viewport_height as f32;
     let cam = &params.camera;
     let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
     camera.offset_x = cam.offset_x;
@@ -73,7 +75,9 @@ pub(super) fn write_uniforms(
     camera.yaw_deg = cam.yaw_deg;
     camera.pitch_deg = cam.pitch_deg;
     let mvp = camera.mvp_matrix(aspect);
+    let sky_view_projection = camera.projection_matrix(aspect) * camera.view_matrix();
     let eye_pos = camera.eye_position();
+    let sky_rotation = inputs.sky.world_from_eqj;
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
         sun_dir: inputs.sky.sun_direction.into(),
@@ -112,6 +116,18 @@ pub(super) fn write_uniforms(
         _pad3: 0.0,
         _pad4: 0.0,
         _pad5: 0.0,
+        sky_view_projection: sky_view_projection.to_cols_array(),
+        world_from_eqj: [
+            sky_rotation.x_axis.extend(0.0).into(),
+            sky_rotation.y_axis.extend(0.0).into(),
+            sky_rotation.z_axis.extend(0.0).into(),
+        ],
+        viewport_size: [viewport_width as f32, viewport_height as f32],
+        screen_offset: [-cam.offset_x, -cam.offset_y],
+        star_intensity: params.star_intensity,
+        star_mag_limit: params.star_mag_limit,
+        _pad6: 0.0,
+        _pad7: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }
@@ -128,6 +144,7 @@ pub(super) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &RenderTarget,
+    stars: Option<Stars<'_>>,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
     vertex_buffer: &wgpu::Buffer,
@@ -173,6 +190,15 @@ pub(super) fn encode_and_submit(
             }),
             ..Default::default()
         });
+
+        if let Some(stars) = stars {
+            pass.set_pipeline(stars.pipeline);
+            pass.set_bind_group(0, stars.bind_group, &[]);
+            pass.set_vertex_buffer(0, stars.catalog_buffer.slice(..));
+            pass.draw(0..4, 0..stars.catalog_count);
+            pass.set_vertex_buffer(0, stars.planet_buffer.slice(..));
+            pass.draw(0..4, 0..5);
+        }
 
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
@@ -225,9 +251,14 @@ pub(super) fn execute_render_pass(
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
 ) {
-    let aspect = res.render_width as f32 / res.render_height as f32;
-
-    write_uniforms(&res.queue, &res.uniform_buffer, params, aspect, inputs);
+    write_uniforms(
+        &res.queue,
+        &res.uniform_buffer,
+        params,
+        res.render_width,
+        res.render_height,
+        inputs,
+    );
 
     let resolve_view = res
         .render_texture
@@ -240,10 +271,12 @@ pub(super) fn execute_render_pass(
     );
 
     let overlays = Overlays::select(res, params, bind_group);
+    let stars = Stars::select(res, params, bind_group);
     encode_and_submit(
         &res.device,
         &res.queue,
         &target,
+        stars,
         &res.pipeline,
         bind_group,
         &res.vertex_buffer,
@@ -258,6 +291,31 @@ pub(super) fn execute_render_pass(
         overlays.cloud.0,
         overlays.cloud.1,
     );
+}
+
+/// The star and planet resources selected for a visible celestial background.
+pub(super) struct Stars<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+    catalog_buffer: &'a wgpu::Buffer,
+    catalog_count: u32,
+    planet_buffer: &'a wgpu::Buffer,
+}
+
+impl<'a> Stars<'a> {
+    pub fn select(
+        res: &'a Renderer,
+        params: &SceneParams,
+        bind_group: &'a wgpu::BindGroup,
+    ) -> Option<Self> {
+        (params.star_intensity > 0.0).then_some(Self {
+            pipeline: &res.star_pipeline,
+            bind_group,
+            catalog_buffer: &res.star_buffer,
+            catalog_count: res.star_count,
+            planet_buffer: &res.planet_buffer,
+        })
+    }
 }
 
 /// Which optional overlay shells to draw for a frame, and with which bind

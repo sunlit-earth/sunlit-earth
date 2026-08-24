@@ -32,6 +32,14 @@ struct Uniforms {
     _pad3: f32,                    // 4 bytes, offset 196
     _pad4: f32,                    // 4 bytes, offset 200
     _pad5: f32,                    // 4 bytes, offset 204
+    sky_view_projection: mat4x4<f32>, // 64 bytes, offset 208
+    world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
+    viewport_size: vec2<f32>,         // 8 bytes, offset 320
+    screen_offset: vec2<f32>,         // 8 bytes, offset 328
+    star_intensity: f32,              // 4 bytes, offset 336
+    star_mag_limit: f32,              // 4 bytes, offset 340
+    _pad6: f32,                       // 4 bytes, offset 344
+    _pad7: f32,                       // 4 bytes, offset 348
 };
 
 @group(0) @binding(0)
@@ -56,6 +64,52 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) world_normal: vec3<f32>,
 };
+
+struct StarInput {
+    @location(2) direction: vec3<f32>,
+    @location(3) color_magnitude: vec4<f32>,
+};
+
+struct StarOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) local_position: vec2<f32>,
+    @location(1) color: vec3<f32>,
+    @location(2) magnitude: f32,
+};
+
+@vertex
+fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutput {
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+    let corner = corners[vertex_index];
+    let magnitude = in.color_magnitude.a * 10.0 - 2.0;
+    let world_direction = uniforms.world_from_eqj * in.direction;
+    var clip = uniforms.sky_view_projection * vec4<f32>(world_direction, 0.0);
+    let visible = clip.w > 0.0 && magnitude <= uniforms.star_mag_limit;
+    let sprite_offset =
+        (uniforms.screen_offset + corner * (12.0 / uniforms.viewport_size)) * clip.w;
+    clip = vec4<f32>(clip.xy + sprite_offset, clip.w, clip.w);
+
+    var out: StarOutput;
+    out.clip_position = select(vec4<f32>(2.0, 2.0, 1.0, 1.0), clip, visible);
+    out.local_position = corner;
+    out.color = in.color_magnitude.rgb;
+    out.magnitude = magnitude;
+    return out;
+}
+
+@fragment
+fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
+    let radius_squared = dot(in.local_position, in.local_position);
+    let gaussian = exp(-4.5 * radius_squared);
+    let compressed_flux = pow(10.0, -0.1 * in.magnitude);
+    let amplitude = uniforms.star_intensity * compressed_flux * gaussian;
+    return vec4<f32>(in.color * amplitude, amplitude);
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {

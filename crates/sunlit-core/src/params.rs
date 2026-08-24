@@ -24,8 +24,8 @@ const GAMMA_MIN: f32 = 0.2;
 const GAMMA_MAX: f32 = 3.0;
 
 /// Everything that determines the rendered image, except the frame's
-/// resolution and the sun direction (both derived: resolution from the target,
-/// sun direction from the clock plus `datetime`).
+/// resolution and sky state (both derived: resolution from the target, sky
+/// state from the clock plus `datetime`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SceneParams {
@@ -59,6 +59,10 @@ pub struct SceneParams {
     pub nightglow_intensity: f32,
     pub nightglow_falloff: f32,
     pub nightglow_balance: f32,
+
+    // Celestial background
+    pub star_intensity: f32,
+    pub star_mag_limit: f32,
 
     // Color correction (gamma values, not slider positions)
     pub day_gamma: f32,
@@ -110,6 +114,8 @@ impl SceneParams {
             nightglow_intensity: config.nightglow_intensity,
             nightglow_falloff: config.nightglow_falloff,
             nightglow_balance: config.nightglow_balance,
+            star_intensity: config.star_intensity,
+            star_mag_limit: config.star_mag_limit,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
@@ -156,6 +162,8 @@ impl SceneParams {
         config.nightglow_intensity = self.nightglow_intensity;
         config.nightglow_falloff = self.nightglow_falloff;
         config.nightglow_balance = self.nightglow_balance;
+        config.star_intensity = self.star_intensity;
+        config.star_mag_limit = self.star_mag_limit;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
@@ -212,6 +220,8 @@ impl SceneParams {
             nightglow_intensity: q(self.effective_nightglow_intensity()),
             nightglow_falloff: q(self.nightglow_falloff),
             nightglow_balance: q(self.nightglow_balance),
+            star_intensity: q(self.star_intensity),
+            star_mag_limit: q(self.star_mag_limit),
             day_gamma: q(self.day_gamma),
             day_saturation: q(self.day_saturation),
             night_gamma: q(self.night_gamma),
@@ -234,9 +244,8 @@ pub fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
 
 /// Dirty-check snapshot of a `SceneParams`.
 ///
-/// `datetime` is deliberately absent: what the shader actually consumes is the
-/// sun direction derived from it, and that is compared separately (a live-UTC
-/// render changes every frame even though `datetime` does not).
+/// `datetime` is deliberately absent: the derived sky state is compared
+/// separately, so a live UTC render changes even though `datetime` does not.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamsDigest {
     pub camera: CameraParams,
@@ -259,6 +268,8 @@ pub struct ParamsDigest {
     pub nightglow_intensity: i32,
     pub nightglow_falloff: i32,
     pub nightglow_balance: i32,
+    pub star_intensity: i32,
+    pub star_mag_limit: i32,
     pub day_gamma: i32,
     pub day_saturation: i32,
     pub night_gamma: i32,
@@ -637,6 +648,20 @@ mod tests {
                 "nightglow_balance",
                 SceneParams {
                     nightglow_balance: 0.8,
+                    ..base
+                },
+            ),
+            (
+                "star_intensity",
+                SceneParams {
+                    star_intensity: 0.8,
+                    ..base
+                },
+            ),
+            (
+                "star_mag_limit",
+                SceneParams {
+                    star_mag_limit: 5.5,
                     ..base
                 },
             ),

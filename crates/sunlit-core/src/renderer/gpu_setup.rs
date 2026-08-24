@@ -1,6 +1,7 @@
 use tracing::debug;
 use wgpu::util::DeviceExt;
 
+use crate::assets::stars;
 use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 
@@ -60,8 +61,19 @@ pub(super) fn create_renderer(
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    // Uniform buffer: MVP (64) + sun_dir (12) + terminator_width (4) +
-    // flags (4) + padding (12) = 96 bytes
+    let star_catalog = stars::embedded_catalog();
+    let star_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("star_instances"),
+        contents: star_catalog.instance_bytes(),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let planet_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("planet_instances"),
+        contents: &[0; 5 * stars::RECORD_SIZE],
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // One shared uniform buffer feeds the globe, atmosphere, and sky pipelines.
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniforms"),
         size: std::mem::size_of::<Uniforms>() as u64,
@@ -228,6 +240,7 @@ pub(super) fn create_renderer(
         create_render_textures(&device, width, height, sample_count, PREVIEW_USAGE);
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let star_pipeline = create_star_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let rayleigh_pipeline =
         create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
@@ -240,6 +253,10 @@ pub(super) fn create_renderer(
 
     Renderer {
         pipeline,
+        star_pipeline,
+        star_buffer,
+        star_count: star_catalog.len(),
+        planet_buffer,
         vertex_buffer,
         index_buffer,
         #[allow(clippy::cast_possible_truncation)]
@@ -281,6 +298,77 @@ pub(super) fn create_renderer(
         cloud_bind_group: None,
         cloud_texture_view: None,
     }
+}
+
+pub(super) fn create_star_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+        wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 2,
+            format: wgpu::VertexFormat::Float32x3,
+        },
+        wgpu::VertexAttribute {
+            offset: 12,
+            shader_location: 3,
+            format: wgpu::VertexFormat::Unorm8x4,
+        },
+    ];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("star_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_star"),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: stars::RECORD_SIZE as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &ATTRIBUTES,
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_star"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::OVER,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            strip_index_format: None,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 pub(super) fn create_pipeline(
@@ -620,6 +708,8 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
     debug!("rebuilding MSAA resources");
     replace_render_textures(res, res.render_width, res.render_height, sample_count);
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.star_pipeline =
+        create_star_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.cloud_pipeline =
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.rayleigh_pipeline =

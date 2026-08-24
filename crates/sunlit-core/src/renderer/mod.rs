@@ -22,7 +22,7 @@ use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
 use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
-use crate::scene::sky::SkyState;
+use crate::scene::sky::{PlanetKind, SkyState};
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
@@ -166,6 +166,10 @@ pub struct RendererConfig {
 /// The GPU pipeline and every resource it owns.
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    star_pipeline: wgpu::RenderPipeline,
+    star_buffer: wgpu::Buffer,
+    star_count: u32,
+    planet_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -439,6 +443,7 @@ impl Renderer {
     /// image reflects the current time even when no frame has been drawn since
     /// the window was hidden.
     pub fn set_sky_state(&mut self, sky: SkyState) {
+        self.update_planets(&sky);
         if let Some(inputs) = &mut self.last_inputs {
             inputs.sky = sky;
         }
@@ -449,6 +454,7 @@ impl Renderer {
     /// Kicks off background texture loads for the selected mode whether or not
     /// the frame is skipped, so a mode switch starts loading immediately.
     pub fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
+        self.update_planets(sky);
         if params.sample_count != self.sample_count {
             debug!(
                 sample_count = params.sample_count,
@@ -494,6 +500,11 @@ impl Renderer {
         self.last_state = Some(current_state);
 
         RenderOutcome::Rendered { first_frame }
+    }
+
+    fn update_planets(&self, sky: &SkyState) {
+        self.queue
+            .write_buffer(&self.planet_buffer, 0, &planet_instance_bytes(sky));
     }
 
     /// Read the preview texture back into RGBA8 pixels.
@@ -546,8 +557,14 @@ impl Renderer {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
 
-        let aspect = target_width as f32 / target_height as f32;
-        render_pass::write_uniforms(&self.queue, &self.uniform_buffer, params, aspect, inputs);
+        render_pass::write_uniforms(
+            &self.queue,
+            &self.uniform_buffer,
+            params,
+            target_width,
+            target_height,
+            inputs,
+        );
 
         let resolve_view = export_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let target = render_pass::RenderTarget::new(
@@ -558,12 +575,14 @@ impl Renderer {
         );
 
         let overlays = render_pass::Overlays::select(self, params, bind_group);
+        let stars = render_pass::Stars::select(self, params, bind_group);
 
         crate::memory::log_memory_usage("wallpaper: before render");
         render_pass::encode_and_submit(
             &self.device,
             &self.queue,
             &target,
+            stars,
             &self.pipeline,
             bind_group,
             &self.vertex_buffer,
@@ -592,6 +611,31 @@ impl Renderer {
     }
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn planet_instance_bytes(sky: &SkyState) -> [u8; 5 * crate::assets::stars::RECORD_SIZE] {
+    let mut bytes = [0; 5 * crate::assets::stars::RECORD_SIZE];
+    let eqj_from_world = sky.world_from_eqj.transpose();
+    for (index, planet) in sky.planets.iter().enumerate() {
+        let record_start = index * crate::assets::stars::RECORD_SIZE;
+        let direction = eqj_from_world * planet.direction;
+        for (component_index, component) in direction.to_array().into_iter().enumerate() {
+            let start = record_start + component_index * 4;
+            bytes[start..start + 4].copy_from_slice(&component.to_le_bytes());
+        }
+        let color = match planet.kind {
+            PlanetKind::Mercury => [170, 170, 170],
+            PlanetKind::Venus => [255, 250, 235],
+            PlanetKind::Mars => [255, 150, 120],
+            PlanetKind::Jupiter => [255, 225, 185],
+            PlanetKind::Saturn => [255, 235, 160],
+        };
+        bytes[record_start + 12..record_start + 15].copy_from_slice(&color);
+        bytes[record_start + 15] =
+            (((planet.magnitude.clamp(-2.0, 8.0) + 2.0) / 10.0) * 255.0).round() as u8;
+    }
+    bytes
+}
+
 /// Clamp a (possibly negative) combo box index into a slot index.
 #[allow(clippy::cast_sign_loss)]
 fn slot_of(texture_index: i32) -> usize {
@@ -600,6 +644,8 @@ fn slot_of(texture_index: i32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::scene::sky::PlanetState;
+
     use super::*;
 
     // -----------------------------------------------------------------------
@@ -777,5 +823,28 @@ mod tests {
     #[test]
     fn texture_labels_cover_every_mode() {
         assert_eq!(TEXTURE_LABELS.len(), BLEND_MODE_INDEX + 1);
+    }
+
+    #[test]
+    fn planet_instances_are_stored_in_eqj_coordinates() {
+        let rotation = glam::Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let planet = PlanetState {
+            kind: PlanetKind::Mercury,
+            direction: rotation * glam::Vec3::X,
+            magnitude: 0.0,
+        };
+        let sky = SkyState {
+            world_from_eqj: rotation,
+            sun_direction: glam::Vec3::Z,
+            planets: [planet; 5],
+        };
+        let bytes = planet_instance_bytes(&sky);
+        let component =
+            |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"));
+        let stored = glam::Vec3::new(component(0), component(4), component(8));
+        assert!(
+            stored.abs_diff_eq(glam::Vec3::X, 1.0e-6),
+            "stored {stored:?}"
+        );
     }
 }

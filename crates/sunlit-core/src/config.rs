@@ -195,6 +195,10 @@ pub struct AppConfig {
     pub nightglow_falloff: f32,
     pub nightglow_balance: f32,
 
+    // Celestial background
+    pub star_intensity: f32,
+    pub star_mag_limit: f32,
+
     // Color correction
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -269,6 +273,8 @@ impl Default for AppConfig {
             nightglow_intensity: 0.25,
             nightglow_falloff: 15.0,
             nightglow_balance: 0.37,
+            star_intensity: 0.45,
+            star_mag_limit: 6.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -665,6 +671,8 @@ mod tests {
             nightglow_intensity: 0.5,
             nightglow_falloff: 6.0,
             nightglow_balance: 0.3,
+            star_intensity: 0.7,
+            star_mag_limit: 5.8,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -789,6 +797,8 @@ mod tests {
             nightglow_intensity: 0.4,
             nightglow_falloff: 5.0,
             nightglow_balance: 0.6,
+            star_intensity: 0.8,
+            star_mag_limit: 6.2,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

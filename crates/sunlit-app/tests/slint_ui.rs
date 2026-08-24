@@ -98,6 +98,16 @@ fn test_int_property_roundtrip() {
     assert_eq!(window.get_texture_index(), 2);
 }
 
+#[test]
+fn test_celestial_properties_roundtrip_through_scene_params() {
+    let window = create_window();
+    window.set_star_intensity(0.73);
+    window.set_star_mag_limit(5.4);
+    let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
+    approx::assert_relative_eq!(params.star_intensity, 0.73);
+    approx::assert_relative_eq!(params.star_mag_limit, 5.4);
+}
+
 // ---------------------------------------------------------------------------
 // Preset callback wiring tests (Step 2.3)
 // ---------------------------------------------------------------------------

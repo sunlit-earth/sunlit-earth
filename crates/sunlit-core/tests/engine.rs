@@ -137,6 +137,29 @@ fn has_lit_pixels(rgba: &[u8]) -> bool {
         .any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40)
 }
 
+#[test]
+fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
+    const CLEAR: [u8; 4] = [5, 5, 13, 255];
+
+    let harness = Harness::start(|config| config.params.star_intensity = 0.0);
+    let (stars_off, _, _) = harness.next_frame();
+    let mut stars_on_params = test_params();
+    stars_on_params.star_intensity = 1.5;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(stars_on_params)));
+    let (stars_on, _, _) = harness.next_frame();
+
+    let revealed_star = stars_off
+        .chunks_exact(4)
+        .zip(stars_on.chunks_exact(4))
+        .any(|(off, on)| off == CLEAR && on != CLEAR);
+    assert!(
+        revealed_star,
+        "enabling stars should alter a clear background pixel"
+    );
+}
+
 /// Two small texture files and a cache directory to go with them.
 ///
 /// The resolution tests need file-backed slots, which the headless config

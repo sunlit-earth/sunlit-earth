@@ -7,6 +7,7 @@ use std::path::Path;
 const MAGIC: &[u8; 4] = b"SSTR";
 const VERSION: u32 = 1;
 const RECORD_SIZE: usize = 16;
+const HEADER_SIZE: usize = 12;
 const CATALOG_EPOCH: f64 = 2000.0;
 const BAKED_EPOCH: f64 = 2026.0;
 const MAX_MAGNITUDE: f64 = 7.0;
@@ -48,8 +49,14 @@ struct StarRecord {
     magnitude: u8,
 }
 
-/// Bake `input` and write the binary catalog plus its attribution sidecar.
-pub fn run(input: &Path, output: &Path) -> Result<u8, String> {
+/// Bake `input` into the blob the renderer embeds.
+///
+/// Returns the bytes rather than writing them, which is the seam
+/// `the_committed_fixture_matches_a_fresh_bake` uses: the reader's fixture is
+/// a CSV and a BIN checked in side by side, and without a test that bakes the
+/// one into the other the writer half of the format contract is only ever
+/// exercised by hand.
+pub fn bake(input: &Path) -> Result<Vec<u8>, String> {
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
         .from_path(input)
@@ -71,35 +78,37 @@ pub fn run(input: &Path, output: &Path) -> Result<u8, String> {
     }
     stars.sort_by_key(|star| star.magnitude);
 
+    let star_count = u32::try_from(stars.len())
+        .map_err(|_| format!("catalog has too many stars: {}", stars.len()))?;
+    let mut bytes = Vec::with_capacity(HEADER_SIZE + stars.len() * RECORD_SIZE);
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&VERSION.to_le_bytes());
+    bytes.extend_from_slice(&star_count.to_le_bytes());
+    for star in &stars {
+        for component in star.direction {
+            bytes.extend_from_slice(&component.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[star.color[0], star.color[1], star.color[2], star.magnitude]);
+    }
+    Ok(bytes)
+}
+
+/// Bake `input` and write the binary catalog plus its attribution sidecar.
+pub fn run(input: &Path, output: &Path) -> Result<u8, String> {
+    let bytes = bake(input)?;
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
-    let star_count = u32::try_from(stars.len())
-        .map_err(|_| format!("catalog has too many stars: {}", stars.len()))?;
     let file = File::create(output)
         .map_err(|error| format!("failed to create {}: {error}", output.display()))?;
     let mut writer = BufWriter::new(file);
     writer
-        .write_all(MAGIC)
-        .and_then(|()| writer.write_all(&VERSION.to_le_bytes()))
-        .and_then(|()| writer.write_all(&star_count.to_le_bytes()))
+        .write_all(&bytes)
+        .and_then(|()| writer.flush())
         .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
-    for star in &stars {
-        for component in star.direction {
-            writer
-                .write_all(&component.to_le_bytes())
-                .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
-        }
-        writer
-            .write_all(&[star.color[0], star.color[1], star.color[2], star.magnitude])
-            .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
-    }
-    writer
-        .flush()
-        .map_err(|error| format!("failed to finish {}: {error}", output.display()))?;
 
     let attribution_path = parent.join("ATTRIBUTION.md");
     std::fs::write(&attribution_path, ATTRIBUTION).map_err(|error| {
@@ -110,8 +119,8 @@ pub fn run(input: &Path, output: &Path) -> Result<u8, String> {
     })?;
     println!(
         "baked {} stars into {} bytes at {}",
-        stars.len(),
-        12 + stars.len() * RECORD_SIZE,
+        (bytes.len() - HEADER_SIZE) / RECORD_SIZE,
+        bytes.len(),
         output.display()
     );
     Ok(0)
@@ -231,6 +240,8 @@ fn encode_magnitude(magnitude: f64) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use crate::store;
+
     use super::*;
 
     #[test]
@@ -265,6 +276,25 @@ mod tests {
     #[test]
     fn magnitude_seven_is_kept() {
         assert_eq!(encode_magnitude(7.0), 230);
+    }
+
+    /// The reader's fixture is a CSV and a BIN, and only the BIN is loaded.
+    ///
+    /// This is the writer half of the same contract, and the analogue of
+    /// `the_committed_bake_matches_a_fresh_one` in `bake_icon`: a change to the
+    /// record layout, the sort, the color bake or the magnitude encoding that
+    /// lands on one side and not the other fails here rather than in whatever
+    /// the sky looked like afterwards.
+    #[test]
+    fn the_committed_fixture_matches_a_fresh_bake() {
+        let fixtures = store::repo_root()
+            .join("crates")
+            .join("sunlit-core")
+            .join("tests")
+            .join("fixtures");
+        let baked = bake(&fixtures.join("stars.csv")).expect("the fixture CSV bakes");
+        let committed = std::fs::read(fixtures.join("stars.bin")).expect("the fixture BIN is read");
+        assert_eq!(baked, committed);
     }
 
     #[test]

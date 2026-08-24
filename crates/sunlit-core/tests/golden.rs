@@ -329,6 +329,31 @@ fn golden_large_crisp_stars_without_glow() {
     check_golden("large_crisp_stars", &params);
 }
 
+#[test]
+fn golden_bright_star_halos() {
+    // Every slider that feeds the halo at its maximum, which is the corner the
+    // sprite quad's own edge used to draw in: a plain Gaussian still carries
+    // 4.4% of its peak where the quad ends, and this is the setting that makes
+    // that residual visible as a square. `large_crisp_stars` is the other end
+    // of the same axis and has no halo at all, so neither case covers this one.
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 5.0,
+        star_glow_strength: 3.0,
+        star_glow_radius: 30.0,
+        star_mag_limit: 6.0,
+        ..base
+    };
+    check_golden("bright_star_halos", &params);
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a
@@ -406,6 +431,7 @@ fn every_golden_case_is_distinguishable() {
         "close_up",
         "night_side_with_stars",
         "large_crisp_stars",
+        "bright_star_halos",
     ];
     let mut images = Vec::new();
     for name in names {

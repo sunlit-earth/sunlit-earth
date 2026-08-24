@@ -61,7 +61,7 @@ struct Uniforms {
     star_glow_radius: f32,
     star_contrast: f32,
     sky_fov: f32,
-    _pad7: f32,
+    _pad6: f32,
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 368);
@@ -573,7 +573,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         star_glow_radius: 8.0,
         star_contrast: 0.3,
         sky_fov: 140.0,
-        _pad7: 0.0,
+        _pad6: 0.0,
     }
 }
 
@@ -714,7 +714,7 @@ struct Uniforms {
     star_glow_radius: f32,
     star_contrast: f32,
     sky_fov: f32,
-    _pad7: f32,
+    _pad6: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -861,7 +861,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         star_glow_radius: 6.0,
         star_contrast: 0.4,
         sky_fov: 123.0,
-        _pad7: 0.0,
+        _pad6: 0.0,
     };
 
     let uniform_buf = ctx

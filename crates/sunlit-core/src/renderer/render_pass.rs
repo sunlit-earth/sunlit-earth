@@ -131,7 +131,7 @@ pub(super) fn write_uniforms(
         star_glow_radius: params.star_glow_radius,
         star_contrast: params.star_contrast,
         sky_fov: params.sky_fov,
-        _pad7: 0.0,
+        _pad6: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

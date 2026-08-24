@@ -43,7 +43,7 @@ struct Uniforms {
     star_glow_radius: f32,            // 4 bytes, offset 352
     star_contrast: f32,               // 4 bytes, offset 356
     sky_fov: f32,                     // 4 bytes, offset 360
-    _pad7: f32,                       // 4 bytes, offset 364
+    _pad6: f32,                       // 4 bytes, offset 364
 };
 
 @group(0) @binding(0)

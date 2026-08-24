@@ -48,7 +48,7 @@ pub(crate) struct Uniforms {
     pub star_glow_radius: f32,         // 4 bytes
     pub star_contrast: f32,            // 4 bytes
     pub sky_fov: f32,                  // 4 bytes
-    pub _pad7: f32,                    // 4 bytes
+    pub _pad6: f32,                    // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 368);

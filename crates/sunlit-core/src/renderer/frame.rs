@@ -1,4 +1,5 @@
 use crate::params::{ParamsDigest, SceneParams, quantize_direction};
+use crate::scene::sky::SkyState;
 
 /// Snapshot of everything that affects the rendered image.
 ///
@@ -12,6 +13,10 @@ pub(crate) struct FrameState {
     pub height: u32,
     /// Sun direction quantized to integer milliradians for stable comparison.
     pub sun_direction: [i32; 3],
+    /// First sky rotation basis vector, quantized to integer milliradians.
+    pub sky_basis_x: [i32; 3],
+    /// Second sky rotation basis vector, quantized to integer milliradians.
+    pub sky_basis_y: [i32; 3],
 }
 
 /// Build a `FrameState` for dirty-check comparison.
@@ -19,22 +24,39 @@ pub(crate) fn build_frame_state(
     params: &SceneParams,
     render_width: u32,
     render_height: u32,
-    sun_dir: glam::Vec3,
+    sky: &SkyState,
 ) -> FrameState {
     FrameState {
         params: params.digest(),
         width: render_width,
         height: render_height,
-        sun_direction: quantize_direction(sun_dir),
+        sun_direction: quantize_direction(sky.sun_direction),
+        sky_basis_x: quantize_direction(sky.world_from_eqj.x_axis),
+        sky_basis_y: quantize_direction(sky.world_from_eqj.y_axis),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::scene::sky::{PlanetKind, PlanetState};
+
     use super::*;
 
+    fn sky(sun: glam::Vec3) -> SkyState {
+        let planet = PlanetState {
+            kind: PlanetKind::Mercury,
+            direction: glam::Vec3::X,
+            magnitude: 0.0,
+        };
+        SkyState {
+            world_from_eqj: glam::Mat3::IDENTITY,
+            sun_direction: sun,
+            planets: [planet; 5],
+        }
+    }
+
     fn state(width: u32, height: u32, sun: glam::Vec3) -> FrameState {
-        build_frame_state(&SceneParams::default(), width, height, sun)
+        build_frame_state(&SceneParams::default(), width, height, &sky(sun))
     }
 
     const SUN: glam::Vec3 = glam::Vec3::new(0.1234, -0.5678, 0.9012);
@@ -74,7 +96,17 @@ mod tests {
         };
         assert_ne!(
             state(1920, 1080, SUN),
-            build_frame_state(&changed, 1920, 1080, SUN)
+            build_frame_state(&changed, 1920, 1080, &sky(SUN))
+        );
+    }
+
+    #[test]
+    fn sky_rotation_change_triggers_dirty() {
+        let mut moved = sky(SUN);
+        moved.world_from_eqj = glam::Mat3::from_rotation_y(0.01);
+        assert_ne!(
+            state(1920, 1080, SUN),
+            build_frame_state(&SceneParams::default(), 1920, 1080, &moved)
         );
     }
 }

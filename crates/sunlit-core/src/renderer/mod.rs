@@ -2,7 +2,7 @@
 //!
 //! `Renderer` owns every GPU object and renders offscreen into its own texture.
 //! It knows nothing about windows, event loops, or Slint: callers hand it a
-//! `SceneParams` plus a sun direction and either read the preview texture back
+//! `SceneParams` plus a sky state and either read the preview texture back
 //! or bind it directly.
 
 mod frame;
@@ -16,13 +16,13 @@ pub use render_pass::read_texture_rgba8;
 
 use std::path::PathBuf;
 
-use glam::Vec3;
 use tracing::debug;
 
 use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
 use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
+use crate::scene::sky::SkyState;
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
@@ -196,9 +196,9 @@ pub struct Renderer {
     /// Scene parameters from the last rendered frame, replayed by the export
     /// path so the wallpaper matches what the preview shows.
     last_params: Option<SceneParams>,
-    /// Per-frame inputs (sun direction, blend flag) from the last rendered
-    /// frame. The scheduler overwrites `sun_dir` here so a hidden window still
-    /// exports with the current sun position.
+    /// Per-frame inputs (sky state, blend flag) from the last rendered frame.
+    /// The scheduler overwrites the sky here so a hidden window still exports
+    /// with current astronomy.
     last_inputs: Option<render_pass::FrameInputs>,
     /// Bind group resolution from the last rendered frame, used by the
     /// export path to reuse the same texture binding without re-resolving.
@@ -433,14 +433,14 @@ impl Renderer {
         slot.source_path.is_some() && slot.bind_group.is_none()
     }
 
-    /// Overwrite the sun direction the export path will use.
+    /// Overwrite the astronomy state the export path will use.
     ///
     /// The scheduler calls this before an unattended wallpaper export so the
     /// image reflects the current time even when no frame has been drawn since
     /// the window was hidden.
-    pub fn set_sun_direction(&mut self, sun_dir: Vec3) {
+    pub fn set_sky_state(&mut self, sky: SkyState) {
         if let Some(inputs) = &mut self.last_inputs {
-            inputs.sun_dir = sun_dir;
+            inputs.sky = sky;
         }
     }
 
@@ -448,7 +448,7 @@ impl Renderer {
     ///
     /// Kicks off background texture loads for the selected mode whether or not
     /// the frame is skipped, so a mode switch starts loading immediately.
-    pub fn render(&mut self, params: &SceneParams, sun_dir: Vec3) -> RenderOutcome {
+    pub fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
         if params.sample_count != self.sample_count {
             debug!(
                 sample_count = params.sample_count,
@@ -458,8 +458,7 @@ impl Renderer {
         }
 
         let received_any = std::mem::take(&mut self.texture_dirty);
-        let current_state =
-            build_frame_state(params, self.render_width, self.render_height, sun_dir);
+        let current_state = build_frame_state(params, self.render_width, self.render_height, sky);
         let raw_index = slot_of(params.texture_index);
 
         let (resolved, use_blend) = texture_routing::resolve_textures(self, raw_index);
@@ -480,7 +479,10 @@ impl Renderer {
         };
         self.last_resolved = Some(resolved);
         self.last_params = Some(*params);
-        self.last_inputs = Some(render_pass::FrameInputs { sun_dir, use_blend });
+        self.last_inputs = Some(render_pass::FrameInputs {
+            sky: sky.clone(),
+            use_blend,
+        });
 
         let first_frame = self.last_state.is_none();
         render_pass::execute_render_pass(

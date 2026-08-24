@@ -28,7 +28,7 @@ use crate::renderer::{
     CLOUDS_SLOT, RenderOutcome, Renderer, RendererConfig, quantize_to_granularity,
     resolve_sample_count,
 };
-use crate::scene::sun;
+use crate::scene::sky::{self, SkyState};
 
 use clock::{Clock, SystemClock};
 use wallpaper_sink::WallpaperSink;
@@ -833,9 +833,9 @@ impl Engine {
         self.params.sample_count = resolved;
     }
 
-    /// The sun direction for the current parameters and clock reading.
-    fn sun_direction(&self) -> glam::Vec3 {
-        sun::compute_sun_direction_at(&self.params.datetime, self.clock.now_utc())
+    /// The astronomy state for the current parameters and clock reading.
+    fn sky_state(&self) -> SkyState {
+        sky::compute_sky_state_at(&self.params.datetime, self.clock.now_utc())
     }
 
     /// Returns whether a preview frame was emitted.
@@ -843,8 +843,8 @@ impl Engine {
         if !self.dirty {
             return false;
         }
-        let sun_dir = self.sun_direction();
-        let outcome = self.renderer.render(&self.params, sun_dir);
+        let sky = self.sky_state();
+        let outcome = self.renderer.render(&self.params, &sky);
         self.dirty = false;
         if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
             info!("first frame rendered");
@@ -957,9 +957,9 @@ impl Engine {
     /// window can be hours.
     fn prepare_export(&mut self) {
         self.renderer.drain_texture_updates();
-        let sun_dir = self.sun_direction();
-        self.renderer.render(&self.params, sun_dir);
-        self.renderer.set_sun_direction(sun_dir);
+        let sky = self.sky_state();
+        self.renderer.render(&self.params, &sky);
+        self.renderer.set_sky_state(sky);
     }
 
     fn render_to_file(

@@ -5,16 +5,17 @@ use crate::params::{
     SceneParams,
 };
 use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
+use crate::scene::sky::SkyState;
 
 use super::Renderer;
 use super::uniforms::Uniforms;
 
-/// The per-frame values that are not part of `SceneParams`: the sun direction
-/// derived from the clock, and whether the resolved bind group carries both a
-/// day and a night texture.
-#[derive(Clone, Copy)]
+/// The per-frame values that are not part of `SceneParams`: astronomy derived
+/// from the clock, and whether the resolved bind group carries both a day and
+/// a night texture.
+#[derive(Clone)]
 pub(super) struct FrameInputs {
-    pub sun_dir: glam::Vec3,
+    pub sky: SkyState,
     pub use_blend: bool,
 }
 
@@ -75,7 +76,7 @@ pub(super) fn write_uniforms(
     let eye_pos = camera.eye_position();
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
-        sun_dir: inputs.sun_dir.into(),
+        sun_dir: inputs.sky.sun_direction.into(),
         terminator_width: if inputs.use_blend {
             params.terminator_width
         } else {

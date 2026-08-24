@@ -9,3 +9,10 @@ vm/windows/scripts/*.cmd text eol=crlf
 # the sort of file a guess gets wrong, and a line-ending conversion inside one
 # is silent until an icon renders as noise.
 assets/icon/baked/** binary
+
+# The baked star catalog and its test fixture are records a tool wrote, not
+# text. Git's own sniffing gets it right (there is a NUL inside the header),
+# but the convention above is what says so, and a line-ending conversion inside
+# a packed float would be silent until the sky came out wrong.
+crates/sunlit-core/src/assets/stars/*.bin binary
+crates/sunlit-core/tests/fixtures/*.bin binary

@@ -75,3 +75,30 @@ Decision 4's check on both platforms, the About hook if phase A has landed, CLAU
 ## Rollback Strategy
 
 Feature branch, plain revert. The SVGs and baked assets are inert data; removing the build-script lines restores an icon-less exe; the old procedural tray icon is one commit away in history.
+
+## Validation Rounds
+
+### Round 1, 2026-08-23
+
+Validator against `41ac458..897abe7`: one MAJOR, seven MINORs, zero departures. Gates re-run independently on Windows and green: `cargo fmt --check`, `cargo clippy --all-targets` with no warnings, `cargo test`.
+
+- M1 (major): the tray-dependent e2e cases of step 3 and criterion 3 were never run.
+- m1: criterion 2 evidenced by enumerating the exe's icon resources rather than by looking at a shell.
+- m2: no artifact for the Windows half of criterion 3.
+- m3: the roadmap item read as finished while criterion 5 is open.
+- m4: the roadmap claimed the launcher search showed the mark, and `install-user.sh` did not rebuild KDE's menu cache.
+- m5: the window icon's double premultiply was undocumented.
+- m6: the `embed-resource` comment in the root `Cargo.toml` contradicted the build script's own gate.
+- m7: `install-user.sh` was committed with mode 644.
+
+### Fix round, 2026-08-24
+
+M1 is closed by running the suite where those cases are live. `cargo xtask e2e --target linux --desktop kde`: 10 passed, 0 failed, 0 ignored, 48.65 s. `cargo xtask e2e --target linux --desktop xfce`: 10 passed, 0 failed, 0 ignored, 49.00 s. Both runs include `test_tray_hide_show_cycle`, `test_tray_mode_ipc_lifecycle` and `test_single_instance_second_exits`, which are the three that skip in a session with no tray, and both guests were torn down afterwards.
+
+- m3: the roadmap item names the small-raster judgement as the half still open.
+- m4: the roadmap and CLAUDE.md now say the KDE launcher search returned the running window rather than the installed entry, and `install-user.sh` rebuilds sycoca through whichever of `kbuildsycoca6` and `kbuildsycoca5` exists. Checked in the guest's Plasma 6 session: the first is there, the second is not, and a bare invocation exits zero.
+- m5: documented rather than traded away, with the artifact measured. On the baked 64 px raster 7.4% of pixels carry partial alpha and lose a mean of 26.8/255 on their brightest channel, which is 1.98/255 over the whole icon; composited and scaled to the 16 px a title bar draws, that is a mean of 1.67/255 with three pixels off by up to 50. Not visible at normal size, and the alternative costs the vector source that exists because the backend asks for 64 times the scale factor.
+- m6: the comment now says what the code does, which is that cargo resolves a `cfg(windows)` build dependency against the host, so the build script gates the call to match.
+- m7: the file is mode 755 in the index.
+
+Open, and not for an agent to close: m1 and m2 need a look at the user's own Windows shell and tray. Criterion 5, the judgement on the 16 and 24 px rasters, is the user's; `bake-icon --review` writes the sheet it is made from.

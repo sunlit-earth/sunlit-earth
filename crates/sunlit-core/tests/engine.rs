@@ -141,21 +141,40 @@ fn has_lit_pixels(rgba: &[u8]) -> bool {
 fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     const CLEAR: [u8; 4] = [5, 5, 13, 255];
 
-    let harness = Harness::start(|config| config.params.star_intensity = 0.0);
+    // With the atmosphere off, the only thing outside the globe is stars, so
+    // every pixel the two frames disagree about is one a star painted. That is
+    // what lets this assert what its name says rather than the much weaker "one
+    // pixel changed": at intensity zero each of those pixels is still exactly
+    // the clear color, not a dimmed star.
+    let harness = Harness::start(|config| {
+        config.params.atmo_enabled = false;
+        config.params.star_intensity = 0.0;
+    });
     let (stars_off, _, _) = harness.next_frame();
     let mut stars_on_params = test_params();
+    stars_on_params.atmo_enabled = false;
     stars_on_params.star_intensity = 1.5;
     harness
         .engine
         .send(EngineCommand::UpdateParams(Box::new(stars_on_params)));
     let (stars_on, _, _) = harness.next_frame();
 
-    let revealed_star = stars_off
+    let mut star_pixels = 0_usize;
+    for (index, (off, on)) in stars_off
         .chunks_exact(4)
         .zip(stars_on.chunks_exact(4))
-        .any(|(off, on)| off == CLEAR && on != CLEAR);
+        .enumerate()
+    {
+        if off != on {
+            star_pixels += 1;
+            assert_eq!(
+                off, CLEAR,
+                "pixel {index} carries {off:?} with stars disabled, not the clear color"
+            );
+        }
+    }
     assert!(
-        revealed_star,
+        star_pixels > 0,
         "enabling stars should alter a clear background pixel"
     );
 }

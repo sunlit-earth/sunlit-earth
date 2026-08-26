@@ -2133,8 +2133,24 @@ fn sky_for(params: &SceneParams) -> sunlit_core::scene::sky::SkyState {
 }
 
 /// The camera `params` describes, as far as the placement needs it.
+///
+/// `write_uniforms` applies the pan and the orientation and the helpers below
+/// pass none of them, so a case that set one would measure a disc away from
+/// where the Moon is drawn; refused rather than answered wrong.
 fn camera_for(params: &SceneParams) -> sunlit_core::scene::camera::OrbitalCamera {
     let cam = &params.camera;
+    assert!(
+        [
+            cam.offset_x,
+            cam.offset_y,
+            cam.tilt_deg,
+            cam.yaw_deg,
+            cam.pitch_deg
+        ]
+        .iter()
+        .all(|value| *value == 0.0),
+        "the placement helpers carry no pan, tilt, yaw or pitch"
+    );
     sunlit_core::scene::camera::OrbitalCamera::new(
         cam.longitude,
         cam.latitude,

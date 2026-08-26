@@ -415,7 +415,7 @@ mod tests {
     /// The scene's unit of length against the library's kilometers, which is
     /// what [`EARTH_RADII_PER_AU`] and nothing else decides.
     #[test]
-    fn the_moon_distance_agrees_with_the_librarys_kilometres() {
+    fn the_moon_distance_agrees_with_the_librarys_kilometers() {
         for time in four_years_of_times().step_by(37) {
             let distance = compute_sky_state_from_time(time).moon_position.length();
             let km = f64::from(distance) * 6378.137;

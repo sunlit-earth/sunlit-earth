@@ -62,8 +62,8 @@ const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 /// than staging nothing: the app would fail to decode them, and a failed decode
 /// leaves the slot in the state `Renderer::textures_ready` never reports ready
 /// (the open roadmap item), so a guest would wait for an event that cannot
-/// arrive. Size is what tells the two apart, since the smaller of the two real
-/// assets is over a megabyte.
+/// arrive. Size is what tells the two apart, since the smallest of the three real
+/// assets is over 250 KiB.
 pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(), String> {
     for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
         match size {

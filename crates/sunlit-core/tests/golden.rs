@@ -354,6 +354,74 @@ fn golden_bright_star_halos() {
     check_golden("bright_star_halos", &params);
 }
 
+/// The camera the two sun cases share, up to the longitude and the zoom.
+///
+/// The eye sits at the latitude of the subsolar point and swings round in
+/// longitude, which puts the Sun beside the globe rather than above it. Above
+/// it is where the aspect ratio would have put it, and NDC y carries twice the
+/// angle NDC x does on a 512 by 256 frame, so a Sun clear of a limb this size
+/// would have been off the top.
+fn sun_camera(longitude: f32, zoom: f32) -> CameraParams {
+    CameraParams {
+        longitude,
+        latitude: -23.44,
+        zoom,
+        ..CameraParams::default()
+    }
+}
+
+/// Both sun cases run at the narrow end of the sky lens rather than at its
+/// 140 degree default, and that is what gives them teeth.
+///
+/// The field of view decides how many pixels a degree is worth: 512 of them
+/// across 140 degrees is three, so the whole Spencer composition lands inside
+/// forty pixels and a reference that lost the Sun entirely would still pass at
+/// a mean of 1.11 and half a percent of outliers. At 60 degrees a degree is
+/// eight pixels and the glare is most of the frame, which is the picture these
+/// cases are supposed to be about. What the Sun does at the default is pinned
+/// by the engine cases instead, where a count of painted pixels needs no
+/// tolerance at all.
+const SUN_CASE_SKY_FOV: f32 = 60.0;
+
+#[test]
+fn golden_sun_over_the_night_side() {
+    // Well clear of the painted limb, so nothing fades the glare: the clipped
+    // core, the corona needles, the halo ring and the veil are all at full
+    // strength against the sky and over the atmosphere shells.
+    let base = base_params();
+    let params = SceneParams {
+        camera: sun_camera(161.8, 0.45),
+        sky_fov: SUN_CASE_SKY_FOV,
+        ..base
+    };
+    check_golden("sun_over_the_night_side", &params);
+}
+
+#[test]
+fn golden_sun_grazing_the_limb() {
+    // Closer in and one degree further round, where the disk straddles the
+    // band between the painted silhouette and the atmosphere shell's: about
+    // 97 percent of it still visible and 57 percent of it looking through the
+    // lower atmosphere, which is what turns the glare warm and dims it. The
+    // closer zoom is what makes that band wide enough to hold most of a disk;
+    // at the other case's zoom it is one pixel across. Nothing else in the
+    // suite reaches that branch of the occlusion function.
+    //
+    // The glare is turned up because the tint is what this case is for and the
+    // tolerance has to be able to see it: at the default strength, losing the
+    // warm shift entirely comes to a mean of 2.33 against a tolerance of 2.00
+    // and 1.04 percent outliers against a limit of 1.00, which is a test that
+    // passes or fails on rounding. At 1.6 it is a test.
+    let base = base_params();
+    let params = SceneParams {
+        camera: sun_camera(160.75, 0.30),
+        sky_fov: SUN_CASE_SKY_FOV,
+        sun_glow: 1.6,
+        ..base
+    };
+    check_golden("sun_grazing_the_limb", &params);
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a
@@ -432,6 +500,8 @@ fn every_golden_case_is_distinguishable() {
         "night_side_with_stars",
         "large_crisp_stars",
         "bright_star_halos",
+        "sun_over_the_night_side",
+        "sun_grazing_the_limb",
     ];
     let mut images = Vec::new();
     for name in names {

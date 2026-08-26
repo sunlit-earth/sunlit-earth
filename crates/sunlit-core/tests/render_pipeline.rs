@@ -1199,6 +1199,137 @@ fn uniform_buffer_field_offsets_match_wgsl() {
 }
 
 // ---------------------------------------------------------------------------
+// The two rules both sides of the boundary spell out
+// ---------------------------------------------------------------------------
+
+/// A compute entry point appended to the production shaders, so what it
+/// evaluates is the source the renderer compiles rather than a copy of it.
+const SHARED_RULE_PROBE: &str = "
+@group(1) @binding(0) var<storage, read_write> rule_out: array<f32>;
+
+@compute @workgroup_size(1)
+fn shared_rule_probe() {
+    rule_out[0] = output_pixel_scale();
+    rule_out[1] = sky_lens_edge_radius();
+}
+";
+
+/// The output-density ramp and the sky lens's edge radius exist once in WGSL
+/// and once in `scene::sun_occlusion`, and both pairings matter at the pixel:
+/// the CPU sizes the Sun's disk with the ramp and the shader draws that disk's
+/// antialiased edge with it, and the CPU measures occlusion at a screen
+/// position the shader has to draw the Sun at.
+///
+/// The heights avoid 1080 and below, where the ramp clamps to 1.0 and any two
+/// knees agree: every golden and every engine frame renders there, so nothing
+/// else in the suite can see a divergence at all.
+#[test]
+fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
+    let ctx = RENDER_CTX.lock().unwrap();
+
+    let wgsl_source = format!(
+        "{}\n{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+        SHARED_RULE_PROBE,
+    );
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shared_rule_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("shared_rule_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("shared_rule_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+    let output_size = 2 * std::mem::size_of::<f32>() as u64;
+    let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shared_rule_probe_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let uniform_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shared_rule_probe_uniforms"),
+        size: std::mem::size_of::<Uniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    let output_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: output_buf.as_entire_binding(),
+        }],
+    });
+
+    let probe = |height: f32, sky_fov: f32| {
+        let uniforms = Uniforms {
+            viewport_size: [height * 16.0 / 9.0, height],
+            sky_fov,
+            ..default_test_uniforms(64)
+        };
+        ctx.queue
+            .write_buffer(&uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniform_group, &[]);
+            pass.set_bind_group(1, &output_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
+        let values: &[f32] = bytemuck::cast_slice(&data);
+        (values[0], values[1])
+    };
+
+    // Below the knee, on it, three points up the ramp, and past the ceiling.
+    for &height in &[540.0_f32, 1080.0, 1350.0, 1620.0, 2160.0, 3240.0] {
+        // Under the lower clamp, both ends of the slider's range, and over the
+        // upper one.
+        for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0] {
+            let (shader_scale, shader_edge) = probe(height, sky_fov);
+            let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
+            let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
+            assert!(
+                (shader_scale - cpu_scale).abs() < 1e-6,
+                "the density ramp at {height} pixels: the shader says {shader_scale}, \
+                 scene::sun_occlusion::pixel_scale says {cpu_scale}"
+            );
+            assert!(
+                (shader_edge - cpu_edge).abs() < 2e-5 * cpu_edge,
+                "the sky lens edge radius at {sky_fov} degrees: the shader says {shader_edge}, \
+                 scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Fresnel specular tests (Step 2.1)
 // ---------------------------------------------------------------------------
 

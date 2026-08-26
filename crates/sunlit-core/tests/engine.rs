@@ -234,6 +234,115 @@ fn wider_sky_fov_reveals_more_catalog_directions() {
     );
 }
 
+/// A night-side framing at a longitude chosen for where the Sun lands.
+///
+/// At noon on day 172 the subsolar point is near the prime meridian, so a
+/// camera on the far side looks at the night side with the Sun somewhere
+/// beyond the limb. Which side of the painted limb it lands on is what the
+/// longitude picks: 160 clears it, 170.5 grazes the atmosphere band, and 176
+/// puts it well inside the painted disc. The atmosphere is off so that the
+/// only thing these cases can be measuring is the Sun.
+///
+/// Those three numbers are for the 512 by 256 the preview quantizes down to,
+/// which `sun_off_and_on` asserts rather than assumes: at another aspect ratio
+/// the painted silhouette is a different size and all three move.
+fn sun_params(longitude: f32) -> SceneParams {
+    let mut params = test_params();
+    params.datetime.custom_day_of_year = 172;
+    params.camera.longitude = longitude;
+    params.camera.latitude = 0.0;
+    params.camera.zoom = 0.45;
+    params.atmo_enabled = false;
+    params
+}
+
+/// Render `params` with the Sun off and then on, and return both frames.
+fn sun_off_and_on(longitude: f32) -> (Vec<u8>, Vec<u8>) {
+    let harness = Harness::start(|config| {
+        config.params = sun_params(longitude);
+        config.params.sun_glow = 0.0;
+    });
+    let (off, width, height) = harness.next_frame();
+    assert_eq!(
+        (width, height),
+        (512, 256),
+        "the longitudes these cases pick are for one framing"
+    );
+    let mut on = sun_params(longitude);
+    on.sun_glow = 1.5;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(on)));
+    let (on, _, _) = harness.next_frame();
+    (off, on)
+}
+
+#[test]
+fn a_sun_behind_the_painted_globe_paints_nothing() {
+    let (off, on) = sun_off_and_on(176.0);
+    let differing = off
+        .chunks_exact(4)
+        .zip(on.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels changed with the Sun fully behind the globe"
+    );
+}
+
+#[test]
+fn zero_sun_glow_takes_the_sun_out_of_the_frame() {
+    let (off, on) = sun_off_and_on(160.0);
+    let mut painted = 0_usize;
+    for (index, (dark, lit)) in off.chunks_exact(4).zip(on.chunks_exact(4)).enumerate() {
+        if dark == lit {
+            continue;
+        }
+        painted += 1;
+        // The two sun draws are additive, so every pixel the Sun touches can
+        // only have got brighter.
+        assert!(
+            (0..3).all(|c| lit[c] >= dark[c]),
+            "pixel {index} went from {dark:?} to {lit:?}, which additive blending cannot do"
+        );
+    }
+    assert!(
+        painted > 100,
+        "a Sun clear of the limb painted only {painted} pixels"
+    );
+}
+
+#[test]
+fn a_sun_grazing_the_limb_turns_the_glare_warm() {
+    // What each longitude adds to its own sun-off frame, summed per channel.
+    // Comparing that against the other longitude's would compare two different
+    // Earths; comparing each against its own leaves only the Sun.
+    let warmth = |longitude: f32| {
+        let (off, on) = sun_off_and_on(longitude);
+        let mut added = [0_u64; 3];
+        for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+            for (channel, total) in added.iter_mut().enumerate() {
+                *total += u64::from(lit[channel].saturating_sub(dark[channel]));
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = added[0] as f64 / added[2].max(1) as f64;
+        ratio
+    };
+    let clear = warmth(160.0);
+    let grazing = warmth(170.5);
+    assert!(
+        clear < 1.15,
+        "a Sun clear of the atmosphere should glare near-white, red over blue was {clear:.2}"
+    );
+    assert!(
+        grazing > clear * 1.3,
+        "a Sun in the transit band should glare warmer than a clear one, \
+         but red over blue was {grazing:.2} against {clear:.2}"
+    );
+}
+
 /// Two small texture files and a cache directory to go with them.
 ///
 /// The resolution tests need file-backed slots, which the headless config

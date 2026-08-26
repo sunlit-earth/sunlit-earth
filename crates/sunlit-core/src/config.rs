@@ -647,6 +647,22 @@ mod tests {
     }
 
     #[test]
+    fn default_sun_shows_the_glare_and_not_the_camera() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.sun_glow, 1.0);
+        assert_relative_eq!(config.sun_rays, 0.6);
+        assert_relative_eq!(config.sun_flare, 0.0);
+    }
+
+    #[test]
+    fn deserialize_missing_sun_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.sun_glow, 1.0);
+        assert_relative_eq!(config.sun_rays, 0.6);
+        assert_relative_eq!(config.sun_flare, 0.0);
+    }
+
+    #[test]
     fn deserialize_missing_star_brightness_uses_two_times_gain() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.star_intensity, 2.0);

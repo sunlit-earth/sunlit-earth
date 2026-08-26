@@ -1,0 +1,16 @@
+# One wgpu instance per process, ever.
+#
+# An instance owns the dynamically loaded driver libraries. Dropping the last
+# one `dlclose`s the Vulkan loader while Mesa's pthread TLS destructors still
+# point into it, and the next thread to exit dies in `__nptl_deallocate_tsd`.
+# That is not theoretical: it killed all 14 engine integration tests on
+# lavapipe. `wgpu_init::instance()` holds the one instance in a `OnceLock`, and
+# this entry is what stops the next `Instance::new` from being written by
+# accident. The single legitimate call site allows the lint by name.
+#
+# Clippy is a local command here rather than a CI job (its artifacts do not
+# share the test cache), so this is a `cargo clippy --all-targets` gate, not a
+# push gate.
+disallowed-methods = [
+  { path = "wgpu::Instance::new", reason = "use sunlit_core::wgpu_init::instance(), which keeps the process's one instance alive" },
+]

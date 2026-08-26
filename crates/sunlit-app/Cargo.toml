@@ -1,0 +1,55 @@
+[package]
+# The package (and therefore the binary) keeps the name `sunlit-earth` even
+# though the crate directory is `sunlit-app`, so `CARGO_BIN_EXE_sunlit-earth`,
+# the e2e suite, CI, and the release workflow all keep working unchanged.
+name = "sunlit-earth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A desktop application that renders a realistic 3D view of Earth as seen from space and sets it as the wallpaper"
+
+[dependencies]
+sunlit-core = { path = "../sunlit-core" }
+slint.workspace = true
+clap.workspace = true
+time.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+log.workspace = true
+single-instance.workspace = true
+interprocess.workspace = true
+crossbeam-channel.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# AttachConsole, and the invisible window `session_end` listens on. Everything
+# else Win32 lives in sunlit-core.
+windows-sys = { workspace = true, features = [
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# SIGTERM, which is how a Linux desktop session says it is ending.
+signal-hook.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+serial_test.workspace = true
+i-slint-backend-testing.workspace = true
+image = { workspace = true }
+regex-lite.workspace = true
+interprocess.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource.workspace = true
+
+[lints]
+workspace = true

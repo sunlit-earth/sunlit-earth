@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Sunlit Earth
+GenericName=Earth Wallpaper
+Comment=Render Earth as seen from space and set it as the desktop wallpaper
+Exec=sunlit-earth
+Icon=sunlit-earth
+Terminal=false
+Categories=Graphics;
+Keywords=wallpaper;earth;globe;space;
+StartupNotify=true
+StartupWMClass=sunlit-earth

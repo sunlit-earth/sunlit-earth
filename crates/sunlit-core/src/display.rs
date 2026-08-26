@@ -1,0 +1,347 @@
+//! What the displays are, on the platforms that answer with a program rather
+//! than with an API.
+//!
+//! Two questions need the same answer and used to have two placeholders for it:
+//! how large to render a wallpaper, and whether a saved window position is still
+//! somewhere a person can reach. On Windows both come from Win32 monitor
+//! enumeration. On Linux the query is `xrandr --query`, whose output is parsed
+//! here.
+//!
+//! xrandr rather than a windowing dependency. `sunlit-core` owns no window, and
+//! Slint's public `Window` API reports the window's own size and nothing about
+//! the display behind it, so there is no API here to ask. Under a Wayland
+//! session the answer comes through `XWayland`, which is usable and has one known
+//! distortion: display scaling can make the reported size differ from the
+//! compositor's own idea of it. A native per-desktop D-Bus query is the fix and
+//! is a roadmap item rather than phase work.
+//!
+//! The parser is separate from the process, so it is tested on every platform
+//! against real xrandr output rather than only where xrandr exists.
+
+/// One output, as xrandr describes a connected one with a mode assigned.
+///
+/// The geometry is post-rotation: xrandr reports a rotated output as the shape
+/// it presents, so a portrait monitor is taller than it is wide here and nothing
+/// downstream has to know about rotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    pub name: String,
+    /// Whether xrandr marked this one primary. At most one output is.
+    pub primary: bool,
+    pub width: u32,
+    pub height: u32,
+    /// Position in the X screen's coordinate space, which is what makes a
+    /// multi-monitor bounds check possible at all.
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Output {
+    /// Whether a rectangle overlaps this output at all.
+    ///
+    /// Half-open on the far edges, so a window whose left edge is exactly the
+    /// output's right edge is on the next one and not on this.
+    pub fn overlaps(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
+        let right = self
+            .x
+            .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX));
+        let bottom = self
+            .y
+            .saturating_add(i32::try_from(self.height).unwrap_or(i32::MAX));
+        x < right
+            && x.saturating_add(width) > self.x
+            && y < bottom
+            && y.saturating_add(height) > self.y
+    }
+}
+
+/// Read the connected outputs out of `xrandr --query` output.
+///
+/// One line per output, unindented, with `connected` as a whole word: the
+/// disconnected ones say `disconnected`, which contains the same letters and is
+/// why this compares tokens rather than searching the line. A connected output
+/// with no mode assigned carries no geometry token and is skipped, because an
+/// output nothing is displayed on is not somewhere to put a window.
+pub fn parse_outputs(text: &str) -> Vec<Output> {
+    let mut outputs = Vec::new();
+    for line in text.lines() {
+        // The mode list under each output is indented; the output's own line is
+        // not, and neither is the `Screen 0:` header, which has no `connected`.
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let mut tokens = line.split_whitespace();
+        let Some(name) = tokens.next() else { continue };
+        let mut connected = false;
+        let mut primary = false;
+        let mut geometry = None;
+        for token in tokens {
+            match token {
+                "connected" => connected = true,
+                "primary" => primary = true,
+                other => {
+                    if geometry.is_none() {
+                        geometry = parse_geometry(other);
+                    }
+                }
+            }
+        }
+        if let (true, Some((width, height, x, y))) = (connected, geometry) {
+            outputs.push(Output {
+                name: name.to_owned(),
+                primary,
+                width,
+                height,
+                x,
+                y,
+            });
+        }
+    }
+    outputs
+}
+
+/// `WIDTHxHEIGHT+X+Y`, with either sign on the offsets.
+///
+/// Rejecting anything else matters more than it looks: the rest of an output's
+/// line is free text ("normal left inverted right x axis y axis", "0mm x 0mm"),
+/// and the first token that happens to parse is taken as the geometry.
+fn parse_geometry(token: &str) -> Option<(u32, u32, i32, i32)> {
+    let (size, offsets) = token.split_once('+')?;
+    let (width, height) = size.split_once('x')?;
+    let width: u32 = width.parse().ok()?;
+    let height: u32 = height.parse().ok()?;
+    // The remainder is `X+Y` or `X-Y`, and X itself may be negative, so the
+    // split is on the separator between them rather than on the first sign.
+    let (x, y) = split_offsets(offsets)?;
+    (width > 0 && height > 0).then_some((width, height, x, y))
+}
+
+/// The two offsets out of what follows the first `+`.
+fn split_offsets(text: &str) -> Option<(i32, i32)> {
+    let at = text
+        .char_indices()
+        .skip(1)
+        .find(|&(_, c)| c == '+' || c == '-')?
+        .0;
+    let x: i32 = text[..at].parse().ok()?;
+    // Kept with its sign: `+0-1080` is an output above the origin.
+    let y: i32 = text[at..].trim_start_matches('+').parse().ok()?;
+    Some((x, y))
+}
+
+/// The output a wallpaper is sized for: the primary one, or the first there is.
+///
+/// Falling back to the first rather than refusing, because a single-output
+/// session is not always marked primary and that is the commonest case here.
+pub fn primary_of(outputs: &[Output]) -> Option<&Output> {
+    outputs
+        .iter()
+        .find(|output| output.primary)
+        .or_else(|| outputs.first())
+}
+
+/// Ask the display server what it has.
+///
+/// `None` where there is no way to ask, which is every platform but Linux, and
+/// an empty list where xrandr answered with no usable output, which is what a
+/// headless run looks like. The two are deliberately different: a caller that
+/// cannot ask keeps whatever it did before, and a caller that asked and got
+/// nothing knows there is no display.
+#[cfg(target_os = "linux")]
+pub fn outputs() -> Option<Vec<Output>> {
+    // `DISPLAY` unset is the ordinary headless case: the `render` subcommand,
+    // CI, the golden suite. Running xrandr there costs a process and a message
+    // on stderr to learn what the missing variable already said.
+    crate::env_override("DISPLAY")?;
+    let out = std::process::Command::new("xrandr")
+        .arg("--query")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        tracing::debug!(
+            status = ?out.status.code(),
+            "xrandr --query failed; falling back to the documented default size"
+        );
+        return None;
+    }
+    Some(parse_outputs(&String::from_utf8_lossy(&out.stdout)))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn outputs() -> Option<Vec<Output>> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape `xrandr --query` answers with in the Linux test guest: one
+    /// virtio output, primary, with its mode list indented under it, and the
+    /// second virtio head that guest has with nothing plugged into it.
+    const GUEST: &str = "\
+Screen 0: minimum 320 x 200, current 1920 x 1080, maximum 16384 x 16384
+Virtual-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 0mm x 0mm
+   1920x1080     59.96*+
+   1280x800      59.81
+Virtual-2 disconnected (normal left inverted right x axis y axis)
+";
+
+    /// Two monitors, the second above and to the left of the origin, and a
+    /// connected output with no mode assigned.
+    ///
+    /// The primary is deliberately not the first output listed, and the
+    /// disconnected `DP-3` deliberately still carries geometry: an output that
+    /// was configured and then unplugged with its CRTC still assigned prints
+    /// exactly that, and it is the one line the connected check alone keeps out.
+    const DESK: &str = "\
+Screen 0: minimum 8 x 8, current 5120 x 1440, maximum 32767 x 32767
+DP-1 connected 3440x1440+1680+0 (normal left inverted right x axis y axis) 800mm x 335mm
+   3440x1440    143.92*+
+HDMI-1 connected primary 1680x1050+0-200 right (normal left inverted right x axis y axis) 474mm x 296mm
+   1680x1050     59.95*+
+DP-2 connected (normal left inverted right x axis y axis)
+DP-3 disconnected 1920x1080+5120+0 (normal left inverted right x axis y axis) 0mm x 0mm
+eDP-1 disconnected (normal left inverted right x axis y axis)
+";
+
+    #[test]
+    fn the_guests_single_output_is_read_with_its_mode() {
+        let outputs = parse_outputs(GUEST);
+        assert_eq!(
+            outputs,
+            vec![Output {
+                name: "Virtual-1".to_owned(),
+                primary: true,
+                width: 1920,
+                height: 1080,
+                x: 0,
+                y: 0,
+            }]
+        );
+        assert_eq!(
+            primary_of(&outputs).map(|o| (o.width, o.height)),
+            Some((1920, 1080))
+        );
+    }
+
+    #[test]
+    fn a_disconnected_output_is_not_a_connected_one() {
+        // "disconnected" contains "connected", which is why the parser compares
+        // whole tokens; searching the line would find every unplugged port.
+        let outputs = parse_outputs(DESK);
+        let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, vec!["DP-1", "HDMI-1"]);
+        // DP-3 is the one only this excludes: disconnected and still holding a
+        // mode, which is what xrandr prints for an output that was configured
+        // and then unplugged. The geometry filter lets it through, and a monitor
+        // nobody can see is neither somewhere to put a window nor something to
+        // size a wallpaper for.
+        assert!(!outputs.iter().any(|o| o.name == "DP-3"), "{outputs:?}");
+    }
+
+    #[test]
+    fn an_output_with_no_mode_assigned_is_not_somewhere_to_put_a_window() {
+        // DP-2 is connected with nothing displayed on it, so it has no geometry
+        // and a window placed there would be on a black screen.
+        assert!(!parse_outputs(DESK).iter().any(|o| o.name == "DP-2"));
+    }
+
+    #[test]
+    fn negative_offsets_keep_their_sign() {
+        let outputs = parse_outputs(DESK);
+        let hdmi = outputs
+            .iter()
+            .find(|o| o.name == "HDMI-1")
+            .expect("the second monitor");
+        assert_eq!((hdmi.x, hdmi.y), (0, -200));
+        let dp = outputs
+            .iter()
+            .find(|o| o.name == "DP-1")
+            .expect("the first");
+        assert_eq!((dp.x, dp.y), (1680, 0));
+    }
+
+    #[test]
+    fn the_primary_is_the_one_xrandr_marked_and_not_the_first_listed() {
+        // The two are the same on most sessions, which is why this fixture makes
+        // them differ: xrandr lists outputs in the X server's own order, and the
+        // monitor a person is looking at is whichever one is marked.
+        let outputs = parse_outputs(DESK);
+        assert_eq!(outputs[0].name, "DP-1", "{outputs:?}");
+        assert_eq!(
+            primary_of(&outputs).map(|o| o.name.as_str()),
+            Some("HDMI-1")
+        );
+        // The resolution too, because that is what taking the first costs: a
+        // wallpaper rendered for the wrong monitor, which the desktop's own zoom
+        // fill then crops.
+        assert_eq!(
+            primary_of(&outputs).map(|o| (o.width, o.height)),
+            Some((1680, 1050))
+        );
+        // With nothing marked the first is the answer, which is the commonest
+        // case here: XFCE marks no output at all, and neither does a
+        // single-output session.
+        let unmarked: Vec<Output> = outputs
+            .iter()
+            .map(|o| Output {
+                primary: false,
+                ..o.clone()
+            })
+            .collect();
+        assert_eq!(primary_of(&unmarked).map(|o| o.name.as_str()), Some("DP-1"));
+    }
+
+    #[test]
+    fn the_free_text_after_the_geometry_is_not_mistaken_for_more_of_it() {
+        // "0mm x 0mm" and "normal left inverted right x axis y axis" both sit on
+        // the same line and both contain an `x`.
+        let outputs = parse_outputs(GUEST);
+        assert_eq!(outputs.len(), 1, "{outputs:?}");
+    }
+
+    #[test]
+    fn nothing_at_all_is_no_outputs_rather_than_a_guess() {
+        assert!(parse_outputs("").is_empty());
+        assert!(parse_outputs("xrandr: Can't open display\n").is_empty());
+        assert!(primary_of(&[]).is_none());
+    }
+
+    #[test]
+    fn overlap_is_half_open_on_the_far_edges() {
+        let output = Output {
+            name: "DP-1".to_owned(),
+            primary: true,
+            width: 1920,
+            height: 1080,
+            x: 0,
+            y: 0,
+        };
+        // A title bar inside it.
+        assert!(output.overlaps(100, 100, 800, 30));
+        // Its top left corner exactly.
+        assert!(output.overlaps(0, 0, 1, 1));
+        // One pixel past the right and bottom edges, which is the next monitor.
+        assert!(!output.overlaps(1920, 0, 10, 10));
+        assert!(!output.overlaps(0, 1080, 10, 10));
+        // Straddling the left edge from outside still overlaps.
+        assert!(output.overlaps(-5, 10, 10, 10));
+        // Entirely off to the left does not.
+        assert!(!output.overlaps(-100, 10, 50, 10));
+    }
+
+    #[test]
+    fn an_output_far_from_the_origin_does_not_overflow_the_check() {
+        let output = Output {
+            name: "DP-1".to_owned(),
+            primary: true,
+            width: 1920,
+            height: 1080,
+            x: i32::MAX - 10,
+            y: i32::MAX - 10,
+        };
+        assert!(!output.overlaps(0, 0, 100, 100));
+        assert!(output.overlaps(i32::MAX - 5, i32::MAX - 5, i32::MAX, i32::MAX));
+    }
+}

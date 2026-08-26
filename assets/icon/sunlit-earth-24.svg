@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Sunlit Earth icon, 24 px variant (render at 20 to 31 px). Derived from
+     sunlit-earth.svg: outline, aurora, and glare grow again relative to the
+     32 px variant. Candidate for pixel-grid hand-tuning before the bake. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="24" height="24">
+  <defs>
+    <radialGradient id="glare" gradientUnits="userSpaceOnUse"
+        cx="50.6" cy="16.4" r="13.3" fx="55.7" fy="12.1">
+      <stop offset="0" stop-color="#FFF7E8"/>
+      <stop offset="0.4" stop-color="#FFC37A" stop-opacity="0.85"/>
+      <stop offset="0.72" stop-color="#FF8A3D" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#FF8A3D" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="auroraTop" gradientUnits="userSpaceOnUse"
+        x1="13.0" y1="11.9" x2="30.4" y2="4.5">
+      <stop offset="0" stop-color="#35B87A" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="0.65" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="1" stop-color="#35B87A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="auroraBottom" gradientUnits="userSpaceOnUse"
+        x1="51.0" y1="52.1" x2="33.6" y2="59.6">
+      <stop offset="0" stop-color="#35B87A" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="0.65" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="1" stop-color="#35B87A" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="occ">
+      <rect x="0" y="0" width="64" height="64" fill="white"/>
+      <circle cx="32" cy="32" r="30" fill="black"/>
+    </mask>
+  </defs>
+
+  <circle cx="32" cy="32" r="30" fill="#191231"/>
+  <path d="M27.5 6.4 A26 26 0 0 1 57.1 38.7" fill="none"
+      stroke="#352B66" stroke-width="6.5" stroke-linecap="round"/>
+  <path d="M42.3 3.8 A30 30 0 0 1 61.5 26.8" fill="none"
+      stroke="#FF8A3D" stroke-width="2.4" stroke-linecap="round" opacity="0.9"/>
+  <circle cx="32" cy="32" r="27.6" fill="none" stroke="#9A91D4" stroke-width="4.8"/>
+  <path d="M13.0 11.9 A27.6 27.6 0 0 1 30.4 4.5" fill="none"
+      stroke="url(#auroraTop)" stroke-width="4.8"/>
+  <path d="M51.0 52.1 A27.6 27.6 0 0 1 33.6 59.6" fill="none"
+      stroke="url(#auroraBottom)" stroke-width="4.8"/>
+  <circle cx="50.6" cy="16.4" r="13.3" fill="url(#glare)"/>
+  <circle cx="55.7" cy="12.1" r="4.8" fill="#FFF7E8" mask="url(#occ)"/>
+</svg>

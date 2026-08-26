@@ -1,13 +1,22 @@
-[package]
-name = "sunlit-earth"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "A desktop application that renders a realistic 3D view of Earth as seen from space and sets it as the wallpaper"
 license = "GPL-3.0-or-later"
 
-[dependencies]
-slint = { version = "~1.15", features = ["unstable-wgpu-28"] }
-wgpu = "28"
+[workspace.dependencies]
+# The app no longer shares its wgpu device with Slint, so the unstable wgpu
+# feature (and with it the coupling between the Slint and wgpu versions) is gone.
+slint = "~1.17"
+slint-build = "~1.17"
+# `counters` turns wgpu's internal byte and object counters from compiled-out
+# no-ops into relaxed atomic adds on resource create and destroy, which is what
+# gives `memory-report` two totals measured by wgpu itself rather than only the
+# ones we compute. Backends that do not maintain a counter keep reporting zero.
+wgpu = { version = "28", features = ["counters"] }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
@@ -18,41 +27,48 @@ jxl-oxide = { version = "0.12", default-features = false, features = ["image", "
 astronomy-engine-bindings = "2.1"
 time = { version = "0.3", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.9"
+crc32fast = "1"
+csv = "1"
 dirs = "6"
+# The icon bake, xtask-only. `resvg` rasterizes the SVG masters and `ico`
+# assembles the multi-size Windows icon; both are pure Rust, so the bake runs
+# on any host with a toolchain and nothing is asked of a user's machine.
+# `default-features = false` drops resvg's text stack, which the mark, being
+# geometry only, has no use for.
+resvg = { version = "0.48", default-features = false }
+ico = "0.5"
+# Compiles the app's one Windows resource, the exe icon, in the build script.
+# It finds the toolchain's `rc.exe` or `windres` and vendors a fallback. The app
+# takes it as a `cfg(windows)` build dependency, which cargo resolves against
+# the host, so the call sits in a `#[cfg(windows)]` block in the build script:
+# off a Windows host there is no crate to name.
+embed-resource = "3"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_warn"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_warn"] }
-tray-icon = "0.21"
 single-instance = "0.3"
 interprocess = "2"
 crossbeam-channel = "0.5"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_Foundation",
-    "Win32_System_ProcessStatus",
-    "Win32_System_Threading",
-    "Win32_System_Console",
-] }
+windows-sys = "0.59"
 winreg = "0.56"
+mach2 = "0.6"
+# The Linux half of `session_end`. A signal handler may call almost nothing, and
+# quitting a Slint event loop is not on the list, so the delivery has to reach an
+# ordinary thread first: this crate's iterator does that with a self-pipe, which
+# is why it is here rather than a scoped `unsafe` around `libc::signal`.
+signal-hook = "0.3"
 
-[dev-dependencies]
+# dev-dependencies
 approx = "0.5"
 proptest = "1"
 serial_test = "3"
-i-slint-backend-testing = "=1.15.1"
-image = { version = "0.25.8", default-features = false, features = ["png"] }
+i-slint-backend-testing = "=1.17.1"
 regex-lite = "0.1"
-interprocess = "2"
 
-[build-dependencies]
-slint-build = "~1.15"
-
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 # Pedantic includes some noisy lints — suppress the ones that aren't useful
@@ -61,7 +77,7 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "deny"
 
 [profile.dev.package."*"]

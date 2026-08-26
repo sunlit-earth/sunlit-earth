@@ -1,0 +1,49 @@
+[package]
+# Headless half of the application: scene math, assets, GPU pipeline, engine.
+# It must never depend on Slint or on a window existing.
+name = "sunlit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless rendering engine for Sunlit Earth"
+
+[dependencies]
+wgpu.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+image.workspace = true
+ureq.workspace = true
+jxl-oxide.workspace = true
+astronomy-engine-bindings.workspace = true
+time.workspace = true
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+winreg.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Raw Mach bindings for the memory snapshot, nothing more. This is the macOS
+# counterpart of `windows-sys` above: declarations only, with the `unsafe` call
+# site and its SAFETY comment living in `memory.rs`. libc's own `mach_task_self`
+# is deprecated in favour of this crate, and libc does not declare
+# `task_vm_info` at all.
+mach2.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

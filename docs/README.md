@@ -7,6 +7,8 @@
 - [related.md](related.md) — competitive analysis of existing satellite imagery and rendered globe apps
 - [roadmap.md](roadmap.md) — planned features and improvements, roughly ordered by priority
 - [notes.md](notes.md) — open issues and research topics
+- [vm-setup.md](vm-setup.md) — running the desktop e2e suite in a local VM: setup, images, interactive access, cleanup
+- [retrospective-2026-08.md](retrospective-2026-08.md) — prototype retrospective: what worked, what failed (including the tray-mode memory leak analysis), and the plan for the next iteration
 
 ## Plans
 

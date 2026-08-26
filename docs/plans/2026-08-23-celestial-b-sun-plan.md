@@ -1,0 +1,104 @@
+# Plan: Celestial B, the Sun
+
+Phase B of [2026-08-23-celestial-bodies-research.md](2026-08-23-celestial-bodies-research.md), section 5. Builds on phase A's `SkyState` ([2026-08-23-celestial-a-stars-plan.md](2026-08-23-celestial-a-stars-plan.md)) and does not start until it has landed.
+
+## Summary
+
+The Sun as a visible object: a procedural glare composite (clipped white core disk at the true angular size, inverse-power bloom, ciliary-corona needles, lenticular halo ring, an optional off-by-default camera mode with aperture spikes and ghosts) through phase A's stereographic sky lens, with the disk drawn among the stars and the glare drawn last over everything, and occlusion and the atmosphere transit computed on the CPU against the globe's painted silhouette. Three new scene parameters. No assets, no new passes, no memory change.
+
+## Stakes Classification
+
+Low-medium. Everything is additive: one pipeline, one draw, pure shader math, CPU-side geometry that is unit-testable without a GPU. The failure modes are visual (a glare that looks wrong, banding, a flare that leaks through the Earth), all caught by goldens and unit tests, none destructive. The largest real risk is taste, which screenshots settle, not code.
+
+## Research
+
+Recorded from code reconnaissance on 2026-08-23, references to the tree at that date.
+
+The render pass draws Earth, clouds, Rayleigh, and two nightglow shells and ends there (`render_pass.rs:126-216`); `Overlays::select` (`render_pass.rs:265-313`) is the existing mechanism that decides per frame which optional draws happen and with which bind group, shared by the preview and export paths so they cannot drift, and `encode_and_submit`'s argument list is already eight optional pairs long (`render_pass.rs:126-143`), which this phase should not make worse. The additive, no-depth-write nightglow pipelines are the blend/depth template (`gpu_setup.rs:387-434`). `dither()` in `sphere.wgsl:216-219` is the in-tree fix for 8-bit banding in faint gradients and is exactly what the bloom tail needs. The camera's eye position and view matrix come from `OrbitalCamera` (`camera.rs:197-235`); the post-projection screen offset is applied in `mvp_matrix` (`camera.rs:245-249`) and phase A already routes it to sky content. The atmosphere shell radius that defines the transit band is `RAYLEIGH_RADIUS = 1.015` (`params.rs:17`). Phase A's `SkyState` owns per-frame astronomy and `FrameInputs` carries it into the renderer; the sun direction is already there. Angular geometry for occlusion: from an eye at distance d the Earth's angular radius is asin(1/d), the atmosphere's asin(1.015/d), and the sun's disk is a constant 0.267 degrees of angular radius, so the visible fraction and the transit factor are closed-form functions of the angle between the sun direction and the eye-to-origin direction. Golden cases pin a custom datetime (`tests/golden.rs:109-125`), and the digest table test is `params.rs:420`.
+
+## Key Design Decisions
+
+1. **Two draws, not one: the disk goes with the sky, the glare goes last.** *(Revised after phase A; see Revisions 1 and 2.)* The Sun's body is a celestial object like any other and is occluded like one, so the clipped core disk is drawn in the sky group, after the stars and before both the Moon and the Earth, where the painted globe covers it (and where a Moon crossing it covers it too, which is the deferred solar eclipse geometry arranged for free by ordering). The glare forms in the observer rather than in the scene, so it is a second quad drawn last, depth ignored, additive, layering over the Earth and the atmosphere shells the way veiling glare washes over a foreground; every glare term is scaled by the occlusion fraction, so it fades as the disk goes behind the globe instead of vanishing with it. Splitting the two is what keeps both halves right: one draw could be occluded or overlaying, not both.
+
+   Both quads are sized through the sky lens, and stereographic projection makes that exact rather than approximate. The lens is conformal and maps circles on the sphere to circles in the plane, so a cone of half-angle alpha about a direction at angle theta from the view axis maps to a disc whose extremes along the radial direction are the images of `theta - alpha` and `theta + alpha`: with `r1 = tan((theta - alpha) / 2)` and `r2 = tan((theta + alpha) / 2)`, the disc is centered at `(r1 + r2) / 2` along the radial direction with radius `(r2 - r1) / 2`, both divided by `edge_radius` and carrying the same aspect and screen offset `vs_star` applies. That is the quad, for the 0.267 degree disk and for the glare's full reach alike. The draw is skipped when `sun_glow` is 0 or when the near edge of the cone is past the screen corner's own angle; when `theta + alpha` reaches 180 degrees the cone contains the anti-view point and `r2` diverges, which is the one case that draws fullscreen instead. There is no behind-the-camera skip, because the sky lens has no `w` and maps every direction short of the antipode.
+
+   Phase A did not put the star draw in `Overlays`; it added a small `Stars` selection struct beside it, selected once and shared by the preview and export paths. The Sun follows that shape rather than growing either.
+
+2. **Occlusion and transit are CPU-side pure functions, and they measure against the painted silhouette rather than the true limb.** *(Revised after phase A; see Revisions 2.)* The mixed lens puts the globe on screen about four and a half times larger than the sky lens's image of the same silhouette, so the true angular limb and the limb a viewer can see are two different circles. Measuring against the first would fade the glare out while it still sits in visibly empty sky, and leave it burning on top of the painted globe elsewhere. So the function works in screen space, where all three shapes are circles with closed forms: the sun's disk from decision 1's cone formula, and the silhouette of a sphere of radius `r` at the origin seen from distance `d`, whose projected radius is `r / sqrt(d^2 - r^2)` divided by `tan(10 degrees)` in the vertical normalization, at `r = 1` for the globe and `r = 1.015` for the atmosphere. The three are compared in pixels, since that is the one space both lenses agree is isotropic. The visible fraction is the sun disk's area outside the globe circle, by the standard circle-circle lens area; the transit factor is the part of it that falls in the annulus between the two. Both are pure functions of the eye distance, the sun direction, the sky field of view and the viewport, computed where the uniforms are written rather than inside `SkyState`, which stays a function of time alone.
+
+   Unit tests cover the four regimes (fully visible, fully hidden, grazing, in-band) and the monotonicity of the fraction along a limb crossing, all without a GPU. The true angular geometry is worth keeping as a second implementation the tests compare against in the one configuration where the two lenses agree, which is the same reference-implementation shape `scene::sun` holds for the sun direction.
+
+3. **The composition is the Spencer glare model, procedurally, per fragment, in angular coordinates.** The fragment shader reconstructs the view ray by analytically inverting phase A's stereographic sky lens, measures the angle to the sun center (so every falloff is FOV-correct, not pixel-fixed), and sums: the clipped white core at 0.267 degrees angular radius with a soft edge; an inverse-power bloom reaching past 10 degrees at low alpha with an optional warm bias; ciliary-corona needles as deterministic angular hash noise modulating the inner few degrees (dozens of thin lobes, varying length, low contrast, lobes at least 2 pixels wide at their tips for adapter stability); and a lenticular halo ring near 3 degrees, blue-tinged inner edge, red-tinged outer edge, very low alpha, folded under the glow parameter rather than getting its own slider unless screenshots demand one. The bloom tail gets `dither()`. Every term multiplies the occlusion fraction; the warm shift follows the transit factor.
+
+   Two things follow from the sky field of view being a user control. Angular sizes move on screen when the slider moves, which is correct and is the point, but it means the disk is 13 pixels across on a 4K render at the default 140 degrees and about one pixel on a small preview at 180. So the core takes the same treatment phase A gave the star core: a minimum radius in pixels and the `pixel_scale` ramp from 1.0 at 1080p to 2.0 at 4K, so the Sun neither disappears on a preview nor collapses to a speck as output density rises. The needles' 2-pixel minimum tip width is the same clause and reads the same `pixel_scale`.
+
+4. **Camera mode is a separate parameter and ships off.** `sun_flare` adds an N-point aperture starburst (default six spikes; screen-fixed, because spikes belong to the imaging device and the tilt control rolls that device, so a device-attached pattern does not rotate in frame) and two or three ghost blobs along the axis from the sun's screen position through screen center, the classic sprite-flare geometry, procedural like everything else. Default 0 because lens ghosts in a still wallpaper read as smudges to some viewers, and the eye-glare default cannot produce ghosts.
+
+5. **Three scene parameters, full digest treatment: `sun_glow`, `sun_rays`, `sun_flare`.** Config fields with sliders in the Celestial group, digest entries and table rows, uniforms. `sun_glow` is the master (0 skips the draw); `sun_rays` scales the corona needles; `sun_flare` enables and scales camera mode. Defaults: glow on at a modest value, rays on low, flare 0.
+
+6. **The optional Rayleigh forward-scatter boost is a separate, droppable step.** A small term in `fs_rayleigh` raising the existing limb glow near the sun's azimuth (a rim-term proxy for forward scattering, per the research), tried with screenshots after the glare itself works. If it does not visibly improve the limb-sunrise composition it is dropped without ceremony, and the research document's backlog entry for it is updated either way.
+
+7. **No exposure model, no HDR.** Star and glare brightness stay artistically mapped into the LDR target; the glare's bloom is what makes the sun visually dominate, not any scene-wide adjustment. An HDR intermediate with convolution bloom stays on the backlog and would subsume parts of this shader if it ever lands.
+
+## Success Criteria
+
+1. Unit tests pin the occlusion and transit function at its four regimes and its monotonic limb crossing, all without a GPU.
+2. A GPU engine test asserts a fully occluded sun contributes no pixels (render with the sun behind the Earth, compare against glow 0).
+3. Two new goldens at pinned datetimes: the sun in frame over the night side, and the sun grazing the limb with the warm transit tint; both stable across three consecutive runs on the local adapters. The goldens with no sun in frame are untouched, and any that move are regenerated once with the reason recorded. The sky lens only shows the Sun when the camera is looking at the night side, so a default-on `sun_glow` should leave the existing set alone; that is a prediction to check, not a promise.
+4. The three parameters round-trip through config and the Slint bridge, have digest rows, and `sun_glow = 0` demonstrably skips the draw.
+5. The sun visibly outshines everything at the default star profile: in the sun-in-frame golden, the brightest non-sun pixel (Venus or Sirius) stays below the clipped core, checked once by inspection and then protected by the golden. Only at the default, because phase A's brightness gain reaches 5.0 and a user who asks for that is entitled to it.
+6. No banding visible in the bloom tail on an 8-bit screenshot at default settings (inspection during implementation; the dither is the mechanism).
+7. `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check` green on Windows and in WSL; CLAUDE.md and `docs/roadmap.md` updated.
+
+## Implementation Steps
+
+### Step 1: Occlusion and transit
+
+The pure screen-space functions and the angular reference they are tested against, the four-regime and monotonicity unit tests, and the uniform plumbing for the two scalars. No visible change yet.
+
+### Step 2: The two quads and the core composition
+
+The disk in the sky group and the glare quad last, both sized by decision 1's cone formula, selected through a small struct in the shape of phase A's `Stars`; the WGSL entry points, core disk with its pixel floor plus bloom with dither, occlusion applied, skip conditions. First screenshots.
+
+### Step 3: Corona, halo, and the transit tint
+
+The angular hash needles, the halo ring, the warm shift from the transit factor. Screenshot iteration on the defaults; this is where taste is settled.
+
+### Step 4: Camera mode
+
+Spikes and ghosts behind `sun_flare`, default 0.
+
+### Step 5: Parameters, config, UI
+
+The three fields through the whole bridge, digest rows, Celestial group sliders, `slint_ui.rs` coverage.
+
+### Step 6: The optional Rayleigh boost, goldens, documentation
+
+The `fs_rayleigh` term evaluated against screenshots and kept or dropped; the two goldens; CLAUDE.md and roadmap; the research document's backlog note updated for whichever way the boost went.
+
+## Risks and Mitigations
+
+- Taste. The composition has four coupled falloffs and the defaults will take iteration; Step 3 exists as the dedicated screenshot loop, and every knob that survives is a parameter, so a bad default is recoverable by the user.
+- Cross-adapter golden stability of the needle noise. Pure ALU and deterministic, but trigonometric precision differs per adapter; mitigated by keeping needles low-contrast and at least 2 pixels wide, and by the existing tolerance. If one adapter still disagrees, coarsen the needle frequency rather than the tolerance.
+- Additive saturation where the glare overlaps the bright limb or clouds. Expected and physically sensible (that is what veiling glare does); checked by the grazing golden for gross ugliness.
+- The quad's sizing near the screen edge or at extreme offsets could clip the bloom tail. The cone formula is exact, so the remaining risk is the margin around the reach rather than the projection; verify with an off-center framing during Step 2, and with the sky field of view at both ends of its range, since that is what decides how many pixels a degree is worth.
+- A sun just outside the globe's painted silhouette but geometrically behind the Earth, or the reverse. Decision 2 chooses to be right about what the viewer sees rather than about where the Sun is, which is the only choice that produces a coherent picture under the mixed lens, but it means the glare's occlusion does not agree with an ephemeris. The grazing golden is where that shows; if it reads wrong, the finding is about the composite and not about this function.
+- The transit band depends on `RAYLEIGH_RADIUS` staying 1.015; if the atmosphere work ever moves it, the transit factor follows automatically because it reads the same constant, which is why the function takes the radius as an argument rather than embedding it.
+
+## Revisions after phase A
+
+Phase A landed with a design that moved during implementation: celestial content is drawn through a stereographic sky lens with its own field of view (60 to 180 degrees, default 140) rather than through the Earth camera's 20 degree perspective lens. That is recorded in phase A's own Departures. Read against this plan on 2026-08-24, it changes four things here.
+
+1. **The projection has no `w`, so the behind-the-camera skip was wrong.** Decision 1 and the research document's section 5.5 both said the draw is skipped when the sun projects behind the camera with a non-positive clip `w`. The sky lens is stereographic: every direction short of the exact antipode has a finite screen position, and a sun behind the camera is simply outside the frame like anything else off screen. The skip is now an angular test against the screen corner, and the quad's size comes from the conformal cone-to-disc formula in decision 1 rather than from a clip-space extent that no longer exists.
+
+2. **Occlusion moved from the true limb to the painted one, and the draw split in two.** The mixed lens puts the globe on screen about four and a half times larger than the sky lens's image of its silhouette (research document, section 2.3), so a single glare quad drawn last with angular occlusion would fade out over visibly empty sky in one framing and burn on top of the painted globe in another. Splitting the disk from the glare, and measuring the occlusion against the silhouette the viewer can actually see, is what makes both halves behave. The cost is that the occlusion no longer agrees with an ephemeris, which is recorded as a risk rather than hidden.
+
+3. **The sky field of view is a user control, so every angular size is now also a slider-dependent pixel size.** The disk is 13 pixels on a 4K render at the default and about one on a small preview at 180 degrees. Decision 3 adopts phase A's answer to the same problem: a minimum radius in pixels and the `pixel_scale` ramp.
+
+4. **`Overlays` is not where a new optional draw goes any more.** Phase A added a `Stars` selection struct beside it rather than a sixth entry, and the argument-list refactor decision 1 offered as a prelude was not taken. The Sun follows the `Stars` shape.
+
+Unchanged by any of this: the Spencer composition itself, the three parameters, camera mode, the decision to keep everything LDR, and the optional Rayleigh forward-scatter boost.
+
+## Rollback Strategy
+
+Feature branch, plain revert. All three config fields are ignored by older binaries; no assets, no persisted state, no schema change anywhere. Dropping Step 6's Rayleigh term is a one-line revert independent of the rest.

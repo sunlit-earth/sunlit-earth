@@ -1,0 +1,145 @@
+name: Regenerate golden references
+
+# Manual only. Golden references are supposed to change when a human decided
+# they should, so nothing here runs on a push.
+#
+# Pick an OS, run it, download the `golden-<adapter>` artifact, and commit its
+# contents (the PNGs are the artifact root, there is no wrapping folder) into
+# `crates/sunlit-core/tests/golden/<adapter>/`. Look at the
+# images first: a golden test that is regenerated without being reviewed is a
+# test that asserts whatever the code currently does.
+#
+# GitHub only offers `workflow_dispatch` for workflows that exist on the default
+# branch, so this becomes usable once the branch adding it is merged. Until
+# then, generate references locally on the adapter in question with
+# `SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden`.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner to generate references on"
+        required: true
+        default: ubuntu-latest
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+# Read-only. The references leave as an artifact and are committed by a human;
+# nothing here pushes to the repository.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Same value as ci.yml, and not only for consistency: Swatinem/rust-cache
+  # folds the RUST* environment into its cache key, so a job that omits this
+  # computes a different key and restores nothing from the matrix's cache.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  regenerate:
+    name: Regenerate on ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: inputs.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libclang-dev \
+            mesa-vulkan-drivers \
+            xvfb
+        shell: bash
+
+      - uses: KyleMayes/install-llvm-action@v2
+        if: inputs.os == 'windows-latest'
+        with:
+          version: "19"
+      - name: Set LIBCLANG_PATH
+        if: inputs.os == 'windows-latest'
+        run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Point bindgen at Xcode's libclang
+        if: inputs.os == 'macos-latest'
+        run: |
+          LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if [ -f "$LIB/libclang.dylib" ]; then
+            echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
+      # Reuse the CI matrix's cache rather than building cold, and pick up the
+      # same command wrapper the matrix uses. Written as a case rather than a
+      # nested `&&`/`||` expression because this workflow cannot be dispatched
+      # until it is on the default branch, so it gets no test run before someone
+      # depends on it.
+      - name: Resolve the matching CI cache key
+        id: cache_key
+        run: |
+          case "${{ inputs.os }}" in
+            ubuntu-latest)
+              echo "key=linux" >> "$GITHUB_OUTPUT"
+              # xvfb as in ci.yml, so the references are produced in the same
+              # environment they will later be compared in.
+              echo "WRAP=xvfb-run -a" >> "$GITHUB_ENV"
+              ;;
+            windows-latest) echo "key=windows" >> "$GITHUB_OUTPUT" ;;
+            macos-latest)   echo "key=macos"   >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown runner ${{ inputs.os }}"; exit 1 ;;
+          esac
+        shell: bash
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ steps.cache_key.outputs.key }}
+
+      - name: Regenerate
+        id: regenerate
+        env:
+          SUNLIT_EARTH_UPDATE_GOLDEN: "1"
+        run: |
+          set -euo pipefail
+          # --nocapture so the adapter key reaches the log: the golden test
+          # prints one marker line per case for exactly this purpose, and which
+          # adapter ran is the one thing this job has to know.
+          ${WRAP:-} cargo test -p sunlit-core --test golden --locked -- --nocapture \
+            | tee golden.log
+          keys=$(sed -n 's/^golden adapter key: //p' golden.log | sort -u)
+          count=$(printf '%s\n' "$keys" | grep -c . || true)
+          if [ "$count" != "1" ]; then
+            echo "expected exactly one adapter key in the test output, got: $keys"
+            exit 1
+          fi
+          echo "key=$keys" >> "$GITHUB_OUTPUT"
+          echo "regenerated the $keys reference set"
+        shell: bash
+
+      # Regeneration short-circuits every comparison, including the pairwise
+      # distinguishability check, so on its own this job proves only that the
+      # renders were written. Running the suite again without the environment
+      # variable is what makes it verify its own output.
+      - name: Verify the regenerated set
+        run: |
+          set -euo pipefail
+          ${WRAP:-} cargo test -p sunlit-core --test golden --locked -- --show-output
+        shell: bash
+
+      # Only the adapter that ran. Uploading all three would let someone extract
+      # the archive over the tracked directory and quietly revert another
+      # adapter's set to whatever this branch happened to have.
+      - name: Upload references
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-${{ steps.regenerate.outputs.key }}
+          path: crates/sunlit-core/tests/golden/${{ steps.regenerate.outputs.key }}/
+          if-no-files-found: error

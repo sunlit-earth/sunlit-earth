@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sunlit Earth application icon, master (render at 48 px and larger).
+
+  The mark: the night hemisphere faces the viewer because the sun sits on the
+  limb. Flat indigo disk, one flat dawn band inside the sun-facing limb, a bold
+  periwinkle outline, aurora arcs over both poles rotated by the 23.4 degree
+  axial tilt, and the sun rising behind the limb: its disk is masked by the
+  globe silhouette, only the glare crosses in front. The glare is one radial
+  gradient with its focus at the sun and its circle displaced toward the
+  planet, so it reaches farther over the atmosphere than into space and never
+  touches the canvas edge.
+
+  Palette: disk #191231, dawn band #352B66, rim #9A91D4, aurora #35B87A,
+  terminator/limb orange #FF8A3D, sun core #FFF7E8, lights amber (unused here).
+  Sun direction: 40 degrees above horizontal, upper right; center (55.7, 12.1).
+
+  Smaller rasters use the sibling variants (sunlit-earth-32.svg, -24.svg,
+  -16.svg), built on one rule: what cannot survive the raster drops (the dawn
+  band and limb arc at 16, the aurora's soft glow below 48), and everything
+  that stays grows in canvas units (outline, aurora arcs, glare reach, sun
+  core), so no element fades into sub-pixel noise. The glare circle is sized
+  to stay inside the canvas at every variant.
+  Design iterations: docs/plans/2026-08-23-app-icon-integration-plan.md.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <radialGradient id="glare" gradientUnits="userSpaceOnUse"
+        cx="52.3" cy="15.0" r="11.5" fx="55.7" fy="12.1">
+      <stop offset="0" stop-color="#FFF7E8"/>
+      <stop offset="0.4" stop-color="#FFC37A" stop-opacity="0.85"/>
+      <stop offset="0.72" stop-color="#FF8A3D" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#FF8A3D" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="auroraTop" gradientUnits="userSpaceOnUse"
+        x1="14.5" y1="9.1" x2="27.3" y2="3.6">
+      <stop offset="0" stop-color="#35B87A" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="0.65" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="1" stop-color="#35B87A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="auroraBottom" gradientUnits="userSpaceOnUse"
+        x1="49.5" y1="54.9" x2="36.7" y2="60.4">
+      <stop offset="0" stop-color="#35B87A" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="0.65" stop-color="#35B87A" stop-opacity="1"/>
+      <stop offset="1" stop-color="#35B87A" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="occ">
+      <rect x="0" y="0" width="64" height="64" fill="white"/>
+      <circle cx="32" cy="32" r="30" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- night disk -->
+  <circle cx="32" cy="32" r="30" fill="#191231"/>
+  <!-- dawn band, sun-fixed lighting -->
+  <path d="M27.5 6.4 A26 26 0 0 1 57.1 38.7" fill="none"
+      stroke="#352B66" stroke-width="5.5" stroke-linecap="round"/>
+  <!-- warm limb near the sun -->
+  <path d="M42.3 3.8 A30 30 0 0 1 61.5 26.8" fill="none"
+      stroke="#FF8A3D" stroke-width="1.8" stroke-linecap="round" opacity="0.9"/>
+  <!-- outline -->
+  <circle cx="32" cy="32" r="28.8" fill="none" stroke="#9A91D4" stroke-width="2.4"/>
+  <!-- aurora arcs, earth-fixed, tilted 23.4 degrees (north to the left) -->
+  <path d="M14.5 9.1 A28.8 28.8 0 0 1 27.3 3.6" fill="none"
+      stroke="url(#auroraTop)" stroke-width="4.8" stroke-linecap="round" opacity="0.22"/>
+  <path d="M14.5 9.1 A28.8 28.8 0 0 1 27.3 3.6" fill="none"
+      stroke="url(#auroraTop)" stroke-width="2.4"/>
+  <path d="M49.5 54.9 A28.8 28.8 0 0 1 36.7 60.4" fill="none"
+      stroke="url(#auroraBottom)" stroke-width="4.8" stroke-linecap="round" opacity="0.22"/>
+  <path d="M49.5 54.9 A28.8 28.8 0 0 1 36.7 60.4" fill="none"
+      stroke="url(#auroraBottom)" stroke-width="2.4"/>
+  <!-- glare in front of everything, biased toward the planet -->
+  <circle cx="52.3" cy="15.0" r="11.5" fill="url(#glare)"/>
+  <!-- sun disk, occluded by the globe -->
+  <circle cx="55.7" cy="12.1" r="4.2" fill="#FFF7E8" mask="url(#occ)"/>
+</svg>

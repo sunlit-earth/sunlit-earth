@@ -1,0 +1,606 @@
+//! Building the guest's binaries on the host, and getting them in.
+//!
+//! Plan decision 8: build on the host, copy the artifacts in. A Windows host
+//! builds the Windows guest's binaries natively and the Linux guest's through
+//! WSL.
+//!
+//! The WSL distribution is Ubuntu 22.04 and the guest is now Debian 13, so the
+//! two are no longer the same userland. What has to hold is only the direction:
+//! glibc is backwards compatible, so a binary linked against the older one runs
+//! against the newer, and Ubuntu 22.04's glibc 2.35 is comfortably the older of
+//! the pair. The reverse would not work, which is why the builder is the old
+//! distribution and not the guest.
+
+use std::path::{Path, PathBuf};
+
+use crate::commands::vm::Session;
+use crate::guest::cargo_json::{self, Artifact};
+use crate::guest::handover;
+use crate::provider;
+use crate::provider::target::{HostOs, Target};
+use crate::runner::{Cmd, Runner};
+use crate::store::{self, Store};
+
+/// The Cargo package and test target the suite lives in.
+pub const PACKAGE: &str = "sunlit-earth";
+pub const TEST_TARGET: &str = "e2e";
+
+/// What the guest needs, on the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostArtifacts {
+    pub app: PathBuf,
+    pub harness: PathBuf,
+    pub fixtures: PathBuf,
+    /// The repository's texture directory, when it holds the real assets.
+    ///
+    /// `None` is not a failure: the suite then runs in the guest exactly as it
+    /// runs on a host that has never fetched them, with the render case looking
+    /// at the procedural grid.
+    pub textures: Option<PathBuf>,
+}
+
+/// The texture files the app resolves, and therefore the ones the guest needs.
+///
+/// `resolve_texture_paths` in the app names these two, and nothing else
+/// connects the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
+/// reads that function and asserts both are still spelled this way.
+pub const TEXTURE_FILES: [&str; 2] = ["world.topo.200405.jxl", "BlackMarble_2016.jxl"];
+
+/// Smaller than any real asset here and far larger than a Git LFS pointer.
+const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
+
+/// Whether a textures directory holds the assets or something that only looks
+/// like them.
+///
+/// `textures/**` is Git LFS, and a checkout without the objects leaves pointer
+/// files of a couple of hundred bytes, which are there as far as anything that
+/// only asks whether the file exists is concerned. Staging those would be worse
+/// than staging nothing: the app would fail to decode them, and a failed decode
+/// leaves the slot in the state `Renderer::textures_ready` never reports ready
+/// (the open roadmap item), so a guest would wait for an event that cannot
+/// arrive. Size is what tells the two apart, since the smaller of the two real
+/// assets is over a megabyte.
+pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(), String> {
+    for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
+        match size {
+            None => return Err(format!("there is no {name} in it")),
+            Some(bytes) if bytes < TEXTURE_MIN_BYTES => {
+                return Err(format!(
+                    "{name} is {bytes} bytes, which is a Git LFS pointer rather than \
+                     the asset; `git lfs pull` fetches it"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The repository's textures directory, if it is worth copying in.
+///
+/// Reports what it decided either way, because the render case samples the
+/// Sahara and the Atlantic: with the assets it tests the real map, and without
+/// them it tests the procedural grid and says so, which is the same thing that
+/// happens to `cargo e2e` on a host in this state.
+fn host_textures(repo: &Path) -> Option<PathBuf> {
+    let dir = repo.join("textures");
+    // An array rather than a vector, so the sizes and the names cannot get
+    // out of step with each other.
+    let sizes = TEXTURE_FILES.map(|name| std::fs::metadata(dir.join(name)).ok().map(|m| m.len()));
+    match textures_verdict(sizes) {
+        Ok(()) => Some(dir),
+        Err(why) => {
+            println!("not staging {}: {why}", dir.display());
+            println!("  the guest will render the procedural grid, as this host would");
+            None
+        }
+    }
+}
+
+/// The `cargo` invocation that builds the suite without running it.
+pub fn build_args() -> Vec<String> {
+    vec![
+        "test".to_owned(),
+        "--no-run".to_owned(),
+        "--locked".to_owned(),
+        "--message-format=json".to_owned(),
+        "-p".to_owned(),
+        PACKAGE.to_owned(),
+        "--test".to_owned(),
+        TEST_TARGET.to_owned(),
+    ]
+}
+
+/// The command line that builds the Linux binaries inside WSL.
+///
+/// `CARGO_TARGET_DIR` points into the distribution's own filesystem, which is
+/// the arrangement CLAUDE.md documents: sharing `target/` between the Windows
+/// and Linux builds makes them fight over the same directory.
+pub fn wsl_build_command(distro: &str, repo_wsl_path: &str) -> Cmd {
+    let script = format!(
+        "cd {repo} && CARGO_TARGET_DIR=$HOME/sunlit-target cargo {args}",
+        repo = shell_quote(repo_wsl_path),
+        args = build_args().join(" ")
+    );
+    Cmd::new("wsl.exe").args([
+        "-d".to_owned(),
+        distro.to_owned(),
+        "--".to_owned(),
+        "bash".to_owned(),
+        "-lc".to_owned(),
+        script,
+    ])
+}
+
+/// `wslpath`, which is the only reliable translation between the two path
+/// worlds and ships inside the distribution.
+pub fn wslpath_command(distro: &str, flag: &str, path: &str) -> Cmd {
+    Cmd::new("wsl.exe").args([
+        "-d".to_owned(),
+        distro.to_owned(),
+        "--".to_owned(),
+        "wslpath".to_owned(),
+        flag.to_owned(),
+        wsl_arg(path),
+    ])
+}
+
+/// Prepare a Windows path to be passed to a program inside WSL.
+///
+/// `wsl.exe` marshals the Windows command line into a Linux argv and treats a
+/// backslash as an escape while doing it, so `C:\Workspace` arrives as
+/// `C:Workspace` and `wslpath` then fails on a path that looked correct going
+/// in. Both Windows and `wslpath` accept forward slashes, so converting is
+/// simpler and less fragile than escaping. Measured on Windows 11 with WSL
+/// 2.7.11: forward slashes and doubled backslashes both work, single
+/// backslashes do not.
+pub fn wsl_arg(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+/// Single-quote a value for `sh`.
+pub fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Whether this host can build a guest's binaries at all, and whether it does
+/// so natively.
+///
+/// Asked before anything is created, because the answer does not depend on the
+/// VM and finding out afterwards means a booted guest with nothing to run in
+/// it. `build` uses the same function, so the check and the attempt cannot
+/// disagree about what is possible.
+///
+/// A Windows guest needs Windows binaries, and a Linux host has no toolchain
+/// for those: cross-compiling them would mean mingw-w64 or a Windows SDK, a
+/// second target triple, and a second set of link-time problems, for the one
+/// cell of the matrix that a Windows host covers natively. Left unsupported
+/// deliberately rather than half-built.
+pub fn check_can_build(host: HostOs, target: Target) -> Result<bool, String> {
+    match (host, target) {
+        (HostOs::Windows, Target::Windows) | (HostOs::Linux, Target::Linux) => Ok(true),
+        // WSL builds the Linux guest's binaries, against an older glibc than
+        // the guest has, which is the direction that works.
+        (HostOs::Windows, Target::Linux) => Ok(false),
+        (HostOs::Linux, Target::Windows) => Err(
+            "the Windows guest's binaries cannot be built on a Linux host, so \
+             `--target windows` needs a Windows host. The Linux guest works here."
+                .to_owned(),
+        ),
+        _ => Err(format!(
+            "a {} host cannot build binaries for a {target} guest",
+            host.name()
+        )),
+    }
+}
+
+/// Pick the two executables out of what Cargo reported.
+pub fn select(artifacts: &[Artifact]) -> Result<(PathBuf, PathBuf), String> {
+    let app = cargo_json::bin(artifacts, PACKAGE)
+        .ok_or_else(|| format!("cargo built no {PACKAGE} binary"))?;
+    let harness = cargo_json::test_binary(artifacts, TEST_TARGET)
+        .ok_or_else(|| format!("cargo built no {TEST_TARGET} test harness"))?;
+    Ok((app.executable.clone(), harness.executable.clone()))
+}
+
+/// Build the binaries a target's guest needs.
+pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostArtifacts, String> {
+    let repo = store::repo_root();
+    let fixtures = repo
+        .join("crates")
+        .join("sunlit-app")
+        .join("tests")
+        .join("fixtures");
+
+    let textures = host_textures(&repo);
+
+    let host = HostOs::current();
+    let native = check_can_build(host, target)?;
+
+    if native {
+        println!("building the e2e suite for the {target} guest (a few minutes if cold)");
+        // stdout is the JSON this parses; stderr is cargo's progress, and that
+        // goes to the terminal, because the alternative is several silent
+        // minutes that look like a hang.
+        let out = runner
+            .capture(
+                &Cmd::new("cargo")
+                    .args(build_args())
+                    .cwd(&repo)
+                    .show_stderr(),
+            )
+            .map_err(|e| format!("cannot run cargo: {e}"))?;
+        if !out.success() {
+            return Err("building the e2e suite failed; the output above says why".to_owned());
+        }
+        let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;
+        return Ok(HostArtifacts {
+            app,
+            harness,
+            fixtures,
+            textures,
+        });
+    }
+
+    build_in_wsl(runner, store, &repo, fixtures, textures)
+}
+
+/// Build the Linux binaries in WSL and copy them onto the Windows filesystem.
+///
+/// Copying inside the distribution rather than reaching into it from Windows
+/// avoids the `\\wsl$` share entirely: `/mnt/c` is already the same disk, so a
+/// plain `cp` lands the files somewhere the Windows `scp` can read.
+fn build_in_wsl(
+    runner: &dyn Runner,
+    store: &Store,
+    repo: &Path,
+    fixtures: PathBuf,
+    textures: Option<PathBuf>,
+) -> Result<HostArtifacts, String> {
+    let distro = crate::host::facts::WSL_DISTRO;
+    let repo_wsl = wslpath(runner, distro, "-u", &repo.to_string_lossy())?;
+
+    // Says whose userland this is, because the distribution named here is not
+    // the guest's and reads as though it were: what makes it the right builder
+    // is being older than the guest rather than being the same as it.
+    println!(
+        "building the e2e suite for the linux guest in {distro}, an older \
+         userland than the guest's (a few minutes if cold)"
+    );
+    let out = runner
+        .capture(&wsl_build_command(distro, &repo_wsl).show_stderr())
+        .map_err(|e| format!("cannot run wsl.exe: {e}"))?;
+    if !out.success() {
+        return Err(format!(
+            "building the Linux e2e suite in {distro} failed; \
+             the output above says why"
+        ));
+    }
+    let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;
+
+    let staging = store.build_dir(Target::Linux).join("artifacts");
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("cannot create {}: {e}", staging.display()))?;
+    let staging_wsl = wslpath(runner, distro, "-u", &staging.to_string_lossy())?;
+
+    let copy = Cmd::new("wsl.exe").args([
+        "-d".to_owned(),
+        distro.to_owned(),
+        "--".to_owned(),
+        "bash".to_owned(),
+        "-lc".to_owned(),
+        format!(
+            "cp {app} {harness} {dest}/",
+            app = shell_quote(&app.to_string_lossy()),
+            harness = shell_quote(&harness.to_string_lossy()),
+            dest = shell_quote(&staging_wsl)
+        ),
+    ]);
+    let out = runner
+        .capture(&copy)
+        .map_err(|e| format!("cannot run wsl.exe: {e}"))?;
+    if !out.success() {
+        return Err(format!(
+            "copying the Linux binaries out of {distro} failed: {}",
+            out.stderr.trim()
+        ));
+    }
+
+    Ok(HostArtifacts {
+        app: staging.join(file_name(&app)),
+        harness: staging.join(file_name(&harness)),
+        fixtures,
+        // The repository half, not the distribution's: `scp` runs on Windows
+        // here and reads the same files the Windows host does.
+        textures,
+    })
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn wslpath(runner: &dyn Runner, distro: &str, flag: &str, path: &str) -> Result<String, String> {
+    let out = runner
+        .capture(&wslpath_command(distro, flag, path))
+        .map_err(|e| format!("cannot run wsl.exe: {e}"))?;
+    if !out.success() {
+        return Err(format!(
+            "wslpath could not translate {path}: {}",
+            out.stderr.trim()
+        ));
+    }
+    Ok(out.trimmed().to_owned())
+}
+
+/// Where each artifact lands inside the guest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestPaths {
+    pub app: String,
+    pub harness: String,
+    pub fixtures: String,
+    /// Where the textures landed, when there were any to stage. The job script
+    /// points `SUNLIT_EARTH_TEXTURES` at this, and omits the variable
+    /// altogether when it is `None` rather than naming a directory the guest
+    /// does not have.
+    pub textures: Option<String>,
+}
+
+/// The guest-side paths for a target, given the host file names.
+pub fn guest_paths(target: Target, app: &str, harness: &str, textures: bool) -> GuestPaths {
+    match target {
+        Target::Windows => GuestPaths {
+            app: format!(r"{}\{app}", provider::guest_bin(target)),
+            harness: format!(r"{}\{harness}", provider::guest_bin(target)),
+            fixtures: format!(r"{}\fixtures", provider::GUEST_ROOT_WINDOWS),
+            textures: textures.then(|| provider::guest_textures(target)),
+        },
+        Target::Linux => GuestPaths {
+            app: format!("{}/{app}", provider::guest_bin(target)),
+            harness: format!("{}/{harness}", provider::guest_bin(target)),
+            fixtures: format!("{}/fixtures", provider::GUEST_ROOT_LINUX),
+            textures: textures.then(|| provider::guest_textures(target)),
+        },
+    }
+}
+
+/// Build for a guest and copy everything in.
+pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<GuestPaths, String> {
+    let target = session.target;
+    let built = build(runner, store, target)?;
+
+    println!("copying the binaries into the guest");
+    let bin_dir = provider::guest_bin(target);
+    session
+        .provider
+        .copy_in(&session.state, &built.app, &bin_dir)?;
+    session
+        .provider
+        .copy_in(&session.state, &built.harness, &bin_dir)?;
+    session.provider.copy_in(
+        &session.state,
+        &built.fixtures,
+        &format!("{}/", provider::guest_root(target)),
+    )?;
+    if let Some(textures) = &built.textures {
+        println!("copying the textures into the guest");
+        session.provider.copy_in(
+            &session.state,
+            textures,
+            &format!("{}/", provider::guest_root(target)),
+        )?;
+    }
+
+    let paths = guest_paths(
+        target,
+        &file_name(&built.app),
+        &file_name(&built.harness),
+        built.textures.is_some(),
+    );
+    if target == Target::Linux {
+        // scp does not carry the executable bit onto every filesystem, and a
+        // harness that cannot be executed fails in a way that looks like a
+        // missing file.
+        let _ = session.provider.exec(
+            &session.state,
+            &format!("chmod +x {} {}", paths.app, paths.harness),
+        );
+    }
+
+    // Every guest is one somebody may end up looking at: `vm up` is for that,
+    // `e2e --keep` leaves the same thing behind, and watching a run through
+    // `vm view` is supported. So the launcher and the shortcuts are staged
+    // alongside the binaries rather than only on the interactive path. A
+    // failure here is a warning: it costs convenience, not the run.
+    if let Err(e) = handover::prepare(
+        session.provider.as_ref(),
+        &session.state,
+        store,
+        target,
+        &paths,
+    ) {
+        println!("warning: {e}");
+    }
+    Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_guest_build_shows_its_progress_while_its_json_is_captured() {
+        // A cold build is minutes long. Capturing both streams made `vm up`
+        // look like it had hung, which is what it was reported as.
+        let native = Cmd::new("cargo").args(build_args()).show_stderr();
+        assert!(native.inherit_stderr);
+        assert!(
+            wsl_build_command(crate::host::facts::WSL_DISTRO, "/mnt/c/x")
+                .show_stderr()
+                .inherit_stderr
+        );
+        // The JSON has to keep coming back on stdout, or nothing downstream
+        // knows which files were built.
+        assert!(
+            build_args().contains(&"--message-format=json".to_owned()),
+            "{:?}",
+            build_args()
+        );
+    }
+
+    #[test]
+    fn a_linux_host_says_it_cannot_build_the_windows_guest_before_anything_boots() {
+        // The provider matrix has a hypervisor for this cell, which is not the
+        // same as being able to produce the binaries to put in it.
+        let err = check_can_build(HostOs::Linux, Target::Windows).unwrap_err();
+        assert!(err.contains("needs a Windows host"), "{err}");
+
+        assert_eq!(check_can_build(HostOs::Linux, Target::Linux), Ok(true));
+        assert_eq!(check_can_build(HostOs::Windows, Target::Windows), Ok(true));
+        // Not native: built through WSL.
+        assert_eq!(check_can_build(HostOs::Windows, Target::Linux), Ok(false));
+        assert!(check_can_build(HostOs::Other, Target::Linux).is_err());
+    }
+
+    #[test]
+    fn the_build_never_runs_the_tests_and_pins_the_lockfile() {
+        let args = build_args();
+        assert!(args.contains(&"--no-run".to_owned()), "{args:?}");
+        assert!(args.contains(&"--locked".to_owned()), "{args:?}");
+        assert!(
+            args.contains(&"--message-format=json".to_owned()),
+            "{args:?}"
+        );
+        assert!(args.contains(&"e2e".to_owned()), "{args:?}");
+    }
+
+    #[test]
+    fn the_wsl_build_keeps_its_target_directory_out_of_the_windows_one() {
+        let cmd = wsl_build_command("Ubuntu-22.04", "/mnt/c/work/sunlit-earth");
+        let script = cmd.args.last().expect("the script");
+        assert!(
+            script.contains("CARGO_TARGET_DIR=$HOME/sunlit-target"),
+            "{script}"
+        );
+        assert!(script.contains("cd '/mnt/c/work/sunlit-earth'"), "{script}");
+        assert!(script.contains("--no-run"), "{script}");
+        assert!(cmd.args.contains(&"Ubuntu-22.04".to_owned()));
+    }
+
+    #[test]
+    fn shell_quoting_survives_an_apostrophe_in_a_path() {
+        assert_eq!(
+            shell_quote("/mnt/c/Users/o'brien"),
+            r"'/mnt/c/Users/o'\''brien'"
+        );
+        assert_eq!(shell_quote("/plain"), "'/plain'");
+    }
+
+    #[test]
+    fn wslpath_is_asked_rather_than_the_translation_guessed() {
+        let cmd = wslpath_command("Ubuntu-22.04", "-u", r"C:\work");
+        assert_eq!(cmd.program, "wsl.exe");
+        assert!(cmd.args.contains(&"wslpath".to_owned()));
+    }
+
+    #[test]
+    fn a_windows_path_reaches_wsl_with_its_separators_intact() {
+        // wsl.exe eats single backslashes on the way in, so the path is
+        // converted rather than passed through and hoped for.
+        assert_eq!(wsl_arg(r"C:\Workspace\rustrover"), "C:/Workspace/rustrover");
+        assert_eq!(wsl_arg("/already/unix"), "/already/unix");
+        assert_eq!(
+            wslpath_command("Ubuntu-22.04", "-u", r"C:\work\sunlit")
+                .args
+                .last()
+                .map(String::as_str),
+            Some("C:/work/sunlit")
+        );
+    }
+
+    #[test]
+    fn selecting_needs_both_the_app_and_the_harness() {
+        let artifacts = cargo_json::parse_artifacts(concat!(
+            r#"{"reason":"compiler-artifact","target":{"kind":["bin"],"name":"sunlit-earth"},"profile":{"test":false},"executable":"/t/sunlit-earth"}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","target":{"kind":["test"],"name":"e2e"},"profile":{"test":true},"executable":"/t/deps/e2e-1"}"#,
+        ));
+        let (app, harness) = select(&artifacts).expect("both");
+        assert_eq!(app, PathBuf::from("/t/sunlit-earth"));
+        assert_eq!(harness, PathBuf::from("/t/deps/e2e-1"));
+
+        let only_app = &artifacts[..1];
+        assert!(select(only_app).unwrap_err().contains("e2e test harness"));
+    }
+
+    #[test]
+    fn guest_paths_follow_each_operating_systems_separator() {
+        let linux = guest_paths(Target::Linux, "sunlit-earth", "e2e-1a2b", true);
+        assert_eq!(linux.app, "/var/lib/sunlit-e2e/bin/sunlit-earth");
+        assert_eq!(linux.harness, "/var/lib/sunlit-e2e/bin/e2e-1a2b");
+        assert_eq!(linux.fixtures, "/var/lib/sunlit-e2e/fixtures");
+        assert_eq!(
+            linux.textures.as_deref(),
+            Some("/var/lib/sunlit-e2e/textures")
+        );
+
+        let windows = guest_paths(Target::Windows, "sunlit-earth.exe", "e2e-1a2b.exe", true);
+        assert_eq!(windows.app, r"C:\sunlit-e2e\bin\sunlit-earth.exe");
+        assert_eq!(windows.harness, r"C:\sunlit-e2e\bin\e2e-1a2b.exe");
+        assert_eq!(windows.fixtures, r"C:\sunlit-e2e\fixtures");
+        assert_eq!(windows.textures.as_deref(), Some(r"C:\sunlit-e2e\textures"));
+
+        // Nothing staged, nothing named.
+        for target in Target::ALL {
+            assert_eq!(guest_paths(target, "a", "h", false).textures, None);
+        }
+    }
+
+    #[test]
+    fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
+        // Both real: the size of the day and night assets in this repository.
+        assert_eq!(textures_verdict([Some(2_574_413), Some(1_382_310)]), Ok(()));
+
+        // A pointer file is a few hundred bytes and is otherwise a file like
+        // any other, so existence is not the question to ask.
+        let err = textures_verdict([Some(130), Some(1_382_310)]).unwrap_err();
+        assert!(err.contains("world.topo.200405.jxl"), "{err}");
+        assert!(err.contains("git lfs pull"), "{err}");
+
+        // Missing is reported as missing rather than as a pointer.
+        let err = textures_verdict([Some(2_574_413), None]).unwrap_err();
+        assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
+        assert!(!err.contains("pointer"), "{err}");
+    }
+
+    /// The app decides which files it loads; the xtask decides which files the
+    /// guest gets. Nothing else connects the two, so a rename in the app would
+    /// otherwise surface as the render case sampling the procedural grid in a
+    /// guest that was told it had textures.
+    #[test]
+    fn the_staged_textures_are_the_ones_the_app_asks_for() {
+        let main = std::fs::read_to_string(
+            store::repo_root()
+                .join("crates")
+                .join("sunlit-app")
+                .join("src")
+                .join("main.rs"),
+        )
+        .expect("the app's main.rs");
+        let resolver = main
+            .split("fn resolve_texture_paths")
+            .nth(1)
+            .expect("resolve_texture_paths is where the app names its textures");
+        let body = &resolver[..resolver.find("\n}").unwrap_or(resolver.len())];
+        for name in TEXTURE_FILES {
+            assert!(
+                body.contains(name),
+                "the app no longer resolves {name}, so staging it is pointless"
+            );
+        }
+        // Both slots, and no third one the guest would be missing.
+        assert_eq!(body.matches(".jxl").count(), TEXTURE_FILES.len());
+    }
+}

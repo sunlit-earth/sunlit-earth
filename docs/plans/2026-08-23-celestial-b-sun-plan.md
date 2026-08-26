@@ -129,6 +129,8 @@ Three adversarial review rounds on 2026-08-26, each by a reviewer with no shared
 
 What the three rounds have in common is worth keeping: every teeth measurement in this plan was made by injecting the fault the test exists to catch, and two of them were wrong the first time. The round 1 measurement for the corner case used a fault that shrinks the corner below its unpanned value, which culls both draws and passes a case the realistic fault walks straight through. A teeth number is only as good as the plausibility of the fault behind it.
 
+The user's own review followed on 2026-08-26 and found what no round could: the composite does not read well while the disk is partly behind the globe or barely clearing the horizon. Which effects should apply there is deferred until phases C and D have landed, and is on the roadmap. Phase C's plan keeps the Moon's limb crossing out of its own scope so that both bodies take whatever that decides, and it adds the Moon to `visibility` as a second occluder, because the glare's fade is measured against the globe alone and a Moon crossing the Sun would otherwise hide the disk and leave the glare.
+
 ## Rollback Strategy
 
 Feature branch, plain revert. All three config fields are ignored by older binaries; no assets, no persisted state, no schema change anywhere. Dropping Step 6's Rayleigh term is a one-line revert independent of the rest.

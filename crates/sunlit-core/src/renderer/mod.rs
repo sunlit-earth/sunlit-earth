@@ -137,7 +137,12 @@ impl SlotLayout {
 /// The allocator report the memory report is built from names allocations by
 /// their GPU label, so a row that reads `day_texture` is worth more than one
 /// that reads `texture_slot_1`.
-const SLOT_LABELS: [&str; 3] = ["grid_texture", "day_texture", "night_texture"];
+const SLOT_LABELS: [&str; 4] = [
+    "grid_texture",
+    "day_texture",
+    "night_texture",
+    "moon_texture",
+];
 
 /// Build the anti-aliasing option labels and find the default index
 /// (preferring 8x MSAA).

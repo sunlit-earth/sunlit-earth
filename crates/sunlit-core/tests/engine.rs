@@ -1059,7 +1059,8 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
 #[should_panic(expected = "engine thread died before reporting its adapter")]
 fn a_mailbox_that_does_not_match_the_slot_count_is_refused() {
     let mut config = EngineConfig::headless((64, 64));
-    // Two file-backed paths need four slots: the grid, both of them, the clouds.
+    // Three file-backed paths need five slots: the grid, all three of them,
+    // the clouds.
     config.mailbox = Some(TextureMailbox::new(3));
     let _ = sunlit_core::engine::start(config);
 }

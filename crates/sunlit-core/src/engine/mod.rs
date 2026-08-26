@@ -171,9 +171,9 @@ impl EngineConfig {
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
             force_software: true,
-            // Two file-backed slots (day, night) so the slot layout matches
-            // production even when no texture files are present.
-            texture_paths: vec![None, None],
+            // Three file-backed slots (day, night, moon) so the slot layout
+            // matches production even when no texture files are present.
+            texture_paths: vec![None, None, None],
             preview_size,
             preview_enabled: true,
             params: SceneParams::default(),

@@ -534,6 +534,52 @@ mod tests {
         );
     }
 
+    /// `place_sun` hands the Moon's circle on to [`visibility`].
+    ///
+    /// Every other Moon case here calls `visibility` itself, so this is what
+    /// says the argument survives the way in: without it the field could be
+    /// dropped in the one function the renderer actually calls.
+    #[test]
+    fn place_sun_measures_the_sun_against_the_moon_it_was_given() {
+        let viewport = agreeing_viewport();
+        let camera = OrbitalCamera::new(0.0, 0.0, 80.0);
+        // Thirty degrees off the view axis, where the painted globe is a few
+        // degrees wide: nothing but the Moon can hide the disk here.
+        let off_axis = 30.0_f32.to_radians();
+        let sun = Vec3::new(0.0, off_axis.sin(), -off_axis.cos());
+        let inputs = |moon_disc| SunPlacementInputs {
+            sun_world_direction: sun,
+            view: camera.view_matrix(),
+            mvp: camera.mvp_matrix(viewport.x / viewport.y),
+            eye_distance: camera.distance,
+            sky_fov_deg: AGREEING_SKY_FOV,
+            camera_fov_deg: CAMERA_FOV,
+            atmosphere_radius: crate::params::RAYLEIGH_RADIUS,
+            screen_offset: Vec2::ZERO,
+            viewport,
+            moon_disc,
+        };
+        let clear = place_sun(&inputs(None));
+        assert_relative_eq!(clear.visibility.visible_fraction, 1.0);
+
+        let view_direction = (camera.view_matrix() * sun.extend(0.0))
+            .truncate()
+            .normalize();
+        let disk = sky_lens_disc(
+            view_direction,
+            SUN_ANGULAR_RADIUS_DEGREES.to_radians(),
+            AGREEING_SKY_FOV,
+            Vec2::ZERO,
+            viewport,
+        )
+        .expect("the sun has an image at this framing");
+        let eclipsed = place_sun(&inputs(Some(ScreenCircle {
+            center: disk.center,
+            radius: clear.disk_radius_pixels * 2.0,
+        })));
+        assert_relative_eq!(eclipsed.visibility.visible_fraction, 0.0);
+    }
+
     #[test]
     fn a_cone_around_the_view_axis_images_as_a_disc_on_the_center() {
         let viewport = Vec2::new(800.0, 400.0);

@@ -2354,6 +2354,119 @@ fn the_lit_limb_faces_the_sun() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The glare fades behind a Moon that covers the Sun.
+///
+/// The instant is the greatest eclipse of the 2024-04-08 total solar eclipse,
+/// where `the_moon_covers_the_sun_at_the_2024_total_eclipse` measures the two
+/// geocentric directions 0.347 degrees apart. The camera puts its view axis
+/// seven degrees off the Sun, which is the window where two things are true at
+/// once: the Sun's image clears the painted globe, so there is a glare to fade,
+/// and the camera's own parallax leaves the Moon inside its own disc of the Sun.
+/// The assertion is on pixels well outside the Moon's silhouette, because those
+/// can only have changed through `sun_visible`: the Moon paints nothing there,
+/// and dropping the Moon's disc on the way into `place_sun` leaves them
+/// identical.
+#[test]
+fn a_moon_over_the_sun_fades_the_glare_around_it() {
+    const WIDTH: u32 = 1024;
+    const HEIGHT: u32 = 256;
+    /// The view axis this far off the Sun, in degrees.
+    const OFF_AXIS: f32 = 7.0;
+
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_eclipse");
+    let fixture = support::write_moon_fixture(&dir);
+    let mut params = moon_params();
+    params.sun_glow = 1.0;
+    params.datetime.custom_year = 2024;
+    params.datetime.custom_day_of_year = 99;
+    params.datetime.custom_hour = 18.0 + 17.0 / 60.0;
+
+    // The eye on the night side, swung `OFF_AXIS` out of the Earth-Sun line, so
+    // the Sun sits that far from the view axis and the Moon almost with it.
+    let sunward = sky_for(&params).sun_direction.normalize();
+    let across = sunward.cross(glam::Vec3::Y).normalize();
+    let radians = OFF_AXIS.to_radians();
+    let eye = -sunward * radians.cos() + across * radians.sin();
+    params.camera.latitude = eye.y.asin().to_degrees();
+    params.camera.longitude = eye.x.atan2(eye.z).to_degrees();
+
+    #[allow(clippy::cast_precision_loss)]
+    let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
+    let disc = moon_disc(&params, viewport);
+    let sun = sun_screen_position(&params, viewport);
+    println!(
+        "the moon's disc is {:.1} px across at ({:.1}, {:.1}), the sun at ({:.1}, {:.1}), \
+         {:.1} px apart",
+        disc.radius * 2.0,
+        disc.center.x,
+        disc.center.y,
+        sun.x,
+        sun.y,
+        disc.center.distance(sun)
+    );
+    assert!(
+        disc.center.distance(sun) + 2.0 < disc.radius,
+        "this framing is meant to put the Sun's disk inside the Moon's"
+    );
+
+    let harness = Harness::start(|config| {
+        config.params = params;
+        config.texture_paths = moon_paths(Some(fixture.clone()));
+    });
+    harness.next_frame();
+    harness.wait_for_moon_texture();
+    let eclipsed = harness
+        .engine
+        .export_pixels(WIDTH, HEIGHT)
+        .expect("the engine should be able to export");
+
+    let mut without = params;
+    without.moon_brightness = 0.0;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(without)));
+    harness.next_frame();
+    let burning = harness
+        .engine
+        .export_pixels(WIDTH, HEIGHT)
+        .expect("the engine should be able to export");
+
+    // Far enough out that the Moon's own mesh cannot reach, since the disc is
+    // the image of the cone every one of its vertices is inside.
+    let reach = disc.radius * 1.5;
+    let mut dimmed = 0;
+    for (index, (with, out)) in eclipsed
+        .chunks_exact(4)
+        .zip(burning.chunks_exact(4))
+        .enumerate()
+    {
+        #[allow(clippy::cast_precision_loss)]
+        let position = glam::Vec2::new(
+            (index % WIDTH as usize) as f32,
+            (index / WIDTH as usize) as f32,
+        );
+        if position.distance(disc.center) <= reach {
+            continue;
+        }
+        let sum = |px: &[u8]| u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2]);
+        assert!(
+            sum(with) <= sum(out),
+            "a pixel {:.1} px from the Moon went from {out:?} to {with:?} with the Moon over \
+             the Sun",
+            position.distance(disc.center)
+        );
+        if sum(with) + 3 < sum(out) {
+            dimmed += 1;
+        }
+    }
+    println!("{dimmed} pixels outside the Moon's silhouette dimmed with the Sun covered");
+    assert!(
+        dimmed > 1000,
+        "only {dimmed} pixels dimmed outside the Moon's silhouette"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Earthshine lifts the unlit face and nothing else.
 ///
 /// The golden cannot see this: the floor at its default of 0.05 changes the

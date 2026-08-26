@@ -158,17 +158,21 @@ pub(super) fn write_uniforms(
 
 /// Encode and submit a render pass with the given target and bind group.
 ///
-/// Draw order: Earth sphere, cloud overlay (alpha blended), Rayleigh scattering
-/// (premultiplied alpha), nightglow orange (additive), nightglow green (additive).
-/// Clouds draw before atmosphere because they're in the troposphere, well below
-/// the scattering and airglow layers. All overlays reuse the already-bound
-/// vertex and index buffers from the Earth draw.
+/// Draw order: stars and planets, the Sun's disk, the Earth sphere, the cloud
+/// overlay (alpha blended), Rayleigh scattering (premultiplied alpha),
+/// nightglow orange and green (additive), and the Sun's glare. Clouds draw
+/// before the atmosphere because they are in the troposphere, well below the
+/// scattering and airglow layers; the glare draws after all of it because it
+/// forms in the observer rather than in the scene. The shell overlays reuse
+/// the already-bound vertex and index buffers from the Earth draw, and the two
+/// sun quads bind nothing at all.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &RenderTarget,
     stars: Option<Stars<'_>>,
+    sun: Option<Sun<'_>>,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
     vertex_buffer: &wgpu::Buffer,
@@ -224,6 +228,15 @@ pub(super) fn encode_and_submit(
             pass.draw(0..4, 0..5);
         }
 
+        // The Sun's body belongs to the sky: drawn here, the opaque Earth
+        // covers whatever falls inside its painted disc, and one day a Moon
+        // crossing it will too.
+        if let Some(sun) = sun {
+            pass.set_pipeline(sun.disk_pipeline);
+            pass.set_bind_group(0, sun.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -261,6 +274,14 @@ pub(super) fn encode_and_submit(
             pass.set_bind_group(0, bg, &[]);
             pass.draw_indexed(0..index_count, 0, 0..1);
         }
+
+        // The glare forms in the observer, so it goes over the scene rather
+        // than into it, faded by how much of the disk the globe left visible.
+        if let Some(sun) = sun {
+            pass.set_pipeline(sun.glare_pipeline);
+            pass.set_bind_group(0, sun.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
     }
 
     queue.submit(std::iter::once(encoder.finish()));
@@ -296,11 +317,13 @@ pub(super) fn execute_render_pass(
 
     let overlays = Overlays::select(res, params, bind_group);
     let stars = Stars::select(res, params, bind_group);
+    let sun = Sun::select(res, params, bind_group);
     encode_and_submit(
         &res.device,
         &res.queue,
         &target,
         stars,
+        sun,
         &res.pipeline,
         bind_group,
         &res.vertex_buffer,
@@ -339,6 +362,30 @@ impl<'a> Stars<'a> {
             catalog_count: crate::assets::stars::embedded_catalog()
                 .visible_count(params.star_mag_limit),
             planet_buffer: &res.planet_buffer,
+        })
+    }
+}
+
+/// The two sun draws, selected together because one switch governs both.
+#[derive(Clone, Copy)]
+pub(super) struct Sun<'a> {
+    disk_pipeline: &'a wgpu::RenderPipeline,
+    glare_pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+}
+
+impl<'a> Sun<'a> {
+    /// Zero glare takes the Sun out of the scene entirely, body included: the
+    /// slider is the switch as well as the strength.
+    pub fn select(
+        res: &'a Renderer,
+        params: &SceneParams,
+        bind_group: &'a wgpu::BindGroup,
+    ) -> Option<Self> {
+        (params.sun_glow > 0.0).then_some(Self {
+            disk_pipeline: &res.sun_disk_pipeline,
+            glare_pipeline: &res.sun_glare_pipeline,
+            bind_group,
         })
     }
 }

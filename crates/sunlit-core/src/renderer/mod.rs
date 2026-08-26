@@ -167,6 +167,10 @@ pub struct RendererConfig {
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     star_pipeline: wgpu::RenderPipeline,
+    /// The Sun's body, drawn with the sky so the painted globe covers it.
+    sun_disk_pipeline: wgpu::RenderPipeline,
+    /// The observer's glare, drawn last over everything in the scene.
+    sun_glare_pipeline: wgpu::RenderPipeline,
     star_buffer: wgpu::Buffer,
     planet_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -581,6 +585,7 @@ impl Renderer {
 
         let overlays = render_pass::Overlays::select(self, params, bind_group);
         let stars = render_pass::Stars::select(self, params, bind_group);
+        let sun = render_pass::Sun::select(self, params, bind_group);
 
         crate::memory::log_memory_usage("wallpaper: before render");
         render_pass::encode_and_submit(
@@ -588,6 +593,7 @@ impl Renderer {
             &self.queue,
             &target,
             stars,
+            sun,
             &self.pipeline,
             bind_group,
             &self.vertex_buffer,

@@ -97,6 +97,22 @@ const STAR_HALO_PEAK_AT_FULL_STRENGTH: f32 = 0.2;
 const STAR_HALO_SIGMAS: f32 = 2.5;
 const PI: f32 = 3.141592653589793;
 
+/// Output-density ramp: 1.0 at 1080p and below, 2.0 at 4K and above.
+///
+/// Everything drawn at a size in pixels reads this, so a sprite does not
+/// shrink to a quarter of its physical size as output density rises.
+fn output_pixel_scale() -> f32 {
+    return clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+}
+
+/// The horizontal half-extent of the sky lens in projected-plane units. A
+/// direction `theta` from the view axis lands at `tan(theta / 2)`, and this is
+/// what puts the frame's horizontal edge at NDC 1. Mirrored by
+/// `sky_lens_edge_radius` in `scene::sun_occlusion`.
+fn sky_lens_edge_radius() -> f32 {
+    return tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
+}
+
 fn star_prominence(magnitude: f32) -> f32 {
     return 1.0 - smoothstep(0.0, 4.0, magnitude);
 }
@@ -159,11 +175,11 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
         radial_direction = view_direction.xy / transverse_length;
     }
     let projected_radius = tan(min(theta, PI - 0.001) * 0.5);
-    let edge_radius = tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
+    let edge_radius = sky_lens_edge_radius();
     let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
     let center = radial_direction * projected_radius / edge_radius * vec2<f32>(1.0, aspect);
     let visible = theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
-    let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+    let pixel_scale = output_pixel_scale();
     let sprite_radius = star_sprite_radius_pixels(magnitude, pixel_scale);
     let sprite_offset = corner * (2.0 * sprite_radius / uniforms.viewport_size);
     let clip = vec4<f32>(center + uniforms.screen_offset + sprite_offset, 1.0, 1.0);
@@ -178,7 +194,7 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
 
 @fragment
 fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
-    let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+    let pixel_scale = output_pixel_scale();
     let sprite_radius = star_sprite_radius_pixels(in.magnitude, pixel_scale);
     let position_pixels = in.local_position * sprite_radius;
     let radius = length(position_pixels);
@@ -435,4 +451,349 @@ fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
     let rgb = color * rim * intensity * night_mask * time_mod * lat_mod;
 
     return vec4<f32>(rgb + dither(in.clip_position), 0.0);
+}
+
+// --- The Sun ---
+//
+// Two draws, because the Sun is two things at once. Its body is a celestial
+// object, drawn with the sky and covered by the painted globe like anything
+// else there. Its glare forms in the observer rather than in the scene, so it
+// is a second quad drawn last over everything, faded by the fraction of the
+// disk the globe leaves visible rather than by whether the disk survived the
+// depth test. One draw could be occluded or overlaying, not both.
+//
+// Every falloff is measured in degrees from the sun's center, reconstructed
+// per fragment by inverting the sky lens, so the composition is correct at any
+// sky field of view instead of being tied to a pixel radius.
+
+/// Angular radius of the Sun's disk, matching `SUN_ANGULAR_RADIUS_DEGREES` in
+/// `scene::sun_occlusion`.
+const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
+/// How far from the center the glare quad reaches. Past this the composite is
+/// below one 8-bit step at any usable glare strength.
+const SUN_GLARE_REACH_DEGREES: f32 = 30.0;
+/// Width of the core's antialiased boundary, in pixels at 1080p.
+const SUN_CORE_EDGE_PIXELS: f32 = 0.8;
+/// How fast the core saturates as the glare slider leaves zero. The core is
+/// the one clipped white object in the scene, so it reaches full white well
+/// before the slider does, and still fades out rather than popping when the
+/// Sun is switched off.
+const SUN_CORE_GAIN: f32 = 4.0;
+
+const SUN_BLOOM_INNER_DEGREES: f32 = 0.8;
+const SUN_BLOOM_INNER_POWER: f32 = 2.0;
+const SUN_BLOOM_OUTER_DEGREES: f32 = 7.0;
+const SUN_BLOOM_OUTER_POWER: f32 = 1.8;
+const SUN_BLOOM_OUTER_WEIGHT: f32 = 0.09;
+const SUN_BLOOM_GAIN: f32 = 1.0;
+
+const SUN_CORONA_LOBES: f32 = 36.0;
+const SUN_CORONA_TIP_DEGREES: f32 = 4.5;
+/// Narrowest a needle's tip is allowed to be. Below about two pixels the lobe
+/// pattern stops being a pattern and starts being adapter-dependent noise, so
+/// the count comes down instead.
+const SUN_CORONA_MIN_TIP_PIXELS: f32 = 2.0;
+const SUN_CORONA_GAIN: f32 = 0.22;
+
+const SUN_HALO_DEGREES: f32 = 3.0;
+const SUN_HALO_WIDTH_DEGREES: f32 = 1.1;
+const SUN_HALO_STRENGTH: f32 = 0.07;
+
+const SUN_SPIKE_COUNT: f32 = 6.0;
+const SUN_SPIKE_REACH_DEGREES: f32 = 10.0;
+const SUN_SPIKE_SHARPNESS: f32 = 48.0;
+const SUN_SPIKE_GAIN: f32 = 0.5;
+const SUN_GHOST_GAIN: f32 = 0.1;
+
+/// Where the glare goes as the line of sight grazes the lower atmosphere: the
+/// long slant path scatters the blue out and leaves a concentrated orange.
+const SUN_TRANSIT_COLOR: vec3<f32> = vec3<f32>(1.0, 0.42, 0.13);
+const SUN_GLARE_COLOR: vec3<f32> = vec3<f32>(1.0, 0.97, 0.92);
+
+struct SunDisc {
+    /// Center of the cone's image, in NDC.
+    center: vec2<f32>,
+    /// Its radius, in normalized projected-plane units.
+    radius: f32,
+    /// Whether any part of the cone is inside the frame.
+    on_screen: bool,
+    /// Whether the cone reaches the antipode, where its image is the exterior
+    /// of a circle and the quad has to be the whole frame.
+    unbounded: bool,
+}
+
+fn ndc_to_pixels(ndc: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        (ndc.x + 1.0) * 0.5 * uniforms.viewport_size.x,
+        (1.0 - ndc.y) * 0.5 * uniforms.viewport_size.y,
+    );
+}
+
+/// The angle the frame's furthest corner sits at, allowing for the pan.
+fn sky_corner_angle() -> f32 {
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let corner = vec2<f32>(1.0, 1.0) + abs(uniforms.screen_offset);
+    let projected = length(vec2<f32>(corner.x, corner.y / aspect)) * sky_lens_edge_radius();
+    return 2.0 * atan(projected);
+}
+
+/// The image of a cone of half-angle `half_angle` about the Sun.
+///
+/// The sky lens is conformal, so the cone images as a disc whose extremes
+/// along the radial direction are the images of `theta - half_angle` and
+/// `theta + half_angle`. Keeping the first signed is what lets a cone that
+/// contains the view axis straddle the origin with no special case. Mirrors
+/// `sky_lens_disc` in `scene::sun_occlusion`.
+fn sun_disc(half_angle: f32) -> SunDisc {
+    let direction = normalize(uniforms.sun_view_dir);
+    let theta = acos(clamp(-direction.z, -1.0, 1.0));
+    let transverse = length(direction.xy);
+    var radial = vec2<f32>(1.0, 0.0);
+    if transverse > 0.000001 {
+        radial = direction.xy / transverse;
+    }
+    let edge = sky_lens_edge_radius();
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let near = tan((theta - half_angle) * 0.5) / edge;
+    let far = tan(min(theta + half_angle, PI - 0.001) * 0.5) / edge;
+
+    var out: SunDisc;
+    out.center = radial * ((near + far) * 0.5) * vec2<f32>(1.0, aspect) + uniforms.screen_offset;
+    out.radius = (far - near) * 0.5;
+    out.on_screen = theta - half_angle <= sky_corner_angle();
+    out.unbounded = theta + half_angle >= PI - 0.001;
+    return out;
+}
+
+/// The Sun's center in framebuffer pixels.
+fn sun_screen_position() -> vec2<f32> {
+    return ndc_to_pixels(sun_disc(0.0).center);
+}
+
+/// How many pixels one degree is worth where the Sun is.
+///
+/// The stereographic radius is `tan(theta / 2)`, so the radial scale is
+/// `(1 + r^2) / 2` times the on-axis one: a degree near the frame's edge
+/// covers several times the pixels it does on the view axis, and every size
+/// the composite states in pixels has to know that.
+fn sun_pixels_per_degree() -> f32 {
+    let direction = normalize(uniforms.sun_view_dir);
+    let theta = acos(clamp(-direction.z, -1.0, 1.0));
+    let r = tan(min(theta, PI - 0.001) * 0.5);
+    let per_radian = uniforms.viewport_size.x * 0.25 * (1.0 + r * r) / sky_lens_edge_radius();
+    return per_radian * PI / 180.0;
+}
+
+/// The view-space direction a framebuffer position looks along, by inverting
+/// the sky lens analytically.
+fn sky_lens_direction(position: vec2<f32>) -> vec3<f32> {
+    let ndc = vec2<f32>(
+        position.x / uniforms.viewport_size.x * 2.0 - 1.0,
+        1.0 - position.y / uniforms.viewport_size.y * 2.0,
+    );
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let projected = (ndc - uniforms.screen_offset) / vec2<f32>(1.0, aspect);
+    let length_projected = length(projected);
+    var radial = vec2<f32>(1.0, 0.0);
+    if length_projected > 0.000001 {
+        radial = projected / length_projected;
+    }
+    let theta = 2.0 * atan(length_projected * sky_lens_edge_radius());
+    return vec3<f32>(radial * sin(theta), -cos(theta));
+}
+
+/// Veiling glare: a bright inner lobe over a much fainter one that carries the
+/// tail out past ten degrees. Inverse power rather than Gaussian, because a
+/// Gaussian that is bright close in has no tail and one with a tail is not
+/// bright close in.
+fn sun_bloom(degrees_out: f32) -> f32 {
+    let d = max(degrees_out, 0.0001);
+    let inner = 1.0 / (1.0 + pow(d / SUN_BLOOM_INNER_DEGREES, SUN_BLOOM_INNER_POWER));
+    let outer = SUN_BLOOM_OUTER_WEIGHT
+        / (1.0 + pow(d / SUN_BLOOM_OUTER_DEGREES, SUN_BLOOM_OUTER_POWER));
+    return inner + outer;
+}
+
+/// Fade the whole sun-centered composite to zero before the quad ends.
+///
+/// A term still carrying anything where its quad stops draws that quad's own
+/// edge as a straight line, which is what `star_halo_profile` exists to
+/// prevent for the star sprites. Here the quad is the image of a cone, so one
+/// angular window covers every term at once.
+fn sun_glare_window(degrees_out: f32) -> f32 {
+    return 1.0 - smoothstep(SUN_GLARE_REACH_DEGREES * 0.65, SUN_GLARE_REACH_DEGREES, degrees_out);
+}
+
+/// Integer hash, deliberately not the usual `fract(sin(...))` one: that feeds
+/// a transcendental a large argument, where adapters disagree in the low bits,
+/// and the needles are exactly the sort of high-frequency detail that turns
+/// such a disagreement into a golden failure. This is bit-identical anywhere.
+fn sun_hash(value: u32) -> f32 {
+    var h = value * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return f32((h >> 22u) ^ h) / 4294967296.0;
+}
+
+/// The ciliary corona: dozens of thin needles of varying length, low contrast,
+/// radiating from the core. Diffraction in the eye rather than in a lens,
+/// which is why it belongs in the default look.
+fn sun_corona(degrees_out: f32, azimuth: f32, pixels_per_degree: f32, scale: f32) -> f32 {
+    let tip_pixels = SUN_CORONA_TIP_DEGREES * pixels_per_degree;
+    let affordable = floor(PI * tip_pixels / (SUN_CORONA_MIN_TIP_PIXELS * scale));
+    let lobes = clamp(affordable, 8.0, SUN_CORONA_LOBES);
+    let position = (azimuth / (2.0 * PI) + 0.5) * lobes;
+    let cell = floor(position);
+    let index = u32(max(cell, 0.0));
+    let reach = SUN_CORONA_TIP_DEGREES * (0.4 + 0.6 * sun_hash(index));
+    let strength = 0.5 + 0.5 * sun_hash(index + 9871u);
+    let across = pow(0.5 - 0.5 * cos(2.0 * PI * (position - cell)), 1.2);
+    let along = clamp(1.0 - degrees_out / reach, 0.0, 1.0);
+    return strength * across * along * along;
+}
+
+/// The lenticular halo: a faint ring near three degrees with a blue inner and
+/// a red outer edge, from the lens fibers acting as a radial grating. Low
+/// enough in alpha to be a detail rather than an object.
+fn sun_halo(degrees_out: f32) -> vec3<f32> {
+    let across = (degrees_out - SUN_HALO_DEGREES) / SUN_HALO_WIDTH_DEGREES;
+    let ring = exp(-across * across * 3.0);
+    let color = mix(
+        vec3<f32>(0.45, 0.62, 1.0),
+        vec3<f32>(1.0, 0.55, 0.35),
+        clamp(across * 0.5 + 0.5, 0.0, 1.0),
+    );
+    return color * ring * SUN_HALO_STRENGTH;
+}
+
+/// Aperture diffraction spikes. Screen-fixed on purpose: they belong to an
+/// imaging device, and the tilt control rolls that device, so the pattern that
+/// does not turn in frame is the correct one.
+fn sun_spikes(degrees_out: f32, azimuth: f32) -> f32 {
+    let lobes = pow(abs(cos(azimuth * SUN_SPIKE_COUNT * 0.5)), SUN_SPIKE_SHARPNESS);
+    let along = clamp(1.0 - degrees_out / SUN_SPIKE_REACH_DEGREES, 0.0, 1.0);
+    return lobes * along * along;
+}
+
+/// Internal-reflection ghosts, spaced along the axis from the Sun through the
+/// frame's center, which is the geometry a real lens produces and the reason
+/// this whole mode is off by default: in a still wallpaper they read to some
+/// eyes as smudges on the display.
+fn sun_ghosts(position: vec2<f32>, sun_pixels: vec2<f32>) -> vec3<f32> {
+    var placements = array<f32, 3>(0.45, 0.95, 1.35);
+    var sizes = array<f32, 3>(0.06, 0.095, 0.035);
+    var tints = array<vec3<f32>, 3>(
+        vec3<f32>(0.45, 0.75, 1.0),
+        vec3<f32>(1.0, 0.72, 0.45),
+        vec3<f32>(0.6, 1.0, 0.7),
+    );
+    let axis = uniforms.viewport_size * 0.5 - sun_pixels;
+    let span = length(uniforms.viewport_size) * 0.5;
+    var total = vec3<f32>(0.0);
+    for (var i = 0; i < 3; i = i + 1) {
+        let center = sun_pixels + axis * placements[i];
+        let reach = max(sizes[i] * span, 1.0);
+        let profile = clamp(1.0 - length(position - center) / reach, 0.0, 1.0);
+        total = total + tints[i] * profile * profile * SUN_GHOST_GAIN;
+    }
+    return total;
+}
+
+fn sun_quad_corner(vertex_index: u32) -> vec2<f32> {
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+    return corners[vertex_index];
+}
+
+const SUN_OFF_SCREEN: vec4<f32> = vec4<f32>(2.0, 2.0, 1.0, 1.0);
+
+@vertex
+fn vs_sun_disk(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    if uniforms.sun_glow <= 0.0 {
+        return SUN_OFF_SCREEN;
+    }
+    let disc = sun_disc(radians(SUN_ANGULAR_RADIUS_DEGREES));
+    if !disc.on_screen {
+        return SUN_OFF_SCREEN;
+    }
+    // Sized from the radius the CPU floored rather than from the cone, so the
+    // quad and the disk the fragment shader draws are the same circle.
+    let extent = uniforms.sun_disk_radius + SUN_CORE_EDGE_PIXELS * output_pixel_scale();
+    let offset = sun_quad_corner(vertex_index) * (2.0 * extent / uniforms.viewport_size);
+    return vec4<f32>(disc.center + offset, 1.0, 1.0);
+}
+
+@fragment
+fn fs_sun_disk(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let radius = length(position.xy - sun_screen_position());
+    let edge = SUN_CORE_EDGE_PIXELS * output_pixel_scale();
+    let core = 1.0 - smoothstep(
+        uniforms.sun_disk_radius - edge,
+        uniforms.sun_disk_radius + edge,
+        radius,
+    );
+    // The gain scales the level, not the profile: multiplying the shape and
+    // then clamping would eat the antialiased edge and leave a hard square of
+    // white a few pixels across.
+    let amplitude = core * saturate(uniforms.sun_glow * SUN_CORE_GAIN);
+    return vec4<f32>(vec3<f32>(amplitude), amplitude);
+}
+
+@vertex
+fn vs_sun_glare(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    if uniforms.sun_glow <= 0.0 || uniforms.sun_visible <= 0.0 {
+        return SUN_OFF_SCREEN;
+    }
+    let corner = sun_quad_corner(vertex_index);
+    let disc = sun_disc(radians(SUN_GLARE_REACH_DEGREES));
+    if !disc.on_screen {
+        return SUN_OFF_SCREEN;
+    }
+    // Camera mode puts ghosts on the far side of the frame's center, so the
+    // cone no longer bounds what this draw touches.
+    if disc.unbounded || uniforms.sun_flare > 0.0 {
+        return vec4<f32>(corner, 1.0, 1.0);
+    }
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let offset = corner * disc.radius * vec2<f32>(1.0, aspect);
+    return vec4<f32>(disc.center + offset, 1.0, 1.0);
+}
+
+@fragment
+fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let sun_direction = normalize(uniforms.sun_view_dir);
+    let ray = sky_lens_direction(position.xy);
+    let degrees_out = degrees(acos(clamp(dot(ray, sun_direction), -1.0, 1.0)));
+    let scale = output_pixel_scale();
+    let sun_pixels = sun_screen_position();
+    let offset = position.xy - sun_pixels;
+    // Framebuffer azimuth with y flipped back up: both the corona and the
+    // spikes are the observer's, so they are measured in the frame.
+    let azimuth = atan2(-offset.y, offset.x);
+    let pixels_per_degree = sun_pixels_per_degree();
+    let core_degrees = uniforms.sun_disk_radius / max(pixels_per_degree, 0.0001);
+
+    let bloom = sun_bloom(degrees_out) * SUN_BLOOM_GAIN;
+    let corona = sun_corona(degrees_out, azimuth, pixels_per_degree, scale)
+        * smoothstep(core_degrees, core_degrees * 2.5, degrees_out)
+        * uniforms.sun_rays
+        * SUN_CORONA_GAIN;
+    let tint = mix(SUN_GLARE_COLOR, SUN_TRANSIT_COLOR, uniforms.sun_transit);
+    let dim = mix(1.0, 0.6, uniforms.sun_transit);
+
+    var color = tint * (bloom + corona) * dim + sun_halo(degrees_out);
+    if uniforms.sun_flare > 0.0 {
+        color = color + SUN_GLARE_COLOR * sun_spikes(degrees_out, azimuth)
+            * uniforms.sun_flare * SUN_SPIKE_GAIN;
+    }
+    color = color * sun_glare_window(degrees_out);
+    if uniforms.sun_flare > 0.0 {
+        color = color + sun_ghosts(position.xy, sun_pixels) * uniforms.sun_flare;
+    }
+    color = color * uniforms.sun_glow * uniforms.sun_visible;
+
+    return vec4<f32>(color + dither(position), 0.0);
 }

@@ -61,10 +61,16 @@ struct Uniforms {
     star_glow_radius: f32,
     star_contrast: f32,
     sky_fov: f32,
-    _pad6: f32,
+    sun_glow: f32,
+    sun_rays: f32,
+    sun_flare: f32,
+    sun_visible: f32,
+    sun_transit: f32,
+    sun_view_dir: [f32; 3],
+    sun_disk_radius: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 368);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 400);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -573,7 +579,16 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         star_glow_radius: 8.0,
         star_contrast: 0.3,
         sky_fov: 140.0,
-        _pad6: 0.0,
+        // These GPU cases render the Earth and its shells; the Sun's own two
+        // draws are covered by the engine and golden suites, and leaving the
+        // glare out here keeps a shading assertion measuring shading.
+        sun_glow: 0.0,
+        sun_rays: 0.0,
+        sun_flare: 0.0,
+        sun_visible: 1.0,
+        sun_transit: 0.0,
+        sun_view_dir: [0.0, 0.0, -1.0],
+        sun_disk_radius: 2.0,
     }
 }
 
@@ -714,7 +729,13 @@ struct Uniforms {
     star_glow_radius: f32,
     star_contrast: f32,
     sky_fov: f32,
-    _pad6: f32,
+    sun_glow: f32,
+    sun_rays: f32,
+    sun_flare: f32,
+    sun_visible: f32,
+    sun_transit: f32,
+    sun_view_dir: vec3<f32>,
+    sun_disk_radius: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -777,6 +798,16 @@ fn main() {
     output[39] = uniforms.star_glow_radius;
     output[40] = uniforms.star_contrast;
     output[41] = uniforms.sky_fov;
+    // sun params
+    output[42] = uniforms.sun_glow;
+    output[43] = uniforms.sun_rays;
+    output[44] = uniforms.sun_flare;
+    output[45] = uniforms.sun_visible;
+    output[46] = uniforms.sun_transit;
+    output[47] = uniforms.sun_view_dir.x;
+    output[48] = uniforms.sun_view_dir.y;
+    output[49] = uniforms.sun_view_dir.z;
+    output[50] = uniforms.sun_disk_radius;
 }
 ";
 
@@ -861,7 +892,13 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         star_glow_radius: 6.0,
         star_contrast: 0.4,
         sky_fov: 123.0,
-        _pad6: 0.0,
+        sun_glow: 1.75,
+        sun_rays: 0.45,
+        sun_flare: 0.8,
+        sun_visible: 0.6,
+        sun_transit: 0.3,
+        sun_view_dir: [0.0, 0.6, -0.8],
+        sun_disk_radius: 7.5,
     };
 
     let uniform_buf = ctx
@@ -872,8 +909,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 42 floats
-    let output_size = (42 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 51 floats
+    let output_size = (51 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1123,6 +1160,41 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (values[41] - 123.0).abs() < eps,
         "sky_fov: got {}, expected 123.0",
         values[41]
+    );
+    assert!(
+        (values[42] - 1.75).abs() < eps,
+        "sun_glow: got {}, expected 1.75",
+        values[42]
+    );
+    assert!(
+        (values[43] - 0.45).abs() < eps,
+        "sun_rays: got {}, expected 0.45",
+        values[43]
+    );
+    assert!(
+        (values[44] - 0.8).abs() < eps,
+        "sun_flare: got {}, expected 0.8",
+        values[44]
+    );
+    assert!(
+        (values[45] - 0.6).abs() < eps,
+        "sun_visible: got {}, expected 0.6",
+        values[45]
+    );
+    assert!(
+        (values[46] - 0.3).abs() < eps,
+        "sun_transit: got {}, expected 0.3",
+        values[46]
+    );
+    assert!(
+        values[47].abs() < eps && (values[48] - 0.6).abs() < eps && (values[49] + 0.8).abs() < eps,
+        "sun_view_dir: got {:?}, expected [0.0, 0.6, -0.8]",
+        [values[47], values[48], values[49]]
+    );
+    assert!(
+        (values[50] - 7.5).abs() < eps,
+        "sun_disk_radius: got {}, expected 7.5",
+        values[50]
     );
 }
 

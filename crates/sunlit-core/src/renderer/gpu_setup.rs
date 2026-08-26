@@ -241,6 +241,24 @@ pub(super) fn create_renderer(
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let star_pipeline = create_star_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let sun_disk_pipeline = create_sun_pipeline(
+        &device,
+        &pipeline_layout,
+        &shader,
+        sample_count,
+        "sun_disk_pipeline",
+        "vs_sun_disk",
+        "fs_sun_disk",
+    );
+    let sun_glare_pipeline = create_sun_pipeline(
+        &device,
+        &pipeline_layout,
+        &shader,
+        sample_count,
+        "sun_glare_pipeline",
+        "vs_sun_glare",
+        "fs_sun_glare",
+    );
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let rayleigh_pipeline =
         create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
@@ -254,6 +272,8 @@ pub(super) fn create_renderer(
     Renderer {
         pipeline,
         star_pipeline,
+        sun_disk_pipeline,
+        sun_glare_pipeline,
         star_buffer,
         planet_buffer,
         vertex_buffer,
@@ -297,6 +317,73 @@ pub(super) fn create_renderer(
         cloud_bind_group: None,
         cloud_texture_view: None,
     }
+}
+
+/// A screen-aligned quad the vertex shader generates from `vertex_index`
+/// alone, additive, with the depth test out of the way.
+///
+/// Both sun draws use it. The disk is scheduled with the sky, where the
+/// opaque globe drawn afterwards covers whatever falls inside its painted
+/// disc; the glare is scheduled last, where nothing covers it, which is what
+/// veiling glare does. Neither reads depth, so the two differ only in when
+/// they run and which entry points they carry.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_sun_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+    label: &str,
+    vs_entry: &str,
+    fs_entry: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some(vs_entry),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fs_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::OVER,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            strip_index_format: None,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 pub(super) fn create_star_pipeline(
@@ -709,6 +796,24 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.star_pipeline =
         create_star_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.sun_disk_pipeline = create_sun_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+        "sun_disk_pipeline",
+        "vs_sun_disk",
+        "fs_sun_disk",
+    );
+    res.sun_glare_pipeline = create_sun_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+        "sun_glare_pipeline",
+        "vs_sun_glare",
+        "fs_sun_glare",
+    );
     res.cloud_pipeline =
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.rayleigh_pipeline =

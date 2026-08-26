@@ -779,7 +779,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create the fixture directory");
         std::fs::write(
             dir.join("world.topo.200405.jxl"),
-            vec![0_u8; TEXTURE_MIN_BYTES as usize],
+            vec![0_u8; usize::try_from(TEXTURE_MIN_BYTES).expect("a small threshold")],
         )
         .expect("write the asset stand-in");
         std::fs::write(

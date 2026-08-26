@@ -67,15 +67,25 @@ fn resident_texture_bytes(texture_resolution: u32) -> u64 {
 
     let width = u64::from(texture_resolution);
     let base_level = width.saturating_mul(width / 2).saturating_mul(4);
-    base_level.saturating_mul(RESIDENT_TEXTURES * 4 / 3)
+    base_level
+        .saturating_mul(RESIDENT_TEXTURES * 4 / 3)
+        .saturating_add(MOON_TEXTURE_BYTES)
 }
+
+/// Bytes the Moon's surface costs, at every resolution.
+///
+/// 1024 by 512 RGBA8 with its mip chain is 2.67 MiB on the GPU, and the decode
+/// that produces it holds about the same again on the CPU while it runs. A
+/// resolution switch purges and reloads this slot like the others, but the file
+/// is narrower than the narrowest cap the setting offers, so it is always loaded
+/// at its own width and the term does not move with the setting.
+const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
 
 /// Soft budget for committed private memory. Crossing it emits a `warn!`.
 ///
 /// A cold start plus its headroom plus whatever the chosen resolution keeps
 /// resident, so the Low end of the setting is not judged against the High end's
-/// footprint. At the widest resolution this is 3 GiB, which is the single
-/// number it replaces.
+/// footprint. At the widest resolution this is 3 GiB and the Moon's 6 MiB.
 pub fn private_bytes_budget(texture_resolution: u32) -> u64 {
     COLD_START_BYTES
         .saturating_add(BUDGET_HEADROOM_BYTES)
@@ -683,12 +693,16 @@ mod tests {
 
     // --- the private-bytes budget ---
 
-    /// 3 GiB is the number that was measured against, and the widest
-    /// resolution is where it was measured. The refactor must not have moved
-    /// it.
+    /// 3 GiB is the number the original single-constant budget was measured
+    /// against, and the widest resolution is where it was measured. Nothing
+    /// since has been allowed to move it except by naming what it added: the
+    /// Moon's surface is the one such term, and it is the same at every width.
     #[test]
     fn the_widest_resolution_keeps_the_budget_it_had() {
-        assert_eq!(private_bytes_budget(8192), 3 * 1024 * MIB);
+        assert_eq!(
+            private_bytes_budget(8192),
+            3 * 1024 * MIB + MOON_TEXTURE_BYTES
+        );
     }
 
     #[test]
@@ -748,14 +762,29 @@ mod tests {
     /// The resident half is what the setting actually buys, so it has to be
     /// the three textures the app holds and not a number someone typed.
     #[test]
-    fn the_resident_half_is_three_mipped_textures() {
+    fn the_resident_half_is_three_mipped_textures_and_the_moon() {
         for width in TEXTURE_RESOLUTIONS {
             let one_base_level = u64::from(width) * u64::from(width / 2) * 4;
-            assert_eq!(resident_texture_bytes(width), 3 * one_base_level * 4 / 3);
+            assert_eq!(
+                resident_texture_bytes(width),
+                3 * one_base_level * 4 / 3 + MOON_TEXTURE_BYTES
+            );
         }
-        assert_eq!(resident_texture_bytes(8192), 512 * MIB);
-        assert_eq!(resident_texture_bytes(4096), 128 * MIB);
-        assert_eq!(resident_texture_bytes(2048), 32 * MIB);
+        assert_eq!(resident_texture_bytes(8192), 512 * MIB + MOON_TEXTURE_BYTES);
+        assert_eq!(resident_texture_bytes(4096), 128 * MIB + MOON_TEXTURE_BYTES);
+        assert_eq!(resident_texture_bytes(2048), 32 * MIB + MOON_TEXTURE_BYTES);
+    }
+
+    /// The Moon's term is a constant, so it cannot be what makes the budget
+    /// grow with the resolution, and it cannot vanish at the narrow end where
+    /// the resident allowance is smallest.
+    #[test]
+    fn the_moons_term_is_the_same_at_every_resolution() {
+        for width in TEXTURE_RESOLUTIONS {
+            let without_moon = resident_texture_bytes(width) - MOON_TEXTURE_BYTES;
+            let one_base_level = u64::from(width) * u64::from(width / 2) * 4;
+            assert_eq!(without_moon, 3 * one_base_level * 4 / 3);
+        }
     }
 
     /// The renderer accepts any width as a cap, so the budget has to answer for

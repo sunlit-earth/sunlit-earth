@@ -78,6 +78,9 @@ export component MainWindow inherits Window {
     in-out property <float> sun-glow: 1.0;
     in-out property <float> sun-rays: 0.6;
     in-out property <float> sun-flare: 0.0;
+    in-out property <float> moon-brightness: 1.0;
+    in-out property <float> moon-size: 1.0;
+    in-out property <float> moon-earthshine: 0.05;
 
     in property <float> zoom-display-distance: 8.0;
     callback sliders-changed();
@@ -835,6 +838,66 @@ export component MainWindow inherits Window {
                                 }
                                 Text {
                                     text: round(root.sun-flare * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Moon";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                moon-brightness-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 3.0;
+                                    value <=> root.moon-brightness;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.moon-brightness * 100) / 100 + "×";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Moon size";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                moon-size-slider := Slider {
+                                    minimum: 1.0;
+                                    maximum: 8.0;
+                                    value <=> root.moon-size;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.moon-size * 10) / 10 + "×";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Earthshine";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                moon-earthshine-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 0.5;
+                                    value <=> root.moon-earthshine;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.moon-earthshine * 100) + "%";
                                     vertical-alignment: center;
                                     min-width: 45px;
                                 }

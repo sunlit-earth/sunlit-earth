@@ -111,6 +111,9 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     window.set_sun_glow(2.4);
     window.set_sun_rays(1.3);
     window.set_sun_flare(0.7);
+    window.set_moon_brightness(1.7);
+    window.set_moon_size(5.5);
+    window.set_moon_earthshine(0.21);
     let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
     approx::assert_relative_eq!(params.sky_fov, 165.0);
     approx::assert_relative_eq!(params.star_intensity, 0.73);
@@ -122,6 +125,9 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     approx::assert_relative_eq!(params.sun_glow, 2.4);
     approx::assert_relative_eq!(params.sun_rays, 1.3);
     approx::assert_relative_eq!(params.sun_flare, 0.7);
+    approx::assert_relative_eq!(params.moon_brightness, 1.7);
+    approx::assert_relative_eq!(params.moon_size, 5.5);
+    approx::assert_relative_eq!(params.moon_earthshine, 0.21);
 }
 
 #[test]
@@ -138,6 +144,9 @@ fn test_celestial_properties_apply_from_scene_params() {
         sun_glow: 0.4,
         sun_rays: 1.8,
         sun_flare: 1.1,
+        moon_brightness: 0.8,
+        moon_size: 3.5,
+        moon_earthshine: 0.17,
         ..sunlit_core::params::SceneParams::default()
     };
     sunlit_earth::ui_callbacks::apply_params_to_window(&window, &params);
@@ -151,6 +160,9 @@ fn test_celestial_properties_apply_from_scene_params() {
     approx::assert_relative_eq!(window.get_sun_glow(), 0.4);
     approx::assert_relative_eq!(window.get_sun_rays(), 1.8);
     approx::assert_relative_eq!(window.get_sun_flare(), 1.1);
+    approx::assert_relative_eq!(window.get_moon_brightness(), 0.8);
+    approx::assert_relative_eq!(window.get_moon_size(), 3.5);
+    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.17);
 }
 
 #[test]
@@ -171,6 +183,14 @@ fn test_default_sun_shows_the_glare_and_not_the_camera() {
     approx::assert_relative_eq!(window.get_sun_glow(), 1.0);
     approx::assert_relative_eq!(window.get_sun_rays(), 0.6);
     approx::assert_relative_eq!(window.get_sun_flare(), 0.0);
+}
+
+#[test]
+fn test_default_moon_is_visible_at_its_true_size() {
+    let window = create_window();
+    approx::assert_relative_eq!(window.get_moon_brightness(), 1.0);
+    approx::assert_relative_eq!(window.get_moon_size(), 1.0);
+    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.05);
 }
 
 // ---------------------------------------------------------------------------

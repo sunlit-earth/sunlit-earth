@@ -223,6 +223,16 @@ pub struct AppConfig {
     /// Strength of camera mode: aperture spikes and lens ghosts, which belong
     /// to an imaging device rather than to an eye. Zero by default.
     pub sun_flare: f32,
+    /// Brightness of the Moon's sunlit face, and the switch that puts the Moon
+    /// in the scene at all: zero draws nothing.
+    pub moon_brightness: f32,
+    /// Multiplier on the Moon's radius, from its true angular size upward. The
+    /// honest way to a larger Moon is a narrower `sky_fov`, which magnifies the
+    /// sky around it too; this one magnifies the Moon alone.
+    pub moon_size: f32,
+    /// Floor under the Moon's unlit face: the earthshine that keeps a new moon
+    /// from disappearing altogether.
+    pub moon_earthshine: f32,
 
     // Color correction
     pub day_gamma: f32,
@@ -308,6 +318,9 @@ impl Default for AppConfig {
             sun_glow: 1.0,
             sun_rays: 0.6,
             sun_flare: 0.0,
+            moon_brightness: 1.0,
+            moon_size: 1.0,
+            moon_earthshine: 0.05,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -655,6 +668,22 @@ mod tests {
     }
 
     #[test]
+    fn default_moon_is_visible_at_its_true_size() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.moon_brightness, 1.0);
+        assert_relative_eq!(config.moon_size, 1.0);
+        assert_relative_eq!(config.moon_earthshine, 0.05);
+    }
+
+    #[test]
+    fn deserialize_missing_moon_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.moon_brightness, 1.0);
+        assert_relative_eq!(config.moon_size, 1.0);
+        assert_relative_eq!(config.moon_earthshine, 0.05);
+    }
+
+    #[test]
     fn deserialize_missing_sun_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.sun_glow, 1.0);
@@ -770,6 +799,9 @@ mod tests {
             sun_glow: 1.4,
             sun_rays: 0.3,
             sun_flare: 0.9,
+            moon_brightness: 1.3,
+            moon_size: 2.5,
+            moon_earthshine: 0.12,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -904,6 +936,9 @@ mod tests {
             sun_glow: 0.8,
             sun_rays: 0.9,
             sun_flare: 0.4,
+            moon_brightness: 0.6,
+            moon_size: 6.0,
+            moon_earthshine: 0.3,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

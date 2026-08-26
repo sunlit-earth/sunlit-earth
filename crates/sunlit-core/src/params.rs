@@ -74,6 +74,11 @@ pub struct SceneParams {
     pub sun_rays: f32,
     pub sun_flare: f32,
 
+    // The Moon
+    pub moon_brightness: f32,
+    pub moon_size: f32,
+    pub moon_earthshine: f32,
+
     // Color correction (gamma values, not slider positions)
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -134,6 +139,9 @@ impl SceneParams {
             sun_glow: config.sun_glow,
             sun_rays: config.sun_rays,
             sun_flare: config.sun_flare,
+            moon_brightness: config.moon_brightness,
+            moon_size: config.moon_size,
+            moon_earthshine: config.moon_earthshine,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
@@ -190,6 +198,9 @@ impl SceneParams {
         config.sun_glow = self.sun_glow;
         config.sun_rays = self.sun_rays;
         config.sun_flare = self.sun_flare;
+        config.moon_brightness = self.moon_brightness;
+        config.moon_size = self.moon_size;
+        config.moon_earthshine = self.moon_earthshine;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
@@ -256,6 +267,9 @@ impl SceneParams {
             sun_glow: q(self.sun_glow),
             sun_rays: q(self.sun_rays),
             sun_flare: q(self.sun_flare),
+            moon_brightness: q(self.moon_brightness),
+            moon_size: q(self.moon_size),
+            moon_earthshine: q(self.moon_earthshine),
             day_gamma: q(self.day_gamma),
             day_saturation: q(self.day_saturation),
             night_gamma: q(self.night_gamma),
@@ -312,6 +326,9 @@ pub struct ParamsDigest {
     pub sun_glow: i32,
     pub sun_rays: i32,
     pub sun_flare: i32,
+    pub moon_brightness: i32,
+    pub moon_size: i32,
+    pub moon_earthshine: i32,
     pub day_gamma: i32,
     pub day_saturation: i32,
     pub night_gamma: i32,
@@ -760,6 +777,27 @@ mod tests {
                 "sun_flare",
                 SceneParams {
                     sun_flare: 0.85,
+                    ..base
+                },
+            ),
+            (
+                "moon_brightness",
+                SceneParams {
+                    moon_brightness: 0.4,
+                    ..base
+                },
+            ),
+            (
+                "moon_size",
+                SceneParams {
+                    moon_size: 4.5,
+                    ..base
+                },
+            ),
+            (
+                "moon_earthshine",
+                SceneParams {
+                    moon_earthshine: 0.2,
                     ..base
                 },
             ),

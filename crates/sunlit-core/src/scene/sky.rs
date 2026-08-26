@@ -1,10 +1,11 @@
 //! Per-frame astronomical state shared by sky renderers.
 
 use astronomy_engine_bindings::{
-    Astronomy_GeoVector, Astronomy_Illumination, Astronomy_Rotation_EQJ_EQD,
-    Astronomy_SiderealTime, astro_aberration_t_ABERRATION, astro_body_t, astro_body_t_BODY_JUPITER,
-    astro_body_t_BODY_MARS, astro_body_t_BODY_MERCURY, astro_body_t_BODY_SATURN,
-    astro_body_t_BODY_SUN, astro_body_t_BODY_VENUS, astro_status_t_ASTRO_SUCCESS, astro_time_t,
+    Astronomy_GeoMoon, Astronomy_GeoVector, Astronomy_Illumination, Astronomy_Rotation_EQJ_EQD,
+    Astronomy_RotationAxis, Astronomy_SiderealTime, astro_aberration_t_ABERRATION, astro_body_t,
+    astro_body_t_BODY_JUPITER, astro_body_t_BODY_MARS, astro_body_t_BODY_MERCURY,
+    astro_body_t_BODY_MOON, astro_body_t_BODY_SATURN, astro_body_t_BODY_SUN,
+    astro_body_t_BODY_VENUS, astro_status_t_ASTRO_SUCCESS, astro_time_t,
 };
 use glam::{Mat3, Vec3};
 
@@ -39,6 +40,15 @@ pub struct SkyState {
     pub sun_direction: Vec3,
     /// The five naked eye planets in stable display order.
     pub planets: [PlanetState; 5],
+    /// Geocentric moon position in renderer world space, in Earth radii.
+    ///
+    /// A position rather than a direction, because the Moon is the one thing in
+    /// the sky near enough for the camera's own displacement to matter: every
+    /// frame measures its direction and its apparent size from the eye, which
+    /// is what makes parallax and apparent size exact for free.
+    pub moon_position: Vec3,
+    /// Rotation from the Moon's IAU body-fixed frame into renderer world space.
+    pub moon_rotation: Mat3,
 }
 
 const PLANETS: [(PlanetKind, astro_body_t); 5] = [
@@ -73,7 +83,68 @@ pub fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
         world_from_eqj,
         sun_direction,
         planets,
+        moon_position: moon_position(time, world_from_eqj),
+        moon_rotation: moon_rotation(&mut time, world_from_eqj),
     }
+}
+
+/// Earth radii per astronomical unit.
+///
+/// The scene's unit of length is the Earth's equatorial radius (6378.137 km),
+/// which is what the camera distances and the atmosphere shells are in, so this
+/// is 1 AU expressed in those.
+const EARTH_RADII_PER_AU: f32 = 23_454.8;
+
+/// The Moon's geocentric position in world space, in Earth radii.
+#[allow(clippy::cast_possible_truncation)]
+fn moon_position(time: astro_time_t, rotation: Mat3) -> Vec3 {
+    // SAFETY: Astronomy_GeoMoon is a pure C function. The time value is valid
+    // and the function returns a value type with no retained references.
+    #[allow(unsafe_code)]
+    let vector = unsafe { Astronomy_GeoMoon(time) };
+    assert_eq!(
+        vector.status, astro_status_t_ASTRO_SUCCESS,
+        "Astronomy_GeoMoon failed"
+    );
+    let eqj = Vec3::new(vector.x as f32, vector.y as f32, vector.z as f32);
+    rotation * (eqj * EARTH_RADII_PER_AU)
+}
+
+/// The rotation that takes the Moon's body-fixed frame into world space.
+///
+/// The IAU model gives a north pole direction and a spin angle, and the spin is
+/// measured east along the body's equator from the ascending node of that
+/// equator on the J2000 equator. So the node is the zero of longitude before
+/// the spin is applied, the spin carries the prime meridian to where it
+/// actually points, and the body's own axes follow from the two.
+#[allow(clippy::cast_possible_truncation)]
+fn moon_rotation(time: &mut astro_time_t, world_from_eqj: Mat3) -> Mat3 {
+    // SAFETY: Astronomy_RotationAxis only reads and updates the valid time
+    // value passed by pointer, and returns a value type.
+    #[allow(unsafe_code)]
+    let axis = unsafe { Astronomy_RotationAxis(astro_body_t_BODY_MOON, std::ptr::from_mut(time)) };
+    assert_eq!(
+        axis.status, astro_status_t_ASTRO_SUCCESS,
+        "Astronomy_RotationAxis failed"
+    );
+    let pole = Vec3::new(
+        axis.north.x as f32,
+        axis.north.y as f32,
+        axis.north.z as f32,
+    )
+    .normalize();
+    let node = Vec3::Z.cross(pole);
+    // A pole on the J2000 pole itself leaves the node undefined; the Moon's is
+    // 66 degrees away from it and the fallback is never taken.
+    let node = if node.length() > 1e-6 {
+        node.normalize()
+    } else {
+        Vec3::X
+    };
+    let spin = (axis.spin as f32).to_radians();
+    let prime_meridian = node * spin.cos() + pole.cross(node) * spin.sin();
+    let eqj_from_body = Mat3::from_cols(prime_meridian, pole.cross(prime_meridian), pole);
+    world_from_eqj * eqj_from_body
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -287,6 +358,136 @@ mod tests {
             f64::from(now.second()),
         ));
         assert_eq!(selected, expected);
+    }
+
+    /// Selenographic coordinates of the sub-Earth point, in degrees.
+    ///
+    /// The direction from the Moon to the Earth, expressed in the Moon's own
+    /// body-fixed frame. Tidal lock puts it near the prime meridian at the
+    /// equator, and the libration is how far it wanders.
+    fn sub_earth_point(state: &SkyState) -> (f32, f32) {
+        let eqj_from_body = state.world_from_eqj.transpose() * state.moon_rotation;
+        let toward_earth = eqj_from_body.transpose()
+            * (state.world_from_eqj.transpose() * -state.moon_position).normalize();
+        (
+            toward_earth.y.atan2(toward_earth.x).to_degrees(),
+            toward_earth.z.asin().to_degrees(),
+        )
+    }
+
+    /// The library's own libration model, which the tests compare against.
+    fn libration(time: astro_time_t) -> astronomy_engine_bindings::astro_libration_t {
+        // SAFETY: Astronomy_Libration is a pure C function. The time value is
+        // valid and the function returns a value type.
+        #[allow(unsafe_code)]
+        unsafe {
+            astronomy_engine_bindings::Astronomy_Libration(time)
+        }
+    }
+
+    /// Every six hours over four years, which covers about fifty lunations.
+    fn four_years_of_times() -> impl Iterator<Item = astro_time_t> {
+        (2026..2030).flat_map(|year| {
+            (1..=365).flat_map(move |doy| {
+                let (month, day) = super::super::datetime::day_of_year_to_month_day(doy, year);
+                [0, 6, 12, 18].into_iter().map(move |hour| {
+                    make_time(year, i32::from(month), i32::from(day), hour, 0, 0.0)
+                })
+            })
+        })
+    }
+
+    /// Perigee and apogee bound the orbit, so a scale error in the AU
+    /// conversion or a direction taken for a position lands outside them.
+    /// Measured over these four years: 55.918 to 63.758.
+    #[test]
+    fn the_moon_orbits_between_fifty_five_and_sixty_four_earth_radii() {
+        for time in four_years_of_times() {
+            let distance = compute_sky_state_from_time(time).moon_position.length();
+            assert!(
+                (55.0..64.0).contains(&distance),
+                "{distance} Earth radii at {}",
+                time.ut
+            );
+        }
+    }
+
+    /// The scene's unit of length against the library's kilometres, which is
+    /// what [`EARTH_RADII_PER_AU`] and nothing else decides.
+    #[test]
+    fn the_moon_distance_agrees_with_the_librarys_kilometres() {
+        for time in four_years_of_times().step_by(37) {
+            let distance = compute_sky_state_from_time(time).moon_position.length();
+            let km = f64::from(distance) * 6378.137;
+            assert_relative_eq!(km, libration(time).dist_km, max_relative = 1.0e-5);
+        }
+    }
+
+    /// The Moon passed in front of the Sun over North America on 2024-04-08,
+    /// with greatest eclipse at 18:17 UTC. A position wrong by a degree, in any
+    /// component, does not reproduce that.
+    #[test]
+    fn the_moon_covers_the_sun_at_the_2024_total_eclipse() {
+        let state = compute_sky_state_from_time(make_time(2024, 4, 8, 18, 17, 0.0));
+        let separation = state
+            .moon_position
+            .normalize()
+            .angle_between(state.sun_direction)
+            .to_degrees();
+        assert!(separation < 0.6, "separation was {separation} degrees");
+    }
+
+    /// Tidal lock: the Earth stays over the Moon's prime meridian, and how far
+    /// it wanders is the optical libration, about eight degrees of longitude
+    /// and seven of latitude. A transposed rotation or a flipped spin sign
+    /// sends the sub-Earth point somewhere else entirely.
+    #[test]
+    fn the_sub_earth_point_stays_inside_the_libration_bounds() {
+        for time in four_years_of_times() {
+            let (longitude, latitude) = sub_earth_point(&compute_sky_state_from_time(time));
+            assert!(
+                longitude.abs() < 8.5 && latitude.abs() < 7.5,
+                "sub-Earth point at ({longitude}, {latitude}) at {}",
+                time.ut
+            );
+        }
+    }
+
+    /// The same rotation against the library's own libration model, which is a
+    /// second implementation of the same quantity rather than a bound on it.
+    /// Worst disagreement over these four years: 0.0276 degrees.
+    #[test]
+    fn the_sub_earth_point_agrees_with_the_library_libration() {
+        for time in four_years_of_times().step_by(37) {
+            let (longitude, latitude) = sub_earth_point(&compute_sky_state_from_time(time));
+            let libration = libration(time);
+            #[allow(clippy::cast_possible_truncation)]
+            let (elon, elat) = (libration.elon as f32, libration.elat as f32);
+            assert!(
+                (longitude - elon).abs() < 0.1 && (latitude - elat).abs() < 0.1,
+                "({longitude}, {latitude}) against the library's ({elon}, {elat}) at {}",
+                time.ut
+            );
+        }
+    }
+
+    /// The Moon's rotation axis is inclined 1.54 degrees to the ecliptic pole,
+    /// which is the Cassini state it has been in for most of its history. A
+    /// pole taken with the wrong sign, or the body's axes read as rows rather
+    /// than columns, misses that by tens of degrees.
+    #[test]
+    fn the_moon_pole_sits_at_the_cassini_tilt_from_the_ecliptic_pole() {
+        let obliquity = 23.439_291_f32.to_radians();
+        let ecliptic_north = Vec3::new(0.0, -obliquity.sin(), obliquity.cos());
+        for time in four_years_of_times().step_by(37) {
+            let state = compute_sky_state_from_time(time);
+            let eqj_from_body = state.world_from_eqj.transpose() * state.moon_rotation;
+            let tilt = eqj_from_body
+                .z_axis
+                .angle_between(ecliptic_north)
+                .to_degrees();
+            assert!((1.0..2.1).contains(&tilt), "tilt was {tilt} degrees");
+        }
     }
 
     #[test]

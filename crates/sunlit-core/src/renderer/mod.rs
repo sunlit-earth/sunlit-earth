@@ -1000,6 +1000,8 @@ mod tests {
             world_from_eqj: rotation,
             sun_direction: glam::Vec3::Z,
             planets: [planet; 5],
+            moon_position: glam::Vec3::new(0.0, 0.0, 60.0),
+            moon_rotation: glam::Mat3::IDENTITY,
         };
         let bytes = planet_instance_bytes(&sky);
         let component =

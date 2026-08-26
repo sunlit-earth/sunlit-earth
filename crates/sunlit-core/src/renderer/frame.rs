@@ -52,6 +52,8 @@ mod tests {
             world_from_eqj: glam::Mat3::IDENTITY,
             sun_direction: sun,
             planets: [planet; 5],
+            moon_position: glam::Vec3::new(0.0, 0.0, 60.0),
+            moon_rotation: glam::Mat3::IDENTITY,
         }
     }
 

@@ -412,7 +412,7 @@ mod tests {
         }
     }
 
-    /// The scene's unit of length against the library's kilometres, which is
+    /// The scene's unit of length against the library's kilometers, which is
     /// what [`EARTH_RADII_PER_AU`] and nothing else decides.
     #[test]
     fn the_moon_distance_agrees_with_the_librarys_kilometres() {

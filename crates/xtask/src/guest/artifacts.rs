@@ -41,10 +41,14 @@ pub struct HostArtifacts {
 
 /// The texture files the app resolves, and therefore the ones the guest needs.
 ///
-/// `resolve_texture_paths` in the app names these two, and nothing else
+/// `resolve_texture_paths` in the app names these three, and nothing else
 /// connects the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
-/// reads that function and asserts both are still spelled this way.
-pub const TEXTURE_FILES: [&str; 2] = ["world.topo.200405.jxl", "BlackMarble_2016.jxl"];
+/// reads that function and asserts all of them are still spelled this way.
+pub const TEXTURE_FILES: [&str; 3] = [
+    "world.topo.200405.jxl",
+    "BlackMarble_2016.jxl",
+    "lroc_color_poles_1k.jxl",
+];
 
 /// Smaller than any real asset here and far larger than a Git LFS pointer.
 const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
@@ -560,19 +564,28 @@ mod tests {
 
     #[test]
     fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
-        // Both real: the size of the day and night assets in this repository.
-        assert_eq!(textures_verdict([Some(2_574_413), Some(1_382_310)]), Ok(()));
+        // All real: the sizes of the three assets in this repository.
+        assert_eq!(
+            textures_verdict([Some(2_574_413), Some(1_382_310), Some(285_458)]),
+            Ok(())
+        );
 
         // A pointer file is a few hundred bytes and is otherwise a file like
         // any other, so existence is not the question to ask.
-        let err = textures_verdict([Some(130), Some(1_382_310)]).unwrap_err();
+        let err = textures_verdict([Some(130), Some(1_382_310), Some(285_458)]).unwrap_err();
         assert!(err.contains("world.topo.200405.jxl"), "{err}");
         assert!(err.contains("git lfs pull"), "{err}");
 
         // Missing is reported as missing rather than as a pointer.
-        let err = textures_verdict([Some(2_574_413), None]).unwrap_err();
+        let err = textures_verdict([Some(2_574_413), None, Some(285_458)]).unwrap_err();
         assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
         assert!(!err.contains("pointer"), "{err}");
+
+        // The Moon is held to the same floor as the other two, which its 285 KB
+        // clears by a wide margin.
+        let err = textures_verdict([Some(2_574_413), Some(1_382_310), Some(130)]).unwrap_err();
+        assert!(err.contains("lroc_color_poles_1k.jxl"), "{err}");
+        assert!(err.contains("git lfs pull"), "{err}");
     }
 
     /// The app decides which files it loads; the xtask decides which files the
@@ -600,7 +613,7 @@ mod tests {
                 "the app no longer resolves {name}, so staging it is pointless"
             );
         }
-        // Both slots, and no third one the guest would be missing.
+        // Every slot, and no further one the guest would be missing.
         assert_eq!(body.matches(".jxl").count(), TEXTURE_FILES.len());
     }
 }

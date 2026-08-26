@@ -224,12 +224,26 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
     }
 }
 
-/// Resolve the day and night texture paths from the textures directory.
+/// Resolve the day, night and moon texture paths from the textures directory.
+///
+/// In slot order after the grid, which is what the renderer's `SlotLayout`
+/// expects: a path missing from disk is `None` and its slot stays empty rather
+/// than moving the ones after it.
 fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBuf>> {
     let dir = texture_loader::resolve_textures_dir(cli_dir);
     let pick = |name: &str| dir.as_ref().map(|d| d.join(name)).filter(|p| p.exists());
-    let paths = vec![pick("world.topo.200405.jxl"), pick("BlackMarble_2016.jxl")];
-    info!(textures_dir = ?dir, day = ?paths[0], night = ?paths[1], "resolved texture paths");
+    let paths = vec![
+        pick("world.topo.200405.jxl"),
+        pick("BlackMarble_2016.jxl"),
+        pick("lroc_color_poles_1k.jxl"),
+    ];
+    info!(
+        textures_dir = ?dir,
+        day = ?paths[0],
+        night = ?paths[1],
+        moon = ?paths[2],
+        "resolved texture paths"
+    );
     paths
 }
 

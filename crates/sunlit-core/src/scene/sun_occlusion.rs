@@ -493,6 +493,81 @@ mod tests {
     }
 
     #[test]
+    fn a_pan_moves_the_imaged_disc_by_exactly_the_pan() {
+        let viewport = Vec2::new(800.0, 400.0);
+        let tilt = 25.0_f32.to_radians();
+        let direction = Vec3::new(tilt.sin(), 0.0, -tilt.cos());
+        let pan = Vec2::new(0.35, -0.2);
+        let disc = |offset| {
+            sky_lens_disc(direction, 0.267_f32.to_radians(), 140.0, offset, viewport)
+                .expect("finite image")
+        };
+        let centered = disc(Vec2::ZERO);
+        let panned = disc(pan);
+        // NDC y runs up and pixel y runs down, which is the whole reason the
+        // sign of this is worth a test.
+        assert_relative_eq!(
+            panned.center.x - centered.center.x,
+            pan.x * 0.5 * viewport.x,
+            epsilon = 1e-3
+        );
+        assert_relative_eq!(
+            panned.center.y - centered.center.y,
+            -pan.y * 0.5 * viewport.y,
+            epsilon = 1e-3
+        );
+        assert_relative_eq!(panned.radius, centered.radius, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn panning_the_frame_moves_the_sun_and_the_globe_together() {
+        let viewport = Vec2::new(512.0, 256.0);
+        let aspect = viewport.x / viewport.y;
+        // The pan the renderer applies to the globe and the one it hands the
+        // sky lens are the same pan with opposite signs, so a sign error in
+        // either one separates the Sun from the silhouette it is measured
+        // against.
+        let (offset_x, offset_y) = (0.3_f32, -0.15_f32);
+        let fraction = |tilt: f32, panned: bool| {
+            let mut camera = OrbitalCamera::new(0.0, 0.0, 8.0);
+            if panned {
+                camera.offset_x = offset_x;
+                camera.offset_y = offset_y;
+            }
+            let screen_offset = if panned {
+                Vec2::new(-offset_x, -offset_y)
+            } else {
+                Vec2::ZERO
+            };
+            place_sun(&SunPlacementInputs {
+                sun_world_direction: Vec3::new(tilt.sin(), 0.0, -tilt.cos()),
+                view: camera.view_matrix(),
+                mvp: camera.mvp_matrix(aspect),
+                eye_distance: camera.distance,
+                sky_fov_deg: 60.0,
+                camera_fov_deg: CAMERA_FOV,
+                atmosphere_radius: crate::params::RAYLEIGH_RADIUS,
+                screen_offset,
+                viewport,
+            })
+            .visibility
+            .visible_fraction
+        };
+        let mut seen_partial = false;
+        for step in 0..=40 {
+            #[allow(clippy::cast_precision_loss)]
+            let tilt = (step as f32 / 40.0) * 40.0_f32.to_radians();
+            let centered = fraction(tilt, false);
+            let panned = fraction(tilt, true);
+            assert_relative_eq!(centered, panned, epsilon = 1e-4);
+            if centered > 0.01 && centered < 0.99 {
+                seen_partial = true;
+            }
+        }
+        assert!(seen_partial, "the sweep never crossed the painted limb");
+    }
+
+    #[test]
     fn a_sub_pixel_disk_is_floored_rather_than_lost() {
         let viewport = Vec2::new(512.0, 256.0);
         let camera = OrbitalCamera::new(0.0, 0.0, 8.0);

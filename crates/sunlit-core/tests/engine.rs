@@ -258,17 +258,21 @@ fn sun_params(longitude: f32) -> SceneParams {
 
 /// Render `params` with the Sun off and then on, and return both frames.
 fn sun_off_and_on(longitude: f32) -> (Vec<u8>, Vec<u8>) {
-    let harness = Harness::start(|config| {
-        config.params = sun_params(longitude);
-        config.params.sun_glow = 0.0;
-    });
+    sun_off_and_on_framed(sun_params(longitude))
+}
+
+/// The same for a framing the caller has already adjusted.
+fn sun_off_and_on_framed(params: SceneParams) -> (Vec<u8>, Vec<u8>) {
+    let mut off = params;
+    off.sun_glow = 0.0;
+    let harness = Harness::start(|config| config.params = off);
     let (off, width, height) = harness.next_frame();
     assert_eq!(
         (width, height),
         (512, 256),
         "the longitudes these cases pick are for one framing"
     );
-    let mut on = sun_params(longitude);
+    let mut on = params;
     on.sun_glow = 1.5;
     harness
         .engine
@@ -340,6 +344,126 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
         grazing > clear * 1.3,
         "a Sun in the transit band should glare warmer than a clear one, \
          but red over blue was {grazing:.2} against {clear:.2}"
+    );
+}
+
+/// A Sun outside an unpanned frame is drawn once a pan reaches it.
+///
+/// Both sun draws cull themselves against `sky_corner_angle`, which is the
+/// frame's furthest corner widened by the pan. At longitude 95 the Sun sits 86
+/// degrees off the view axis, past the 76 degree corner of an unpanned frame,
+/// so the widening is the whole reason the pan finds anything there.
+#[test]
+fn a_pan_past_the_frame_corner_still_draws_the_sun() {
+    /// How much brighter a pixel got, in every channel, with the Sun on.
+    fn core_pixels(params: SceneParams) -> (usize, u8) {
+        let (off, on) = sun_off_and_on_framed(params);
+        let mut core = 0;
+        let mut brightest = 0;
+        for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+            let added = [0, 1, 2].map(|c| lit[c].saturating_sub(dark[c]));
+            if added.iter().all(|&value| value >= 200) {
+                core += 1;
+            }
+            brightest = brightest.max(added.into_iter().max().unwrap_or(0));
+        }
+        (core, brightest)
+    }
+
+    let mut framed = sun_params(95.0);
+    let (core, brightest) = core_pixels(framed);
+    assert_eq!(
+        core, 0,
+        "the Sun's core is off the frame here, so nothing may be at core brightness"
+    );
+    assert!(
+        brightest < 64,
+        "only the far tail of the glare reaches an unpanned frame at this \
+         longitude, but a pixel gained {brightest}"
+    );
+
+    framed.camera.offset_x = -0.4;
+    framed.camera.offset_y = 0.4;
+    let (core, brightest) = core_pixels(framed);
+    assert!(
+        core >= 20 && brightest > 200,
+        "the pan brings the Sun into frame, but only {core} pixels reached core \
+         brightness and the brightest gained {brightest}"
+    );
+}
+
+/// Panning the frame slides the whole composite across the framebuffer, so a
+/// panned frame is the unpanned one moved by the pan and nothing else.
+///
+/// The pan reaches the Sun through four places that each carry a sign:
+/// `scene::sun_occlusion::sky_lens_disc`, which is where the CPU decides what
+/// the globe hides, and `sun_disc`, `sky_corner_angle` and `sky_lens_direction`
+/// in the shader. Any one of them disagreeing with the pan the globe got leaves
+/// the composite sheared rather than moved, which no other case in the suite
+/// would see: every other frame in it is rendered with no pan at all.
+#[test]
+fn a_pan_slides_the_composite_without_shearing_it() {
+    // An eighth of the frame's width, which is a whole number of pixels, so
+    // the two frames compare without resampling either.
+    const PAN: f32 = -0.25;
+    const SHIFT: usize = 64;
+
+    let panned_params = |offset_x: f32| {
+        let mut params = sun_params(160.0);
+        params.sun_glow = 1.5;
+        params.camera.offset_x = offset_x;
+        params
+    };
+    let harness = Harness::start(|config| config.params = panned_params(0.0));
+    let (centered, width, height) = harness.next_frame();
+    assert_eq!(
+        (width, height),
+        (512, 256),
+        "the pan below is a pixel count for one framing"
+    );
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(panned_params(PAN))));
+    let (panned, _, _) = harness.next_frame();
+
+    let row = width as usize * 4;
+    let mut worst = 0_u8;
+    let mut worst_at = (0_usize, 0_usize);
+    let mut total = 0_u64;
+    let mut lit = 0_u64;
+    for y in 0..height as usize {
+        for x in 0..width as usize - SHIFT {
+            let from = y * row + x * 4;
+            let to = y * row + (x + SHIFT) * 4;
+            if centered[from..from + 3].iter().any(|&c| c > 8) {
+                lit += 1;
+            }
+            for channel in 0..3 {
+                let difference = centered[from + channel].abs_diff(panned[to + channel]);
+                total += u64::from(difference);
+                if difference > worst {
+                    worst = difference;
+                    worst_at = (x, y);
+                }
+            }
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mean = total as f64 / ((height as usize * (width as usize - SHIFT) * 3) as f64);
+    assert!(
+        lit > 2000,
+        "only {lit} pixels of the compared region carry anything, so this \
+         would pass on an empty frame"
+    );
+    // Two sources of a last-bit difference, and nothing else may move. The
+    // glare dithers from the framebuffer position, which does not travel with
+    // the pan, and every sprite center is the sum of a pan and a projection
+    // rather than a projection shifted by whole pixels, so an antialiased edge
+    // can round the other way.
+    assert!(
+        worst <= 2 && mean < 0.15,
+        "the panned frame is not the unpanned one moved by {SHIFT} pixels: \
+         worst channel difference {worst} at {worst_at:?}, mean {mean:.4}"
     );
 }
 

@@ -355,8 +355,8 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
 /// degrees past an unpanned corner: nearer than that the glare draw clears its
 /// own cull without the pan and paints the same pixels either way. At
 /// longitude 68 the Sun sits 110.5 degrees off the view axis against a 76.1
-/// degree corner, which is past both, and a pan of 0.9 brings the frame's near
-/// edge to within 4.4 degrees of it.
+/// degree corner, which is past both, and a pan of 0.9 brings the frame's
+/// nearest pixel to 10.2 degrees from it.
 #[test]
 fn a_pan_past_the_frame_corner_still_draws_the_sun() {
     /// Pixels the Sun added more than a handful of levels to, and its most.
@@ -386,8 +386,8 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
     let (painted, brightest) = added(framed);
     assert!(
         painted > 4000 && brightest > 8,
-        "the pan brings the frame's edge to within 4.4 degrees of the Sun, \
-         but only {painted} pixels gained more than four levels and the \
+        "the pan brings the frame's nearest pixel to 10.2 degrees from the \
+         Sun, but only {painted} pixels gained more than four levels and the \
          brightest gained {brightest}"
     );
 }

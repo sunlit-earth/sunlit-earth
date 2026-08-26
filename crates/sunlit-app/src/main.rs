@@ -224,6 +224,16 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
     }
 }
 
+/// Smaller than any of the three assets and far larger than a Git LFS pointer.
+///
+/// `textures/**` is Git LFS, and a checkout without the objects holds pointer
+/// files of a couple of hundred bytes, which are there as far as anything that
+/// only asks whether the file exists is concerned. Naming one is worse than
+/// naming nothing: the decode fails and logs an error for a checkout that is
+/// merely incomplete. Size is what tells the two apart, which is the same rule
+/// the guest staging in `xtask` and the engine tests use.
+const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
+
 /// Resolve the day, night and moon texture paths from the textures directory.
 ///
 /// In slot order after the grid, which is what the renderer's `SlotLayout`
@@ -231,7 +241,11 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
 /// than moving the ones after it.
 fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBuf>> {
     let dir = texture_loader::resolve_textures_dir(cli_dir);
-    let pick = |name: &str| dir.as_ref().map(|d| d.join(name)).filter(|p| p.exists());
+    let pick = |name: &str| {
+        dir.as_ref()
+            .map(|d| d.join(name))
+            .filter(|p| std::fs::metadata(p).is_ok_and(|meta| meta.len() >= TEXTURE_MIN_BYTES))
+    };
     let paths = vec![
         pick("world.topo.200405.jxl"),
         pick("BlackMarble_2016.jxl"),
@@ -745,5 +759,39 @@ fn main() -> ExitCode {
             };
             run_app(cli, &config, instance_guard)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pointer file exists, so `exists()` is not the question to ask.
+    ///
+    /// Every one of the three assets is over a megabyte, and a checkout without
+    /// the LFS objects holds a couple of hundred bytes under the same name. What
+    /// naming one costs is a decode failure and an error line for a checkout
+    /// that is only incomplete, where the same run without the file at all is
+    /// quiet and draws the same picture.
+    #[test]
+    fn a_git_lfs_pointer_is_not_a_texture_path() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_texture_pointers");
+        std::fs::create_dir_all(&dir).expect("create the fixture directory");
+        std::fs::write(
+            dir.join("world.topo.200405.jxl"),
+            vec![0_u8; TEXTURE_MIN_BYTES as usize],
+        )
+        .expect("write the asset stand-in");
+        std::fs::write(
+            dir.join("lroc_color_poles_1k.jxl"),
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:0\nsize 291720\n",
+        )
+        .expect("write the pointer stand-in");
+
+        let paths = resolve_texture_paths(Some(&dir));
+        assert!(paths[0].is_some(), "the day map is the asset here");
+        assert_eq!(paths[1], None, "the night map is not in the directory");
+        assert_eq!(paths[2], None, "the moon map is a pointer");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

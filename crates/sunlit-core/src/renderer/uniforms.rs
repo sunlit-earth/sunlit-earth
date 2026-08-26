@@ -1,6 +1,6 @@
 /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
 ///
-/// Total: 368 bytes (must be a multiple of 16 for uniform alignment).
+/// Total: 400 bytes (must be a multiple of 16 for uniform alignment).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Uniforms {
@@ -48,7 +48,18 @@ pub(crate) struct Uniforms {
     pub star_glow_radius: f32,         // 4 bytes
     pub star_contrast: f32,            // 4 bytes
     pub sky_fov: f32,                  // 4 bytes
-    pub _pad6: f32,                    // 4 bytes
+    pub sun_glow: f32,                 // 4 bytes
+    pub sun_rays: f32,                 // 4 bytes
+    pub sun_flare: f32,                // 4 bytes
+    /// Fraction of the Sun's disk outside the globe's painted silhouette.
+    pub sun_visible: f32, // 4 bytes
+    /// Fraction of it inside the atmosphere annulus.
+    pub sun_transit: f32, // 4 bytes
+    /// Sun direction in view space; the shader rebuilds its screen position
+    /// and every angular falloff from this one vector.
+    pub sun_view_dir: [f32; 3], // 12 bytes
+    /// The disk's radius in pixels, floor already applied.
+    pub sun_disk_radius: f32, // 4 bytes
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 368);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 400);

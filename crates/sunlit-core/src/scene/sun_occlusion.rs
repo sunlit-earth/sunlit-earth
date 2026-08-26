@@ -1,0 +1,535 @@
+//! Where the Sun lands on screen, and how much of it the viewer can see.
+//!
+//! The composite draws the globe through the camera's 20 degree perspective
+//! lens and everything celestial through the stereographic sky lens, which
+//! puts the painted globe about four and a half times larger on screen than
+//! the sky lens's own image of the same silhouette. Occlusion therefore has to
+//! be measured against the silhouette the viewer can see rather than against
+//! the true angular limb: the second would fade the glare out while the Sun
+//! still sits in visibly empty sky in one framing, and leave it burning on top
+//! of the painted globe in another. The cost is that the answer no longer
+//! agrees with an ephemeris, which is the price of a coherent picture under a
+//! mixed lens.
+//!
+//! Screen space is where the comparison is possible, because every shape in it
+//! is a circle. The sky lens is conformal, so a cone about a direction images
+//! as a disc; the projected plane reaches pixels by one uniform scale, so that
+//! disc is a circle in pixels; and the globe's silhouette is a circle there
+//! too. Pixels are also the one space both lenses agree is isotropic.
+//!
+//! [`angular_visible_fraction`] is the ephemeris answer, computed from the
+//! true angles and read by nothing in the renderer. It is the second
+//! implementation the tests compare the screen-space one against, the same
+//! role `scene::sun` plays for the sun direction.
+
+use std::f32::consts::PI;
+
+use glam::{Mat4, Vec2, Vec3, Vec4};
+
+/// Angular radius of the Sun's disk seen from Earth, in degrees. The seasonal
+/// variation (0.262 to 0.271) is below a pixel at any output this renders.
+pub const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
+
+/// Smallest radius the Sun's disk is drawn at, in pixels at 1080p.
+///
+/// At the default sky field of view the true disk is about 13 pixels across on
+/// a 4K render and under one pixel on a small preview, so without a floor the
+/// Sun collapses to a speck exactly where a user is tuning it. Phase A's stars
+/// carry the same clause for the same reason.
+pub const SUN_MIN_DISK_RADIUS_PIXELS: f32 = 1.6;
+
+/// Output-density ramp shared with the star sprites: 1.0 at 1080p and below,
+/// 2.0 at 4K and above.
+pub fn pixel_scale(viewport_height: f32) -> f32 {
+    (viewport_height / 1080.0).clamp(1.0, 2.0)
+}
+
+/// A circle on the framebuffer, in pixels, with y running down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenCircle {
+    pub center: Vec2,
+    pub radius: f32,
+}
+
+/// How much of the Sun's disk the viewer can see, and how much of what is
+/// visible looks through the atmosphere shell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunVisibility {
+    /// Fraction of the disk's area outside the globe's painted silhouette.
+    pub visible_fraction: f32,
+    /// Fraction of the disk's area inside the annulus between the painted
+    /// silhouette and the atmosphere shell's, which is the grazing band where
+    /// the light path runs through the lower atmosphere.
+    pub transit_fraction: f32,
+}
+
+/// The frame geometry [`place_sun`] needs, bundled because it is nine values
+/// and every one of them is already sitting in the uniform encoder.
+#[derive(Clone, Copy, Debug)]
+pub struct SunPlacementInputs {
+    /// Geocentric sun direction in world space.
+    pub sun_world_direction: Vec3,
+    /// The camera's view matrix, shared by both lenses.
+    pub view: Mat4,
+    /// The Earth camera's full transform, used only to project the origin.
+    pub mvp: Mat4,
+    pub eye_distance: f32,
+    pub sky_fov_deg: f32,
+    /// The Earth camera's vertical field of view.
+    pub camera_fov_deg: f32,
+    /// Radius of the atmosphere shell that bounds the transit band.
+    pub atmosphere_radius: f32,
+    /// Post-projection pan, in NDC, as the sky lens applies it.
+    pub screen_offset: Vec2,
+    pub viewport: Vec2,
+}
+
+/// Everything the uniform encoder needs to place and fade the Sun.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunPlacement {
+    /// Sun direction in view space, unit length. The shader rebuilds the
+    /// screen position from this, so there is one formula and not two.
+    pub view_direction: Vec3,
+    /// The disk's radius in pixels, never below [`SUN_MIN_DISK_RADIUS_PIXELS`]
+    /// times the density ramp.
+    pub disk_radius_pixels: f32,
+    pub visibility: SunVisibility,
+}
+
+/// The horizontal half-extent of the sky lens in projected-plane units.
+///
+/// A direction `theta` from the view axis lands at `tan(theta / 2)`, and the
+/// frame's horizontal edge is `sky_fov / 2` from the axis, so this is the
+/// divisor that puts that edge at NDC 1. Mirrors `sky_lens_edge_radius` in
+/// `sphere.wgsl`, clamp included.
+pub fn sky_lens_edge_radius(sky_fov_deg: f32) -> f32 {
+    (sky_fov_deg.clamp(60.0, 180.0) * PI / 720.0).tan()
+}
+
+/// The image of a cone of half-angle `half_angle` about `view_dir`, in pixels.
+///
+/// Stereographic projection maps circles on the sphere to circles in the
+/// plane, so this is exact rather than a small-angle approximation. The cone's
+/// extremes along the radial direction are the images of `theta - half_angle`
+/// and `theta + half_angle`; keeping the first signed is what makes a cone
+/// that contains the view axis straddle the origin with no special case.
+///
+/// `None` when the cone reaches the antipode, where the image is the exterior
+/// of a circle and no finite radius describes it.
+pub fn sky_lens_disc(
+    view_dir: Vec3,
+    half_angle: f32,
+    sky_fov_deg: f32,
+    screen_offset: Vec2,
+    viewport: Vec2,
+) -> Option<ScreenCircle> {
+    let dir = view_dir.normalize_or_zero();
+    let theta = (-dir.z).clamp(-1.0, 1.0).acos();
+    if theta + half_angle >= PI {
+        return None;
+    }
+    let transverse = dir.truncate();
+    let radial = if transverse.length() > 1e-6 {
+        transverse.normalize()
+    } else {
+        Vec2::X
+    };
+    let edge = sky_lens_edge_radius(sky_fov_deg);
+    let near = ((theta - half_angle) * 0.5).tan() / edge;
+    let far = ((theta + half_angle) * 0.5).tan() / edge;
+    let aspect = viewport.x / viewport.y;
+    let ndc = radial * ((near + far) * 0.5) * Vec2::new(1.0, aspect) + screen_offset;
+    Some(ScreenCircle {
+        center: ndc_to_pixels(ndc, viewport),
+        // The projected plane reaches pixels by one uniform scale, so the disc
+        // stays a circle whatever the aspect ratio is.
+        radius: (far - near) * 0.5 * viewport.x * 0.5,
+    })
+}
+
+/// The painted silhouette of a sphere of radius `body_radius` at the origin.
+///
+/// Its tangent-plane radius is `r / sqrt(d^2 - r^2)`, which the vertical field
+/// of view normalizes to NDC. The center is the projected origin, exact on the
+/// view axis; off it the true silhouette drifts outward and this stays put, an
+/// approximation that is best where the globe is the subject of the frame,
+/// which is every framing this renderer is for.
+pub fn globe_screen_circle(
+    mvp: Mat4,
+    eye_distance: f32,
+    body_radius: f32,
+    camera_fov_deg: f32,
+    viewport: Vec2,
+) -> ScreenCircle {
+    let clip = mvp * Vec4::new(0.0, 0.0, 0.0, 1.0);
+    let ndc = if clip.w.abs() > 1e-6 {
+        Vec2::new(clip.x / clip.w, clip.y / clip.w)
+    } else {
+        Vec2::ZERO
+    };
+    let horizon = (eye_distance * eye_distance - body_radius * body_radius).max(1e-6);
+    let radius_ndc = body_radius / horizon.sqrt() / (camera_fov_deg * 0.5).to_radians().tan();
+    ScreenCircle {
+        center: ndc_to_pixels(ndc, viewport),
+        radius: radius_ndc * viewport.y * 0.5,
+    }
+}
+
+/// Place the Sun and measure what the globe hides of it.
+pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
+    let view_direction = (inputs.view * inputs.sun_world_direction.extend(0.0))
+        .truncate()
+        .normalize_or_zero();
+    let floor = SUN_MIN_DISK_RADIUS_PIXELS * pixel_scale(inputs.viewport.y);
+    let disc = sky_lens_disc(
+        view_direction,
+        SUN_ANGULAR_RADIUS_DEGREES.to_radians(),
+        inputs.sky_fov_deg,
+        inputs.screen_offset,
+        inputs.viewport,
+    );
+    let Some(mut disc) = disc else {
+        // The Sun sits at the antipode of the view axis, off screen whatever
+        // the globe does: nothing hides it, and nothing draws it either.
+        return SunPlacement {
+            view_direction,
+            disk_radius_pixels: floor,
+            visibility: SunVisibility {
+                visible_fraction: 1.0,
+                transit_fraction: 0.0,
+            },
+        };
+    };
+    disc.radius = disc.radius.max(floor);
+    let globe = globe_screen_circle(
+        inputs.mvp,
+        inputs.eye_distance,
+        1.0,
+        inputs.camera_fov_deg,
+        inputs.viewport,
+    );
+    let atmosphere = globe_screen_circle(
+        inputs.mvp,
+        inputs.eye_distance,
+        inputs.atmosphere_radius,
+        inputs.camera_fov_deg,
+        inputs.viewport,
+    );
+    SunPlacement {
+        view_direction,
+        disk_radius_pixels: disc.radius,
+        visibility: visibility(disc, globe, atmosphere),
+    }
+}
+
+/// Split the Sun's disk against the two concentric silhouettes.
+pub fn visibility(
+    sun: ScreenCircle,
+    globe: ScreenCircle,
+    atmosphere: ScreenCircle,
+) -> SunVisibility {
+    let hidden = overlap_area(sun.radius, globe.radius, sun.center.distance(globe.center));
+    let within_atmosphere = overlap_area(
+        sun.radius,
+        atmosphere.radius,
+        sun.center.distance(atmosphere.center),
+    );
+    let area = PI * sun.radius * sun.radius;
+    if area <= 0.0 {
+        let clear = sun.center.distance(globe.center) > globe.radius;
+        let banded = clear && sun.center.distance(atmosphere.center) <= atmosphere.radius;
+        return SunVisibility {
+            visible_fraction: f32::from(u8::from(clear)),
+            transit_fraction: f32::from(u8::from(banded)),
+        };
+    }
+    SunVisibility {
+        visible_fraction: (1.0 - hidden / area).clamp(0.0, 1.0),
+        transit_fraction: ((within_atmosphere - hidden) / area).clamp(0.0, 1.0),
+    }
+}
+
+/// The ephemeris answer: what fraction of the Sun's disk clears the true
+/// angular limb of a sphere of radius `body_radius` at the origin.
+///
+/// Read by nothing in the renderer. It exists so the screen-space function has
+/// something independent to be checked against in the one configuration where
+/// the two lenses agree about scale.
+pub fn angular_visible_fraction(sun_direction: Vec3, eye: Vec3, body_radius: f32) -> f32 {
+    let distance = eye.length();
+    if distance <= body_radius {
+        return 0.0;
+    }
+    let limb = (body_radius / distance).asin();
+    let sun_radius = SUN_ANGULAR_RADIUS_DEGREES.to_radians();
+    let separation = sun_direction
+        .normalize_or_zero()
+        .angle_between(-eye.normalize_or_zero());
+    let hidden = overlap_area(sun_radius, limb, separation);
+    (1.0 - hidden / (PI * sun_radius * sun_radius)).clamp(0.0, 1.0)
+}
+
+/// Area shared by two circles whose centers are `distance` apart.
+fn overlap_area(r0: f32, r1: f32, distance: f32) -> f32 {
+    if r0 <= 0.0 || r1 <= 0.0 || distance >= r0 + r1 {
+        return 0.0;
+    }
+    if distance <= (r0 - r1).abs() {
+        let contained = r0.min(r1);
+        return PI * contained * contained;
+    }
+    let d = distance;
+    let a0 = ((d * d + r0 * r0 - r1 * r1) / (2.0 * d * r0))
+        .clamp(-1.0, 1.0)
+        .acos();
+    let a1 = ((d * d + r1 * r1 - r0 * r0) / (2.0 * d * r1))
+        .clamp(-1.0, 1.0)
+        .acos();
+    let kite = 0.5
+        * ((-d + r0 + r1) * (d + r0 - r1) * (d - r0 + r1) * (d + r0 + r1))
+            .max(0.0)
+            .sqrt();
+    r0 * r0 * a0 + r1 * r1 * a1 - kite
+}
+
+fn ndc_to_pixels(ndc: Vec2, viewport: Vec2) -> Vec2 {
+    Vec2::new(
+        (ndc.x + 1.0) * 0.5 * viewport.x,
+        (1.0 - ndc.y) * 0.5 * viewport.y,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+
+    use super::*;
+    use crate::scene::camera::OrbitalCamera;
+
+    /// Concentric silhouettes to measure a sun disk against: the globe at 50
+    /// pixels and the atmosphere shell at 60, both around (100, 100).
+    fn globe() -> ScreenCircle {
+        ScreenCircle {
+            center: Vec2::new(100.0, 100.0),
+            radius: 50.0,
+        }
+    }
+
+    fn atmosphere() -> ScreenCircle {
+        ScreenCircle {
+            center: Vec2::new(100.0, 100.0),
+            radius: 60.0,
+        }
+    }
+
+    fn sun_at(x: f32, radius: f32) -> ScreenCircle {
+        ScreenCircle {
+            center: Vec2::new(x, 100.0),
+            radius,
+        }
+    }
+
+    #[test]
+    fn a_sun_clear_of_both_silhouettes_is_fully_visible() {
+        let v = visibility(sun_at(300.0, 5.0), globe(), atmosphere());
+        assert_relative_eq!(v.visible_fraction, 1.0);
+        assert_relative_eq!(v.transit_fraction, 0.0);
+    }
+
+    #[test]
+    fn a_sun_inside_the_painted_globe_is_fully_hidden() {
+        let v = visibility(sun_at(100.0, 5.0), globe(), atmosphere());
+        assert_relative_eq!(v.visible_fraction, 0.0);
+        assert_relative_eq!(v.transit_fraction, 0.0);
+    }
+
+    #[test]
+    fn a_sun_centered_on_the_limb_is_half_visible() {
+        let v = visibility(sun_at(150.0, 5.0), globe(), atmosphere());
+        // A shade over half, because the limb curves away from the disk's
+        // center rather than cutting it along a diameter.
+        assert_relative_eq!(v.visible_fraction, 0.51, epsilon = 0.02);
+        // What cleared the limb is entirely inside the atmosphere circle,
+        // which is what the transit band means.
+        assert_relative_eq!(v.transit_fraction, v.visible_fraction, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn a_sun_in_the_annulus_is_visible_and_fully_in_transit() {
+        let v = visibility(sun_at(155.0, 2.0), globe(), atmosphere());
+        assert_relative_eq!(v.visible_fraction, 1.0);
+        assert_relative_eq!(v.transit_fraction, 1.0);
+    }
+
+    #[test]
+    fn a_sun_past_the_atmosphere_is_out_of_transit() {
+        let v = visibility(sun_at(170.0, 2.0), globe(), atmosphere());
+        assert_relative_eq!(v.visible_fraction, 1.0);
+        assert_relative_eq!(v.transit_fraction, 0.0);
+    }
+
+    #[test]
+    fn the_visible_fraction_rises_monotonically_across_the_limb() {
+        let mut previous = -1.0_f32;
+        let mut seen_partial = false;
+        for step in 0..=200 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = 100.0 + step as f32 * 0.4;
+            let fraction = visibility(sun_at(x, 6.0), globe(), atmosphere()).visible_fraction;
+            assert!(
+                fraction >= previous - 1e-6,
+                "the visible fraction fell from {previous} to {fraction} at x = {x}"
+            );
+            if fraction > 0.01 && fraction < 0.99 {
+                seen_partial = true;
+            }
+            previous = fraction;
+        }
+        assert!(seen_partial, "the sweep never crossed the limb");
+        assert_relative_eq!(previous, 1.0);
+    }
+
+    /// The aspect ratio at which the two lenses agree about angular scale.
+    ///
+    /// The sky lens maps a small angle to `theta * W / (4 * edge)` pixels and
+    /// the Earth lens maps one to `alpha * H / (2 * tan(fov / 2))`. Setting
+    /// those equal fixes the aspect ratio once both fields of view are chosen,
+    /// and 60 degrees is the sky slider's own minimum rather than a number from
+    /// outside the product's range.
+    const AGREEING_SKY_FOV: f32 = 60.0;
+    const CAMERA_FOV: f32 = 20.0;
+
+    fn agreeing_viewport() -> Vec2 {
+        let aspect =
+            2.0 * sky_lens_edge_radius(AGREEING_SKY_FOV) / (CAMERA_FOV * 0.5).to_radians().tan();
+        Vec2::new(500.0 * aspect, 500.0)
+    }
+
+    #[test]
+    fn the_screen_space_fraction_matches_the_ephemeris_where_the_lenses_agree() {
+        let viewport = agreeing_viewport();
+        let camera = OrbitalCamera::new(0.0, 0.0, 80.0);
+        let eye = camera.eye_position();
+        let limb = (1.0_f32 / 80.0).asin();
+        let mut worst = 0.0_f32;
+        for step in 0..=40 {
+            #[allow(clippy::cast_precision_loss)]
+            let separation = limb * 2.0 * step as f32 / 40.0;
+            // The eye sits on +Z looking at the origin, so a direction tilted
+            // out of the view axis by `separation` is a rotation about X.
+            let sun = Vec3::new(0.0, separation.sin(), -separation.cos());
+            let placement = place_sun(&SunPlacementInputs {
+                sun_world_direction: sun,
+                view: camera.view_matrix(),
+                mvp: camera.mvp_matrix(viewport.x / viewport.y),
+                eye_distance: camera.distance,
+                sky_fov_deg: AGREEING_SKY_FOV,
+                camera_fov_deg: CAMERA_FOV,
+                atmosphere_radius: crate::params::RAYLEIGH_RADIUS,
+                screen_offset: Vec2::ZERO,
+                viewport,
+            });
+            let reference = angular_visible_fraction(sun, eye, 1.0);
+            worst = worst.max((placement.visibility.visible_fraction - reference).abs());
+        }
+        assert!(
+            worst < 0.01,
+            "the screen-space fraction and the ephemeris one differ by {worst} at worst"
+        );
+    }
+
+    #[test]
+    fn a_cone_around_the_view_axis_images_as_a_disc_on_the_center() {
+        let viewport = Vec2::new(800.0, 400.0);
+        let disc = sky_lens_disc(
+            Vec3::NEG_Z,
+            10.0_f32.to_radians(),
+            140.0,
+            Vec2::ZERO,
+            viewport,
+        )
+        .expect("a cone about the view axis has a finite image");
+        assert_relative_eq!(disc.center.x, 400.0, epsilon = 1e-3);
+        assert_relative_eq!(disc.center.y, 200.0, epsilon = 1e-3);
+        assert!(disc.radius > 0.0);
+    }
+
+    #[test]
+    fn a_cone_reaching_the_antipode_has_no_finite_image() {
+        assert!(
+            sky_lens_disc(
+                Vec3::Z,
+                10.0_f32.to_radians(),
+                140.0,
+                Vec2::ZERO,
+                Vec2::new(800.0, 400.0),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_imaged_disc_is_the_same_size_along_both_screen_axes() {
+        let viewport = Vec2::new(1600.0, 400.0);
+        let half_angle = 0.267_f32.to_radians();
+        let tilt = 25.0_f32.to_radians();
+        let horizontal = sky_lens_disc(
+            Vec3::new(tilt.sin(), 0.0, -tilt.cos()),
+            half_angle,
+            140.0,
+            Vec2::ZERO,
+            viewport,
+        )
+        .expect("finite image");
+        let vertical = sky_lens_disc(
+            Vec3::new(0.0, tilt.sin(), -tilt.cos()),
+            half_angle,
+            140.0,
+            Vec2::ZERO,
+            viewport,
+        )
+        .expect("finite image");
+        assert_relative_eq!(horizontal.radius, vertical.radius, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn a_sub_pixel_disk_is_floored_rather_than_lost() {
+        let viewport = Vec2::new(512.0, 256.0);
+        let camera = OrbitalCamera::new(0.0, 0.0, 8.0);
+        let tilt = 20.0_f32.to_radians();
+        let placement = place_sun(&SunPlacementInputs {
+            // Well clear of the globe but near enough to the view axis that
+            // the lens is not stretching the disk: at 140 degrees on a 512
+            // pixel frame the true disk is under a pixel across.
+            sun_world_direction: Vec3::new(tilt.sin(), 0.0, -tilt.cos()),
+            view: camera.view_matrix(),
+            mvp: camera.mvp_matrix(2.0),
+            eye_distance: camera.distance,
+            sky_fov_deg: 140.0,
+            camera_fov_deg: CAMERA_FOV,
+            atmosphere_radius: crate::params::RAYLEIGH_RADIUS,
+            screen_offset: Vec2::ZERO,
+            viewport,
+        });
+        assert_relative_eq!(placement.disk_radius_pixels, SUN_MIN_DISK_RADIUS_PIXELS);
+    }
+
+    #[test]
+    fn a_sun_behind_the_globe_reports_nothing_visible() {
+        let viewport = Vec2::new(1920.0, 1080.0);
+        let camera = OrbitalCamera::new(0.0, 0.0, 8.0);
+        let placement = place_sun(&SunPlacementInputs {
+            // Straight through the globe, away from the eye.
+            sun_world_direction: Vec3::NEG_Z,
+            view: camera.view_matrix(),
+            mvp: camera.mvp_matrix(viewport.x / viewport.y),
+            eye_distance: camera.distance,
+            sky_fov_deg: 140.0,
+            camera_fov_deg: CAMERA_FOV,
+            atmosphere_radius: crate::params::RAYLEIGH_RADIUS,
+            screen_offset: Vec2::ZERO,
+            viewport,
+        });
+        assert_relative_eq!(placement.visibility.visible_fraction, 0.0);
+    }
+}

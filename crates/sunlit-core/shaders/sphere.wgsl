@@ -43,7 +43,13 @@ struct Uniforms {
     star_glow_radius: f32,            // 4 bytes, offset 352
     star_contrast: f32,               // 4 bytes, offset 356
     sky_fov: f32,                     // 4 bytes, offset 360
-    _pad6: f32,                       // 4 bytes, offset 364
+    sun_glow: f32,                    // 4 bytes, offset 364
+    sun_rays: f32,                    // 4 bytes, offset 368
+    sun_flare: f32,                   // 4 bytes, offset 372
+    sun_visible: f32,                 // 4 bytes, offset 376
+    sun_transit: f32,                 // 4 bytes, offset 380
+    sun_view_dir: vec3<f32>,          // 12 bytes, offset 384
+    sun_disk_radius: f32,             // 4 bytes, offset 396
 };
 
 @group(0) @binding(0)

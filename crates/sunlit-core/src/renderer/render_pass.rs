@@ -6,6 +6,7 @@ use crate::params::{
 };
 use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
 use crate::scene::sky::SkyState;
+use crate::scene::sun_occlusion;
 
 use super::Renderer;
 use super::uniforms::Uniforms;
@@ -78,6 +79,19 @@ pub(super) fn write_uniforms(
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();
     let sky_rotation = inputs.sky.world_from_eqj;
+    let viewport = glam::Vec2::new(viewport_width as f32, viewport_height as f32);
+    let screen_offset = glam::Vec2::new(-cam.offset_x, -cam.offset_y);
+    let sun = sun_occlusion::place_sun(&sun_occlusion::SunPlacementInputs {
+        sun_world_direction: inputs.sky.sun_direction,
+        view: sky_view,
+        mvp,
+        eye_distance: camera.distance,
+        sky_fov_deg: params.sky_fov,
+        camera_fov_deg: camera.fov_deg,
+        atmosphere_radius: RAYLEIGH_RADIUS,
+        screen_offset,
+        viewport,
+    });
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
         sun_dir: inputs.sky.sun_direction.into(),
@@ -122,8 +136,8 @@ pub(super) fn write_uniforms(
             sky_rotation.y_axis.extend(0.0).into(),
             sky_rotation.z_axis.extend(0.0).into(),
         ],
-        viewport_size: [viewport_width as f32, viewport_height as f32],
-        screen_offset: [-cam.offset_x, -cam.offset_y],
+        viewport_size: viewport.into(),
+        screen_offset: screen_offset.into(),
         star_intensity: params.star_intensity,
         star_mag_limit: params.star_mag_limit,
         star_size: params.star_size,
@@ -131,7 +145,13 @@ pub(super) fn write_uniforms(
         star_glow_radius: params.star_glow_radius,
         star_contrast: params.star_contrast,
         sky_fov: params.sky_fov,
-        _pad6: 0.0,
+        sun_glow: params.sun_glow,
+        sun_rays: params.sun_rays,
+        sun_flare: params.sun_flare,
+        sun_visible: sun.visibility.visible_fraction,
+        sun_transit: sun.visibility.transit_fraction,
+        sun_view_dir: sun.view_direction.into(),
+        sun_disk_radius: sun.disk_radius_pixels,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 }

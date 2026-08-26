@@ -322,6 +322,9 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_star_glow_radius(params.star_glow_radius);
     window.set_star_contrast(params.star_contrast);
     window.set_star_mag_limit(params.star_mag_limit);
+    window.set_sun_glow(params.sun_glow);
+    window.set_sun_rays(params.sun_rays);
+    window.set_sun_flare(params.sun_flare);
     window.set_day_gamma(gamma_value_to_slider(params.day_gamma));
     window.set_day_saturation(params.day_saturation);
     window.set_night_gamma(gamma_value_to_slider(params.night_gamma));
@@ -380,6 +383,9 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         star_glow_radius: window.get_star_glow_radius(),
         star_contrast: window.get_star_contrast(),
         star_mag_limit: window.get_star_mag_limit(),
+        sun_glow: window.get_sun_glow(),
+        sun_rays: window.get_sun_rays(),
+        sun_flare: window.get_sun_flare(),
         day_gamma: gamma_slider_to_value(window.get_day_gamma()),
         day_saturation: window.get_day_saturation(),
         night_gamma: gamma_slider_to_value(window.get_night_gamma()),

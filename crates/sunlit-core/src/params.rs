@@ -69,6 +69,11 @@ pub struct SceneParams {
     pub star_contrast: f32,
     pub star_mag_limit: f32,
 
+    // The Sun as a visible object
+    pub sun_glow: f32,
+    pub sun_rays: f32,
+    pub sun_flare: f32,
+
     // Color correction (gamma values, not slider positions)
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -126,6 +131,9 @@ impl SceneParams {
             star_glow_radius: config.star_glow_radius,
             star_contrast: config.star_contrast,
             star_mag_limit: config.star_mag_limit,
+            sun_glow: config.sun_glow,
+            sun_rays: config.sun_rays,
+            sun_flare: config.sun_flare,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
@@ -179,6 +187,9 @@ impl SceneParams {
         config.star_glow_radius = self.star_glow_radius;
         config.star_contrast = self.star_contrast;
         config.star_mag_limit = self.star_mag_limit;
+        config.sun_glow = self.sun_glow;
+        config.sun_rays = self.sun_rays;
+        config.sun_flare = self.sun_flare;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
@@ -242,6 +253,9 @@ impl SceneParams {
             star_glow_radius: q(self.star_glow_radius),
             star_contrast: q(self.star_contrast),
             star_mag_limit: q(self.star_mag_limit),
+            sun_glow: q(self.sun_glow),
+            sun_rays: q(self.sun_rays),
+            sun_flare: q(self.sun_flare),
             day_gamma: q(self.day_gamma),
             day_saturation: q(self.day_saturation),
             night_gamma: q(self.night_gamma),
@@ -295,6 +309,9 @@ pub struct ParamsDigest {
     pub star_glow_radius: i32,
     pub star_contrast: i32,
     pub star_mag_limit: i32,
+    pub sun_glow: i32,
+    pub sun_rays: i32,
+    pub sun_flare: i32,
     pub day_gamma: i32,
     pub day_saturation: i32,
     pub night_gamma: i32,
@@ -722,6 +739,27 @@ mod tests {
                 "star_mag_limit",
                 SceneParams {
                     star_mag_limit: 5.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_glow",
+                SceneParams {
+                    sun_glow: 1.7,
+                    ..base
+                },
+            ),
+            (
+                "sun_rays",
+                SceneParams {
+                    sun_rays: 0.15,
+                    ..base
+                },
+            ),
+            (
+                "sun_flare",
+                SceneParams {
+                    sun_flare: 0.85,
                     ..base
                 },
             ),

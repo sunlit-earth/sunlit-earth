@@ -75,6 +75,9 @@ export component MainWindow inherits Window {
     in-out property <float> star-glow-radius: 8.0;
     in-out property <float> star-contrast: 0.3;
     in-out property <float> star-mag-limit: 6.5;
+    in-out property <float> sun-glow: 1.0;
+    in-out property <float> sun-rays: 0.6;
+    in-out property <float> sun-flare: 0.0;
 
     in property <float> zoom-display-distance: 8.0;
     callback sliders-changed();
@@ -772,6 +775,66 @@ export component MainWindow inherits Window {
                                 }
                                 Text {
                                     text: round(root.star-mag-limit * 10) / 10 + " mag";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Sun glare";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                sun-glow-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 3.0;
+                                    value <=> root.sun-glow;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.sun-glow * 100) / 100 + "×";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Sun rays";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                sun-rays-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.sun-rays;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.sun-rays * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Lens flare";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                sun-flare-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.sun-flare;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.sun-flare * 100) + "%";
                                     vertical-alignment: center;
                                     min-width: 45px;
                                 }

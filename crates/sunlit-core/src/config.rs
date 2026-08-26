@@ -214,6 +214,15 @@ pub struct AppConfig {
     /// Zero is neutral and negative values make magnitudes more uniform.
     pub star_contrast: f32,
     pub star_mag_limit: f32,
+    /// Master strength of the Sun's glare, and the switch that puts the Sun in
+    /// the scene at all: zero draws neither the disk nor the glare.
+    pub sun_glow: f32,
+    /// Strength of the ciliary corona, the fine radial needles the eye adds
+    /// around a bright source.
+    pub sun_rays: f32,
+    /// Strength of camera mode: aperture spikes and lens ghosts, which belong
+    /// to an imaging device rather than to an eye. Zero by default.
+    pub sun_flare: f32,
 
     // Color correction
     pub day_gamma: f32,
@@ -296,6 +305,9 @@ impl Default for AppConfig {
             star_glow_radius: 8.0,
             star_contrast: 0.3,
             star_mag_limit: 6.5,
+            sun_glow: 1.0,
+            sun_rays: 0.6,
+            sun_flare: 0.0,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -739,6 +751,9 @@ mod tests {
             star_glow_radius: 8.0,
             star_contrast: 0.7,
             star_mag_limit: 5.8,
+            sun_glow: 1.4,
+            sun_rays: 0.3,
+            sun_flare: 0.9,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -870,6 +885,9 @@ mod tests {
             star_glow_radius: 7.5,
             star_contrast: 0.65,
             star_mag_limit: 6.2,
+            sun_glow: 0.8,
+            sun_rays: 0.9,
+            sun_flare: 0.4,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

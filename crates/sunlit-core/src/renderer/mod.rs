@@ -684,15 +684,14 @@ impl Renderer {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
 
-        let moon = render_pass::Moon::select(self, params);
-        render_pass::write_uniforms(
+        let moon = render_pass::write_uniforms(
             &self.queue,
             &self.uniform_buffer,
             params,
             target_width,
             target_height,
             inputs,
-            moon.is_some(),
+            render_pass::Moon::select(self, params),
         );
 
         let resolve_view = export_texture.create_view(&wgpu::TextureViewDescriptor::default());

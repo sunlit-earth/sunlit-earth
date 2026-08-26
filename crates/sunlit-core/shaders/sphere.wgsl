@@ -273,6 +273,11 @@ fn vs_moon(in: VertexInput) -> MoonOutput {
         (uniforms.sky_view * vec4<f32>(world_position - uniforms.eye_pos, 0.0)).xyz
     );
     var out: MoonOutput;
+    // No offscreen guard here, unlike `vs_star`: a sprite's four vertices share
+    // one direction, so one verdict moves all of them, where a mesh judged per
+    // vertex would keep every triangle that straddles the verdict. The whole
+    // mesh is inside one cone, and `scene::moon::place_moon` measures that cone
+    // before the draw is submitted at all.
     out.clip_position = vec4<f32>(sky_lens_project(view_direction).ndc, 1.0, 1.0);
     out.uv = in.uv;
     // The model matrix carries a uniform scale and a rotation, so the position

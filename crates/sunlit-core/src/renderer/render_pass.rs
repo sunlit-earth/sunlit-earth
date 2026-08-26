@@ -54,21 +54,26 @@ impl<'a> RenderTarget<'a> {
     }
 }
 
-/// Build a `Uniforms` struct and write it to the GPU buffer.
+/// Build a `Uniforms` struct and write it to the GPU buffer, and say whether
+/// the Moon the caller selected is one the frame can draw.
 ///
 /// This is one of the two translation points for `SceneParams` (the other is
 /// the Slint bridge in the app): everything the shader reads is derived here
-/// and nowhere else.
+/// and nowhere else. The Moon's placement is part of that derivation, and the
+/// placement is what decides whether there is a silhouette to draw at all, so
+/// this is also the one place that can narrow the selection: a Moon with no
+/// disc is returned as `None` and never reaches the pass.
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-pub(super) fn write_uniforms(
+#[must_use]
+pub(super) fn write_uniforms<'a>(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
     params: &SceneParams,
     viewport_width: u32,
     viewport_height: u32,
     inputs: &FrameInputs,
-    moon_drawn: bool,
-) {
+    moon_selected: Option<Moon<'a>>,
+) -> Option<Moon<'a>> {
     let aspect = viewport_width as f32 / viewport_height as f32;
     let cam = &params.camera;
     let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
@@ -93,6 +98,13 @@ pub(super) fn write_uniforms(
         screen_offset,
         viewport,
     });
+    // A Moon with no disc has no image on screen to draw: the cone `place_moon`
+    // measured either reaches the view antipode, where the stereographic lens
+    // has no finite circle, or contains the eye. Every mesh vertex is inside
+    // that same tangent cone, so a disc is exactly the condition under which
+    // the projection has a finite answer for all of them, and without one the
+    // mesh's triangles sweep the whole frame.
+    let moon_drawn = moon_selected.filter(|_| moon.disc.is_some());
     let sun = sun_occlusion::place_sun(&sun_occlusion::SunPlacementInputs {
         sun_world_direction: inputs.sky.sun_direction,
         view: sky_view,
@@ -106,7 +118,7 @@ pub(super) fn write_uniforms(
         // Only a Moon that is actually drawn hides anything: a glare fading
         // behind something invisible is the same incoherence as one burning
         // around a Moon that covers the disk.
-        moon_disc: moon_drawn.then_some(moon.disc).flatten(),
+        moon_disc: moon_drawn.and(moon.disc),
     });
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
@@ -175,6 +187,7 @@ pub(super) fn write_uniforms(
         _pad7: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+    moon_drawn
 }
 
 /// Encode and submit a render pass with the given target and bind group.
@@ -331,15 +344,14 @@ pub(super) fn execute_render_pass(
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
 ) {
-    let moon = Moon::select(res, params);
-    write_uniforms(
+    let moon = write_uniforms(
         &res.queue,
         &res.uniform_buffer,
         params,
         res.render_width,
         res.render_height,
         inputs,
-        moon.is_some(),
+        Moon::select(res, params),
     );
 
     let resolve_view = res
@@ -439,6 +451,11 @@ impl<'a> Moon<'a> {
     /// Zero brightness is the switch, and a Moon whose texture has not arrived
     /// is not drawn either: it is an overlay, like the clouds, so its absence
     /// is a picture without a Moon rather than something to wait for.
+    ///
+    /// Both of those are properties of the configuration. The third condition,
+    /// whether this frame's geometry puts a silhouette on screen at all, is a
+    /// property of the frame, so [`write_uniforms`] applies it where the
+    /// placement is and hands back what is left.
     pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
         if params.moon_brightness <= 0.0 {
             return None;

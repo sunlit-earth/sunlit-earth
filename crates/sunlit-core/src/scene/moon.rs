@@ -96,8 +96,11 @@ pub fn place_moon(inputs: &MoonPlacementInputs) -> MoonPlacement {
         // direction, distance and parallax are all untouched by it. The disc is
         // taken again afterwards rather than scaled, because the lens is not
         // linear in the half-angle and this way there is no approximation to
-        // hold.
-        Some(disc) if disc.radius < floor && disc.radius > 1.0e-4 => {
+        // hold. A disc that projected to exactly nothing is the one radius the
+        // ratio cannot be taken against; any other, however small, gives a
+        // factor that is finite or infinite, and `disc_for` refuses an inflated
+        // radius that reaches the eye.
+        Some(disc) if disc.radius < floor && disc.radius > 0.0 => {
             let inflated = true_radius * floor / disc.radius;
             (inflated, disc_for(inflated))
         }

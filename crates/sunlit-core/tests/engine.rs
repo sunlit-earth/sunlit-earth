@@ -2003,6 +2003,69 @@ fn a_switched_off_moon_and_a_missing_texture_draw_the_same_frame() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A Moon at the antipode of the view axis is not drawn at all.
+///
+/// The camera looks at the origin, so an eye on the line from the Earth to the
+/// Moon, at any zoom short of the orbit, has the Moon exactly behind it. A cone
+/// that reaches the lens's antipode has no finite image, which is what
+/// `place_moon` reports by leaving the disc empty: the vertices would otherwise
+/// land thousands of units out in every radial direction at once and the mesh's
+/// triangles would sweep the frame. The globe drag reaches that camera, so the
+/// frame it produces has to be the frame with no Moon in it.
+#[test]
+fn a_moon_at_the_view_antipode_draws_nothing() {
+    const WIDTH: u32 = 512;
+    const HEIGHT: u32 = 256;
+
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_antipode");
+    let fixture = support::write_moon_fixture(&dir);
+    let mut params = moon_params();
+    let direction = sky_for(&params).moon_position.normalize();
+    params.camera.latitude = direction.y.asin().to_degrees();
+    params.camera.longitude = direction.x.atan2(direction.z).to_degrees();
+
+    #[allow(clippy::cast_precision_loss)]
+    let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
+    assert_eq!(
+        moon_placement(&params, viewport).disc,
+        None,
+        "this framing is the one where the disc is empty, or it measures nothing"
+    );
+
+    let harness = Harness::start(|config| {
+        config.params = params;
+        config.texture_paths = moon_paths(Some(fixture.clone()));
+    });
+    harness.next_frame();
+    harness.wait_for_moon_texture();
+    let behind = harness
+        .engine
+        .export_pixels(WIDTH, HEIGHT)
+        .expect("the engine should be able to export");
+
+    let mut without = params;
+    without.moon_brightness = 0.0;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(without)));
+    harness.next_frame();
+    let off = harness
+        .engine
+        .export_pixels(WIDTH, HEIGHT)
+        .expect("the engine should be able to export");
+
+    let differing = behind
+        .chunks_exact(4)
+        .zip(off.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels differ between a Moon behind the camera and no Moon at all"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The Moon is an overlay: its texture is not what `TexturesReady` waits for,
 /// and the slot it lands in is the one the layout reserves for it.
 #[test]
@@ -2056,24 +2119,36 @@ fn illuminated_fraction(doy: u16, hour: i32) -> f32 {
     illumination.phase_fraction as f32
 }
 
-/// Where the Moon's disc lands, and how large, for `params` at `viewport`.
-fn moon_disc(
-    params: &SceneParams,
-    viewport: glam::Vec2,
-) -> sunlit_core::scene::sun_occlusion::ScreenCircle {
-    let sky = sunlit_core::scene::sky::compute_sky_state_from_time(moon_time(
-        params.datetime.custom_day_of_year,
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            params.datetime.custom_hour as i32
-        },
-    ));
+/// The sky state the engine computes for `params`.
+///
+/// Every framing here pins its datetime, so the clock a live one would consult
+/// does not enter the answer, and the year and the fractional hour come from
+/// the parameters instead of being assumed.
+fn sky_for(params: &SceneParams) -> sunlit_core::scene::sky::SkyState {
+    assert!(
+        params.datetime.use_custom,
+        "the placement helpers only answer for a pinned datetime"
+    );
+    sunlit_core::scene::sky::compute_sky_state(&params.datetime)
+}
+
+/// The camera `params` describes, as far as the placement needs it.
+fn camera_for(params: &SceneParams) -> sunlit_core::scene::camera::OrbitalCamera {
     let cam = &params.camera;
-    let camera = sunlit_core::scene::camera::OrbitalCamera::new(
+    sunlit_core::scene::camera::OrbitalCamera::new(
         cam.longitude,
         cam.latitude,
         sunlit_core::scene::camera::zoom_to_distance(cam.zoom),
-    );
+    )
+}
+
+/// Where the Moon lands for `params` at `viewport`, disc and all.
+fn moon_placement(
+    params: &SceneParams,
+    viewport: glam::Vec2,
+) -> sunlit_core::scene::moon::MoonPlacement {
+    let sky = sky_for(params);
+    let camera = camera_for(params);
     sunlit_core::scene::moon::place_moon(&sunlit_core::scene::moon::MoonPlacementInputs {
         position: sky.moon_position,
         rotation: sky.moon_rotation,
@@ -2084,25 +2159,22 @@ fn moon_disc(
         screen_offset: glam::Vec2::ZERO,
         viewport,
     })
-    .disc
-    .expect("the moon is on screen at these framings")
 }
 
-/// The Sun's position on the same screen, for the one case that needs it.
+/// Where the Moon's disc lands, and how large, for `params` at `viewport`.
+fn moon_disc(
+    params: &SceneParams,
+    viewport: glam::Vec2,
+) -> sunlit_core::scene::sun_occlusion::ScreenCircle {
+    moon_placement(params, viewport)
+        .disc
+        .expect("the moon is on screen at these framings")
+}
+
+/// The Sun's position on the same screen, for the cases that need it.
 fn sun_screen_position(params: &SceneParams, viewport: glam::Vec2) -> glam::Vec2 {
-    let sky = sunlit_core::scene::sky::compute_sky_state_from_time(moon_time(
-        params.datetime.custom_day_of_year,
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            params.datetime.custom_hour as i32
-        },
-    ));
-    let cam = &params.camera;
-    let camera = sunlit_core::scene::camera::OrbitalCamera::new(
-        cam.longitude,
-        cam.latitude,
-        sunlit_core::scene::camera::zoom_to_distance(cam.zoom),
-    );
+    let sky = sky_for(params);
+    let camera = camera_for(params);
     let view_direction = (camera.view_matrix() * sky.sun_direction.extend(0.0))
         .truncate()
         .normalize();

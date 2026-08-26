@@ -1,6 +1,6 @@
 /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
 ///
-/// Total: 400 bytes (must be a multiple of 16 for uniform alignment).
+/// Total: 480 bytes (must be a multiple of 16 for uniform alignment).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Uniforms {
@@ -60,6 +60,13 @@ pub(crate) struct Uniforms {
     pub sun_view_dir: [f32; 3], // 12 bytes
     /// The disk's radius in pixels, floor already applied.
     pub sun_disk_radius: f32, // 4 bytes
+    /// Takes a mesh vertex to the Moon's place in world space, with the pixel
+    /// floor already in its scale.
+    pub moon_model: [f32; 16], // 64 bytes
+    pub moon_brightness: f32,          // 4 bytes
+    pub moon_earthshine: f32,          // 4 bytes
+    pub _pad6: f32,                    // 4 bytes
+    pub _pad7: f32,                    // 4 bytes
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 400);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);

@@ -29,7 +29,7 @@ use gpu_setup::{
     COLOR_FORMAT, DEPTH_FORMAT, create_render_textures, rebuild_msaa_resources,
     rebuild_render_textures,
 };
-use textures::{TextureSlot, process_decoded_textures};
+use textures::{TextureSlot, maybe_spawn_texture_load, process_decoded_textures};
 
 /// Render dimensions are rounded to this granularity to avoid
 /// creating new GPU textures on every pixel change during resize.
@@ -39,6 +39,8 @@ const SIZE_GRANULARITY: u32 = 64;
 const DAY_SLOT: usize = 1;
 /// Texture slot index for the night texture (JXL).
 const NIGHT_SLOT: usize = 2;
+/// Texture slot index for the Moon's surface (JXL).
+const MOON_SLOT: usize = 3;
 
 /// Display names of the texture modes, in combo box order. The index into this
 /// array is `SceneParams::texture_index`.
@@ -111,6 +113,15 @@ impl SlotLayout {
     /// The cloud overlay's slot.
     pub fn clouds(self) -> usize {
         self.file_backed + 1
+    }
+
+    /// The Moon's slot, in a layout that has one.
+    ///
+    /// A configuration with fewer file-backed paths than production's is a
+    /// configuration with no Moon in it, which is a picture missing an overlay
+    /// rather than anything to repair.
+    pub fn moon(self) -> Option<usize> {
+        (self.file_backed > MOON_SLOT - 1).then_some(MOON_SLOT)
     }
 
     /// The slot the globe is drawn from in `mode`.
@@ -242,6 +253,8 @@ pub struct Renderer {
     sun_disk_pipeline: wgpu::RenderPipeline,
     /// The observer's glare, drawn last over everything in the scene.
     sun_glare_pipeline: wgpu::RenderPipeline,
+    /// The Moon, drawn with the sky and opaque.
+    moon_pipeline: wgpu::RenderPipeline,
     star_buffer: wgpu::Buffer,
     planet_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -480,6 +493,12 @@ impl Renderer {
             .map_or_else(|| format!("texture_slot_{slot}"), |name| (*name).to_owned())
     }
 
+    /// The bind group holding the Moon's surface texture, once it has loaded.
+    fn moon_bind_group(&self) -> Option<&wgpu::BindGroup> {
+        let slot = self.layout().moon()?;
+        self.texture_slots[slot].bind_group.as_ref()
+    }
+
     /// The loading indicator text for the current texture selection, empty when
     /// nothing is loading.
     pub fn loading_text(&self, texture_index: i32) -> String {
@@ -560,6 +579,15 @@ impl Renderer {
 
         let (resolved, use_blend) =
             texture_routing::resolve_textures(self, TextureMode::from_index(params.texture_index));
+
+        // The Moon's texture is loaded when the Moon is wanted and not before,
+        // which is what keeps a switched-off Moon from costing a decode. Like
+        // the globe's loads, this happens whether or not the frame is skipped.
+        if params.moon_brightness > 0.0
+            && let Some(slot) = self.layout().moon()
+        {
+            maybe_spawn_texture_load(self, slot);
+        }
 
         if !received_any && self.last_state.as_ref() == Some(&current_state) {
             return RenderOutcome::Skipped;
@@ -656,6 +684,7 @@ impl Renderer {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
 
+        let moon = render_pass::Moon::select(self, params);
         render_pass::write_uniforms(
             &self.queue,
             &self.uniform_buffer,
@@ -663,6 +692,7 @@ impl Renderer {
             target_width,
             target_height,
             inputs,
+            moon.is_some(),
         );
 
         let resolve_view = export_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -684,6 +714,7 @@ impl Renderer {
             &target,
             stars,
             sun,
+            moon,
             &self.pipeline,
             bind_group,
             &self.vertex_buffer,

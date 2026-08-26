@@ -50,6 +50,11 @@ struct Uniforms {
     sun_transit: f32,                 // 4 bytes, offset 380
     sun_view_dir: vec3<f32>,          // 12 bytes, offset 384
     sun_disk_radius: f32,             // 4 bytes, offset 396
+    moon_model: mat4x4<f32>,          // 64 bytes, offset 400
+    moon_brightness: f32,             // 4 bytes, offset 464
+    moon_earthshine: f32,             // 4 bytes, offset 468
+    _pad6: f32,                       // 4 bytes, offset 472
+    _pad7: f32,                       // 4 bytes, offset 476
 };
 
 @group(0) @binding(0)
@@ -113,6 +118,38 @@ fn sky_lens_edge_radius() -> f32 {
     return tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
 }
 
+struct SkyLensPoint {
+    /// Where the direction lands, in NDC, pan included.
+    ndc: vec2<f32>,
+    /// Its angle from the view axis, which is what says whether it is in front
+    /// of the lens at all.
+    theta: f32,
+};
+
+/// The sky lens's forward projection: where a view-space direction lands.
+///
+/// Stereographic, so a direction `theta` off the view axis lands at
+/// `tan(theta / 2)` along its own radial direction, and one uniform scale takes
+/// that to NDC. The inverse is `sky_lens_direction`, and the image of a cone
+/// about a direction is `sun_disc`; this is the point mapping the star sprites
+/// and the Moon's vertices both go through.
+fn sky_lens_project(view_direction: vec3<f32>) -> SkyLensPoint {
+    let theta = acos(clamp(-view_direction.z, -1.0, 1.0));
+    let transverse_length = length(view_direction.xy);
+    var radial_direction = vec2<f32>(0.0);
+    if transverse_length > 0.000001 {
+        radial_direction = view_direction.xy / transverse_length;
+    }
+    let projected_radius = tan(min(theta, PI - 0.001) * 0.5);
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    var out: SkyLensPoint;
+    out.ndc = radial_direction * projected_radius / sky_lens_edge_radius()
+        * vec2<f32>(1.0, aspect)
+        + uniforms.screen_offset;
+    out.theta = theta;
+    return out;
+}
+
 fn star_prominence(magnitude: f32) -> f32 {
     return 1.0 - smoothstep(0.0, 4.0, magnitude);
 }
@@ -168,21 +205,12 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
     let magnitude = in.color_magnitude.a * 10.0 - 2.0;
     let world_direction = uniforms.world_from_eqj * in.direction;
     let view_direction = normalize((uniforms.sky_view * vec4<f32>(world_direction, 0.0)).xyz);
-    let theta = acos(clamp(-view_direction.z, -1.0, 1.0));
-    let transverse_length = length(view_direction.xy);
-    var radial_direction = vec2<f32>(0.0);
-    if transverse_length > 0.000001 {
-        radial_direction = view_direction.xy / transverse_length;
-    }
-    let projected_radius = tan(min(theta, PI - 0.001) * 0.5);
-    let edge_radius = sky_lens_edge_radius();
-    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
-    let center = radial_direction * projected_radius / edge_radius * vec2<f32>(1.0, aspect);
-    let visible = theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
+    let point = sky_lens_project(view_direction);
+    let visible = point.theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
     let pixel_scale = output_pixel_scale();
     let sprite_radius = star_sprite_radius_pixels(magnitude, pixel_scale);
     let sprite_offset = corner * (2.0 * sprite_radius / uniforms.viewport_size);
-    let clip = vec4<f32>(center + uniforms.screen_offset + sprite_offset, 1.0, 1.0);
+    let clip = vec4<f32>(point.ndc + sprite_offset, 1.0, 1.0);
 
     var out: StarOutput;
     out.clip_position = select(vec4<f32>(2.0, 2.0, 1.0, 1.0), clip, visible);
@@ -211,6 +239,55 @@ fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
     let compressed_flux = pow(10.0, -contrast_exponent * in.magnitude);
     let amplitude = uniforms.star_intensity * compressed_flux * (core + halo);
     return vec4<f32>(in.color * amplitude, amplitude);
+}
+
+// ---------------------------------------------------------------------------
+// The Moon
+//
+// A textured sphere at its true position, distance and orientation, drawn with
+// the sky: after the stars and the Sun's disk, before the Earth, so the painted
+// globe covers whatever falls inside its own disc and a Moon crossing the Sun
+// covers the disk. Its vertices reach the screen as directions from the eye
+// through the same sky lens the stars use, which is what makes parallax and
+// apparent size exact at every camera distance; its own front-to-back is
+// back-face culling, exact on a convex sphere, rather than a depth test between
+// two lenses that would mean nothing.
+// ---------------------------------------------------------------------------
+
+/// Width of the terminator, in units of n dot l.
+///
+/// The Moon has no atmosphere to scatter light past the shadow line, so this is
+/// as narrow as it can be without aliasing rather than a lit-side gradient.
+const MOON_TERMINATOR_WIDTH: f32 = 0.03;
+
+struct MoonOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) world_normal: vec3<f32>,
+};
+
+@vertex
+fn vs_moon(in: VertexInput) -> MoonOutput {
+    let world_position = (uniforms.moon_model * vec4<f32>(in.position, 1.0)).xyz;
+    let view_direction = normalize(
+        (uniforms.sky_view * vec4<f32>(world_position - uniforms.eye_pos, 0.0)).xyz
+    );
+    var out: MoonOutput;
+    out.clip_position = vec4<f32>(sky_lens_project(view_direction).ndc, 1.0, 1.0);
+    out.uv = in.uv;
+    // The model matrix carries a uniform scale and a rotation, so the position
+    // is the normal here too, once it is normalized.
+    out.world_normal = normalize((uniforms.moon_model * vec4<f32>(in.position, 0.0)).xyz);
+    return out;
+}
+
+@fragment
+fn fs_moon(in: MoonOutput) -> @location(0) vec4<f32> {
+    let albedo = textureSample(sphere_texture, sphere_sampler, in.uv).rgb;
+    let n_dot_l = dot(normalize(in.world_normal), normalize(uniforms.sun_dir));
+    let sunlit = smoothstep(-MOON_TERMINATOR_WIDTH, MOON_TERMINATOR_WIDTH, n_dot_l);
+    let shade = max(sunlit, clamp(uniforms.moon_earthshine, 0.0, 1.0));
+    return vec4<f32>(albedo * shade * uniforms.moon_brightness, 1.0);
 }
 
 @vertex

@@ -259,6 +259,7 @@ pub(super) fn create_renderer(
         "vs_sun_glare",
         "fs_sun_glare",
     );
+    let moon_pipeline = create_moon_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let rayleigh_pipeline =
         create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
@@ -274,6 +275,7 @@ pub(super) fn create_renderer(
         star_pipeline,
         sun_disk_pipeline,
         sun_glare_pipeline,
+        moon_pipeline,
         star_buffer,
         planet_buffer,
         vertex_buffer,
@@ -492,6 +494,61 @@ pub(super) fn create_pipeline(
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// The Moon: opaque, back-face culled, and out of the depth test's way.
+///
+/// Opaque because it has to cover the Sun's additive disk, which would show
+/// through anything else; back-face culled because that is what a convex
+/// sphere's own front-to-back needs and a depth comparison between the sky lens
+/// and the Earth's would compare two different projections; and no depth write,
+/// so the Earth still draws over it wherever the painted globe covers it.
+pub(super) fn create_moon_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("moon_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_moon"),
+            buffers: &[Vertex::buffer_layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_moon"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
@@ -814,6 +871,8 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
         "vs_sun_glare",
         "fs_sun_glare",
     );
+    res.moon_pipeline =
+        create_moon_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.cloud_pipeline =
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.rayleigh_pipeline =

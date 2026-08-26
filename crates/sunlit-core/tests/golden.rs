@@ -38,6 +38,8 @@ use sunlit_core::engine::{EngineCommand, EngineConfig, EngineHandle};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
 
+mod support;
+
 /// Golden images are small on purpose: they live in git.
 const WIDTH: u32 = 512;
 const HEIGHT: u32 = 256;
@@ -95,6 +97,18 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     config.force_software = true;
     config.preview_enabled = false;
     config.params = base_params();
+    // The Moon's slot points at a generated fixture rather than at the 1024
+    // pixel asset, which is Git LFS and may not be there. Every case therefore
+    // renders with a Moon wherever the sky puts one at the pinned instant,
+    // which is what makes the default-on Moon visible to this suite at all
+    // instead of quietly absent from it.
+    config.texture_paths = vec![
+        None,
+        None,
+        Some(support::write_moon_fixture(Path::new(env!(
+            "CARGO_TARGET_TMPDIR"
+        )))),
+    ];
     Mutex::new(sunlit_core::engine::start(config))
 });
 
@@ -126,6 +140,50 @@ fn base_params() -> SceneParams {
     params
 }
 
+/// The part of a rendered frame a case is compared over.
+///
+/// Every case but one compares the whole frame. The Moon is the exception, and
+/// the reason is arithmetic rather than taste: at 60 degrees of sky and eight
+/// times its size, the largest the disk can be in any coherent framing, it is 31
+/// pixels across in a 512 by 256 frame. Removing it entirely then comes to a
+/// mean channel difference of 0.22 against a tolerance of 2.00, so a full-frame
+/// reference would go on passing with the feature deleted, which is precisely
+/// the failure phase B's goldens taught. Comparing the window the Moon is in
+/// puts the same loss at a mean of 3.12 with 1.71 percent of pixels outliers,
+/// which fails on both counts, and what the window leaves out is the globe,
+/// which nine other cases pin.
+#[derive(Clone, Copy)]
+struct Window {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+const FULL_FRAME: Window = Window {
+    x: 0,
+    y: 0,
+    width: WIDTH,
+    height: HEIGHT,
+};
+
+/// Cut `window` out of a full-frame RGBA8 render.
+fn crop(pixels: &[u8], window: Window) -> Vec<u8> {
+    if window.x == 0 && window.y == 0 && window.width == WIDTH && window.height == HEIGHT {
+        return pixels.to_vec();
+    }
+    assert!(
+        window.x + window.width <= WIDTH && window.y + window.height <= HEIGHT,
+        "the window has to be inside the frame"
+    );
+    let mut out = Vec::with_capacity((window.width * window.height * 4) as usize);
+    for row in window.y..window.y + window.height {
+        let start = ((row * WIDTH + window.x) * 4) as usize;
+        out.extend_from_slice(&pixels[start..start + (window.width * 4) as usize]);
+    }
+    out
+}
+
 /// Reference directory for the adapter this run is using.
 fn golden_dir(adapter_key: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -137,14 +195,50 @@ fn updating() -> bool {
     std::env::var("SUNLIT_EARTH_UPDATE_GOLDEN").is_ok()
 }
 
+/// Block until the Moon's fixture texture has reached the GPU.
+///
+/// The Moon is an overlay, so nothing in the engine waits for it and
+/// `TexturesReady` excludes it. Every case here would otherwise race a decode
+/// that takes a few tens of milliseconds: the first case would render without
+/// the Moon and the rest with it, which is a reference that depends on test
+/// order. The memory report is what says whether the renderer owns the texture.
+fn wait_for_moon_texture(engine: &EngineHandle) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        let report = engine
+            .memory_report()
+            .expect("the engine should answer with a report");
+        if report
+            .expected
+            .iter()
+            .any(|texture| texture.label == "moon_texture")
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the moon fixture did not reach the GPU within a minute");
+}
+
 /// Render `params` and compare against `tests/golden/<adapter>/<name>.png`.
 fn check_golden(name: &str, params: &SceneParams) {
+    check_golden_in(name, params, FULL_FRAME);
+}
+
+/// The same, over one window of the frame.
+fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     let engine = engine();
     let adapter_key = engine.adapter_key().to_owned();
     engine.send(EngineCommand::UpdateParams(Box::new(*params)));
-    let pixels = engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
+    if params.moon_brightness > 0.0 {
+        wait_for_moon_texture(&engine);
+    }
+    let pixels = crop(
+        &engine
+            .export_pixels(WIDTH, HEIGHT)
+            .expect("the engine should be able to export"),
+        window,
+    );
     drop(engine);
 
     announce_adapter(&adapter_key);
@@ -153,7 +247,8 @@ fn check_golden(name: &str, params: &SceneParams) {
 
     if updating() {
         std::fs::create_dir_all(&dir).expect("create golden directory");
-        sunlit_core::engine::save_png(&path, WIDTH, HEIGHT, &pixels).expect("write golden");
+        sunlit_core::engine::save_png(&path, window.width, window.height, &pixels)
+            .expect("write golden");
         return;
     }
 
@@ -182,7 +277,7 @@ fn check_golden(name: &str, params: &SceneParams) {
             .join(&adapter_key);
         std::fs::create_dir_all(&review).expect("create the review directory");
         let review_path = review.join(format!("{name}.png"));
-        sunlit_core::engine::save_png(&review_path, WIDTH, HEIGHT, &pixels)
+        sunlit_core::engine::save_png(&review_path, window.width, window.height, &pixels)
             .expect("write the review image");
         panic!(
             "golden reference {name} is missing at {}. This run's render is at {} \
@@ -198,7 +293,7 @@ fn check_golden(name: &str, params: &SceneParams) {
         .to_rgba8();
     assert_eq!(
         (reference.width(), reference.height()),
-        (WIDTH, HEIGHT),
+        (window.width, window.height),
         "golden {name} has the wrong size"
     );
 
@@ -422,6 +517,46 @@ fn golden_sun_grazing_the_limb() {
     check_golden("sun_grazing_the_limb", &params);
 }
 
+/// The window the Moon lands in at the framing below, with room around it for
+/// a Moon that moved to be visible rather than merely absent.
+const MOON_WINDOW: Window = Window {
+    x: 90,
+    y: 73,
+    width: 96,
+    height: 96,
+};
+
+/// The Moon as a fat crescent, clear of the painted limb.
+///
+/// The instant is chosen so that the Moon sits beside the globe rather than
+/// behind it, and so that the camera's own displacement barely changes the
+/// phase: the eye is nine Earth radii from the geocenter and the Moon is sixty
+/// away, so a framing where that displacement is nearly perpendicular to the
+/// Sun's direction is one whose phase an ephemeris can be asked about. At 60
+/// degrees of sky and eight times the size the disk is 31 pixels across, which
+/// is what makes the crescent's orientation something a person can see.
+#[test]
+fn golden_moon_crescent() {
+    let base = base_params();
+    let mut params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        sun_glow: 0.0,
+        sky_fov: 60.0,
+        moon_size: 8.0,
+        ..base
+    };
+    params.datetime.custom_day_of_year = 199;
+    params.datetime.custom_hour = 16.0;
+    check_golden_in("moon_crescent", &params, MOON_WINDOW);
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a
@@ -502,6 +637,7 @@ fn every_golden_case_is_distinguishable() {
         "bright_star_halos",
         "sun_over_the_night_side",
         "sun_grazing_the_limb",
+        "moon_crescent",
     ];
     let mut images = Vec::new();
     for name in names {
@@ -517,6 +653,12 @@ fn every_golden_case_is_distinguishable() {
 
     for (i, a) in images.iter().enumerate() {
         for (j, b) in images.iter().enumerate().skip(i + 1) {
+            // Two references of different sizes are distinguishable by their
+            // sizes, and `compare` has no meaning across them. Only the Moon's
+            // window is a different size from the rest; see `Window`.
+            if a.dimensions() != b.dimensions() {
+                continue;
+            }
             let (mean, outliers) = compare(a.as_raw(), b.as_raw());
             println!(
                 "{} vs {}: mean {mean:.2}, outliers {:.2}%",

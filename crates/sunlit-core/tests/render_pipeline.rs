@@ -68,9 +68,14 @@ struct Uniforms {
     sun_transit: f32,
     sun_view_dir: [f32; 3],
     sun_disk_radius: f32,
+    moon_model: [f32; 16],
+    moon_brightness: f32,
+    moon_earthshine: f32,
+    _pad6: f32,
+    _pad7: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 400);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -589,8 +594,20 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         sun_transit: 0.0,
         sun_view_dir: [0.0, 0.0, -1.0],
         sun_disk_radius: 2.0,
+        moon_model: MOON_MODEL_IDENTITY,
+        moon_brightness: 0.0,
+        moon_earthshine: 0.0,
+        _pad6: 0.0,
+        _pad7: 0.0,
     }
 }
+
+/// A model matrix that puts a unit Moon at the world origin. These cases draw
+/// no Moon (`moon_brightness` is zero), so what it has to be is valid rather
+/// than meaningful.
+const MOON_MODEL_IDENTITY: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -736,6 +753,11 @@ struct Uniforms {
     sun_transit: f32,
     sun_view_dir: vec3<f32>,
     sun_disk_radius: f32,
+    moon_model: mat4x4<f32>,
+    moon_brightness: f32,
+    moon_earthshine: f32,
+    _pad6: f32,
+    _pad7: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -808,6 +830,13 @@ fn main() {
     output[48] = uniforms.sun_view_dir.y;
     output[49] = uniforms.sun_view_dir.z;
     output[50] = uniforms.sun_disk_radius;
+    // moon params
+    output[51] = uniforms.moon_model[0][0];
+    output[52] = uniforms.moon_model[1][1];
+    output[53] = uniforms.moon_model[2][2];
+    output[54] = uniforms.moon_model[3][0];
+    output[55] = uniforms.moon_brightness;
+    output[56] = uniforms.moon_earthshine;
 }
 ";
 
@@ -899,6 +928,15 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         sun_transit: 0.3,
         sun_view_dir: [0.0, 0.6, -0.8],
         sun_disk_radius: 7.5,
+        // Column major, so the last column's first component is the Moon's x
+        // position and the diagonal is its scale.
+        moon_model: [
+            0.25, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.75, 0.0, 12.5, 0.0, 0.0, 1.0,
+        ],
+        moon_brightness: 1.25,
+        moon_earthshine: 0.35,
+        _pad6: 0.0,
+        _pad7: 0.0,
     };
 
     let uniform_buf = ctx
@@ -909,8 +947,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 51 floats
-    let output_size = (51 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 57 floats
+    let output_size = (57 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1195,6 +1233,24 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (values[50] - 7.5).abs() < eps,
         "sun_disk_radius: got {}, expected 7.5",
         values[50]
+    );
+    assert!(
+        (values[51] - 0.25).abs() < eps
+            && (values[52] - 0.5).abs() < eps
+            && (values[53] - 0.75).abs() < eps
+            && (values[54] - 12.5).abs() < eps,
+        "moon_model: got {:?}, expected [0.25, 0.5, 0.75, 12.5]",
+        [values[51], values[52], values[53], values[54]]
+    );
+    assert!(
+        (values[55] - 1.25).abs() < eps,
+        "moon_brightness: got {}, expected 1.25",
+        values[55]
+    );
+    assert!(
+        (values[56] - 0.35).abs() < eps,
+        "moon_earthshine: got {}, expected 0.35",
+        values[56]
     );
 }
 

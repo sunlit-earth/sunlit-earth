@@ -21,6 +21,8 @@ use sunlit_core::engine::wallpaper_sink::CountingSink;
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent, EngineHandle};
 use sunlit_core::params::SceneParams;
 
+mod support;
+
 static GPU_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Hold the GPU lock even if a previous test panicked while holding it.
@@ -115,6 +117,31 @@ impl Harness {
             }
         }
         panic!("{what}: no matching status within {TIMEOUT:?}");
+    }
+
+    /// Block until the Moon's surface texture has reached the GPU.
+    ///
+    /// `TexturesReady` deliberately excludes it, because the Moon is an overlay
+    /// and nothing in the engine waits for one. So a test that wants the Moon in
+    /// a frame asks the memory report whether the renderer owns the texture yet,
+    /// which is the only thing that answers it.
+    fn wait_for_moon_texture(&self) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            let report = self
+                .engine
+                .memory_report()
+                .expect("the engine should answer with a report");
+            if report
+                .expected
+                .iter()
+                .any(|texture| texture.label == "moon_texture")
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the moon texture did not arrive within {TIMEOUT:?}");
     }
 
     /// Drain events already queued and report whether any frame was among them.
@@ -1842,4 +1869,158 @@ fn textures_ready_fires_for_the_procedural_grid() {
         ready,
         "the grid texture is built up front and is always ready"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The Moon
+// ---------------------------------------------------------------------------
+
+/// A framing with the Moon in it, and nothing else that emits light.
+///
+/// The stars, the Sun and the atmosphere are all switched off, so the only
+/// thing these cases can be measuring is the Moon; the camera looks at the
+/// night side, where the sky lens has room to show it. The pinned instant is
+/// the one the moon golden uses.
+fn moon_params() -> SceneParams {
+    let mut params = test_params();
+    params.datetime.custom_day_of_year = 172;
+    params.datetime.custom_hour = 21.0;
+    params.camera.longitude = 160.0;
+    params.camera.latitude = 0.0;
+    params.camera.zoom = 0.45;
+    params.atmo_enabled = false;
+    params.star_intensity = 0.0;
+    params.sun_glow = 0.0;
+    params.sky_fov = 60.0;
+    params.moon_size = 8.0;
+    // Earthshine well above the clear color, so the unlit face is part of what
+    // "only adds light" is measured over rather than a wash against the sky.
+    params.moon_earthshine = 0.2;
+    params
+}
+
+/// Texture paths for a configuration whose Moon slot points at `moon`.
+fn moon_paths(moon: Option<std::path::PathBuf>) -> Vec<Option<std::path::PathBuf>> {
+    vec![None, None, moon]
+}
+
+/// The Moon adds light to a dark sky and takes none away.
+///
+/// With nothing else drawn, every pixel the Moon touches can only get brighter,
+/// which is the shape `sun_off_and_on` uses: one engine, one `UpdateParams`, an
+/// off frame against an on frame.
+#[test]
+fn a_moon_on_the_night_sky_only_adds_light() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_adds_light");
+    let fixture = support::write_moon_fixture(&dir);
+    let params = moon_params();
+
+    let harness = Harness::start(|config| {
+        config.params = params;
+        config.texture_paths = moon_paths(Some(fixture.clone()));
+    });
+    // The first frame is what spawns the load, and the texture arrives on a
+    // later tick, so the frames come from the export path rather than from the
+    // preview: an export renders now, with whatever the renderer holds.
+    let (_, width, height) = harness.next_frame();
+    assert_eq!(
+        (width, height),
+        (512, 256),
+        "this framing is for one aspect ratio"
+    );
+    harness.wait_for_moon_texture();
+    let on = harness
+        .engine
+        .export_pixels(512, 256)
+        .expect("the engine should be able to export");
+
+    let mut without = params;
+    without.moon_brightness = 0.0;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(without)));
+    harness.next_frame();
+    let off = harness
+        .engine
+        .export_pixels(512, 256)
+        .expect("the engine should be able to export");
+
+    let mut brighter = 0;
+    for (before, after) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+        let sum = |px: &[u8]| u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2]);
+        assert!(
+            sum(after) >= sum(before),
+            "a pixel went from {before:?} to {after:?} with nothing but the Moon drawn"
+        );
+        if sum(after) > sum(before) + 30 {
+            brighter += 1;
+        }
+    }
+    assert!(
+        brighter > 500,
+        "only {brighter} pixels got brighter with an eight times Moon in frame"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A Moon switched off and a Moon with no texture behind it are the same
+/// picture, which is what makes the missing asset a non-event.
+#[test]
+fn a_switched_off_moon_and_a_missing_texture_draw_the_same_frame() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_off");
+    let fixture = support::write_moon_fixture(&dir);
+    let params = moon_params();
+
+    let mut off = params;
+    off.moon_brightness = 0.0;
+    let with_texture = {
+        let harness = Harness::start(|config| {
+            config.params = off;
+            config.texture_paths = moon_paths(Some(fixture.clone()));
+        });
+        harness.next_frame().0
+    };
+    let without_texture = {
+        let harness = Harness::start(|config| {
+            config.params = params;
+            config.texture_paths = moon_paths(None);
+        });
+        harness.next_frame().0
+    };
+    let differing = with_texture
+        .chunks_exact(4)
+        .zip(without_texture.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels differ between a switched-off Moon and a missing one"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Moon is an overlay: its texture is not what `TexturesReady` waits for,
+/// and the slot it lands in is the one the layout reserves for it.
+#[test]
+fn the_moon_texture_lands_in_its_own_slot_without_delaying_readiness() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_slot");
+    let fixture = support::write_moon_fixture(&dir);
+    let harness = Harness::start(|config| {
+        config.params = moon_params();
+        config.texture_paths = moon_paths(Some(fixture.clone()));
+    });
+    // Readiness arrives with the grid alone, before the Moon has decoded.
+    harness.wait_for_textures("at startup");
+    harness.next_frame();
+    harness.wait_for_moon_texture();
+
+    let report = harness
+        .engine
+        .memory_report()
+        .expect("the engine should answer with a report");
+    assert_eq!(
+        expected_widths(&report, "moon_texture"),
+        [support::MOON_FIXTURE_WIDTH]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

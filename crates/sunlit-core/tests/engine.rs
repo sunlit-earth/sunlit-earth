@@ -347,48 +347,48 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
     );
 }
 
-/// A Sun outside an unpanned frame is drawn once a pan reaches it.
+/// A Sun past the reach of an unpanned frame is drawn once a pan reaches it.
 ///
-/// Both sun draws cull themselves against `sky_corner_angle`, which is the
-/// frame's furthest corner widened by the pan. At longitude 95 the Sun sits 86
-/// degrees off the view axis, past the 76 degree corner of an unpanned frame,
-/// so the widening is the whole reason the pan finds anything there.
+/// Both sun draws cull themselves against `sky_corner_angle`, the angle of the
+/// frame's furthest corner widened by the pan. The glare's cone is 30 degrees
+/// wide, so the widening decides anything only where the Sun is more than 30
+/// degrees past an unpanned corner: nearer than that the glare draw clears its
+/// own cull without the pan and paints the same pixels either way. At
+/// longitude 68 the Sun sits 110.5 degrees off the view axis against a 76.1
+/// degree corner, which is past both, and a pan of 0.9 brings the frame's near
+/// edge to within 4.4 degrees of it.
 #[test]
 fn a_pan_past_the_frame_corner_still_draws_the_sun() {
-    /// How much brighter a pixel got, in every channel, with the Sun on.
-    fn core_pixels(params: SceneParams) -> (usize, u8) {
+    /// Pixels the Sun added more than a handful of levels to, and its most.
+    fn added(params: SceneParams) -> (usize, u8) {
         let (off, on) = sun_off_and_on_framed(params);
-        let mut core = 0;
+        let mut painted = 0;
         let mut brightest = 0;
         for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
-            let added = [0, 1, 2].map(|c| lit[c].saturating_sub(dark[c]));
-            if added.iter().all(|&value| value >= 200) {
-                core += 1;
+            let gained = [0, 1, 2].map(|c| lit[c].saturating_sub(dark[c]));
+            if gained.iter().any(|&value| value > 4) {
+                painted += 1;
             }
-            brightest = brightest.max(added.into_iter().max().unwrap_or(0));
+            brightest = brightest.max(gained.into_iter().max().unwrap_or(0));
         }
-        (core, brightest)
+        (painted, brightest)
     }
 
-    let mut framed = sun_params(95.0);
-    let (core, brightest) = core_pixels(framed);
+    let mut framed = sun_params(68.0);
     assert_eq!(
-        core, 0,
-        "the Sun's core is off the frame here, so nothing may be at core brightness"
-    );
-    assert!(
-        brightest < 64,
-        "only the far tail of the glare reaches an unpanned frame at this \
-         longitude, but a pixel gained {brightest}"
+        added(framed),
+        (0, 0),
+        "no point of an unpanned frame is within the glare's cone here, so \
+         the Sun may not touch a pixel of it"
     );
 
-    framed.camera.offset_x = -0.4;
-    framed.camera.offset_y = 0.4;
-    let (core, brightest) = core_pixels(framed);
+    framed.camera.offset_x = -0.9;
+    let (painted, brightest) = added(framed);
     assert!(
-        core >= 20 && brightest > 200,
-        "the pan brings the Sun into frame, but only {core} pixels reached core \
-         brightness and the brightest gained {brightest}"
+        painted > 4000 && brightest > 8,
+        "the pan brings the frame's edge to within 4.4 degrees of the Sun, \
+         but only {painted} pixels gained more than four levels and the \
+         brightest gained {brightest}"
     );
 }
 

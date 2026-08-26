@@ -39,39 +39,105 @@ const SIZE_GRANULARITY: u32 = 64;
 const DAY_SLOT: usize = 1;
 /// Texture slot index for the night texture (JXL).
 const NIGHT_SLOT: usize = 2;
-/// Texture combobox index for the day/night blend mode.
-const BLEND_MODE_INDEX: usize = 3;
-/// Texture slot index for the cloud overlay texture.
-/// This shares its numeric value with `BLEND_MODE_INDEX` (a combobox index),
-/// but the two are used in different contexts: `CLOUDS_SLOT` indexes into
-/// `texture_slots` for loading/bind-group creation, while `BLEND_MODE_INDEX`
-/// is compared against the UI combobox value in `resolve_textures`.
-pub const CLOUDS_SLOT: usize = 3;
 
 /// Display names of the texture modes, in combo box order. The index into this
 /// array is `SceneParams::texture_index`.
 pub const TEXTURE_LABELS: [&str; 4] = ["Grid", "Day", "Night", "Day/Night Blend"];
 
-/// What each texture slot's GPU texture is called.
+/// The texture mode a combo box index names.
+///
+/// A mode is not a slot. The first three modes each draw the globe from one
+/// file-backed slot, `Blend` binds two of them together and has no slot of its
+/// own, and the cloud overlay has a slot but no mode. Those facts agreed
+/// numerically while the day/night blend index and the cloud slot were both
+/// three, which is what let one integer stand for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextureMode {
+    Grid,
+    Day,
+    Night,
+    Blend,
+}
+
+impl TextureMode {
+    /// The mode a combo box index names, with anything outside the four the
+    /// grid.
+    ///
+    /// A `texture_index` is a persisted integer that nothing repairs on load,
+    /// so a hand-edited config can name a mode that does not exist. The grid
+    /// is the answer because it is the one slot that is always loaded.
+    fn from_index(index: i32) -> Self {
+        match index {
+            1 => Self::Day,
+            2 => Self::Night,
+            3 => Self::Blend,
+            _ => Self::Grid,
+        }
+    }
+
+    /// The combo box's own name for this mode, for the loading indicator.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Grid => TEXTURE_LABELS[0],
+            Self::Day => TEXTURE_LABELS[1],
+            Self::Night => TEXTURE_LABELS[2],
+            Self::Blend => TEXTURE_LABELS[3],
+        }
+    }
+}
+
+/// Where each texture sits in `texture_slots`.
+///
+/// Slot 0 is the procedural grid, always loaded; then one slot per file-backed
+/// path, in the order the paths arrive; then the cloud overlay, which comes
+/// from the fetcher rather than from a file and is therefore last. Deriving the
+/// cloud slot from the number of paths rather than naming a constant is what
+/// lets a file-backed texture be added without moving it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotLayout {
+    file_backed: usize,
+}
+
+impl SlotLayout {
+    pub fn new(file_backed: usize) -> Self {
+        Self { file_backed }
+    }
+
+    /// How many slots there are, which is also the mailbox's slot count.
+    pub fn count(self) -> usize {
+        self.file_backed + 2
+    }
+
+    /// The cloud overlay's slot.
+    pub fn clouds(self) -> usize {
+        self.file_backed + 1
+    }
+
+    /// The slot the globe is drawn from in `mode`.
+    ///
+    /// `Blend` reports the day slot, which is both the fallback it renders from
+    /// until the composite bind group exists and the first of the two slots its
+    /// readiness depends on. Clamped to a slot this layout has a file for, so a
+    /// configuration with fewer paths than production's cannot reach past its
+    /// own file-backed range into the cloud slot.
+    fn globe(self, mode: TextureMode) -> usize {
+        let slot = match mode {
+            TextureMode::Grid => 0,
+            TextureMode::Day | TextureMode::Blend => DAY_SLOT,
+            TextureMode::Night => NIGHT_SLOT,
+        };
+        slot.min(self.file_backed)
+    }
+}
+
+/// What each file-backed slot's GPU texture is called. The cloud overlay is
+/// named by [`Renderer::slot_label`] instead, because its slot is wherever the
+/// layout puts it.
 ///
 /// The allocator report the memory report is built from names allocations by
 /// their GPU label, so a row that reads `day_texture` is worth more than one
-/// that reads `texture_slot_1`. Slots past this array fall back to the index,
-/// which only a configuration with more file-backed slots than production's two
-/// can reach.
-const SLOT_LABELS: [&str; 4] = [
-    "grid_texture",
-    "day_texture",
-    "night_texture",
-    "cloud_texture",
-];
-
-/// The GPU label the texture in `slot` carries.
-fn slot_label(slot: usize) -> String {
-    SLOT_LABELS
-        .get(slot)
-        .map_or_else(|| format!("texture_slot_{slot}"), |name| (*name).to_owned())
-}
+/// that reads `texture_slot_1`.
+const SLOT_LABELS: [&str; 3] = ["grid_texture", "day_texture", "night_texture"];
 
 /// Build the anti-aliasing option labels and find the default index
 /// (preferring 8x MSAA).
@@ -347,7 +413,7 @@ impl Renderer {
             .filter_map(|(index, slot)| {
                 let texture = slot.texture.as_ref()?;
                 Some(ExpectedTexture {
-                    label: slot_label(index),
+                    label: self.slot_label(index),
                     width: texture.width(),
                     height: texture.height(),
                     format: texture.format(),
@@ -393,22 +459,39 @@ impl Renderer {
         process_decoded_textures(self)
     }
 
+    /// Where the textures sit, derived from how many file-backed slots this
+    /// renderer was built with.
+    fn layout(&self) -> SlotLayout {
+        SlotLayout::new(self.texture_slots.len() - 2)
+    }
+
+    /// The GPU label the texture in `slot` carries.
+    fn slot_label(&self, slot: usize) -> String {
+        if slot == self.layout().clouds() {
+            return "cloud_texture".to_owned();
+        }
+        SLOT_LABELS
+            .get(slot)
+            .map_or_else(|| format!("texture_slot_{slot}"), |name| (*name).to_owned())
+    }
+
     /// The loading indicator text for the current texture selection, empty when
     /// nothing is loading.
     pub fn loading_text(&self, texture_index: i32) -> String {
-        texture_routing::loading_text(self, slot_of(texture_index))
+        texture_routing::loading_text(self, TextureMode::from_index(texture_index))
     }
 
     /// Whether every texture the current mode needs has finished loading.
-    /// Clouds are excluded: they are an overlay, not a requirement.
+    /// Clouds and the Moon are excluded: they are overlays, not requirements.
     pub fn textures_ready(&self, texture_index: i32) -> bool {
-        let raw_index = slot_of(texture_index);
-        if raw_index == BLEND_MODE_INDEX {
-            self.slot_loaded(DAY_SLOT)
-                && self.slot_loaded(NIGHT_SLOT)
+        let layout = self.layout();
+        let mode = TextureMode::from_index(texture_index);
+        if mode == TextureMode::Blend {
+            self.slot_loaded(layout.globe(TextureMode::Day))
+                && self.slot_loaded(layout.globe(TextureMode::Night))
                 && self.composite_bind_group.is_some()
         } else {
-            self.slot_loaded(raw_index.min(self.texture_slots.len().saturating_sub(1)))
+            self.slot_loaded(layout.globe(mode))
         }
     }
 
@@ -427,11 +510,13 @@ impl Renderer {
     /// question this answers is "will this get better on its own", which is the
     /// only sound reason to hold something back.
     pub fn textures_pending(&self, texture_index: i32) -> bool {
-        let raw_index = slot_of(texture_index);
-        if raw_index == BLEND_MODE_INDEX {
-            self.slot_pending(DAY_SLOT) || self.slot_pending(NIGHT_SLOT)
+        let layout = self.layout();
+        let mode = TextureMode::from_index(texture_index);
+        if mode == TextureMode::Blend {
+            self.slot_pending(layout.globe(TextureMode::Day))
+                || self.slot_pending(layout.globe(TextureMode::Night))
         } else {
-            self.slot_pending(raw_index.min(self.texture_slots.len().saturating_sub(1)))
+            self.slot_pending(layout.globe(mode))
         }
     }
 
@@ -467,9 +552,9 @@ impl Renderer {
 
         let received_any = std::mem::take(&mut self.texture_dirty);
         let current_state = build_frame_state(params, self.render_width, self.render_height, sky);
-        let raw_index = slot_of(params.texture_index);
 
-        let (resolved, use_blend) = texture_routing::resolve_textures(self, raw_index);
+        let (resolved, use_blend) =
+            texture_routing::resolve_textures(self, TextureMode::from_index(params.texture_index));
 
         if !received_any && self.last_state.as_ref() == Some(&current_state) {
             return RenderOutcome::Skipped;
@@ -647,12 +732,6 @@ fn planet_instance_bytes(sky: &SkyState) -> [u8; 5 * crate::assets::stars::RECOR
     bytes
 }
 
-/// Clamp a (possibly negative) combo box index into a slot index.
-#[allow(clippy::cast_sign_loss)]
-fn slot_of(texture_index: i32) -> usize {
-    texture_index.max(0) as usize
-}
-
 #[cfg(test)]
 mod tests {
     use crate::scene::sky::PlanetState;
@@ -821,19 +900,87 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // slot_of
+    // the slot layout
     // -----------------------------------------------------------------------
 
+    /// Every mode the combo box can name, with the index it is named by.
+    const MODES: [(i32, TextureMode); 4] = [
+        (0, TextureMode::Grid),
+        (1, TextureMode::Day),
+        (2, TextureMode::Night),
+        (3, TextureMode::Blend),
+    ];
+
     #[test]
-    fn slot_of_clamps_negative_indices() {
-        assert_eq!(slot_of(-1), 0);
-        assert_eq!(slot_of(0), 0);
-        assert_eq!(slot_of(3), 3);
+    fn every_combo_box_index_names_its_mode() {
+        for (index, mode) in MODES {
+            assert_eq!(TextureMode::from_index(index), mode, "index {index}");
+        }
     }
 
     #[test]
-    fn texture_labels_cover_every_mode() {
-        assert_eq!(TEXTURE_LABELS.len(), BLEND_MODE_INDEX + 1);
+    fn an_index_outside_the_modes_is_the_grid() {
+        for index in [-2, -1, 4, 7, i32::MIN, i32::MAX] {
+            assert_eq!(
+                TextureMode::from_index(index),
+                TextureMode::Grid,
+                "index {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_mode_has_a_label() {
+        for (index, mode) in MODES {
+            #[allow(clippy::cast_sign_loss)]
+            let expected = TEXTURE_LABELS[index as usize];
+            assert_eq!(mode.label(), expected, "index {index}");
+        }
+    }
+
+    /// Production's layout: the grid, the day and night surfaces, the Moon, and
+    /// the cloud overlay last.
+    #[test]
+    fn the_production_layout_puts_the_clouds_after_the_moon() {
+        let layout = SlotLayout::new(3);
+        assert_eq!(layout.count(), 5);
+        assert_eq!(layout.clouds(), 4);
+        assert_eq!(layout.globe(TextureMode::Grid), 0);
+        assert_eq!(layout.globe(TextureMode::Day), DAY_SLOT);
+        assert_eq!(layout.globe(TextureMode::Night), NIGHT_SLOT);
+        assert_eq!(layout.globe(TextureMode::Blend), DAY_SLOT);
+    }
+
+    /// The cloud overlay is always the last slot, whatever comes before it, and
+    /// the mailbox has one slot per texture.
+    #[test]
+    fn the_clouds_are_last_at_every_size() {
+        for file_backed in 0..6 {
+            let layout = SlotLayout::new(file_backed);
+            assert_eq!(layout.count(), file_backed + 2, "{file_backed} paths");
+            assert_eq!(layout.clouds(), layout.count() - 1, "{file_backed} paths");
+        }
+    }
+
+    /// No mode ever indexes past the file-backed slots, which is what kept the
+    /// old identity mapping from landing on the cloud slot.
+    #[test]
+    fn no_mode_reaches_the_cloud_slot() {
+        for file_backed in 0..6 {
+            let layout = SlotLayout::new(file_backed);
+            for (index, mode) in MODES {
+                let slot = layout.globe(mode);
+                assert!(
+                    slot < layout.clouds(),
+                    "{file_backed} paths, index {index}: slot {slot} is the cloud slot {}",
+                    layout.clouds()
+                );
+                assert!(
+                    slot <= file_backed,
+                    "{file_backed} paths, index {index}: slot {slot} has no file behind it"
+                );
+            }
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::geometry::sphere::{self, Vertex};
 
 use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
-use super::{Renderer, RendererConfig};
+use super::{Renderer, RendererConfig, SLOT_LABELS};
 
 /// Usage flags for the offscreen preview target. `TEXTURE_BINDING` lets a
 /// client bind it directly (the Slint shell does), `COPY_SRC` lets the engine
@@ -176,7 +176,7 @@ pub(super) fn create_renderer(
     let grid_tex = create_mipmapped_texture(
         &device,
         &queue,
-        &super::slot_label(0),
+        SLOT_LABELS[0],
         GRID_TEX_WIDTH,
         GRID_TEX_HEIGHT,
         grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),

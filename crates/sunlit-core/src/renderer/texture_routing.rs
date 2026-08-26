@@ -1,6 +1,5 @@
-use super::Renderer;
 use super::textures::{maybe_spawn_texture_load, resolve_render_index};
-use super::{BLEND_MODE_INDEX, DAY_SLOT, NIGHT_SLOT, TEXTURE_LABELS};
+use super::{Renderer, TextureMode};
 
 /// Result of texture resolution: identifies which bind group to use.
 pub(super) enum ResolvedTexture {
@@ -15,42 +14,44 @@ pub(super) enum ResolvedTexture {
 /// Spawns background texture loads as needed, resolves which bind group to use,
 /// and returns a `ResolvedTexture` indicating the bind group along with whether
 /// blend uniforms should be active.
-pub(super) fn resolve_textures(res: &mut Renderer, raw_index: usize) -> (ResolvedTexture, bool) {
-    let is_blend_mode = raw_index == BLEND_MODE_INDEX;
-    let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
+pub(super) fn resolve_textures(res: &mut Renderer, mode: TextureMode) -> (ResolvedTexture, bool) {
+    let layout = res.layout();
+    let day_slot = layout.globe(TextureMode::Day);
+    let night_slot = layout.globe(TextureMode::Night);
 
     // Kick off background loading if needed
-    if is_blend_mode {
-        maybe_spawn_texture_load(res, DAY_SLOT);
-        maybe_spawn_texture_load(res, NIGHT_SLOT);
+    if mode == TextureMode::Blend {
+        maybe_spawn_texture_load(res, day_slot);
+        maybe_spawn_texture_load(res, night_slot);
     } else {
-        maybe_spawn_texture_load(res, slot_index);
+        maybe_spawn_texture_load(res, layout.globe(mode));
     }
 
     // Cloud texture is populated by the cloud fetcher thread, not by
     // file-based texture loading. No need to call maybe_spawn_texture_load.
 
     // Resolve which bind group to use
-    if is_blend_mode {
+    if mode == TextureMode::Blend {
         if res.composite_bind_group.is_some() {
             (ResolvedTexture::Composite, true)
         } else {
-            let fallback_index = resolve_render_index(res, DAY_SLOT);
+            let fallback_index = resolve_render_index(res, day_slot);
             (ResolvedTexture::Slot(fallback_index), false)
         }
     } else {
-        let render_index = resolve_render_index(res, slot_index);
+        let render_index = resolve_render_index(res, layout.globe(mode));
         (ResolvedTexture::Slot(render_index), false)
     }
 }
 
 /// The loading indicator text for the current texture selection.
-pub(super) fn loading_text(res: &Renderer, raw_index: usize) -> String {
-    let slot_index = raw_index.min(res.texture_slots.len().saturating_sub(1));
+pub(super) fn loading_text(res: &Renderer, mode: TextureMode) -> String {
+    let layout = res.layout();
+    let slot_index = layout.globe(mode);
 
-    if raw_index == BLEND_MODE_INDEX {
-        let day_loading = res.texture_slots[DAY_SLOT].loading;
-        let night_loading = res.texture_slots[NIGHT_SLOT].loading;
+    if mode == TextureMode::Blend {
+        let day_loading = res.texture_slots[layout.globe(TextureMode::Day)].loading;
+        let night_loading = res.texture_slots[layout.globe(TextureMode::Night)].loading;
         match (day_loading, night_loading) {
             (true, true) => "Loading Day and Night...".to_owned(),
             (true, false) => "Loading Day...".to_owned(),
@@ -58,8 +59,7 @@ pub(super) fn loading_text(res: &Renderer, raw_index: usize) -> String {
             (false, false) => String::new(),
         }
     } else if res.texture_slots[slot_index].loading {
-        let name = TEXTURE_LABELS.get(slot_index).copied().unwrap_or_default();
-        format!("Loading {name}...")
+        format!("Loading {}...", mode.label())
     } else {
         String::new()
     }

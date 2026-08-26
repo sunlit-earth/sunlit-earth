@@ -54,7 +54,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 let tex = create_mipmapped_texture(
                     &res.device,
                     &res.queue,
-                    &super::slot_label(msg.slot_index),
+                    &res.slot_label(msg.slot_index),
                     img.width,
                     img.height,
                     img.pixels,
@@ -93,7 +93,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 } else if msg.slot_index == super::NIGHT_SLOT {
                     res.night_texture_view = Some(tex_view);
                     maybe_create_composite_bind_group(res);
-                } else if msg.slot_index == super::CLOUDS_SLOT {
+                } else if msg.slot_index == res.layout().clouds() {
                     res.cloud_texture_view = Some(tex_view);
                     maybe_create_cloud_bind_group(res);
                 }

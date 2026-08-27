@@ -234,7 +234,8 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
 /// the guest staging in `xtask` and the engine tests use.
 const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 
-/// Resolve the day, night and moon texture paths from the textures directory.
+/// Resolve the day, night, moon and Milky Way texture paths from the textures
+/// directory.
 ///
 /// In slot order after the grid, which is what the renderer's `SlotLayout`
 /// expects: a path missing from disk is `None` and its slot stays empty rather
@@ -250,12 +251,14 @@ fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBu
         pick("world.topo.200405.jxl"),
         pick("BlackMarble_2016.jxl"),
         pick("lroc_color_poles_1k.jxl"),
+        pick("milkyway_2020_4k.jxl"),
     ];
     info!(
         textures_dir = ?dir,
         day = ?paths[0],
         night = ?paths[1],
         moon = ?paths[2],
+        milky_way = ?paths[3],
         "resolved texture paths"
     );
     paths
@@ -768,11 +771,11 @@ mod tests {
 
     /// A pointer file exists, so `exists()` is not the question to ask.
     ///
-    /// Every one of the three assets is over a megabyte, and a checkout without
-    /// the LFS objects holds a couple of hundred bytes under the same name. What
-    /// naming one costs is a decode failure and an error line for a checkout
-    /// that is only incomplete, where the same run without the file at all is
-    /// quiet and draws the same picture.
+    /// The smallest of the four assets is 285 KB and a checkout without the LFS
+    /// objects holds a couple of hundred bytes under the same name. What naming
+    /// one costs is a decode failure and an error line for a checkout that is
+    /// only incomplete, where the same run without the file at all is quiet and
+    /// draws the same picture.
     #[test]
     fn a_git_lfs_pointer_is_not_a_texture_path() {
         let dir = std::env::temp_dir().join("sunlit_earth_test_texture_pointers");
@@ -792,6 +795,7 @@ mod tests {
         assert!(paths[0].is_some(), "the day map is the asset here");
         assert_eq!(paths[1], None, "the night map is not in the directory");
         assert_eq!(paths[2], None, "the moon map is a pointer");
+        assert_eq!(paths[3], None, "the panorama is not in the directory");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -41,6 +41,8 @@ const DAY_SLOT: usize = 1;
 const NIGHT_SLOT: usize = 2;
 /// Texture slot index for the Moon's surface (JXL).
 const MOON_SLOT: usize = 3;
+/// Texture slot index for the Milky Way panorama (JXL).
+const MILKY_WAY_SLOT: usize = 4;
 
 /// Display names of the texture modes, in combo box order. The index into this
 /// array is `SceneParams::texture_index`.
@@ -116,12 +118,22 @@ impl SlotLayout {
     }
 
     /// The Moon's slot, in a layout that has one.
+    pub fn moon(self) -> Option<usize> {
+        self.overlay(MOON_SLOT)
+    }
+
+    /// The Milky Way panorama's slot, in a layout that has one.
+    pub fn milky_way(self) -> Option<usize> {
+        self.overlay(MILKY_WAY_SLOT)
+    }
+
+    /// An overlay's own file-backed slot, when this layout reaches that far.
     ///
     /// A configuration with fewer file-backed paths than production's is a
-    /// configuration with no Moon in it, which is a picture missing an overlay
-    /// rather than anything to repair.
-    pub fn moon(self) -> Option<usize> {
-        (self.file_backed > MOON_SLOT - 1).then_some(MOON_SLOT)
+    /// configuration missing that overlay, which is a picture without it rather
+    /// than anything to repair.
+    fn overlay(self, slot: usize) -> Option<usize> {
+        (self.file_backed >= slot).then_some(slot)
     }
 
     /// The slot the globe is drawn from in `mode`.
@@ -148,11 +160,12 @@ impl SlotLayout {
 /// The allocator report the memory report is built from names allocations by
 /// their GPU label, so a row that reads `day_texture` is worth more than one
 /// that reads `texture_slot_1`.
-const SLOT_LABELS: [&str; 4] = [
+const SLOT_LABELS: [&str; 5] = [
     "grid_texture",
     "day_texture",
     "night_texture",
     "moon_texture",
+    "milky_way_texture",
 ];
 
 /// Build the anti-aliasing option labels and find the default index
@@ -506,7 +519,8 @@ impl Renderer {
     }
 
     /// Whether every texture the current mode needs has finished loading.
-    /// Clouds and the Moon are excluded: they are overlays, not requirements.
+    /// The clouds, the Moon and the Milky Way are excluded: they are overlays,
+    /// not requirements.
     pub fn textures_ready(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
@@ -580,13 +594,17 @@ impl Renderer {
         let (resolved, use_blend) =
             texture_routing::resolve_textures(self, TextureMode::from_index(params.texture_index));
 
-        // The Moon's texture is loaded when the Moon is wanted and not before,
-        // which is what keeps a switched-off Moon from costing a decode. Like
-        // the globe's loads, this happens whether or not the frame is skipped.
-        if params.moon_brightness > 0.0
-            && let Some(slot) = self.layout().moon()
-        {
-            maybe_spawn_texture_load(self, slot);
+        // An overlay's texture is loaded when the overlay is wanted and not
+        // before, which is what keeps a switched-off one from costing a decode.
+        // Like the globe's loads, this happens whether or not the frame is
+        // skipped.
+        for slot in [
+            (params.moon_brightness > 0.0).then(|| self.layout().moon()),
+            (params.milky_way_intensity > 0.0).then(|| self.layout().milky_way()),
+        ] {
+            if let Some(Some(slot)) = slot {
+                maybe_spawn_texture_load(self, slot);
+            }
         }
 
         if !received_any && self.last_state.as_ref() == Some(&current_state) {
@@ -973,13 +991,15 @@ mod tests {
         }
     }
 
-    /// Production's layout: the grid, the day and night surfaces, the Moon, and
-    /// the cloud overlay last.
+    /// Production's layout: the grid, the day and night surfaces, the Moon, the
+    /// Milky Way, and the cloud overlay last.
     #[test]
-    fn the_production_layout_puts_the_clouds_after_the_moon() {
-        let layout = SlotLayout::new(3);
-        assert_eq!(layout.count(), 5);
-        assert_eq!(layout.clouds(), 4);
+    fn the_production_layout_puts_the_clouds_after_the_overlays() {
+        let layout = SlotLayout::new(4);
+        assert_eq!(layout.count(), 6);
+        assert_eq!(layout.clouds(), 5);
+        assert_eq!(layout.moon(), Some(MOON_SLOT));
+        assert_eq!(layout.milky_way(), Some(MILKY_WAY_SLOT));
         assert_eq!(layout.globe(TextureMode::Grid), 0);
         assert_eq!(layout.globe(TextureMode::Day), DAY_SLOT);
         assert_eq!(layout.globe(TextureMode::Night), NIGHT_SLOT);
@@ -988,6 +1008,25 @@ mod tests {
 
     /// The cloud overlay is always the last slot, whatever comes before it, and
     /// the mailbox has one slot per texture.
+    /// A layout too short for an overlay reports no slot for it rather than one
+    /// that belongs to something else, which is what keeps the cloud slot from
+    /// being read as a panorama in a shorter configuration.
+    #[test]
+    fn a_layout_without_an_overlay_says_so() {
+        assert_eq!(SlotLayout::new(3).milky_way(), None);
+        assert_eq!(SlotLayout::new(3).moon(), Some(MOON_SLOT));
+        assert_eq!(SlotLayout::new(2).moon(), None);
+        for file_backed in 0..7 {
+            let layout = SlotLayout::new(file_backed);
+            for slot in [layout.moon(), layout.milky_way()].into_iter().flatten() {
+                assert!(
+                    slot < layout.clouds(),
+                    "{file_backed} paths: overlay slot {slot} is the cloud slot"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_clouds_are_last_at_every_size() {
         for file_backed in 0..6 {

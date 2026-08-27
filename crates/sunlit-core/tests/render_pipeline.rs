@@ -71,8 +71,8 @@ struct Uniforms {
     moon_model: [f32; 16],
     moon_brightness: f32,
     moon_earthshine: f32,
+    milky_way_intensity: f32,
     _pad6: f32,
-    _pad7: f32,
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);
@@ -597,8 +597,10 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         moon_model: MOON_MODEL_IDENTITY,
         moon_brightness: 0.0,
         moon_earthshine: 0.0,
+        // These cases bind the Earth's own texture rather than a panorama, and
+        // the layer's draw is not among the ones they encode.
+        milky_way_intensity: 0.0,
         _pad6: 0.0,
-        _pad7: 0.0,
     }
 }
 

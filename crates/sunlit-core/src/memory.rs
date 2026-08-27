@@ -58,9 +58,10 @@ const BUDGET_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 ///
 /// Three textures at `width` by `width / 2` RGBA8: the day and night surfaces
 /// and the cloud overlay, which follows the same setting. Each carries a full
-/// mip chain, which is four thirds of its base level. Saturating, because the
-/// renderer takes any width as a cap and a nonsense one must produce a large
-/// budget rather than a panic.
+/// mip chain, which is four thirds of its base level. Then the two overlays
+/// with a width of their own, one of which the setting moves and one of which
+/// it does not. Saturating, because the renderer takes any width as a cap and a
+/// nonsense one must produce a large budget rather than a panic.
 fn resident_texture_bytes(texture_resolution: u32) -> u64 {
     /// The day surface, the night surface, and the cloud overlay.
     const RESIDENT_TEXTURES: u64 = 3;
@@ -70,6 +71,24 @@ fn resident_texture_bytes(texture_resolution: u32) -> u64 {
     base_level
         .saturating_mul(RESIDENT_TEXTURES * 4 / 3)
         .saturating_add(MOON_TEXTURE_BYTES)
+        .saturating_add(milky_way_texture_bytes(texture_resolution))
+}
+
+/// Bytes the Milky Way panorama costs at `texture_resolution`.
+///
+/// Its source is 4096 wide, which is wider than the narrowest cap the setting
+/// offers and no wider than the other two, so the setting moves this term at
+/// the narrow end and not at the wide one: 42.7 MiB with its mip chain at 8192
+/// and 4096, 10.7 MiB at 2048 where the halving cache serves the downscale.
+/// `PANORAMA_WIDTH` is what stops the term growing above the source's own
+/// width, which is the same clause `halvings_to` applies to the pixels.
+fn milky_way_texture_bytes(texture_resolution: u32) -> u64 {
+    /// The width of the panorama in `textures/`.
+    const PANORAMA_WIDTH: u32 = 4096;
+
+    let width = u64::from(texture_resolution.min(PANORAMA_WIDTH));
+    let base_level = width.saturating_mul(width / 2).saturating_mul(4);
+    base_level.saturating_mul(4) / 3
 }
 
 /// Bytes the Moon's surface costs, at every resolution.
@@ -85,7 +104,8 @@ const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
 ///
 /// A cold start plus its headroom plus whatever the chosen resolution keeps
 /// resident, so the Low end of the setting is not judged against the High end's
-/// footprint. At the widest resolution this is 3 GiB and the Moon's 6 MiB.
+/// footprint. At the widest resolution this is 3 GiB, the Moon's 6 MiB and the
+/// panorama's 42.7 MiB.
 pub fn private_bytes_budget(texture_resolution: u32) -> u64 {
     COLD_START_BYTES
         .saturating_add(BUDGET_HEADROOM_BYTES)
@@ -696,12 +716,13 @@ mod tests {
     /// 3 GiB is the number the original single-constant budget was measured
     /// against, and the widest resolution is where it was measured. Nothing
     /// since has been allowed to move it except by naming what it added: the
-    /// Moon's surface is the one such term, and it is the same at every width.
+    /// Moon's surface, which is the same at every width, and the Milky Way
+    /// panorama, which is not.
     #[test]
     fn the_widest_resolution_keeps_the_budget_it_had() {
         assert_eq!(
             private_bytes_budget(8192),
-            3 * 1024 * MIB + MOON_TEXTURE_BYTES
+            3 * 1024 * MIB + MOON_TEXTURE_BYTES + milky_way_texture_bytes(8192)
         );
     }
 
@@ -726,7 +747,7 @@ mod tests {
     ///
     /// The narrow end is the binding case, not a restatement of the wide one:
     /// it gets the smallest resident allowance and has the same decode to pay
-    /// for. 2048 clears the measurement by 104 MiB where 8192 clears it by 584,
+    /// for. 2048 clears the measurement by 121 MiB where 8192 clears it by 633,
     /// so a cold-start figure set too low fails here at the two lower widths
     /// while the widest, which is where the 3 GiB total is anchored, still
     /// passes.
@@ -760,19 +781,22 @@ mod tests {
     }
 
     /// The resident half is what the setting actually buys, so it has to be
-    /// the three textures the app holds and not a number someone typed.
+    /// the textures the app holds and not a number someone typed.
     #[test]
-    fn the_resident_half_is_three_mipped_textures_and_the_moon() {
+    fn the_resident_half_is_the_textures_the_renderer_keeps() {
         for width in TEXTURE_RESOLUTIONS {
             let one_base_level = u64::from(width) * u64::from(width / 2) * 4;
             assert_eq!(
                 resident_texture_bytes(width),
-                3 * one_base_level * 4 / 3 + MOON_TEXTURE_BYTES
+                3 * one_base_level * 4 / 3 + MOON_TEXTURE_BYTES + milky_way_texture_bytes(width)
             );
         }
-        assert_eq!(resident_texture_bytes(8192), 512 * MIB + MOON_TEXTURE_BYTES);
-        assert_eq!(resident_texture_bytes(4096), 128 * MIB + MOON_TEXTURE_BYTES);
-        assert_eq!(resident_texture_bytes(2048), 32 * MIB + MOON_TEXTURE_BYTES);
+        let surfaces = |width| {
+            resident_texture_bytes(width) - MOON_TEXTURE_BYTES - milky_way_texture_bytes(width)
+        };
+        assert_eq!(surfaces(8192), 512 * MIB);
+        assert_eq!(surfaces(4096), 128 * MIB);
+        assert_eq!(surfaces(2048), 32 * MIB);
     }
 
     /// The Moon's term is a constant, so it cannot be what makes the budget
@@ -781,10 +805,26 @@ mod tests {
     #[test]
     fn the_moons_term_is_the_same_at_every_resolution() {
         for width in TEXTURE_RESOLUTIONS {
-            let without_moon = resident_texture_bytes(width) - MOON_TEXTURE_BYTES;
+            let without_overlays =
+                resident_texture_bytes(width) - MOON_TEXTURE_BYTES - milky_way_texture_bytes(width);
             let one_base_level = u64::from(width) * u64::from(width / 2) * 4;
-            assert_eq!(without_moon, 3 * one_base_level * 4 / 3);
+            assert_eq!(without_overlays, 3 * one_base_level * 4 / 3);
         }
+    }
+
+    /// The panorama's term follows the setting the way the surfaces do, and
+    /// stops at the source's own width rather than pretending a wider setting
+    /// buys a wider file. Both halves matter: a term that kept growing would
+    /// claim 170 MiB at 8192 that nothing allocates, and one that did not
+    /// shrink would give the narrow end an allowance it has no use for.
+    #[test]
+    fn the_panoramas_term_is_capped_at_the_width_of_the_file() {
+        assert_eq!(milky_way_texture_bytes(4096), 4096 * 2048 * 4 * 4 / 3);
+        assert_eq!(milky_way_texture_bytes(8192), milky_way_texture_bytes(4096));
+        assert_eq!(
+            milky_way_texture_bytes(2048),
+            milky_way_texture_bytes(4096) / 4
+        );
     }
 
     /// The renderer accepts any width as a cap, so the budget has to answer for

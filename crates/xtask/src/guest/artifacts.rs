@@ -41,13 +41,14 @@ pub struct HostArtifacts {
 
 /// The texture files the app resolves, and therefore the ones the guest needs.
 ///
-/// `resolve_texture_paths` in the app names these three, and nothing else
+/// `resolve_texture_paths` in the app names these four, and nothing else
 /// connects the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
 /// reads that function and asserts all of them are still spelled this way.
-pub const TEXTURE_FILES: [&str; 3] = [
+pub const TEXTURE_FILES: [&str; 4] = [
     "world.topo.200405.jxl",
     "BlackMarble_2016.jxl",
     "lroc_color_poles_1k.jxl",
+    "milkyway_2020_4k.jxl",
 ];
 
 /// Smaller than any real asset here and far larger than a Git LFS pointer.
@@ -564,27 +565,44 @@ mod tests {
 
     #[test]
     fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
-        // All real: the sizes of the three assets in this repository.
-        assert_eq!(
-            textures_verdict([Some(2_574_413), Some(1_382_310), Some(285_458)]),
-            Ok(())
-        );
+        // All real: the sizes of the four assets in this repository.
+        let real = [
+            Some(2_574_413),
+            Some(1_382_310),
+            Some(285_458),
+            Some(9_874_855),
+        ];
+        assert_eq!(textures_verdict(real), Ok(()));
 
         // A pointer file is a few hundred bytes and is otherwise a file like
         // any other, so existence is not the question to ask.
-        let err = textures_verdict([Some(130), Some(1_382_310), Some(285_458)]).unwrap_err();
+        let mut pointer = real;
+        pointer[0] = Some(130);
+        let err = textures_verdict(pointer).unwrap_err();
         assert!(err.contains("world.topo.200405.jxl"), "{err}");
         assert!(err.contains("git lfs pull"), "{err}");
 
         // Missing is reported as missing rather than as a pointer.
-        let err = textures_verdict([Some(2_574_413), None, Some(285_458)]).unwrap_err();
+        let mut absent = real;
+        absent[1] = None;
+        let err = textures_verdict(absent).unwrap_err();
         assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
         assert!(!err.contains("pointer"), "{err}");
 
-        // The Moon is held to the same floor as the other two, which its 285 KB
+        // The Moon is held to the same floor as the rest, which its 285 KB
         // clears by a wide margin.
-        let err = textures_verdict([Some(2_574_413), Some(1_382_310), Some(130)]).unwrap_err();
+        let mut moon = real;
+        moon[2] = Some(130);
+        let err = textures_verdict(moon).unwrap_err();
         assert!(err.contains("lroc_color_poles_1k.jxl"), "{err}");
+        assert!(err.contains("git lfs pull"), "{err}");
+
+        // And so is the panorama, which the render case does not sample but
+        // which a guest without it draws an empty sky for.
+        let mut panorama = real;
+        panorama[3] = Some(130);
+        let err = textures_verdict(panorama).unwrap_err();
+        assert!(err.contains("milkyway_2020_4k.jxl"), "{err}");
         assert!(err.contains("git lfs pull"), "{err}");
     }
 

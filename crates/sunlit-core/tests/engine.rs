@@ -10,6 +10,7 @@
 //! concurrently crashes on Windows, so the lock keeps at most one engine alive
 //! at a time.
 
+use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -119,29 +120,25 @@ impl Harness {
         panic!("{what}: no matching status within {TIMEOUT:?}");
     }
 
-    /// Block until the Moon's surface texture has reached the GPU.
+    /// Block until an overlay's texture has reached the GPU, by its GPU label.
     ///
-    /// `TexturesReady` deliberately excludes it, because the Moon is an overlay
-    /// and nothing in the engine waits for one. So a test that wants the Moon in
-    /// a frame asks the memory report whether the renderer owns the texture yet,
-    /// which is the only thing that answers it.
-    fn wait_for_moon_texture(&self) {
+    /// `TexturesReady` deliberately excludes the overlays, because nothing in
+    /// the engine waits for one. So a test that wants the Moon or the Milky Way
+    /// in a frame asks the memory report whether the renderer owns the texture
+    /// yet, which is the only thing that answers it.
+    fn wait_for_slot_texture(&self, label: &str) {
         let deadline = std::time::Instant::now() + TIMEOUT;
         while std::time::Instant::now() < deadline {
             let report = self
                 .engine
                 .memory_report()
                 .expect("the engine should answer with a report");
-            if report
-                .expected
-                .iter()
-                .any(|texture| texture.label == "moon_texture")
-            {
+            if report.expected.iter().any(|texture| texture.label == label) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("the moon texture did not arrive within {TIMEOUT:?}");
+        panic!("the {label} did not arrive within {TIMEOUT:?}");
     }
 
     /// Drain events already queued and report whether any frame was among them.
@@ -1932,7 +1929,7 @@ fn a_moon_on_the_night_sky_only_adds_light() {
         (512, 256),
         "this framing is for one aspect ratio"
     );
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
     let on = harness
         .engine
         .export_pixels(512, 256)
@@ -2037,7 +2034,7 @@ fn a_moon_at_the_view_antipode_draws_nothing() {
         config.texture_paths = moon_paths(Some(fixture.clone()));
     });
     harness.next_frame();
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
     let behind = harness
         .engine
         .export_pixels(WIDTH, HEIGHT)
@@ -2079,7 +2076,7 @@ fn the_moon_texture_lands_in_its_own_slot_without_delaying_readiness() {
     // Readiness arrives with the grid alone, before the Moon has decoded.
     harness.wait_for_textures("at startup");
     harness.next_frame();
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
 
     let report = harness
         .engine
@@ -2276,7 +2273,7 @@ fn the_lit_fraction_tracks_the_ephemeris_at_three_phases() {
         config.texture_paths = moon_paths(Some(fixture.clone()));
     });
     harness.next_frame();
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
 
     #[allow(clippy::cast_precision_loss)]
     let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
@@ -2337,7 +2334,7 @@ fn the_lit_limb_faces_the_sun() {
         config.texture_paths = moon_paths(Some(fixture.clone()));
     });
     harness.next_frame();
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
     let pixels = harness
         .engine
         .export_pixels(WIDTH, HEIGHT)
@@ -2430,7 +2427,7 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
         config.texture_paths = moon_paths(Some(fixture.clone()));
     });
     harness.next_frame();
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
     let eclipsed = harness
         .engine
         .export_pixels(WIDTH, HEIGHT)
@@ -2501,7 +2498,7 @@ fn earthshine_lifts_the_unlit_face_only() {
         config.texture_paths = moon_paths(Some(fixture.clone()));
     });
     harness.next_frame();
-    harness.wait_for_moon_texture();
+    harness.wait_for_slot_texture("moon_texture");
     let dark = harness
         .engine
         .export_pixels(512, 256)
@@ -2543,5 +2540,756 @@ fn earthshine_lifts_the_unlit_face_only() {
         raised > 100,
         "only {raised} pixels changed with the earthshine floor at 0.3"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// The Milky Way
+// ---------------------------------------------------------------------------
+
+/// A camera that shows `eqj` in the sky, as far as it can be from both the
+/// frame's edges and the painted globe, chosen by maximizing the smaller of
+/// those two clearances over the camera's two angles.
+///
+/// By search, so nothing here has to know the world frame's own convention, and
+/// through `sky_lens_disc`, which is the CPU's own spelling of the projection
+/// rather than a new one. The frames these cases render have the Sun switched
+/// off, so where it lands is not part of the choice.
+fn camera_showing(
+    eqj: glam::Vec3,
+    sky: &sunlit_core::scene::sky::SkyState,
+    params: &SceneParams,
+    viewport: glam::Vec2,
+) -> (f32, f32) {
+    let world = sky.world_from_eqj * eqj;
+    let mut best = (f32::MIN, (0.0, 0.0));
+    let mut longitude = -180.0_f32;
+    while longitude < 180.0 {
+        let mut latitude = -85.0_f32;
+        while latitude < 85.0 {
+            let camera = sunlit_core::scene::camera::OrbitalCamera::new(
+                longitude,
+                latitude,
+                sunlit_core::scene::camera::zoom_to_distance(params.camera.zoom),
+            );
+            let view_direction = (camera.view_matrix() * world.extend(0.0)).truncate();
+            if let Some(circle) = sunlit_core::scene::sun_occlusion::sky_lens_disc(
+                view_direction,
+                0.0,
+                params.sky_fov,
+                glam::Vec2::ZERO,
+                viewport,
+            ) {
+                let globe = sunlit_core::scene::sun_occlusion::globe_screen_circle(
+                    camera.mvp_matrix(viewport.x / viewport.y),
+                    camera.distance,
+                    1.0,
+                    camera.fov_deg,
+                    viewport,
+                );
+                let inset = circle
+                    .center
+                    .x
+                    .min(viewport.x - circle.center.x)
+                    .min(circle.center.y)
+                    .min(viewport.y - circle.center.y);
+                let clearance = circle.center.distance(globe.center) - globe.radius;
+                let score = inset.min(clearance);
+                if score > best.0 {
+                    best = (score, (longitude, latitude));
+                }
+            }
+            latitude += 0.5;
+        }
+        longitude += 0.5;
+    }
+    best.1
+}
+
+/// A unit vector in equatorial J2000 coordinates from right ascension and
+/// declination, both in degrees.
+fn eqj_direction(right_ascension: f32, declination: f32) -> glam::Vec3 {
+    let (ra, dec) = (right_ascension.to_radians(), declination.to_radians());
+    glam::Vec3::new(dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin())
+}
+
+/// Where the sky lens puts an equatorial J2000 direction, in pixels.
+///
+/// `scene::sun_occlusion::sky_lens_disc` of a zero-width cone, which is the
+/// CPU's own spelling of the projection the shader inverts rather than a new
+/// one.
+fn eqj_screen_position(
+    eqj: glam::Vec3,
+    params: &SceneParams,
+    viewport: glam::Vec2,
+) -> Option<glam::Vec2> {
+    let sky = sky_for(params);
+    let view = camera_for(params).view_matrix();
+    let view_direction = (view * (sky.world_from_eqj * eqj).extend(0.0)).truncate();
+    sunlit_core::scene::sun_occlusion::sky_lens_disc(
+        view_direction,
+        0.0,
+        params.sky_fov,
+        glam::Vec2::ZERO,
+        viewport,
+    )
+    .map(|circle| circle.center)
+}
+
+/// The painted globe's own circle, for the cases that have to ignore it.
+fn globe_circle(
+    params: &SceneParams,
+    viewport: glam::Vec2,
+) -> sunlit_core::scene::sun_occlusion::ScreenCircle {
+    let camera = camera_for(params);
+    sunlit_core::scene::sun_occlusion::globe_screen_circle(
+        camera.mvp_matrix(viewport.x / viewport.y),
+        camera.distance,
+        1.0,
+        camera.fov_deg,
+        viewport,
+    )
+}
+
+/// A framing with a panorama fixture in the sky, at 512 by 256.
+///
+/// The datetime and camera are the caller's, through `params`; what this owns is
+/// the fixture, the engine, and the wait for the texture to arrive, which
+/// `TexturesReady` does not cover because the panorama is an overlay.
+struct PanoramaHarness {
+    harness: Harness,
+    dir: std::path::PathBuf,
+}
+
+impl PanoramaHarness {
+    const WIDTH: u32 = 512;
+    const HEIGHT: u32 = 256;
+
+    fn new(
+        name: &str,
+        params: SceneParams,
+        fixture: impl FnOnce(&Path) -> std::path::PathBuf,
+    ) -> Self {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = fixture(&dir);
+        let harness = Harness::start(|config| {
+            config.preview_size = (Self::WIDTH, Self::HEIGHT);
+            config.params = params;
+            config.texture_paths = vec![None, None, None, Some(path)];
+            config.cache_dir = Some(dir.clone());
+        });
+        harness.wait_for_slot_texture("milky_way_texture");
+        Self { harness, dir }
+    }
+
+    fn export(&self, params: &SceneParams) -> Vec<u8> {
+        self.harness
+            .engine
+            .send(EngineCommand::UpdateParams(Box::new(*params)));
+        self.harness
+            .engine
+            .export_pixels(Self::WIDTH, Self::HEIGHT)
+            .expect("the engine should be able to export")
+    }
+
+    /// The same framing with the layer switched off, which is what isolates
+    /// what the layer drew from the globe and the clear color.
+    fn export_pair(&self, params: &SceneParams) -> (Vec<u8>, Vec<u8>) {
+        let on = self.export(params);
+        let off = self.export(&SceneParams {
+            milky_way_intensity: 0.0,
+            ..*params
+        });
+        (on, off)
+    }
+
+    fn viewport() -> glam::Vec2 {
+        #[allow(clippy::cast_precision_loss)]
+        glam::Vec2::new(Self::WIDTH as f32, Self::HEIGHT as f32)
+    }
+}
+
+impl Drop for PanoramaHarness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Parameters for the panorama cases: a pinned instant, a globe small enough to
+/// leave sky around it, and everything else that puts light in the sky switched
+/// off, so what is measured is the layer.
+fn panorama_params() -> SceneParams {
+    let mut params = SceneParams {
+        texture_index: 0,
+        sample_count: 1,
+        star_intensity: 0.0,
+        sun_glow: 0.0,
+        moon_brightness: 0.0,
+        cloud_opacity: 0.0,
+        atmo_enabled: false,
+        milky_way_intensity: 1.0,
+        camera: sunlit_core::scene::camera::CameraParams {
+            zoom: 0.6,
+            ..Default::default()
+        },
+        ..SceneParams::default()
+    };
+    params.datetime.use_custom = true;
+    params.datetime.custom_hour = 2.0;
+    params.datetime.custom_day_of_year = 172;
+    params.datetime.custom_year = 2026;
+    params
+}
+
+/// How much each pixel changed between two frames, as a sum over the channels.
+fn channel_differences(on: &[u8], off: &[u8]) -> Vec<u32> {
+    on.chunks_exact(4)
+        .zip(off.chunks_exact(4))
+        .map(|(a, b)| {
+            u32::from(a[0].abs_diff(b[0]))
+                + u32::from(a[1].abs_diff(b[1]))
+                + u32::from(a[2].abs_diff(b[2]))
+        })
+        .collect()
+}
+
+/// The difference-weighted centroid of everything over `floor`, and how many
+/// pixels that was.
+fn difference_centroid(differences: &[u32], width: u32, floor: u32) -> (glam::Vec2, u32) {
+    let mut sum = glam::Vec2::ZERO;
+    let mut weight = 0.0_f32;
+    let mut count = 0;
+    for (index, &value) in differences.iter().enumerate() {
+        if value < floor {
+            continue;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let index = index as u32;
+        #[allow(clippy::cast_precision_loss)]
+        let position = glam::Vec2::new((index % width) as f32, (index / width) as f32);
+        #[allow(clippy::cast_precision_loss)]
+        let w = value as f32;
+        sum += position * w;
+        weight += w;
+        count += 1;
+    }
+    (sum / weight.max(1.0), count)
+}
+
+/// The layer draws when it is switched on, and switching it off is the whole
+/// sky's difference rather than a corner's.
+#[test]
+fn a_panorama_fills_the_sky_and_zero_intensity_empties_it() {
+    let params = panorama_params();
+    let panorama = PanoramaHarness::new(
+        "engine_panorama_switch",
+        params,
+        support::write_panorama_ramp_fixture,
+    );
+
+    let (on, off) = panorama.export_pair(&params);
+    let differences = channel_differences(&on, &off);
+    let changed = differences.iter().filter(|&&d| d > 0).count();
+    let total = differences.len();
+    let circle = globe_circle(&params, PanoramaHarness::viewport());
+    println!(
+        "the panorama changes {changed} of {total} pixels, \
+         with a globe {:.0} px across in the middle of them",
+        circle.radius * 2.0
+    );
+    assert!(
+        changed * 2 > total,
+        "only {changed} of {total} pixels differ with the panorama on"
+    );
+}
+
+/// The panorama's image of a sky position is where the star sprites put the
+/// same position.
+///
+/// The strongest statement available about the direction-to-texel map, and the
+/// one the round-trip probe cannot make: the probe holds the reconstruction to
+/// the projection, and this holds the panorama's own texel layout to the
+/// catalog path phase A checked against ephemerides. A landmark painted at
+/// Sirius's coordinates has to land on Sirius's sprite.
+///
+/// Sirius because it is the only catalog entry brighter than magnitude -1, so a
+/// limit there leaves one sprite in the whole sky. Both measurements are taken
+/// against the same frame with the layer or the stars switched off, so the
+/// painted globe is subtracted out rather than reasoned about.
+#[test]
+fn the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction() {
+    /// Sirius, right ascension and declination in degrees at J2000.
+    const SIRIUS: (f32, f32) = (101.287, -16.716);
+
+    let mut params = panorama_params();
+    let direction = eqj_direction(SIRIUS.0, SIRIUS.1);
+    let sky = sky_for(&params);
+    let viewport = PanoramaHarness::viewport();
+    let (longitude, latitude) = camera_showing(direction, &sky, &params, viewport);
+    params.camera.longitude = longitude;
+    params.camera.latitude = latitude;
+
+    let expected = eqj_screen_position(direction, &params, viewport)
+        .expect("Sirius is not at the view antipode in this framing");
+    let circle = globe_circle(&params, viewport);
+    assert!(
+        expected.x > 0.0 && expected.x < viewport.x && expected.y > 0.0 && expected.y < viewport.y,
+        "the framing puts Sirius at {expected:?}, which is off screen"
+    );
+    assert!(
+        expected.distance(circle.center) > circle.radius + 30.0,
+        "the framing puts Sirius {:.1} px from the center of a globe {:.1} px across",
+        expected.distance(circle.center),
+        circle.radius * 2.0
+    );
+
+    let panorama = PanoramaHarness::new("engine_panorama_landmark", params, |dir| {
+        support::write_panorama_landmark_fixture(dir, "sirius.png", SIRIUS.0, SIRIUS.1, 4.0)
+    });
+
+    let (with_landmark, without) = panorama.export_pair(&params);
+    let (landmark, lit) =
+        difference_centroid(&channel_differences(&with_landmark, &without), 512, 300);
+
+    let starry = SceneParams {
+        milky_way_intensity: 0.0,
+        star_intensity: 4.0,
+        star_mag_limit: -1.0,
+        ..params
+    };
+    let with_star = panorama.export(&starry);
+    let (sprite, sprite_pixels) = difference_centroid(
+        &channel_differences(&with_star, &without),
+        PanoramaHarness::WIDTH,
+        60,
+    );
+
+    println!(
+        "the landmark's centroid is at {landmark:?} over {lit} pixels, \
+         the sprite's at {sprite:?} over {sprite_pixels}, \
+         and the lens puts the direction at {expected:?}"
+    );
+    assert!(lit > 50, "only {lit} pixels of the landmark are lit");
+    assert!(
+        (1..=400).contains(&sprite_pixels),
+        "{sprite_pixels} pixels changed with one sprite in the sky"
+    );
+    assert!(
+        landmark.distance(sprite) < 5.0,
+        "the landmark is {:.1} px from the sprite for the same direction",
+        landmark.distance(sprite)
+    );
+    assert!(
+        landmark.distance(expected) < 5.0,
+        "the landmark is {:.1} px from where the lens puts the direction",
+        landmark.distance(expected)
+    );
+}
+
+/// The wrap column is not a band of the coarsest mip.
+///
+/// `atan2`'s branch cut is one pixel column wide, which is 0.2 percent of a
+/// golden frame: inside its outlier allowance and absent from its mean, so a
+/// golden passes with the seam in it and a per-column count is what can see it.
+/// The fixture does not depend on right ascension at all, so a column
+/// differing from both its neighbors cannot be content, and its coarsest mip is
+/// one texel holding a value far from the ramp at most declinations.
+///
+/// The painted globe is excluded, because its grid lines are one-pixel features
+/// of exactly the shape being counted.
+#[test]
+fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
+    /// The branch cut is the half plane where a direction's y is zero and its x
+    /// is negative, which is right ascension 180 at every declination.
+    const CUT_RIGHT_ASCENSION: f32 = 180.0;
+
+    let mut params = panorama_params();
+    let sky = sky_for(&params);
+    let viewport = PanoramaHarness::viewport();
+    let (longitude, latitude) = camera_showing(
+        eqj_direction(CUT_RIGHT_ASCENSION, 0.0),
+        &sky,
+        &params,
+        viewport,
+    );
+    params.camera.longitude = longitude;
+    params.camera.latitude = latitude;
+
+    // Vacuity guard: the case says nothing unless the cut crosses the frame.
+    let mut on_screen = 0;
+    for declination in [-60.0_f32, -30.0, 0.0, 30.0, 60.0] {
+        let Some(position) = eqj_screen_position(
+            eqj_direction(CUT_RIGHT_ASCENSION, declination),
+            &params,
+            viewport,
+        ) else {
+            continue;
+        };
+        if position.x >= 0.0
+            && position.x < viewport.x
+            && position.y >= 0.0
+            && position.y < viewport.y
+        {
+            on_screen += 1;
+        }
+    }
+    assert!(
+        on_screen >= 2,
+        "the branch cut crosses the frame at only {on_screen} of the five declinations sampled"
+    );
+
+    let panorama = PanoramaHarness::new(
+        "engine_panorama_seam",
+        params,
+        support::write_panorama_ramp_fixture,
+    );
+    let pixels = panorama.export(&params);
+    let circle = globe_circle(&params, viewport);
+
+    let width = PanoramaHarness::WIDTH as usize;
+    let height = PanoramaHarness::HEIGHT as usize;
+    let value = |x: usize, y: usize| i32::from(pixels[(y * width + x) * 4]);
+    let sky_pixel = |x: usize, y: usize| {
+        #[allow(clippy::cast_precision_loss)]
+        let position = glam::Vec2::new(x as f32, y as f32);
+        position.distance(circle.center) > circle.radius + 2.0
+    };
+    let mut worst = (0, 0, 0);
+    for x in 1..width - 1 {
+        let mut outliers = 0;
+        let mut largest = 0;
+        for y in 0..height {
+            if !(sky_pixel(x - 1, y) && sky_pixel(x, y) && sky_pixel(x + 1, y)) {
+                continue;
+            }
+            let both = (value(x, y) - value(x - 1, y))
+                .abs()
+                .min((value(x, y) - value(x + 1, y)).abs());
+            if both > 1 {
+                outliers += 1;
+                largest = largest.max(both);
+            }
+        }
+        if outliers > worst.1 {
+            worst = (x, outliers, largest);
+        }
+    }
+    println!(
+        "the worst column is {} with {} rows differing from both neighbors, by up to {}",
+        worst.0, worst.1, worst.2
+    );
+    assert!(
+        worst.1 <= 2,
+        "column {} differs from both its neighbors in {} of {height} sky rows, by up to {}",
+        worst.0,
+        worst.1,
+        worst.2
+    );
+}
+
+/// The panorama rescales with the sky field of view and the painted globe does
+/// not, which is what keeps the two lenses from drifting apart.
+///
+/// The landmark is a piece of sky of a fixed angular size, so halving the field
+/// of view has to roughly quadruple its area; the globe has the camera's own 20
+/// degree lens and cannot move at all.
+#[test]
+fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
+    const LANDMARK: (f32, f32) = (101.287, -16.716);
+    /// The landmark's own angular radius in the fixture.
+    const LANDMARK_RADIUS_DEGREES: f32 = 5.0;
+
+    let mut params = panorama_params();
+    // Further out than the other cases, so a landmark magnified by the narrow
+    // end of the slider still has room beside the globe.
+    params.camera.zoom = 0.8;
+    let sky = sky_for(&params);
+    let viewport = PanoramaHarness::viewport();
+    // Chosen at the narrow end, where the layer is magnified most and the
+    // landmark is hardest to keep in frame.
+    let (longitude, latitude) = camera_showing(
+        eqj_direction(LANDMARK.0, LANDMARK.1),
+        &sky,
+        &SceneParams {
+            sky_fov: 60.0,
+            ..params
+        },
+        viewport,
+    );
+    params.camera.longitude = longitude;
+    params.camera.latitude = latitude;
+
+    let panorama = PanoramaHarness::new("engine_panorama_fov", params, |dir| {
+        support::write_panorama_landmark_fixture(
+            dir,
+            "landmark.png",
+            LANDMARK.0,
+            LANDMARK.1,
+            LANDMARK_RADIUS_DEGREES,
+        )
+    });
+
+    let measure = |sky_fov: f32| {
+        let framing = SceneParams { sky_fov, ..params };
+        let sky = sky_for(&framing);
+        let view_direction = (camera_for(&framing).view_matrix()
+            * (sky.world_from_eqj * eqj_direction(LANDMARK.0, LANDMARK.1)).extend(0.0))
+        .truncate();
+        let disc = sunlit_core::scene::sun_occlusion::sky_lens_disc(
+            view_direction,
+            LANDMARK_RADIUS_DEGREES.to_radians(),
+            sky_fov,
+            glam::Vec2::ZERO,
+            viewport,
+        )
+        .expect("in front of the lens");
+        let circle = globe_circle(&framing, viewport);
+        assert!(
+            disc.center.distance(circle.center) > circle.radius + disc.radius + 3.0,
+            "at {sky_fov} degrees of sky a landmark {:.1} px across sits {:.1} px from a              globe {:.1} px across",
+            disc.radius * 2.0,
+            disc.center.distance(circle.center),
+            circle.radius * 2.0
+        );
+        let (on, off) = panorama.export_pair(&framing);
+        let landmark = channel_differences(&on, &off)
+            .iter()
+            .filter(|&&d| d > 300)
+            .count();
+        // On the frame with no panorama in it the sky is the clear color, whose
+        // green channel is far below anything the grid texture paints.
+        let globe = off.chunks_exact(4).filter(|px| px[1] >= 60).count();
+        (landmark, globe)
+    };
+
+    let (wide_landmark, wide_globe) = measure(120.0);
+    let (narrow_landmark, narrow_globe) = measure(60.0);
+    #[allow(clippy::cast_precision_loss)]
+    let landmark_ratio = narrow_landmark as f32 / wide_landmark as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let globe_ratio = narrow_globe as f32 / wide_globe as f32;
+    println!(
+        "halving the sky field of view takes the landmark from {wide_landmark} px to \
+         {narrow_landmark} ({landmark_ratio:.2}x) and the globe from {wide_globe} to \
+         {narrow_globe} ({globe_ratio:.3}x)"
+    );
+    assert!(
+        wide_landmark > 200,
+        "the landmark is only {wide_landmark} px"
+    );
+    assert!(
+        landmark_ratio > 3.0,
+        "the landmark's area grew {landmark_ratio:.2}x, where halving the field of view \
+         should be about four"
+    );
+    assert!(
+        (globe_ratio - 1.0).abs() < 0.02,
+        "the globe's area moved by {globe_ratio:.3}x, and the sky slider is not its lens"
+    );
+}
+
+/// The real panorama has the galactic plane where the plane is.
+///
+/// The fixture cases pin the map from a direction to a texel, but the fixture
+/// and the shader are written from one reading of the asset's own layout, so
+/// neither can catch that reading being wrong. This can: it samples the
+/// rendered sky at the galactic center, at both galactic poles, and at two
+/// stretches of the plane far from the center, and the ordering it asserts is
+/// the one a mirrored or transposed reading gets backwards.
+///
+/// One framing per sample, each with the sample 40 degrees off the view axis,
+/// because the five directions span the whole sky and no single frame holds
+/// them.
+///
+/// Skips with a printed reason where `textures/**` is still Git LFS pointers.
+#[test]
+fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
+    let Some(path) = real_panorama() else {
+        return;
+    };
+
+    let base = panorama_params();
+    let sky = sky_for(&base);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_panorama_real");
+    let _ = std::fs::remove_dir_all(&dir);
+    let harness = Harness::start(|config| {
+        config.preview_size = (PanoramaHarness::WIDTH, PanoramaHarness::HEIGHT);
+        config.params = base;
+        config.texture_paths = vec![None, None, None, Some(path)];
+        config.cache_dir = Some(dir.clone());
+    });
+    harness.wait_for_slot_texture("milky_way_texture");
+
+    let viewport = PanoramaHarness::viewport();
+    let sample = |name: &str, right_ascension: f32, declination: f32| {
+        let direction = eqj_direction(right_ascension, declination);
+        let (longitude, latitude) = camera_showing(direction, &sky, &base, viewport);
+        let mut params = base;
+        params.camera.longitude = longitude;
+        params.camera.latitude = latitude;
+        let position = eqj_screen_position(direction, &params, viewport)
+            .expect("in front of the lens at this framing");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x, y) = (position.x.round() as u32, position.y.round() as u32);
+        assert!(
+            (5..PanoramaHarness::WIDTH - 5).contains(&x)
+                && (5..PanoramaHarness::HEIGHT - 5).contains(&y),
+            "{name} is at ({x}, {y}), which is not a window inside the frame"
+        );
+        assert!(
+            position.distance(globe_circle(&params, viewport).center)
+                > globe_circle(&params, viewport).radius + 10.0,
+            "{name} lands on the painted globe"
+        );
+        harness
+            .engine
+            .send(EngineCommand::UpdateParams(Box::new(params)));
+        let pixels = harness
+            .engine
+            .export_pixels(PanoramaHarness::WIDTH, PanoramaHarness::HEIGHT)
+            .expect("the engine should be able to export");
+        // A window rather than a pixel, because the sky is Gaia photon noise
+        // and one texel of it is not what is being compared.
+        let mut total = 0_u32;
+        let mut count = 0_u32;
+        for wy in y.saturating_sub(4)..(y + 5).min(PanoramaHarness::HEIGHT) {
+            for wx in x.saturating_sub(4)..(x + 5).min(PanoramaHarness::WIDTH) {
+                let index = ((wy * PanoramaHarness::WIDTH + wx) * 4) as usize;
+                total += u32::from(pixels[index])
+                    + u32::from(pixels[index + 1])
+                    + u32::from(pixels[index + 2]);
+                count += 1;
+            }
+        }
+        let mean = total / count.max(1);
+        println!("  {name} at ({x}, {y}): mean {mean} of 765");
+        mean
+    };
+
+    let bulge = sample("the galactic center", 266.42, -29.01);
+    let north_pole = sample("the north galactic pole", 192.86, 27.13);
+    let south_pole = sample("the south galactic pole", 12.86, -27.13);
+    let cygnus = sample("the plane through Cygnus", 310.4, 45.3);
+    let carina = sample("the plane through Carina", 160.0, -59.0);
+
+    for (name, pole) in [
+        ("the north galactic pole", north_pole),
+        ("the south galactic pole", south_pole),
+    ] {
+        assert!(
+            bulge > pole * 3,
+            "the galactic center reads {bulge} and {name} {pole}, which is not this sky"
+        );
+        assert!(
+            cygnus > pole,
+            "the plane through Cygnus reads {cygnus} and {name} {pole}"
+        );
+        assert!(
+            carina > pole,
+            "the plane through Carina reads {carina} and {name} {pole}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The panorama in `textures/`, or `None` with a printed reason.
+fn real_panorama() -> Option<std::path::PathBuf> {
+    /// Far larger than a Git LFS pointer and far smaller than the asset.
+    const MIN_BYTES: u64 = 64 * 1024;
+
+    let Some(dir) = sunlit_core::assets::texture_loader::resolve_textures_dir(None) else {
+        println!("skipping: there is no textures directory");
+        return None;
+    };
+    let path = dir.join("milkyway_2020_4k.jxl");
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() >= MIN_BYTES => Some(path),
+        Ok(meta) => {
+            println!(
+                "skipping: {} is {} bytes, which is a Git LFS pointer rather than the asset",
+                path.display(),
+                meta.len()
+            );
+            None
+        }
+        Err(e) => {
+            println!("skipping: {} is not readable: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// The panorama follows the texture resolution cap, and the halving cache is
+/// what serves the narrow end.
+///
+/// Its source is 4096 wide, which is between the widest and the narrowest of
+/// the three widths the config offers, so it is the one texture where the
+/// setting is a cap in both directions: 8192 loads it as it is and 2048 halves
+/// it. That halving is what keeps the layer's 42.7 MiB from being the price of
+/// choosing the low setting, so it is worth knowing the file is written and
+/// read rather than assuming it.
+///
+/// Skips with a printed reason where `textures/**` is still Git LFS pointers.
+#[test]
+fn the_panorama_follows_the_texture_resolution_cap() {
+    let Some(path) = real_panorama() else {
+        return;
+    };
+
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_panorama_cap");
+    let _ = std::fs::remove_dir_all(&dir);
+    let params = panorama_params();
+
+    let width_of = |resolution: u32| {
+        let harness = Harness::start(|config| {
+            config.preview_size = (256, 128);
+            config.params = params;
+            config.texture_paths = vec![None, None, None, Some(path.clone())];
+            config.cache_dir = Some(dir.clone());
+            config.texture_resolution = resolution;
+        });
+        harness.wait_for_slot_texture("milky_way_texture");
+        let report = harness
+            .engine
+            .memory_report()
+            .expect("the engine should answer with a report");
+        let texture = report
+            .expected
+            .iter()
+            .find(|texture| texture.label == "milky_way_texture")
+            .expect("the panorama is in the report once it has arrived");
+        (texture.width, texture.height)
+    };
+
+    let cached = dir.join("texture_cache").join("milkyway_2020_4k.2048.png");
+    assert!(
+        !cached.exists(),
+        "the cache directory starts empty, and {} is in it",
+        cached.display()
+    );
+
+    let (wide, wide_height) = width_of(8192);
+    println!("at the 8192 setting the panorama loads at {wide}x{wide_height}");
+    assert_eq!(
+        (wide, wide_height),
+        (4096, 2048),
+        "the widest setting is a cap, and the file is 4096 wide"
+    );
+
+    let (narrow, narrow_height) = width_of(2048);
+    println!("at the 2048 setting the panorama loads at {narrow}x{narrow_height}");
+    assert_eq!((narrow, narrow_height), (2048, 1024));
+    assert!(
+        cached.exists(),
+        "the halving was not written to {}",
+        cached.display()
+    );
+
+    // The second run at the same width reads what the first wrote, which is the
+    // point of the cache and not something the width alone can show.
+    let (again, _) = width_of(2048);
+    assert_eq!(again, narrow);
+
     let _ = std::fs::remove_dir_all(&dir);
 }

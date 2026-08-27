@@ -108,6 +108,9 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
         Some(support::write_moon_fixture(Path::new(env!(
             "CARGO_TARGET_TMPDIR"
         )))),
+        Some(support::write_panorama_bands_fixture(Path::new(env!(
+            "CARGO_TARGET_TMPDIR"
+        )))),
     ];
     Mutex::new(sunlit_core::engine::start(config))
 });
@@ -131,6 +134,12 @@ fn base_params() -> SceneParams {
             zoom: 0.26,
             ..CameraParams::default()
         },
+        // Off for every case but the two that are about it. The layer covers
+        // the whole frame by construction, so leaving it on would move all
+        // eleven other references and bury what each of them is for under one
+        // background; the two panorama cases switch it on, and its own engine
+        // cases pin what a golden cannot see anyway.
+        milky_way_intensity: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;
@@ -195,29 +204,26 @@ fn updating() -> bool {
     std::env::var("SUNLIT_EARTH_UPDATE_GOLDEN").is_ok()
 }
 
-/// Block until the Moon's fixture texture has reached the GPU.
+/// Block until an overlay's fixture texture has reached the GPU, by its GPU
+/// label.
 ///
-/// The Moon is an overlay, so nothing in the engine waits for it and
-/// `TexturesReady` excludes it. Every case here would otherwise race a decode
+/// The Moon and the Milky Way are overlays, so nothing in the engine waits for
+/// them and `TexturesReady` excludes both. A case would otherwise race a decode
 /// that takes a few tens of milliseconds: the first case would render without
-/// the Moon and the rest with it, which is a reference that depends on test
-/// order. The memory report is what says whether the renderer owns the texture.
-fn wait_for_moon_texture(engine: &EngineHandle) {
+/// the texture and the rest with it, which is a reference that depends on test
+/// order. The memory report is what says whether the renderer owns it.
+fn wait_for_slot_texture(engine: &EngineHandle, label: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         let report = engine
             .memory_report()
             .expect("the engine should answer with a report");
-        if report
-            .expected
-            .iter()
-            .any(|texture| texture.label == "moon_texture")
-        {
+        if report.expected.iter().any(|texture| texture.label == label) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    panic!("the moon fixture did not reach the GPU within a minute");
+    panic!("the {label} fixture did not reach the GPU within a minute");
 }
 
 /// Render `params` and compare against `tests/golden/<adapter>/<name>.png`.
@@ -231,7 +237,10 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     let adapter_key = engine.adapter_key().to_owned();
     engine.send(EngineCommand::UpdateParams(Box::new(*params)));
     if params.moon_brightness > 0.0 {
-        wait_for_moon_texture(&engine);
+        wait_for_slot_texture(&engine, "moon_texture");
+    }
+    if params.milky_way_intensity > 0.0 {
+        wait_for_slot_texture(&engine, "milky_way_texture");
     }
     let pixels = crop(
         &engine
@@ -555,6 +564,62 @@ fn golden_moon_crescent() {
     params.datetime.custom_day_of_year = 199;
     params.datetime.custom_hour = 16.0;
     check_golden_in("moon_crescent", &params, MOON_WINDOW);
+}
+
+/// The panorama behind the stars at the default field of view.
+///
+/// The fixture is bands of declination, so what the reference shows is where
+/// the celestial sphere's parallels lie in this framing as well as that the
+/// layer is drawn at all: a reconstruction that had the sky rotated would bend
+/// the bands somewhere else. What it cannot show is the real asset's own
+/// layout, which is Git LFS and deliberately not what any reference here rests
+/// on; `the_real_panorama_has_the_galactic_plane_where_the_plane_is` in
+/// `tests/engine.rs` is where that lives.
+#[test]
+fn golden_panorama_behind_the_stars() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 1.0,
+        star_mag_limit: 6.0,
+        sun_glow: 0.0,
+        milky_way_intensity: 1.0,
+        ..base
+    };
+    check_golden("panorama_behind_the_stars", &params);
+}
+
+/// The same sky at the narrow end of the slider, where the layer is magnified
+/// about two and a half times more.
+///
+/// Two references at two fields of view are what makes the pair distinguishable
+/// for the reason decision 5 cares about: the bands are wider apart here and
+/// the globe is exactly the size it is in the other one.
+#[test]
+fn golden_panorama_at_a_narrow_sky() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 1.0,
+        star_mag_limit: 6.0,
+        sun_glow: 0.0,
+        sky_fov: 60.0,
+        milky_way_intensity: 1.0,
+        ..base
+    };
+    check_golden("panorama_at_a_narrow_sky", &params);
 }
 
 /// Render every camera preset into one image for human review.

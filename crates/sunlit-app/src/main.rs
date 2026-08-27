@@ -224,7 +224,7 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
     }
 }
 
-/// Smaller than any of the three assets and far larger than a Git LFS pointer.
+/// Smaller than any of the four assets and far larger than a Git LFS pointer.
 ///
 /// `textures/**` is Git LFS, and a checkout without the objects holds pointer
 /// files of a couple of hundred bytes, which are there as far as anything that

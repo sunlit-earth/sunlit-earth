@@ -3229,7 +3229,7 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
 /// of it are measured. Across the 21 records inside the limit the ratio runs
 /// from 0.73 to 1.26, which is bright stars sitting in bright parts of the Milky
 /// Way and nothing more; the brightest is Antares at 1.26. A star baked into the
-/// layer saturates the texels it covers, so a core at 765 of 765 reads 2.37
+/// layer saturates the texels it covers, so a core at 765 of 765 reads 2.32
 /// against the brightest surround in the set and 5 or more against a typical
 /// one, and the wrong SVS layer would do that to most of the 21 at once. Two
 /// sits between the two, with the clean maximum well clear of it.

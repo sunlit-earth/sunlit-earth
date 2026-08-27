@@ -170,7 +170,7 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 
 `cargo xtask bake-stars` reads HYG v4.4, excludes its `Sol` row, propagates proper motion to epoch 2026.0, bakes B minus V color and magnitude, and writes 16 byte records after a 12 byte header. `assets::stars` validates the embedded blob and lends its payload directly to wgpu as the static instance buffer. The blob with 15,597 stars and its `ATTRIBUTION.md` ship together under `crates/sunlit-core/src/assets/stars/`; xtask does not depend on `sunlit-core`. The format contract between the two crates is held by a fixture in `crates/sunlit-core/tests/fixtures/`, a CSV and a BIN checked in side by side: the reader's tests load the BIN, and `the_committed_fixture_matches_a_fresh_bake` in xtask bakes the CSV and compares, so a layout change that lands on one side and not the other fails there rather than in whatever the sky looked like afterwards.
 
-The star pipeline draws first. Four generated triangle strip vertices expand every catalog record into an analytic sprite with a crisp core and independently controlled glow, transformed by the shared sky rotation and camera rotation. The glow is a Gaussian with the value at `star_glow_radius` subtracted and the remainder renormalized, so it reaches zero exactly where the sprite quad ends: a bare Gaussian still carries 4.4% of its peak there, and with brightness, glow strength and glow radius all at their maxima that residual draws the quad's own edge as a straight line and puts bright stars in visible squares. `golden_bright_star_halos` is that corner of the parameter space, and `large_crisp_stars` is the other end of the same axis with no halo at all. Earth retains the camera's 20 degree perspective lens; celestial directions use a separate stereographic lens with a configurable horizontal field of view. Records are sorted by magnitude, so the runtime submits only the prefix inside the selected limit; the shader keeps the same cutoff as a boundary check. Brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline, rewritten by the two calls that move the renderer's stored sky and by neither of them when it did not move: the buffer is what the draw reads and the stored inputs are what a replayed export re-encodes, so the two have to name the same instant. Intensity zero omits both draws. The Milky Way's panorama is drawn before all of it, and Earth then covers the sky, followed by clouds and the atmosphere shells.
+The star pipeline draws over the Milky Way's panorama and under everything else. Four generated triangle strip vertices expand every catalog record into an analytic sprite with a crisp core and independently controlled glow, transformed by the shared sky rotation and camera rotation. The glow is a Gaussian with the value at `star_glow_radius` subtracted and the remainder renormalized, so it reaches zero exactly where the sprite quad ends: a bare Gaussian still carries 4.4% of its peak there, and with brightness, glow strength and glow radius all at their maxima that residual draws the quad's own edge as a straight line and puts bright stars in visible squares. `golden_bright_star_halos` is that corner of the parameter space, and `large_crisp_stars` is the other end of the same axis with no halo at all. Earth retains the camera's 20 degree perspective lens; celestial directions use a separate stereographic lens with a configurable horizontal field of view. Records are sorted by magnitude, so the runtime submits only the prefix inside the selected limit; the shader keeps the same cutoff as a boundary check. Brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline, rewritten by the two calls that move the renderer's stored sky and by neither of them when it did not move: the buffer is what the draw reads and the stored inputs are what a replayed export re-encodes, so the two have to name the same instant. Intensity zero omits both draws. Earth then covers the sky, followed by clouds and the atmosphere shells.
 
 ### The Sun
 
@@ -255,88 +255,19 @@ Two things the bake is not. It is not a fidelity guarantee: the mark leans on a 
 
 ### The Milky Way
 
-The diffuse band is a panorama of the whole celestial sphere sampled per pixel,
-drawn first in the pass so everything else in the sky sits on it. `vs_milky_way`
-is the four-vertex screen quad the sun draws generate from `vertex_index`, and it
-is always the whole frame: the sky lens has an image of every direction short of
-the antipode, the antipode is past the frame's corner at every field of view the
-slider offers, and so there is no region to leave undrawn and nothing here to
-cull. `MilkyWay::select` is the only gate, on the intensity and on whether the
-texture has arrived, which is `Stars::select`'s shape and not the Moon's: a
-fullscreen quad has no geometry that can fail to appear, so nothing about the
-frame can narrow it.
+The diffuse band is a panorama of the whole celestial sphere sampled per pixel, drawn first in the pass so everything else in the sky sits on it. `vs_milky_way` is the four-vertex screen quad the sun draws generate from `vertex_index`, and it is always the whole frame: the sky lens has an image of every direction short of the antipode, the antipode is past the frame's corner at every field of view the slider offers, and so there is no region to leave undrawn and nothing here to cull. `MilkyWay::select` is the only gate, on the intensity and on whether the texture has arrived, which is `Stars::select`'s shape and not the Moon's: a fullscreen quad has no geometry that can fail to appear, so nothing about the frame can narrow it.
 
-`fs_milky_way` inverts the chain a star sprite goes through. `milky_way_direction`
-calls phase B's `sky_lens_direction` on the framebuffer position and then
-transposes the view matrix and `world_from_eqj`, which makes it the exact inverse
-of `sky_lens_project` after `view_from_eqj`, the forward composition factored out
-of `vs_star` when this became its second consumer. That pairing is what puts the
-panorama at the same scale and orientation as the sprites on top of it, and it is
-three places a sign can be wrong, so
-`the_panoramas_reconstruction_inverts_the_projection_it_sits_under` in
-`tests/render_pipeline.rs` is a compute entry point appended to the production
-shaders that feeds directions through the forward pair and back, over both ends
-of the field of view and both signs of pan: the round trip holds to 6.5e-7 of
-chord distance on `warp` and 1.5e-4 on `lavapipe`, against a tolerance of 1e-3,
-where dropping either transpose gives 1.229 and 0.546 on both.
+`fs_milky_way` inverts the chain a star sprite goes through. `milky_way_direction` calls phase B's `sky_lens_direction` on the framebuffer position and then transposes the view matrix and `world_from_eqj`, which makes it the exact inverse of `sky_lens_project` after `view_from_eqj`, the forward composition factored out of `vs_star` when this became its second consumer. That pairing is what puts the panorama at the same scale and orientation as the sprites on top of it, and it is three places a sign can be wrong, so `the_panoramas_reconstruction_inverts_the_projection_it_sits_under` in `tests/render_pipeline.rs` is a compute entry point appended to the production shaders that feeds directions through the forward pair and back, over both ends of the field of view and both signs of pan: the round trip holds to 6.5e-7 of chord distance on `warp` and 1.5e-4 on `lavapipe`, against a tolerance of 1e-3, where dropping either transpose gives 1.229 and 0.546 on both.
 
-`milky_way_uv` is the panorama's own layout, and the one constant in it is
-`PANORAMA_RIGHT_ASCENSION_ZERO`. The asset is a standard astronomical all-sky map
-(right ascension zero at the center, increasing to the left, north up, which is
-the opposite handedness from the Earth's and the Moon's maps because a sphere
-seen from inside runs the other way round from one seen from outside), and
-`assets::texture_loader::orient` mirrors and quarter-shifts every equirectangular
-source it loads. The mirror is what turns right ascension the right way round for
-this map and the shift is what moves its zero a quarter of the way across, so the
-shader undoes the shift and nothing else. `textures/PROVENANCE.md` records the
-measurement that this is the source's layout, against eleven sky positions,
-because the SVS does not document it and the two readings differ by a mirror that
-the galactic center alone cannot tell apart.
+`milky_way_uv` is the panorama's own layout, and the one constant in it is `PANORAMA_RIGHT_ASCENSION_ZERO`. The asset is a standard astronomical all-sky map (right ascension zero at the center, increasing to the left, north up, which is the opposite handedness from the Earth's and the Moon's maps because a sphere seen from inside runs the other way round from one seen from outside), and `assets::texture_loader::orient` mirrors and quarter-shifts every equirectangular source it loads. The mirror is what turns right ascension the right way round for this map and the shift is what moves its zero a quarter of the way across, so the shader undoes the shift and nothing else. `textures/PROVENANCE.md` records the measurement that this is the source's layout, against eleven sky positions, because the SVS does not document it and the two readings differ by a mirror that the galactic center alone cannot tell apart.
 
-The wrap is handled with explicit gradients rather than patched later.
-`atan2` jumps a full turn across its branch cut, so a hardware derivative of `u`
-there is a whole texture width and the sampler answers that column with the
-coarsest mip: the average of the entire panorama, drawn as a curve from pole to
-pole. The direction is continuous across the cut, so `milky_way_uv_gradient`
-carries its derivative through the map by the chain rule and
-`textureSampleGrad` takes the result. `the_wrap_column_is_not_a_band_of_the_coarsest_mip`
-is what holds it, and two things about that case are worth knowing before
-editing it. Its fixture is bands of declination rather than a gradient, because a
-linear ramp is a fixed point of the mip chain and a case built on one passed with
-the gradient sample deleted. And its metric is a second difference over the sky
-pixels rather than a per-column count, because the cut is a curve on screen and
-two pixels wide, a derivative being a property of the fragment quad.
+The wrap is handled with explicit gradients rather than patched later. `atan2` jumps a full turn across its branch cut, so a hardware derivative of `u` there is a whole texture width and the sampler answers that column with the coarsest mip: the average of the entire panorama, drawn as a curve from pole to pole. The direction is continuous across the cut, so `milky_way_uv_gradient` carries its derivative through the map by the chain rule and `textureSampleGrad` takes the result. `the_wrap_column_is_not_a_band_of_the_coarsest_mip` is what holds it, and two things about that case are worth knowing before editing it. Its fixture is bands of declination rather than a gradient, because a linear ramp is a fixed point of the mip chain and a case built on one passed with the gradient sample deleted. And its metric is a second difference over the sky pixels rather than a per-column count, because the cut is a curve on screen and two pixels wide, a derivative being a property of the fragment quad.
 
-What the layer costs is seven transcendentals per pixel over the whole frame,
-which is negligible on a real adapter and is not on a software one: measured, the
-panorama adds 0.2 ms to a 1920 by 1080 frame and 0.9 ms to a 4K one on this
-machine's GPU, and 133 ms and 555 ms on `warp`, against the cloud shell's 16 ms
-at 1080p. It is not the texture fetch, which the sampler's anisotropy makes no
-difference to. Nothing in the suite pays it except the two goldens and the
-panorama engine cases, because every other headless configuration leaves the
-slot empty; the soak test's fourteen simulated days draw no panorama at all. The
-plan's departure 6 has the whole table and names the algebraic identity that
-would remove three of the seven from `sky_lens_direction`, which is not taken
-because that function is the Sun's too and substituting it moves every
-reference.
+What the layer costs is seven transcendentals per pixel over the whole frame, which is negligible on a real adapter and is not on a software one: measured, the panorama adds 0.2 ms to a 1920 by 1080 frame and 0.9 ms to a 4K one on this machine's GPU, and 133 ms and 555 ms on `warp`, against the cloud shell's 16 ms at 1080p. It is not the texture fetch, which the sampler's anisotropy makes no difference to. Nothing in the suite pays it except the two goldens and the panorama engine cases, because every other headless configuration leaves the slot empty; the soak test's fourteen simulated days draw no panorama at all. The plan's departure 6 has the whole table and names the algebraic identity that would remove three of the seven from `sky_lens_direction`, which is not taken because that function is the Sun's too and substituting it moves every reference.
 
-The layer's slot is the fourth file-backed one and the only texture whose source
-width sits between two of the caps, so `memory::milky_way_texture_bytes` is
-42.7 MiB at the 8192 and 4096 settings and 10.7 MiB at 2048, where the halving
-cache serves the downscale. It is an overlay, like the clouds and the Moon, so
-`textures_ready` and `textures_pending` exclude it and a checkout without the Git
-LFS object draws a sky without a band rather than waiting for one.
+The layer's slot is the fourth file-backed one and the only texture whose source width sits between two of the caps, so `memory::milky_way_texture_bytes` is 42.7 MiB at the 8192 and 4096 settings and 10.7 MiB at 2048, where the halving cache serves the downscale. It is an overlay, like the clouds and the Moon, so `textures_ready` and `textures_pending` exclude it and a checkout without the Git LFS object draws a sky without a band rather than waiting for one.
 
-Two goldens pin it, `panorama_behind_the_stars` and `panorama_at_a_narrow_sky`,
-the same night-side camera at the two ends of the field-of-view slider, both with
-the banded fixture rather than the real asset. `base_params` switches the layer
-off for every other case: it covers the whole frame, so leaving it on would move
-all eleven other references and bury what each of them is for. What a fixture
-cannot show is the asset's own layout, and
-`the_real_panorama_has_the_galactic_plane_where_the_plane_is` in `tests/engine.rs`
-is where that lives, sampling the rendered sky at the galactic center, both
-galactic poles and two stretches of the plane and asserting the ordering a
-mirrored reading inverts.
+Two goldens pin it, `panorama_behind_the_stars` and `panorama_at_a_narrow_sky`, the same night-side camera at the two ends of the field-of-view slider, both with the banded fixture rather than the real asset. `base_params` switches the layer off for every other case: it covers the whole frame, so leaving it on would move all eleven other references and bury what each of them is for. What a fixture cannot show is the asset's own layout, and `the_real_panorama_has_the_galactic_plane_where_the_plane_is` in `tests/engine.rs` is where that lives, sampling the rendered sky at the galactic center, both galactic poles and two stretches of the plane and asserting the ordering a mirrored reading inverts.
 
 ### Quality tiers
 

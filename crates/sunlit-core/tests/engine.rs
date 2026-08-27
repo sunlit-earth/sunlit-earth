@@ -2889,15 +2889,17 @@ fn the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction() {
 
 /// The wrap column is not a band of the coarsest mip.
 ///
-/// `atan2`'s branch cut is one pixel column wide, which is 0.2 percent of a
-/// golden frame: inside its outlier allowance and absent from its mean, so a
-/// golden passes with the seam in it and a per-column count is what can see it.
-/// The fixture does not depend on right ascension at all, so a column
-/// differing from both its neighbors cannot be content, and its coarsest mip is
-/// one texel holding a value far from the ramp at most declinations.
+/// `atan2`'s branch cut is a curve two pixels wide, a derivative being a
+/// property of the fragment quad, which is a fraction of a percent of a golden
+/// frame: inside its outlier allowance and absent from its mean, so a golden
+/// passes with the seam in it and a second difference over the sky pixels is
+/// what can see it. The fixture does not depend on right ascension at all, so a
+/// pixel differing from its neighbors cannot be content, and its coarsest mip is
+/// one texel holding the bands' own mean, which is far from the sky at most
+/// declinations.
 ///
-/// The painted globe is excluded, because its grid lines are one-pixel features
-/// of exactly the shape being counted.
+/// The painted globe is excluded, because its grid lines are features of exactly
+/// the shape being measured.
 #[test]
 fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
     /// The branch cut is the half plane where a direction's y is zero and its x

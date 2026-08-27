@@ -53,8 +53,8 @@ struct Uniforms {
     moon_model: mat4x4<f32>,          // 64 bytes, offset 400
     moon_brightness: f32,             // 4 bytes, offset 464
     moon_earthshine: f32,             // 4 bytes, offset 468
-    _pad6: f32,                       // 4 bytes, offset 472
-    _pad7: f32,                       // 4 bytes, offset 476
+    milky_way_intensity: f32,         // 4 bytes, offset 472
+    _pad6: f32,                       // 4 bytes, offset 476
 };
 
 @group(0) @binding(0)

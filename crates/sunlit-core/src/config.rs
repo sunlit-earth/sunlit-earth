@@ -233,6 +233,9 @@ pub struct AppConfig {
     /// Floor under the Moon's unlit face: the earthshine that keeps a new moon
     /// from disappearing altogether.
     pub moon_earthshine: f32,
+    /// Brightness of the diffuse Milky Way panorama, and the switch that puts
+    /// it in the scene at all: zero skips the draw.
+    pub milky_way_intensity: f32,
 
     // Color correction
     pub day_gamma: f32,
@@ -321,6 +324,7 @@ impl Default for AppConfig {
             moon_brightness: 1.0,
             moon_size: 1.0,
             moon_earthshine: 0.05,
+            milky_way_intensity: 0.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -675,6 +679,20 @@ mod tests {
         assert_relative_eq!(config.moon_earthshine, 0.05);
     }
 
+    /// On by default, and at half strength: the panorama's own tone map is a
+    /// neutral one, so the slider is where the band stops competing with the
+    /// globe it sits behind.
+    #[test]
+    fn the_milky_way_defaults_to_half_strength() {
+        assert_relative_eq!(AppConfig::default().milky_way_intensity, 0.5);
+    }
+
+    #[test]
+    fn deserialize_missing_the_milky_way_fills_the_default() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.milky_way_intensity, 0.5);
+    }
+
     #[test]
     fn deserialize_missing_moon_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
@@ -802,6 +820,7 @@ mod tests {
             moon_brightness: 1.3,
             moon_size: 2.5,
             moon_earthshine: 0.12,
+            milky_way_intensity: 0.8,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -939,6 +958,7 @@ mod tests {
             moon_brightness: 0.6,
             moon_size: 6.0,
             moon_earthshine: 0.3,
+            milky_way_intensity: 1.6,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

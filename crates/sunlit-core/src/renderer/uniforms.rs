@@ -65,8 +65,10 @@ pub(crate) struct Uniforms {
     pub moon_model: [f32; 16], // 64 bytes
     pub moon_brightness: f32,          // 4 bytes
     pub moon_earthshine: f32,          // 4 bytes
+    /// Brightness of the Milky Way panorama. Zero never reaches the shader,
+    /// because the draw is skipped.
+    pub milky_way_intensity: f32, // 4 bytes
     pub _pad6: f32,                    // 4 bytes
-    pub _pad7: f32,                    // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);

@@ -328,6 +328,7 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_moon_brightness(params.moon_brightness);
     window.set_moon_size(params.moon_size);
     window.set_moon_earthshine(params.moon_earthshine);
+    window.set_milky_way_intensity(params.milky_way_intensity);
     window.set_day_gamma(gamma_value_to_slider(params.day_gamma));
     window.set_day_saturation(params.day_saturation);
     window.set_night_gamma(gamma_value_to_slider(params.night_gamma));
@@ -392,6 +393,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         moon_brightness: window.get_moon_brightness(),
         moon_size: window.get_moon_size(),
         moon_earthshine: window.get_moon_earthshine(),
+        milky_way_intensity: window.get_milky_way_intensity(),
         day_gamma: gamma_slider_to_value(window.get_day_gamma()),
         day_saturation: window.get_day_saturation(),
         night_gamma: gamma_slider_to_value(window.get_night_gamma()),

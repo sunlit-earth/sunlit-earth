@@ -183,8 +183,8 @@ pub(super) fn write_uniforms<'a>(
         moon_model: moon.model.to_cols_array(),
         moon_brightness: params.moon_brightness,
         moon_earthshine: params.moon_earthshine,
+        milky_way_intensity: params.milky_way_intensity,
         _pad6: 0.0,
-        _pad7: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

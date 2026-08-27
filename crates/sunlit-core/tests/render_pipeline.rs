@@ -756,8 +756,8 @@ struct Uniforms {
     moon_model: mat4x4<f32>,
     moon_brightness: f32,
     moon_earthshine: f32,
+    milky_way_intensity: f32,
     _pad6: f32,
-    _pad7: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -837,6 +837,8 @@ fn main() {
     output[54] = uniforms.moon_model[3][0];
     output[55] = uniforms.moon_brightness;
     output[56] = uniforms.moon_earthshine;
+    // the Milky Way
+    output[57] = uniforms.milky_way_intensity;
 }
 ";
 
@@ -935,8 +937,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         ],
         moon_brightness: 1.25,
         moon_earthshine: 0.35,
+        milky_way_intensity: 0.65,
         _pad6: 0.0,
-        _pad7: 0.0,
     };
 
     let uniform_buf = ctx
@@ -947,8 +949,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 57 floats
-    let output_size = (57 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 58 floats
+    let output_size = (58 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1251,6 +1253,11 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (values[56] - 0.35).abs() < eps,
         "moon_earthshine: got {}, expected 0.35",
         values[56]
+    );
+    assert!(
+        (values[57] - 0.65).abs() < eps,
+        "milky_way_intensity: got {}, expected 0.65",
+        values[57]
     );
 }
 

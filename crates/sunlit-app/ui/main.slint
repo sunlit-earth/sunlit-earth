@@ -81,6 +81,7 @@ export component MainWindow inherits Window {
     in-out property <float> moon-brightness: 1.0;
     in-out property <float> moon-size: 1.0;
     in-out property <float> moon-earthshine: 0.05;
+    in-out property <float> milky-way-intensity: 0.5;
 
     in property <float> zoom-display-distance: 8.0;
     callback sliders-changed();
@@ -898,6 +899,26 @@ export component MainWindow inherits Window {
                                 }
                                 Text {
                                     text: round(root.moon-earthshine * 100) + "%";
+                                    vertical-alignment: center;
+                                    min-width: 45px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Milky Way";
+                                    vertical-alignment: center;
+                                    min-width: 100px;
+                                }
+                                milky-way-intensity-slider := Slider {
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.milky-way-intensity;
+                                    changed => { root.sliders-changed(); }
+                                }
+                                Text {
+                                    text: round(root.milky-way-intensity * 100) / 100 + "×";
                                     vertical-alignment: center;
                                     min-width: 45px;
                                 }

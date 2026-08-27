@@ -79,6 +79,9 @@ pub struct SceneParams {
     pub moon_size: f32,
     pub moon_earthshine: f32,
 
+    // The Milky Way
+    pub milky_way_intensity: f32,
+
     // Color correction (gamma values, not slider positions)
     pub day_gamma: f32,
     pub day_saturation: f32,
@@ -142,6 +145,7 @@ impl SceneParams {
             moon_brightness: config.moon_brightness,
             moon_size: config.moon_size,
             moon_earthshine: config.moon_earthshine,
+            milky_way_intensity: config.milky_way_intensity,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
@@ -201,6 +205,7 @@ impl SceneParams {
         config.moon_brightness = self.moon_brightness;
         config.moon_size = self.moon_size;
         config.moon_earthshine = self.moon_earthshine;
+        config.milky_way_intensity = self.milky_way_intensity;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
@@ -270,6 +275,7 @@ impl SceneParams {
             moon_brightness: q(self.moon_brightness),
             moon_size: q(self.moon_size),
             moon_earthshine: q(self.moon_earthshine),
+            milky_way_intensity: q(self.milky_way_intensity),
             day_gamma: q(self.day_gamma),
             day_saturation: q(self.day_saturation),
             night_gamma: q(self.night_gamma),
@@ -329,6 +335,7 @@ pub struct ParamsDigest {
     pub moon_brightness: i32,
     pub moon_size: i32,
     pub moon_earthshine: i32,
+    pub milky_way_intensity: i32,
     pub day_gamma: i32,
     pub day_saturation: i32,
     pub night_gamma: i32,
@@ -798,6 +805,13 @@ mod tests {
                 "moon_earthshine",
                 SceneParams {
                     moon_earthshine: 0.2,
+                    ..base
+                },
+            ),
+            (
+                "milky_way_intensity",
+                SceneParams {
+                    milky_way_intensity: 1.4,
                     ..base
                 },
             ),

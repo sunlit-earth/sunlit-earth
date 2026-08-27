@@ -239,10 +239,17 @@ pub(super) fn encode_and_submit(
                 depth_slice: None,
                 resolve_target: target.resolve_target,
                 ops: wgpu::Operations {
+                    // Near black rather than the faint blue this was while it
+                    // was the whole sky. With stars, the planets, the Sun and a
+                    // panorama on it, a blue-tinted clear reads as haze under
+                    // the band and, where the band is dark, as a floor the
+                    // stars sit on. Unconditional, so a checkout without the
+                    // panorama's Git LFS object does not change color the day
+                    // it arrives.
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.02,
-                        g: 0.02,
-                        b: 0.05,
+                        r: 0.005,
+                        g: 0.005,
+                        b: 0.01,
                         a: 1.0,
                     }),
                     store: wgpu::StoreOp::Store,

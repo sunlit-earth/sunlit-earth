@@ -163,7 +163,7 @@ fn has_lit_pixels(rgba: &[u8]) -> bool {
 
 #[test]
 fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
-    const CLEAR: [u8; 4] = [5, 5, 13, 255];
+    const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
     // With the atmosphere off, the only thing outside the globe is stars, so
     // every pixel the two frames disagree about is one a star painted. That is
@@ -205,7 +205,7 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
 
 #[test]
 fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
-    const CLEAR: [u8; 4] = [5, 5, 13, 255];
+    const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
     let harness = Harness::start(|config| {
         config.params.star_intensity = 2.0;
@@ -236,7 +236,7 @@ fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
 
 #[test]
 fn wider_sky_fov_reveals_more_catalog_directions() {
-    const CLEAR: [u8; 4] = [5, 5, 13, 255];
+    const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
     let harness = Harness::start(|config| config.params.sky_fov = 60.0);
     let (narrow_sky, _, _) = harness.next_frame();

@@ -264,6 +264,21 @@ fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBu
     paths
 }
 
+/// Whether any of the resolved paths is one of the globe's own maps.
+///
+/// `TexturesReady` is about the globe: `Renderer::textures_ready` asks for the
+/// day and night maps and the overlays are excluded from it, so a directory
+/// holding only the Moon's file or the panorama's has nothing for the wait in
+/// `run_render` to wait for. The paths are in slot order after the grid, which
+/// is why the slot is the index plus one.
+fn have_globe_texture(paths: &[Option<PathBuf>]) -> bool {
+    let layout = renderer::SlotLayout::new(paths.len());
+    paths
+        .iter()
+        .enumerate()
+        .any(|(index, path)| path.is_some() && layout.is_globe(index + 1))
+}
+
 /// The surface texture width this run uses.
 ///
 /// The flag wins over the stored setting, and unlike `--quality` the choice has
@@ -339,26 +354,29 @@ fn run_render(
         }
     });
 
-    // Waiting for `TexturesReady` only makes sense if there is a texture file
+    // Waiting for `TexturesReady` only makes sense if there is a globe texture
     // to wait for. A slot with no path never gets a bind group and so never
-    // reports ready, which turns the wait below into a guaranteed two-minute
-    // stall ending in an error about a problem that does not exist. The frame
-    // is the same either way: the scene falls back to the procedural grid.
+    // reports ready, and the overlays are not what readiness is about, so a
+    // directory holding only the Moon's file or the panorama's would turn the
+    // wait below into a guaranteed two-minute stall ending in an error about a
+    // problem that does not exist. What the globe draws from is the same either
+    // way, the procedural grid; an overlay is drawn if its own decode has landed
+    // by then, which is what waiting on `TexturesReady` never promised anyway.
     //
     // This covers a missing file, not a broken one. A texture that fails to
     // decode leaves the slot in the same terminal state and still hangs the
     // wait; that is a gap in `Renderer::textures_ready` itself, affecting every
     // client rather than only this one, and it is on the roadmap as its own
     // fix rather than patched around here.
-    let have_textures = engine_config.texture_paths.iter().any(Option::is_some);
+    let have_globe = have_globe_texture(&engine_config.texture_paths);
 
     let engine = engine::start(engine_config);
-    if have_textures {
+    if have_globe {
         if ready_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT).is_err() {
             error!("textures were not ready within the timeout, rendering anyway");
         }
     } else {
-        info!("no texture files found, rendering the procedural grid");
+        info!("no globe texture found, rendering the procedural grid");
     }
 
     let status = match engine.render_to_file(output.to_path_buf(), width, height) {
@@ -797,5 +815,33 @@ mod tests {
         assert_eq!(paths[2], None, "the moon map is a pointer");
         assert_eq!(paths[3], None, "the panorama is not in the directory");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An overlay is not something to wait for.
+    ///
+    /// The wait in `run_render` is for `TexturesReady`, which the renderer
+    /// reports from the globe's own slots, so a textures directory holding only
+    /// the Moon's file or the panorama's leaves nothing to wait for and asking
+    /// whether any path at all is present costs the two-minute timeout and an
+    /// error line for a picture that was never going to change.
+    #[test]
+    fn only_a_globe_texture_is_worth_waiting_for() {
+        let path = || Some(PathBuf::from("stand-in.jxl"));
+        assert!(!have_globe_texture(&[None, None, None, None]));
+        assert!(!have_globe_texture(&[None, None, path(), None]), "the Moon");
+        assert!(
+            !have_globe_texture(&[None, None, None, path()]),
+            "the panorama"
+        );
+        assert!(!have_globe_texture(&[None, None, path(), path()]), "both");
+        assert!(
+            have_globe_texture(&[path(), None, None, None]),
+            "the day map"
+        );
+        assert!(
+            have_globe_texture(&[None, path(), None, None]),
+            "the night map"
+        );
+        assert!(have_globe_texture(&[path(), path(), path(), path()]));
     }
 }

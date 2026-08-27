@@ -127,6 +127,19 @@ impl SlotLayout {
         self.overlay(MILKY_WAY_SLOT)
     }
 
+    /// Whether `slot` holds one of the globe's own maps.
+    ///
+    /// This is the question [`Renderer::textures_ready`] answers, from the other
+    /// side: the globe is what readiness is about, and the overlays are excluded
+    /// from it, so a configuration whose only file is an overlay's has nothing to
+    /// wait for. Slot 0 is the procedural grid, which needs no file at all.
+    pub fn is_globe(self, slot: usize) -> bool {
+        slot > 0
+            && [TextureMode::Day, TextureMode::Night]
+                .into_iter()
+                .any(|mode| self.globe(mode) == slot)
+    }
+
     /// An overlay's own file-backed slot, when this layout reaches that far.
     ///
     /// A configuration with fewer file-backed paths than production's is a
@@ -1014,6 +1027,13 @@ mod tests {
         assert_eq!(layout.globe(TextureMode::Day), DAY_SLOT);
         assert_eq!(layout.globe(TextureMode::Night), NIGHT_SLOT);
         assert_eq!(layout.globe(TextureMode::Blend), DAY_SLOT);
+        for slot in 0..layout.count() {
+            assert_eq!(
+                layout.is_globe(slot),
+                slot == DAY_SLOT || slot == NIGHT_SLOT,
+                "slot {slot}"
+            );
+        }
     }
 
     /// The cloud overlay is always the last slot, whatever comes before it, and
@@ -1024,6 +1044,10 @@ mod tests {
     #[test]
     fn a_layout_without_an_overlay_says_so() {
         assert_eq!(SlotLayout::new(3).milky_way(), None);
+        assert!(
+            !SlotLayout::new(1).is_globe(NIGHT_SLOT),
+            "a layout with one path has no night map, and clamping is not a second globe slot"
+        );
         assert_eq!(SlotLayout::new(3).moon(), Some(MOON_SLOT));
         assert_eq!(SlotLayout::new(2).moon(), None);
         for file_backed in 0..7 {

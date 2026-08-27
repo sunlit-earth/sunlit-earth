@@ -306,14 +306,18 @@ the gradient sample deleted. And its metric is a second difference over the sky
 pixels rather than a per-column count, because the cut is a curve on screen and
 two pixels wide, a derivative being a property of the fragment quad.
 
-What the layer costs is a software-adapter question and not a real-GPU one. At
-1920 by 1080 the panorama adds 130 ms to a frame on `warp` against the cloud
-shell's 16, and 0.2 ms on this machine's real adapter against the cloud shell's
-0.0. It is not the texture fetch, which anisotropy makes no difference to, but
-seven transcendentals per pixel over the whole frame; the plan's departure 6 has
-the numbers and names the algebraic identity that would remove three of them from
-`sky_lens_direction`, which is not taken because that function is the Sun's too
-and substituting it moves every golden.
+What the layer costs is seven transcendentals per pixel over the whole frame,
+which is negligible on a real adapter and is not on a software one: measured, the
+panorama adds 0.2 ms to a 1920 by 1080 frame and 0.9 ms to a 4K one on this
+machine's GPU, and 133 ms and 555 ms on `warp`, against the cloud shell's 16 ms
+at 1080p. It is not the texture fetch, which the sampler's anisotropy makes no
+difference to. Nothing in the suite pays it except the two goldens and the
+panorama engine cases, because every other headless configuration leaves the
+slot empty; the soak test's fourteen simulated days draw no panorama at all. The
+plan's departure 6 has the whole table and names the algebraic identity that
+would remove three of the seven from `sky_lens_direction`, which is not taken
+because that function is the Sun's too and substituting it moves every
+reference.
 
 The layer's slot is the fourth file-backed one and the only texture whose source
 width sits between two of the caps, so `memory::milky_way_texture_bytes` is

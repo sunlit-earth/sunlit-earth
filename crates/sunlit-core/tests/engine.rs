@@ -2993,11 +2993,14 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
         }
     }
     println!(
-        "the largest second difference among the sky pixels is {largest} at {worst_at:?},          and {anomalies} of them are over {SECOND_DIFFERENCE_TOLERANCE}"
+        "the largest second difference among the sky pixels is {largest} at {worst_at:?}, \
+         and {anomalies} of them are over {SECOND_DIFFERENCE_TOLERANCE}"
     );
     assert!(
         largest <= SECOND_DIFFERENCE_TOLERANCE,
-        "the sky pixel at {worst_at:?} sits {largest} away from the mean of its neighbors,          and {anomalies} of them do: this panorama does not depend on right ascension and          its bands are tens of pixels wide, so nothing in it can turn over in one"
+        "the sky pixel at {worst_at:?} sits {largest} away from the mean of its neighbors, \
+         and {anomalies} of them do: this panorama does not depend on right ascension and \
+         its bands are tens of pixels wide, so nothing in it can turn over in one"
     );
 }
 
@@ -3060,7 +3063,8 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
         let circle = globe_circle(&framing, viewport);
         assert!(
             disc.center.distance(circle.center) > circle.radius + disc.radius + 3.0,
-            "at {sky_fov} degrees of sky a landmark {:.1} px across sits {:.1} px from a              globe {:.1} px across",
+            "at {sky_fov} degrees of sky a landmark {:.1} px across sits {:.1} px from a \
+             globe {:.1} px across",
             disc.radius * 2.0,
             disc.center.distance(circle.center),
             circle.radius * 2.0

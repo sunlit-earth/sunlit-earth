@@ -677,6 +677,13 @@ fn contact_sheet_of_every_preset() {
 /// Every pair of references must land outside the tolerance. If two of them
 /// compare equal, either the tolerance is too loose to catch a regression or
 /// one of the cases is not testing anything the others do not.
+///
+/// The names are spelled here rather than read off the directory, so that a
+/// reference file that went missing fails this case as well as the one that
+/// owns it. What the directory is read for is the other direction: a reference
+/// this list does not name is a case silently outside the guard, which is what
+/// happened when the two panorama references were added, and the closest pair
+/// in the set is exactly the pair most likely to arrive that way.
 #[test]
 fn every_golden_case_is_distinguishable() {
     if updating() {
@@ -703,7 +710,27 @@ fn every_golden_case_is_distinguishable() {
         "sun_over_the_night_side",
         "sun_grazing_the_limb",
         "moon_crescent",
+        "panorama_behind_the_stars",
+        "panorama_at_a_narrow_sky",
     ];
+
+    let mut unnamed: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read the golden directory") {
+        let file_name = entry.expect("a directory entry").file_name();
+        let file_name = file_name.to_string_lossy();
+        if let Some(stem) = file_name.strip_suffix(".png")
+            && !names.contains(&stem)
+        {
+            unnamed.push(file_name.into_owned());
+        }
+    }
+    unnamed.sort();
+    assert!(
+        unnamed.is_empty(),
+        "the {adapter_key} set holds {unnamed:?}, which this case does not name; \
+         add them to `names` so the guard compares them too"
+    );
+
     let mut images = Vec::new();
     for name in names {
         let path = dir.join(format!("{name}.png"));

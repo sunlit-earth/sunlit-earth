@@ -2903,6 +2903,16 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
     /// The branch cut is the half plane where a direction's y is zero and its x
     /// is negative, which is right ascension 180 at every declination.
     const CUT_RIGHT_ASCENSION: f32 = 180.0;
+    /// How far a sky pixel may sit from the mean of its neighbors.
+    ///
+    /// The clean frame reaches 4 on warp and 7 on lavapipe, which is the two
+    /// rasterizers disagreeing about filtering and rounding rather than anything
+    /// about the sky. The fault reaches 102 on warp and 18 on lavapipe, so the
+    /// margin is wide on one adapter and narrow on the other and this sits
+    /// between the two pairs; what the second adapter buys is that the case is
+    /// not assumed to behave the same on both, which is the whole reason it runs
+    /// on both.
+    const SECOND_DIFFERENCE_TOLERANCE: i32 = 12;
 
     let mut params = panorama_params();
     let sky = sky_for(&params);
@@ -2971,7 +2981,7 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
             let across = (value(x - 1, y) + value(x + 1, y) - here).abs();
             let down = (value(x, y - 1) + value(x, y + 1) - here).abs();
             let curvature = across.max(down);
-            if curvature > 6 {
+            if curvature > SECOND_DIFFERENCE_TOLERANCE {
                 anomalies += 1;
             }
             if curvature > largest {
@@ -2981,10 +2991,10 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
         }
     }
     println!(
-        "the largest second difference among the sky pixels is {largest} at {worst_at:?},          and {anomalies} of them are over six"
+        "the largest second difference among the sky pixels is {largest} at {worst_at:?},          and {anomalies} of them are over {SECOND_DIFFERENCE_TOLERANCE}"
     );
     assert!(
-        largest <= 6,
+        largest <= SECOND_DIFFERENCE_TOLERANCE,
         "the sky pixel at {worst_at:?} sits {largest} away from the mean of its neighbors,          and {anomalies} of them do: this panorama does not depend on right ascension and          its bands are tens of pixels wide, so nothing in it can turn over in one"
     );
 }

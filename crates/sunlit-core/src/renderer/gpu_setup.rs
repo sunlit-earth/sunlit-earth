@@ -241,7 +241,16 @@ pub(super) fn create_renderer(
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let star_pipeline = create_star_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let sun_disk_pipeline = create_sun_pipeline(
+    let milky_way_pipeline = create_sky_quad_pipeline(
+        &device,
+        &pipeline_layout,
+        &shader,
+        sample_count,
+        "milky_way_pipeline",
+        "vs_milky_way",
+        "fs_milky_way",
+    );
+    let sun_disk_pipeline = create_sky_quad_pipeline(
         &device,
         &pipeline_layout,
         &shader,
@@ -250,7 +259,7 @@ pub(super) fn create_renderer(
         "vs_sun_disk",
         "fs_sun_disk",
     );
-    let sun_glare_pipeline = create_sun_pipeline(
+    let sun_glare_pipeline = create_sky_quad_pipeline(
         &device,
         &pipeline_layout,
         &shader,
@@ -273,6 +282,7 @@ pub(super) fn create_renderer(
     Renderer {
         pipeline,
         star_pipeline,
+        milky_way_pipeline,
         sun_disk_pipeline,
         sun_glare_pipeline,
         moon_pipeline,
@@ -324,13 +334,14 @@ pub(super) fn create_renderer(
 /// A screen-aligned quad the vertex shader generates from `vertex_index`
 /// alone, additive, with the depth test out of the way.
 ///
-/// Both sun draws use it. The disk is scheduled with the sky, where the
-/// opaque globe drawn afterwards covers whatever falls inside its painted
-/// disc; the glare is scheduled last, where nothing covers it, which is what
-/// veiling glare does. Neither reads depth, so the two differ only in when
-/// they run and which entry points they carry.
+/// Three draws use it. The Milky Way is the pass's first, where everything
+/// after it overdraws it; the Sun's disk is scheduled with the sky, where the
+/// opaque globe drawn afterwards covers whatever falls inside its painted disc;
+/// the glare is scheduled last, where nothing covers it, which is what veiling
+/// glare does. None of them reads depth, so they differ only in when they run
+/// and which entry points they carry.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn create_sun_pipeline(
+pub(super) fn create_sky_quad_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
@@ -853,7 +864,16 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.star_pipeline =
         create_star_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.sun_disk_pipeline = create_sun_pipeline(
+    res.milky_way_pipeline = create_sky_quad_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+        "milky_way_pipeline",
+        "vs_milky_way",
+        "fs_milky_way",
+    );
+    res.sun_disk_pipeline = create_sky_quad_pipeline(
         &res.device,
         &res.pipeline_layout,
         &res.shader,
@@ -862,7 +882,7 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
         "vs_sun_disk",
         "fs_sun_disk",
     );
-    res.sun_glare_pipeline = create_sun_pipeline(
+    res.sun_glare_pipeline = create_sky_quad_pipeline(
         &res.device,
         &res.pipeline_layout,
         &res.shader,

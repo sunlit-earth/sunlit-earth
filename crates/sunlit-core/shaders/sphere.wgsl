@@ -150,6 +150,16 @@ fn sky_lens_project(view_direction: vec3<f32>) -> SkyLensPoint {
     return out;
 }
 
+/// The view-space direction a catalog direction points along.
+///
+/// Two rotations: the equatorial J2000 frame into the world, then the world
+/// into the eye. Everything drawn from a celestial direction goes through this
+/// one composition, and `milky_way_direction` is its inverse.
+fn view_from_eqj(eqj_direction: vec3<f32>) -> vec3<f32> {
+    let world_direction = uniforms.world_from_eqj * eqj_direction;
+    return normalize((uniforms.sky_view * vec4<f32>(world_direction, 0.0)).xyz);
+}
+
 fn star_prominence(magnitude: f32) -> f32 {
     return 1.0 - smoothstep(0.0, 4.0, magnitude);
 }
@@ -203,9 +213,7 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
     );
     let corner = corners[vertex_index];
     let magnitude = in.color_magnitude.a * 10.0 - 2.0;
-    let world_direction = uniforms.world_from_eqj * in.direction;
-    let view_direction = normalize((uniforms.sky_view * vec4<f32>(world_direction, 0.0)).xyz);
-    let point = sky_lens_project(view_direction);
+    let point = sky_lens_project(view_from_eqj(in.direction));
     let visible = point.theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
     let pixel_scale = output_pixel_scale();
     let sprite_radius = star_sprite_radius_pixels(magnitude, pixel_scale);
@@ -780,7 +788,9 @@ fn sun_ghosts(position: vec2<f32>, sun_pixels: vec2<f32>) -> vec3<f32> {
     return total;
 }
 
-fn sun_quad_corner(vertex_index: u32) -> vec2<f32> {
+/// The four corners of a screen-aligned quad, generated from the vertex index
+/// so the three draws that use one need no vertex buffer.
+fn sky_quad_corner(vertex_index: u32) -> vec2<f32> {
     let corners = array<vec2<f32>, 4>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 1.0, -1.0),
@@ -804,7 +814,7 @@ fn vs_sun_disk(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) v
     // Sized from the radius the CPU floored rather than from the cone, so the
     // quad and the disk the fragment shader draws are the same circle.
     let extent = uniforms.sun_disk_radius + SUN_CORE_EDGE_PIXELS * output_pixel_scale();
-    let offset = sun_quad_corner(vertex_index) * (2.0 * extent / uniforms.viewport_size);
+    let offset = sky_quad_corner(vertex_index) * (2.0 * extent / uniforms.viewport_size);
     return vec4<f32>(disc.center + offset, 1.0, 1.0);
 }
 
@@ -829,7 +839,7 @@ fn vs_sun_glare(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) 
     if uniforms.sun_glow <= 0.0 || uniforms.sun_visible <= 0.0 {
         return SUN_OFF_SCREEN;
     }
-    let corner = sun_quad_corner(vertex_index);
+    let corner = sky_quad_corner(vertex_index);
     let disc = sun_disc(radians(SUN_GLARE_REACH_DEGREES));
     if !disc.on_screen {
         return SUN_OFF_SCREEN;
@@ -877,5 +887,88 @@ fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
     }
     color = color * uniforms.sun_glow * uniforms.sun_visible;
 
+    return vec4<f32>(color + dither(position), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// The Milky Way
+//
+// The diffuse band as a panorama of the whole celestial sphere, sampled per
+// pixel through the inverse of the lens the sprites are projected with. It is
+// the first draw of the pass, before the stars, so everything else in the sky
+// sits on top of it; source position here is after the Sun only because
+// `sky_lens_direction` has to be declared before it is called.
+// ---------------------------------------------------------------------------
+
+/// Where the loader's own orientation pass leaves right ascension zero.
+///
+/// The panorama in `textures/` is a standard astronomical all-sky map, centered
+/// on right ascension zero with right ascension increasing to the left, and
+/// `assets::texture_loader::orient` mirrors every equirectangular source it
+/// loads and then shifts it a quarter width. The mirror is what turns right
+/// ascension the right way round for this map and the shift is what moves its
+/// zero to here. `textures/PROVENANCE.md` records the measurement that the
+/// source's layout is the one this inverts.
+const PANORAMA_RIGHT_ASCENSION_ZERO: f32 = 0.25;
+
+/// The panorama's UV for a unit direction in equatorial J2000 coordinates.
+fn milky_way_uv(direction: vec3<f32>) -> vec2<f32> {
+    let u = atan2(direction.y, direction.x) / (2.0 * PI) + PANORAMA_RIGHT_ASCENSION_ZERO;
+    let v = 0.5 - asin(clamp(direction.z, -1.0, 1.0)) / PI;
+    return vec2<f32>(u, v);
+}
+
+/// The equatorial J2000 direction a framebuffer position looks along.
+///
+/// The inverse of `sky_lens_project` after `view_from_eqj`, which is what puts
+/// the panorama at the same scale and orientation as the sprites drawn on top
+/// of it. The lens half is phase B's and the two transposes are this layer's.
+fn milky_way_direction(position: vec2<f32>) -> vec3<f32> {
+    let view_direction = sky_lens_direction(position);
+    let world_direction = (transpose(uniforms.sky_view) * vec4<f32>(view_direction, 0.0)).xyz;
+    return transpose(uniforms.world_from_eqj) * world_direction;
+}
+
+/// One screen-space derivative of `milky_way_uv`, taken from the direction's own
+/// derivative rather than from the coordinate's.
+///
+/// `atan2` jumps a full turn across its branch cut, so a hardware derivative of
+/// `u` there is a whole texture width wide and the sampler answers that one
+/// pixel column with the coarsest mip: the average of the entire panorama,
+/// drawn as a line from pole to pole. The direction is continuous across the
+/// cut, so carrying its derivative through the map by the chain rule is what
+/// keeps the gradient continuous too. Both denominators vanish at the celestial
+/// poles, where the derivative really is unbounded and the coarse mip a pole
+/// then selects is the right answer rather than an artifact; the floors are
+/// there so it is a large number rather than a division by zero.
+fn milky_way_uv_gradient(direction: vec3<f32>, derivative: vec3<f32>) -> vec2<f32> {
+    let horizontal = max(dot(direction.xy, direction.xy), 1.0e-12);
+    let du = (direction.x * derivative.y - direction.y * derivative.x)
+        / (2.0 * PI * horizontal);
+    let dv = -derivative.z / (PI * max(sqrt(1.0 - direction.z * direction.z), 1.0e-6));
+    return vec2<f32>(du, dv);
+}
+
+/// The whole frame, always: the sky lens has an image of every pixel of it
+/// short of the antipode, and the antipode is past the corner at every field of
+/// view the slider offers, so there is no region to leave undrawn and nothing
+/// here to cull. Whether the layer is drawn at all is `MilkyWay::select`.
+@vertex
+fn vs_milky_way(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(sky_quad_corner(vertex_index), 1.0, 1.0);
+}
+
+@fragment
+fn fs_milky_way(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let direction = normalize(milky_way_direction(position.xy));
+    let uv = milky_way_uv(direction);
+    let sky = textureSampleGrad(
+        sphere_texture,
+        sphere_sampler,
+        uv,
+        milky_way_uv_gradient(direction, dpdx(direction)),
+        milky_way_uv_gradient(direction, dpdy(direction)),
+    ).rgb;
+    let color = sky * uniforms.milky_way_intensity;
     return vec4<f32>(color + dither(position), 0.0);
 }

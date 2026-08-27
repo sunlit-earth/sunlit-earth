@@ -262,6 +262,8 @@ pub struct RendererConfig {
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     star_pipeline: wgpu::RenderPipeline,
+    /// The diffuse Milky Way, the pass's first draw.
+    milky_way_pipeline: wgpu::RenderPipeline,
     /// The Sun's body, drawn with the sky so the painted globe covers it.
     sun_disk_pipeline: wgpu::RenderPipeline,
     /// The observer's glare, drawn last over everything in the scene.
@@ -512,6 +514,12 @@ impl Renderer {
         self.texture_slots[slot].bind_group.as_ref()
     }
 
+    /// The bind group holding the Milky Way panorama, once it has loaded.
+    fn milky_way_bind_group(&self) -> Option<&wgpu::BindGroup> {
+        let slot = self.layout().milky_way()?;
+        self.texture_slots[slot].bind_group.as_ref()
+    }
+
     /// The loading indicator text for the current texture selection, empty when
     /// nothing is loading.
     pub fn loading_text(&self, texture_index: i32) -> String {
@@ -721,6 +729,7 @@ impl Renderer {
         );
 
         let overlays = render_pass::Overlays::select(self, params, bind_group);
+        let milky_way = render_pass::MilkyWay::select(self, params);
         let stars = render_pass::Stars::select(self, params, bind_group);
         let sun = render_pass::Sun::select(self, params, bind_group);
 
@@ -729,6 +738,7 @@ impl Renderer {
             &self.device,
             &self.queue,
             &target,
+            milky_way,
             stars,
             sun,
             moon,

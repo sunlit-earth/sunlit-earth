@@ -1395,6 +1395,222 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
 }
 
 // ---------------------------------------------------------------------------
+// The panorama's reconstruction against the projection it inverts
+// ---------------------------------------------------------------------------
+
+/// A second compute entry point appended to the production shaders, so the
+/// four functions it composes are the ones the renderer compiles.
+const ROUND_TRIP_PROBE: &str = "
+@group(1) @binding(0) var<storage, read> trip_directions: array<vec4<f32>>;
+@group(1) @binding(1) var<storage, read_write> trip_results: array<vec4<f32>>;
+
+@compute @workgroup_size(1)
+fn round_trip_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    let eqj = normalize(trip_directions[index].xyz);
+    let point = sky_lens_project(view_from_eqj(eqj));
+    let back = normalize(milky_way_direction(ndc_to_pixels(point.ndc)));
+    trip_results[index] = vec4<f32>(back, point.theta);
+}
+";
+
+/// `milky_way_direction` has to be the exact inverse of `sky_lens_project`
+/// after `view_from_eqj`, because the panorama it samples sits under sprites the
+/// forward pair places. Two transposes and a lens inversion is three places a
+/// sign can be wrong, and every one of them yields a plausible-looking sky
+/// rather than an obviously broken one.
+///
+/// A round trip on the GPU rather than a re-derivation on the CPU: the forward
+/// half is production's, the inverse half is production's, and nothing here
+/// spells either of them out. Real camera and real astronomy, so both matrices
+/// are ones the renderer actually writes, and both signs of pan, which no other
+/// frame in this file carries.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
+    let ctx = RENDER_CTX.lock().unwrap();
+
+    let wgsl_source = format!(
+        "{}\n{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+        ROUND_TRIP_PROBE,
+    );
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("round_trip_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("round_trip_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("round_trip_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+    // A spread of equatorial J2000 directions: the poles, the equator all the
+    // way round, and two mid-latitude rings, so no component of either
+    // transpose can be zero everywhere.
+    let mut directions: Vec<[f32; 4]> = vec![[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, -1.0, 0.0]];
+    for declination in [-60.0_f32, -25.0, 0.0, 25.0, 60.0] {
+        for step in 0..12 {
+            let right_ascension = f32::from(u8::try_from(step).expect("a small index")) * 30.0;
+            let (ra, dec) = (right_ascension.to_radians(), declination.to_radians());
+            directions.push([dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin(), 0.0]);
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let count = directions.len() as u32;
+    let buffer_size = std::mem::size_of_val(directions.as_slice()) as u64;
+
+    let input_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("round_trip_probe_input"),
+            contents: bytemuck::cast_slice(&directions),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+    let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("round_trip_probe_output"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let uniform_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("round_trip_probe_uniforms"),
+        size: std::mem::size_of::<Uniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    let storage_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buf.as_entire_binding(),
+            },
+        ],
+    });
+
+    let datetime = sunlit_core::scene::sun::DateTimeInput {
+        use_custom: true,
+        custom_hour: 7.0,
+        custom_day_of_year: 172,
+        custom_year: 2026,
+    };
+    let sky = sunlit_core::scene::sky::compute_sky_state(&datetime);
+    let world_from_eqj = [
+        sky.world_from_eqj.x_axis.extend(0.0).into(),
+        sky.world_from_eqj.y_axis.extend(0.0).into(),
+        sky.world_from_eqj.z_axis.extend(0.0).into(),
+    ];
+
+    let probe = |sky_fov: f32, offset: glam::Vec2, viewport: glam::Vec2| {
+        let camera = sunlit_core::scene::camera::OrbitalCamera::new(
+            41.0,
+            -17.0,
+            sunlit_core::scene::camera::zoom_to_distance(0.45),
+        );
+        let uniforms = Uniforms {
+            sky_view: camera.view_matrix().to_cols_array(),
+            world_from_eqj,
+            viewport_size: viewport.into(),
+            screen_offset: offset.into(),
+            sky_fov,
+            ..default_test_uniforms(64)
+        };
+        ctx.queue
+            .write_buffer(&uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniform_group, &[]);
+            pass.set_bind_group(1, &storage_group, &[]);
+            pass.dispatch_workgroups(count, 1, 1);
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, buffer_size);
+        bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec()
+    };
+
+    // The two ends of the slider and the default, with no pan and a pan of
+    // either sign in both axes.
+    for sky_fov in [60.0_f32, 140.0, 180.0] {
+        for offset in [
+            glam::Vec2::ZERO,
+            glam::Vec2::new(0.35, 0.2),
+            glam::Vec2::new(-0.35, -0.2),
+        ] {
+            for viewport in [
+                glam::Vec2::new(1280.0, 720.0),
+                glam::Vec2::new(512.0, 512.0),
+            ] {
+                let results = probe(sky_fov, offset, viewport);
+                let mut checked = 0;
+                let mut worst = (0.0_f32, 0.0_f32);
+                for (sent, got) in directions.iter().zip(&results) {
+                    let sent = glam::Vec3::from_slice(&sent[0..3]).normalize();
+                    let theta = got[3];
+                    // Past this the projected radius is `tan(theta / 2)` of a
+                    // very large number and single precision has nothing left;
+                    // the shader clamps at the antipode for the same reason.
+                    if theta > 170.0_f32.to_radians() {
+                        continue;
+                    }
+                    checked += 1;
+                    let back = glam::Vec3::from_slice(&got[0..3]);
+                    // The straight-line distance between two unit vectors
+                    // rather than the angle between them: `acos` of a dot
+                    // product a couple of ULP short of one reports half a
+                    // milliradian that is entirely the measurement's, a floor
+                    // no round trip could ever get under.
+                    let apart = (sent - back).length();
+                    if apart > worst.0 {
+                        worst = (apart, theta.to_degrees());
+                    }
+                    assert!(
+                        apart < 1.0e-4,
+                        "at {sky_fov} degrees of sky, pan {offset:?}, viewport {viewport:?}:                          {sent:?} came back as {back:?}, {apart} away"
+                    );
+                }
+                println!(
+                    "fov {sky_fov} pan {offset:?} viewport {viewport:?}: worst {:.3e} at theta {:.1}",
+                    worst.0, worst.1
+                );
+                assert!(
+                    checked > 40,
+                    "only {checked} of the directions were inside the range this checks"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Fresnel specular tests (Step 2.1)
 // ---------------------------------------------------------------------------
 

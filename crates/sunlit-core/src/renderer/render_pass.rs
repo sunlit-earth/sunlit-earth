@@ -192,9 +192,11 @@ pub(super) fn write_uniforms<'a>(
 
 /// Encode and submit a render pass with the given target and bind group.
 ///
-/// Draw order: stars and planets, the Sun's disk, the Moon, the Earth sphere,
-/// the cloud overlay (alpha blended), Rayleigh scattering (premultiplied
-/// alpha), nightglow orange and green (additive), and the Sun's glare. The Moon
+/// Draw order: the Milky Way, stars and planets, the Sun's disk, the Moon, the
+/// Earth sphere, the cloud overlay (alpha blended), Rayleigh scattering
+/// (premultiplied alpha), nightglow orange and green (additive), and the Sun's
+/// glare. The Milky Way is first because it is the background every other
+/// celestial draw sits on. The Moon
 /// is after the disk so a Moon crossing the Sun covers its body, and before the
 /// Earth so the painted globe covers the Moon. Clouds draw
 /// before the atmosphere because they are in the troposphere, well below the
@@ -207,6 +209,7 @@ pub(super) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &RenderTarget,
+    milky_way: Option<MilkyWay<'_>>,
     stars: Option<Stars<'_>>,
     sun: Option<Sun<'_>>,
     moon: Option<Moon<'_>>,
@@ -255,6 +258,15 @@ pub(super) fn encode_and_submit(
             }),
             ..Default::default()
         });
+
+        // The background the rest of the sky is drawn on, and the one draw here
+        // that always covers the whole frame: the sky lens has an image of
+        // every pixel of it.
+        if let Some(milky_way) = milky_way {
+            pass.set_pipeline(milky_way.pipeline);
+            pass.set_bind_group(0, milky_way.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
 
         if let Some(stars) = stars {
             pass.set_pipeline(stars.pipeline);
@@ -365,12 +377,14 @@ pub(super) fn execute_render_pass(
     );
 
     let overlays = Overlays::select(res, params, bind_group);
+    let milky_way = MilkyWay::select(res, params);
     let stars = Stars::select(res, params, bind_group);
     let sun = Sun::select(res, params, bind_group);
     encode_and_submit(
         &res.device,
         &res.queue,
         &target,
+        milky_way,
         stars,
         sun,
         moon,
@@ -388,6 +402,33 @@ pub(super) fn execute_render_pass(
         overlays.cloud.0,
         overlays.cloud.1,
     );
+}
+
+/// The Milky Way's draw, with the bind group holding the panorama.
+#[derive(Clone, Copy)]
+pub(super) struct MilkyWay<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+}
+
+impl<'a> MilkyWay<'a> {
+    /// Zero intensity is the switch, and a panorama whose texture has not
+    /// arrived is not drawn either: it is an overlay, like the clouds and the
+    /// Moon, so its absence is a sky without a band rather than something to
+    /// wait for.
+    ///
+    /// Nothing about the frame can narrow this further. The draw is the whole
+    /// frame and the lens has an image of every pixel of it, so unlike the
+    /// Moon's there is no geometry here that can fail to appear.
+    pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
+        if params.milky_way_intensity <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            pipeline: &res.milky_way_pipeline,
+            bind_group: res.milky_way_bind_group()?,
+        })
+    }
 }
 
 /// The star and planet resources selected for a visible celestial background.

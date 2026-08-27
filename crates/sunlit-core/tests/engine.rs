@@ -2785,7 +2785,7 @@ fn a_panorama_fills_the_sky_and_zero_intensity_empties_it() {
     let panorama = PanoramaHarness::new(
         "engine_panorama_switch",
         params,
-        support::write_panorama_ramp_fixture,
+        support::write_panorama_bands_fixture,
     );
 
     let (on, off) = panorama.export_pair(&params);
@@ -2942,7 +2942,7 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
     let panorama = PanoramaHarness::new(
         "engine_panorama_seam",
         params,
-        support::write_panorama_ramp_fixture,
+        support::write_panorama_bands_fixture,
     );
     let pixels = panorama.export(&params);
     let circle = globe_circle(&params, viewport);
@@ -2955,36 +2955,37 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
         let position = glam::Vec2::new(x as f32, y as f32);
         position.distance(circle.center) > circle.radius + 2.0
     };
-    let mut worst = (0, 0, 0);
-    for x in 1..width - 1 {
-        let mut outliers = 0;
-        let mut largest = 0;
-        for y in 0..height {
-            if !(sky_pixel(x - 1, y) && sky_pixel(x, y) && sky_pixel(x + 1, y)) {
+    let mut largest = 0;
+    let mut worst_at = (0, 0);
+    let mut anomalies = 0;
+    for y in 1..height - 1 {
+        for x in 1..width - 1 {
+            let neighbors = [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)];
+            if !sky_pixel(x, y) || !neighbors.iter().all(|&(nx, ny)| sky_pixel(nx, ny)) {
                 continue;
             }
-            let both = (value(x, y) - value(x - 1, y))
-                .abs()
-                .min((value(x, y) - value(x + 1, y)).abs());
-            if both > 1 {
-                outliers += 1;
-                largest = largest.max(both);
+            // Second differences on both axes: the bands are smooth enough that
+            // theirs is a fraction of a code value, while anything one or two
+            // pixels wide has its own height in one of the two.
+            let here = 2 * value(x, y);
+            let across = (value(x - 1, y) + value(x + 1, y) - here).abs();
+            let down = (value(x, y - 1) + value(x, y + 1) - here).abs();
+            let curvature = across.max(down);
+            if curvature > 6 {
+                anomalies += 1;
             }
-        }
-        if outliers > worst.1 {
-            worst = (x, outliers, largest);
+            if curvature > largest {
+                largest = curvature;
+                worst_at = (x, y);
+            }
         }
     }
     println!(
-        "the worst column is {} with {} rows differing from both neighbors, by up to {}",
-        worst.0, worst.1, worst.2
+        "the largest second difference among the sky pixels is {largest} at {worst_at:?},          and {anomalies} of them are over six"
     );
     assert!(
-        worst.1 <= 2,
-        "column {} differs from both its neighbors in {} of {height} sky rows, by up to {}",
-        worst.0,
-        worst.1,
-        worst.2
+        largest <= 6,
+        "the sky pixel at {worst_at:?} sits {largest} away from the mean of its neighbors,          and {anomalies} of them do: this panorama does not depend on right ascension and          its bands are tens of pixels wide, so nothing in it can turn over in one"
     );
 }
 

@@ -63,8 +63,17 @@ pub fn write_moon_fixture(dir: &Path) -> PathBuf {
 /// position comes out round, narrow enough to decode in milliseconds.
 pub const PANORAMA_FIXTURE_WIDTH: u32 = 512;
 
-/// The two ends of the ramp fixture's declination gradient, north to south.
-pub const PANORAMA_RAMP_ENDS: (u8, u8) = (16, 236);
+/// The base level and swing of the banded fixture, and how many bands it puts
+/// across the sky.
+///
+/// Eight cycles over 180 degrees of declination, which is 32 texel rows of the
+/// fixture. Mip level 5 of it is eight rows for those eight cycles, so
+/// everything above level 4 has the bands averaged out of it and holds the base
+/// level alone: that is what makes a sample that lands on a coarse mip a
+/// visible band rather than a subtle one, and it is the property a linear ramp
+/// does not have, since box-averaging and bilinear interpolation reproduce a
+/// linear ramp exactly at every level.
+pub const PANORAMA_BANDS: (f32, f32, f32) = (128.0, 100.0, 8.0);
 
 /// Where a sky position sits in a panorama source, before the loader's own
 /// orientation pass.
@@ -86,27 +95,29 @@ fn panorama_texel(right_ascension: f32, declination: f32, width: u32, height: u3
 /// Write a panorama whose value depends on declination alone, and return its
 /// path.
 ///
-/// Two properties, both of which a test needs. It does not depend on right
+/// Three properties, and each is what a test needs. It does not depend on right
 /// ascension at all, so it is perfectly smooth across the branch cut of the
-/// shader's `atan2` and an artifact there cannot be mistaken for content. And
-/// its coarsest mip is one texel holding the ramp's own mean, which is far from
-/// the ramp's value at most declinations, so a sample that lands on that mip is
-/// a visible band rather than a subtle one.
-pub fn write_panorama_ramp_fixture(dir: &Path) -> PathBuf {
+/// shader's `atan2` and an artifact there cannot be mistaken for content. Its
+/// bands are slow enough on screen that neighboring pixels differ by a code
+/// value or two, so a one-pixel or two-pixel anomaly stands out from them. And
+/// every mip level above the fourth has the bands averaged out of it, so a
+/// sample that lands on one reads the base level instead of the sky.
+pub fn write_panorama_bands_fixture(dir: &Path) -> PathBuf {
     let width = PANORAMA_FIXTURE_WIDTH;
     let height = width / 2;
     let mut img = image::RgbaImage::new(width, height);
-    let (north, south) = PANORAMA_RAMP_ENDS;
+    let (base, swing, cycles) = PANORAMA_BANDS;
     for (_, y, pixel) in img.enumerate_pixels_mut() {
         #[allow(clippy::cast_precision_loss)]
-        let t = (y as f32 + 0.5) / height as f32;
+        let t = (f32::from(u16::try_from(y).expect("a small row")) + 0.5) / height as f32;
+        let level = base + swing * (t * cycles * std::f32::consts::TAU).sin();
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let value = (f32::from(north) + (f32::from(south) - f32::from(north)) * t).round() as u8;
+        let value = level.clamp(0.0, 255.0).round() as u8;
         *pixel = image::Rgba([value, value, value, 255]);
     }
-    let path = dir.join("panorama-ramp-fixture.png");
+    let path = dir.join("panorama-bands-fixture.png");
     std::fs::create_dir_all(dir).expect("create the fixture directory");
-    img.save(&path).expect("write the panorama ramp fixture");
+    img.save(&path).expect("write the panorama bands fixture");
     path
 }
 

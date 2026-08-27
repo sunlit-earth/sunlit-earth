@@ -84,7 +84,12 @@ pub const PANORAMA_BANDS: (f32, f32, f32) = (128.0, 100.0, 8.0);
 /// to the *left*, north up. A map of the sphere seen from inside runs the other
 /// way round from a map of one seen from outside, and `textures/PROVENANCE.md`
 /// records the measurement that this is the asset's layout.
-fn panorama_texel(right_ascension: f32, declination: f32, width: u32, height: u32) -> (f32, f32) {
+pub fn panorama_texel(
+    right_ascension: f32,
+    declination: f32,
+    width: u32,
+    height: u32,
+) -> (f32, f32) {
     #[allow(clippy::cast_precision_loss)]
     let (w, h) = (width as f32, height as f32);
     let u = (0.5 - right_ascension / 360.0).rem_euclid(1.0);

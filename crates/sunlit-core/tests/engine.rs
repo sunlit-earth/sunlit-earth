@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use sunlit_core::assets::mailbox::{DecodedTextureMessage, TextureMailbox};
+use sunlit_core::assets::stars;
 use sunlit_core::assets::texture_loader::DecodedImage;
 use sunlit_core::config::QualityTier;
 use sunlit_core::engine::wallpaper_sink::CountingSink;
@@ -3208,6 +3209,142 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// No star the sprite pipeline draws is baked into the real panorama.
+///
+/// The `milkyway_2020` layer is the SVS map with the Hipparcos and Tycho stars
+/// taken out, which is what keeps a bright star from being drawn twice: once as
+/// phase A's sprite and once as a blob under it. That is a property of the file
+/// that shipped rather than of the description it came with, and it is a
+/// property a re-bake from the source could lose without anything else moving.
+///
+/// The measure is the one the asset was checked with by hand: the mean of a 3x3
+/// texel window at the star's own position against the mean of the 41x41 window
+/// around it, on the file as it sits on disk. Every catalog record the star draw
+/// submits inside `MAGNITUDE_LIMIT` is measured, rather than a hand-picked list,
+/// so the set is the one the sprites come from.
+///
+/// The bound is what separates the two answers, and the numbers on both sides
+/// of it are measured. Across the 21 records inside the limit the ratio runs
+/// from 0.73 to 1.26, which is bright stars sitting in bright parts of the Milky
+/// Way and nothing more; the brightest is Antares at 1.26. A star baked into the
+/// layer saturates the texels it covers, so a core at 765 of 765 reads 2.37
+/// against the brightest surround in the set and 5 or more against a typical
+/// one, and the wrong SVS layer would do that to most of the 21 at once. Two
+/// sits between the two, with the clean maximum well clear of it.
+///
+/// What this window cannot see is a star confined to a single texel in the
+/// brightest part of the plane: raising one texel of the nine to 765 where the
+/// sky already reads 363, which is the brightest core in the set, takes the core
+/// to 408 and the ratio to 1.26, inside the bound. The peak texel of the core
+/// rather than its mean does not fix that and was measured: the map's own grain
+/// already puts single texels at 2.08 times the local mean, so a peak metric has
+/// no separation left to spend.
+///
+/// Skips with a printed reason where `textures/**` is still Git LFS pointers.
+#[test]
+fn no_bright_star_is_baked_into_the_real_panorama() {
+    /// Bright enough to be a sprite nothing could hide under.
+    const MAGNITUDE_LIMIT: f32 = 1.3;
+    /// Half width of the core window, which is 3x3 texels.
+    const CORE: i32 = 1;
+    /// Half width of the surrounding window, which is 41x41.
+    const SURROUND: i32 = 20;
+    /// The core may be this much brighter than what surrounds it.
+    const RATIO_BOUND: f64 = 2.0;
+
+    let Some(path) = real_panorama() else {
+        return;
+    };
+    sunlit_core::assets::texture_loader::register_jxl_hook();
+    let panorama = image::open(&path)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()))
+        .to_rgba8();
+    let width = i32::try_from(panorama.width()).expect("a panorama of a sane width");
+    let height = i32::try_from(panorama.height()).expect("a panorama of a sane height");
+
+    // Wrapped in u and clamped in v, which is what the map itself does at its
+    // seam and at its poles.
+    let window_mean = |cx: i32, cy: i32, half: i32| -> f64 {
+        let mut total = 0_u32;
+        let mut count = 0_u32;
+        for dy in -half..=half {
+            let y = (cy + dy).clamp(0, height - 1);
+            for dx in -half..=half {
+                let x = (cx + dx).rem_euclid(width);
+                let texel = panorama.get_pixel(
+                    u32::try_from(x).expect("wrapped into the map"),
+                    u32::try_from(y).expect("clamped into the map"),
+                );
+                total += u32::from(texel[0]) + u32::from(texel[1]) + u32::from(texel[2]);
+                count += 1;
+            }
+        }
+        f64::from(total) / f64::from(count.max(1))
+    };
+
+    let catalog = sunlit_core::assets::stars::embedded_catalog();
+    let visible = usize::try_from(catalog.visible_count(MAGNITUDE_LIMIT)).expect("a small prefix");
+    assert!(
+        visible >= 15,
+        "only {visible} catalog records are inside magnitude {MAGNITUDE_LIMIT}, \
+         which is not the brightest sky"
+    );
+    let records = catalog.instance_bytes();
+
+    let mut worst = (0.0_f64, 0.0_f32, 0.0_f32);
+    for index in 0..visible {
+        let record = &records[index * stars::RECORD_SIZE..(index + 1) * stars::RECORD_SIZE];
+        let component = |offset: usize| {
+            f32::from_le_bytes(
+                record[offset..offset + 4]
+                    .try_into()
+                    .expect("four bytes of a direction"),
+            )
+        };
+        let direction = glam::Vec3::new(component(0), component(4), component(8)).normalize();
+        let right_ascension = direction
+            .y
+            .atan2(direction.x)
+            .to_degrees()
+            .rem_euclid(360.0);
+        let declination = direction.z.clamp(-1.0, 1.0).asin().to_degrees();
+        let magnitude = f32::from(record[15]) / 255.0 * 10.0 - 2.0;
+
+        let (u, v) = support::panorama_texel(
+            right_ascension,
+            declination,
+            panorama.width(),
+            panorama.height(),
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        let (cx, cy) = (u.floor() as i32, v.floor() as i32);
+        let core = window_mean(cx, cy, CORE);
+        let surround = window_mean(cx, cy, SURROUND);
+        let ratio = core / surround.max(1.0);
+        println!(
+            "  magnitude {magnitude:.2} at ra {right_ascension:.2} dec {declination:.2}: \
+             core {core:.1} of 765, surround {surround:.1}, ratio {ratio:.2}"
+        );
+        if ratio > worst.0 {
+            worst = (ratio, right_ascension, declination);
+        }
+    }
+
+    println!(
+        "the brightest core against its surroundings over {visible} stars is {:.2}, \
+         at ra {:.2} dec {:.2}",
+        worst.0, worst.1, worst.2
+    );
+    assert!(
+        worst.0 < RATIO_BOUND,
+        "a star at ra {:.2} dec {:.2} reads {:.2} times its surroundings, over {RATIO_BOUND}: \
+         this panorama has bright stars in it and the sprites are drawing them again",
+        worst.1,
+        worst.2,
+        worst.0
+    );
 }
 
 /// The panorama in `textures/`, or `None` with a printed reason.

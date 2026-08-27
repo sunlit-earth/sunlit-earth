@@ -277,7 +277,8 @@ three places a sign can be wrong, so
 `tests/render_pipeline.rs` is a compute entry point appended to the production
 shaders that feeds directions through the forward pair and back, over both ends
 of the field of view and both signs of pan: the round trip holds to 6.5e-7 of
-chord distance where dropping either transpose gives 1.229 and 0.546.
+chord distance on `warp` and 1.5e-4 on `lavapipe`, against a tolerance of 1e-3,
+where dropping either transpose gives 1.229 and 0.546 on both.
 
 `milky_way_uv` is the panorama's own layout, and the one constant in it is
 `PANORAMA_RIGHT_ASCENSION_ZERO`. The asset is a standard astronomical all-sky map

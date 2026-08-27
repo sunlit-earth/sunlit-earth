@@ -1428,6 +1428,16 @@ fn round_trip_probe(@builtin(global_invocation_id) id: vec3<u32>) {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
+    /// How far a direction may come back from where it went in, as a distance
+    /// between two unit vectors.
+    ///
+    /// The round trip is exact to 6.5e-7 on warp and to 1.5e-4 on lavapipe,
+    /// which is the two adapters' transcendentals rather than anything about
+    /// the chain, and 1.5e-4 is half a hundredth of a degree. This sits an
+    /// order of magnitude above the worse of them and three below the faults it
+    /// exists to catch, which are 1.229 and 0.546.
+    const TOLERANCE: f32 = 1.0e-3;
+
     let ctx = RENDER_CTX.lock().unwrap();
 
     let wgsl_source = format!(
@@ -1593,7 +1603,7 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
                         worst = (apart, theta.to_degrees());
                     }
                     assert!(
-                        apart < 1.0e-4,
+                        apart < TOLERANCE,
                         "at {sky_fov} degrees of sky, pan {offset:?}, viewport {viewport:?}:                          {sent:?} came back as {back:?}, {apart} away"
                     );
                 }

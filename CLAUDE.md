@@ -130,8 +130,9 @@ sunlit-earth/
   assets/
     icon/            # the mark: SVG master plus 32/24/16 variants, and baked/ (committed)
     linux/           # sunlit-earth.desktop and the user-local install script
-  textures/          # local JXL assets, not part of the build: the two 8K Earth maps and
-                     # the Moon's 1024x512 surface, with PROVENANCE.md beside them
+  textures/          # local JXL assets, not part of the build: the two 8K Earth maps,
+                     # the Moon's 1024x512 surface and the 4096x2048 Milky Way
+                     # panorama, with PROVENANCE.md beside them
   vm/                # Packer templates and guest assets for the test VMs
     linux/           # Debian 13, four desktops on Xorg, cloud-init seed
     windows/         # Windows 11 Enterprise eval, autounattend, bootstrap
@@ -169,7 +170,7 @@ One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the sc
 
 `cargo xtask bake-stars` reads HYG v4.4, excludes its `Sol` row, propagates proper motion to epoch 2026.0, bakes B minus V color and magnitude, and writes 16 byte records after a 12 byte header. `assets::stars` validates the embedded blob and lends its payload directly to wgpu as the static instance buffer. The blob with 15,597 stars and its `ATTRIBUTION.md` ship together under `crates/sunlit-core/src/assets/stars/`; xtask does not depend on `sunlit-core`. The format contract between the two crates is held by a fixture in `crates/sunlit-core/tests/fixtures/`, a CSV and a BIN checked in side by side: the reader's tests load the BIN, and `the_committed_fixture_matches_a_fresh_bake` in xtask bakes the CSV and compares, so a layout change that lands on one side and not the other fails there rather than in whatever the sky looked like afterwards.
 
-The star pipeline draws first. Four generated triangle strip vertices expand every catalog record into an analytic sprite with a crisp core and independently controlled glow, transformed by the shared sky rotation and camera rotation. The glow is a Gaussian with the value at `star_glow_radius` subtracted and the remainder renormalized, so it reaches zero exactly where the sprite quad ends: a bare Gaussian still carries 4.4% of its peak there, and with brightness, glow strength and glow radius all at their maxima that residual draws the quad's own edge as a straight line and puts bright stars in visible squares. `golden_bright_star_halos` is that corner of the parameter space, and `large_crisp_stars` is the other end of the same axis with no halo at all. Earth retains the camera's 20 degree perspective lens; celestial directions use a separate stereographic lens with a configurable horizontal field of view. Records are sorted by magnitude, so the runtime submits only the prefix inside the selected limit; the shader keeps the same cutoff as a boundary check. Brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline, rewritten by the two calls that move the renderer's stored sky and by neither of them when it did not move: the buffer is what the draw reads and the stored inputs are what a replayed export re-encodes, so the two have to name the same instant. Intensity zero omits both draws. Earth then covers the sky, followed by clouds and the atmosphere shells.
+The star pipeline draws first. Four generated triangle strip vertices expand every catalog record into an analytic sprite with a crisp core and independently controlled glow, transformed by the shared sky rotation and camera rotation. The glow is a Gaussian with the value at `star_glow_radius` subtracted and the remainder renormalized, so it reaches zero exactly where the sprite quad ends: a bare Gaussian still carries 4.4% of its peak there, and with brightness, glow strength and glow radius all at their maxima that residual draws the quad's own edge as a straight line and puts bright stars in visible squares. `golden_bright_star_halos` is that corner of the parameter space, and `large_crisp_stars` is the other end of the same axis with no halo at all. Earth retains the camera's 20 degree perspective lens; celestial directions use a separate stereographic lens with a configurable horizontal field of view. Records are sorted by magnitude, so the runtime submits only the prefix inside the selected limit; the shader keeps the same cutoff as a boundary check. Brightness uses compressed astronomical flux. A second buffer with five records carries the planets through the same pipeline, rewritten by the two calls that move the renderer's stored sky and by neither of them when it did not move: the buffer is what the draw reads and the stored inputs are what a replayed export re-encodes, so the two have to name the same instant. Intensity zero omits both draws. The Milky Way's panorama is drawn before all of it, and Earth then covers the sky, followed by clouds and the atmosphere shells.
 
 ### The Sun
 
@@ -217,7 +218,7 @@ The texture slots are the grid at 0, then one slot per file-backed path in the o
 
 ### The app (`sunlit-app`)
 
-- `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand. `resolve_texture_paths` names the three file-backed textures in slot order, and it asks how large each file is rather than whether it exists: `textures/**` is Git LFS, a checkout without the objects holds pointer files under the same names, and naming one costs a decode failure and an error line where the same run with no file at all is quiet and draws the same picture. The threshold is the 64 KiB the xtask's guest staging and the engine tests already use.
+- `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand. `resolve_texture_paths` names the four file-backed textures in slot order, and it asks how large each file is rather than whether it exists: `textures/**` is Git LFS, a checkout without the objects holds pointer files under the same names, and naming one costs a decode failure and an error line where the same run with no file at all is quiet and draws the same picture. The threshold is the 64 KiB the xtask's guest staging and the engine tests already use.
 - `engine_client.rs`: `EngineLink` (send commands, push window state as `SceneParams`) and `event_forwarder` (engine events to the window). Preview frames cross the thread boundary through a latest-value mailbox with a single pending wake-up: the newest frame replaces the parked one and only one `invoke_from_event_loop` closure is ever in flight.
 - `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
 - `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`, `memory-report`, `set-wallpaper`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test`, `query-memory` and `memory-report` are answered on the listener thread, so they work while the event loop is idle. `query-memory`'s single `SIGNAL:memory rss_bytes=... peak_rss_bytes=... private_bytes=...` line is a parsing contract the e2e suite depends on and must stay byte-identical; `memory-report` is a separate command for that reason, and brackets its many lines with `SIGNAL:memory_report_begin` and `SIGNAL:memory_report_end` rather than promising a line format.
@@ -252,6 +253,86 @@ What the Linux guest showed, one boot per desktop: the tray icon and the title b
 
 Two things the bake is not. It is not a fidelity guarantee: the mark leans on a radial gradient with a displaced focus and an alpha mask that hides the sun behind the globe, both of which renderers disagree about, so the master was checked against Blink at 256 and the two agree to a mean channel difference of 0.175/255 over the opaque pixels, with 0.55% of channel samples over 8 and all of those on antialiased edges. And it is not a taste check: `bake-icon --review DIR` writes the small rasters and a contact sheet, both shell chromes at 1x and magnified six times with nearest neighbour, and the judgment about whether 16 and 24 read is still a person's.
 
+### The Milky Way
+
+The diffuse band is a panorama of the whole celestial sphere sampled per pixel,
+drawn first in the pass so everything else in the sky sits on it. `vs_milky_way`
+is the four-vertex screen quad the sun draws generate from `vertex_index`, and it
+is always the whole frame: the sky lens has an image of every direction short of
+the antipode, the antipode is past the frame's corner at every field of view the
+slider offers, and so there is no region to leave undrawn and nothing here to
+cull. `MilkyWay::select` is the only gate, on the intensity and on whether the
+texture has arrived, which is `Stars::select`'s shape and not the Moon's: a
+fullscreen quad has no geometry that can fail to appear, so nothing about the
+frame can narrow it.
+
+`fs_milky_way` inverts the chain a star sprite goes through. `milky_way_direction`
+calls phase B's `sky_lens_direction` on the framebuffer position and then
+transposes the view matrix and `world_from_eqj`, which makes it the exact inverse
+of `sky_lens_project` after `view_from_eqj`, the forward composition factored out
+of `vs_star` when this became its second consumer. That pairing is what puts the
+panorama at the same scale and orientation as the sprites on top of it, and it is
+three places a sign can be wrong, so
+`the_panoramas_reconstruction_inverts_the_projection_it_sits_under` in
+`tests/render_pipeline.rs` is a compute entry point appended to the production
+shaders that feeds directions through the forward pair and back, over both ends
+of the field of view and both signs of pan: the round trip holds to 6.5e-7 of
+chord distance where dropping either transpose gives 1.229 and 0.546.
+
+`milky_way_uv` is the panorama's own layout, and the one constant in it is
+`PANORAMA_RIGHT_ASCENSION_ZERO`. The asset is a standard astronomical all-sky map
+(right ascension zero at the center, increasing to the left, north up, which is
+the opposite handedness from the Earth's and the Moon's maps because a sphere
+seen from inside runs the other way round from one seen from outside), and
+`assets::texture_loader::orient` mirrors and quarter-shifts every equirectangular
+source it loads. The mirror is what turns right ascension the right way round for
+this map and the shift is what moves its zero a quarter of the way across, so the
+shader undoes the shift and nothing else. `textures/PROVENANCE.md` records the
+measurement that this is the source's layout, against eleven sky positions,
+because the SVS does not document it and the two readings differ by a mirror that
+the galactic center alone cannot tell apart.
+
+The wrap is handled with explicit gradients rather than patched later.
+`atan2` jumps a full turn across its branch cut, so a hardware derivative of `u`
+there is a whole texture width and the sampler answers that column with the
+coarsest mip: the average of the entire panorama, drawn as a curve from pole to
+pole. The direction is continuous across the cut, so `milky_way_uv_gradient`
+carries its derivative through the map by the chain rule and
+`textureSampleGrad` takes the result. `the_wrap_column_is_not_a_band_of_the_coarsest_mip`
+is what holds it, and two things about that case are worth knowing before
+editing it. Its fixture is bands of declination rather than a gradient, because a
+linear ramp is a fixed point of the mip chain and a case built on one passed with
+the gradient sample deleted. And its metric is a second difference over the sky
+pixels rather than a per-column count, because the cut is a curve on screen and
+two pixels wide, a derivative being a property of the fragment quad.
+
+What the layer costs is a software-adapter question and not a real-GPU one. At
+1920 by 1080 the panorama adds 130 ms to a frame on `warp` against the cloud
+shell's 16, and 0.2 ms on this machine's real adapter against the cloud shell's
+0.0. It is not the texture fetch, which anisotropy makes no difference to, but
+seven transcendentals per pixel over the whole frame; the plan's departure 6 has
+the numbers and names the algebraic identity that would remove three of them from
+`sky_lens_direction`, which is not taken because that function is the Sun's too
+and substituting it moves every golden.
+
+The layer's slot is the fourth file-backed one and the only texture whose source
+width sits between two of the caps, so `memory::milky_way_texture_bytes` is
+42.7 MiB at the 8192 and 4096 settings and 10.7 MiB at 2048, where the halving
+cache serves the downscale. It is an overlay, like the clouds and the Moon, so
+`textures_ready` and `textures_pending` exclude it and a checkout without the Git
+LFS object draws a sky without a band rather than waiting for one.
+
+Two goldens pin it, `panorama_behind_the_stars` and `panorama_at_a_narrow_sky`,
+the same night-side camera at the two ends of the field-of-view slider, both with
+the banded fixture rather than the real asset. `base_params` switches the layer
+off for every other case: it covers the whole frame, so leaving it on would move
+all eleven other references and bury what each of them is for. What a fixture
+cannot show is the asset's own layout, and
+`the_real_panorama_has_the_galactic_plane_where_the_plane_is` in `tests/engine.rs`
+is where that lives, sampling the rendered sky at the galactic center, both
+galactic poles and two stretches of the plane and asserting the ordering a
+mirrored reading inverts.
+
 ### Quality tiers
 
 `QualityTier` (low, medium, high) is persisted in the config and overridable per run with `--quality` (the override is not written back). It has no widget in the settings window, which is why `read_config_from_window` is a read-modify-write against the stored config rather than a fresh `AppConfig::default()`: any persisted setting the UI does not manage has to survive a save untouched. It caps the MSAA sample count (1, 4, unlimited) and the preview width (1280, 1920, unlimited, aspect preserved). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile.
@@ -260,7 +341,7 @@ The tier does not select the cloud image variant; the texture resolution does. T
 
 ### Texture resolution
 
-The two local surface textures are 8192 wide, and the Moon's is 1024, which is at or below every cap the setting offers, so the halving cache never touches it and it is loaded at its own width whatever the setting says. `AppConfig::texture_resolution` decides what width the two Earth maps are loaded at, from the three in `config::TEXTURE_RESOLUTIONS` (8192, 4096, 2048), and the Rendering group offers them as a combo box. It also selects the cloud image variant, which is the third thing that scales with it; the three offered widths map one to one onto the three variants the upstream service publishes. The default is 4096, so an install whose config predates the setting moves to 4096 and anyone who wants the full width picks it once. `--texture-resolution <8192|4096|2048>` overrides it for one run; clap validates the three values, and a config file holding anything else is repaired to the default by `AppConfig::sanitize` on load, which is where the check belongs since a config file is a text file.
+The two local surface textures are 8192 wide, and the Moon's is 1024, which is at or below every cap the setting offers, so the halving cache never touches it and it is loaded at its own width whatever the setting says. The Milky Way panorama's 4096 is the one width between two caps: the two upper settings load it as it is and the lowest halves it through the cache, which is what `the_panorama_follows_the_texture_resolution_cap` measures. `AppConfig::texture_resolution` decides what width the two Earth maps are loaded at, from the three in `config::TEXTURE_RESOLUTIONS` (8192, 4096, 2048), and the Rendering group offers them as a combo box. It also selects the cloud image variant, which is the third thing that scales with it; the three offered widths map one to one onto the three variants the upstream service publishes. The default is 4096, so an install whose config predates the setting moves to 4096 and anyone who wants the full width picks it once. `--texture-resolution <8192|4096|2048>` overrides it for one run; clap validates the three values, and a config file holding anything else is repaired to the default by `AppConfig::sanitize` on load, which is where the check belongs since a config file is a text file.
 
 The halving is the same box filter that builds the mip chain, so a 4096 texture is the 8192 texture's first mip level exactly. That is why the default costs so little: on the software adapter the 800x800 render the e2e case checks is byte-identical at 8192 and 4096, and at 2048 the sampled land and ocean pixels move by at most 1/255. On a real adapter it is not quite identical, because anisotropic sampling can ask for a level of detail finer than the narrower texture's level 0 near the limb: measured on this machine's GPU, 8 pixels of 640,000 differ by one channel step. Anything that renders the globe larger than a few hundred pixels across will show the difference properly; the settings window is where to change it back.
 
@@ -292,7 +373,7 @@ The rule is "the highest supported count at most the requested one, otherwise th
 `shaders/blend.wgsl` and `shaders/sphere.wgsl` are concatenated at load time by `renderer/gpu_setup.rs`.
 
 - `blend.wgsl`: `blend_fragment()` (day/night blending with diffuse shading and a per-channel `min(night, day)` clamp), plus `apply_gamma()` and `adjust_saturation()`.
-- `sphere.wgsl`: star sprite and sphere vertex transforms, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). The Sun is `vs_sun_disk`/`fs_sun_disk` for its body and `vs_sun_glare`/`fs_sun_glare` for the observer's glare, both quads generated from `vertex_index` alone. The Moon is `vs_moon`/`fs_moon`, the sphere mesh through one model matrix and then `sky_lens_project`, which is the sky lens's forward projection factored out of `vs_star` when the Moon became its second consumer. Draw order: Stars and Planets, Sun disk, Moon, Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green, Sun glare.
+- `sphere.wgsl`: star sprite and sphere vertex transforms, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). The Sun is `vs_sun_disk`/`fs_sun_disk` for its body and `vs_sun_glare`/`fs_sun_glare` for the observer's glare, both quads generated from `vertex_index` alone. The Moon is `vs_moon`/`fs_moon`, the sphere mesh through one model matrix and then `sky_lens_project`, which is the sky lens's forward projection factored out of `vs_star` when the Moon became its second consumer. The Milky Way is `vs_milky_way`/`fs_milky_way`, a screen quad that is always the whole frame, sampling the panorama through `milky_way_direction`, the inverse of `sky_lens_project` after `view_from_eqj`. Draw order: Milky Way, Stars and Planets, Sun disk, Moon, Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green, Sun glare. The pass clears to (0.005, 0.005, 0.01), which is near black because there is a real sky on it now; three engine cases in `tests/engine.rs` hardcode the resulting pixel as `[1, 1, 3, 255]`.
 
 ### Wallpaper export
 
@@ -420,7 +501,7 @@ What `test_set_wallpaper` can assert about the capability differs by platform, w
 - **One wgpu instance per process, ever.** `wgpu_init::instance()` holds it in a `OnceLock` and nothing else may call `wgpu::Instance::new`; `clippy.toml` enforces that through `disallowed-methods`, so a second call site has to allow the lint by name. An instance owns the loaded driver libraries, and dropping the last one `dlclose`s the Vulkan loader while Mesa's pthread TLS destructors still point into it, so the next thread to exit dies in `__nptl_deallocate_tsd`. That is not theoretical: it killed all 14 engine tests on lavapipe.
 - **Golden images** force the software adapter where the platform has one, so a developer machine and a CI runner compare against the same references. References are per adapter (`tests/golden/warp/`, `lavapipe/`, `metal/`), keyed by `wgpu_init::adapter_key`; the reasoning and the measured cross-adapter deltas are on that function. Which adapters have a set is listed in the test's `GENERATED_ADAPTERS`, not inferred from the filesystem: an adapter on the list whose directory is missing fails, and only an adapter that has genuinely never been generated skips. A missing single case fails every run, with its render written under `CARGO_TARGET_TMPDIR` for review rather than into the tracked tree. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
 - **Soak measurements** take their baseline after warm-up (the first cloud texture and wgpu's allocator pools are a one-off ~85 MiB); the assertion is on the remaining simulated days.
-- **A test that needs the real 8K assets skips with a printed reason without them**, rather than failing or passing vacuously: `textures/**` is Git LFS, and a checkout without the objects holds pointer files that exist as far as anything that only asks about existence is concerned, so the check is on size. `lowering_the_resolution_lowers_the_process_footprint` in `tests/engine.rs` is the one such case, and it costs about 25 seconds where the assets are present. Everything else that needs a texture, including every Moon case and the golden suite's Moon, uses a generated fixture instead.
+- **A test that needs the real 8K assets skips with a printed reason without them**, rather than failing or passing vacuously: `textures/**` is Git LFS, and a checkout without the objects holds pointer files that exist as far as anything that only asks about existence is concerned, so the check is on size. `lowering_the_resolution_lowers_the_process_footprint` in `tests/engine.rs` is the one such case, and it costs about 25 seconds where the assets are present. Everything else that needs a texture, including every Moon case, the golden suite's Moon and every panorama case but the two that are about the real asset, uses a generated fixture instead.
 
 ### Resource-flow rules (from the retrospective, section 8.2)
 

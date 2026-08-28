@@ -94,6 +94,17 @@ impl Store {
         self.run_dir(image).join("vm.json")
     }
 
+    /// Where a job's script is written before it is copied into the guest.
+    ///
+    /// Run state like the overlay and the record: it belongs to the guest that
+    /// is running the job, it means nothing once that guest is gone, and the
+    /// teardown takes all three together. One place says where it is, because
+    /// every command that runs a job in a guest names it and the teardown has to
+    /// name the same directory.
+    pub fn job_scratch(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("job")
+    }
+
     /// The disk a native install writes into, before it becomes the golden
     /// image.
     ///

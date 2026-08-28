@@ -168,6 +168,21 @@ impl Image {
         matches!(self, Self::Windows | Self::Linux)
     }
 
+    /// What `vm view` opens for this image, as the word that labels the line
+    /// offering it.
+    ///
+    /// A builder has no desktop session, so what a viewer attaches to there is
+    /// a text console and calling it a desktop describes an image nobody built.
+    /// Both spellings are seven letters, which is what keeps that line's command
+    /// in the same column as the `ssh:` and `down:` lines around it.
+    pub fn console_label(self) -> &'static str {
+        if self.has_desktop() {
+            "desktop"
+        } else {
+            "console"
+        }
+    }
+
     /// The desktop image the e2e suite and a release verification run in.
     pub fn desktop(target: Target) -> Self {
         match target {
@@ -407,6 +422,18 @@ mod tests {
             Some(ProviderKind::Qemu)
         );
         assert_eq!(provider_for(HostOs::Other, Target::Linux), None);
+    }
+
+    /// Three commands print this word in front of a `vm view` line whose
+    /// command has to stay in the same column as the `ssh:` and `down:` lines
+    /// around it, so the two spellings are the same width.
+    #[test]
+    fn a_builder_offers_a_console_and_a_desktop_image_a_desktop() {
+        assert_eq!(Image::Linux.console_label(), "desktop");
+        assert_eq!(Image::LinuxBuilder.console_label(), "console");
+        for image in Image::ALL {
+            assert_eq!(image.console_label().len(), 7, "{image}");
+        }
     }
 
     #[test]

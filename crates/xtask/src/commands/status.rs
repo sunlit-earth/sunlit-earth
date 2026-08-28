@@ -256,7 +256,8 @@ fn running_vm(image: Image, state: &RunState) -> String {
     }
     let _ = writeln!(
         out,
-        "    desktop: `cargo xtask vm view {image}`{}",
+        "    {}: `cargo xtask vm view {image}`{}",
+        image.console_label(),
         state
             .vnc
             .as_ref()
@@ -368,6 +369,21 @@ mod tests {
         let text = render(&inv, BUILT + 80 * SECS_PER_DAY);
         assert!(text.contains("evaluation day 80 of 90"), "{text}");
         assert!(text.contains("expiring"), "{text}");
+    }
+
+    /// A builder has no desktop session, so the line offering its console must
+    /// not call it one; a desktop image's line keeps the word it earns.
+    #[test]
+    fn the_line_that_offers_a_console_calls_it_what_the_image_has() {
+        for image in Image::ALL {
+            let text = running_vm(image, &running_state(image));
+            let expected = if image.has_desktop() {
+                format!("desktop: `cargo xtask vm view {image}`")
+            } else {
+                format!("console: `cargo xtask vm view {image}`")
+            };
+            assert!(text.contains(&expected), "{text}");
+        }
     }
 
     #[test]

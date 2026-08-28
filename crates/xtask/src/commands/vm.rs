@@ -49,14 +49,7 @@ impl Session<'_> {
     pub fn tear_down(&self, store: &Store) -> Result<(), String> {
         self.provider.destroy(&self.state)?;
 
-        let mut problems = Vec::new();
-        for path in [&store.state_file(self.image), &self.state.overlay] {
-            if let Err(e) = std::fs::remove_file(path)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                problems.push(format!("{}: {e}", path.display()));
-            }
-        }
+        let problems = remove_run_state(&run_state_paths(store, self.image, &self.state));
         if problems.is_empty() {
             Ok(())
         } else {
@@ -111,10 +104,50 @@ impl Session<'_> {
         let image = self.image;
         format!(
             "  ssh:     cargo xtask vm ssh {image}\n  \
-             desktop: cargo xtask vm view {image}\n  \
-             down:    cargo xtask vm down {image}"
+             {console}: cargo xtask vm view {image}\n  \
+             down:    cargo xtask vm down {image}",
+            console = image.console_label()
         )
     }
+}
+
+/// Everything in the store that belongs to the guest a session owns, which is
+/// what a teardown removes and the whole of what it removes.
+///
+/// The overlay comes from the record rather than from the image, because the two
+/// providers give it different names and the record is what says which one this
+/// guest got. The job scratch is in the list because a command that ran a job
+/// wrote it and nothing reads it once the guest that ran the job is gone, so a
+/// green run that left it behind left run state under an image with nothing
+/// running. `vm.log` is deliberately not in the list: a failed boot's message
+/// quotes its tail and names its path, and deleting it here would make that path
+/// a lie.
+pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 3] {
+    [
+        store.state_file(image),
+        state.overlay.clone(),
+        store.job_scratch(image),
+    ]
+}
+
+/// Remove them, whether each is a file or a directory, and report what would not
+/// go. A path that is not there is not a problem: a teardown of a guest that ran
+/// no job is the ordinary case.
+fn remove_run_state(paths: &[std::path::PathBuf]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for path in paths {
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        if let Err(e) = removed
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            problems.push(format!("{}: {e}", path.display()));
+        }
+    }
+    problems
 }
 
 /// What the wait after SSH is waiting for, per image.
@@ -155,8 +188,14 @@ pub fn readiness_ready_line(image: Image, elapsed: Duration) -> String {
 /// hint, which is the worst of both: it holds its memory, it blocks the next
 /// run's ports, and nothing said it was there. Either it goes, or it is named
 /// along with the command that removes it.
-pub fn after_failure(session: &Session, store: &Store, keep: bool) -> String {
+///
+/// A guest kept here is kept for the same reason a guest kept after a green run
+/// is, so its record goes through [`record_kept`] too: the work it was booted
+/// for is over, and a record that still names a run or a build in progress makes
+/// `vm down` warn about ending something that stopped when the failure did.
+pub fn after_failure(session: &mut Session, store: &Store, keep: bool) -> String {
     if keep {
+        record_kept(session, store);
         return format!(
             "{} is still running, because --keep was given.\n{}",
             session.state.vm_name,
@@ -217,9 +256,22 @@ pub fn detached_help(image: Image, detail: &str) -> String {
 /// it needs itself, and which of the two it is follows from what the image is
 /// for: the e2e suite runs in a desktop image and a release build in a builder.
 /// `e2e --target windows-builder` is not something anyone can type.
+///
+/// `dist` needs `--no-verify` on top of the flag, because
+/// [`dist::keeps_guest`](crate::commands::dist::keeps_guest) keeps the last
+/// guest of a run and one guest only: a run that verifies boots the desktop
+/// image after the builder, so `dist --target linux --keep` hands back a Debian
+/// desktop with no source tree in it. Dropping the verification makes the
+/// builder the last guest, which is the one this text is offering.
 pub fn keep_command(image: Image) -> String {
-    let command = if image.has_desktop() { "e2e" } else { "dist" };
-    format!("cargo xtask {command} --target {} --keep", image.target())
+    if image.has_desktop() {
+        format!("cargo xtask e2e --target {} --keep", image.target())
+    } else {
+        format!(
+            "cargo xtask dist --target {} --keep --no-verify",
+            image.target()
+        )
+    }
 }
 
 /// Refuse to boot from an image that cannot produce a trustworthy run.
@@ -386,7 +438,7 @@ pub fn boot<'a>(
     match session.bring_up(store) {
         Ok(()) => Ok(session),
         Err(e) => {
-            println!("{}", after_failure(&session, store, false));
+            println!("{}", after_failure(&mut session, store, false));
             Err(e)
         }
     }
@@ -493,7 +545,7 @@ pub fn lifecycle_explainer(image: Image, prepared: Prepared) -> String {
         "\n\
          {vm} is up.\n  \
          ssh:     cargo xtask vm ssh {image}\n  \
-         desktop: cargo xtask vm view {image}\n  \
+         {console}: cargo xtask vm view {image}\n  \
          down:    cargo xtask vm down {image}\n\n\
          `vm down` is the stop, and an idle guest is worth stopping: it holds \
          {memory} of this host's memory for as long as it is up. What there is no \
@@ -503,6 +555,7 @@ pub fn lifecycle_explainer(image: Image, prepared: Prepared) -> String {
          next `vm up` boots something pristine.\n\n\
          Watching a run is harmless; clicking during one perturbs it.{session}{extra}",
         vm = image.vm_name(),
+        console = image.console_label(),
         memory = guest_memory(image),
         session = view_note(image, prepared.enhanced_session),
         extra = guest_environment_note(image, prepared.staged)
@@ -677,7 +730,7 @@ pub fn up(
     if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
         // Keep the guest: `vm up` is for looking at one, and a guest that
         // booted is still worth having even if the binaries did not arrive.
-        println!("{}", after_failure(&session, &store, true));
+        println!("{}", after_failure(&mut session, &store, true));
         return Err(e);
     }
     let enhanced_session = hand_over(&mut session, &store);
@@ -905,7 +958,7 @@ pub fn smoke(
     let script = smoke_script(image);
 
     println!("running a trivial job through the guest contract");
-    let scratch = store.run_dir(image).join("job");
+    let scratch = store.job_scratch(image);
     // From here on the VM exists, so `?` would leave it running unannounced.
     let code = match job::run(
         session.provider.as_ref(),
@@ -917,7 +970,7 @@ pub fn smoke(
     ) {
         Ok(code) => code,
         Err(e) => {
-            println!("{}", after_failure(&session, &store, keep));
+            println!("{}", after_failure(&mut session, &store, keep));
             return Err(e);
         }
     };
@@ -928,7 +981,7 @@ pub fn smoke(
         &provider::guest_results(image.target()),
         &results,
     ) {
-        println!("{}", after_failure(&session, &store, keep));
+        println!("{}", after_failure(&mut session, &store, keep));
         return Err(e);
     }
 
@@ -1436,15 +1489,194 @@ mod tests {
             "cargo xtask e2e --target linux --keep"
         );
         // Not `e2e`, which has no image to run its suite in here, and not the
-        // image's own slug, which neither command takes.
+        // image's own slug, which neither command takes. `--no-verify` is what
+        // makes the builder the last guest of the run and so the one kept.
         assert_eq!(
             keep_command(Image::WindowsBuilder),
-            "cargo xtask dist --target windows --keep"
+            "cargo xtask dist --target windows --keep --no-verify"
         );
         for image in Image::ALL {
             let text = keep_command(image);
             assert!(!text.contains("--image"), "{text}");
             assert!(!text.contains("builder"), "{text}");
+        }
+    }
+
+    /// The flag on its own keeps the last guest of the run, which for a
+    /// verifying `dist` is the desktop image: a text offering the builder has
+    /// to name the command that actually leaves the builder up.
+    #[test]
+    fn the_command_that_keeps_a_builder_is_one_that_keeps_a_builder() {
+        use crate::commands::dist::{Boot, Options, Which, keeps_guest};
+        for image in Image::ALL {
+            let text = keep_command(image);
+            if image.has_desktop() {
+                assert!(!text.contains("--no-verify"), "{text}");
+                continue;
+            }
+            let options = Options {
+                which: match image.target() {
+                    Target::Windows => Which::Windows,
+                    Target::Linux => Which::Linux,
+                },
+                keep: true,
+                verify: !text.contains("--no-verify"),
+                allow_expired: false,
+                allow_dirty: false,
+            };
+            let boot = Boot {
+                target: image.target(),
+                builder: true,
+                failed: false,
+            };
+            assert!(
+                keeps_guest(options, boot),
+                "`{text}` does not keep the {image} guest"
+            );
+        }
+    }
+
+    /// A builder has no desktop session, so nothing may offer one: the console
+    /// a viewer attaches to there is a text console, and the same boot that says
+    /// so must not go on to call it a desktop.
+    #[test]
+    fn the_line_that_offers_a_console_calls_it_what_the_image_has() {
+        for image in Image::ALL {
+            let expected = if image.has_desktop() {
+                "desktop: cargo xtask vm view"
+            } else {
+                "console: cargo xtask vm view"
+            };
+            let text = lifecycle_explainer(image, Prepared::BARE);
+            assert!(text.contains(expected), "{text}");
+            let store = Store::new("/srv/vm");
+            let hint = Session {
+                provider: Box::new(fake::Fake),
+                state: fake::state(&store, image, StartReason::Run),
+                image,
+            }
+            .reach_hint();
+            assert!(hint.contains(expected), "{hint}");
+        }
+    }
+
+    /// A run kept after its work failed is as finished as one kept after its
+    /// work passed, so its record has to say so: `StartReason::Dist` carries a
+    /// cost of ending, and the `vm down` this very message recommends would
+    /// warn about ending a build that stopped when the failure did.
+    #[test]
+    fn a_guest_kept_after_a_failure_is_no_longer_recorded_as_the_work_that_failed() {
+        let store = fake::store("kept_after_failure");
+        let mut session = Session {
+            provider: Box::new(fake::Fake),
+            state: fake::state(&store, Image::LinuxBuilder, StartReason::Dist),
+            image: Image::LinuxBuilder,
+        };
+        write_state(&store, session.image, &session.state).expect("write the record");
+
+        let text = after_failure(&mut session, &store, true);
+        assert!(text.contains("still running"), "{text}");
+
+        let recorded = load_state(&store, session.image).expect("the record is still there");
+        assert_eq!(recorded.reason, StartReason::Keep);
+        assert_eq!(recorded.reason.cost_of_ending(), None);
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// What a teardown removes is the guest's own run state and nothing else:
+    /// the record, the overlay, and the scratch the job script was written into.
+    /// The last of those is why a green run used to leave run state behind under
+    /// an image with nothing running.
+    #[test]
+    fn a_teardown_removes_the_run_state_it_wrote_and_leaves_the_rest() {
+        let store = fake::store("tear_down_run_state");
+        let image = Image::LinuxBuilder;
+        let state = fake::state(&store, image, StartReason::Dist);
+        let session = Session {
+            provider: Box::new(fake::Fake),
+            state: state.clone(),
+            image,
+        };
+
+        assert_eq!(
+            run_state_paths(&store, image, &state),
+            [
+                store.state_file(image),
+                state.overlay.clone(),
+                store.job_scratch(image),
+            ]
+        );
+
+        write_state(&store, image, &state).expect("write the record");
+        std::fs::write(&state.overlay, b"overlay").expect("write the overlay");
+        std::fs::create_dir_all(store.job_scratch(image)).expect("the job scratch");
+        std::fs::write(store.job_scratch(image).join("job.sh"), b"echo hi").expect("the script");
+        std::fs::write(store.vm_log(image), b"qemu").expect("the log");
+
+        session.tear_down(&store).expect("the teardown");
+
+        assert!(!store.state_file(image).exists());
+        assert!(!state.overlay.exists());
+        assert!(!store.job_scratch(image).exists());
+        // The log is what a failed boot's message quotes and names, so a
+        // teardown is not what removes it.
+        assert!(store.vm_log(image).is_file());
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// A store in a directory of its own and a provider that answers the two
+    /// questions a teardown asks, for the cases that write files and read them
+    /// back.
+    mod fake {
+        use super::*;
+        use crate::provider::target::ProviderKind;
+
+        pub fn store(name: &str) -> Store {
+            let root = std::env::temp_dir().join(format!("sunlit_xtask_vm_{name}"));
+            let _ = std::fs::remove_dir_all(&root);
+            let store = Store::new(&root);
+            for image in Image::ALL {
+                std::fs::create_dir_all(store.run_dir(image)).expect("the run directory");
+            }
+            store
+        }
+
+        pub fn state(store: &Store, image: Image, reason: StartReason) -> RunState {
+            RunState::new(image, ProviderKind::Qemu, store.overlay(image), reason, 0)
+        }
+
+        /// Everything a teardown consults is real; everything else is
+        /// unreachable, because nothing in these cases boots anything.
+        pub struct Fake;
+
+        impl crate::provider::Provider for Fake {
+            fn kind(&self) -> ProviderKind {
+                ProviderKind::Qemu
+            }
+            fn create_from_golden(&self, _: Image, _: StartReason) -> Result<RunState, String> {
+                unreachable!("these cases create nothing")
+            }
+            fn start(&self, _: &mut RunState) -> Result<(), String> {
+                unreachable!("these cases start nothing")
+            }
+            fn destroy(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+                Ok(crate::provider::Stopped::WasNotRunning)
+            }
+            fn is_running(&self, _: &RunState) -> bool {
+                false
+            }
+            fn defunct(&self, _: &RunState) -> Option<String> {
+                None
+            }
+            fn view(&self, _: &RunState) -> Result<String, String> {
+                unreachable!("these cases open no console")
+            }
+            fn ssh_target(&self, state: &RunState) -> crate::guest::ssh::SshTarget {
+                crate::guest::ssh::SshTarget::from_state(state, std::path::Path::new("id_ed25519"))
+            }
+            fn runner(&self) -> &dyn crate::runner::Runner {
+                unreachable!("these cases run nothing")
+            }
         }
     }
 

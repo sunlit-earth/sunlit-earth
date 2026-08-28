@@ -211,14 +211,14 @@ fn run_in_guest(
     let paths = match artifacts::stage(runner, &store, &session) {
         Ok(paths) => paths,
         Err(e) => {
-            println!("{}", vm::after_failure(&session, &store, keep));
+            println!("{}", vm::after_failure(&mut session, &store, keep));
             return Err(e);
         }
     };
 
     println!("running the suite in the guest's console session");
     let script = job_script(target, &paths);
-    let scratch = store.run_dir(image).join("job");
+    let scratch = store.job_scratch(image);
     let code = job::run(
         session.provider.as_ref(),
         &session.state,

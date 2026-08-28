@@ -860,7 +860,7 @@ fn build_in_builder(
         let _ = std::fs::remove_file(archive);
 
         println!("  building; cargo's own output follows");
-        let scratch = store.run_dir(builder).join("job");
+        let scratch = store.job_scratch(builder);
         let mut tail = OutputTail::new();
         let code = job::run_watching(
             session.provider.as_ref(),
@@ -924,7 +924,7 @@ fn build_in_builder(
             );
             println!("{}", kept_builder_note(builder));
         }
-        Err(_) => println!("{}", vm::after_failure(&session, store, keep)),
+        Err(_) => println!("{}", vm::after_failure(&mut session, store, keep)),
     }
     outcome
 }
@@ -992,7 +992,7 @@ fn verify_in_desktop(
             None => None,
         };
 
-        let scratch = store.run_dir(desktop).join("job");
+        let scratch = store.job_scratch(desktop);
         let code = job::run(
             session.provider.as_ref(),
             &session.state,
@@ -1075,7 +1075,7 @@ fn verify_in_desktop(
             );
             println!("The binary this run built is in the guest's own bin directory.");
         }
-        Err(_) => println!("{}", vm::after_failure(&session, store, keep)),
+        Err(_) => println!("{}", vm::after_failure(&mut session, store, keep)),
     }
     outcome
 }

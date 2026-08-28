@@ -60,7 +60,7 @@ because each of them picks the image it needs itself.
 
 The host tools the VM commands run go through `host::facts::resolve_tool`, which asks `PATH` and then the places an installer is known to leave a program without putting it on `PATH`: QEMU's and TightVNC's own directories under Program Files, winget's links directory, and scoop's shims directory under `%SCOOP%` or `~\scoop` and `%SCOOP_GLOBAL%` or `%ProgramData%\scoop`. Both package managers append to the *user* `PATH`, so a tool installed in the shell that is now running the xtask is installed and invisible; a lookup that missed it would make `vm setup` plan an install that winget then refuses as redundant, and `vm view` claim a viewer is absent. The VNC viewers are in `facts::VNC_VIEWERS`, executable names rather than package identifiers, and `vm view` of a QEMU guest resolves them the same way `vm doctor` reports them. Two lookups stay on bare `PATH` deliberately and say so where they sit: the Packer ISO tools, because Packer resolves them itself and a fallback location would not help it, and `store::windows_media`'s choice between `curl` and `wget`.
 
-`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `vm down` is the cheap teardown: it ends the guest and deletes its run state, which the next boot recreates. `vm purge` is the disk-space one: everything a target has on disk unless `--vm`, `--image`, or `--iso` narrows it, and it asks before deleting unless `-f` is given. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
+`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `vm down` is the cheap teardown: it ends the guest and deletes its run state, which the next boot recreates. A command that boots a guest of its own tears it down the same way when it is finished with it, and `vm::run_state_paths` is the one list of what that removes: the record, the overlay, and the scratch a job's script was written into (`Store::job_scratch`), so a green run leaves `vm status` nothing to report. `vm.log` is deliberately outside that list, because a failed boot's message quotes its tail and names its path. `vm purge` is the disk-space one: everything a target has on disk unless `--vm`, `--image`, or `--iso` narrows it, and it asks before deleting unless `-f` is given. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
 **The store holds an image per slug, not an image per target** (`provider::target::Image`).
 An image is either a *base*, installed from media, or a *layer*, provisioned over a named
 parent:
@@ -80,6 +80,9 @@ target is everything about the operating system: the provider matrix, the guest 
 job scripts, the SSH account, and the device models the Packer templates and the QEMU
 command line have to agree about. `Image::target()` is the bridge, and the two desktop
 images keep their original slugs so every path they had is the path they have.
+`Image::has_desktop()` is the third question, and every text that offers a console asks it
+through `Image::console_label()`: a builder's `vm view` line says `console:` rather than
+`desktop:`, because there is no desktop session in one to open.
 
 A layer is a differencing child, which is what makes the Windows builder five minutes
 and a few gigabytes rather than an hour and another fifteen: `commands::build_layer`
@@ -150,6 +153,9 @@ archive is of `HEAD` and a record whose commit does not describe the binary is t
 thing it must not be. `--keep` leaves one guest of the whole run up, not one per target:
 the next boot is refused while another guest is registered, so `dist::keeps_guest` narrows
 the flag to the last boot the run makes and the closing summary names what is still there.
+Which guest that is follows from the verification, so a text offering the builder says
+`--keep --no-verify` (`vm::keep_command`): with the verification on, the last boot is the
+desktop guest and the flag alone hands back a desktop with no source tree in it.
 
 A build says what it is doing while it does it: `job::OutputTail` reads the guest's
 `output.log` on every poll and prints what is new, tracked by how much has been printed

@@ -160,6 +160,10 @@ pub struct TeardownPlan {
     pub dirs: Vec<PathBuf>,
     /// Things deliberately not touched, and why.
     pub refused: Vec<String>,
+    /// Layers reached because the base they are children of was named, which is
+    /// the one thing in the listing that a reader would otherwise take for a
+    /// command deleting more than it was asked to.
+    pub layers: Vec<Image>,
 }
 
 impl TeardownPlan {
@@ -235,6 +239,14 @@ impl TeardownPlan {
                 crate::util::count(self.files.len(), "file")
             );
         }
+        for layer in &self.layers {
+            let _ = writeln!(
+                out,
+                "the {layer} layer goes with it: it holds only what its own \
+                 build changed, so without the disk it is a child of it is not \
+                 a smaller image but an unreadable file"
+            );
+        }
         for kept in self.left_behind() {
             let _ = writeln!(out, "kept: {kept}");
         }
@@ -256,6 +268,7 @@ pub fn plan(
     let mut files = Vec::new();
     let mut dirs = Vec::new();
     let mut refused = Vec::new();
+    let mut layers = Vec::new();
 
     let take = |file: &FileInfo,
                 owner: Option<Image>,
@@ -296,6 +309,9 @@ pub fn plan(
         let Some(entry) = inventory.for_image(image) else {
             continue;
         };
+        if as_a_layer {
+            layers.push(image);
+        }
 
         if scope.needs_the_vm_stopped(entry.state.as_ref().map(|state| state.reason)) {
             if let Some(state) = &entry.state {
@@ -374,6 +390,7 @@ pub fn plan(
         files,
         dirs,
         refused,
+        layers,
     }
 }
 
@@ -668,6 +685,43 @@ mod tests {
                 .any(|f| f.path.to_string_lossy().contains("images")),
             "{plan:?}"
         );
+    }
+
+    #[test]
+    fn purging_a_base_takes_its_layer_and_says_why_the_layer_is_in_the_list() {
+        let inv = inventory(vec![
+            healthy(Image::Windows),
+            healthy(Image::WindowsBuilder),
+        ]);
+        let both = plan(
+            &store(),
+            &inv,
+            Selection::One(Image::Windows),
+            Scope::EVERYTHING,
+        );
+        assert_eq!(both.layers, vec![Image::WindowsBuilder]);
+        let rendered = both.render();
+        assert!(rendered.contains("images/windows-builder"), "{rendered}");
+        // Why a command asked for one image is deleting two.
+        assert!(
+            rendered.contains("the windows-builder layer goes with it"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("unreadable file"), "{rendered}");
+
+        // The other direction: a layer named on its own is the only thing
+        // taken, and there is nothing to explain.
+        let layer = plan(
+            &store(),
+            &inv,
+            Selection::One(Image::WindowsBuilder),
+            Scope::EVERYTHING,
+        );
+        assert!(layer.layers.is_empty(), "{layer:?}");
+        let rendered = layer.render();
+        assert!(rendered.contains("images/windows-builder"), "{rendered}");
+        assert!(!rendered.contains("images/windows/"), "{rendered}");
+        assert!(!rendered.contains("goes with it"), "{rendered}");
     }
 
     #[test]

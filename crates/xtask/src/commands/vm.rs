@@ -162,6 +162,26 @@ pub fn expired_help(image: Image, state: EvalState) -> String {
     )
 }
 
+/// The help text a layer whose parent moved gets (plan decision 3).
+///
+/// Named separately from the other refusals because this is the one that has to
+/// say what a layer is: the disk is intact, its own checksum matches, and it is
+/// still unreadable, which reads as a bug in the check unless the text explains
+/// that a differencing child holds only what its own build changed.
+pub fn detached_help(image: Image, detail: &str) -> String {
+    format!(
+        "the {image} layer is detached from its parent: {detail}.\n\n\
+         A layer holds only what its own build changed, so it cannot be read \
+         without the disk it was built over. Hyper-V refuses to attach a child \
+         whose parent's identifier moved, and qcow2 reads garbage without \
+         saying so, which is why this is checked here rather than left to the \
+         hypervisor. Nothing can be repaired in place: the blocks the parent \
+         used to hold are the ones that are gone.\n\n\
+         Rebuild it over the parent that is there now: \
+         cargo xtask vm build-image {image}"
+    )
+}
+
 /// Refuse to boot from an image that cannot produce a trustworthy run.
 pub fn check_image(store: &Store, image: Image, allow_expired: bool) -> Result<(), String> {
     let inventory = inventory::scan(store);
@@ -215,6 +235,7 @@ pub fn check_image(store: &Store, image: Image, allow_expired: bool) -> Result<(
             "the {image} golden image does not match its manifest: {detail}. \
              `cargo xtask vm build-image {image}` rebuilds it."
         )),
+        ImageCondition::Detached { detail } => Err(detached_help(image, &detail)),
         // Everything else returned above, where `blocks_boot` said so.
         other => Err(format!(
             "the {image} image is not usable: {}",
@@ -1235,5 +1256,22 @@ mod tests {
         assert!(text.contains("Sunlit Earth"), "{text}");
         assert!(text.contains("basic session"), "{text}");
         assert!(!text.contains("leave that field empty"), "{text}");
+    }
+
+    #[test]
+    fn a_detached_layer_is_refused_by_naming_the_rebuild_of_the_layer() {
+        let text = detached_help(
+            Image::WindowsBuilder,
+            "the windows image was rebuilt: golden.vhdx is crc32:1 now and this \
+             layer was built over crc32:2",
+        );
+        // The layer, not its parent: rebuilding the parent is what caused this.
+        assert!(
+            text.contains("cargo xtask vm build-image windows-builder"),
+            "{text}"
+        );
+        assert!(text.contains("was rebuilt"), "{text}");
+        // The reason a disk whose own checksum matches is unusable anyway.
+        assert!(text.contains("only what its own build changed"), "{text}");
     }
 }

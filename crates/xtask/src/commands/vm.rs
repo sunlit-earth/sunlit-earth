@@ -124,7 +124,10 @@ impl Session<'_> {
 /// because it has no session to write it from and no X server to have one in.
 /// Naming a desktop there describes an image nobody built, and a wait that
 /// returns in no time at all then reads as a broken guest rather than as the
-/// marker being in place before SSH was.
+/// marker being in place before SSH was. The Windows builder inherits its
+/// parent's logon and so has a session, and is still described the neutral way,
+/// because what a boot of it waits for is a guest that can run a job rather than
+/// a desktop anybody is going to look at.
 pub fn readiness_wait_line(image: Image) -> &'static str {
     if image.has_desktop() {
         "waiting for the desktop session"

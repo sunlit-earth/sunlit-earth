@@ -1,7 +1,7 @@
 //! The VM lifecycle commands: `up`, `ssh`, `view`, `status`, `down`, `purge`,
 //! guest-contract smoke test.
 //!
-//! `vm up` and `e2e --image <t>` share the whole boot path, which is what
+//! `vm up` and `e2e --target <t>` share the whole boot path, which is what
 //! makes an interactive guest and a test guest the same guest.
 
 use std::time::Duration;
@@ -180,6 +180,17 @@ pub fn detached_help(image: Image, detail: &str) -> String {
          Rebuild it over the parent that is there now: \
          cargo xtask vm build-image {image}"
     )
+}
+
+/// The command that leaves a guest of this image behind to look at.
+///
+/// Both of them take a target rather than an image, because each picks the image
+/// it needs itself, and which of the two it is follows from what the image is
+/// for: the e2e suite runs in a desktop image and a release build in a builder.
+/// `e2e --target windows-builder` is not something anyone can type.
+pub fn keep_command(image: Image) -> String {
+    let command = if image.has_desktop() { "e2e" } else { "dist" };
+    format!("cargo xtask {command} --target {} --keep", image.target())
 }
 
 /// Refuse to boot from an image that cannot produce a trustworthy run.
@@ -557,8 +568,8 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             "\n\nNothing of ours was staged in it, so its desktop is empty and \
              there is no app in it to start. `cargo xtask vm up {image}` boots a \
              guest with the binaries, the launcher and the shortcuts, and \
-             `cargo xtask e2e --image {image} --keep` leaves one behind after a \
-             run."
+             `{keep}` leaves one behind after a run.",
+            keep = keep_command(image),
         ),
         (Target::Linux, true) => format!(
             "\n\nWhat this boot staged is in `{root}`, which is outside any home \
@@ -576,9 +587,9 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             "\n\nNothing of ours was staged in it, so there is no app in \
              `{root}` to start and no entry for one. `cargo xtask vm up {image}` \
              boots a guest with the binaries, the launcher and the desktop \
-             entries, and `cargo xtask e2e --image {image} --keep` leaves one \
-             behind after a run.",
+             entries, and `{keep}` leaves one behind after a run.",
             root = crate::provider::GUEST_ROOT_LINUX,
+            keep = keep_command(image),
         ),
     }
 }
@@ -726,8 +737,8 @@ pub fn view(runner: &dyn Runner, image: Image) -> Result<u8, String> {
     let state = load_state(&store, image).ok_or_else(|| {
         format!(
             "no {image} VM is running. `cargo xtask vm up {image}` starts one, \
-             and `cargo xtask e2e --image {image} --keep` leaves the aftermath \
-             of a test run to look at."
+             and `{keep}` leaves the aftermath of a run to look at.",
+            keep = keep_command(image),
         )
     })?;
     let provider = provider::for_state(runner, &store, &state)?;
@@ -1112,7 +1123,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("cargo xtask vm up linux"), "{text}");
-        assert!(text.contains("--image linux --keep"), "{text}");
+        assert!(text.contains(&keep_command(Image::Linux)), "{text}");
     }
 
     #[test]
@@ -1256,6 +1267,25 @@ mod tests {
         assert!(text.contains("Sunlit Earth"), "{text}");
         assert!(text.contains("basic session"), "{text}");
         assert!(!text.contains("leave that field empty"), "{text}");
+    }
+
+    #[test]
+    fn the_command_that_keeps_a_guest_is_the_one_that_runs_in_that_image() {
+        assert_eq!(
+            keep_command(Image::Linux),
+            "cargo xtask e2e --target linux --keep"
+        );
+        // Not `e2e`, which has no image to run its suite in here, and not the
+        // image's own slug, which neither command takes.
+        assert_eq!(
+            keep_command(Image::WindowsBuilder),
+            "cargo xtask dist --target windows --keep"
+        );
+        for image in Image::ALL {
+            let text = keep_command(image);
+            assert!(!text.contains("--image"), "{text}");
+            assert!(!text.contains("builder"), "{text}");
+        }
     }
 
     #[test]

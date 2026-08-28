@@ -97,6 +97,22 @@ if (-not (Test-Path $libclang)) {
     Write-Output "libclang.dll at $libclang"
 }
 
+Write-Output '== clearing what this build left in the guest root'
+# The parent image writes its readiness marker from the console session at logon,
+# and this build logged on: without this, the marker is *in the layer*, so every
+# boot of it looks ready before its session exists. The first live smoke of this
+# image found that the expensive way. `schtasks /run` then fires an interactive
+# task with no interactive session to run in, reports success, and the job never
+# starts: five minutes of waiting for an exit code that was never coming.
+$root = 'C:\sunlit-e2e'
+Remove-Item (Join-Path $root 'ready') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'job.cmd') -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'results') -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Join-Path $root 'results\artifacts') | Out-Null
+if (Test-Path (Join-Path $root 'ready')) {
+    $problems += 'the readiness marker is still in the guest root, so every boot of this layer would look ready before its session existed'
+}
+
 if ($problems.Count -gt 0) {
     Write-Output ''
     Write-Output 'this layer is not usable:'

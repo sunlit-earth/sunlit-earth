@@ -8,3 +8,13 @@ e2e = "test --test e2e -- --ignored --test-threads=1 --nocapture"
 unit = "test --workspace --lib --bins"
 # Developer tooling: VM orchestration for the desktop e2e suite.
 xtask = "run -p xtask --"
+
+# Link the Visual C++ runtime into the binary rather than against
+# `vcruntime140.dll`, which a clean Windows does not carry and which otherwise
+# has to be at least as new on the target as the toolset that linked it. Here
+# rather than in the release build's job, so every Windows build of this tree
+# agrees: the e2e binaries a guest runs, a developer's `cargo build --release`,
+# and what `cargo xtask dist` produces are the same kind of binary. The `cc`
+# crate reads the flag and follows it with `/MT` for the Astronomy Engine's C.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

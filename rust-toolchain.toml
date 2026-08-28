@@ -1,0 +1,13 @@
+# The toolchain this tree is built with, everywhere it is built: this host, CI,
+# and the two builder images a release binary comes out of.
+#
+# It exists so that a release build has one answer to "which compiler made
+# this". `guest::toolchain::pinned` in the xtask reads the channel out of here
+# and hands it to both builders, so the version is spelled once and a bump is
+# one line rather than a hunt. rustup honours the file in this checkout whatever
+# the host's default toolchain is, which is the intended effect and is worth
+# knowing before wondering why `rustc -V` differs from the one outside.
+[toolchain]
+channel = "1.94.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

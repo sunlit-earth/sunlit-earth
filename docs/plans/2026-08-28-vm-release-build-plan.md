@@ -209,3 +209,23 @@ The rebuild with that fix, and the smoke on it:
 - `vm status` afterwards: all four images `ok (current)`, no VM recorded, **67.7 GiB in the store** (Windows 34.1 GiB across its two formats, the layer 16.5, Debian 4.0, the Linux builder 3.1, and the 6.6 GB of media).
 
 Acceptance criterion 1 is met for both builders, and criterion 2 is met but for `vm doctor`'s four-current line, which needs one more run to be quoted here.
+
+### `cargo xtask dist --target windows`
+
+Of commit `e348f64`, on 2026-08-28. Green end to end at the first attempt, after one bug found by reading the generated script rather than by running it.
+
+**The bug first, because it would have cost the run.** The build job's `dumpbin` lookup is a `for /f` loop, and a batch file doubles a loop variable: `%%i`. The generated script carried `%%%%i`, because the four percent signs in the Rust format string are four percent signs in the output, and `cmd` refuses `%%%%i` outright with "cannot be processed syntactically" rather than finding nothing. The test that existed asked whether the script contains `%%i`, which four percent signs also satisfy; it now also asks that there is no run of three. Measured against `cmd` on the host before the fix went in, which is the only way to be sure which of the three forms it wants.
+
+| | |
+|---|---|
+| source archive | 8.4 MiB, `HEAD` without `textures/`, clean tree |
+| the build itself | **6 minutes 45 seconds** in the guest, 519 crates, cold registry |
+| the whole target | **7 minutes 47 seconds**, two boots included |
+| the binary | 29,183,488 bytes (27.8 MiB) |
+| imports | **26, none of them the Visual C++ runtime**, so `crt_static: true` |
+| verification | the Windows desktop guest: SSH at 0 s, session at 6 s, textures staged, `render` produced a 640x360 PNG of 362.5 KiB |
+| on the host | the same exe answered `--version` and rendered a 640x360 PNG of 332,910 bytes with an IHDR that says so |
+
+What this measured that the Linux target could not. The Windows build is **six minutes forty-five against Linux's four fifty-one** on the same eight virtual cores, which is the ordering anyone would predict and is still nowhere near the plan's fifteen to forty minutes. `dumpbin` came out of `vswhere -find` as designed, and its version line reads 14.44.35228.0 against the 14.44.35207 `finalize.ps1` reported at image build time, which is the same MSVC toolset moving under a servicing update rather than a second one. `tar.exe -xf` unpacked the source archive with no complaint, and `cargo build --release` found `link.exe` with no `vcvarsall` anywhere in sight: rustc's own MSVC probing is what makes the job script as short as it is. The 26 imports are the four API sets and the twenty-two system DLLs a Slint and wgpu binary asks for, and `bcryptprimitives.dll` rather than `vcruntime140.dll` is decision 8 proved on the artifact.
+
+Acceptance criterion 3 is met, including the host run.

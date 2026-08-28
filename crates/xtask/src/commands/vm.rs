@@ -94,17 +94,14 @@ impl Session<'_> {
         let elapsed = self.provider.wait_ssh(&self.state, BOOT_TIMEOUT)?;
         println!("  SSH answered after {:.0}s", elapsed.as_secs_f64());
 
-        println!("waiting for the desktop session");
+        println!("{}", readiness_wait_line(self.image));
         let elapsed = job::wait_for_session(
             self.provider.as_ref(),
             &self.state,
             self.target(),
             SESSION_TIMEOUT,
         )?;
-        println!(
-            "  the desktop was ready after {:.0}s",
-            elapsed.as_secs_f64()
-        );
+        println!("{}", readiness_ready_line(self.image, elapsed));
         Ok(())
     }
 
@@ -118,6 +115,35 @@ impl Session<'_> {
              down:    cargo xtask vm down {image}"
         )
     }
+}
+
+/// What the wait after SSH is waiting for, per image.
+///
+/// One marker, and what writes it differs: a desktop image writes it from the
+/// session that logs on, and the Linux builder from a oneshot unit at boot,
+/// because it has no session to write it from and no X server to have one in.
+/// Naming a desktop there describes an image nobody built, and a wait that
+/// returns in no time at all then reads as a broken guest rather than as the
+/// marker being in place before SSH was.
+pub fn readiness_wait_line(image: Image) -> &'static str {
+    if image.has_desktop() {
+        "waiting for the desktop session"
+    } else {
+        "waiting for the guest to be ready for a job"
+    }
+}
+
+/// The line that closes that wait, with what it cost.
+pub fn readiness_ready_line(image: Image, elapsed: Duration) -> String {
+    format!(
+        "  {} was ready after {:.0}s",
+        if image.has_desktop() {
+            "the desktop"
+        } else {
+            "the guest"
+        },
+        elapsed.as_secs_f64()
+    )
 }
 
 /// Deal with a guest after something went wrong with it.
@@ -552,6 +578,12 @@ fn view_note(image: Image, enhanced_session: bool) -> String {
 /// person handed a KDE guest could not find the app. It also cannot promise a
 /// desktop icon, because GNOME shows none at all, so it names the menu and the
 /// desktop separately.
+///
+/// The Linux builder cannot promise the menu either, and that is why the Linux
+/// arms ask [`Image::has_desktop`] rather than what operating system it is: it
+/// has no session for an entry to appear in, so what it offers is a shell. The
+/// Windows builder is not the same case and is not asked, because it is a layer
+/// over the desktop image and its console session is its parent's.
 fn guest_environment_note(image: Image, staged: bool) -> String {
     match (image.target(), staged) {
         (Target::Windows, true) => format!(
@@ -571,7 +603,7 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
              `{keep}` leaves one behind after a run.",
             keep = keep_command(image),
         ),
-        (Target::Linux, true) => format!(
+        (Target::Linux, true) if image.has_desktop() => format!(
             "\n\nWhat this boot staged is in `{root}`, which is outside any home \
              directory: the app and the test harness in `bin/`, the fixtures, and \
              a run's results. `{launcher}` starts the app from there, naming the \
@@ -583,11 +615,31 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             launcher = crate::guest::handover::linux_launcher_path(),
             app = crate::guest::handover::ENTRY_NAME,
         ),
-        (Target::Linux, false) => format!(
+        (Target::Linux, true) => format!(
+            "\n\nWhat this boot staged is in `{root}`, which is outside any home \
+             directory: the app and the test harness in `bin/`, the fixtures, and \
+             a run's results. `{launcher}` starts the app from there. There is no \
+             menu entry and no desktop icon to reach it by, because this image has \
+             no desktop session at all: `cargo xtask vm ssh {image}` is the way \
+             in, and a shell is all there is.",
+            root = crate::provider::GUEST_ROOT_LINUX,
+            launcher = crate::guest::handover::linux_launcher_path(),
+        ),
+        (Target::Linux, false) if image.has_desktop() => format!(
             "\n\nNothing of ours was staged in it, so there is no app in \
              `{root}` to start and no entry for one. `cargo xtask vm up {image}` \
              boots a guest with the binaries, the launcher and the desktop \
              entries, and `{keep}` leaves one behind after a run.",
+            root = crate::provider::GUEST_ROOT_LINUX,
+            keep = keep_command(image),
+        ),
+        (Target::Linux, false) => format!(
+            "\n\nNothing of ours was staged in it, so there is no app in \
+             `{root}` to start, and this image has no desktop session for an \
+             entry to appear in either: it is where `dist` builds a release \
+             binary. `{keep}` leaves one behind with the source tree it built and \
+             that tree's `target/release`, and `cargo xtask vm ssh {image}` is \
+             the way in.",
             root = crate::provider::GUEST_ROOT_LINUX,
             keep = keep_command(image),
         ),
@@ -898,22 +950,30 @@ pub fn smoke(
 
 /// The trivial job the smoke test runs.
 ///
-/// What it asks the guest differs by what the guest has. A desktop image is
-/// asked to prove there is an X server the job can reach, which is the half of
-/// the contract a builder cannot have; a builder is asked for the toolchain
-/// instead, which is the thing that makes it one. Asking either question of the
-/// wrong image prints a command-not-found line that reads as a defect.
+/// What it asks the guest differs by what the guest has. A builder of either
+/// target is asked for its toolchain, which is the thing that makes it one and
+/// the thing a `dist` run refuses without. The Debian desktop image is asked to
+/// prove there is an X server the job can reach, which is the half of the
+/// contract a builder cannot have; the Windows desktop image is asked neither,
+/// because its job runs from the console session or it does not run at all, so
+/// getting this far is the proof. Asking a question of the wrong image prints a
+/// command-not-found line that reads as a defect in the image.
 pub fn smoke_script(image: Image) -> String {
     match image.target() {
-        Target::Windows => concat!(
-            "@echo off\r\n",
-            "echo sunlit-e2e smoke\r\n",
-            "hostname\r\n",
-            "whoami\r\n",
-            "echo %SUNLIT_E2E_ARTIFACTS%\r\n",
-            "echo smoke > %SUNLIT_E2E_ARTIFACTS%\\smoke.txt\r\n",
-        )
-        .to_owned(),
+        Target::Windows => format!(
+            "@echo off\r\n\
+             echo sunlit-e2e smoke\r\n\
+             hostname\r\n\
+             whoami\r\n\
+             echo %SUNLIT_E2E_ARTIFACTS%\r\n\
+             {probe}\
+             echo smoke > %SUNLIT_E2E_ARTIFACTS%\\smoke.txt\r\n",
+            probe = if image.has_desktop() {
+                ""
+            } else {
+                "\"%USERPROFILE%\\.cargo\\bin\\cargo.exe\" -V || exit /b 1\r\n"
+            },
+        ),
         Target::Linux => format!(
             "#!/usr/bin/env bash\n\
              set -eux\n\
@@ -984,6 +1044,22 @@ mod tests {
         let builder = smoke_script(Image::LinuxBuilder);
         assert!(builder.contains(".cargo/bin/cargo"), "{builder}");
         assert!(!builder.contains("xdpyinfo"), "{builder}");
+
+        // Both builders, not only the one whose script had a question in it
+        // already: a Windows builder with no toolchain is the same broken image
+        // as a Linux one, and the smoke test is where that shows.
+        let windows = smoke_script(Image::WindowsBuilder);
+        assert!(windows.contains(r"\.cargo\bin\cargo.exe"), "{windows}");
+        assert!(windows.contains("exit /b 1"), "{windows}");
+        assert!(!smoke_script(Image::Windows).contains("cargo"));
+
+        for image in Image::ALL {
+            assert_eq!(
+                smoke_script(image).contains("cargo"),
+                !image.has_desktop(),
+                "{image}"
+            );
+        }
 
         for image in Image::ALL {
             let script = smoke_script(image);
@@ -1124,6 +1200,51 @@ mod tests {
         );
         assert!(text.contains("cargo xtask vm up linux"), "{text}");
         assert!(text.contains(&keep_command(Image::Linux)), "{text}");
+    }
+
+    /// The Linux builder has no session for an entry to appear in, so neither
+    /// of its texts may name one: a guest that was told to look in a menu it
+    /// does not have reads as a guest that failed to stage.
+    #[test]
+    fn a_linux_builder_is_never_promised_a_menu_or_a_desktop_entry() {
+        for prepared in [
+            Prepared::BARE,
+            Prepared {
+                staged: true,
+                enhanced_session: false,
+            },
+        ] {
+            let text = lifecycle_explainer(Image::LinuxBuilder, prepared);
+            assert!(!text.contains("desktop entries"), "{text}");
+            assert!(!text.contains(crate::guest::handover::ENTRY_NAME), "{text}");
+            assert!(!text.contains("applications menu"), "{text}");
+            assert!(text.contains("vm ssh linux-builder"), "{text}");
+        }
+        // The desktop image keeps every one of those promises, which is what
+        // makes the builder's silence about them a difference and not a loss.
+        let desktop = lifecycle_explainer(
+            Image::Linux,
+            Prepared {
+                staged: true,
+                enhanced_session: false,
+            },
+        );
+        assert!(desktop.contains("applications menu"), "{desktop}");
+    }
+
+    /// The line a boot prints between SSH and the job is about a session the
+    /// Linux builder has none of: it writes its readiness marker from a oneshot
+    /// unit at boot, so a wait that returns instantly there is the image working
+    /// rather than a desktop that failed to appear.
+    #[test]
+    fn only_an_image_with_a_desktop_is_said_to_be_waiting_for_one() {
+        for image in Image::ALL {
+            let waiting = readiness_wait_line(image);
+            let ready = readiness_ready_line(image, Duration::from_secs(6));
+            assert_eq!(waiting.contains("desktop"), image.has_desktop(), "{image}");
+            assert_eq!(ready.contains("desktop"), image.has_desktop(), "{image}");
+            assert!(ready.contains("after 6s"), "{image}: {ready}");
+        }
     }
 
     #[test]

@@ -1,0 +1,23 @@
+#cloud-config
+# The NoCloud seed for the Linux release builder. Its whole job is to create the
+# build account with our SSH key so Packer can connect; the toolchain and the
+# guest contract are installed by the provisioner scripts, where failures are
+# visible in Packer's own output.
+hostname: sunlit-e2e-linux-builder
+users:
+  - name: ${test_user}
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: false
+    plain_text_passwd: ${test_password}
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# Key only. Nothing reaches this guest except from the host it runs on.
+ssh_pwauth: false
+
+# The provisioner scripts run their own apt update, and doing it twice doubles
+# the slowest part of the build.
+package_update: false
+package_upgrade: false

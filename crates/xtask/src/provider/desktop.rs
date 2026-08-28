@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn the_guest_accepts_exactly_the_sessions_the_host_can_ask_for() {
         let script = std::fs::read_to_string(
-            crate::store::template_dir(crate::provider::target::Target::Linux)
+            crate::store::template_dir(crate::provider::target::Image::Linux)
                 .join("scripts/desktop.sh"),
         )
         .expect("the Linux desktop script");

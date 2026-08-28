@@ -302,7 +302,11 @@ mod tests {
         fn kind(&self) -> ProviderKind {
             ProviderKind::Qemu
         }
-        fn create_from_golden(&self, _: Target, _: StartReason) -> Result<RunState, String> {
+        fn create_from_golden(
+            &self,
+            _: crate::provider::target::Image,
+            _: StartReason,
+        ) -> Result<RunState, String> {
             unreachable!("the waits create nothing")
         }
         fn start(&self, _: &mut RunState) -> Result<(), String> {
@@ -330,7 +334,7 @@ mod tests {
 
     fn state() -> RunState {
         let mut state = RunState::new(
-            Target::Linux,
+            crate::provider::target::Image::Linux,
             ProviderKind::Qemu,
             std::path::PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,

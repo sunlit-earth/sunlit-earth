@@ -13,7 +13,7 @@ use crate::guest::artifacts::{self, GuestPaths};
 use crate::guest::job;
 use crate::provider;
 use crate::provider::desktop::Desktop;
-use crate::provider::target::Target;
+use crate::provider::target::{Image, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store;
 use crate::store::state::StartReason;
@@ -187,6 +187,9 @@ fn run_in_guest(
 ) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
+    // The suite runs in the desktop image of that operating system, which is
+    // the only one of its two images with a session to run windowed tests in.
+    let image = Image::desktop(target);
 
     // Asked before anything is created. The provider matrix has a hypervisor
     // for every cell, which is not the same as this host being able to produce
@@ -197,7 +200,7 @@ fn run_in_guest(
     let mut session = vm::boot(
         runner,
         &store,
-        target,
+        image,
         StartReason::Run,
         allow_expired,
         desktop,
@@ -215,7 +218,7 @@ fn run_in_guest(
 
     println!("running the suite in the guest's console session");
     let script = job_script(target, &paths);
-    let scratch = store.run_dir(target).join("job");
+    let scratch = store.run_dir(image).join("job");
     let code = job::run(
         session.provider.as_ref(),
         &session.state,
@@ -225,7 +228,7 @@ fn run_in_guest(
         job_timeout(target),
     );
 
-    let results = store.results_dir(target);
+    let results = store.results_dir(image);
     let collected = session.provider.collect_results(
         &session.state,
         &provider::guest_results(target),
@@ -242,7 +245,7 @@ fn run_in_guest(
     // expired evaluation is the failure that otherwise reads as flakiness, so
     // it gets to name itself.
     if code.is_err()
-        && target.has_eval_expiry()
+        && image.has_eval_expiry()
         && let Ok(out) = session.provider.exec(&session.state, "slmgr /xpr")
     {
         println!("licence state in the guest: {}", out.stdout.trim());
@@ -255,7 +258,7 @@ fn run_in_guest(
         println!(
             "{}",
             vm::lifecycle_explainer(
-                target,
+                image,
                 vm::Prepared {
                     staged: true,
                     enhanced_session

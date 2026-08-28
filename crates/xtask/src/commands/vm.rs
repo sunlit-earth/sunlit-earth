@@ -1,7 +1,7 @@
 //! The VM lifecycle commands: `up`, `ssh`, `view`, `status`, `down`, `purge`,
 //! guest-contract smoke test.
 //!
-//! `vm up` and `e2e --target <t>` share the whole boot path, which is what
+//! `vm up` and `e2e --image <t>` share the whole boot path, which is what
 //! makes an interactive guest and a test guest the same guest.
 
 use std::time::Duration;
@@ -10,7 +10,7 @@ use crate::commands::status;
 use crate::commands::teardown::{self, Selection};
 use crate::guest::job;
 use crate::provider::desktop::Desktop;
-use crate::provider::target::Target;
+use crate::provider::target::{Image, Target};
 use crate::provider::{self, Provider};
 use crate::runner::Runner;
 use crate::store::inventory::{self, ImageCondition};
@@ -29,10 +29,16 @@ pub const SESSION_TIMEOUT: Duration = Duration::from_mins(5);
 pub struct Session<'a> {
     pub provider: Box<dyn Provider + 'a>,
     pub state: RunState,
-    pub target: Target,
+    pub image: Image,
 }
 
 impl Session<'_> {
+    /// The operating system in the guest, which is what the guest contract and
+    /// the job scripts are written against.
+    pub fn target(&self) -> Target {
+        self.image.target()
+    }
+
     /// Stop the VM and remove the run state it left behind.
     ///
     /// The record goes only after the teardown succeeded, and a file that
@@ -44,7 +50,7 @@ impl Session<'_> {
         self.provider.destroy(&self.state)?;
 
         let mut problems = Vec::new();
-        for path in [&store.state_file(self.target), &self.state.overlay] {
+        for path in [&store.state_file(self.image), &self.state.overlay] {
             if let Err(e) = std::fs::remove_file(path)
                 && e.kind() != std::io::ErrorKind::NotFound
             {
@@ -74,7 +80,7 @@ impl Session<'_> {
     /// behind it and unlink the disk of a live guest. Afterwards, because that
     /// is when the process id and the address exist to record.
     fn bring_up(&mut self, store: &Store) -> Result<(), String> {
-        write_state(store, self.target, &self.state)?;
+        write_state(store, self.image, &self.state)?;
 
         println!(
             "starting {} on {}",
@@ -82,7 +88,7 @@ impl Session<'_> {
             self.provider.kind().name()
         );
         self.provider.start(&mut self.state)?;
-        write_state(store, self.target, &self.state)?;
+        write_state(store, self.image, &self.state)?;
 
         println!("waiting for the guest to answer on SSH");
         let elapsed = self.provider.wait_ssh(&self.state, BOOT_TIMEOUT)?;
@@ -92,7 +98,7 @@ impl Session<'_> {
         let elapsed = job::wait_for_session(
             self.provider.as_ref(),
             &self.state,
-            self.target,
+            self.target(),
             SESSION_TIMEOUT,
         )?;
         println!(
@@ -105,11 +111,11 @@ impl Session<'_> {
     /// How to reach and get rid of this guest, for when something has gone
     /// wrong and it is still running.
     pub fn reach_hint(&self) -> String {
-        let target = self.target;
+        let image = self.image;
         format!(
-            "  ssh:     cargo xtask vm ssh {target}\n  \
-             desktop: cargo xtask vm view {target}\n  \
-             down:    cargo xtask vm down {target}"
+            "  ssh:     cargo xtask vm ssh {image}\n  \
+             desktop: cargo xtask vm view {image}\n  \
+             down:    cargo xtask vm down {image}"
         )
     }
 }
@@ -143,24 +149,24 @@ pub fn after_failure(session: &Session, store: &Store, keep: bool) -> String {
 /// Expiry is not a hard refusal anywhere else, and it is not one here either:
 /// it stops before booting and says how to proceed anyway, because the failure
 /// it prevents is flakiness rather than an error.
-pub fn expired_help(target: Target, state: EvalState) -> String {
+pub fn expired_help(image: Image, state: EvalState) -> String {
     format!(
-        "The {target} golden image's evaluation has expired.\n\n{}\n\n\
+        "The {image} golden image's evaluation has expired.\n\n{}\n\n\
          An expired evaluation does not refuse to boot. Windows starts shutting \
          itself down about once an hour, so a run inside it fails in the middle \
          of whatever it was doing rather than failing cleanly. That is why this \
          is checked before booting instead of diagnosed afterwards.\n\n\
-         Rebuild it:  cargo xtask vm build-image {target}\n\
+         Rebuild it:  cargo xtask vm build-image {image}\n\
          Boot anyway: add --allow-expired-image",
         state.summary()
     )
 }
 
 /// Refuse to boot from an image that cannot produce a trustworthy run.
-pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result<(), String> {
+pub fn check_image(store: &Store, image: Image, allow_expired: bool) -> Result<(), String> {
     let inventory = inventory::scan(store);
-    let Some(entry) = inventory.for_target(target) else {
-        return Err(format!("nothing is known about the {target} image"));
+    let Some(entry) = inventory.for_image(image) else {
+        return Err(format!("nothing is known about the {image} image"));
     };
     let condition = entry.condition(util::now_unix());
     if !condition.blocks_boot() {
@@ -171,15 +177,15 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
             ImageCondition::Ok => {}
             ImageCondition::Stale { .. } => {
                 println!(
-                    "warning: the {target} image is stale: {}",
+                    "warning: the {image} image is stale: {}",
                     condition.detail()
                 );
                 println!(
-                    "it still runs; `cargo xtask vm build-image {target}` brings it up to date"
+                    "it still runs; `cargo xtask vm build-image {image}` brings it up to date"
                 );
             }
             other => println!(
-                "warning: the {target} image is {}: {}",
+                "warning: the {image} image is {}: {}",
                 other.label(),
                 other.detail()
             ),
@@ -192,38 +198,38 @@ pub fn check_image(store: &Store, target: Target, allow_expired: bool) -> Result
             println!("proceeding because --allow-expired-image was given");
             Ok(())
         }
-        ImageCondition::Expired { state } => Err(expired_help(target, state)),
+        ImageCondition::Expired { state } => Err(expired_help(image, state)),
         ImageCondition::Missing => Err(format!(
-            "no {target} golden image yet. `cargo xtask vm build-image {target}` builds one."
+            "no {image} golden image yet. `cargo xtask vm build-image {image}` builds one."
         )),
         ImageCondition::Unmanifested { detail, .. } => Err(format!(
-            "the {target} image has no usable manifest: {detail}.\n\n\
+            "the {image} image has no usable manifest: {detail}.\n\n\
              The manifest is where the build timestamp lives, and that is the \
              only record of when the evaluation licence started running. \
              Without it there is no telling an image with two months left from \
              one that will start shutting itself down mid-run, which is the \
              failure this check exists to prevent.\n\n\
-             Rebuild it: cargo xtask vm build-image {target}"
+             Rebuild it: cargo xtask vm build-image {image}"
         )),
         ImageCondition::Corrupt { detail } => Err(format!(
-            "the {target} golden image does not match its manifest: {detail}. \
-             `cargo xtask vm build-image {target}` rebuilds it."
+            "the {image} golden image does not match its manifest: {detail}. \
+             `cargo xtask vm build-image {image}` rebuilds it."
         )),
         // Everything else returned above, where `blocks_boot` said so.
         other => Err(format!(
-            "the {target} image is not usable: {}",
+            "the {image} image is not usable: {}",
             other.detail()
         )),
     }
 }
 
 /// Refuse to start a second VM (plan decision 7: one at a time).
-pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> Result<(), String> {
+pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, image: Image) -> Result<(), String> {
     let inventory = inventory::scan(store);
-    for entry in &inventory.targets {
+    for entry in &inventory.images {
         let Some(state) = &entry.state else { continue };
-        let Some(other) = entry.target else { continue };
-        if other == target {
+        let Some(other) = entry.image else { continue };
+        if other == image {
             continue;
         }
         let running = provider::for_state(runner, store, state)
@@ -248,8 +254,8 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, target: Target) -> 
 /// Save the state file. Called as soon as the VM exists, so that a crash from
 /// here on still leaves something `vm status` can see and `vm down` can
 /// clean up.
-pub fn write_state(store: &Store, target: Target, state: &RunState) -> Result<(), String> {
-    let path = store.state_file(target);
+pub fn write_state(store: &Store, image: Image, state: &RunState) -> Result<(), String> {
+    let path = store.state_file(image);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
@@ -259,24 +265,30 @@ pub fn write_state(store: &Store, target: Target, state: &RunState) -> Result<()
 }
 
 /// Read the state file, if there is one for a VM of ours.
-pub fn load_state(store: &Store, target: Target) -> Option<RunState> {
-    let text = std::fs::read_to_string(store.state_file(target)).ok()?;
+pub fn load_state(store: &Store, image: Image) -> Option<RunState> {
+    let text = std::fs::read_to_string(store.state_file(image)).ok()?;
     RunState::from_json(&text).ok().filter(RunState::is_ours)
 }
 
 /// Which desktop a guest may be asked to boot into, and whether it may be
 /// asked at all.
 ///
-/// Only the Linux image carries more than one, so the flag is refused for the
-/// Windows guest rather than ignored: a run whose `--desktop` did nothing is a
-/// run whose results are about a desktop nobody chose.
-pub fn desktop_for(target: Target, requested: Option<Desktop>) -> Result<Option<Desktop>, String> {
-    match (target, requested) {
-        (Target::Linux, chosen) => Ok(chosen),
-        (Target::Windows, None) => Ok(None),
-        (Target::Windows, Some(desktop)) => Err(format!(
-            "--desktop {desktop} is a Linux guest option; the Windows image has \
+/// Only the Debian 13 image carries more than one, so the flag is refused for
+/// every other image rather than ignored: a run whose `--desktop` did nothing is
+/// a run whose results are about a desktop nobody chose. A builder is the
+/// sharper case, because it has no desktop at all.
+pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<Desktop>, String> {
+    match (image, requested) {
+        (Image::Linux, chosen) => Ok(chosen),
+        (_, None) => Ok(None),
+        (_, Some(desktop)) if image.has_desktop() => Err(format!(
+            "--desktop {desktop} is a Debian 13 guest option; the {image} image has \
              one desktop and no way to choose another"
+        )),
+        (_, Some(desktop)) => Err(format!(
+            "--desktop {desktop} asks for a session the {image} image does not have: \
+             a builder carries no desktop at all, which is what keeps it small and \
+             what keeps a compiler out of the images the suite runs in"
         )),
     }
 }
@@ -285,19 +297,19 @@ pub fn desktop_for(target: Target, requested: Option<Desktop>) -> Result<Option<
 pub fn boot<'a>(
     runner: &'a dyn Runner,
     store: &'a Store,
-    target: Target,
+    image: Image,
     reason: StartReason,
     allow_expired: bool,
     desktop: Option<Desktop>,
 ) -> Result<Session<'a>, String> {
-    let desktop = desktop_for(target, desktop)?;
-    check_image(store, target, allow_expired)?;
-    check_no_other_vm(runner, store, target)?;
-    clear_stale_state(runner, store, target)?;
+    let desktop = desktop_for(image, desktop)?;
+    check_image(store, image, allow_expired)?;
+    check_no_other_vm(runner, store, image)?;
+    clear_stale_state(runner, store, image)?;
 
-    let provider = provider::for_target(runner, store, target)?;
-    println!("creating a throwaway overlay of the {target} golden image");
-    let mut state = provider.create_from_golden(target, reason)?;
+    let provider = provider::for_image(runner, store, image)?;
+    println!("creating a throwaway overlay of the {image} golden image");
+    let mut state = provider.create_from_golden(image, reason)?;
     // Recorded before the VM is started, because the provider builds the guest's
     // fw_cfg argument out of the record rather than out of a parameter.
     state.desktop = desktop.map(|d| d.flag().to_owned());
@@ -308,7 +320,7 @@ pub fn boot<'a>(
     let mut session = Session {
         provider,
         state,
-        target,
+        image,
     };
     match session.bring_up(store) {
         Ok(()) => Ok(session),
@@ -326,55 +338,55 @@ pub fn boot<'a>(
 /// of minutes of install whose disk is not an image yet, so taking it down means
 /// starting again from the media. A build that is recorded and no longer running
 /// is a crashed one, and clearing that away is exactly what clearing is for.
-pub fn may_clear(target: Target, reason: StartReason, running: bool) -> Result<(), String> {
+pub fn may_clear(image: Image, reason: StartReason, running: bool) -> Result<(), String> {
     if reason == StartReason::Build && running {
         return Err(format!(
-            "an image build is running in the {target} VM, and clearing it away \
+            "an image build is running in the {image} VM, and clearing it away \
              would throw away the install it is partway through.\n\
-             Wait for it, or `cargo xtask vm down {target}` to end it deliberately."
+             Wait for it, or `cargo xtask vm down {image}` to end it deliberately."
         ));
     }
     Ok(())
 }
 
-/// Take down whatever an earlier run left recorded for this target.
+/// Take down whatever an earlier run left recorded for this image.
 ///
 /// The record is removed only once the teardown has succeeded, which is the
 /// same rule `teardown::execute` follows and for the same reason: deleting the
 /// record of a VM that is still registered makes it invisible to `vm status`
 /// and `vm down` for good. That is reachable on a host where the `Hyper-V`
 /// cmdlets fail, which is a plain missing group membership away.
-pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> Result<(), String> {
-    let Some(existing) = load_state(store, target) else {
+pub fn clear_stale_state(runner: &dyn Runner, store: &Store, image: Image) -> Result<(), String> {
+    let Some(existing) = load_state(store, image) else {
         return Ok(());
     };
 
     let provider = provider::for_state(runner, store, &existing).map_err(|e| {
         format!(
-            "{} is recorded for {target}, but {e}. The record is left in place \
-             rather than deleted; `cargo xtask vm down {target}` clears it.",
+            "{} is recorded for {image}, but {e}. The record is left in place \
+             rather than deleted; `cargo xtask vm down {image}` clears it.",
             existing.vm_name
         )
     })?;
 
-    may_clear(target, existing.reason, provider.is_running(&existing))?;
+    may_clear(image, existing.reason, provider.is_running(&existing))?;
 
     // Said after the decision, not before it: a running build is refused here,
     // and announcing a clearing that is then declined describes something that
     // never happens.
-    println!("clearing the {target} VM left behind by an earlier run");
+    println!("clearing the {image} VM left behind by an earlier run");
 
     let session = Session {
         provider,
         state: existing,
-        target,
+        image,
     };
     session.tear_down(store).map_err(|e| {
         format!(
-            "the {target} VM left behind by an earlier run could not be taken \
+            "the {image} VM left behind by an earlier run could not be taken \
              down: {e}\nIts record is kept rather than deleted, because a VM \
              that is still registered and no longer recorded cannot be found \
-             again. `cargo xtask vm down {target}` retries this."
+             again. `cargo xtask vm down {image}` retries this."
         )
     })
 }
@@ -385,7 +397,7 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, target: Target) -> 
 /// rather than at the boot: the binaries with their launcher and desktop
 /// shortcuts, and the enhanced session. `vm up` and `e2e --keep` do both,
 /// `vm smoke --keep` does neither, and a hand-over that failed did only the
-/// first. So the text is printed from what happened rather than from the target,
+/// first. So the text is printed from what happened rather than from the image,
 /// which is what it was doing when it told the owner of an empty desktop which
 /// shortcut to double-click.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,13 +427,13 @@ impl Prepared {
 /// that a guest holds nothing worth saving. The memory figure is the guest's
 /// own, because an idle guest holding gigabytes is the reason to take it down
 /// rather than leave it up.
-pub fn lifecycle_explainer(target: Target, prepared: Prepared) -> String {
+pub fn lifecycle_explainer(image: Image, prepared: Prepared) -> String {
     format!(
         "\n\
          {vm} is up.\n  \
-         ssh:     cargo xtask vm ssh {target}\n  \
-         desktop: cargo xtask vm view {target}\n  \
-         down:    cargo xtask vm down {target}\n\n\
+         ssh:     cargo xtask vm ssh {image}\n  \
+         desktop: cargo xtask vm view {image}\n  \
+         down:    cargo xtask vm down {image}\n\n\
          `vm down` is the stop, and an idle guest is worth stopping: it holds \
          {memory} of this host's memory for as long as it is up. What there is no \
          way to do is save or pause one, and nothing in here is worth saving, so \
@@ -429,22 +441,22 @@ pub fn lifecycle_explainer(target: Target, prepared: Prepared) -> String {
          the memory and the overlay, leaves the golden image untouched, and the \
          next `vm up` boots something pristine.\n\n\
          Watching a run is harmless; clicking during one perturbs it.{session}{extra}",
-        vm = target.vm_name(),
-        memory = guest_memory(target),
-        session = view_note(target, prepared.enhanced_session),
-        extra = guest_environment_note(target, prepared.staged)
+        vm = image.vm_name(),
+        memory = guest_memory(image),
+        session = view_note(image, prepared.enhanced_session),
+        extra = guest_environment_note(image, prepared.staged)
     )
 }
 
-/// How much of the host a guest of this target holds while it is up.
+/// How much of the host a guest of this image holds while it is up.
 ///
 /// Taken from the QEMU launch parameters, which both providers agree with:
 /// `provider::hyperv::MEMORY_BYTES` is the same 6 GiB a Windows guest gets
 /// there, and `the_memory_a_guest_is_said_to_hold_is_the_memory_it_gets` pins
 /// that, because a figure printed to argue for a teardown has to be the real
 /// one.
-fn guest_memory(target: Target) -> String {
-    let mib = u64::from(crate::provider::qemu::resources_for(target).0);
+fn guest_memory(image: Image) -> String {
+    let mib = u64::from(crate::provider::resources_for(image).0);
     util::format_bytes(mib * 1024 * 1024)
 }
 
@@ -463,8 +475,8 @@ fn guest_memory(target: Target) -> String {
 /// `vm view` prints, from the same constant: the two texts describe the same
 /// console for the same guests, so "nothing to type" needs its exception in both
 /// places or in neither.
-fn view_note(target: Target, enhanced_session: bool) -> String {
-    match (target, enhanced_session) {
+fn view_note(image: Image, enhanced_session: bool) -> String {
+    match (image.target(), enhanced_session) {
         (Target::Windows, true) => "\n\nIts desktop opens in an enhanced session, which is the \
              one that can be resized: drag the window and the guest's desktop \
              follows. The dialog asks for the guest's account, `tester`, with no \
@@ -508,8 +520,8 @@ fn view_note(target: Target, enhanced_session: bool) -> String {
 /// person handed a KDE guest could not find the app. It also cannot promise a
 /// desktop icon, because GNOME shows none at all, so it names the menu and the
 /// desktop separately.
-fn guest_environment_note(target: Target, staged: bool) -> String {
-    match (target, staged) {
+fn guest_environment_note(image: Image, staged: bool) -> String {
+    match (image.target(), staged) {
         (Target::Windows, true) => format!(
             "\n\nTwo shortcuts are on its desktop. `{app}` starts the app through \
              a launcher that sets `SLINT_BACKEND={backend}` for it: this guest has \
@@ -522,9 +534,9 @@ fn guest_environment_note(target: Target, staged: bool) -> String {
         ),
         (Target::Windows, false) => format!(
             "\n\nNothing of ours was staged in it, so its desktop is empty and \
-             there is no app in it to start. `cargo xtask vm up {target}` boots a \
+             there is no app in it to start. `cargo xtask vm up {image}` boots a \
              guest with the binaries, the launcher and the shortcuts, and \
-             `cargo xtask e2e --target {target} --keep` leaves one behind after a \
+             `cargo xtask e2e --image {image} --keep` leaves one behind after a \
              run."
         ),
         (Target::Linux, true) => format!(
@@ -541,9 +553,9 @@ fn guest_environment_note(target: Target, staged: bool) -> String {
         ),
         (Target::Linux, false) => format!(
             "\n\nNothing of ours was staged in it, so there is no app in \
-             `{root}` to start and no entry for one. `cargo xtask vm up {target}` \
+             `{root}` to start and no entry for one. `cargo xtask vm up {image}` \
              boots a guest with the binaries, the launcher and the desktop \
-             entries, and `cargo xtask e2e --target {target} --keep` leaves one \
+             entries, and `cargo xtask e2e --image {image} --keep` leaves one \
              behind after a run.",
             root = crate::provider::GUEST_ROOT_LINUX,
         ),
@@ -553,19 +565,22 @@ fn guest_environment_note(target: Target, staged: bool) -> String {
 /// `vm up`.
 pub fn up(
     runner: &dyn Runner,
-    target: Target,
+    image: Image,
     allow_expired: bool,
     desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
     // Asked before anything is created: a guest with no binaries to put in it
     // is worse than a refusal.
-    crate::guest::artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
+    crate::guest::artifacts::check_can_build(
+        crate::provider::target::HostOs::current(),
+        image.target(),
+    )?;
 
     let mut session = boot(
         runner,
         &store,
-        target,
+        image,
         StartReason::Up,
         allow_expired,
         desktop,
@@ -582,7 +597,7 @@ pub fn up(
     println!(
         "{}",
         lifecycle_explainer(
-            session.target,
+            session.image,
             Prepared {
                 staged: true,
                 enhanced_session
@@ -613,7 +628,7 @@ pub fn hand_over(session: &mut Session, store: &Store) -> bool {
     let enhanced_session = match crate::guest::handover::enable_enhanced_session(
         session.provider.as_ref(),
         &session.state,
-        session.target,
+        session.target(),
     ) {
         Ok(offered) => offered,
         Err(e) => {
@@ -637,26 +652,26 @@ fn record_kept(session: &mut Session, store: &Store) {
     if session.state.reason == StartReason::Run {
         session.state.reason = StartReason::Keep;
     }
-    if let Err(e) = write_state(store, session.target, &session.state) {
+    if let Err(e) = write_state(store, session.image, &session.state) {
         println!("warning: the guest is up, but its record could not be updated: {e}");
         println!(
             "  `cargo xtask vm view {}` may open the wrong console",
-            session.target
+            session.image
         );
     }
 }
 
 /// `vm ssh`.
-pub fn ssh(runner: &dyn Runner, target: Target, extra: &[String]) -> Result<u8, String> {
+pub fn ssh(runner: &dyn Runner, image: Image, extra: &[String]) -> Result<u8, String> {
     let store = store::store()?;
-    let state = load_state(&store, target).ok_or_else(|| {
-        format!("no {target} VM is recorded. `cargo xtask vm up {target}` starts one.")
+    let state = load_state(&store, image).ok_or_else(|| {
+        format!("no {image} VM is recorded. `cargo xtask vm up {image}` starts one.")
     })?;
     let provider = provider::for_state(runner, &store, &state)?;
     if !provider.is_running(&state) {
         return Err(format!(
-            "{} is recorded but not running. `cargo xtask vm down {target}` \
-             clears it and `cargo xtask vm up {target}` starts a fresh one.",
+            "{} is recorded but not running. `cargo xtask vm down {image}` \
+             clears it and `cargo xtask vm up {image}` starts a fresh one.",
             state.vm_name
         ));
     }
@@ -685,12 +700,12 @@ pub fn ssh(runner: &dyn Runner, target: Target, extra: &[String]) -> Result<u8, 
 }
 
 /// `vm view`.
-pub fn view(runner: &dyn Runner, target: Target) -> Result<u8, String> {
+pub fn view(runner: &dyn Runner, image: Image) -> Result<u8, String> {
     let store = store::store()?;
-    let state = load_state(&store, target).ok_or_else(|| {
+    let state = load_state(&store, image).ok_or_else(|| {
         format!(
-            "no {target} VM is running. `cargo xtask vm up {target}` starts one, \
-             and `cargo xtask e2e --target {target} --keep` leaves the aftermath \
+            "no {image} VM is running. `cargo xtask vm up {image}` starts one, \
+             and `cargo xtask e2e --image {image} --keep` leaves the aftermath \
              of a test run to look at."
         )
     })?;
@@ -698,7 +713,7 @@ pub fn view(runner: &dyn Runner, target: Target) -> Result<u8, String> {
     if !provider.is_running(&state) {
         return Err(format!(
             "{} is recorded but not running; there is no console to attach to. \
-             `cargo xtask vm up {target}` starts a fresh one.",
+             `cargo xtask vm up {image}` starts a fresh one.",
             state.vm_name
         ));
     }
@@ -713,7 +728,7 @@ pub fn view(runner: &dyn Runner, target: Target) -> Result<u8, String> {
 pub fn status(runner: &dyn Runner) -> Result<u8, String> {
     let store = store::store()?;
     let mut inventory = inventory::scan(&store);
-    for entry in &mut inventory.targets {
+    for entry in &mut inventory.images {
         if let Some(state) = &entry.state {
             entry.running = provider::for_state(runner, &store, state)
                 .ok()
@@ -776,15 +791,15 @@ fn tear_down(
 /// means the plumbing and a failure there means the product.
 pub fn smoke(
     runner: &dyn Runner,
-    target: Target,
+    image: Image,
     keep: bool,
     desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
-    let mut session = boot(runner, &store, target, StartReason::Run, false, desktop)?;
+    let mut session = boot(runner, &store, image, StartReason::Run, false, desktop)?;
 
-    let script = match target {
+    let script = match image.target() {
         Target::Windows => concat!(
             "@echo off\r\n",
             "echo sunlit-e2e smoke\r\n",
@@ -806,12 +821,12 @@ pub fn smoke(
     };
 
     println!("running a trivial job through the guest contract");
-    let scratch = store.run_dir(target).join("job");
+    let scratch = store.run_dir(image).join("job");
     // From here on the VM exists, so `?` would leave it running unannounced.
     let code = match job::run(
         session.provider.as_ref(),
         &session.state,
-        target,
+        image.target(),
         script,
         &scratch,
         Duration::from_mins(5),
@@ -823,12 +838,12 @@ pub fn smoke(
         }
     };
 
-    let results = store.results_dir(target);
-    if let Err(e) =
-        session
-            .provider
-            .collect_results(&session.state, &provider::guest_results(target), &results)
-    {
+    let results = store.results_dir(image);
+    if let Err(e) = session.provider.collect_results(
+        &session.state,
+        &provider::guest_results(image.target()),
+        &results,
+    ) {
         println!("{}", after_failure(&session, &store, keep));
         return Err(e);
     }
@@ -850,7 +865,7 @@ pub fn smoke(
         // smoke test proves the guest contract and leaves the guest as it found
         // it, so the text says what is actually in there.
         record_kept(&mut session, &store);
-        println!("{}", lifecycle_explainer(target, Prepared::BARE));
+        println!("{}", lifecycle_explainer(image, Prepared::BARE));
     } else if let Err(e) = session.tear_down(&store) {
         // The same shape as the other three teardown sites: name the VM and
         // say how to reach it, because it is still there.
@@ -875,19 +890,19 @@ mod tests {
         // `stream` gives a child a closed stdin unless the command says
         // otherwise, which is right for every orchestration step and wrong for
         // the one command whose purpose is to hand over the terminal.
-        let target = crate::guest::ssh::SshTarget {
+        let reachable = crate::guest::ssh::SshTarget {
             user: "tester".to_owned(),
             host: "127.0.0.1".to_owned(),
             port: 2222,
             key: std::path::PathBuf::from("/srv/vm/ssh/id_ed25519"),
         };
-        let shell = crate::guest::ssh::ssh_command(&target, None).interactive();
+        let shell = crate::guest::ssh::ssh_command(&reachable, None).interactive();
         assert!(
             shell.interactive,
             "a shell nobody can type into is not a shell"
         );
         // Every other ssh invocation stays non-interactive on purpose.
-        let probe = crate::guest::ssh::ssh_command(&target, Some("echo hi"));
+        let probe = crate::guest::ssh::ssh_command(&reachable, Some("echo hi"));
         assert!(!probe.interactive);
     }
 
@@ -897,7 +912,7 @@ mod tests {
 
     #[test]
     fn the_expiry_help_explains_the_symptom_and_both_ways_out() {
-        let text = expired_help(Target::Windows, eval_state(0, 95 * SECS_PER_DAY));
+        let text = expired_help(Image::Windows, eval_state(0, 95 * SECS_PER_DAY));
         assert!(text.contains("expired"), "{text}");
         assert!(text.contains("once an hour"), "{text}");
         assert!(
@@ -909,22 +924,22 @@ mod tests {
 
     #[test]
     fn a_running_image_build_is_not_cleared_away_to_make_room() {
-        let running = may_clear(Target::Windows, StartReason::Build, true).unwrap_err();
+        let running = may_clear(Image::Windows, StartReason::Build, true).unwrap_err();
         assert!(running.contains("image build is running"), "{running}");
         assert!(running.contains("vm down windows"), "{running}");
-        // The refusal is about the reason rather than about the target, so it
-        // names the target it was asked about and not the one builds usually
+        // The refusal is about the reason rather than about the image, so it
+        // names the image it was asked about and not the one builds usually
         // happen on.
-        let linux = may_clear(Target::Linux, StartReason::Build, true).unwrap_err();
+        let linux = may_clear(Image::Linux, StartReason::Build, true).unwrap_err();
         assert!(linux.contains("vm down linux"), "{linux}");
         assert!(!linux.contains("windows"), "{linux}");
         // A crashed build is exactly what clearing is for, and every other
         // guest holds nothing worth keeping.
-        assert!(may_clear(Target::Windows, StartReason::Build, false).is_ok());
+        assert!(may_clear(Image::Windows, StartReason::Build, false).is_ok());
         for reason in [StartReason::Run, StartReason::Keep, StartReason::Up] {
-            for target in Target::ALL {
-                assert!(may_clear(target, reason, true).is_ok(), "{reason:?}");
-                assert!(may_clear(target, reason, false).is_ok(), "{reason:?}");
+            for image in Image::ALL {
+                assert!(may_clear(image, reason, true).is_ok(), "{reason:?}");
+                assert!(may_clear(image, reason, false).is_ok(), "{reason:?}");
             }
         }
     }
@@ -952,7 +967,7 @@ mod tests {
     #[test]
     fn the_lifecycle_explainer_names_the_stop_and_what_it_frees() {
         let text = lifecycle_explainer(
-            Target::Linux,
+            Image::Linux,
             Prepared {
                 staged: true,
                 enhanced_session: false,
@@ -972,21 +987,27 @@ mod tests {
     }
 
     /// A figure printed to argue for a teardown has to be the one the guest
-    /// actually holds, and two providers hand out that memory. They agree today,
-    /// which is what makes reading it off one of them honest; the day they
-    /// disagree, the Windows text starts lying about six gigabytes.
+    /// actually holds. Both hypervisors read it from one function now, so what
+    /// this pins is that the text and that function agree, and that the two
+    /// images a target has are not described by one number.
     #[test]
     fn the_memory_a_guest_is_said_to_hold_is_the_memory_it_gets() {
-        let (windows_mib, _) = crate::provider::qemu::resources_for(Target::Windows);
-        assert_eq!(
-            u64::from(windows_mib) * 1024 * 1024,
-            crate::provider::hyperv::MEMORY_BYTES,
-            "the two providers give a Windows guest different amounts of memory, \
-             so the lifecycle text cannot name one figure for both"
+        for image in Image::ALL {
+            let (mib, _) = crate::provider::resources_for(image);
+            let expected = util::format_bytes(u64::from(mib) * 1024 * 1024);
+            assert!(
+                lifecycle_explainer(image, Prepared::BARE)
+                    .contains(&format!("{expected} of this host's memory")),
+                "{image} is described as holding something other than {expected}"
+            );
+        }
+        assert!(
+            lifecycle_explainer(Image::Windows, Prepared::BARE).contains("6.0 GiB"),
+            "the Windows desktop guest's own figure"
         );
         assert!(
-            lifecycle_explainer(Target::Windows, Prepared::BARE).contains("6.0 GiB"),
-            "the Windows guest's own figure"
+            lifecycle_explainer(Image::WindowsBuilder, Prepared::BARE).contains("8.0 GiB"),
+            "a builder gets more of the host, and the text has to say so"
         );
     }
 
@@ -997,7 +1018,7 @@ mod tests {
     #[test]
     fn handing_over_a_linux_guest_says_where_the_app_is_and_how_to_start_it() {
         let text = lifecycle_explainer(
-            Target::Linux,
+            Image::Linux,
             Prepared {
                 staged: true,
                 enhanced_session: false,
@@ -1020,7 +1041,7 @@ mod tests {
     /// none. The Windows arm has said so since it existed; this is the same rule.
     #[test]
     fn a_bare_linux_guest_promises_no_launcher_and_names_what_would_stage_one() {
-        let text = lifecycle_explainer(Target::Linux, Prepared::BARE);
+        let text = lifecycle_explainer(Image::Linux, Prepared::BARE);
         assert!(text.contains("Nothing of ours was staged"), "{text}");
         assert!(!text.contains(crate::guest::handover::ENTRY_NAME), "{text}");
         assert!(
@@ -1028,7 +1049,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("cargo xtask vm up linux"), "{text}");
-        assert!(text.contains("--target linux --keep"), "{text}");
+        assert!(text.contains("--image linux --keep"), "{text}");
     }
 
     #[test]
@@ -1037,7 +1058,7 @@ mod tests {
         // an OpenGL symbol rather than the guest. What sets it for a person is
         // the desktop launcher, so both shortcuts are named as well.
         let text = lifecycle_explainer(
-            Target::Windows,
+            Image::Windows,
             Prepared {
                 staged: true,
                 enhanced_session: true,
@@ -1064,7 +1085,7 @@ mod tests {
     /// desktop in a session that asks them for nothing.
     #[test]
     fn a_guest_that_was_left_as_it_stood_promises_neither_shortcuts_nor_a_session() {
-        let text = lifecycle_explainer(Target::Windows, Prepared::BARE);
+        let text = lifecycle_explainer(Image::Windows, Prepared::BARE);
         assert!(text.contains("`vm down` is the stop"), "{text}");
         // Neither shortcut, and no launcher behind one.
         assert!(!text.contains("Sunlit Earth"), "{text}");
@@ -1091,7 +1112,7 @@ mod tests {
                 enhanced_session: false,
             },
         ] {
-            let text = lifecycle_explainer(Target::Windows, prepared);
+            let text = lifecycle_explainer(Image::Windows, prepared);
             assert!(text.contains(caveat), "{text}");
         }
         assert!(crate::provider::hyperv::view_note(Target::Windows, false).contains(caveat));
@@ -1099,7 +1120,7 @@ mod tests {
         // A guest that was handed over expects the dialog and can answer it, so
         // the caveat would contradict the advice it is printed beside.
         let handed_over = lifecycle_explainer(
-            Target::Windows,
+            Image::Windows,
             Prepared {
                 staged: true,
                 enhanced_session: true,
@@ -1110,7 +1131,7 @@ mod tests {
         // And a Linux guest has no vmconnect dialog to be surprised by.
         assert!(
             !lifecycle_explainer(
-                Target::Linux,
+                Image::Linux,
                 Prepared {
                     staged: true,
                     enhanced_session: false,
@@ -1131,21 +1152,30 @@ mod tests {
     fn only_the_linux_guest_can_be_asked_which_desktop_to_boot() {
         for desktop in Desktop::ALL {
             assert_eq!(
-                desktop_for(Target::Linux, Some(desktop)),
+                desktop_for(Image::Linux, Some(desktop)),
                 Ok(Some(desktop)),
                 "{desktop}"
             );
-            let refusal = desktop_for(Target::Windows, Some(desktop))
+            let refusal = desktop_for(Image::Windows, Some(desktop))
                 .expect_err("the Windows image has one desktop");
             // What was asked for and why it cannot be, both in the message: the
-            // flag is right for the other target rather than wrong everywhere.
+            // flag is right for the other image rather than wrong everywhere.
             assert!(refusal.contains(desktop.flag()), "{refusal}");
-            assert!(refusal.contains("Linux guest option"), "{refusal}");
+            assert!(refusal.contains("Debian 13 guest option"), "{refusal}");
+
+            // A builder is the sharper case: it has no desktop at all, and
+            // saying "the other image has one" would send somebody looking for
+            // a session that is not in there.
+            for builder in [Image::WindowsBuilder, Image::LinuxBuilder] {
+                let refusal =
+                    desktop_for(builder, Some(desktop)).expect_err("a builder has no desktop");
+                assert!(refusal.contains("no desktop at all"), "{refusal}");
+            }
         }
         // Neither guest has to be asked. On Linux that is the image's own
         // default session, which is the whole point of the flag being optional.
-        for target in Target::ALL {
-            assert_eq!(desktop_for(target, None), Ok(None), "{target}");
+        for image in Image::ALL {
+            assert_eq!(desktop_for(image, None), Ok(None), "{image}");
         }
     }
 
@@ -1154,7 +1184,7 @@ mod tests {
     #[test]
     fn a_failed_hand_over_still_describes_the_console_the_guest_has() {
         let text = lifecycle_explainer(
-            Target::Windows,
+            Image::Windows,
             Prepared {
                 staged: true,
                 enhanced_session: false,

@@ -4,6 +4,11 @@
 //! overridable with `SUNLIT_EARTH_VM_DIR`; the repo carries only the templates.
 //! Every path the xtask reads or writes is derived here, which is also what
 //! lets a teardown prove that a path it is about to delete belongs to it.
+//!
+//! Everything under `images/`, `run/`, `build/` and `results/` is keyed by
+//! [`Image`] rather than by target, because those are properties of one disk
+//! and there are two disks per operating system now. The two desktop images
+//! keep their slugs, so every path they had is the path they have.
 
 pub mod hash;
 pub mod inventory;
@@ -13,7 +18,7 @@ pub mod windows_media;
 
 use std::path::{Path, PathBuf};
 
-use crate::provider::target::Target;
+use crate::provider::target::{Image, Target};
 use crate::util;
 
 /// Environment override for the image store.
@@ -38,50 +43,55 @@ impl Store {
         &self.root
     }
 
-    /// The golden image and its manifest for one target.
-    pub fn image_dir(&self, target: Target) -> PathBuf {
-        self.root.join("images").join(target.slug())
+    /// One image's disks and its manifest.
+    pub fn image_dir(&self, image: Image) -> PathBuf {
+        self.root.join("images").join(image.slug())
     }
 
-    /// The canonical qcow2 golden image, which is what Packer builds for both
-    /// targets.
-    pub fn qcow2(&self, target: Target) -> PathBuf {
-        self.image_dir(target).join("golden.qcow2")
+    /// The canonical qcow2 image, which is what Packer builds for every base.
+    ///
+    /// For a layer this is the differencing child, named `layer.qcow2` rather
+    /// than `golden.qcow2`: the file does not stand on its own, and a name that
+    /// says so is worth more than one that matches its parent's.
+    pub fn qcow2(&self, image: Image) -> PathBuf {
+        self.image_dir(image)
+            .join(format!("{}.qcow2", image.disk_stem()))
     }
 
-    /// The VHDX conversion of the Windows golden image, which is what the
-    /// `Hyper-V` provider makes its differencing children from.
-    pub fn vhdx(&self, target: Target) -> PathBuf {
-        self.image_dir(target).join("golden.vhdx")
+    /// The VHDX form, which is what the `Hyper-V` provider makes its
+    /// differencing children from.
+    pub fn vhdx(&self, image: Image) -> PathBuf {
+        self.image_dir(image)
+            .join(format!("{}.vhdx", image.disk_stem()))
     }
 
-    pub fn manifest(&self, target: Target) -> PathBuf {
-        self.image_dir(target).join("manifest.json")
+    pub fn manifest(&self, image: Image) -> PathBuf {
+        self.image_dir(image).join("manifest.json")
     }
 
-    /// Per-target run state: the throwaway overlay, the state file, and the
+    /// Per-image run state: the throwaway overlay, the state file, and the
     /// hypervisor's log.
-    pub fn run_dir(&self, target: Target) -> PathBuf {
-        self.root.join("run").join(target.slug())
+    pub fn run_dir(&self, image: Image) -> PathBuf {
+        self.root.join("run").join(image.slug())
     }
 
-    pub fn overlay(&self, target: Target) -> PathBuf {
-        let name = match target {
+    pub fn overlay(&self, image: Image) -> PathBuf {
+        let name = match image.target() {
             Target::Windows => "overlay.vhdx",
             Target::Linux => "overlay.qcow2",
         };
-        self.run_dir(target).join(name)
+        self.run_dir(image).join(name)
     }
 
-    /// The qcow2 overlay used when a target runs under QEMU. For the Windows
+    /// The qcow2 overlay used when an image runs under QEMU. For the Windows
     /// guest that is the Linux-host cell of the provider matrix, so both
     /// overlay shapes exist for it.
-    pub fn qemu_overlay(&self, target: Target) -> PathBuf {
-        self.run_dir(target).join("overlay.qcow2")
+    pub fn qemu_overlay(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("overlay.qcow2")
     }
 
-    pub fn state_file(&self, target: Target) -> PathBuf {
-        self.run_dir(target).join("vm.json")
+    pub fn state_file(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("vm.json")
     }
 
     /// The disk a native install writes into, before it becomes the golden
@@ -92,12 +102,12 @@ impl Store {
     /// gets rid of both together. A half-built image is worth nothing, so
     /// nothing about it is worth keeping past the guest that was writing it
     /// (amendment decision 17).
-    pub fn build_disk(&self, target: Target) -> PathBuf {
-        self.run_dir(target).join("build.vhdx")
+    pub fn build_disk(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("build.vhdx")
     }
 
-    pub fn vm_log(&self, target: Target) -> PathBuf {
-        self.run_dir(target).join("vm.log")
+    pub fn vm_log(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("vm.log")
     }
 
     /// Downloaded installation media, cached so a rebuild does not re-download.
@@ -125,9 +135,9 @@ impl Store {
         self.iso_dir().join(windows_media::SOURCE_MARK_FILE)
     }
 
-    /// Packer's working directory for one target, which also holds its log.
-    pub fn build_dir(&self, target: Target) -> PathBuf {
-        self.root.join("build").join(target.slug())
+    /// Packer's working directory for one image, which also holds its log.
+    pub fn build_dir(&self, image: Image) -> PathBuf {
+        self.root.join("build").join(image.slug())
     }
 
     /// The key pair the guests trust. Generated once by `vm setup` and baked
@@ -141,8 +151,8 @@ impl Store {
     }
 
     /// Where results pulled back out of a guest land.
-    pub fn results_dir(&self, target: Target) -> PathBuf {
-        self.root.join("results").join(target.slug())
+    pub fn results_dir(&self, image: Image) -> PathBuf {
+        self.root.join("results").join(image.slug())
     }
 
     /// Whether `path` is inside the store.
@@ -221,9 +231,9 @@ pub fn repo_root() -> PathBuf {
         .map_or_else(|| manifest.to_path_buf(), Path::to_path_buf)
 }
 
-/// The template directory for one target, `vm/<target>/` in the repo.
-pub fn template_dir(target: Target) -> PathBuf {
-    repo_root().join("vm").join(target.slug())
+/// The template directory for one image, `vm/<slug>/` in the repo.
+pub fn template_dir(image: Image) -> PathBuf {
+    repo_root().join("vm").join(image.slug())
 }
 
 #[cfg(test)]
@@ -256,21 +266,26 @@ mod tests {
     #[test]
     fn every_artifact_path_sits_under_the_root() {
         let store = Store::new("/srv/vm");
-        let paths = [
-            store.qcow2(Target::Linux),
-            store.vhdx(Target::Windows),
-            store.manifest(Target::Windows),
-            store.overlay(Target::Linux),
-            store.state_file(Target::Windows),
-            store.build_disk(Target::Windows),
+        let mut paths = vec![
             store.windows_iso(),
             store.windows_iso_noprompt(),
             store.windows_iso_noprompt_source(),
-            store.build_dir(Target::Linux),
             store.ssh_key(),
-            store.results_dir(Target::Linux),
-            store.vm_log(Target::Windows),
         ];
+        for image in Image::ALL {
+            paths.extend([
+                store.qcow2(image),
+                store.vhdx(image),
+                store.manifest(image),
+                store.overlay(image),
+                store.qemu_overlay(image),
+                store.state_file(image),
+                store.build_disk(image),
+                store.build_dir(image),
+                store.results_dir(image),
+                store.vm_log(image),
+            ]);
+        }
         for path in paths {
             assert!(
                 store.contains(&path),
@@ -281,11 +296,42 @@ mod tests {
     }
 
     #[test]
-    fn the_two_targets_never_share_a_path() {
+    fn no_two_images_share_a_path() {
         let store = Store::new("/srv/vm");
-        assert_ne!(store.qcow2(Target::Windows), store.qcow2(Target::Linux));
-        assert_ne!(store.run_dir(Target::Windows), store.run_dir(Target::Linux));
-        assert_ne!(store.overlay(Target::Windows), store.overlay(Target::Linux));
+        for (index, image) in Image::ALL.into_iter().enumerate() {
+            for other in &Image::ALL[index + 1..] {
+                assert_ne!(store.qcow2(image), store.qcow2(*other));
+                assert_ne!(store.image_dir(image), store.image_dir(*other));
+                assert_ne!(store.run_dir(image), store.run_dir(*other));
+                assert_ne!(store.overlay(image), store.overlay(*other));
+                assert_ne!(store.manifest(image), store.manifest(*other));
+                assert_ne!(template_dir(image), template_dir(*other));
+            }
+        }
+    }
+
+    /// The images already on disk were built under the two original slugs, and
+    /// the store has to keep reading them from exactly where they are. A layer
+    /// sits beside them under its own slug and names its disk differently,
+    /// because that file cannot be read without its parent.
+    #[test]
+    fn the_desktop_images_keep_the_paths_they_were_built_at() {
+        let store = Store::new("/srv/vm");
+        assert!(
+            store
+                .qcow2(Image::Linux)
+                .ends_with("images/linux/golden.qcow2")
+        );
+        assert!(
+            store
+                .vhdx(Image::Windows)
+                .ends_with("images/windows/golden.vhdx")
+        );
+        assert!(
+            store
+                .vhdx(Image::WindowsBuilder)
+                .ends_with("images/windows-builder/layer.vhdx")
+        );
     }
 
     #[test]
@@ -317,8 +363,8 @@ mod tests {
         // The build disk shares the run directory with the overlay a guest
         // boots from, and a build and a guest must never write to one file.
         assert_ne!(
-            store.build_disk(Target::Windows),
-            store.overlay(Target::Windows)
+            store.build_disk(Image::Windows),
+            store.overlay(Image::Windows)
         );
         assert_ne!(store.windows_iso(), store.windows_iso_noprompt());
         // Both media files sit in the one directory `vm purge --iso` clears.
@@ -331,15 +377,14 @@ mod tests {
     #[test]
     fn windows_overlays_differ_by_provider_and_linux_has_only_qcow2() {
         let store = Store::new("/srv/vm");
-        assert!(
-            store
-                .overlay(Target::Windows)
-                .to_string_lossy()
-                .ends_with(".vhdx")
-        );
-        assert_eq!(
-            store.overlay(Target::Linux),
-            store.qemu_overlay(Target::Linux)
-        );
+        for image in [Image::Windows, Image::WindowsBuilder] {
+            assert!(
+                store.overlay(image).to_string_lossy().ends_with(".vhdx"),
+                "{image}"
+            );
+        }
+        for image in [Image::Linux, Image::LinuxBuilder] {
+            assert_eq!(store.overlay(image), store.qemu_overlay(image), "{image}");
+        }
     }
 }

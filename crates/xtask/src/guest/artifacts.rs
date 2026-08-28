@@ -17,7 +17,7 @@ use crate::commands::vm::Session;
 use crate::guest::cargo_json::{self, Artifact};
 use crate::guest::handover;
 use crate::provider;
-use crate::provider::target::{HostOs, Target};
+use crate::provider::target::{HostOs, Image, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store::{self, Store};
 
@@ -283,7 +283,7 @@ fn build_in_wsl(
     }
     let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;
 
-    let staging = store.build_dir(Target::Linux).join("artifacts");
+    let staging = store.build_dir(Image::Linux).join("artifacts");
     std::fs::create_dir_all(&staging)
         .map_err(|e| format!("cannot create {}: {e}", staging.display()))?;
     let staging_wsl = wslpath(runner, distro, "-u", &staging.to_string_lossy())?;
@@ -373,7 +373,7 @@ pub fn guest_paths(target: Target, app: &str, harness: &str, textures: bool) -> 
 
 /// Build for a guest and copy everything in.
 pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<GuestPaths, String> {
-    let target = session.target;
+    let target = session.image.target();
     let built = build(runner, store, target)?;
 
     println!("copying the binaries into the guest");
@@ -423,7 +423,7 @@ pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<Gu
         session.provider.as_ref(),
         &session.state,
         store,
-        target,
+        session.image,
         &paths,
     ) {
         println!("warning: {e}");

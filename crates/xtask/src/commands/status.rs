@@ -7,8 +7,8 @@
 use std::fmt::Write as _;
 
 use crate::provider::desktop::Desktop;
-use crate::provider::target::Target;
-use crate::store::inventory::{Inventory, TargetInventory};
+use crate::provider::target::Image;
+use crate::store::inventory::{ImageInventory, Inventory};
 use crate::store::state::{RunState, StartReason};
 use crate::util::{format_bytes, format_unix_utc};
 
@@ -19,14 +19,14 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
     if !inventory.root_exists {
         let _ = writeln!(
             out,
-            "  (does not exist yet; `cargo xtask vm build-image <target>` creates it)"
+            "  (does not exist yet; `cargo xtask vm build-image <image>` creates it)"
         );
     }
     let _ = writeln!(out);
 
-    for target in Target::ALL {
-        let entry = inventory.for_target(target);
-        let _ = writeln!(out, "{}", target_section(target, entry, now_unix));
+    for image in Image::ALL {
+        let entry = inventory.for_image(image);
+        let _ = writeln!(out, "{}", image_section(image, entry, now_unix));
     }
 
     if inventory.iso.is_empty() {
@@ -54,15 +54,11 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
     let _ = writeln!(out);
     let _ = writeln!(out, "total: {}", format_bytes(inventory.total_bytes()));
     let images: u64 = inventory
-        .targets
+        .images
         .iter()
         .map(|t| t.image_bytes() + t.build_bytes())
         .sum();
-    let runs: u64 = inventory
-        .targets
-        .iter()
-        .map(TargetInventory::run_bytes)
-        .sum();
+    let runs: u64 = inventory.images.iter().map(ImageInventory::run_bytes).sum();
     let _ = writeln!(
         out,
         "  {} in golden images and media, {} in run state",
@@ -79,26 +75,33 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
         let _ = writeln!(
             out,
             "  `cargo xtask vm purge all` frees everything, including the images; \
-             rebuilding costs one `vm build-image` per target"
+             rebuilding costs one `vm build-image` per image"
         );
     }
     out
 }
 
-fn target_section(target: Target, entry: Option<&TargetInventory>, now_unix: u64) -> String {
+fn image_section(image: Image, entry: Option<&ImageInventory>, now_unix: u64) -> String {
     let mut out = String::new();
     let Some(entry) = entry else {
-        let _ = writeln!(out, "{target}: not inspected");
+        let _ = writeln!(out, "{image}: not inspected");
         return out;
     };
 
     let condition = entry.condition(now_unix);
     let _ = writeln!(
         out,
-        "{target}: image {} ({})",
+        "{image}: {} ({})",
         condition.label(),
         condition.detail()
     );
+    let _ = writeln!(out, "  {}", entry.image().label());
+    // A layer is listed under the disk it is a differencing child of, because
+    // the two stand or fall together: the parent cannot be rebuilt without
+    // rebuilding this, and it cannot be purged without taking this with it.
+    if let Some(parent) = entry.image().parent() {
+        let _ = writeln!(out, "  a layer over the {parent} image");
+    }
 
     for file in &entry.images {
         let _ = writeln!(
@@ -134,7 +137,7 @@ fn target_section(target: Target, entry: Option<&TargetInventory>, now_unix: u64
         let _ = writeln!(out, "  manifest problem: {error}");
     }
 
-    let _ = write!(out, "{}", run_state_section(target, entry));
+    let _ = write!(out, "{}", run_state_section(image, entry));
 
     let _ = writeln!(
         out,
@@ -145,8 +148,8 @@ fn target_section(target: Target, entry: Option<&TargetInventory>, now_unix: u64
     out
 }
 
-/// The half of a target's section that describes overlays and VMs.
-fn run_state_section(target: Target, entry: &TargetInventory) -> String {
+/// The half of an image's section that describes overlays and VMs.
+fn run_state_section(image: Image, entry: &ImageInventory) -> String {
     let mut out = String::new();
     if entry.build_bytes() > 0 {
         let _ = writeln!(
@@ -173,7 +176,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
 
     match (&entry.state, entry.running) {
         (Some(state), Some(true)) => {
-            let _ = write!(out, "{}", running_vm(target, state));
+            let _ = write!(out, "{}", running_vm(image, state));
         }
         (Some(state), Some(false)) => {
             let _ = writeln!(
@@ -184,7 +187,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
             );
             let _ = writeln!(
                 out,
-                "    `cargo xtask vm down {target}` removes the leftovers"
+                "    `cargo xtask vm down {image}` removes the leftovers"
             );
         }
         (Some(state), None) => {
@@ -197,7 +200,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
                 state.vm_name,
                 state.reason.label()
             );
-            let _ = writeln!(out, "    `cargo xtask vm down {target}` removes it");
+            let _ = writeln!(out, "    `cargo xtask vm down {image}` removes it");
         }
         (None, _) => {}
     }
@@ -208,7 +211,7 @@ fn run_state_section(target: Target, entry: &TargetInventory) -> String {
     out
 }
 
-fn running_vm(target: Target, state: &RunState) -> String {
+fn running_vm(image: Image, state: &RunState) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -230,13 +233,13 @@ fn running_vm(target: Target, state: &RunState) -> String {
     if state.ssh_port > 0 {
         let _ = writeln!(
             out,
-            "    ssh:     `cargo xtask vm ssh {target}`  ({}:{})",
+            "    ssh:     `cargo xtask vm ssh {image}`  ({}:{})",
             state.ssh_host, state.ssh_port
         );
     }
     let _ = writeln!(
         out,
-        "    desktop: `cargo xtask vm view {target}`{}",
+        "    desktop: `cargo xtask vm view {image}`{}",
         state
             .vnc
             .as_ref()
@@ -248,7 +251,7 @@ fn running_vm(target: Target, state: &RunState) -> String {
     // one costs: the install is lost and starts again from the media.
     let _ = writeln!(
         out,
-        "    down:    `cargo xtask vm down {target}`  ({})",
+        "    down:    `cargo xtask vm down {image}`  ({})",
         if state.reason == StartReason::Build {
             "frees the memory and deletes the unfinished disk, so the install starts \
              over; any golden image already in the store is untouched"
@@ -262,6 +265,7 @@ fn running_vm(target: Target, state: &RunState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::target::Image;
     use crate::provider::target::ProviderKind;
     use crate::store::inventory::FileInfo;
     use crate::store::inventory::fixtures::{BUILT, empty, healthy, inventory};
@@ -271,11 +275,11 @@ mod tests {
         BUILT + SECS_PER_DAY
     }
 
-    fn running_state(target: Target) -> RunState {
+    fn running_state(image: Image) -> RunState {
         let mut state = RunState::new(
-            target,
+            image,
             ProviderKind::Qemu,
-            format!("/srv/vm/run/{target}/overlay.qcow2").into(),
+            format!("/srv/vm/run/{image}/overlay.qcow2").into(),
             StartReason::Keep,
             BUILT,
         );
@@ -289,11 +293,16 @@ mod tests {
 
     #[test]
     fn nothing_built_says_so_and_points_at_the_build_command() {
-        let mut inv = inventory(vec![empty(Target::Windows), empty(Target::Linux)]);
+        let mut inv = inventory(Image::ALL.into_iter().map(empty).collect());
         inv.root_exists = false;
         let text = render(&inv, now());
-        assert!(text.contains("windows: image missing"), "{text}");
-        assert!(text.contains("linux: image missing"), "{text}");
+        for image in Image::ALL {
+            assert!(text.contains(&format!("{image}: missing")), "{text}");
+            assert!(text.contains(image.label()), "{text}");
+        }
+        // A layer is listed under the disk it is a child of, because the two
+        // stand or fall together.
+        assert!(text.contains("a layer over the windows image"), "{text}");
         assert!(text.contains("does not exist yet"), "{text}");
         assert!(text.contains("installation media: none cached"), "{text}");
         assert!(text.contains("total: 0 B"), "{text}");
@@ -303,14 +312,14 @@ mod tests {
 
     #[test]
     fn built_images_report_size_build_time_and_footprint() {
-        let mut inv = inventory(vec![healthy(Target::Windows), healthy(Target::Linux)]);
+        let mut inv = inventory(vec![healthy(Image::Windows), healthy(Image::Linux)]);
         inv.iso = vec![FileInfo::new(
             "/srv/vm/iso/windows11-enterprise-eval.iso",
             7_092_807_680,
             BUILT,
         )];
         let text = render(&inv, now());
-        assert!(text.contains("windows: image ok"), "{text}");
+        assert!(text.contains("windows: ok"), "{text}");
         assert!(text.contains("golden.qcow2  20.0 GiB"), "{text}");
         assert!(text.contains("built 1972-09-27T00:00:00Z"), "{text}");
         assert!(text.contains("windows11-enterprise-eval.iso"), "{text}");
@@ -320,7 +329,7 @@ mod tests {
 
     #[test]
     fn the_windows_image_reports_its_evaluation_age() {
-        let inv = inventory(vec![healthy(Target::Windows), empty(Target::Linux)]);
+        let inv = inventory(vec![healthy(Image::Windows), empty(Image::Linux)]);
         let text = render(&inv, BUILT + 80 * SECS_PER_DAY);
         assert!(text.contains("evaluation day 80 of 90"), "{text}");
         assert!(text.contains("expiring"), "{text}");
@@ -328,15 +337,15 @@ mod tests {
 
     #[test]
     fn a_running_vm_carries_the_ssh_view_and_destroy_hints() {
-        let mut entry = healthy(Target::Linux);
-        entry.state = Some(running_state(Target::Linux));
+        let mut entry = healthy(Image::Linux);
+        entry.state = Some(running_state(Image::Linux));
         entry.running = Some(true);
         entry.run_files = vec![FileInfo::new(
             "/srv/vm/run/linux/overlay.qcow2",
             2 * 1024 * 1024 * 1024,
             BUILT,
         )];
-        let text = render(&inventory(vec![empty(Target::Windows), entry]), now());
+        let text = render(&inventory(vec![empty(Image::Windows), entry]), now());
         assert!(text.contains("sunlit-e2e-linux is running"), "{text}");
         assert!(text.contains("a test run kept with --keep"), "{text}");
         assert!(text.contains("cargo xtask vm ssh linux"), "{text}");
@@ -352,8 +361,8 @@ mod tests {
 
     #[test]
     fn an_orphan_from_a_crashed_run_is_reported_as_leftovers() {
-        let mut entry = healthy(Target::Linux);
-        let mut state = running_state(Target::Linux);
+        let mut entry = healthy(Image::Linux);
+        let mut state = running_state(Image::Linux);
         state.reason = StartReason::Run;
         entry.state = Some(state);
         entry.running = Some(false);
@@ -362,7 +371,7 @@ mod tests {
             1024,
             BUILT,
         )];
-        let text = render(&inventory(vec![empty(Target::Windows), entry]), now());
+        let text = render(&inventory(vec![empty(Image::Windows), entry]), now());
         assert!(text.contains("registered but not running"), "{text}");
         assert!(text.contains("left behind by a test run"), "{text}");
         assert!(text.contains("cargo xtask vm down linux"), "{text}");
@@ -373,8 +382,8 @@ mod tests {
         // A build carries the same record every other guest does, so the only
         // thing that says it is a build is the reason. Both states matter: one
         // is a build in progress and the other is what a crash leaves.
-        let mut entry = empty(Target::Windows);
-        let mut state = running_state(Target::Windows);
+        let mut entry = empty(Image::Windows);
+        let mut state = running_state(Image::Windows);
         state.reason = StartReason::Build;
         state.ssh_port = 22;
         entry.state = Some(state);
@@ -384,7 +393,7 @@ mod tests {
             11 * 1024 * 1024 * 1024,
             BUILT,
         )];
-        let text = render(&inventory(vec![entry.clone(), empty(Target::Linux)]), now());
+        let text = render(&inventory(vec![entry.clone(), empty(Image::Linux)]), now());
         assert!(text.contains("sunlit-e2e-windows is running"), "{text}");
         assert!(text.contains("an image build (vm build-image)"), "{text}");
         assert!(text.contains("build.vhdx  11.0 GiB"), "{text}");
@@ -396,7 +405,7 @@ mod tests {
         assert!(!text.contains("and the overlay"), "{text}");
 
         entry.running = Some(false);
-        let crashed = render(&inventory(vec![entry.clone(), empty(Target::Linux)]), now());
+        let crashed = render(&inventory(vec![entry.clone(), empty(Image::Linux)]), now());
         assert!(crashed.contains("registered but not running"), "{crashed}");
         assert!(
             crashed.contains("left behind by an image build"),
@@ -408,7 +417,7 @@ mod tests {
         // is what `vm doctor` renders. The labels carry a parenthesis of their
         // own, so this line puts none around them.
         entry.running = None;
-        let unchecked = render(&inventory(vec![entry, empty(Target::Linux)]), now());
+        let unchecked = render(&inventory(vec![entry, empty(Image::Linux)]), now());
         assert!(
             unchecked.contains("is recorded by an image build (vm build-image)"),
             "{unchecked}"
@@ -423,7 +432,7 @@ mod tests {
         // are in the total. The record beside them is listed as well, because
         // `vm purge windows --iso` deletes it too, and it is labeled for what
         // it is rather than passing as a third ISO.
-        let mut inv = inventory(vec![empty(Target::Windows), empty(Target::Linux)]);
+        let mut inv = inventory(vec![empty(Image::Windows), empty(Image::Linux)]);
         inv.iso = vec![
             FileInfo::new(
                 "/srv/vm/iso/windows11-enterprise-eval-noprompt.iso",
@@ -466,7 +475,7 @@ mod tests {
 
     #[test]
     fn a_broken_state_file_is_surfaced_rather_than_swallowed() {
-        let mut entry = healthy(Target::Linux);
+        let mut entry = healthy(Image::Linux);
         entry.state_error = Some("malformed VM state file: expected value".to_owned());
         let text = render(&inventory(vec![entry]), now());
         assert!(text.contains("state file problem"), "{text}");
@@ -474,7 +483,7 @@ mod tests {
 
     #[test]
     fn the_totals_split_what_each_cleanup_command_frees() {
-        let mut entry = healthy(Target::Linux);
+        let mut entry = healthy(Image::Linux);
         entry.run_files = vec![FileInfo::new(
             "/srv/vm/run/linux/overlay.qcow2",
             1024 * 1024 * 1024,

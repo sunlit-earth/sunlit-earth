@@ -17,7 +17,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::guest::ssh::{self, SshTarget};
-use crate::provider::target::{HostOs, ProviderKind, Target};
+use crate::provider::target::{HostOs, Image, ProviderKind, Target};
 use crate::runner::{CommandOutput, Runner};
 use crate::store::Store;
 use crate::store::state::{RunState, StartReason};
@@ -54,7 +54,7 @@ pub trait Provider {
 
     /// Make a throwaway child of the read-only golden image and record it.
     /// Does not boot anything.
-    fn create_from_golden(&self, target: Target, reason: StartReason) -> Result<RunState, String>;
+    fn create_from_golden(&self, image: Image, reason: StartReason) -> Result<RunState, String>;
 
     /// Boot it, filling in how to reach it.
     fn start(&self, state: &mut RunState) -> Result<(), String>;
@@ -144,22 +144,64 @@ pub trait Provider {
     }
 }
 
-/// The provider for one target on this host.
-pub fn for_target<'a>(
+/// The provider for one image on this host.
+///
+/// The matrix is keyed on the operating system, because that is what decides
+/// which hypervisor can run a guest. What the image adds is the one refusal
+/// below: a differencing layer exists in exactly the disk format of the host
+/// that made it, and moving one between formats means flattening it through a
+/// full copy of its parent.
+pub fn for_image<'a>(
     runner: &'a dyn Runner,
     store: &'a Store,
-    target: Target,
+    image: Image,
 ) -> Result<Box<dyn Provider + 'a>, String> {
     let host = HostOs::current();
-    let kind = crate::provider::target::resolve_provider(
-        host,
-        target,
-        util::env_var(PROVIDER_ENV).as_deref(),
-    )?;
+    let requested = util::env_var(PROVIDER_ENV);
+    let kind =
+        crate::provider::target::resolve_provider(host, image.target(), requested.as_deref())?;
+    if image.is_layer() {
+        let native = crate::provider::target::provider_for(host, image.target());
+        if native != Some(kind) {
+            return Err(layer_provider_refusal(image, kind));
+        }
+    }
     Ok(match kind {
         ProviderKind::Qemu => Box::new(qemu::QemuProvider::new(runner, store, host)),
         ProviderKind::HyperV => Box::new(hyperv::HypervProvider::new(runner, store, host)),
     })
+}
+
+/// Why a layer cannot be moved onto the other hypervisor.
+pub fn layer_provider_refusal(image: Image, requested: ProviderKind) -> String {
+    format!(
+        "{PROVIDER_ENV} asks for {} and the {image} layer is a differencing child \
+         in the other provider's disk format. Converting one means flattening it \
+         through a full copy of its parent, so a layer has one format per host \
+         and this is refused rather than silently reading the wrong disk.\n\
+         The desktop images can be moved: the override is for those.",
+        requested.name()
+    )
+}
+
+/// Memory and processors per image.
+///
+/// One function for both providers, so the `Hyper-V` create script and the QEMU
+/// command line cannot come apart: `the_memory_a_guest_is_said_to_hold_is_the_memory_it_gets`
+/// reads it and the create script's own test pins the script against it.
+///
+/// A builder gets more of the host than a desktop guest, because a release
+/// profile with fat LTO and one codegen unit runs several `rustc` processes that
+/// each hold a whole crate graph, and an out-of-memory kill part way through a
+/// forty-minute build is the failure that costs the most to diagnose.
+pub fn resources_for(image: Image) -> (u32, u32) {
+    match image {
+        // Windows needs the headroom, and the e2e suite renders an 8K-capable
+        // pipeline on a CPU rasterizer inside it.
+        Image::Windows => (6144, 4),
+        Image::Linux => (4096, 4),
+        Image::WindowsBuilder | Image::LinuxBuilder => (8192, 8),
+    }
 }
 
 /// Override for the provider matrix, mostly so a Windows host can be pushed
@@ -186,7 +228,7 @@ pub fn for_state<'a>(
     }
 }
 
-/// The guest's root directory, per target.
+/// The guest's root directory, per operating system.
 pub fn guest_root(target: Target) -> &'static str {
     match target {
         Target::Windows => GUEST_ROOT_WINDOWS,
@@ -224,6 +266,37 @@ pub fn guest_textures(target: Target) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_builder_gets_more_of_the_host_than_a_desktop_guest() {
+        // Not a check on the figures, which are a judgement about this host, but
+        // on the ordering: a release build with fat LTO is the heaviest thing
+        // any guest does, and it runs in the image with the least in it.
+        for target in Target::ALL {
+            let (desktop_mib, desktop_cpus) = resources_for(Image::desktop(target));
+            let (builder_mib, builder_cpus) = resources_for(Image::builder(target));
+            assert!(builder_mib > desktop_mib, "{target}");
+            assert!(builder_cpus >= desktop_cpus, "{target}");
+        }
+        // And the two builders are the same machine, because the work is.
+        assert_eq!(
+            resources_for(Image::WindowsBuilder),
+            resources_for(Image::LinuxBuilder)
+        );
+    }
+
+    /// A layer is a differencing child in one disk format, and the override
+    /// moves a guest between hypervisors. Pointing it at a layer would have
+    /// Hyper-V refuse the attach with a message about a broken chain, or qcow2
+    /// read the file without refusing at all.
+    #[test]
+    fn the_provider_override_is_refused_for_a_layer_and_says_why() {
+        let text = layer_provider_refusal(Image::WindowsBuilder, ProviderKind::Qemu);
+        assert!(text.contains(PROVIDER_ENV), "{text}");
+        assert!(text.contains("windows-builder"), "{text}");
+        assert!(text.contains("one format per host"), "{text}");
+        assert!(text.contains("desktop images can be moved"), "{text}");
+    }
 
     #[test]
     fn guest_paths_use_each_operating_systems_separator() {

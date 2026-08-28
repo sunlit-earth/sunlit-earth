@@ -8,6 +8,7 @@ pub mod bake_icon;
 pub mod bake_stars;
 pub mod build_hyperv;
 pub mod build_image;
+pub mod build_layer;
 pub mod build_watch;
 pub mod doctor;
 pub mod e2e;

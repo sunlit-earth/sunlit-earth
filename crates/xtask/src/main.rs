@@ -25,7 +25,7 @@ use clap::{Parser, Subcommand};
 use crate::commands::{bake_icon, bake_stars, build_image, doctor, e2e, setup, teardown, vm};
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
-use crate::provider::target::{HostOs, Target};
+use crate::provider::target::{HostOs, Image};
 use crate::runner::RealRunner;
 
 #[derive(Parser)]
@@ -86,17 +86,18 @@ enum VmCommand {
     /// Check whether this host can run the VM suite. Unelevated, changes
     /// nothing.
     Doctor,
-    /// Build a golden image from the templates in `vm/<target>/`.
+    /// Build an image from the templates in `vm/<slug>/`. A layer is
+    /// provisioned over its parent instead, which needs no template of media.
     BuildImage {
-        /// Which guest to build.
-        target: Target,
+        /// Which image to build.
+        image: Image,
     },
     /// Prepare this host. Elevated on Windows; reports what needs a restart or
     /// a relogin but never performs one.
     Setup,
     /// Boot an interactive guest without running any tests.
     Up {
-        target: Target,
+        image: Image,
         /// Boot even though the image's evaluation licence has expired.
         #[arg(long)]
         allow_expired_image: bool,
@@ -107,16 +108,16 @@ enum VmCommand {
     },
     /// Open a shell in the running guest, or run one command in it.
     Ssh {
-        target: Target,
+        image: Image,
         /// A command to run instead of an interactive shell.
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
     /// Open the running guest's desktop.
-    View { target: Target },
+    View { image: Image },
     /// Boot, run a trivial job through the guest contract, collect it, take it down.
     Smoke {
-        target: Target,
+        image: Image,
         /// Leave the VM running afterwards.
         #[arg(long)]
         keep: bool,
@@ -127,23 +128,23 @@ enum VmCommand {
     },
     /// List the images, media, overlays, and VMs the xtask owns.
     Status,
-    /// End the guest and delete its run state. The golden image stays.
+    /// End the guest and delete its run state. The image stays.
     Down {
-        /// Which target, or `all`.
-        target: TeardownTarget,
+        /// Which image, or `all`.
+        image: TeardownImage,
     },
-    /// Delete what a target has on disk. Everything unless a flag narrows it,
-    /// and it asks first. Rebuilding costs one `vm build-image` per target and
+    /// Delete what an image has on disk. Everything unless a flag narrows it,
+    /// and it asks first. Rebuilding costs one `vm build-image` per image and
     /// re-downloading the Windows media costs 6.6 GB.
     Purge {
-        /// Which target, or `all`.
-        target: TeardownTarget,
+        /// Which image, or `all`.
+        image: TeardownImage,
         /// Only the VM: its overlay and run state.
         #[arg(long)]
         vm: bool,
-        /// Only the golden image, its manifest, and the build leftovers.
-        #[arg(long)]
-        image: bool,
+        /// Only the image itself, its manifest, and the build leftovers.
+        #[arg(long = "image")]
+        image_only: bool,
         /// Only the cached installation media.
         #[arg(long)]
         iso: bool,
@@ -153,19 +154,27 @@ enum VmCommand {
     },
 }
 
+/// One image or all of them, which is what the two teardowns take.
+///
+/// A separate enum from [`Image`] because `all` is not an image, and clap needs
+/// one type for the argument.
 #[derive(Clone, Copy, clap::ValueEnum)]
-enum TeardownTarget {
+enum TeardownImage {
     Windows,
+    WindowsBuilder,
     Linux,
+    LinuxBuilder,
     All,
 }
 
-impl From<TeardownTarget> for teardown::Selection {
-    fn from(value: TeardownTarget) -> Self {
+impl From<TeardownImage> for teardown::Selection {
+    fn from(value: TeardownImage) -> Self {
         match value {
-            TeardownTarget::Windows => Self::One(Target::Windows),
-            TeardownTarget::Linux => Self::One(Target::Linux),
-            TeardownTarget::All => Self::All,
+            TeardownImage::Windows => Self::One(Image::Windows),
+            TeardownImage::WindowsBuilder => Self::One(Image::WindowsBuilder),
+            TeardownImage::Linux => Self::One(Image::Linux),
+            TeardownImage::LinuxBuilder => Self::One(Image::LinuxBuilder),
+            TeardownImage::All => Self::All,
         }
     }
 }
@@ -185,32 +194,32 @@ fn main() -> ExitCode {
         Command::BakeStars { input, output } => bake_stars::run(&input, &output),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
-            VmCommand::BuildImage { target } => build_image::run(&runner, target),
+            VmCommand::BuildImage { image } => build_image::run(&runner, image),
             VmCommand::Setup => run_setup(&runner),
             VmCommand::Up {
-                target,
+                image,
                 allow_expired_image,
                 desktop,
-            } => vm::up(&runner, target, allow_expired_image, desktop),
-            VmCommand::Ssh { target, command } => vm::ssh(&runner, target, &command),
-            VmCommand::View { target } => vm::view(&runner, target),
+            } => vm::up(&runner, image, allow_expired_image, desktop),
+            VmCommand::Ssh { image, command } => vm::ssh(&runner, image, &command),
+            VmCommand::View { image } => vm::view(&runner, image),
             VmCommand::Smoke {
-                target,
+                image,
                 keep,
                 desktop,
-            } => vm::smoke(&runner, target, keep, desktop),
+            } => vm::smoke(&runner, image, keep, desktop),
             VmCommand::Status => vm::status(&runner),
-            VmCommand::Down { target } => vm::down(&runner, target.into()),
+            VmCommand::Down { image } => vm::down(&runner, image.into()),
             VmCommand::Purge {
-                target,
-                vm,
                 image,
+                vm,
+                image_only,
                 iso,
                 force,
             } => vm::purge(
                 &runner,
-                target.into(),
-                teardown::Scope::from_flags(vm, image, iso),
+                image.into(),
+                teardown::Scope::from_flags(vm, image_only, iso),
                 force,
             ),
         },

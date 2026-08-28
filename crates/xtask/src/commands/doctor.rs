@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use crate::host::facts::{
     FEATURE_HYPERV, FEATURE_WHPX, FeatureState, HostFacts, REQUIRED_TOOLS, WSL_DISTRO,
 };
-use crate::provider::target::{HostOs, Target};
+use crate::provider::target::{HostOs, Image};
 use crate::runner::Runner;
 use crate::store::inventory::{ImageCondition, Inventory};
 use crate::util::{self, format_bytes};
@@ -492,9 +492,9 @@ fn disk_check(facts: &HostFacts, checks: &mut Vec<Check>) {
 }
 
 fn image_checks(inventory: &Inventory, now_unix: u64, checks: &mut Vec<Check>) {
-    for target in Target::ALL {
-        let name = format!("{target} image");
-        let Some(entry) = inventory.for_target(target) else {
+    for image in Image::ALL {
+        let name = format!("{image} image");
+        let Some(entry) = inventory.for_image(image) else {
             checks.push(Check::new(name, Status::Warn, "not inspected"));
             continue;
         };
@@ -514,7 +514,7 @@ fn image_checks(inventory: &Inventory, now_unix: u64, checks: &mut Vec<Check>) {
         let check = if status == Status::Pass {
             Check::new(name, status, detail)
         } else {
-            Check::new(name, status, detail).hint(format!("`cargo xtask vm build-image {target}`"))
+            Check::new(name, status, detail).hint(format!("`cargo xtask vm build-image {image}`"))
         };
         checks.push(check);
     }
@@ -618,8 +618,21 @@ mod tests {
         }
     }
 
+    /// Every image built and current, which is what a ready host has: the
+    /// doctor reports one check per image, so a fixture with two of the four in
+    /// it is a host that warns about the other two.
     fn built_images() -> Inventory {
-        inventory(vec![healthy(Target::Windows), healthy(Target::Linux)])
+        inventory(Image::ALL.into_iter().map(built).collect())
+    }
+
+    /// One image, healthy, with a layer's parent record filled in where the
+    /// image is a layer.
+    fn built(image: Image) -> crate::store::inventory::ImageInventory {
+        if image.is_layer() {
+            crate::store::inventory::fixtures::attached_layer()
+        } else {
+            healthy(image)
+        }
     }
 
     fn now() -> u64 {
@@ -908,7 +921,7 @@ mod tests {
 
     #[test]
     fn a_host_with_no_images_warns_rather_than_failing() {
-        let empty_store = inventory(vec![empty(Target::Windows), empty(Target::Linux)]);
+        let empty_store = inventory(vec![empty(Image::Windows), empty(Image::Linux)]);
         let report = evaluate(&good_windows(), &empty_store, now());
         assert_eq!(report.get("windows image").unwrap().status, Status::Warn);
         assert_eq!(report.get("linux image").unwrap().status, Status::Warn);
@@ -928,9 +941,9 @@ mod tests {
     fn an_image_that_cannot_be_dated_fails_where_it_matters() {
         // The doctor's severity and the boot gate are the same decision, so
         // they are made by the same function and cannot drift apart.
-        let mut windows = healthy(Target::Windows);
+        let mut windows = healthy(Image::Windows);
         windows.manifest = None;
-        let mut linux = healthy(Target::Linux);
+        let mut linux = healthy(Image::Linux);
         linux.manifest = None;
         let report = evaluate(&good_windows(), &inventory(vec![windows, linux]), now());
         assert_eq!(report.get("windows image").unwrap().status, Status::Fail);
@@ -939,11 +952,11 @@ mod tests {
 
     #[test]
     fn a_stale_image_warns_and_an_expired_one_fails() {
-        let mut stale = healthy(Target::Linux);
+        let mut stale = healthy(Image::Linux);
         stale.template_hash = Some("crc32:ffffffff".to_owned());
         let report = evaluate(
             &good_windows(),
-            &inventory(vec![healthy(Target::Windows), stale]),
+            &inventory(vec![healthy(Image::Windows), stale]),
             now(),
         );
         assert_eq!(report.get("linux image").unwrap().status, Status::Warn);
@@ -957,11 +970,11 @@ mod tests {
 
     #[test]
     fn a_corrupt_image_fails() {
-        let mut corrupt = healthy(Target::Windows);
+        let mut corrupt = healthy(Image::Windows);
         corrupt.images[0].bytes = 1;
         let report = evaluate(
             &good_windows(),
-            &inventory(vec![corrupt, healthy(Target::Linux)]),
+            &inventory(vec![corrupt, healthy(Image::Linux)]),
             now(),
         );
         assert_eq!(report.get("windows image").unwrap().status, Status::Fail);

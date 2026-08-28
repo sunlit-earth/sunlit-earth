@@ -1,4 +1,4 @@
-//! `cargo xtask vm build-image <target>`: Packer, then a manifest.
+//! `cargo xtask vm build-image <image>`: Packer, then a manifest.
 //!
 //! The build itself is Packer's job. What this adds is everything around it:
 //! the SSH key both guests trust, the accelerator the host can offer, a build
@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::provider::target::{HostOs, Target};
+use crate::provider::target::{HostOs, Image, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store::hash;
 use crate::store::manifest::{ImageRecord, Manifest};
@@ -34,8 +34,11 @@ pub fn accelerator_for(host: HostOs) -> &'static str {
 pub enum Builder {
     /// The xtask installs Windows on `Hyper-V` itself, no builder in the loop.
     HyperV,
-    /// Packer's QEMU builder, which is what both images were always built with.
+    /// Packer's QEMU builder, which is what every base image is built with.
     PackerQemu,
+    /// A differencing child of a parent image, provisioned over SSH. No install
+    /// and no media: everything below the toolchain is inherited.
+    Layer,
 }
 
 /// The builder matrix, which mirrors the runtime provider matrix.
@@ -57,8 +60,15 @@ pub enum Builder {
 /// path measured not to work would be a two-hour way to learn nothing. The
 /// recheck recipe in `docs/vm-setup.md` re-measures it in twenty seconds
 /// instead.
-pub fn builder_for(host: HostOs, target: Target) -> Builder {
-    match (host, target) {
+/// A layer is the third answer, and it does not depend on the host: nothing is
+/// installed, so the question the table above answers does not arise. What does
+/// depend on the host is the disk format the child is made in, which is the
+/// provider matrix again and lives in `build_layer`.
+pub fn builder_for(host: HostOs, image: Image) -> Builder {
+    if image.is_layer() {
+        return Builder::Layer;
+    }
+    match (host, image.target()) {
         (HostOs::Windows, Target::Windows) => Builder::HyperV,
         _ => Builder::PackerQemu,
     }
@@ -70,7 +80,7 @@ pub fn builder_for(host: HostOs, target: Target) -> Builder {
 /// hypervisor this host already has, so there is no `packer` and no
 /// `qemu-system-x86_64` in it, and nothing after the ISO download touches the
 /// network, so `packer init` and its firewall failure class (deviation 20) are
-/// gone from this target. `qemu-img` stays, because the qcow2 the QEMU override
+/// gone from this image. `qemu-img` stays, because the qcow2 the QEMU override
 /// cell boots is derived from the VHDX.
 pub fn required_tools(builder: Builder) -> &'static [&'static str] {
     match builder {
@@ -82,13 +92,19 @@ pub fn required_tools(builder: Builder) -> &'static [&'static str] {
             "ssh-keygen",
         ],
         Builder::PackerQemu => &["packer", "qemu-system-x86_64", "qemu-img", "ssh-keygen"],
+        // A layer asks for the least of the three: no media, so no ISO builder,
+        // and no second format, so no `qemu-img` on a Windows host. What it
+        // needs is a way into the guest it boots. The disk itself is made by
+        // whichever hypervisor the parent's format belongs to, and that tool is
+        // the provider's own.
+        Builder::Layer => &["ssh", "scp", "ssh-keygen"],
     }
 }
 
 /// Everything a build needs, decided before anything runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildPlan {
-    pub target: Target,
+    pub image: Image,
     pub template_dir: PathBuf,
     /// Packer's output directory. Deleted first, because Packer refuses to
     /// write into one that exists.
@@ -111,14 +127,14 @@ impl BuildPlan {
     }
 }
 
-/// Assemble the plan for one target.
+/// Assemble the plan for one image.
 pub fn plan(
     store: &Store,
-    target: Target,
+    image: Image,
     accelerator: &str,
     firmware: Option<&crate::provider::firmware::Firmware>,
 ) -> BuildPlan {
-    let build_dir = store.build_dir(target);
+    let build_dir = store.build_dir(image);
     let mut vars = vec![
         (
             "output_dir".to_owned(),
@@ -130,7 +146,15 @@ pub fn plan(
             store.ssh_key().to_string_lossy().into_owned(),
         ),
     ];
-    if target == Target::Windows {
+    if image == Image::LinuxBuilder {
+        // The one variable a builder template needs and a desktop one does not:
+        // which toolchain to install. Read from `rust-toolchain.toml` rather
+        // than spelled here, so the image and the build agree by construction.
+        if let Ok(pinned) = crate::guest::toolchain::pinned() {
+            vars.push(("rust_channel".to_owned(), pinned.channel));
+        }
+    }
+    if image == Image::Windows {
         vars.push((
             "iso_path".to_owned(),
             store.windows_iso().to_string_lossy().into_owned(),
@@ -147,10 +171,10 @@ pub fn plan(
         }
     }
     BuildPlan {
-        target,
-        template_dir: store::template_dir(target),
+        image,
+        template_dir: store::template_dir(image),
         output_dir: build_dir.join("output"),
-        image_dir: store.image_dir(target),
+        image_dir: store.image_dir(image),
         cache_dir: build_dir.join("cache"),
         vars,
     }
@@ -207,7 +231,7 @@ pub fn ensure_ssh_key(runner: &dyn Runner, store: &Store) -> Result<String, Stri
 
 /// Build the manifest for a finished build.
 pub fn manifest_for(
-    target: Target,
+    image: Image,
     template_hash: String,
     images: &[(String, u64, String)],
     built_unix: u64,
@@ -215,7 +239,7 @@ pub fn manifest_for(
     builder: String,
 ) -> Manifest {
     Manifest::new(
-        target,
+        image,
         template_hash,
         built_unix,
         source,
@@ -354,16 +378,17 @@ pub const BUILD_QMP_PORT: u16 = 4445;
 /// What Packer names the disk it builds, which is the template's `vm_name`.
 pub const BUILT_DISK: &str = "golden.qcow2";
 
-/// Run a build end to end, on whichever path this host and target choose.
-pub fn run(runner: &dyn Runner, target: Target) -> Result<u8, String> {
+/// Run a build end to end, on whichever path this host and image choose.
+pub fn run(runner: &dyn Runner, image: Image) -> Result<u8, String> {
     let store = store::store()?;
     let host = HostOs::current();
     if host == HostOs::Other {
         return Err("images are built on a Windows or Linux host".to_owned());
     }
-    with_host_keys_forgotten(&store, || match builder_for(host, target) {
-        Builder::HyperV => crate::commands::build_hyperv::run(runner, &store, target),
-        Builder::PackerQemu => run_packer_build(runner, &store, target, host),
+    with_host_keys_forgotten(&store, || match builder_for(host, image) {
+        Builder::HyperV => crate::commands::build_hyperv::run(runner, &store, image),
+        Builder::PackerQemu => run_packer_build(runner, &store, image, host),
+        Builder::Layer => crate::commands::build_layer::run(runner, &store, image, host),
     })
 }
 
@@ -390,7 +415,7 @@ fn with_host_keys_forgotten(
 fn run_packer_build(
     runner: &dyn Runner,
     store: &Store,
-    target: Target,
+    image: Image,
     host: HostOs,
 ) -> Result<u8, String> {
     for tool in required_tools(Builder::PackerQemu) {
@@ -408,13 +433,13 @@ fn run_packer_build(
     let (iso_tool, iso_tool_dir) = resolve_iso_tool(runner, host)?;
 
     let public_key = ensure_ssh_key(runner, store)?;
-    if target == Target::Windows {
+    if image == Image::Windows {
         crate::store::windows_media::ensure_iso(runner, store)?;
     }
 
     let accelerator = accelerator_for(host);
     // Windows 11 needs UEFI, and Packer's own defaults for it are Linux paths.
-    let firmware = if target == Target::Windows {
+    let firmware = if image == Image::Windows {
         let binary = crate::host::facts::resolve_tool(runner, "qemu-system-x86_64", host);
         Some(
             crate::provider::firmware::locate(host, binary.as_deref())
@@ -423,7 +448,7 @@ fn run_packer_build(
     } else {
         None
     };
-    let plan = plan(store, target, accelerator, firmware.as_ref());
+    let plan = plan(store, image, accelerator, firmware.as_ref());
     if !plan.template_dir.is_dir() {
         return Err(format!(
             "no templates at {}; the repo is where they live",
@@ -444,12 +469,12 @@ fn run_packer_build(
             |out| parse_packer_version(&out.stdout),
         );
 
-    println!("building the {target} golden image with {version}");
+    println!("building the {image} golden image with {version}");
     match &iso_tool_dir {
         None => println!("  cd images: {iso_tool}"),
         Some(dir) => println!("  cd images: {iso_tool}, from {}", dir.display()),
     }
-    let build_dir = store.build_dir(target);
+    let build_dir = store.build_dir(image);
     let log = build_dir.join("packer.log");
     let screen = build_dir.join("screen.png");
     println!("  templates: {}", plan.template_dir.display());
@@ -472,14 +497,14 @@ fn run_packer_build(
     run_packer(
         runner,
         &plan,
-        target,
+        image,
         public_key,
         extra_path.as_deref(),
         &log,
         screen,
     )?;
 
-    finish(runner, store, target, &plan, &version)
+    finish(runner, store, image, &plan, &version)
 }
 
 /// Run the build itself: the command, the watcher over it, and what a nonzero
@@ -487,7 +512,7 @@ fn run_packer_build(
 fn run_packer(
     runner: &dyn Runner,
     plan: &BuildPlan,
-    target: Target,
+    image: Image,
     public_key: String,
     extra_path: Option<&str>,
     log: &Path,
@@ -495,7 +520,7 @@ fn run_packer(
 ) -> Result<(), String> {
     let mut vars = plan.vars.clone();
     vars.push(("ssh_public_key".to_owned(), public_key));
-    if target == Target::Windows {
+    if image == Image::Windows {
         vars.push(("qmp_port".to_owned(), BUILD_QMP_PORT.to_string()));
     }
     let mut build = Cmd::new("packer")
@@ -521,8 +546,8 @@ fn run_packer(
     // answer, which is most of a Windows install. The watcher reads what is
     // observable in the meantime and ends a build whose guest has stopped.
     let watcher = crate::commands::build_watch::spawn(crate::commands::build_watch::Watch {
-        target,
-        qmp_port: (target == Target::Windows).then_some(BUILD_QMP_PORT),
+        image,
+        qmp_port: (image == Image::Windows).then_some(BUILD_QMP_PORT),
         // The same file `finish` collects, which is also the signal that the
         // boot prompt has been answered.
         disk: plan.output_dir.join(BUILT_DISK),
@@ -555,7 +580,7 @@ fn run_packer(
 fn finish(
     runner: &dyn Runner,
     store: &Store,
-    target: Target,
+    image: Image,
     plan: &BuildPlan,
     builder: &str,
 ) -> Result<u8, String> {
@@ -563,28 +588,31 @@ fn finish(
         .map_err(|e| format!("cannot create {}: {e}", plan.image_dir.display()))?;
 
     let built = plan.output_dir.join(BUILT_DISK);
-    let qcow2 = store.qcow2(target);
+    let qcow2 = store.qcow2(image);
     move_file(&built, &qcow2)?;
 
     let mut images = vec![record(&qcow2)?];
 
-    if target == Target::Windows {
+    if image == Image::Windows {
         // One canonical install, two disk formats: Hyper-V boots the VHDX and
         // QEMU boots the qcow2, and they are the same Windows. A native
         // Hyper-V build derives them the other way round.
-        let vhdx = store.vhdx(target);
+        let vhdx = store.vhdx(image);
         println!("converting to VHDX for the Hyper-V provider");
         convert(runner, &qcow2, &vhdx, "vhdx")?;
         images.push(record(&vhdx)?);
     }
 
-    let source = match target {
-        Target::Windows => store.windows_iso().to_string_lossy().into_owned(),
-        Target::Linux => "debian 13 generic image".to_owned(),
+    let source = match image {
+        Image::Windows => store.windows_iso().to_string_lossy().into_owned(),
+        Image::Linux => "debian 13 generic image".to_owned(),
+        Image::LinuxBuilder => "ubuntu 22.04 cloud image".to_owned(),
+        // A layer is built by `build_layer`, which writes its own manifest.
+        Image::WindowsBuilder => store.vhdx(Image::Windows).to_string_lossy().into_owned(),
     };
     write_manifest(
         store,
-        target,
+        image,
         &plan.template_dir,
         &images,
         source,
@@ -593,7 +621,7 @@ fn finish(
 
     let _ = std::fs::remove_dir_all(&plan.output_dir);
 
-    announce(target, &images);
+    announce(image, &images);
     Ok(0)
 }
 
@@ -638,7 +666,7 @@ pub fn convert(runner: &dyn Runner, from: &Path, to: &Path, format: &str) -> Res
 /// Write the manifest that makes the result auditable (plan decision 4).
 pub fn write_manifest(
     store: &Store,
-    target: Target,
+    image: Image,
     template_dir: &Path,
     images: &[(String, u64, String)],
     source: String,
@@ -648,14 +676,14 @@ pub fn write_manifest(
         .map(|files| hash::template_hash(&files))
         .map_err(|e| format!("cannot hash the templates: {e}"))?;
     let manifest = manifest_for(
-        target,
+        image,
         template_hash,
         images,
         util::now_unix(),
         source,
         builder,
     );
-    std::fs::write(store.manifest(target), manifest.to_json())
+    std::fs::write(store.manifest(image), manifest.to_json())
         .map_err(|e| format!("cannot write the manifest: {e}"))
 }
 
@@ -672,7 +700,7 @@ pub fn write_manifest(
 /// why it would never be dealt with otherwise.
 ///
 /// The file is the xtask's own and holds nothing but these guests, so a build
-/// deletes it. Clearing both targets' entries rather than one is deliberate: it
+/// deletes it. Clearing every image's entries rather than one is deliberate: it
 /// is one file, and the entries come back on the next boot for free.
 pub fn forget_host_keys(store: &Store) {
     let path = crate::guest::ssh::known_hosts(&store.ssh_key());
@@ -684,19 +712,33 @@ pub fn forget_host_keys(store: &Store) {
 }
 
 /// The closing report, the same whichever path built the image.
-pub fn announce(target: Target, images: &[(String, u64, String)]) {
+///
+/// What to do with the result differs by image, because a builder is not
+/// something the e2e suite can run in: it has no desktop session at all.
+pub fn announce(image: Image, images: &[(String, u64, String)]) {
     println!();
-    println!("the {target} golden image is built:");
+    println!("the {image} image is built:");
     for (file, bytes, _) in images {
         println!("  {file}  {}", util::format_bytes(*bytes));
     }
-    if target.has_eval_expiry() {
+    if image.has_eval_expiry() && !image.is_layer() {
         println!(
             "  the evaluation clock started now and runs {} days",
             crate::store::manifest::EVAL_TOTAL_DAYS
         );
     }
-    println!("`cargo xtask vm status` lists it; `cargo xtask e2e --target {target}` uses it.");
+    let uses = if image.has_desktop() {
+        format!("cargo xtask e2e --target {}", image.target())
+    } else {
+        format!("cargo xtask dist --target {}", image.target())
+    };
+    println!("`cargo xtask vm status` lists it; `{uses}` uses it.");
+    for child in image.children() {
+        println!(
+            "the {child} layer was built over the disk this replaced, so it is \
+             detached now: `cargo xtask vm build-image {child}` makes it again."
+        );
+    }
 }
 
 pub fn record(path: &Path) -> Result<(String, u64, String), String> {
@@ -743,31 +785,47 @@ mod tests {
         // The one cell that is not Packer is the one QEMU cannot install: a
         // WHPX guest does not survive the reset Windows Setup performs.
         assert_eq!(
-            builder_for(HostOs::Windows, Target::Windows),
+            builder_for(HostOs::Windows, Image::Windows),
             Builder::HyperV
         );
         assert_eq!(
-            builder_for(HostOs::Windows, Target::Linux),
+            builder_for(HostOs::Windows, Image::Linux),
             Builder::PackerQemu
         );
         assert_eq!(
-            builder_for(HostOs::Linux, Target::Windows),
+            builder_for(HostOs::Linux, Image::Windows),
             Builder::PackerQemu
         );
         assert_eq!(
-            builder_for(HostOs::Linux, Target::Linux),
+            builder_for(HostOs::Linux, Image::Linux),
             Builder::PackerQemu
         );
         // The same builder the runtime provider would be, wherever both exist.
-        for target in Target::ALL {
-            let native = crate::provider::target::provider_for(HostOs::Windows, target);
+        for image in Image::ALL.into_iter().filter(|i| !i.is_layer()) {
+            let native = crate::provider::target::provider_for(HostOs::Windows, image.target());
             let hyperv = native == Some(crate::provider::target::ProviderKind::HyperV);
             assert_eq!(
-                builder_for(HostOs::Windows, target) == Builder::HyperV,
+                builder_for(HostOs::Windows, image) == Builder::HyperV,
                 hyperv,
-                "{target} builds on a different hypervisor than it runs on"
+                "{image} builds on a different hypervisor than it runs on"
             );
         }
+
+        // A layer is provisioned rather than installed, on either host, and it
+        // is the only cell that does not depend on the host at all.
+        for host in [HostOs::Windows, HostOs::Linux] {
+            assert_eq!(
+                builder_for(host, Image::WindowsBuilder),
+                Builder::Layer,
+                "{}",
+                host.name()
+            );
+        }
+        // And the Linux builder is a base like any other Packer one.
+        assert_eq!(
+            builder_for(HostOs::Windows, Image::LinuxBuilder),
+            Builder::PackerQemu
+        );
     }
 
     #[test]
@@ -839,7 +897,7 @@ mod tests {
         use crate::runner::CommandOutput;
         use crate::runner::fake::FakeRunner;
 
-        let plan = plan(&store(), Target::Linux, "kvm", None);
+        let plan = plan(&store(), Image::Linux, "kvm", None);
         let runner = FakeRunner::new().on("packer init", CommandOutput::failed(1, "dial tcp"));
         let error = init_plugins(&runner, &plan, None, 3, Duration::ZERO)
             .expect_err("every attempt failed");
@@ -894,16 +952,13 @@ mod tests {
 
     #[test]
     fn the_plan_points_packer_at_the_store_and_the_repo() {
-        let plan = plan(&store(), Target::Linux, "whpx", None);
+        let plan = plan(&store(), Image::Linux, "whpx", None);
         assert!(
             plan.template_dir.ends_with("vm/linux") || plan.template_dir.ends_with(r"vm\linux")
         );
-        assert_eq!(plan.image_dir, store().image_dir(Target::Linux));
-        assert!(
-            plan.output_dir
-                .starts_with(store().build_dir(Target::Linux))
-        );
-        assert!(plan.cache_dir.starts_with(store().build_dir(Target::Linux)));
+        assert_eq!(plan.image_dir, store().image_dir(Image::Linux));
+        assert!(plan.output_dir.starts_with(store().build_dir(Image::Linux)));
+        assert!(plan.cache_dir.starts_with(store().build_dir(Image::Linux)));
     }
 
     #[test]
@@ -912,8 +967,8 @@ mod tests {
             code: PathBuf::from("/fw/code.fd"),
             vars: PathBuf::from("/fw/vars.fd"),
         };
-        let linux = plan(&store(), Target::Linux, "kvm", Some(&firmware));
-        let windows = plan(&store(), Target::Windows, "whpx", Some(&firmware));
+        let linux = plan(&store(), Image::Linux, "kvm", Some(&firmware));
+        let windows = plan(&store(), Image::Windows, "whpx", Some(&firmware));
         assert!(!linux.vars.iter().any(|(k, _)| k == "iso_path"));
         assert!(windows.vars.iter().any(|(k, _)| k == "iso_path"));
         // The Linux cloud image boots without UEFI, so it is not handed
@@ -925,7 +980,7 @@ mod tests {
 
     #[test]
     fn the_build_command_passes_every_variable_and_the_template_last() {
-        let plan = plan(&store(), Target::Linux, "kvm", None);
+        let plan = plan(&store(), Image::Linux, "kvm", None);
         let args = plan.build_args();
         assert_eq!(args[0], "build");
         assert!(args.contains(&"accelerator=kvm".to_owned()));
@@ -1002,7 +1057,7 @@ mod tests {
     #[test]
     fn the_manifest_records_every_image_the_build_produced() {
         let manifest = manifest_for(
-            Target::Windows,
+            Image::Windows,
             "crc32:aaaa".to_owned(),
             &[
                 ("golden.qcow2".to_owned(), 10, "crc32:1".to_owned()),
@@ -1013,8 +1068,11 @@ mod tests {
             "packer 1.16.0".to_owned(),
         );
         assert_eq!(manifest.images.len(), 2);
-        assert_eq!(manifest.record("golden.vhdx").map(|r| r.bytes), Some(20));
+        assert_eq!(
+            manifest.record_for("golden.vhdx").map(|r| r.bytes),
+            Some(20)
+        );
         assert_eq!(manifest.built_utc, "2025-08-19T10:40:00Z");
-        assert_eq!(manifest.target, "windows");
+        assert_eq!(manifest.image, "windows");
     }
 }

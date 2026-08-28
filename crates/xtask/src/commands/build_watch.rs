@@ -5,7 +5,7 @@
 //! boot prompt and the guest's first SSH answer, nothing on the host is driving
 //! the install. Nothing is watching it either, which is the part worth fixing.
 //! The signals exist, they were just never read: the disk Packer is installing
-//! into, and, for a target whose template opens one, QEMU's monitor, which will
+//! into, and, for an image whose template opens one, QEMU's monitor, which will
 //! say whether the machine is running, where it stopped if it is not, and what
 //! is on its screen.
 //!
@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::provider::qmp::{self, Session};
-use crate::provider::target::Target;
+use crate::provider::target::Image;
 use crate::util::{format_bytes, format_duration};
 
 /// How often the signals are read.
@@ -85,7 +85,7 @@ pub fn installer_started(path: &Path, threshold: u64) -> bool {
 /// How the guest looks from the monitor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Guest {
-    /// This target's template opens no monitor, so there is nothing to ask. The
+    /// This image's template opens no monitor, so there is nothing to ask. The
     /// Linux build is here, and its disk is still worth watching.
     Unmonitored,
     Running,
@@ -283,8 +283,8 @@ impl Trend {
 /// What a watcher needs to know about the build it is watching.
 #[derive(Debug, Clone)]
 pub struct Watch {
-    pub target: Target,
-    /// The monitor port, for a target whose template opens one.
+    pub image: Image,
+    /// The monitor port, for an image whose template opens one.
     pub qmp_port: Option<u16>,
     /// The disk Packer is installing into.
     pub disk: PathBuf,
@@ -470,7 +470,7 @@ fn connect(port: u16, done: &AtomicBool) -> Option<Session> {
 /// Packer's own `boot_command` is empty because its VNC keystrokes do not
 /// arrive on this host; QMP's `send-key` injects at the input device instead.
 fn press_boot_key(watch: &Watch, session: &mut Session, done: &AtomicBool) {
-    if watch.target != Target::Windows {
+    if watch.image != Image::Windows {
         return;
     }
     tell(&format!(
@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unmonitored_target_still_reports_its_disk() {
+    fn an_unmonitored_image_still_reports_its_disk() {
         let mut trend = Trend::new();
         let sample = Sample {
             elapsed: secs(5),
@@ -816,7 +816,7 @@ mod tests {
 
         let server = qmp::fake::Server::start(&["paused"]);
         let watcher = spawn(Watch {
-            target: Target::Windows,
+            image: Image::Windows,
             qmp_port: Some(server.port),
             disk,
             screen: screen.clone(),

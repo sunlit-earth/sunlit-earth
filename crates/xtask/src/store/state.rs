@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::provider::target::{ProviderKind, Target, VM_NAME_PREFIX};
+use crate::provider::target::{Image, ProviderKind, Target, VM_NAME_PREFIX};
 
 pub const STATE_VERSION: u32 = 1;
 
@@ -25,7 +25,8 @@ pub enum StartReason {
     Keep,
     /// An interactive guest from `vm up`.
     Up,
-    /// The guest a `vm build-image` is installing Windows into.
+    /// The guest a `vm build-image` is installing Windows into, or provisioning
+    /// a layer in.
     ///
     /// It carries the same name and record as any other, so `vm status`,
     /// `vm view`, `vm ssh`, `vm down`, and the one-VM-at-a-time rule all apply
@@ -33,6 +34,9 @@ pub enum StartReason {
     /// something the inventory can name rather than an orphan (amendment
     /// decision 17).
     Build,
+    /// The guest a `cargo xtask dist` is building a release binary in, or
+    /// verifying one in.
+    Dist,
 }
 
 impl StartReason {
@@ -45,6 +49,7 @@ impl StartReason {
             Self::Keep => "a test run kept with --keep",
             Self::Up => "an interactive guest (vm up)",
             Self::Build => "an image build (vm build-image)",
+            Self::Dist => "a release build (xtask dist)",
         }
     }
 
@@ -61,11 +66,19 @@ impl StartReason {
     /// one-VM-at-a-time refusal and the teardown that is about to stop the guest
     /// have to say the same thing, and a sentence written twice is a sentence
     /// that drifts.
+    ///
+    /// A release build costs less than an image build and more than nothing: the
+    /// compile starts again from an empty `target/`, which is tens of minutes,
+    /// and no image is lost.
     pub fn cost_of_ending(self) -> Option<&'static str> {
         match self {
             Self::Build => Some(
                 "ends the image build running in it and starts that install over \
                  from the media",
+            ),
+            Self::Dist => Some(
+                "ends the release build running in it and starts that compile over \
+                 from an empty target directory",
             ),
             Self::Run | Self::Keep | Self::Up => None,
         }
@@ -77,6 +90,16 @@ impl StartReason {
 pub struct RunState {
     #[serde(default)]
     pub format_version: u32,
+    /// The image this guest is a throwaway child of, as
+    /// [`Image::slug`](crate::provider::target::Image::slug).
+    ///
+    /// Defaulted rather than required, because records written before there was
+    /// more than one image per target carry no such field, and one of those is
+    /// what `vm status` reads after an upgrade. An empty value reads as the
+    /// desktop image of the recorded target, which is what those records are
+    /// about: there was nothing else to boot.
+    #[serde(default)]
+    pub image: String,
     pub target: String,
     pub provider: String,
     pub vm_name: String,
@@ -127,7 +150,7 @@ pub struct RunState {
 
 impl RunState {
     pub fn new(
-        target: Target,
+        image: Image,
         provider: ProviderKind,
         overlay: PathBuf,
         reason: StartReason,
@@ -135,9 +158,10 @@ impl RunState {
     ) -> Self {
         Self {
             format_version: STATE_VERSION,
-            target: target.slug().to_owned(),
+            image: image.slug().to_owned(),
+            target: image.target().slug().to_owned(),
             provider: provider.name().to_owned(),
-            vm_name: target.vm_name(),
+            vm_name: image.vm_name(),
             overlay,
             ssh_host: String::new(),
             ssh_port: 0,
@@ -164,13 +188,31 @@ impl RunState {
         ProviderKind::parse(&self.provider)
     }
 
-    /// The guest this record is about, if it names one this xtask knows.
+    /// The operating system this record is about, if it names one this xtask
+    /// knows.
     ///
     /// `None` for a hand-edited or corrupted file. Callers that only need it to
     /// choose a sentence supply their own fallback rather than panicking on a
     /// file they were reading in order to explain something.
     pub fn target(&self) -> Option<Target> {
-        Target::ALL.into_iter().find(|t| t.slug() == self.target)
+        Target::parse(&self.target)
+    }
+
+    /// The image this guest is a child of.
+    ///
+    /// A record with no image field is one written when there was one image per
+    /// target, so it can only be about that target's desktop image. A record
+    /// naming an image whose target disagrees with its own `target` field is
+    /// rejected rather than reconciled: the two would send a teardown to two
+    /// different places.
+    pub fn image(&self) -> Option<Image> {
+        if self.image.trim().is_empty() {
+            return self.target().map(Image::desktop);
+        }
+        Image::parse(&self.image).filter(|image| match self.target() {
+            Some(target) => image.target() == target,
+            None => false,
+        })
     }
 
     /// Whether this record describes something the xtask created.
@@ -179,8 +221,7 @@ impl RunState {
     /// hand-edited or corrupted state file cannot aim the teardown at another
     /// VM on the host.
     pub fn is_ours(&self) -> bool {
-        self.vm_name.starts_with(VM_NAME_PREFIX)
-            && Target::ALL.iter().any(|t| t.slug() == self.target)
+        self.vm_name.starts_with(VM_NAME_PREFIX) && self.image().is_some()
     }
 }
 
@@ -190,7 +231,7 @@ mod tests {
 
     fn sample() -> RunState {
         let mut state = RunState::new(
-            Target::Linux,
+            Image::Linux,
             ProviderKind::Qemu,
             PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Keep,
@@ -238,6 +279,47 @@ mod tests {
         // And one written before the desktop was recorded reads as a guest on
         // the image's own default, which is what it is.
         assert_eq!(parsed.desktop, None);
+        // A record from before there was more than one image per target can
+        // only be about that target's desktop image, and reads as one.
+        assert_eq!(parsed.image(), Some(Image::Windows));
+    }
+
+    #[test]
+    fn a_builder_guest_records_the_image_it_is_a_child_of() {
+        let state = RunState::new(
+            Image::WindowsBuilder,
+            ProviderKind::HyperV,
+            PathBuf::from("C:/vm/run/windows-builder/overlay.vhdx"),
+            StartReason::Dist,
+            1_755_600_000,
+        );
+        let json = state.to_json();
+        assert!(json.contains(r#""image": "windows-builder""#), "{json}");
+        // The target is the operating system, which is what the guest contract,
+        // the SSH account and the job scripts key on.
+        assert!(json.contains(r#""target": "windows""#), "{json}");
+        assert!(json.contains(r#""reason": "dist""#), "{json}");
+        let parsed = RunState::from_json(&json).expect("round trip");
+        assert_eq!(parsed, state);
+        assert_eq!(parsed.image(), Some(Image::WindowsBuilder));
+        assert_eq!(parsed.target(), Some(Target::Windows));
+        assert!(parsed.is_ours());
+    }
+
+    /// The image and the target are written together and read separately, so a
+    /// record where they disagree would send a teardown to one image's overlay
+    /// while asking the other's guest contract about it. Neither half wins.
+    #[test]
+    fn a_record_whose_image_and_target_disagree_is_not_ours() {
+        let mut state = sample();
+        state.image = Image::WindowsBuilder.slug().to_owned();
+        assert_eq!(state.image(), None);
+        assert!(!state.is_ours());
+
+        let mut unknown = sample();
+        unknown.image = "windows-server-core".to_owned();
+        assert_eq!(unknown.image(), None);
+        assert!(!unknown.is_ours());
     }
 
     #[test]
@@ -268,6 +350,8 @@ mod tests {
 
     #[test]
     fn a_crashed_build_leaves_a_record_that_names_itself_as_one() {
+        // Written before the image field existed, which is the shape a record
+        // from the last release has.
         // What `vm status` reads after a build died: the same file every other
         // guest leaves, distinguishable only by its reason, and naming the
         // unfinished disk that `vm down` deletes with it.
@@ -287,7 +371,7 @@ mod tests {
         // And it round trips under the same spelling, because the file is
         // written by one version of this and read by another.
         let mut state = RunState::new(
-            Target::Windows,
+            Image::Windows,
             ProviderKind::HyperV,
             PathBuf::from("C:/vm/run/windows/build.vhdx"),
             StartReason::Build,

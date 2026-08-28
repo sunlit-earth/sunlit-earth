@@ -28,7 +28,7 @@ use crate::commands::build_watch::{Action, Guest, Sample, Trend, report};
 use crate::commands::vm;
 use crate::guest::ssh::{self, SshTarget};
 use crate::provider::hyperv;
-use crate::provider::target::{HostOs, ProviderKind, Target};
+use crate::provider::target::{HostOs, Image, ProviderKind};
 use crate::runner::{Runner, powershell, ps_quote};
 use crate::store::state::{RunState, StartReason};
 use crate::store::{self, Store, windows_media};
@@ -166,6 +166,7 @@ pub fn create_script(
     install_iso: &Path,
     unattend_iso: &Path,
     console: (u32, u32),
+    (memory_mb, cpus): (u32, u32),
 ) -> String {
     format!(
         "New-VHD -Path {disk} -SizeBytes {size} -Dynamic | Out-Null\n\
@@ -188,8 +189,8 @@ pub fn create_script(
         unattend = ps_quote(unattend_iso),
         switch = ps_quote(hyperv::SWITCH),
         size = BUILD_DISK_BYTES,
-        memory = hyperv::MEMORY_BYTES,
-        cpus = hyperv::CPUS,
+        memory = u64::from(memory_mb) * 1024 * 1024,
+        cpus = cpus,
         // An install is watched as often as a running guest is, and what there
         // is to watch is Setup's own progress, so it gets the same console.
         video = hyperv::video_script(name, console),
@@ -385,11 +386,11 @@ fn build_unattend_cd(
 /// `New-VM` and the record there is a window in which a VM exists that nothing
 /// can find again, and the record costs nothing to write early because
 /// everything in it is decided in advance.
-fn build_state(store: &Store, target: Target) -> RunState {
+fn build_state(store: &Store, image: Image) -> RunState {
     let mut state = RunState::new(
-        target,
+        image,
         ProviderKind::HyperV,
-        store.build_disk(target),
+        store.build_disk(image),
         StartReason::Build,
         util::now_unix(),
     );
@@ -406,7 +407,7 @@ fn build_state(store: &Store, target: Target) -> RunState {
 /// cmdlet or from the script's own `throw`, and both arrive here as a nonzero
 /// exit with the message on stderr. The text carries the message rather than
 /// guessing which of the two produced it.
-fn run_script(runner: &dyn Runner, script: &str) -> Result<String, String> {
+pub fn run_script(runner: &dyn Runner, script: &str) -> Result<String, String> {
     let out = runner
         .capture(&powershell(script))
         .map_err(|e| format!("cannot run powershell.exe: {e}"))?;
@@ -479,26 +480,26 @@ fn presence(runner: &dyn Runner, name: &str) -> Presence {
 /// registered anything, and a VM that disappeared out from under an install the
 /// watcher or the shutdown was in the middle of. One query cannot say which, so
 /// this says what the query answered instead of picking one.
-fn aftermath(presence: &Presence, target: Target, state: &RunState) -> String {
+fn aftermath(presence: &Presence, image: Image, state: &RunState) -> String {
     let vm = &state.vm_name;
     match presence {
         Presence::Registered => format!(
             "{vm} is still there, with the disk it was installing onto.\n  \
-             desktop: cargo xtask vm view {target}\n  \
-             ssh:     cargo xtask vm ssh {target}\n  \
-             down:    cargo xtask vm down {target}  (removes the VM and the unfinished disk)"
+             desktop: cargo xtask vm view {image}\n  \
+             ssh:     cargo xtask vm ssh {image}\n  \
+             down:    cargo xtask vm down {image}  (removes the VM and the unfinished disk)"
         ),
         Presence::Gone => format!(
             "no VM called {vm} is registered with Hyper-V now, so nothing of this \
              build is running.\n  \
-             down:    cargo xtask vm down {target}  (clears the record and any disk \
+             down:    cargo xtask vm down {image}  (clears the record and any disk \
              that was made for it)"
         ),
         Presence::Unknown { why } => format!(
             "whether {vm} exists cannot be read from Hyper-V ({why}), so it may be \
              running with the disk it was installing onto.\n  \
              status:  cargo xtask vm status\n  \
-             down:    cargo xtask vm down {target}  (removes the VM and the unfinished disk)"
+             down:    cargo xtask vm down {image}  (removes the VM and the unfinished disk)"
         ),
     }
 }
@@ -542,8 +543,8 @@ fn preflight(runner: &dyn Runner, store: &Store) -> Result<(), String> {
 /// outcomes go through here rather than through the build itself, because the
 /// build has a dozen ways to fail and every one of them leaves the same
 /// question.
-pub fn run(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, String> {
-    let outcome = build(runner, store, target);
+pub fn run(runner: &dyn Runner, store: &Store, image: Image) -> Result<u8, String> {
+    let outcome = build(runner, store, image);
     match &outcome {
         Ok(_) => windows_media::discard_install_media(store),
         Err(_) => {
@@ -556,10 +557,10 @@ pub fn run(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, Str
 }
 
 /// The build itself.
-fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, String> {
+fn build(runner: &dyn Runner, store: &Store, image: Image) -> Result<u8, String> {
     preflight(runner, store)?;
 
-    let template_dir = store::template_dir(target);
+    let template_dir = store::template_dir(image);
     if !template_dir.is_dir() {
         return Err(format!(
             "no templates at {}; the repo is where they live",
@@ -573,20 +574,20 @@ fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, Strin
     // One VM at a time, and nothing of ours left running: the build VM carries
     // the same name a runtime guest does, so both questions are the ones the
     // boot path already asks.
-    vm::check_no_other_vm(runner, store, target)?;
-    vm::clear_stale_state(runner, store, target)?;
+    vm::check_no_other_vm(runner, store, image)?;
+    vm::clear_stale_state(runner, store, image)?;
 
-    let build_dir = store.build_dir(target);
+    let build_dir = store.build_dir(image);
     std::fs::create_dir_all(&build_dir)
         .map_err(|e| format!("cannot create {}: {e}", build_dir.display()))?;
 
-    println!("building the {target} golden image on Hyper-V, with no builder in the loop");
+    println!("building the {image} golden image on Hyper-V, with no builder in the loop");
+    let (memory_mb, cpus) = crate::provider::resources_for(image);
     println!(
-        "  install:  a generation 2 VM, {} vCPUs, {}",
-        hyperv::CPUS,
-        format_bytes(hyperv::MEMORY_BYTES)
+        "  install:  a generation 2 VM, {cpus} vCPUs, {}",
+        format_bytes(u64::from(memory_mb) * 1024 * 1024)
     );
-    println!("  disk:     {}", store.build_disk(target).display());
+    println!("  disk:     {}", store.build_disk(image).display());
     println!("  media:    {}", store.iso_dir().display());
     println!("  this takes tens of minutes and downloads several gigabytes the first time");
 
@@ -594,10 +595,10 @@ fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, Strin
     let media = windows_media::ensure_install_media(runner, store, &build_dir)?;
     let unattend = build_unattend_cd(runner, &oscdimg, &template_dir, &build_dir, &public_key)?;
 
-    let mut state = build_state(store, target);
+    let mut state = build_state(store, image);
     let disk = state.overlay.clone();
     let _ = std::fs::remove_file(&disk);
-    vm::write_state(store, target, &state)?;
+    vm::write_state(store, image, &state)?;
 
     // From here on a VM may exist, so from here on every failure says what is
     // there. Including the one that creates it: the create script is one
@@ -606,7 +607,7 @@ fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, Strin
     create_and_install(
         runner,
         store,
-        target,
+        image,
         &mut state,
         &template_dir,
         &media.boot,
@@ -614,7 +615,7 @@ fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, Strin
     )?;
 
     let source = media.source.to_string_lossy().into_owned();
-    let code = finish(runner, store, target, &disk, &template_dir, &source)?;
+    let code = finish(runner, store, image, &disk, &template_dir, &source)?;
     clean_up_build_dir(&build_dir);
     Ok(code)
 }
@@ -627,7 +628,7 @@ fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<u8, Strin
 fn create_and_install(
     runner: &dyn Runner,
     store: &Store,
-    target: Target,
+    image: Image,
     state: &mut RunState,
     template_dir: &Path,
     install_iso: &Path,
@@ -635,17 +636,24 @@ fn create_and_install(
 ) -> Result<(), String> {
     let disk = state.overlay.clone();
     let console = hyperv::HypervProvider::new(runner, store, HostOs::Windows).console_size();
-    let create = create_script(&state.vm_name, &disk, install_iso, unattend_iso, console);
+    let create = create_script(
+        &state.vm_name,
+        &disk,
+        install_iso,
+        unattend_iso,
+        console,
+        crate::provider::resources_for(image),
+    );
     let outcome = match run_script(runner, &create) {
         Ok(_) => {
             println!("{} is created", state.vm_name);
-            install_windows(runner, store, target, state, template_dir)
+            install_windows(runner, store, image, state, template_dir)
         }
         Err(e) => Err(e),
     };
     outcome.map_err(|e| {
         let presence = presence(runner, &state.vm_name);
-        format!("{e}\n{}", aftermath(&presence, target, state))
+        format!("{e}\n{}", aftermath(&presence, image, state))
     })
 }
 
@@ -653,7 +661,7 @@ fn create_and_install(
 ///
 /// The staging tree and the unattend ISO exist to be read by Windows Setup and
 /// are worth nothing afterwards, so a successful build leaves neither: `vm
-/// status` would otherwise report build leftovers for a target whose build
+/// status` would otherwise report build leftovers for an image whose build
 /// finished. The cached media is not touched, because it lives in the media
 /// directory and is worth its download.
 fn clean_up_build_dir(build_dir: &Path) {
@@ -668,7 +676,7 @@ fn clean_up_build_dir(build_dir: &Path) {
 fn install_windows(
     runner: &dyn Runner,
     store: &Store,
-    target: Target,
+    image: Image,
     state: &mut RunState,
     template_dir: &Path,
 ) -> Result<(), String> {
@@ -677,13 +685,13 @@ fn install_windows(
         &format!("Start-VM -Name {}", ps_quote(&state.vm_name)),
     )?;
     state.started_unix = util::now_unix();
-    vm::write_state(store, target, state)?;
+    vm::write_state(store, image, state)?;
     println!(
         "{} is running; Windows Setup takes it from here",
         state.vm_name
     );
 
-    watch_install(runner, store, target, state, POLL)?;
+    watch_install(runner, store, image, state, POLL)?;
     wait_for_bootstrap(runner, store, state)?;
     finalize(runner, store, state, template_dir)?;
     shut_down(runner, store, state)?;
@@ -706,7 +714,7 @@ fn install_windows(
     // The VM is gone and the disk is about to move: the record describes
     // neither any more. Deleted after the removal succeeded, never before, so a
     // failure above leaves something `vm status` can still see.
-    let _ = std::fs::remove_file(store.state_file(target));
+    let _ = std::fs::remove_file(store.state_file(image));
     Ok(())
 }
 
@@ -723,7 +731,7 @@ fn install_windows(
 fn watch_install(
     runner: &dyn Runner,
     store: &Store,
-    target: Target,
+    image: Image,
     state: &mut RunState,
     poll: Duration,
 ) -> Result<(), String> {
@@ -774,7 +782,7 @@ fn watch_install(
                 if !addressed && let Some(address) = hyperv::first_usable_ipv4(&probe.addresses) {
                     addressed = true;
                     state.ssh_host.clone_from(&address);
-                    vm::write_state(store, target, state)?;
+                    vm::write_state(store, image, state)?;
                     report(
                         "guest",
                         &format!("{} is at {address}, so Windows is up", state.vm_name),
@@ -972,7 +980,7 @@ pub fn shutting(stdout: &str) -> Shutting {
 }
 
 /// Shut the guest down and wait for the VM to be off.
-fn shut_down(runner: &dyn Runner, store: &Store, state: &RunState) -> Result<(), String> {
+pub fn shut_down(runner: &dyn Runner, store: &Store, state: &RunState) -> Result<(), String> {
     println!("shutting the guest down");
     // The connection dies with the session this starts, so a failure here says
     // nothing: the state of the VM is the only answer that counts.
@@ -1028,7 +1036,7 @@ fn shut_down(runner: &dyn Runner, store: &Store, state: &RunState) -> Result<(),
 }
 
 /// Where the guest is and how to authenticate to it.
-fn ssh_target(store: &Store, state: &RunState) -> SshTarget {
+pub fn ssh_target(store: &Store, state: &RunState) -> SshTarget {
     SshTarget::from_state(state, store.ssh_key())
 }
 
@@ -1041,16 +1049,16 @@ fn ssh_target(store: &Store, state: &RunState) -> SshTarget {
 fn finish(
     runner: &dyn Runner,
     store: &Store,
-    target: Target,
+    image: Image,
     built: &Path,
     template_dir: &Path,
     source: &str,
 ) -> Result<u8, String> {
-    let image_dir = store.image_dir(target);
+    let image_dir = store.image_dir(image);
     std::fs::create_dir_all(&image_dir)
         .map_err(|e| format!("cannot create {}: {e}", image_dir.display()))?;
 
-    let vhdx = store.vhdx(target);
+    let vhdx = store.vhdx(image);
     if !built.is_file() {
         return Err(format!(
             "the install finished and produced no {}",
@@ -1060,14 +1068,14 @@ fn finish(
     build_image::move_file(built, &vhdx)?;
     let mut images = vec![build_image::record(&vhdx)?];
 
-    let qcow2 = store.qcow2(target);
+    let qcow2 = store.qcow2(image);
     println!("converting to qcow2 for the QEMU provider");
     build_image::convert(runner, &vhdx, &qcow2, "qcow2")?;
     images.push(build_image::record(&qcow2)?);
 
     build_image::write_manifest(
         store,
-        target,
+        image,
         template_dir,
         &images,
         source.to_owned(),
@@ -1076,7 +1084,7 @@ fn finish(
     // The host keys the new image answers with are forgotten by the caller,
     // which does it on the failure path too: a build that got as far as an SSH
     // session and then failed has already written an entry that is wrong.
-    build_image::announce(target, &images);
+    build_image::announce(image, &images);
     Ok(0)
 }
 
@@ -1095,6 +1103,7 @@ mod tests {
             Path::new(r"C:\vm\iso\noprompt.iso"),
             Path::new(r"C:\vm\build\windows\unattend.iso"),
             (1920, 1080),
+            crate::provider::resources_for(Image::Windows),
         )
     }
 
@@ -1158,7 +1167,7 @@ mod tests {
             // Never a blanket query or removal.
             assert!(!script.contains("Get-VM |"), "{script}");
         }
-        assert_eq!(NAME, Target::Windows.vm_name());
+        assert_eq!(NAME, Image::Windows.vm_name());
     }
 
     #[test]
@@ -1451,7 +1460,7 @@ mod tests {
     #[test]
     fn the_build_record_marks_a_build_and_owns_the_disk_a_teardown_deletes() {
         let store = Store::new("/srv/vm");
-        let state = build_state(&store, Target::Windows);
+        let state = build_state(&store, Image::Windows);
         assert_eq!(state.reason, StartReason::Build);
         assert!(
             state.reason.label().contains("build"),
@@ -1462,8 +1471,8 @@ mod tests {
         assert_eq!(state.provider_kind(), Some(ProviderKind::HyperV));
         // The disk the install writes into is the one `vm down` deletes: a
         // half-built image is worth nothing.
-        assert_eq!(state.overlay, store.build_disk(Target::Windows));
-        assert_ne!(state.overlay, store.overlay(Target::Windows));
+        assert_eq!(state.overlay, store.build_disk(Image::Windows));
+        assert_ne!(state.overlay, store.overlay(Image::Windows));
         assert_eq!(state.ssh_user, hyperv::GUEST_USER);
         assert_eq!(state.ssh_port, 22);
         // Nothing of a QEMU guest applies.
@@ -1480,8 +1489,8 @@ mod tests {
 
     #[test]
     fn what_is_still_running_is_named_along_with_how_to_reach_it() {
-        let state = build_state(&Store::new("/srv/vm"), Target::Windows);
-        let text = aftermath(&Presence::Registered, Target::Windows, &state);
+        let state = build_state(&Store::new("/srv/vm"), Image::Windows);
+        let text = aftermath(&Presence::Registered, Image::Windows, &state);
         assert!(text.contains("sunlit-e2e-windows is still there"), "{text}");
         for hint in [
             "cargo xtask vm view windows",
@@ -1495,7 +1504,7 @@ mod tests {
         // hint to go and look at one is worse than none. And it is not
         // described as never created either: a VM that vanished mid-install
         // answers the same query the same way, and this text is on both paths.
-        let gone = aftermath(&Presence::Gone, Target::Windows, &state);
+        let gone = aftermath(&Presence::Gone, Image::Windows, &state);
         assert!(
             gone.contains("no VM called sunlit-e2e-windows is registered"),
             "{gone}"
@@ -1511,7 +1520,7 @@ mod tests {
             &Presence::Unknown {
                 why: "the Hyper-V script exited Some(1): access denied".to_owned(),
             },
-            Target::Windows,
+            Image::Windows,
             &state,
         );
         assert!(unknown.contains("cannot be read from Hyper-V"), "{unknown}");
@@ -1552,11 +1561,11 @@ mod tests {
             )
             .on("STATE=", CommandOutput::ok("STATE=Off\nQUERY=ok\n"));
         let store = Store::new("/srv/vm");
-        let mut state = build_state(&store, Target::Windows);
+        let mut state = build_state(&store, Image::Windows);
         let error = create_and_install(
             &runner,
             &store,
-            Target::Windows,
+            Image::Windows,
             &mut state,
             Path::new("vm/windows"),
             Path::new(r"C:\vm\iso\noprompt.iso"),
@@ -1583,11 +1592,11 @@ mod tests {
             )
             .on("STATE=", CommandOutput::ok("QUERY=ok\n"));
         let store = Store::new("/srv/vm");
-        let mut state = build_state(&store, Target::Windows);
+        let mut state = build_state(&store, Image::Windows);
         let error = create_and_install(
             &runner,
             &store,
-            Target::Windows,
+            Image::Windows,
             &mut state,
             Path::new("vm/windows"),
             Path::new("i.iso"),
@@ -1609,8 +1618,8 @@ mod tests {
         let runner =
             FakeRunner::new().on("STATE=", CommandOutput::ok("STATE=Starting\nQUERY=ok\n"));
         let store = Store::new("/srv/vm");
-        let mut state = build_state(&store, Target::Windows);
-        let error = watch_install(&runner, &store, Target::Windows, &mut state, Duration::ZERO)
+        let mut state = build_state(&store, Image::Windows);
+        let error = watch_install(&runner, &store, Image::Windows, &mut state, Duration::ZERO)
             .expect_err("a guest that never runs ends the install");
         assert!(error.contains("Starting"), "{error}");
         assert!(error.contains("2 readings in a row"), "{error}");
@@ -1630,14 +1639,14 @@ mod tests {
         // query can read.
         let runner = FakeRunner::new().on("STATE=", CommandOutput::ok("QUERY=ok\n"));
         let store = Store::new("/srv/vm");
-        let mut state = build_state(&store, Target::Windows);
-        let error = watch_install(&runner, &store, Target::Windows, &mut state, Duration::ZERO)
+        let mut state = build_state(&store, Image::Windows);
+        let error = watch_install(&runner, &store, Image::Windows, &mut state, Duration::ZERO)
             .expect_err("a VM that is not registered ends the install");
         assert!(error.contains("is no longer registered"), "{error}");
 
         let whole = format!(
             "{error}\n{}",
-            aftermath(&presence(&runner, &state.vm_name), Target::Windows, &state)
+            aftermath(&presence(&runner, &state.vm_name), Image::Windows, &state)
         );
         assert!(!whole.contains("was not created"), "{whole}");
         assert!(

@@ -9,6 +9,8 @@ publish = false
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `rust-toolchain.toml`, which is the one place the pinned channel is spelled.
+toml = { workspace = true }
 time = { workspace = true, features = ["formatting"] }
 dirs = { workspace = true }
 # CRC-32 rather than a cryptographic digest: the question a checksum answers

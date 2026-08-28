@@ -94,6 +94,20 @@ install does not reset the licence. A purge of a base lists its layers with it, 
 `SUNLIT_EARTH_VM_PROVIDER` is refused for a layer, because converting a differencing
 child between formats means flattening it through a full copy of its parent.
 
+The other cost is that a differencing child records every block the guest wrote,
+including the ones it freed again, so a layer is much larger than what it
+installed: the Windows one holds 4.8 GiB of toolchain and came out at 16.5 GiB.
+Two steps take that to 13.5, one on each side of the boundary. `finalize.ps1`
+deletes the installer caches a build never reads and runs `Optimize-Volume
+-ReTrim`, which is the only thing that tells a virtual disk a block is free, and
+`build_layer::compact` runs `Optimize-VHD -Mode Full` on the host between the
+move into the store and the manifest, so the manifest measures the file as it
+will be read. Both are best effort, since a layer that could not be trimmed is a
+larger layer rather than a failed build, and the trim runs before `finalize`'s
+toolchain checks so that anything it breaks fails that build. The compaction is
+the larger half: 2.3 GiB of the 3.0 is blocks the guest had freed and nothing had
+told the disk about.
+
 **The builder matrix mirrors the runtime provider matrix**, and `commands::build_image::builder_for` is the one place that decides it:
 
 | | Windows host | Linux host |

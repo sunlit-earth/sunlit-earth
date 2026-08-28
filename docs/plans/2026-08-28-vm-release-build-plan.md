@@ -249,3 +249,35 @@ Then three runs whose point was to fail, because a refusal nobody has seen is a 
 Criterion 9, both halves, taken while the first Windows build was compiling: `vm status` listed `sunlit-e2e-windows-builder is running, started 2026-08-28T19:34:29Z (a release build (xtask dist))` with its 6.2 GiB overlay, and `cargo xtask vm up windows` was refused with `cargo xtask vm down windows-builder frees it, which ends the release build running in it and starts that compile over from an empty target directory`. The refusal is ahead of `create_from_golden`, so trying it costs nothing.
 
 Criterion 11 found the other missing sentence. `vm purge windows --image` lists five files including the layer's two and frees 50.6 GiB; `vm purge windows-builder --image` lists two and frees 16.5 GiB. Both answered `n`, and nothing was deleted, which is what `confirm` does with anything that is not plainly yes. **The base's listing did not say why the layer was in it**, though `Selection::reaches_as_a_layer`'s own comment claims it does, and that rule had no test at all. The plan now carries both: a `layers` field the rendering turns into one line, and a test in both directions.
+
+### Where the Windows layer's 16.5 GiB was, and what came off it
+
+Decision 17 says to measure the layer and reach for trimming if it disappoints, and 16.5 GiB against an estimate of 7 to 10 GB disappoints. So a guest was booted on the layer and asked what it holds:
+
+| | |
+|---|---|
+| Visual Studio Build Tools | 1.76 GiB |
+| the Windows 11 SDK | 1.86 GiB |
+| `.rustup` (one toolchain, minimal) | 0.54 GiB |
+| the Visual Studio installer's `Package Cache` | 0.53 GiB |
+| Windows Update and Delivery Optimization downloads | 0.34 GiB |
+| `%TEMP%` | 0.18 GiB |
+| libclang and the clang headers | 0.11 GiB |
+| `WinSxS`, inherited from the parent | 9.43 GiB |
+
+The installed toolchain is **4.8 GiB of it**, which is inside the plan's own estimate. The rest is what a differencing child does: it records every block the guest wrote, including the ones it freed again. The Visual Studio installer's downloads, the LLVM release archive and the two-gigabyte tree it was unpacked into are all deleted by `toolchain.ps1` and all still in the file, because deleting a file tells the guest's file system and nothing else.
+
+Two steps, one on each side of the boundary, and neither is a rebuild of anything. `finalize.ps1` deletes what a build does not read and then runs `Optimize-Volume -DriveLetter C -ReTrim`, which is what tells a virtual disk a block is free; the build then runs `Optimize-VHD -Mode Full` on the host between the move into the store and the manifest, so the manifest measures the file as it will be read. Both are best effort, because a layer that could not be trimmed is a larger layer rather than a failed build, and the trim runs *before* the toolchain checks rather than after them, so anything it breaks fails that build.
+
+| | |
+|---|---|
+| deleted inside the guest | 805 MB (Package Cache 543, `%TEMP%` 183, Delivery Optimization 66, Windows Update 13) |
+| the disk when the guest shut down | **15.8 GiB** |
+| after `Optimize-VHD -Mode Full` | **13.5 GiB** |
+| against the untrimmed layer | **16.5 GiB, so 3.0 GiB off, 18%** |
+| the build | 4 minutes 21 seconds, compaction included |
+| the store | 67.7 GiB down to 64.8 GiB |
+
+So the deletions are the smaller half and the compaction is the larger one: 2.3 of the 3.0 GiB is blocks the guest had already freed and nothing had told the disk about. `vm smoke windows-builder` passes on the result with its session wait at 6 seconds rather than 0, which is the marker fix still holding, and `finalize.ps1` found `rc.exe`, `dumpbin.exe` and `libclang.dll` where the job's constants say they are after the trim rather than before it.
+
+What is left is 13.5 GiB of which 4.8 is the toolchain, and the remaining 8.7 is a Windows guest having been booted: the page file, the servicing stack, the registry, Defender's definitions and the event logs, none of which a differencing child can be talked out of recording. Nothing cheap is left. Squeezing it further means the Windows Server Core option in the non-goals, which is a second ISO, a second unattend file and an install path nobody has measured, and which would replace the 19.3 GiB parent rather than shrink the 13.5 GiB child. That is the next thing to reach for and it is not cheap, so the layer stays as it is.

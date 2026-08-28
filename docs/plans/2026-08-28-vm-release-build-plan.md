@@ -495,8 +495,9 @@ with a test that fails when the line that fixes it is put back the way it was.
    `e16c9fe` and the last of the class round 1's findings 4 and 5 were about.
    `Image::console_label` is the one spelling, read by `Session::reach_hint`,
    `vm::lifecycle_explainer` and `status::running_vm` alike, and the two words are seven letters
-   each so the column of commands beside `ssh:` and `down:` holds. Three tests, one per place,
-   plus one on the label itself; hard-coding it to "desktop" fails all three.
+   each so the column of commands beside `ssh:` and `down:` holds. Three tests: one on
+   `status::running_vm`, one covering `Session::reach_hint` and `vm::lifecycle_explainer`
+   together, and one on the label itself; hard-coding it to "desktop" fails all three.
 
 4. **A finished run left its job scratch behind.** `Session::tear_down` removed the record and
    the overlay and not the `job/` directory the run wrote its guest script into, which the
@@ -534,3 +535,74 @@ Gates at `562511b`, on this Windows host and in WSL:
   out of `wgpu-hal`'s EGL setup) which is the documented treatment. Its xtask count is 500
   against 511 on Windows, the eleven `cfg(windows)` cases being the difference, and both
   counts rose by the six tests this round added.
+
+### Validator round 3, 2026-08-29, range da87152..fe5f5c6: 0 MAJOR, 3 MINOR, all fixed
+
+The third validator ran the four gates at `fe5f5c6` itself, all green at the first attempt
+with no flake in the WSL leg, mutation-tested each of round 2's four fixes in a scratchpad
+archive, and took `vm status`, `vm doctor` and one kept `vm smoke linux-builder --keep` live,
+where the two texts round 2 changed read as they are meant to and `vm down` left the store at
+0 B of run state. No major. The three minors are below, the first two fixed in `0ccd2e8` with
+a test each that fails when the line that fixes it is put back the way it was, the third a
+correction to this document.
+
+1. **Two more things a boot writes were outside the teardown's list.** `vm::run_state_paths`
+   named the record, the overlay and the job scratch, and round 2's own doc comment called
+   that "what a teardown removes and the whole of what it removes". It was not the whole: the
+   Windows hand-over launcher is written to `run/<image>/handover/run-app.cmd` on the host
+   before it is copied into the guest, by `guest::handover`, which `artifacts::stage` calls
+   for every guest it stages, so a green `e2e --target windows` left that directory behind and
+   CLAUDE.md's "a green run leaves `vm status` nothing to report" was false. `provider::qemu`
+   writes `run/<image>/efi-vars.fd` per boot for the same reason and was missing the same way,
+   which is every Linux guest and a Windows one under the QEMU cell of the matrix. Both are
+   `Store` methods now, `handover_scratch` and `firmware_vars`, so the writer and the teardown
+   share one spelling the way `job_scratch` already made them, and
+   `a_teardown_removes_the_run_state_it_wrote_and_leaves_the_rest` writes both and reads both
+   back. `vm.log` stays outside the list for the recorded reason. Replacing either entry with a
+   duplicate of `job_scratch` fails the case on the list itself.
+
+2. **One question was answering two, and the Windows builder is where they part.**
+   `Image::console_label()` read `has_desktop()`, which was `Windows | Linux`, so
+   `vm smoke windows-builder --keep` offered a "console:" four lines above "Its desktop opens
+   in a basic session" and "so its desktop is empty": one guest, both answers, one screen. The
+   builder is a differencing child of the Windows desktop image and inherits its autologon, so
+   the desktop is the true half and the label was the wrong one. `has_desktop()` is now whether
+   a session logs on, which the Linux builder alone has none of, and `is_builder()` is what an
+   image is for. Every call site was read for which of the two it was asking: the announcement
+   of a built image, `keep_command` and both halves of `smoke_script` ask `is_builder()`; the
+   console label, the readiness lines, `desktop_for` and the Linux hand-over text ask
+   `has_desktop()`. The Windows builder therefore says desktop in all of them, including the
+   readiness lines round 1 left neutral, which is the reversal this round makes deliberately:
+   the six seconds a boot of it spends there are six seconds of a real logon, and a second
+   question dressed as the first is what this finding is about. `build_layer::left_behind` and
+   `build_hyperv::aftermath` hard-coded the word and now take it from the image, which is what
+   makes CLAUDE.md's "every text that offers a console asks it through `Image::console_label()`"
+   true. Reverting `has_desktop()` to its old two images fails seven tests across four modules;
+   hard-coding either build text's label fails that text's own case.
+
+3. **This document miscounted its own round 2.** Finding 3 there said "Three tests, one per
+   place, plus one on the label itself", which reads as four, and there are three: one on
+   `status::running_vm`, one covering `Session::reach_hint` and `vm::lifecycle_explainer`
+   together, and one on the label. Corrected in place in that section, since it is the record
+   of what was done rather than a claim about the code. The stronger claim in the same
+   paragraph, that hard-coding the label to "desktop" fails all three, was accurate and stands.
+
+Nothing was declined. The validator also reported something outside the range: a kept QEMU
+guest holds a pipe on the command that started it, so `vm smoke linux-builder --keep | tail`
+never terminates while the same command redirected to a file exits normally. It is
+pre-existing, it was left as it was found, and it is now a roadmap item under the VM entries
+with the candidate cause named and marked unconfirmed.
+
+Gates at `0ccd2e8`, on this Windows host and in WSL:
+
+- `cargo test`: **all green**, 450 + 54 + 14 + 21 + 12 + 1 + 46 + 2 + 27 + 512 with the 11
+  e2e cases ignored as they are meant to be. The xtask's own count is 512 against 511 at
+  `fe5f5c6`: this round added two cases and merged two others into the ones beside them.
+- `cargo clippy --all-targets`: **zero warnings**, with all nine touched files rechecked
+  rather than answered from the cache.
+- `cargo fmt --check`: **clean**.
+- The WSL leg, `cargo test --workspace` under Ubuntu 22.04 into a Linux target directory:
+  **green at the first attempt**, all thirteen targets, with none of the known
+  `tests/shading.rs` flake. Its xtask count is 501 against 512 on Windows, the eleven
+  `cfg(windows)` cases being the difference, and both counts rose by the one net test this
+  round added.

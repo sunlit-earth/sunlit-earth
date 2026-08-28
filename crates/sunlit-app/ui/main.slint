@@ -17,6 +17,159 @@ component Splitter inherits Rectangle {
     }
 }
 
+// The hover text's own popup.
+//
+// `Tooltip { text: ... }` would be one line, but the built-in content does not
+// wrap and a sentence is wider than any screen, so this is the custom-content
+// form. The compiler still wraps it in the built-in `ToolTipImpl`, which is
+// where the background and the border come from, and which sizes the popup
+// from its children's preferred width. A `Text` reports the width it would
+// take unwrapped however narrow the element around it is, so the width here is
+// declared as a constraint and not only as a size; the height then follows
+// from the wrap at that width.
+component Hint inherits Rectangle {
+    in property <string> text;
+
+    min-width: 300px;
+    max-width: 300px;
+    preferred-width: 300px;
+    height: body.preferred-height;
+
+    body := VerticalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        padding-bottom: 6px;
+
+        Text {
+            text: root.text;
+            color: Palette.foreground;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// One row of the settings panel: a label, a control, and the value it reads.
+//
+// The root is a Rectangle rather than the layout itself because the hover text
+// covers the whole row: a `Tooltip` lowers to a full-size child area, which
+// inside a layout would claim a cell of its own.
+component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <string> value-text;
+    // A sub-row shifts its label right and gives up the same width, so the
+    // sliders of a group stay in one column whatever the nesting is.
+    in property <length> indent: 0px;
+    in property <length> label-width: 88px;
+    in property <length> value-width: 45px;
+    in property <float> minimum;
+    in property <float> maximum;
+    in-out property <float> value;
+    callback changed();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 4px;
+        padding-left: root.indent;
+
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            min-width: root.label-width - root.indent;
+        }
+        Slider {
+            minimum: root.minimum;
+            maximum: root.maximum;
+            value <=> root.value;
+            changed => { root.changed(); }
+        }
+        Text {
+            text: root.value-text;
+            vertical-alignment: center;
+            min-width: root.value-width;
+        }
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+// A checkbox row. The checkbox carries its own wording, so there is no label
+// column to align it against.
+component SettingCheck inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <length> indent: 0px;
+    in-out property <bool> checked;
+    callback toggled();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: root.indent;
+
+        CheckBox {
+            text: root.text;
+            checked <=> root.checked;
+            toggled => { root.toggled(); }
+        }
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+// A combo box row, on the same label column as SettingRow.
+component SettingCombo inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <length> indent: 0px;
+    in property <length> label-width: 88px;
+    in property <[string]> model;
+    in-out property <int> current-index;
+    callback selected();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 4px;
+        padding-left: root.indent;
+
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            min-width: root.label-width - root.indent;
+        }
+        ComboBox {
+            model: root.model;
+            current-index <=> root.current-index;
+            max-height: 24px;
+            selected => { root.selected(); }
+        }
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+// The heading above a run of related rows inside a GroupBox.
+component SettingHeading inherits Text {
+    font-weight: 700;
+}
+
 export component MainWindow inherits Window {
     title: "Sunlit Earth — MVP";
     // The SVG master rather than a baked raster: Slint asks for the icon at 64
@@ -139,6 +292,9 @@ export component MainWindow inherits Window {
                 Button {
                     text: "Set as Wallpaper";
                     clicked => { root.set-wallpaper(); }
+                    Tooltip {
+                        Hint { text: "Render one frame at the desktop's own resolution and put it on the desktop."; }
+                    }
                 }
 
                 HorizontalLayout {
@@ -148,19 +304,26 @@ export component MainWindow inherits Window {
                         min-width: 0;
                         preferred-width: 0;
                         clicked => { root.load-defaults(); }
+                        Tooltip {
+                            Hint { text: "Put every setting back to the value the app ships with."; }
+                        }
                     }
                     Button {
                         text: "Reset";
                         min-width: 0;
                         preferred-width: 0;
                         clicked => { root.reset(); }
+                        Tooltip {
+                            Hint { text: "Throw away the changes made since the last save and reload the stored settings."; }
+                        }
                     }
                 }
 
                 // --- Auto-refresh ---
 
-                CheckBox {
+                SettingCheck {
                     text: "Auto-refresh wallpaper";
+                    hint: "Set the wallpaper again on a timer, so the sunlit half of the globe keeps up with the real one.";
                     checked <=> root.auto-refresh-enabled;
                     toggled => { root.auto-refresh-changed(); }
                 }
@@ -173,6 +336,9 @@ export component MainWindow inherits Window {
                         maximum: 30;
                         value <=> root.auto-refresh-interval;
                         changed(value) => { root.auto-refresh-changed(); }
+                        Tooltip {
+                            Hint { text: "How long between one wallpaper render and the next."; }
+                        }
                     }
                     Text {
                         text: "every " + round(root.auto-refresh-interval) + " min";
@@ -288,64 +454,37 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Longitude";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                longitude-slider := Slider {
-                                    minimum: -180;
-                                    maximum: 180;
-                                    value <=> root.camera-longitude;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.camera-longitude) + "\u{b0}";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            longitude-slider := SettingRow {
+                                label: "Longitude";
+                                hint: "The meridian the camera hangs above, which is what turns the globe left and right.";
+                                minimum: -180;
+                                maximum: 180;
+                                value <=> root.camera-longitude;
+                                value-text: round(root.camera-longitude) + "°";
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Latitude";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                latitude-slider := Slider {
-                                    minimum: -89;
-                                    maximum: 89;
-                                    value <=> root.camera-latitude;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.camera-latitude) + "\u{b0}";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            latitude-slider := SettingRow {
+                                label: "Latitude";
+                                hint: "How far north or south of the equator the camera hangs, from one pole to the other.";
+                                minimum: -89;
+                                maximum: 89;
+                                value <=> root.camera-latitude;
+                                value-text: round(root.camera-latitude) + "°";
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Zoom";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                zoom-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.camera-zoom;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.zoom-display-distance * 10) / 10;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            zoom-slider := SettingRow {
+                                label: "Zoom";
+                                hint: "Distance from the Earth's centre in Earth radii, mapped exponentially so both ends of the slider stay useful.";
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.camera-zoom;
+                                value-text: round(root.zoom-display-distance * 10) / 10;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
                         }
                     }
@@ -355,78 +494,51 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Tilt";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                tilt-slider := Slider {
-                                    minimum: -180;
-                                    maximum: 180;
-                                    value <=> root.camera-tilt;
-                                    changed => {
-                                        if root.camera-tilt > -5 && root.camera-tilt < 5 {
-                                            root.camera-tilt = 0;
-                                        }
-                                        root.sliders-changed();
+                            tilt-slider := SettingRow {
+                                label: "Tilt";
+                                hint: "Rolls the whole frame around the view axis, tipping the poles away from vertical.";
+                                minimum: -180;
+                                maximum: 180;
+                                value <=> root.camera-tilt;
+                                value-text: round(root.camera-tilt) + "°";
+                                value-width: 35px;
+                                changed => {
+                                    if root.camera-tilt > -5 && root.camera-tilt < 5 {
+                                        root.camera-tilt = 0;
                                     }
-                                }
-                                Text {
-                                    text: round(root.camera-tilt) + "\u{b0}";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
+                                    root.sliders-changed();
                                 }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Yaw";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                yaw-slider := Slider {
-                                    minimum: -90;
-                                    maximum: 90;
-                                    value <=> root.camera-yaw;
-                                    changed => {
-                                        if root.camera-yaw > -3 && root.camera-yaw < 3 {
-                                            root.camera-yaw = 0;
-                                        }
-                                        root.sliders-changed();
+                            yaw-slider := SettingRow {
+                                label: "Yaw";
+                                hint: "Swings the aim point sideways across the globe, so the camera looks off-centre rather than at the middle.";
+                                minimum: -90;
+                                maximum: 90;
+                                value <=> root.camera-yaw;
+                                value-text: round(root.camera-yaw) + "°";
+                                value-width: 35px;
+                                changed => {
+                                    if root.camera-yaw > -3 && root.camera-yaw < 3 {
+                                        root.camera-yaw = 0;
                                     }
-                                }
-                                Text {
-                                    text: round(root.camera-yaw) + "\u{b0}";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
+                                    root.sliders-changed();
                                 }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Pitch";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                pitch-slider := Slider {
-                                    minimum: -90;
-                                    maximum: 90;
-                                    value <=> root.camera-pitch;
-                                    changed => {
-                                        if root.camera-pitch > -3 && root.camera-pitch < 3 {
-                                            root.camera-pitch = 0;
-                                        }
-                                        root.sliders-changed();
+                            pitch-slider := SettingRow {
+                                label: "Pitch";
+                                hint: "Swings the aim point up or down across the globe, which is what puts the horizon low in the frame.";
+                                minimum: -90;
+                                maximum: 90;
+                                value <=> root.camera-pitch;
+                                value-text: round(root.camera-pitch) + "°";
+                                value-width: 35px;
+                                changed => {
+                                    if root.camera-pitch > -3 && root.camera-pitch < 3 {
+                                        root.camera-pitch = 0;
                                     }
-                                }
-                                Text {
-                                    text: round(root.camera-pitch) + "\u{b0}";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
+                                    root.sliders-changed();
                                 }
                             }
                         }
@@ -437,53 +549,35 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Offset X";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                offset-x-slider := Slider {
-                                    minimum: -3.0;
-                                    maximum: 3.0;
-                                    value <=> root.camera-offset-x;
-                                    changed => {
-                                        if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
-                                            root.camera-offset-x = 0;
-                                        }
-                                        root.sliders-changed();
+                            offset-x-slider := SettingRow {
+                                label: "Offset X";
+                                hint: "Slides the finished frame left or right without moving the camera.";
+                                minimum: -3.0;
+                                maximum: 3.0;
+                                value <=> root.camera-offset-x;
+                                value-text: round(root.camera-offset-x * 100) / 100;
+                                value-width: 35px;
+                                changed => {
+                                    if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
+                                        root.camera-offset-x = 0;
                                     }
-                                }
-                                Text {
-                                    text: round(root.camera-offset-x * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
+                                    root.sliders-changed();
                                 }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Offset Y";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                offset-y-slider := Slider {
-                                    minimum: -3.0;
-                                    maximum: 3.0;
-                                    value <=> root.camera-offset-y;
-                                    changed => {
-                                        if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
-                                            root.camera-offset-y = 0;
-                                        }
-                                        root.sliders-changed();
+                            offset-y-slider := SettingRow {
+                                label: "Offset Y";
+                                hint: "Slides the finished frame up or down without moving the camera.";
+                                minimum: -3.0;
+                                maximum: 3.0;
+                                value <=> root.camera-offset-y;
+                                value-text: round(root.camera-offset-y * 100) / 100;
+                                value-width: 35px;
+                                changed => {
+                                    if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
+                                        root.camera-offset-y = 0;
                                     }
-                                }
-                                Text {
-                                    text: round(root.camera-offset-y * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
+                                    root.sliders-changed();
                                 }
                             }
                         }
@@ -494,79 +588,46 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Custom";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                CheckBox {
-                                    text: "Override date/time";
-                                    checked <=> root.use-custom-datetime;
-                                    toggled => {
-                                        root.datetime-override-toggled();
-                                    }
-                                }
+                            SettingCheck {
+                                text: "Override date/time";
+                                hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were.";
+                                checked <=> root.use-custom-datetime;
+                                toggled => { root.datetime-override-toggled(); }
                             }
 
                             if root.use-custom-datetime :
                             VerticalLayout {
                                 spacing: 4px;
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "Hour";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    Slider {
-                                        minimum: 0.0;
-                                        maximum: 23.99;
-                                        value <=> root.custom-hour;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: root.hour-label;
-                                        vertical-alignment: center;
-                                        min-width: 45px;
-                                    }
+                                custom-hour-slider := SettingRow {
+                                    label: "Hour";
+                                    hint: "Time of day in UTC, which is what decides the longitude the Sun stands over.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 23.99;
+                                    value <=> root.custom-hour;
+                                    value-text: root.hour-label;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "Day";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    Slider {
-                                        minimum: 1.0;
-                                        maximum: root.max-day-of-year;
-                                        value <=> root.custom-day-of-year;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: root.day-label;
-                                        vertical-alignment: center;
-                                        min-width: 45px;
-                                    }
+                                custom-day-slider := SettingRow {
+                                    label: "Day";
+                                    hint: "Day of the year, which is what decides the Sun's declination and so the season the terminator shows.";
+                                    indent: 8px;
+                                    minimum: 1.0;
+                                    maximum: root.max-day-of-year;
+                                    value <=> root.custom-day-of-year;
+                                    value-text: root.day-label;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "Year";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    ComboBox {
-                                        model: root.year-options;
-                                        current-index <=> root.custom-year-index;
-                                        max-height: 24px;
-                                        selected => { root.sliders-changed(); }
-                                    }
+                                SettingCombo {
+                                    label: "Year";
+                                    hint: "Which year that day belongs to. The Sun barely notices; the Moon and the planets do.";
+                                    indent: 8px;
+                                    model: root.year-options;
+                                    current-index <=> root.custom-year-index;
+                                    selected => { root.sliders-changed(); }
                                 }
                             }
                         }
@@ -577,64 +638,37 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Opacity";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                cloud-opacity-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.cloud-opacity;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.cloud-opacity * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            cloud-opacity-slider := SettingRow {
+                                label: "Opacity";
+                                hint: "How strongly the live cloud layer covers the surface underneath it.";
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.cloud-opacity;
+                                value-text: round(root.cloud-opacity * 100) + "%";
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Floor";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                cloud-floor-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 0.5;
-                                    value <=> root.cloud-floor;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.cloud-floor * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            cloud-floor-slider := SettingRow {
+                                label: "Floor";
+                                hint: "Brightness below which a cloud pixel counts as clear sky, which is what trims the haze out of the source image.";
+                                minimum: 0.0;
+                                maximum: 0.5;
+                                value <=> root.cloud-floor;
+                                value-text: round(root.cloud-floor * 100) + "%";
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Gamma";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                cloud-gamma-slider := Slider {
-                                    minimum: 0.1;
-                                    maximum: 2.0;
-                                    value <=> root.cloud-gamma;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(cloud-gamma-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            cloud-gamma-slider := SettingRow {
+                                label: "Gamma";
+                                hint: "Contrast curve of the cloud layer: below one lifts the thin cloud, above one keeps only the dense tops.";
+                                minimum: 0.1;
+                                maximum: 2.0;
+                                value <=> root.cloud-gamma;
+                                value-text: round(root.cloud-gamma * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
                         }
                     }
@@ -644,284 +678,166 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Sky field of view";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                sky-fov-slider := Slider {
-                                    minimum: 60.0;
-                                    maximum: 180.0;
-                                    value <=> root.sky-fov;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.sky-fov) + "°";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            SettingHeading { text: "Sky"; }
+
+                            sky-fov-slider := SettingRow {
+                                label: "Field of view";
+                                hint: "How much sky the background lens covers, which is what sets the scale of the constellations and the Milky Way.";
+                                indent: 8px;
+                                minimum: 60.0;
+                                maximum: 180.0;
+                                value <=> root.sky-fov;
+                                value-text: round(root.sky-fov) + "°";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Star brightness";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                star-intensity-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 5.0;
-                                    value <=> root.star-intensity;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.star-intensity * 100) / 100 + "×";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            milky-way-intensity-slider := SettingRow {
+                                label: "Milky Way";
+                                hint: "Brightness of the diffuse galactic band behind the stars. Zero leaves it out of the frame.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.milky-way-intensity;
+                                value-text: round(root.milky-way-intensity * 100) / 100 + "×";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Star size";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                star-size-slider := Slider {
-                                    minimum: 0.5;
-                                    maximum: 3.0;
-                                    value <=> root.star-size;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.star-size * 100) / 100 + "×";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            SettingHeading { text: "Sun"; }
+
+                            sun-glow-slider := SettingRow {
+                                label: "Glare";
+                                hint: "Master strength of the Sun's glare, and the switch for the Sun itself: at zero neither the disk nor the glare is drawn.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 3.0;
+                                value <=> root.sun-glow;
+                                value-text: round(root.sun-glow * 100) / 100 + "×";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Glow strength";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                star-glow-strength-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 3.0;
-                                    value <=> root.star-glow-strength;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.star-glow-strength * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            sun-rays-slider := SettingRow {
+                                label: "Rays";
+                                hint: "Strength of the fine radial needles the eye itself adds around a bright source.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.sun-rays;
+                                value-text: round(root.sun-rays * 100) + "%";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Glow radius";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                star-glow-radius-slider := Slider {
-                                    minimum: 1.0;
-                                    maximum: 30.0;
-                                    value <=> root.star-glow-radius;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.star-glow-radius * 10) / 10 + " px";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            sun-flare-slider := SettingRow {
+                                label: "Lens flare";
+                                hint: "Aperture spikes and lens ghosts, which belong to a camera rather than to an eye. Off by default.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.sun-flare;
+                                value-text: round(root.sun-flare * 100) + "%";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Magnitude contrast";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                star-contrast-slider := Slider {
-                                    minimum: -1.0;
-                                    maximum: 1.0;
-                                    value <=> root.star-contrast;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.star-contrast * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            SettingHeading { text: "Moon"; }
+
+                            moon-brightness-slider := SettingRow {
+                                label: "Brightness";
+                                hint: "Brightness of the Moon's sunlit face, and the switch for the Moon itself: zero draws nothing.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 3.0;
+                                value <=> root.moon-brightness;
+                                value-text: round(root.moon-brightness * 100) / 100 + "×";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Faintest stars";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                star-mag-limit-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 7.0;
-                                    value <=> root.star-mag-limit;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.star-mag-limit * 10) / 10 + " mag";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            moon-size-slider := SettingRow {
+                                label: "Size";
+                                hint: "Multiplies the Moon's radius above its true half degree. A narrower sky field of view magnifies it honestly instead.";
+                                indent: 8px;
+                                minimum: 1.0;
+                                maximum: 8.0;
+                                value <=> root.moon-size;
+                                value-text: round(root.moon-size * 10) / 10 + "×";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Sun glare";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                sun-glow-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 3.0;
-                                    value <=> root.sun-glow;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.sun-glow * 100) / 100 + "×";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            moon-earthshine-slider := SettingRow {
+                                label: "Earthshine";
+                                hint: "Floor under the Moon's unlit face, so a new moon does not disappear altogether.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 0.5;
+                                value <=> root.moon-earthshine;
+                                value-text: round(root.moon-earthshine * 100) + "%";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Sun rays";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                sun-rays-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 2.0;
-                                    value <=> root.sun-rays;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.sun-rays * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            SettingHeading { text: "Stars"; }
+
+                            star-intensity-slider := SettingRow {
+                                label: "Brightness";
+                                hint: "Display gain for the stars and the naked-eye planets, and the switch for both: zero leaves the sky empty.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 5.0;
+                                value <=> root.star-intensity;
+                                value-text: round(root.star-intensity * 100) / 100 + "×";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Lens flare";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                sun-flare-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 2.0;
-                                    value <=> root.sun-flare;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.sun-flare * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            star-size-slider := SettingRow {
+                                label: "Size";
+                                hint: "Multiplies the compact core of each star, leaving its halo to the two glow sliders.";
+                                indent: 8px;
+                                minimum: 0.5;
+                                maximum: 3.0;
+                                value <=> root.star-size;
+                                value-text: round(root.star-size * 100) / 100 + "×";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Moon";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                moon-brightness-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 3.0;
-                                    value <=> root.moon-brightness;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.moon-brightness * 100) / 100 + "×";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            star-glow-strength-slider := SettingRow {
+                                label: "Glow strength";
+                                hint: "How pronounced the soft halo around the brighter stars is.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 3.0;
+                                value <=> root.star-glow-strength;
+                                value-text: round(root.star-glow-strength * 100) + "%";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Moon size";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                moon-size-slider := Slider {
-                                    minimum: 1.0;
-                                    maximum: 8.0;
-                                    value <=> root.moon-size;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.moon-size * 10) / 10 + "×";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            star-glow-radius-slider := SettingRow {
+                                label: "Glow radius";
+                                hint: "How far that halo reaches, in pixels at 1080p; a larger frame scales it up on its own.";
+                                indent: 8px;
+                                minimum: 1.0;
+                                maximum: 30.0;
+                                value <=> root.star-glow-radius;
+                                value-text: round(root.star-glow-radius * 10) / 10 + " px";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Earthshine";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                moon-earthshine-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 0.5;
-                                    value <=> root.moon-earthshine;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.moon-earthshine * 100) + "%";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            star-contrast-slider := SettingRow {
+                                label: "Contrast";
+                                hint: "Separation between bright and faint stars; below zero they even out, above zero the bright ones pull away.";
+                                indent: 8px;
+                                minimum: -1.0;
+                                maximum: 1.0;
+                                value <=> root.star-contrast;
+                                value-text: round(root.star-contrast * 100) + "%";
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Milky Way";
-                                    vertical-alignment: center;
-                                    min-width: 100px;
-                                }
-                                milky-way-intensity-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 2.0;
-                                    value <=> root.milky-way-intensity;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(root.milky-way-intensity * 100) / 100 + "×";
-                                    vertical-alignment: center;
-                                    min-width: 45px;
-                                }
+                            star-mag-limit-slider := SettingRow {
+                                label: "Faintest";
+                                hint: "Dimmest apparent magnitude still drawn. The naked eye reaches about 6 under a dark sky, and the catalog stops at 7.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 7.0;
+                                value <=> root.star-mag-limit;
+                                value-text: round(root.star-mag-limit * 10) / 10;
+                                changed => { root.sliders-changed(); }
                             }
                         }
                     }
@@ -931,154 +847,93 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Enable";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                CheckBox {
-                                    text: "Atmosphere glow";
-                                    checked <=> root.atmo-enabled;
-                                    toggled => { root.sliders-changed(); }
-                                }
+                            SettingCheck {
+                                text: "Atmosphere glow";
+                                hint: "Master switch for the three glowing shells around the globe.";
+                                checked <=> root.atmo-enabled;
+                                toggled => { root.sliders-changed(); }
                             }
 
                             if root.atmo-enabled :
                             VerticalLayout {
                                 spacing: 4px;
 
-                                Text {
-                                    text: "Rayleigh";
-                                    font-weight: 700;
+                                SettingHeading { text: "Rayleigh"; }
+
+                                rayleigh-intensity-slider := SettingRow {
+                                    label: "Intensity";
+                                    hint: "Strength of the blue scattering halo that rings the daylit limb.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.rayleigh-intensity;
+                                    value-text: round(root.rayleigh-intensity * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "  Intensity";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    rayleigh-intensity-slider := Slider {
-                                        minimum: 0.0;
-                                        maximum: 1.0;
-                                        value <=> root.rayleigh-intensity;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: round(root.rayleigh-intensity * 100) + "%";
-                                        vertical-alignment: center;
-                                        min-width: 35px;
-                                    }
+                                rayleigh-sharpness-slider := SettingRow {
+                                    label: "Sharpness";
+                                    hint: "How tightly that halo hugs the limb; higher leaves a thinner, harder band.";
+                                    indent: 8px;
+                                    minimum: 10.0;
+                                    maximum: 100.0;
+                                    value <=> root.rayleigh-sharpness;
+                                    value-text: round(root.rayleigh-sharpness * 10) / 10;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "  Sharpness";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    rayleigh-sharpness-slider := Slider {
-                                        minimum: 10.0;
-                                        maximum: 100.0;
-                                        value <=> root.rayleigh-sharpness;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: round(rayleigh-sharpness-slider.value * 10) / 10;
-                                        vertical-alignment: center;
-                                        min-width: 35px;
-                                    }
+                                rayleigh-haze-slider := SettingRow {
+                                    label: "Haze";
+                                    hint: "How far the scattering bleeds inward over the disc itself rather than sitting on its edge.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.rayleigh-haze;
+                                    value-text: round(root.rayleigh-haze * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "  Haze";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    rayleigh-haze-slider := Slider {
-                                        minimum: 0.0;
-                                        maximum: 1.0;
-                                        value <=> root.rayleigh-haze;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: round(rayleigh-haze-slider.value * 100) + "%";
-                                        vertical-alignment: center;
-                                        min-width: 35px;
-                                    }
+                                SettingHeading { text: "Nightglow"; }
+
+                                nightglow-intensity-slider := SettingRow {
+                                    label: "Intensity";
+                                    hint: "Strength of the faint airglow that traces the night limb.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.nightglow-intensity;
+                                    value-text: round(root.nightglow-intensity * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                Text {
-                                    text: "Nightglow";
-                                    font-weight: 700;
+                                nightglow-balance-slider := SettingRow {
+                                    label: "Balance";
+                                    hint: "Mix between the orange sodium band and the green oxygen band of that airglow.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.nightglow-balance;
+                                    value-text: root.nightglow-balance <= 0.01 ? "orange" :
+                                                root.nightglow-balance >= 0.99 ? "green" :
+                                                round(root.nightglow-balance * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
                                 }
 
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "  Intensity";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    nightglow-intensity-slider := Slider {
-                                        minimum: 0.0;
-                                        maximum: 1.0;
-                                        value <=> root.nightglow-intensity;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: round(root.nightglow-intensity * 100) + "%";
-                                        vertical-alignment: center;
-                                        min-width: 35px;
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "  Balance";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    nightglow-balance-slider := Slider {
-                                        minimum: 0.0;
-                                        maximum: 1.0;
-                                        value <=> root.nightglow-balance;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: root.nightglow-balance <= 0.01 ? "orange" :
-                                              root.nightglow-balance >= 0.99 ? "green" :
-                                              round(root.nightglow-balance * 100) / 100;
-                                        vertical-alignment: center;
-                                        min-width: 35px;
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: "  Falloff";
-                                        vertical-alignment: center;
-                                        min-width: 70px;
-                                    }
-                                    nightglow-falloff-slider := Slider {
-                                        minimum: 2.0;
-                                        maximum: 50.0;
-                                        value <=> root.nightglow-falloff;
-                                        changed => { root.sliders-changed(); }
-                                    }
-                                    Text {
-                                        text: round(nightglow-falloff-slider.value * 10) / 10;
-                                        vertical-alignment: center;
-                                        min-width: 35px;
-                                    }
+                                nightglow-falloff-slider := SettingRow {
+                                    label: "Falloff";
+                                    hint: "How quickly the airglow fades with distance from the limb.";
+                                    indent: 8px;
+                                    minimum: 2.0;
+                                    maximum: 50.0;
+                                    value <=> root.nightglow-falloff;
+                                    value-text: round(root.nightglow-falloff * 10) / 10;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
                                 }
                             }
                         }
@@ -1089,158 +944,90 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Terminator";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                terminator-slider := Slider {
-                                    minimum: 0.01;
-                                    maximum: 0.3;
-                                    value <=> root.terminator-width;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(terminator-slider.value * 1000) / 1000;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            terminator-slider := SettingRow {
+                                label: "Terminator";
+                                hint: "Width of the blend between the day and night maps across the day/night boundary.";
+                                minimum: 0.01;
+                                maximum: 0.3;
+                                value <=> root.terminator-width;
+                                value-text: round(root.terminator-width * 1000) / 1000;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Diffuse";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                diffuse-check := CheckBox {
-                                    text: "Dayside shading";
-                                    checked <=> root.diffuse-shading;
-                                    toggled => { root.sliders-changed(); }
-                                }
+                            SettingCheck {
+                                text: "Dayside shading";
+                                hint: "Shade the daylit half by the Sun's angle instead of laying the map on flat.";
+                                checked <=> root.diffuse-shading;
+                                toggled => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Floor";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                diffuse-floor-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.diffuse-floor;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(diffuse-floor-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            diffuse-floor-slider := SettingRow {
+                                label: "Floor";
+                                hint: "How bright the dimmest shaded daylight still is, so the approach to the terminator does not go black.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.diffuse-floor;
+                                value-text: round(root.diffuse-floor * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Ramp";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                diffuse-ramp-slider := Slider {
-                                    minimum: 0.1;
-                                    maximum: 1.0;
-                                    value <=> root.diffuse-ramp;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(diffuse-ramp-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            diffuse-ramp-slider := SettingRow {
+                                label: "Ramp";
+                                hint: "How quickly that shading falls off as the surface turns away from the Sun.";
+                                indent: 8px;
+                                minimum: 0.1;
+                                maximum: 1.0;
+                                value <=> root.diffuse-ramp;
+                                value-text: round(root.diffuse-ramp * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Shininess";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                spec-shininess-slider := Slider {
-                                    minimum: 10;
-                                    maximum: 500;
-                                    value <=> root.spec-shininess;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(spec-shininess-slider.value);
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            spec-shininess-slider := SettingRow {
+                                label: "Shininess";
+                                hint: "Tightness of the specular highlight the Sun leaves on the oceans; higher makes a smaller, harder glint.";
+                                minimum: 10;
+                                maximum: 500;
+                                value <=> root.spec-shininess;
+                                value-text: round(root.spec-shininess);
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Glint";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                spec-intensity-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.spec-intensity;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(spec-intensity-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            spec-intensity-slider := SettingRow {
+                                label: "Glint";
+                                hint: "Strength of that specular highlight.";
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.spec-intensity;
+                                value-text: round(root.spec-intensity * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Fresnel Mix";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                fresnel-mix-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.fresnel-mix;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(fresnel-mix-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            fresnel-mix-slider := SettingRow {
+                                label: "Fresnel mix";
+                                hint: "How much the ocean brightens where it turns away from the camera, the way water does at a glancing angle.";
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.fresnel-mix;
+                                value-text: round(root.fresnel-mix * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Fresnel Extent";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                fresnel-exp-slider := Slider {
-                                    minimum: 1.0;
-                                    maximum: 8.0;
-                                    value <=> root.fresnel-exp;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(fresnel-exp-slider.value * 10) / 10;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            fresnel-exp-slider := SettingRow {
+                                label: "Fresnel extent";
+                                hint: "How far in from the limb that glancing-angle brightening reaches.";
+                                minimum: 1.0;
+                                maximum: 8.0;
+                                value <=> root.fresnel-exp;
+                                value-text: round(root.fresnel-exp * 10) / 10;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
                         }
                     }
@@ -1250,94 +1037,56 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            Text {
-                                text: "Day Texture";
-                                font-weight: 700;
+                            SettingHeading { text: "Day Texture"; }
+
+                            day-gamma-slider := SettingRow {
+                                label: "Gamma";
+                                hint: "Brightness curve of the daylit surface map; below one lifts the shadows, above one deepens them.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.day-gamma;
+                                value-text: round((root.day-gamma <= 0.5 ? 0.2 + 1.6 * root.day-gamma : 1.0 + 4.0 * (root.day-gamma - 0.5)) * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Gamma";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                day-gamma-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.day-gamma;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round((day-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * day-gamma-slider.value : 1.0 + 4.0 * (day-gamma-slider.value - 0.5)) * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            day-saturation-slider := SettingRow {
+                                label: "Saturation";
+                                hint: "Colour intensity of the daylit surface map; zero is greyscale.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.day-saturation;
+                                value-text: round(root.day-saturation * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Saturation";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                day-saturation-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 2.0;
-                                    value <=> root.day-saturation;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(day-saturation-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            SettingHeading { text: "Night Texture"; }
+
+                            night-gamma-slider := SettingRow {
+                                label: "Gamma";
+                                hint: "Brightness curve of the city-lights map; below one brings out the sparse lights, above one keeps only the cities.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.night-gamma;
+                                value-text: round((root.night-gamma <= 0.5 ? 0.2 + 1.6 * root.night-gamma : 1.0 + 4.0 * (root.night-gamma - 0.5)) * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
 
-                            Text {
-                                text: "Night Texture";
-                                font-weight: 700;
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Gamma";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                night-gamma-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.night-gamma;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round((night-gamma-slider.value <= 0.5 ? 0.2 + 1.6 * night-gamma-slider.value : 1.0 + 4.0 * (night-gamma-slider.value - 0.5)) * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "  Saturation";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                night-saturation-slider := Slider {
-                                    minimum: 0.0;
-                                    maximum: 2.0;
-                                    value <=> root.night-saturation;
-                                    changed => { root.sliders-changed(); }
-                                }
-                                Text {
-                                    text: round(night-saturation-slider.value * 100) / 100;
-                                    vertical-alignment: center;
-                                    min-width: 35px;
-                                }
+                            night-saturation-slider := SettingRow {
+                                label: "Saturation";
+                                hint: "Colour intensity of the city-lights map; zero is greyscale.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.night-saturation;
+                                value-text: round(root.night-saturation * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
                             }
                         }
                     }
@@ -1347,49 +1096,28 @@ export component MainWindow inherits Window {
                         VerticalLayout {
                             spacing: 4px;
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Texture";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                texture-combo := ComboBox {
-                                    model: texture-options;
-                                    current-index <=> root.texture-index;
-                                    max-height: 24px;
-                                    selected => { root.texture-changed(); }
-                                }
+                            SettingCombo {
+                                label: "Texture";
+                                hint: "Which map the globe is drawn from: the procedural grid, one of the two surface maps alone, or the day/night blend.";
+                                model: texture-options;
+                                current-index <=> root.texture-index;
+                                selected => { root.texture-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Resolution";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                texture-resolution-combo := ComboBox {
-                                    model: texture-resolution-options;
-                                    current-index <=> root.texture-resolution-index;
-                                    max-height: 24px;
-                                    selected => { root.texture-resolution-changed(); }
-                                }
+                            SettingCombo {
+                                label: "Resolution";
+                                hint: "Width the surface maps are loaded at. Lower costs less memory and takes effect without a restart.";
+                                model: texture-resolution-options;
+                                current-index <=> root.texture-resolution-index;
+                                selected => { root.texture-resolution-changed(); }
                             }
 
-                            HorizontalLayout {
-                                spacing: 4px;
-                                Text {
-                                    text: "Anti-Aliasing";
-                                    vertical-alignment: center;
-                                    min-width: 70px;
-                                }
-                                aa-combo := ComboBox {
-                                    model: aa-options;
-                                    current-index <=> root.aa-index;
-                                    max-height: 24px;
-                                    selected => { root.msaa-changed(); }
-                                }
+                            SettingCombo {
+                                label: "Anti-aliasing";
+                                hint: "How many samples each pixel is rendered from, which is what smooths the globe's edge and the star sprites.";
+                                model: aa-options;
+                                current-index <=> root.aa-index;
+                                selected => { root.msaa-changed(); }
                             }
                         }
                     }
@@ -1403,6 +1131,9 @@ export component MainWindow inherits Window {
                     Button {
                         text: "About";
                         clicked => { root.show-about(); }
+                        Tooltip {
+                            Hint { text: "The version this is, and who the maps, the star catalog and the astronomy come from."; }
+                        }
                     }
                 }
             }

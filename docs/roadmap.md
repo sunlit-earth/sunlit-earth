@@ -54,6 +54,7 @@ Features and improvements planned for Sunlit Earth, roughly ordered by priority 
 - [x] Improved Controls: Rotate Earth with mouse drag, Zoom with scroll wheel in addition to existing UI controls.
 - [x] Preset camera views: quick-select buttons for common viewpoints (Europe, Americas, Asia, etc.), as well as recreations of iconic photographs (blue marble, earthrise). Implemented as a 3x3 grid of preset buttons with `PRESETS` constant array.
 - [x] Change date and time of day: checkbox to enable custom date/time, sliders for hour (UTC) and day of year, year dropdown. Implemented with proper leap year handling and live sun position updates.
+- [x] Settings polish: one-sentence hover text on every control in the Advanced section, and a Celestial group subdivided into Sky, Sun, Moon and Stars. Rows are three shared components (`SettingRow`, `SettingCheck`, `SettingCombo`) rather than repeated layouts.
 
 ## CI and distribution
 

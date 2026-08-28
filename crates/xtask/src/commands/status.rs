@@ -382,7 +382,7 @@ mod tests {
         )];
         let text = render(&inventory(vec![empty(Image::Windows), entry]), now());
         assert!(text.contains("sunlit-e2e-linux is running"), "{text}");
-        assert!(text.contains("a test run kept with --keep"), "{text}");
+        assert!(text.contains("a run kept with --keep"), "{text}");
         assert!(text.contains("cargo xtask vm ssh linux"), "{text}");
         assert!(text.contains("cargo xtask vm view linux"), "{text}");
         assert!(text.contains("cargo xtask vm down linux"), "{text}");

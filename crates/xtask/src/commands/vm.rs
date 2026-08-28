@@ -729,16 +729,32 @@ pub fn hand_over(session: &mut Session, store: &Store) -> bool {
     enhanced_session
 }
 
+/// What a guest's record says once the work it was booted for is over.
+///
+/// The two reasons that describe work in progress become the one that describes
+/// a guest waiting for somebody, and everything else is left alone.
+pub fn reason_when_kept(reason: StartReason) -> StartReason {
+    match reason {
+        StartReason::Run | StartReason::Dist => StartReason::Keep,
+        other => other,
+    }
+}
+
 /// Record what a guest is once the command that booted it is finished with it.
 ///
 /// A guest booted for a run and then kept is no longer a run in progress, and
 /// `vm status` reads the reason to say why something is still there. Nothing
 /// used to write [`StartReason::Keep`] at all, so a kept guest reported itself
 /// as a run for as long as it existed.
+///
+/// A release build is the same case and reaches this at the same moment, once
+/// its work is over: leaving it named as one costs more than a stale label,
+/// because `StartReason::Dist` carries a `cost_of_ending`, and the teardown the
+/// closing text just told a person to run would warn them that it ends a build
+/// that finished minutes ago. An image build never reaches here, which is why it
+/// is not in the list: nothing hands one over.
 fn record_kept(session: &mut Session, store: &Store) {
-    if session.state.reason == StartReason::Run {
-        session.state.reason = StartReason::Keep;
-    }
+    session.state.reason = reason_when_kept(session.state.reason);
     if let Err(e) = write_state(store, session.image, &session.state) {
         println!("warning: the guest is up, but its record could not be updated: {e}");
         println!(
@@ -1233,6 +1249,26 @@ mod tests {
             },
         );
         assert!(desktop.contains("applications menu"), "{desktop}");
+    }
+
+    /// A guest kept after a release build is not a release build in progress,
+    /// and the difference is not cosmetic: `StartReason::Dist` carries a cost of
+    /// ending, so the `vm down` the closing text has just recommended would warn
+    /// about ending a build that finished minutes ago.
+    #[test]
+    fn a_guest_kept_after_its_work_is_no_longer_named_as_that_work() {
+        assert_eq!(reason_when_kept(StartReason::Run), StartReason::Keep);
+        assert_eq!(reason_when_kept(StartReason::Dist), StartReason::Keep);
+        assert!(
+            reason_when_kept(StartReason::Dist)
+                .cost_of_ending()
+                .is_none()
+        );
+        // An image build never reaches a hand-over, and an interactive guest is
+        // already what it says it is.
+        assert_eq!(reason_when_kept(StartReason::Build), StartReason::Build);
+        assert_eq!(reason_when_kept(StartReason::Up), StartReason::Up);
+        assert_eq!(reason_when_kept(StartReason::Keep), StartReason::Keep);
     }
 
     /// The line a boot prints between SSH and the job is about a session the

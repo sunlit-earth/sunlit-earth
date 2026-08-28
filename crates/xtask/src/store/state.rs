@@ -46,7 +46,7 @@ impl StartReason {
     pub fn label(self) -> &'static str {
         match self {
             Self::Run => "a test run",
-            Self::Keep => "a test run kept with --keep",
+            Self::Keep => "a run kept with --keep",
             Self::Up => "an interactive guest (vm up)",
             Self::Build => "an image build (vm build-image)",
             Self::Dist => "a release build (xtask dist)",

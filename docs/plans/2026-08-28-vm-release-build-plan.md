@@ -153,6 +153,8 @@ What one target does, in order: read the pinned toolchain and the git facts and 
 
 4. **`vm smoke` asks each image about what it has.** The Linux smoke job probed the X server, which a builder does not have: the first live smoke of `linux-builder` printed `xdpyinfo: command not found` and still passed, which reads as a broken image rather than a script asking the wrong question. `vm::smoke_script` now asks a desktop image for its display and a builder for its `cargo -V`. Not in the plan, and the same class of thing as the boot line that used to promise a builder guest a desktop session.
 
+5. **A builder with no toolchain was demonstrated by pointing the builder slot at the desktop image, not by renaming `cargo` in a kept guest.** Acceptance criterion 6 suggests the second, and it cannot work: every boot creates a throwaway overlay of the golden disk, so a change made inside a live guest is not in the guest the next run boots, and the only way to make the rename stick would be to modify a golden image, which goal 5 forbids and which would cost a rebuild to undo. What the criterion is really about is the probe, its refusal and the teardown that follows it, and all three are exercised by a run whose builder genuinely has no cargo in it. `Image::builder(Target::Linux)` was pointed at the Debian desktop image for one run, which is a real image with no toolchain, and the run booted it, probed it, destroyed the guest and refused by naming the rebuild of the image it had probed. The one line was reverted immediately and the run is recorded with the method it used.
+
 ## Validation record
 
 ### The Linux builder image
@@ -281,3 +283,45 @@ Two steps, one on each side of the boundary, and neither is a rebuild of anythin
 So the deletions are the smaller half and the compaction is the larger one: 2.3 of the 3.0 GiB is blocks the guest had already freed and nothing had told the disk about. `vm smoke windows-builder` passes on the result with its session wait at 6 seconds rather than 0, which is the marker fix still holding, and `finalize.ps1` found `rc.exe`, `dumpbin.exe` and `libclang.dll` where the job's constants say they are after the trim rather than before it.
 
 What is left is 13.5 GiB of which 4.8 is the toolchain, and the remaining 8.7 is a Windows guest having been booted: the page file, the servicing stack, the registry, Defender's definitions and the event logs, none of which a differencing child can be talked out of recording. Nothing cheap is left. Squeezing it further means the Windows Server Core option in the non-goals, which is a second ISO, a second unattend file and an install path nobody has measured, and which would replace the 19.3 GiB parent rather than shrink the 13.5 GiB child. That is the next thing to reach for and it is not cheap, so the layer stays as it is.
+
+### The e2e suite on the existing desktop images
+
+Criterion 10, run after every change on this branch and on the two desktop images as they were. `cargo xtask e2e --target linux --desktop kde`: **10 of 10 passed in 283 seconds**, `test_set_wallpaper` included, with its usual note that Plasma's setter has nothing to ask what the wallpaper is. `cargo xtask e2e --target windows`: **11 of 11 passed in 203 seconds**, `test_session_end_shuts_down_promptly` and `test_set_wallpaper` included. Nothing about the image refactor or the static C runtime disturbed either.
+
+The static runtime reached those binaries too, which is what makes the run more than a regression check: they are built on the host in debug, and `crt-static` is in `.cargo/config.toml` rather than in a profile, so the debug `sunlit-earth.exe` the suite staged has no `vcruntime140` in it either. A dynamically linked one would have run in that guest anyway, since the parent image's first logon installs the redistributable, which is exactly why decision 10 checks the imports rather than the run.
+
+### `vm doctor` on a host with four images
+
+Criterion 2's other half, with nothing running: **22 passed, 0 warnings, 0 failed**, the last four lines being `windows image ok: current`, `windows-builder image ok: current`, `linux image ok: current`, `linux-builder image ok: current`. The two desktop images report the build times they had before this branch started, 2026-08-21 and 2026-08-23, which is goal 5 stated as a measurement: neither was rebuilt.
+
+### `--target all` again, on the trimmed layer
+
+Of commit `40c815e`, after the trim changed the layer under it: **Windows built in 7m46s and Linux in 5m21s**, both verified in their desktop guests, exit 0. The Windows figure is within four seconds of the run before the trim, so nothing the trim deleted was something a build reads, which is the claim the ordering inside `finalize.ps1` was chosen to make falsifiable. `build-info.json` names the layer's new build time, and the store is 64.8 GiB with all four images current.
+
+### The gates
+
+At `dac4e3c`, on this Windows host and in WSL.
+
+- `cargo test`: **all green**, 450 + 54 + 14 + 21 + 12 + 1 + 46 + 2 + 27 + 494 passing across the workspace with the 11 e2e cases ignored as they are meant to be.
+- `cargo clippy --all-targets`: **zero warnings**, which is what keeps CI's `-D warnings` honest.
+- `cargo fmt --check`: **clean**.
+- The WSL leg, `cargo test --workspace` under Ubuntu 22.04 into a Linux target directory: **failed once and passed on the rerun**, which is the documented treatment of the known flake. The failure was exactly it: `software_adapter_produces_correct_results` panicking at `wgpu-hal-28.0.1/src/gles/egl.rs:308` with `called Result::unwrap() on an Err value: BadAccess`. `cargo test` stops at the first failing target, so that run never reached the five targets after `shading`; the rerun covered all thirteen and every one passed. The xtask's own count there is 483 against 494 on Windows, the difference being the cases behind `cfg(windows)`.
+
+One thing step 6 asks for was not measured: peak memory in a builder during a build. Nothing came close to needing it, since neither build failed at any point and the fallback the plan names (fewer parallel jobs) was never reached for, and observing it properly would mean a sampler inside the job rather than a number the run already has. `docs/vm-setup.md` carries the troubleshooting entry that names the fix if a build ever does die that way.
+
+### What the criteria came to
+
+| | |
+|---|---|
+| 1 | met: both builders built, `finalize` verified each, both smokes pass, and the Windows one was rebuilt and smoked again after the trim |
+| 2 | met: four images in `vm status` with the layer under its parent and the parent's expiry, `vm doctor` 22 passed, the two desktop images still carrying their August 21 and August 23 build times |
+| 3 | met: all four files, no Visual C++ runtime among the 26 imports, `crt_static: true`, and the exe renders 640x360 on the host |
+| 4 | met, twice: glibc floor 2.35, the four expected `NEEDED`, a 640x360 render in the Debian guest |
+| 5 | met: the commit, the channel and a matching `rustc` release on both targets; `dirty: true` with the flag and a refusal without it |
+| 6 | met, the second half by hand-editing the layer's manifest and the first by departure 5's method |
+| 7 | met: four boots, two summary lines, exit 0 clean and exit 1 when the Windows target was made to fail; `--no-verify` skips both desktop boots |
+| 8 | met: cargo's `Compiling` lines arrive on the terminal as they happen, on both targets |
+| 9 | met: the start reason is named in `vm status` and in the refusal a second `vm up` gets |
+| 10 | met: 10 of 10 in the Linux guest under KDE, 11 of 11 in the Windows guest |
+| 11 | met, after the listing was made to say why the layer goes with its base |
+| 12 | met: the four gates above |

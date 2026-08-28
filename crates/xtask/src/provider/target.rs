@@ -162,19 +162,40 @@ impl Image {
         matches!(self, Self::Windows | Self::WindowsBuilder)
     }
 
-    /// Whether this image carries a desktop session, which is what the e2e
-    /// suite needs and what a builder deliberately has none of.
+    /// Whether a desktop session logs on in this image.
+    ///
+    /// The Linux builder is the only image with none: it is built from a cloud
+    /// image with no desktop in it, and writes its readiness marker from a
+    /// oneshot unit at boot because it has no session to write one from. The
+    /// Windows builder is a differencing child of the Windows desktop image and
+    /// inherits the autologon it was built with, so a boot of it waits for a
+    /// session and gets one, and `vm view` opens a desktop there. What tells a
+    /// builder from an image the suite runs in is [`Self::is_builder`], and
+    /// asking this instead is what once called the same guest a console in one
+    /// line and a desktop four lines later.
     pub fn has_desktop(self) -> bool {
-        matches!(self, Self::Windows | Self::Linux)
+        matches!(self, Self::Windows | Self::Linux | Self::WindowsBuilder)
+    }
+
+    /// Whether this is an image a release binary is built in rather than one the
+    /// e2e suite runs in.
+    ///
+    /// Both builders carry a toolchain and neither carries the suite, which is
+    /// the question every text about what an image is *for* is asking: which
+    /// command uses it, which command leaves one of its guests behind, and what
+    /// a smoke test should ask it to prove.
+    pub fn is_builder(self) -> bool {
+        matches!(self, Self::WindowsBuilder | Self::LinuxBuilder)
     }
 
     /// What `vm view` opens for this image, as the word that labels the line
     /// offering it.
     ///
-    /// A builder has no desktop session, so what a viewer attaches to there is
-    /// a text console and calling it a desktop describes an image nobody built.
-    /// Both spellings are seven letters, which is what keeps that line's command
-    /// in the same column as the `ssh:` and `down:` lines around it.
+    /// The Linux builder is the one image with no session, so what a viewer
+    /// attaches to there is a text console and calling it a desktop describes an
+    /// image nobody built. Both spellings are seven letters, which is what keeps
+    /// that line's command in the same column as the `ssh:` and `down:` lines
+    /// around it.
     pub fn console_label(self) -> &'static str {
         if self.has_desktop() {
             "desktop"
@@ -379,8 +400,25 @@ mod tests {
             assert_eq!(Image::builder(target).target(), target);
             assert_eq!(Image::desktop(target).target(), target);
             assert_ne!(Image::builder(target), Image::desktop(target));
-            assert!(Image::desktop(target).has_desktop());
-            assert!(!Image::builder(target).has_desktop());
+            assert!(Image::builder(target).is_builder());
+            assert!(!Image::desktop(target).is_builder());
+        }
+        for image in Image::ALL {
+            assert_eq!(image.is_builder(), image == Image::builder(image.target()));
+        }
+    }
+
+    /// A session and a purpose are two questions, and the Windows builder is
+    /// where they part: it is a differencing child of the desktop image, so it
+    /// logs on the session its parent was built with, and it is still not
+    /// something the suite can run in.
+    #[test]
+    fn only_the_linux_builder_has_no_session_and_both_builders_are_builders() {
+        assert!(Image::WindowsBuilder.has_desktop());
+        assert!(Image::WindowsBuilder.is_builder());
+        assert!(!Image::LinuxBuilder.has_desktop());
+        for image in Image::ALL {
+            assert_eq!(image.has_desktop(), image != Image::LinuxBuilder, "{image}");
         }
     }
 
@@ -424,12 +462,16 @@ mod tests {
         assert_eq!(provider_for(HostOs::Other, Target::Linux), None);
     }
 
-    /// Three commands print this word in front of a `vm view` line whose
-    /// command has to stay in the same column as the `ssh:` and `down:` lines
-    /// around it, so the two spellings are the same width.
+    /// Five texts print this word in front of a `vm view` line whose command has
+    /// to stay in the same column as the `ssh:` and `down:` lines around it, so
+    /// the two spellings are the same width. The Windows builder is the case
+    /// worth naming: the guest a viewer reaches there is its parent's desktop,
+    /// and the same closing text says so twice further down.
     #[test]
-    fn a_builder_offers_a_console_and_a_desktop_image_a_desktop() {
+    fn only_the_image_with_no_session_offers_a_console() {
         assert_eq!(Image::Linux.console_label(), "desktop");
+        assert_eq!(Image::Windows.console_label(), "desktop");
+        assert_eq!(Image::WindowsBuilder.console_label(), "desktop");
         assert_eq!(Image::LinuxBuilder.console_label(), "console");
         for image in Image::ALL {
             assert_eq!(image.console_label().len(), 7, "{image}");

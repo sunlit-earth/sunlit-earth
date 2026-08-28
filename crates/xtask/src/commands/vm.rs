@@ -116,17 +116,22 @@ impl Session<'_> {
 ///
 /// The overlay comes from the record rather than from the image, because the two
 /// providers give it different names and the record is what says which one this
-/// guest got. The job scratch is in the list because a command that ran a job
-/// wrote it and nothing reads it once the guest that ran the job is gone, so a
-/// green run that left it behind left run state under an image with nothing
-/// running. `vm.log` is deliberately not in the list: a failed boot's message
-/// quotes its tail and names its path, and deleting it here would make that path
-/// a lie.
-pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 3] {
+/// guest got. The other three are all the same case: a boot writes them, nothing
+/// reads them once the guest that took a copy is gone, and a green run that left
+/// one behind left run state under an image with nothing running. The job
+/// scratch is the script a command copied into the guest, the hand-over scratch
+/// is the Windows launcher staging writes for every guest it stages, and the
+/// firmware variables are the per-VM copy a QEMU boot makes, which is every
+/// Linux guest and a Windows one under the QEMU cell of the provider matrix.
+/// `vm.log` is deliberately not in the list: a failed boot's message quotes its
+/// tail and names its path, and deleting it here would make that path a lie.
+pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 5] {
     [
         store.state_file(image),
         state.overlay.clone(),
         store.job_scratch(image),
+        store.handover_scratch(image),
+        store.firmware_vars(image),
     ]
 }
 
@@ -152,15 +157,15 @@ fn remove_run_state(paths: &[std::path::PathBuf]) -> Vec<String> {
 
 /// What the wait after SSH is waiting for, per image.
 ///
-/// One marker, and what writes it differs: a desktop image writes it from the
-/// session that logs on, and the Linux builder from a oneshot unit at boot,
-/// because it has no session to write it from and no X server to have one in.
-/// Naming a desktop there describes an image nobody built, and a wait that
+/// One marker, and what writes it differs: an image with a session writes it
+/// from the session that logs on, and the Linux builder from a oneshot unit at
+/// boot, because it has no session to write it from and no X server to have one
+/// in. Naming a desktop there describes an image nobody built, and a wait that
 /// returns in no time at all then reads as a broken guest rather than as the
-/// marker being in place before SSH was. The Windows builder inherits its
-/// parent's logon and so has a session, and is still described the neutral way,
-/// because what a boot of it waits for is a guest that can run a job rather than
-/// a desktop anybody is going to look at.
+/// marker being in place before SSH was. The Windows builder is on the other
+/// side of that line and says so: it is a differencing child of the desktop
+/// image, the marker comes from the logon it inherited, and the six seconds a
+/// boot of it spends here are six seconds of a session starting.
 pub fn readiness_wait_line(image: Image) -> &'static str {
     if image.has_desktop() {
         "waiting for the desktop session"
@@ -264,13 +269,13 @@ pub fn detached_help(image: Image, detail: &str) -> String {
 /// desktop with no source tree in it. Dropping the verification makes the
 /// builder the last guest, which is the one this text is offering.
 pub fn keep_command(image: Image) -> String {
-    if image.has_desktop() {
-        format!("cargo xtask e2e --target {} --keep", image.target())
-    } else {
+    if image.is_builder() {
         format!(
             "cargo xtask dist --target {} --keep --no-verify",
             image.target()
         )
+    } else {
+        format!("cargo xtask e2e --target {} --keep", image.target())
     }
 }
 
@@ -388,8 +393,8 @@ pub fn load_state(store: &Store, image: Image) -> Option<RunState> {
 ///
 /// Only the Debian 13 image carries more than one, so the flag is refused for
 /// every other image rather than ignored: a run whose `--desktop` did nothing is
-/// a run whose results are about a desktop nobody chose. A builder is the
-/// sharper case, because it has no desktop at all.
+/// a run whose results are about a desktop nobody chose. The Linux builder is
+/// the sharper case, because it has no session at all to choose one for.
 pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<Desktop>, String> {
     match (image, requested) {
         (Image::Linux, chosen) => Ok(chosen),
@@ -400,8 +405,8 @@ pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<De
         )),
         (_, Some(desktop)) => Err(format!(
             "--desktop {desktop} asks for a session the {image} image does not have: \
-             a builder carries no desktop at all, which is what keeps it small and \
-             what keeps a compiler out of the images the suite runs in"
+             it carries no desktop at all, which is what keeps it small and what \
+             keeps a compiler out of the images the suite runs in"
         )),
     }
 }
@@ -638,8 +643,9 @@ fn view_note(image: Image, enhanced_session: bool) -> String {
 /// The Linux builder cannot promise the menu either, and that is why the Linux
 /// arms ask [`Image::has_desktop`] rather than what operating system it is: it
 /// has no session for an entry to appear in, so what it offers is a shell. The
-/// Windows builder is not the same case and is not asked, because it is a layer
-/// over the desktop image and its console session is its parent's.
+/// Windows arms need no such split, because the Windows builder is a layer over
+/// the desktop image and logs on the session its parent was built with, so that
+/// question answers the same for both and the shortcuts land on a real desktop.
 fn guest_environment_note(image: Image, staged: bool) -> String {
     match (image.target(), staged) {
         (Target::Windows, true) => format!(
@@ -1040,10 +1046,10 @@ pub fn smoke_script(image: Image) -> String {
              echo %SUNLIT_E2E_ARTIFACTS%\r\n\
              {probe}\
              echo smoke > %SUNLIT_E2E_ARTIFACTS%\\smoke.txt\r\n",
-            probe = if image.has_desktop() {
-                ""
-            } else {
+            probe = if image.is_builder() {
                 "\"%USERPROFILE%\\.cargo\\bin\\cargo.exe\" -V || exit /b 1\r\n"
+            } else {
+                ""
             },
         ),
         Target::Linux => format!(
@@ -1055,10 +1061,10 @@ pub fn smoke_script(image: Image) -> String {
              echo \"DISPLAY=$DISPLAY\"\n\
              {probe}\
              echo smoke > \"$SUNLIT_E2E_ARTIFACTS/smoke.txt\"\n",
-            probe = if image.has_desktop() {
-                "xdpyinfo -display \"$DISPLAY\" | head -3\n"
-            } else {
+            probe = if image.is_builder() {
                 "\"$HOME/.cargo/bin/cargo\" -V\n"
+            } else {
+                "xdpyinfo -display \"$DISPLAY\" | head -3\n"
             },
         ),
     }
@@ -1128,7 +1134,7 @@ mod tests {
         for image in Image::ALL {
             assert_eq!(
                 smoke_script(image).contains("cargo"),
-                !image.has_desktop(),
+                image.is_builder(),
                 "{image}"
             );
         }
@@ -1327,7 +1333,8 @@ mod tests {
     /// The line a boot prints between SSH and the job is about a session the
     /// Linux builder has none of: it writes its readiness marker from a oneshot
     /// unit at boot, so a wait that returns instantly there is the image working
-    /// rather than a desktop that failed to appear.
+    /// rather than a desktop that failed to appear. The Windows builder is the
+    /// other way round, and the seconds it spends here are a real logon.
     #[test]
     fn only_an_image_with_a_desktop_is_said_to_be_waiting_for_one() {
         for image in Image::ALL {
@@ -1337,6 +1344,14 @@ mod tests {
             assert_eq!(ready.contains("desktop"), image.has_desktop(), "{image}");
             assert!(ready.contains("after 6s"), "{image}: {ready}");
         }
+        assert_eq!(
+            readiness_wait_line(Image::WindowsBuilder),
+            "waiting for the desktop session"
+        );
+        assert_eq!(
+            readiness_wait_line(Image::LinuxBuilder),
+            "waiting for the guest to be ready for a job"
+        );
     }
 
     #[test]
@@ -1450,14 +1465,18 @@ mod tests {
             assert!(refusal.contains(desktop.flag()), "{refusal}");
             assert!(refusal.contains("Debian 13 guest option"), "{refusal}");
 
-            // A builder is the sharper case: it has no desktop at all, and
-            // saying "the other image has one" would send somebody looking for
-            // a session that is not in there.
-            for builder in [Image::WindowsBuilder, Image::LinuxBuilder] {
-                let refusal =
-                    desktop_for(builder, Some(desktop)).expect_err("a builder has no desktop");
-                assert!(refusal.contains("no desktop at all"), "{refusal}");
-            }
+            // The Linux builder is the sharper case: it has no desktop at all,
+            // and saying "the other image has one" would send somebody looking
+            // for a session that is not in there. The Windows builder is not
+            // that case, because it logs on the session its parent was built
+            // with, so it gets the same refusal the desktop image gets.
+            let refusal = desktop_for(Image::LinuxBuilder, Some(desktop))
+                .expect_err("the Linux builder has no desktop");
+            assert!(refusal.contains("no desktop at all"), "{refusal}");
+            let refusal = desktop_for(Image::WindowsBuilder, Some(desktop))
+                .expect_err("the Windows builder has one desktop");
+            assert!(refusal.contains("Debian 13 guest option"), "{refusal}");
+            assert!(!refusal.contains("no desktop at all"), "{refusal}");
         }
         // Neither guest has to be asked. On Linux that is the image's own
         // default session, which is the whole point of the flag being optional.
@@ -1510,7 +1529,7 @@ mod tests {
         use crate::commands::dist::{Boot, Options, Which, keeps_guest};
         for image in Image::ALL {
             let text = keep_command(image);
-            if image.has_desktop() {
+            if !image.is_builder() {
                 assert!(!text.contains("--no-verify"), "{text}");
                 continue;
             }
@@ -1536,9 +1555,11 @@ mod tests {
         }
     }
 
-    /// A builder has no desktop session, so nothing may offer one: the console
-    /// a viewer attaches to there is a text console, and the same boot that says
-    /// so must not go on to call it a desktop.
+    /// The image with no session must not be offered a desktop, and the ones
+    /// with a session must not be offered a console: a closing text is one
+    /// screen about one guest, and the Windows builder is where it used to give
+    /// both answers, offering a console four lines above two sentences about its
+    /// desktop.
     #[test]
     fn the_line_that_offers_a_console_calls_it_what_the_image_has() {
         for image in Image::ALL {
@@ -1549,6 +1570,11 @@ mod tests {
             };
             let text = lifecycle_explainer(image, Prepared::BARE);
             assert!(text.contains(expected), "{text}");
+            assert_eq!(
+                text.contains("no desktop session"),
+                !image.has_desktop(),
+                "{text}"
+            );
             let store = Store::new("/srv/vm");
             let hint = Session {
                 provider: Box::new(fake::Fake),
@@ -1558,6 +1584,15 @@ mod tests {
             .reach_hint();
             assert!(hint.contains(expected), "{hint}");
         }
+        let windows_builder = lifecycle_explainer(Image::WindowsBuilder, Prepared::BARE);
+        assert!(
+            windows_builder.contains("desktop: cargo xtask vm view windows-builder"),
+            "{windows_builder}"
+        );
+        assert!(
+            windows_builder.contains("Its desktop opens in a basic session"),
+            "{windows_builder}"
+        );
     }
 
     /// A run kept after its work failed is as finished as one kept after its
@@ -1604,6 +1639,8 @@ mod tests {
                 store.state_file(image),
                 state.overlay.clone(),
                 store.job_scratch(image),
+                store.handover_scratch(image),
+                store.firmware_vars(image),
             ]
         );
 
@@ -1611,6 +1648,16 @@ mod tests {
         std::fs::write(&state.overlay, b"overlay").expect("write the overlay");
         std::fs::create_dir_all(store.job_scratch(image)).expect("the job scratch");
         std::fs::write(store.job_scratch(image).join("job.sh"), b"echo hi").expect("the script");
+        // Written by staging in every Windows guest and by every QEMU boot
+        // respectively, so a run that leaves either behind leaves run state
+        // under an image with nothing running.
+        std::fs::create_dir_all(store.handover_scratch(image)).expect("the handover scratch");
+        std::fs::write(
+            store.handover_scratch(image).join("run-app.cmd"),
+            b"@echo off",
+        )
+        .expect("the launcher");
+        std::fs::write(store.firmware_vars(image), b"vars").expect("the firmware variables");
         std::fs::write(store.vm_log(image), b"qemu").expect("the log");
 
         session.tear_down(&store).expect("the teardown");
@@ -1618,6 +1665,8 @@ mod tests {
         assert!(!store.state_file(image).exists());
         assert!(!state.overlay.exists());
         assert!(!store.job_scratch(image).exists());
+        assert!(!store.handover_scratch(image).exists());
+        assert!(!store.firmware_vars(image).exists());
         // The log is what a failed boot's message quotes and names, so a
         // teardown is not what removes it.
         assert!(store.vm_log(image).is_file());

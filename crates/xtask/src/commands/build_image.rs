@@ -713,8 +713,10 @@ pub fn forget_host_keys(store: &Store) {
 
 /// The closing report, the same whichever path built the image.
 ///
-/// What to do with the result differs by image, because a builder is not
-/// something the e2e suite can run in: it has no desktop session at all.
+/// What to do with the result differs by image, because a builder is where a
+/// release binary is built and not something the e2e suite can run in. That is
+/// [`Image::is_builder`] and not whether a session logs on: the Windows builder
+/// inherits its parent's, and `dist` is still the command that uses it.
 pub fn announce(image: Image, images: &[(String, u64, String)]) {
     println!();
     println!("the {image} image is built:");
@@ -727,10 +729,10 @@ pub fn announce(image: Image, images: &[(String, u64, String)]) {
             crate::store::manifest::EVAL_TOTAL_DAYS
         );
     }
-    let uses = if image.has_desktop() {
-        format!("cargo xtask e2e --target {}", image.target())
-    } else {
+    let uses = if image.is_builder() {
         format!("cargo xtask dist --target {}", image.target())
+    } else {
+        format!("cargo xtask e2e --target {}", image.target())
     };
     println!("`cargo xtask vm status` lists it; `{uses}` uses it.");
     for child in image.children() {

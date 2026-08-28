@@ -371,8 +371,9 @@ mod tests {
         assert!(text.contains("expiring"), "{text}");
     }
 
-    /// A builder has no desktop session, so the line offering its console must
-    /// not call it one; a desktop image's line keeps the word it earns.
+    /// The Linux builder has no session, so the line offering its console must
+    /// not call it a desktop; every other image, the Windows builder over its
+    /// parent's logon included, keeps the word it earns.
     #[test]
     fn the_line_that_offers_a_console_calls_it_what_the_image_has() {
         for image in Image::ALL {
@@ -384,6 +385,11 @@ mod tests {
             };
             assert!(text.contains(&expected), "{text}");
         }
+        let text = running_vm(Image::WindowsBuilder, &running_state(Image::WindowsBuilder));
+        assert!(
+            text.contains("desktop: `cargo xtask vm view windows-builder`"),
+            "{text}"
+        );
     }
 
     #[test]

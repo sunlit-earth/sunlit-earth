@@ -485,9 +485,10 @@ fn aftermath(presence: &Presence, image: Image, state: &RunState) -> String {
     match presence {
         Presence::Registered => format!(
             "{vm} is still there, with the disk it was installing onto.\n  \
-             desktop: cargo xtask vm view {image}\n  \
+             {console}: cargo xtask vm view {image}\n  \
              ssh:     cargo xtask vm ssh {image}\n  \
-             down:    cargo xtask vm down {image}  (removes the VM and the unfinished disk)"
+             down:    cargo xtask vm down {image}  (removes the VM and the unfinished disk)",
+            console = image.console_label()
         ),
         Presence::Gone => format!(
             "no VM called {vm} is registered with Hyper-V now, so nothing of this \
@@ -1498,6 +1499,14 @@ mod tests {
             "cargo xtask vm down windows",
         ] {
             assert!(text.contains(hint), "{text}");
+        }
+        // The word in front of the view line comes from the image, so this text
+        // cannot be the one that calls a guest something the rest of the run
+        // does not.
+        for image in Image::ALL {
+            let text = aftermath(&Presence::Registered, image, &state);
+            let expected = format!("{}: cargo xtask vm view {image}", image.console_label());
+            assert!(text.contains(&expected), "{text}");
         }
 
         // A VM that is not registered is not described as running, because a

@@ -105,6 +105,21 @@ impl Store {
         self.run_dir(image).join("job")
     }
 
+    /// Where the Windows hand-over launcher is written before it is copied into
+    /// the guest, for the same reason and with the same lifetime as the job
+    /// scratch: it is generated per boot from what that boot staged, and it
+    /// means nothing once the guest that took a copy is gone.
+    pub fn handover_scratch(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("handover")
+    }
+
+    /// The throwaway copy of the firmware's variables store a QEMU boot makes,
+    /// so a guest writes its boot entries into its own rather than into the
+    /// shared one the host installed.
+    pub fn firmware_vars(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("efi-vars.fd")
+    }
+
     /// The disk a native install writes into, before it becomes the golden
     /// image.
     ///
@@ -291,6 +306,9 @@ mod tests {
                 store.overlay(image),
                 store.qemu_overlay(image),
                 store.state_file(image),
+                store.job_scratch(image),
+                store.handover_scratch(image),
+                store.firmware_vars(image),
                 store.build_disk(image),
                 store.build_dir(image),
                 store.results_dir(image),

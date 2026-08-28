@@ -517,7 +517,7 @@ impl<'a> QemuProvider<'a> {
     fn per_vm_firmware(&self, image: Image) -> Option<crate::provider::firmware::Firmware> {
         let binary = crate::host::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host);
         let found = crate::provider::firmware::locate(self.host, binary.as_deref())?;
-        let copy = self.store.run_dir(image).join("efi-vars.fd");
+        let copy = self.store.firmware_vars(image);
         if std::fs::create_dir_all(self.store.run_dir(image)).is_err()
             || std::fs::copy(&found.vars, &copy).is_err()
         {

@@ -391,7 +391,7 @@ fn prepare_windows(
     image: Image,
     paths: &GuestPaths,
 ) -> Result<(), String> {
-    let scratch = store.run_dir(image).join("handover");
+    let scratch = store.handover_scratch(image);
     std::fs::create_dir_all(&scratch)
         .map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
     let local = scratch.join(LAUNCHER);

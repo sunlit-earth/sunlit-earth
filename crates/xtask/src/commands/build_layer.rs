@@ -553,11 +553,12 @@ fn finish(
 /// What is still there after a failure, and how to reach it.
 fn left_behind(image: Image, state: &RunState) -> String {
     format!(
-        "{} is still there with the unfinished layer attached.\n  \
+        "{vm} is still there with the unfinished layer attached.\n  \
          ssh:     cargo xtask vm ssh {image}\n  \
-         desktop: cargo xtask vm view {image}\n  \
+         {console}: cargo xtask vm view {image}\n  \
          down:    cargo xtask vm down {image}  (removes the VM and the unfinished disk)",
-        state.vm_name
+        vm = state.vm_name,
+        console = image.console_label()
     )
 }
 
@@ -641,6 +642,18 @@ mod tests {
         assert!(text.contains("sunlit-e2e-windows-builder"), "{text}");
         assert!(text.contains("vm ssh windows-builder"), "{text}");
         assert!(text.contains("vm down windows-builder"), "{text}");
+        // The word in front of the view line is the image's, not this text's:
+        // the guest here is a differencing child of the Windows desktop image
+        // and opens the session its parent was built with.
+        assert!(
+            text.contains("desktop: cargo xtask vm view windows-builder"),
+            "{text}"
+        );
+        for image in Image::ALL {
+            let text = left_behind(image, &state);
+            let expected = format!("{}: cargo xtask vm view {image}", image.console_label());
+            assert!(text.contains(&expected), "{text}");
+        }
     }
 
     #[test]

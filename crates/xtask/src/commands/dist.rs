@@ -56,19 +56,64 @@ impl Which {
     }
 }
 
-/// What a run was asked for.
+/// What a run was asked for: which targets, and the four flags.
 ///
 /// Four flags of one command line rather than a state machine, which is why
 /// `struct_excessive_bools` is allowed here: they are independent answers to
-/// independent questions and naming them together is the point.
+/// independent questions and naming them together is the point. Which targets
+/// is in here with them because one of the four is not a property of a target on
+/// its own: `--keep` keeps the last guest of the whole run, so deciding it needs
+/// to know what else the run is going to boot.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
+    pub which: Which,
     pub keep: bool,
     /// Whether to run the binary in the desktop image afterwards.
     pub verify: bool,
     pub allow_expired: bool,
     pub allow_dirty: bool,
+}
+
+/// One boot of a run, as the keep rule sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Boot {
+    pub target: Target,
+    /// The builder guest rather than the desktop guest that verifies.
+    pub builder: bool,
+    /// Whether the work in it failed, which ends the target there and makes its
+    /// guest the last one the run booted.
+    pub failed: bool,
+}
+
+/// Whether the guest a boot created is kept once the run is over.
+///
+/// `--keep` keeps the last guest the run booted, one per run (decision 13), and
+/// the reason it can only be one is decision 16: a guest that is still
+/// registered refuses the next boot, so a first target that kept its guest would
+/// refuse the second target's build rather than leave two guests behind. Every
+/// guest before the last one is therefore torn down whatever the flag says.
+pub fn keeps_guest(options: Options, boot: Boot) -> bool {
+    if !options.keep {
+        return false;
+    }
+    let targets = options.which.targets();
+    if targets.last() != Some(&boot.target) {
+        return false;
+    }
+    // Inside the last target, the builder is the last guest only when nothing
+    // follows it: either the verification boot was skipped, or the build failed
+    // before it could happen.
+    !boot.builder || !options.verify || boot.failed
+}
+
+/// The closing line about the one guest a run kept.
+pub fn kept_summary(image: Image) -> String {
+    format!(
+        "the {} guest is still up, because --keep was given; \
+         `cargo xtask vm down {image}` ends it",
+        image.vm_name()
+    )
 }
 
 /// How long a release build may take inside a guest.
@@ -195,6 +240,17 @@ pub fn archive_args(output: &Path) -> Vec<String> {
         "HEAD".to_owned(),
         ":!textures".to_owned(),
     ]
+}
+
+/// Where the archive is written on the host.
+///
+/// At the run directory's root rather than in a subdirectory of it, because the
+/// root is what the inventory scans and what a teardown deletes: a file one
+/// level deeper is invisible to `vm status` and survives `vm down`, and this one
+/// is eight megabytes per target. It is run state in every other sense too, so
+/// this is the shelf it belongs on rather than a place chosen to be seen.
+pub fn archive_path(store: &Store, builder: Image) -> PathBuf {
+    store.run_dir(builder).join("src.tar")
 }
 
 /// Write the archive, and answer how large it is.
@@ -602,7 +658,7 @@ pub fn dist_dir(target: Target) -> PathBuf {
 }
 
 /// Run the command.
-pub fn run(runner: &dyn Runner, which: Which, options: Options) -> Result<u8, String> {
+pub fn run(runner: &dyn Runner, options: Options) -> Result<u8, String> {
     let pinned = crate::guest::toolchain::pinned()?;
     let store = store::store()?;
     let repo = store::repo_root();
@@ -611,13 +667,20 @@ pub fn run(runner: &dyn Runner, which: Which, options: Options) -> Result<u8, St
         return Err(dirty_refusal());
     }
 
-    let targets = which.targets();
+    let targets = options.which.targets();
     let mut summary = Vec::new();
     let mut failed = false;
+    // The one guest the run is allowed to leave behind, recorded where it was
+    // left rather than inferred afterwards: a target can fail before it boots
+    // anything, and a summary claiming a guest that is not there is worse than
+    // no summary at all.
+    let mut kept = None;
     for target in targets {
         println!();
         println!("== {target}: a release build of {}", git.describe);
-        match one_target(runner, &store, &repo, target, &pinned, &git, options) {
+        match one_target(
+            runner, &store, &repo, target, &pinned, &git, options, &mut kept,
+        ) {
             Ok(line) => summary.push(line),
             Err(e) => {
                 println!("error: {e}");
@@ -631,11 +694,17 @@ pub fn run(runner: &dyn Runner, which: Which, options: Options) -> Result<u8, St
     for line in &summary {
         println!("{line}");
     }
+    if let Some(image) = kept {
+        println!("{}", kept_summary(image));
+    }
     Ok(u8::from(failed))
 }
 
 /// One target, end to end.
-#[allow(clippy::too_many_lines)]
+///
+/// `kept` is where a guest this target left running records itself, which is the
+/// one thing about a target that outlives it.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn one_target(
     runner: &dyn Runner,
     store: &Store,
@@ -644,6 +713,7 @@ fn one_target(
     pinned: &Toolchain,
     git: &GitFacts,
     options: Options,
+    kept: &mut Option<Image>,
 ) -> Result<String, String> {
     let builder = Image::builder(target);
     let desktop = Image::desktop(target);
@@ -657,7 +727,7 @@ fn one_target(
     }
     let builder_info = builder_info(store, builder)?;
 
-    let archive = store.run_dir(builder).join("dist").join("src.tar");
+    let archive = archive_path(store, builder);
     let bytes = write_archive(runner, repo, &archive)?;
     println!(
         "  source:  {} of {} ({})",
@@ -671,7 +741,7 @@ fn one_target(
     );
     println!("  builder: {builder}, built {}", builder_info.built_utc);
 
-    let results = build_in_builder(runner, store, builder, pinned, &archive, options)?;
+    let results = build_in_builder(runner, store, builder, pinned, &archive, options, kept)?;
 
     let exe = results.join("artifacts").join(exe_name(target));
     if !exe.is_file() {
@@ -690,7 +760,9 @@ fn one_target(
     println!("  linkage: {}", linkage_summary(target, &linkage));
 
     let smoke = if options.verify {
-        Some(verify_in_desktop(runner, store, desktop, &exe, options)?)
+        Some(verify_in_desktop(
+            runner, store, desktop, &exe, options, kept,
+        )?)
     } else {
         println!("  skipping the verification boot, because --no-verify was given");
         None
@@ -749,6 +821,7 @@ fn builder_info(store: &Store, builder: Image) -> Result<BuilderInfo, String> {
 }
 
 /// Boot the builder, run the build, bring the results back, and take it down.
+#[allow(clippy::too_many_arguments)]
 fn build_in_builder(
     runner: &dyn Runner,
     store: &Store,
@@ -756,6 +829,7 @@ fn build_in_builder(
     pinned: &Toolchain,
     archive: &Path,
     options: Options,
+    kept: &mut Option<Image>,
 ) -> Result<PathBuf, String> {
     let target = builder.target();
     let mut session = vm::boot(
@@ -780,6 +854,10 @@ fn build_in_builder(
         session
             .provider
             .copy_in(&session.state, archive, &guest_archive(target))?;
+        // The guest has it now, so the host's copy is eight megabytes of a
+        // commit that `git archive` reproduces in a second. A copy that failed
+        // leaves it where `vm status` counts it and `vm down` removes it.
+        let _ = std::fs::remove_file(archive);
 
         println!("  building; cargo's own output follows");
         let scratch = store.run_dir(builder).join("job");
@@ -809,9 +887,19 @@ fn build_in_builder(
         Ok(results)
     })();
 
-    // The builder is torn down whichever way it went, unless the run is keeping
-    // the last guest it booted and there is no verification boot after this one.
-    let keep = options.keep && (!options.verify || outcome.is_err());
+    // The builder is torn down whichever way it went, unless this is the last
+    // guest the whole run boots.
+    let keep = keeps_guest(
+        options,
+        Boot {
+            target,
+            builder: true,
+            failed: outcome.is_err(),
+        },
+    );
+    if keep {
+        *kept = Some(builder);
+    }
     match &outcome {
         Ok(_) if !keep => {
             if let Err(e) = session.tear_down(store) {
@@ -858,6 +946,7 @@ fn verify_in_desktop(
     desktop: Image,
     exe: &Path,
     options: Options,
+    kept: &mut Option<Image>,
 ) -> Result<PathBuf, String> {
     let target = desktop.target();
     println!();
@@ -951,7 +1040,17 @@ fn verify_in_desktop(
         }
     })();
 
-    let keep = options.keep;
+    let keep = keeps_guest(
+        options,
+        Boot {
+            target,
+            builder: false,
+            failed: outcome.is_err(),
+        },
+    );
+    if keep {
+        *kept = Some(desktop);
+    }
     match &outcome {
         Ok(_) if !keep => {
             if let Err(e) = session.tear_down(store) {
@@ -1057,6 +1156,95 @@ mod tests {
         assert_eq!(Which::All.targets(), vec![Target::Windows, Target::Linux]);
         assert_eq!(Which::Linux.targets(), vec![Target::Linux]);
         assert_eq!(Which::Windows.targets(), vec![Target::Windows]);
+    }
+
+    fn options(which: Which, keep: bool, verify: bool) -> Options {
+        Options {
+            which,
+            keep,
+            verify,
+            allow_expired: false,
+            allow_dirty: false,
+        }
+    }
+
+    fn boot(target: Target, builder: bool) -> Boot {
+        Boot {
+            target,
+            builder,
+            failed: false,
+        }
+    }
+
+    /// Decision 13's `--keep` keeps the last guest the run booted, singular,
+    /// and decision 16 is why it cannot be more: the next boot is refused while
+    /// another guest is registered, so a first target that kept its builder
+    /// would refuse the second target's build rather than leave two guests
+    /// behind.
+    #[test]
+    fn a_run_keeps_the_last_guest_it_booted_and_nothing_before_it() {
+        // The four boots of `dist --keep`, in the order the run makes them.
+        let all = options(Which::All, true, true);
+        assert!(!keeps_guest(all, boot(Target::Windows, true)));
+        assert!(!keeps_guest(all, boot(Target::Windows, false)));
+        assert!(!keeps_guest(all, boot(Target::Linux, true)));
+        assert!(keeps_guest(all, boot(Target::Linux, false)));
+
+        // With no verification boot the builder is the last guest of a target,
+        // and still only of the run's last target.
+        let bare = options(Which::All, true, false);
+        assert!(!keeps_guest(bare, boot(Target::Windows, true)));
+        assert!(keeps_guest(bare, boot(Target::Linux, true)));
+
+        // A build that failed booted nothing after itself, which makes its
+        // builder the last guest of that target and of nothing else.
+        let failed = |target, builder| Boot {
+            target,
+            builder,
+            failed: true,
+        };
+        assert!(!keeps_guest(all, failed(Target::Windows, true)));
+        assert!(keeps_guest(all, failed(Target::Linux, true)));
+
+        // A run of one target: its only target is its last one.
+        let one = options(Which::Windows, true, true);
+        assert!(!keeps_guest(one, boot(Target::Windows, true)));
+        assert!(keeps_guest(one, boot(Target::Windows, false)));
+
+        // Without the flag every guest goes, whichever boot it came from.
+        for which in [Which::All, Which::Windows, Which::Linux] {
+            for target in Target::ALL {
+                for builder in [true, false] {
+                    let without = options(which, false, true);
+                    assert!(!keeps_guest(without, boot(target, builder)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_summary_names_the_one_guest_that_was_kept() {
+        let text = kept_summary(Image::Linux);
+        assert!(text.contains(&Image::Linux.vm_name()), "{text}");
+        assert!(text.contains("vm down linux"), "{text}");
+        assert!(text.contains("--keep"), "{text}");
+    }
+
+    /// `vm status` counts the files in a run directory and `vm down` deletes
+    /// them, and neither looks a level deeper: an archive in a subdirectory of
+    /// one is eight megabytes that nothing accounts for and nothing removes.
+    #[test]
+    fn the_source_archive_sits_where_the_inventory_and_the_teardown_look() {
+        let store = Store::new("/srv/vm");
+        for target in Target::ALL {
+            let builder = Image::builder(target);
+            let archive = archive_path(&store, builder);
+            assert_eq!(archive.parent(), Some(store.run_dir(builder).as_path()));
+            assert_eq!(
+                archive.file_name().and_then(|n| n.to_str()),
+                Some("src.tar")
+            );
+        }
     }
 
     /// Untracked files are not dirt: the archive is of `HEAD`, so a file git has

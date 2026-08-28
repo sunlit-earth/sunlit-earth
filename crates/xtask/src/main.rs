@@ -217,8 +217,8 @@ fn main() -> ExitCode {
             allow_dirty,
         } => dist::run(
             &runner,
-            target,
             dist::Options {
+                which: target,
                 keep,
                 verify: !no_verify,
                 allow_expired: allow_expired_image,

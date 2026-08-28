@@ -319,9 +319,9 @@ pub fn build_job(target: Target, pinned: &Toolchain) -> String {
              \"%CARGO%\" +{channel} -V >> \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
              set VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\r\n\
              set DUMPBIN=\r\n\
-             for /f \"usebackq delims=\" %%%%i in (`\"%VSWHERE%\" -latest -products * \
+             for /f \"usebackq delims=\" %%i in (`\"%VSWHERE%\" -latest -products * \
              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
-             -find **\\Hostx64\\x64\\dumpbin.exe`) do set DUMPBIN=%%%%i\r\n\
+             -find **\\Hostx64\\x64\\dumpbin.exe`) do set DUMPBIN=%%i\r\n\
              if not defined DUMPBIN echo no dumpbin found & exit /b 1\r\n\
              \"%DUMPBIN%\" /dependents \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" \
              > \"%SUNLIT_E2E_ARTIFACTS%\\deps.txt\" || exit /b 1\r\n\
@@ -1145,9 +1145,12 @@ mod tests {
         // cmd.exe wants CRLF, and every line has to be able to fail the job.
         assert!(windows.contains("\r\n"), "{windows}");
         assert!(windows.contains("|| exit /b 1"), "{windows}");
-        // In a batch file the loop variable is doubled; a single % would be
-        // taken as an argument reference and the loop would find nothing.
+        // In a batch file the loop variable is doubled, and doubled exactly: a
+        // single % is read as an argument reference, and cmd refuses %%%i and
+        // %%%%i outright with "cannot be processed syntactically". `contains`
+        // alone cannot tell the three apart.
         assert!(windows.contains("%%i"), "{windows}");
+        assert!(!windows.contains("%%%"), "{windows}");
     }
 
     #[test]

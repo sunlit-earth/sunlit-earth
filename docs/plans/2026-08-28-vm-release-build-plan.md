@@ -165,3 +165,21 @@ What one target does, in order: read the pinned toolchain and the git facts and 
 - `finalize.sh`'s checks all passed on the second attempt: `rustc +1.94.0 -vV` and `cargo +1.94.0 -V` answer, `libclang.so` is at `/usr/lib/llvm-14/lib/`, and `readelf` and `objdump` are both on `PATH`.
 
 `cargo xtask vm smoke linux-builder`: **SSH answered 16 seconds after the boot, the readiness marker was already there (0 s), the job ran and its results came back, and the guest was destroyed. 17 seconds in total.** The boot-time marker unit is what makes the wait for a session return immediately in an image that has none, which is decision 5's whole claim.
+
+### `cargo xtask dist --target linux`
+
+The first live release build, of commit `0b7c9a4`, on 2026-08-28. Green end to end.
+
+| | |
+|---|---|
+| source archive | 8.4 MiB, `HEAD` without `textures/`, clean tree |
+| the build itself | **4 minutes 51 seconds** in the guest, 519 crates, cold registry |
+| the whole target | **5 minutes 40 seconds**, two boots included |
+| the binary | 31,852,608 bytes (30.4 MiB), stripped by the release profile |
+| glibc floor | **2.35**, which is the floor the builder exists to give it |
+| `NEEDED` | `libfontconfig.so.1`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6`, and nothing else |
+| verification | the Debian 13 desktop guest: SSH at 12 s, textures staged, `--version` answered, `render` produced a 640x360 PNG of 375 KiB |
+
+Four things this measured that the plan could only estimate. A cold release build with fat LTO is **five minutes on eight virtual cores**, not the fifteen to forty the plan budgeted, so the two-hour job timeout is generous by an order of magnitude and the crate download is not worth warming (departure 2). The `NEEDED` set is exactly the four the plan predicted from the WSL build, so the assumption that X11, xcb, xkbcommon and EGL stay `dlopen`ed survives a release profile with LTO. Nothing in the guest needed a display for the build, and nothing in the desktop guest needed one for the render. And the progress hook works: cargo's `Compiling` lines arrived on the terminal as they happened, which is acceptance criterion 8 observed rather than reviewed.
+
+`build-info.json` came out with the commit, `describe`, `dirty: false`, the channel, the guest's own `rustc -vV` and `cargo -V`, the builder image with its template hash and build time, the linkage, `verified_in: linux`, and the xtask version. The Windows-only fields are absent rather than empty, which is what the `skip_serializing_if` on them is for.

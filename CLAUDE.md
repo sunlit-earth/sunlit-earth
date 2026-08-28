@@ -81,7 +81,7 @@ job scripts, the SSH account, and the device models the Packer templates and the
 command line have to agree about. `Image::target()` is the bridge, and the two desktop
 images keep their original slugs so every path they had is the path they have.
 
-A layer is a differencing child, which is what makes the Windows builder twenty minutes
+A layer is a differencing child, which is what makes the Windows builder five minutes
 and a few gigabytes rather than an hour and another fifteen: `commands::build_layer`
 creates the child, boots it, runs `toolchain.ps1` and then `finalize.ps1` over SSH, shuts
 it down, drops the VM keeping the disk, and moves the disk into the store. The cost is

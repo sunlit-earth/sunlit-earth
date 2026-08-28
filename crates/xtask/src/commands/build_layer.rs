@@ -5,8 +5,9 @@
 //! toolchain, and the cheapest way to have both is the copy-on-write mechanism
 //! the runtime overlays already use, kept instead of thrown away: a differencing
 //! child holds only what the provisioning wrote, which is gigabytes rather than
-//! the fifteen a second Windows install would cost, and it takes twenty minutes
-//! rather than an hour because there is no install in it.
+//! the fifteen a second Windows install would cost, and it takes minutes rather
+//! than an hour because there is no install in it: four and six on this host, over
+//! two builds.
 //!
 //! Nothing here creates media, answers a boot prompt, or watches an installer.
 //! Everything below the toolchain is inherited from the parent, including the
@@ -109,7 +110,7 @@ pub fn run(runner: &dyn Runner, store: &Store, image: Image, host: HostOs) -> Re
         util::format_bytes(u64::from(memory_mb) * 1024 * 1024)
     );
     println!("  toolchain: {}", pinned.channel);
-    println!("  this takes twenty to thirty minutes, most of it the Visual Studio installer");
+    println!("  this takes five minutes or so, most of it the Visual Studio installer");
 
     let outcome = provision(
         runner,

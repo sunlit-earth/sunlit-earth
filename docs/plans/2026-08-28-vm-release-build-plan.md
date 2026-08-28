@@ -190,7 +190,7 @@ Four things this measured that the plan could only estimate. A cold release buil
 
 The build itself, first attempt:
 
-- **Twenty-two minutes wall clock**, of which the Visual Studio Build Tools installer is nearly all. It exited 0 rather than 3010, so no reboot was even deferred.
+- **Six minutes four seconds**, from the command to the manifest, of which the Visual Studio Build Tools installer is most. It exited 0 rather than 3010, so no reboot was even deferred. That is a fifth of the plan's estimate, and the reason is decision 17: two components rather than the workload, and the LLVM release archive rather than the 2 GB installer.
 - **The differencing child boots.** SSH answered immediately after the address appeared, which settles the one thing the layer approach could not be argued into: a generation 2 VM on a differencing VHDX whose parent is the golden image is a guest like any other.
 - **`finalize.ps1` found every part of the toolchain**: `rustc 1.94.0` and `cargo 1.94.0` by channel name, the VC tools under `BuildTools`, `rc.exe` at `Windows Kits\10\bin\10.0.22621.0\x64\rc.exe`, `dumpbin.exe` under `VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64`, and `libclang.dll` at `C:\tools\llvm\bin`.
 - **The evaluation clock is the parent's**, as designed: the closing line read "evaluation day 6 of 90, 84 left" on a layer built the same day, because the Windows image behind it was installed six days earlier.
@@ -201,3 +201,11 @@ Then `vm smoke windows-builder` failed, and it is worth writing down what it fou
 The fix is in the image, where the same clause already exists in the parent's own `finalize.ps1`: the layer's finalize now clears `ready`, `job.cmd` and `results/` and fails the build if the marker survives. The host was left alone deliberately. `bring_up` could delete the marker after SSH answers and wait for it to reappear, which would be a general fix rather than a per-image one, but it would change the timing of the e2e path that is currently green, and the marker being absent from a golden image is a property every other image already has.
 
 The lesson generalizes past this one file: **a layer inherits its parent's run-time leftovers, not just its installation.** Anything a boot of the parent writes into the guest root is in the child unless the child's finalize takes it out.
+
+The rebuild with that fix, and the smoke on it:
+
+- **Four minutes twenty-four seconds**, and `layer.vhdx` came out at 16.5 GiB, within a tenth of a gigabyte of the first. So the two measurements of a layer build are four and six minutes, not the twenty to thirty the plan budgeted, and the size is a property of what a Windows guest touches rather than of what this build installed.
+- **`vm smoke windows-builder` passes**: the address appeared, SSH answered at once, **the session wait took 6 seconds rather than returning instantly**, which is the fix showing itself, and the job ran and exited 0 nineteen seconds after the boot. The guest was destroyed and its overlay removed.
+- `vm status` afterwards: all four images `ok (current)`, no VM recorded, **67.7 GiB in the store** (Windows 34.1 GiB across its two formats, the layer 16.5, Debian 4.0, the Linux builder 3.1, and the 6.6 GB of media).
+
+Acceptance criterion 1 is met for both builders, and criterion 2 is met but for `vm doctor`'s four-current line, which needs one more run to be quoted here.

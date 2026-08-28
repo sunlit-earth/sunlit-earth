@@ -17,7 +17,7 @@ The store holds four, and every `vm` command takes one of their slugs:
 
 The two builders are not guests the suite can run in: neither has a desktop, and that is deliberate. A compiler in the images the suite runs in would cost the fidelity that found the missing Visual C++ runtime, because the guest that found it was a stock Windows.
 
-`windows-builder` is a *layer*: a differencing child of `windows`'s own disk, so it holds only what the toolchain install wrote. That makes it twenty to thirty minutes to build instead of an hour, and gigabytes instead of another fifteen, and it costs one thing: the file cannot be read without its parent. So the two are rebuilt and purged together, `vm status` lists the layer under the image it is a child of, and the layer's ninety-day evaluation clock is its parent's, which means a Windows rebuild for expiry costs the layer's twenty minutes on top of the hour.
+`windows-builder` is a *layer*: a differencing child of `windows`'s own disk, so it holds only what the toolchain install wrote. That makes it five minutes or so to build instead of an hour, and gigabytes instead of another fifteen, and it costs one thing: the file cannot be read without its parent. So the two are rebuilt and purged together, `vm status` lists the layer under the image it is a child of, and the layer's ninety-day evaluation clock is its parent's, which means a Windows rebuild for expiry costs the layer's few minutes on top of the hour.
 
 ## The four steps
 
@@ -35,7 +35,7 @@ cargo xtask e2e --target linux
 
 One convenience it warns about rather than installs is a VNC viewer, which only `vm view` of a QEMU guest needs. It looks for `vncviewer`, `tigervnc`, `tvnviewer`, `remmina` and `vinagre`, by name on `PATH` and then in the places an installer is known to leave a program without putting it there: TightVNC's own directory under Program Files, winget's links directory, and scoop's shims directory. `scoop install tightvnc` on Windows and `apt install tigervnc-viewer` on Linux both satisfy it. A viewer installed in the shell that is running `vm view` still counts, which is the point of not asking `PATH` alone: both winget and scoop append to the user `PATH`, and a shell that started earlier never sees it.
 
-`vm build-image <image>` builds one. What it costs varies by an order of magnitude: `linux-builder` is a minute or two of provisioning over a 700 MB download, `windows-builder` is twenty to thirty minutes of Visual Studio installer over its parent's disk, and the two desktop images are the better part of an hour each plus several gigabytes, because one installs four desktops and the other installs Windows. All of them are a one-time cost, repeated only when a template changes or a Windows evaluation expires.
+`vm build-image <image>` builds one. What it costs varies by an order of magnitude: `linux-builder` is a minute or two of provisioning over a 700 MB download, `windows-builder` is about five minutes of Visual Studio installer over its parent's disk, and the two desktop images are the better part of an hour each plus several gigabytes, because one installs four desktops and the other installs Windows. All of them are a one-time cost, repeated only when a template changes or a Windows evaluation expires.
 
 Which mechanism performs the install depends on the host, and it mirrors the hypervisor the finished guest runs on:
 
@@ -222,7 +222,7 @@ cargo xtask vm purge windows-builder --image # only the layer, leaving its paren
 
 A purge that has to stop a guest says what stopping it costs, on the line that says it is being stopped and in the question, and `-f` skips the question rather than the warning. That matters for one guest only: an image build. A purge that ends a build stops there and does not also clear the build's record and the disk its install had written, since those are run state and no flag asked for them; it names both and points at `vm down <target>`, which is what a `vm status` full of a build that is not running is telling you afterwards.
 
-A purge of a base takes its layers with it, and lists them before it asks. That is not tidiness: a differencing child without the disk it was made from is not a smaller image, it is an unreadable file. The other direction is free, so `vm purge windows-builder --image` takes the layer and leaves the Windows image alone, and rebuilding the layer is twenty minutes rather than an hour.
+A purge of a base takes its layers with it, and lists them before it asks. That is not tidiness: a differencing child without the disk it was made from is not a smaller image, it is an unreadable file. The other direction is free, so `vm purge windows-builder --image` takes the layer and leaves the Windows image alone, and rebuilding the layer is minutes rather than an hour.
 
 Neither command touches anything that is not the xtask's own. Every VM it creates is named `sunlit-e2e-<image>`, every file it writes lives under the image store, and a state file naming anything else is reported and left alone.
 

@@ -455,3 +455,82 @@ Gates at `6650133`, on this Windows host and in WSL:
   `tests/shading.rs` flake. Its xtask count is 494 against 505 on Windows, the eleven
   `cfg(windows)` cases being the difference, and both counts rose by the eleven tests this
   round added.
+
+### Validator round 2, 2026-08-29, range ca309ef..da87152: 0 MAJOR, 4 MINOR, all fixed
+
+The second validator ran the four gates at `da87152` itself, all green at the first attempt
+with no flake in the WSL leg, and then checked round 1's work rather than taking it: each of
+the nine findings plus the one the round turned up on its way out was verified by reverting
+the line that fixed it in a scratchpad copy and watching the named test fail, the
+`OutputTail` panic reproduced verbatim. Live it ran `dist --target all --keep --no-verify` to
+exit 0, Windows in 7m02s and Linux in 4m56s, confirmed the artifacts independently, and
+confirmed departure 6 from the store itself: mid-run the Windows builder's run directory
+holds the overlay, the record and `job/` and no `src.tar`, so the archive really is deleted
+once the guest has it. No major. The four minors are below, all four fixed in `562511b`, each
+with a test that fails when the line that fixes it is put back the way it was.
+
+1. **The text offering a builder guest named a command that keeps the desktop guest.** Since
+   `98f6528` made `--keep` one guest per run, the last guest of a verifying `dist` is the
+   desktop guest that runs the verification, so `cargo xtask dist --target linux --keep`, which
+   is what `vm smoke linux-builder --keep` printed, hands back a Debian desktop with neither the
+   source tree nor the `target/release` the same sentence promises. `docs/vm-setup.md` already
+   said `--keep --no-verify`, so the guest's own text was the half that was wrong.
+   `vm::keep_command` says it too now, and `the_command_that_keeps_a_builder_is_one_that_keeps_a_builder`
+   asks `dist::keeps_guest` whether the command being printed keeps the guest being offered
+   rather than comparing a string, so the two cannot come apart again. Put back to `--keep`, it
+   fails naming the windows-builder guest.
+
+2. **A guest kept after a failure kept the reason of the work that failed.** `record_kept` was
+   reached only from `hand_over`, and the keep branch of `after_failure` wrote no state, so
+   `dist --target linux --keep` whose build exited nonzero left a record saying
+   `StartReason::Dist`, and the `vm down` that message recommends then warned that it would end
+   a release build and start the compile over from an empty target directory: the exact wrong
+   warning `6650133` set out to remove, on the path that reaches it faster. Both keep paths go
+   through `record_kept` now. `a_guest_kept_after_a_failure_is_no_longer_recorded_as_the_work_that_failed`
+   writes a `Dist` record, calls `after_failure` with `--keep`, and reads the record back.
+
+3. **`vm view` was offered as "desktop:" for images that have none.** `vm smoke linux-builder
+   --keep` printed "console: 1920x1080, into a text console, since this image has no desktop"
+   and four lines later "desktop: cargo xtask vm view linux-builder". Pre-existing from
+   `e16c9fe` and the last of the class round 1's findings 4 and 5 were about.
+   `Image::console_label` is the one spelling, read by `Session::reach_hint`,
+   `vm::lifecycle_explainer` and `status::running_vm` alike, and the two words are seven letters
+   each so the column of commands beside `ssh:` and `down:` holds. Three tests, one per place,
+   plus one on the label itself; hard-coding it to "desktop" fails all three.
+
+4. **A finished run left its job scratch behind.** `Session::tear_down` removed the record and
+   the overlay and not the `job/` directory the run wrote its guest script into, which the
+   recursive scan `3137294` added then reported as run state under an image with nothing
+   running. `vm::run_state_paths` is now the one list of what a teardown removes, the scratch
+   included, and `Store::job_scratch` the one place that says where it is; `vm.log` is
+   deliberately outside the list, because a QEMU boot that failed is diagnosed from a message
+   that quotes its tail and names its path, and the same teardown runs on that path.
+   `a_teardown_removes_the_run_state_it_wrote_and_leaves_the_rest` pins the set and the
+   exception. Live: `vm smoke windows-builder` with no `--keep` leaves `0 B run state`, which is
+   the case the finding was reported against; the QEMU images keep the 607 bytes of `vm.log`
+   that the paragraph above is about, and `vm down` takes it.
+
+Nothing was declined. Live at `562511b`, one Linux builder boot and one Windows builder boot:
+`vm smoke linux-builder --keep` closed with "console: cargo xtask vm view linux-builder" and
+"`cargo xtask dist --target linux --keep --no-verify` leaves one behind with the source tree it
+built", which is findings 1 and 3 in the same six lines; its record read `"reason": "keep"`, and
+`vm down linux-builder` deleted the nested `job\job.sh` with no warning about ending a build.
+`vm smoke linux-builder` and `vm smoke windows-builder` without the flag then exercised the
+teardown itself: the Windows builder's run directory came back empty and `vm status` reported
+`0 B run state` for it, the Linux builder's held `vm.log` and nothing else. All four images
+`ok (current)` throughout, the two desktop images untouched, nothing left running.
+
+Gates at `562511b`, on this Windows host and in WSL:
+
+- `cargo test`: **all green**, 450 + 54 + 14 + 21 + 12 + 1 + 46 + 2 + 27 + 511 with the 11
+  e2e cases ignored as they are meant to be. The xtask's own count is 511 against 505 at
+  `da87152`, which is the six tests this round added.
+- `cargo clippy --all-targets`: **zero warnings**, with the six touched files rechecked
+  rather than answered from the cache.
+- `cargo fmt --check`: **clean**.
+- The WSL leg, `cargo test --workspace` under Ubuntu 22.04 into a Linux target directory:
+  **green on the second attempt**, all thirteen targets, the first attempt having hit the
+  known `tests/shading.rs` flake (`software_adapter_produces_correct_results`, `BadAccess`
+  out of `wgpu-hal`'s EGL setup) which is the documented treatment. Its xtask count is 500
+  against 511 on Windows, the eleven `cfg(windows)` cases being the difference, and both
+  counts rose by the six tests this round added.

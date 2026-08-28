@@ -67,7 +67,7 @@ parent:
 
 | slug | kind | what it is for |
 |---|---|---|
-| `windows` | base | Windows 11 Enterprise evaluation, four desktops' worth of nothing: the e2e guest |
+| `windows` | base | Windows 11 Enterprise evaluation: the e2e guest |
 | `linux` | base | Debian 13 with four desktops: the e2e guest |
 | `windows-builder` | layer over `windows` | release builds |
 | `linux-builder` | base, Ubuntu 22.04 | release builds |
@@ -593,7 +593,7 @@ Key details:
 ## Key Constraints
 
 - `rust-toolchain.toml` pins the channel (`1.94.0`, profile minimal, rustfmt and clippy).
-  rustup honours it in this checkout whatever the host's default is, which is intended:
+  rustup honors it in this checkout whatever the host's default is, which is intended:
   a release build has to be able to say which compiler made it, and the builder images
   install the channel `guest::toolchain::pinned` reads out of that file. A developer whose
   default is newer sees `rustc -V` differ inside and outside the checkout.

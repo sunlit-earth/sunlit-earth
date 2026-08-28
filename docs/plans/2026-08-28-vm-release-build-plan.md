@@ -327,3 +327,131 @@ One thing step 6 asks for was not measured: peak memory in a builder during a bu
 | 10 | met: 10 of 10 in the Linux guest under KDE, 11 of 11 in the Windows guest |
 | 11 | met, after the listing was made to say why the layer goes with its base |
 | 12 | met: the four gates above |
+
+### Validator round 1, 2026-08-28, range cc7b184..ca309ef: 1 MAJOR, 8 MINOR, all fixed
+
+A validator with fresh context ran the four gates at ca309ef itself (all green at the first
+attempt, the WSL leg included, with no flake), checked the artifacts without trusting the
+command that made them (no `vcruntime140` or `msvcp140` among the exe's strings, `readelf`
+naming exactly the four expected libraries, a glibc floor of 2.35, and the exe rendering
+640x360 on the host), re-ran `dist --target linux` live in 5m27s, took `vm status` and
+`vm doctor` on a host with four current images, and read the code against every decision and
+departure. What it found is below, most severe first, with what each one came to.
+
+1. **MAJOR. `--keep` kept one guest per target, so a `dist --keep` of both targets failed its
+   second one.** Three arms decided it independently and none of them knew how many targets
+   the run had: the Windows target kept its desktop guest, and `vm::boot` of the Linux
+   builder was then refused by `check_no_other_vm`, which is decision 16's rule doing exactly
+   what it exists for. The validator demonstrated the refusal live. Decision 13 says `--keep`
+   keeps "the last guest the run booted", singular, and `docs/vm-setup.md` repeats it, so this
+   was the code disagreeing with the contract rather than the contract being unclear. Fixed in
+   `98f6528`: `dist::keeps_guest` is that rule as one pure function over the run's options and
+   the boot in front of it, `Options` carries which targets the run covers because the answer
+   depends on them, all three arms read it, and the closing summary names the one guest that
+   was kept. `a_run_keeps_the_last_guest_it_booted_and_nothing_before_it` walks the four boots
+   of `--target all --keep` and both no-verification and failed-build variants; put back to the
+   old inline rule, it fails on the second assertion, which is the Windows desktop guest the
+   old code kept.
+
+2. **A character caught half-written panicked the build's progress hook.** `OutputTail::absorb`
+   kept a byte index into the previous poll's lossy decode, and a multi-byte character the
+   guest was still writing arrives as one three-byte replacement character and becomes itself a
+   poll later, which moves every byte after it: the validator's case, poll N of `a\u{FFFD}` and
+   poll N+1 of `a🎉`, panicked with "byte index 4 is not a char boundary", and a two- or
+   three-byte character dropped the rest of the line in silence instead. Seven minutes into a
+   build either way. Fixed in `e3284ca`: what a decode had to replace is held back for the poll
+   that has the whole of it, and the index is clamped to a character boundary before it is used.
+   The test carries all three widths and fails on the old code with the validator's own panic.
+
+3. **The source archive sat where nothing counted it and nothing deleted it.** It was written to
+   `<run dir>/dist/src.tar`, the inventory scanned a run directory one level deep, and the
+   teardown removes only an empty directory, so `vm status` reported "no overlays or run state,
+   0 B" over three archives of 8.4 MiB each. The teardown's own comment claimed anything
+   unexpected inside would show up in the next `vm status`, which was true of a file and not of
+   a subdirectory. Fixed in three commits: `98f6528` puts the archive at the run directory's
+   root and removes it as soon as the guest has it, so a copy that failed leaves it visible;
+   `3137294` scans a run directory whole and reaches through directories to remove the empty
+   ones, which makes that comment true; `d367e93` lists a run file by where it sits under the
+   run directory rather than by its name alone. Live: `vm down all` then deleted 9 files and
+   freed 25.3 MiB, naming all three archives, and left the run directory empty.
+
+4. **The boot line promised every image a desktop session.** "waiting for the desktop session"
+   and "the desktop was ready after 0s" printed for `linux-builder`, which has no X server at
+   all and writes its readiness marker from a oneshot unit at boot. Departure 4 names that line
+   as the class of thing it fixed and never touched it. Fixed in `2b95fbe`: the two lines come
+   from `readiness_wait_line` and `readiness_ready_line`, which ask `Image::has_desktop`. Live,
+   on the rebuilt builder: "waiting for the guest to be ready for a job / the guest was ready
+   after 0s".
+
+5. **The kept-guest text offered the Linux builder an applications menu.** The `Target::Linux`
+   arms of `guest_environment_note` branched on the operating system, so `vm smoke
+   linux-builder --keep` was told to look for desktop entries in an image that has no session
+   to show them. Fixed in `2b95fbe`: both Linux arms ask `Image::has_desktop`, and the builder's
+   texts name the shell and `vm ssh` instead. The Windows builder is deliberately not asked,
+   because it is a layer over the desktop image and its console session is its parent's.
+
+6. **Only the Linux half of the smoke script asked a builder for its toolchain.** `vm smoke
+   windows-builder` ran the desktop image's script, so a Windows builder with no cargo in it
+   smoked green. Fixed in `2b95fbe`, and live: the Windows builder's smoke now prints
+   `cargo 1.94.0 (85eff7c80 2026-01-15)` and exits 0 after 26 seconds.
+
+7. **`--allow-expired-image` was documented nowhere.** Neither CLAUDE.md's usage line nor
+   `docs/vm-setup.md`'s release builds section named it. Fixed in `dbb4d7d`, which also states
+   in the guide that `--keep` is one guest per run and why. `the_docs_spell_out_every_flag_dist_takes`
+   reads the usage line out of both documents and compares it against the command clap defines,
+   so the next flag cannot be added in silence.
+
+8. **The Linux builder installed `git`, which decision 4's package list does not name.** Nothing
+   in the guest uses it: the source arrives as a tar the host made, the lockfile names no git
+   dependency, and cargo's registry protocol needs none. Removed in `dbb4d7d` rather than
+   recorded as a departure, and the image rebuilt over it in 1 minute 12 seconds to 3.1 GiB
+   (3,349,282,816 bytes), which is within a tenth of a percent of the image that had it. The
+   Linux target of the `--target all` run below is what proves nothing missed it.
+
+9. **`TeardownImage` duplicated `Image::ALL` with nothing joining the two lists.** A fifth image
+   would have left `vm down` and `vm purge` unable to name it with nothing failing anywhere.
+   Fixed in `dbb4d7d` with `the_teardowns_can_name_every_image_and_nothing_else`, which is the
+   same shape as `the_guest_accepts_exactly_the_sessions_the_host_can_ask_for`.
+
+Nothing was declined, and the round found one thing the review had not. `--keep` now always
+ends a run with a guest still up, which made it visible that `record_kept` moved a test run's
+reason to `Keep` and left a release build's alone: the kept guest reported itself as a build
+in progress for as long as it existed, and the `vm down` its own closing text recommends
+warned that it would end that build and start the compile over from an empty target
+directory. Fixed in `6650133`, where both of the reasons that describe work in progress
+become the one that describes a guest waiting for somebody, and the label loses the word
+`test` because two commands leave a guest behind now.
+
+What the round cost live, in order. The Linux builder was rebuilt without `git` in
+1 minute 12 seconds to 3.1 GiB (3,349,282,816 bytes), and `vm smoke linux-builder` passed
+in 17 seconds with the new line, "waiting for the guest to be ready for a job / the guest
+was ready after 0s", and `cargo 1.94.0` from the probe. `vm smoke windows-builder` passed
+in 26 seconds with the same `cargo 1.94.0`, which is a question that image had never been
+asked. `vm down all` swept the three orphaned archives, 9 files and 25.3 MiB, and left the
+run directory empty.
+
+Then the run the major finding is about. **`cargo xtask dist --target all --keep` of commit
+`e7514f4`, clean tree, verification on: four boots, exit 0, Windows built in 7m48s and
+rendered in the Windows guest, Linux in 5m22s and rendered in the Linux guest.** Both
+figures are within two seconds of the same run before this round, so nothing here cost
+anything. The Windows target's guest and the Windows desktop guest were both taken down
+although `--keep` was given, the Linux builder was taken down after its build, and the run
+ended with one guest and one line naming it: "the sunlit-e2e-linux guest is still up,
+because --keep was given; `cargo xtask vm down linux` ends it". `vm status` then reported
+exactly one VM running, `sunlit-e2e-linux`, with no source archive anywhere in the store,
+and `vm down linux` stopped it and freed 122.1 MiB across four files with no warning about
+ending a build, which is what the last commit of the round is for. The Linux binary was
+built on the rebuilt image, so nothing in the workspace missed the `git` that went.
+
+Gates at `6650133`, on this Windows host and in WSL:
+
+- `cargo test`: **all green**, 450 + 54 + 14 + 21 + 12 + 1 + 46 + 2 + 27 + 505 with the 11
+  e2e cases ignored as they are meant to be. The xtask's own count is 505 against 494 at
+  ca309ef, which is the eleven tests this round added.
+- `cargo clippy --all-targets`: **zero warnings**.
+- `cargo fmt --check`: **clean**.
+- The WSL leg, `cargo test --workspace` under Ubuntu 22.04 into a Linux target directory:
+  **green at the first attempt**, all thirteen targets, with none of the known
+  `tests/shading.rs` flake. Its xtask count is 494 against 505 on Windows, the eleven
+  `cfg(windows)` cases being the difference, and both counts rose by the eleven tests this
+  round added.

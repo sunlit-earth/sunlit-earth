@@ -87,7 +87,7 @@ pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(),
 /// Sahara and the Atlantic: with the assets it tests the real map, and without
 /// them it tests the procedural grid and says so, which is the same thing that
 /// happens to `cargo e2e` on a host in this state.
-fn host_textures(repo: &Path) -> Option<PathBuf> {
+pub fn host_textures(repo: &Path) -> Option<PathBuf> {
     let dir = repo.join("textures");
     // An array rather than a vector, so the sizes and the names cannot get
     // out of step with each other.

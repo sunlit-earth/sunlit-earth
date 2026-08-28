@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{bake_icon, bake_stars, build_image, doctor, e2e, setup, teardown, vm};
+use crate::commands::{bake_icon, bake_stars, build_image, dist, doctor, e2e, setup, teardown, vm};
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
 use crate::provider::target::{HostOs, Image};
@@ -61,6 +61,25 @@ enum Command {
         /// default is KDE Plasma.
         #[arg(long)]
         desktop: Option<Desktop>,
+    },
+    /// Build a release binary in a pristine builder guest, from the committed
+    /// tree, and prove it runs in the desktop guest of the same target.
+    Dist {
+        /// Which target, or `all`.
+        #[arg(long, default_value = "all")]
+        target: dist::Which,
+        /// Leave the last guest of the run up for inspection.
+        #[arg(long)]
+        keep: bool,
+        /// Skip the boot that runs the binary in the desktop image.
+        #[arg(long)]
+        no_verify: bool,
+        /// Build even though an image's evaluation licence has expired.
+        #[arg(long)]
+        allow_expired_image: bool,
+        /// Build HEAD even though the working tree has uncommitted changes.
+        #[arg(long)]
+        allow_dirty: bool,
     },
     /// Rasterize the icon SVGs into the outputs the app ships. The results are
     /// committed; rerun this when a source SVG changes.
@@ -190,6 +209,22 @@ fn main() -> ExitCode {
             allow_expired_image,
             desktop,
         } => e2e::run(&runner, target, keep, allow_expired_image, desktop),
+        Command::Dist {
+            target,
+            keep,
+            no_verify,
+            allow_expired_image,
+            allow_dirty,
+        } => dist::run(
+            &runner,
+            target,
+            dist::Options {
+                keep,
+                verify: !no_verify,
+                allow_expired: allow_expired_image,
+                allow_dirty,
+            },
+        ),
         Command::BakeIcon { review } => bake_icon::run(review),
         Command::BakeStars { input, output } => bake_stars::run(&input, &output),
         Command::Vm { command } => match command {

@@ -208,7 +208,32 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
         "e2e-1a2b",
         false,
     );
+    // The release build's own two jobs. The build one is the longest generated
+    // script in the crate and the only one that runs for tens of minutes, so a
+    // syntax error in it costs a boot and a source copy before it says anything.
+    let pinned = crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n")
+        .expect("a fixture pin parses");
     vec![
+        (
+            "dist: build".to_owned(),
+            crate::commands::dist::build_job(crate::provider::target::Target::Linux, &pinned),
+        ),
+        (
+            "dist: verify".to_owned(),
+            crate::commands::dist::verify_job(
+                crate::provider::target::Target::Linux,
+                "/var/lib/sunlit-e2e/bin/sunlit-earth",
+                Some("/var/lib/sunlit-e2e/textures"),
+            ),
+        ),
+        (
+            "dist: verify without textures".to_owned(),
+            crate::commands::dist::verify_job(
+                crate::provider::target::Target::Linux,
+                "/var/lib/sunlit-e2e/bin/sunlit-earth",
+                None,
+            ),
+        ),
         (
             "handover: launcher".to_owned(),
             crate::guest::handover::linux_launcher_script(&paths),

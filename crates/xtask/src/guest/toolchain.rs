@@ -31,24 +31,6 @@ pub struct Toolchain {
     pub components: Vec<String>,
 }
 
-impl Toolchain {
-    /// The `rustup toolchain install` arguments a builder's job runs.
-    ///
-    /// Explicit rather than relying on rustup installing a missing toolchain by
-    /// itself, which 1.28.0 removed and 1.28.1 restored behind a variable. It
-    /// is a no-op when the image already carries the channel and a download
-    /// when the repository has moved on since the image was built.
-    pub fn install_args(&self) -> Vec<String> {
-        vec![
-            "toolchain".to_owned(),
-            "install".to_owned(),
-            self.channel.clone(),
-            "--profile".to_owned(),
-            "minimal".to_owned(),
-        ]
-    }
-}
-
 #[derive(Deserialize)]
 struct File {
     toolchain: Section,
@@ -203,15 +185,6 @@ mod tests {
             let text = format!("[toolchain]\nchannel = \"{good}\"\n");
             assert_eq!(parse(&text).expect("parses").channel, good);
         }
-    }
-
-    #[test]
-    fn the_install_arguments_name_the_channel_and_the_minimal_profile() {
-        let pin = parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses");
-        assert_eq!(
-            pin.install_args(),
-            ["toolchain", "install", "1.94.0", "--profile", "minimal"]
-        );
     }
 
     /// The committed file is what rustup reads and what both builders install,

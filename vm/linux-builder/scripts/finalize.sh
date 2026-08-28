@@ -46,7 +46,10 @@ done
 
 # Recorded in the image so a guest can be asked what it is without a toolchain
 # query: the floor a binary linked here carries is this libc's version.
-ldd --version | head -1 > /var/lib/sunlit-e2e/glibc.txt
+# `awk` rather than `head`, which closes the pipe on its first line and
+# leaves `ldd` killed by SIGPIPE: under `pipefail` that is a failed script
+# with 141 and nothing to say for itself.
+ldd --version | awk 'NR == 1' > /var/lib/sunlit-e2e/glibc.txt
 chmod 0644 /var/lib/sunlit-e2e/glibc.txt
 
 # Every run boots a throwaway overlay of this image with no seed CD attached.

@@ -370,9 +370,7 @@ mod tests {
             );
         }
         assert!(
-            named
-                .iter()
-                .any(|s| matches!(s, teardown::Selection::All)),
+            named.iter().any(|s| matches!(s, teardown::Selection::All)),
             "nothing names all of them"
         );
         assert_eq!(named.len(), Image::ALL.len() + 1);

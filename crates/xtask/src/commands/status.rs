@@ -26,7 +26,11 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
 
     for image in Image::ALL {
         let entry = inventory.for_image(image);
-        let _ = writeln!(out, "{}", image_section(image, entry, now_unix));
+        let _ = writeln!(
+            out,
+            "{}",
+            image_section(image, entry, now_unix, &inventory.root)
+        );
     }
 
     if inventory.iso.is_empty() {
@@ -81,7 +85,12 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
     out
 }
 
-fn image_section(image: Image, entry: Option<&ImageInventory>, now_unix: u64) -> String {
+fn image_section(
+    image: Image,
+    entry: Option<&ImageInventory>,
+    now_unix: u64,
+    root: &std::path::Path,
+) -> String {
     let mut out = String::new();
     let Some(entry) = entry else {
         let _ = writeln!(out, "{image}: not inspected");
@@ -137,7 +146,7 @@ fn image_section(image: Image, entry: Option<&ImageInventory>, now_unix: u64) ->
         let _ = writeln!(out, "  manifest problem: {error}");
     }
 
-    let _ = write!(out, "{}", run_state_section(image, entry));
+    let _ = write!(out, "{}", run_state_section(image, entry, root));
 
     let _ = writeln!(
         out,
@@ -149,7 +158,7 @@ fn image_section(image: Image, entry: Option<&ImageInventory>, now_unix: u64) ->
 }
 
 /// The half of an image's section that describes overlays and VMs.
-fn run_state_section(image: Image, entry: &ImageInventory) -> String {
+fn run_state_section(image: Image, entry: &ImageInventory, root: &std::path::Path) -> String {
     let mut out = String::new();
     if entry.build_bytes() > 0 {
         let _ = writeln!(
@@ -169,8 +178,16 @@ fn run_state_section(image: Image, entry: &ImageInventory) -> String {
             crate::util::count(entry.run_files.len(), "file"),
             format_bytes(entry.run_bytes())
         );
+        // Named the way it sits under the run directory, not by its file name
+        // alone: what is listed there is what `vm down` deletes, and a run
+        // directory has subdirectories in it.
+        let run_dir = crate::store::Store::new(root).run_dir(image);
         for file in &entry.run_files {
-            let _ = writeln!(out, "    {}  {}", file.name(), format_bytes(file.bytes));
+            let name = file
+                .path
+                .strip_prefix(&run_dir)
+                .map_or_else(|_| file.name(), |rest| rest.display().to_string());
+            let _ = writeln!(out, "    {name}  {}", format_bytes(file.bytes));
         }
     }
 
@@ -289,6 +306,24 @@ mod tests {
         state.vnc = Some("127.0.0.1:5900".to_owned());
         state.pid = Some(1234);
         state
+    }
+
+    /// What this lists is what `vm down` deletes, and a run directory has
+    /// subdirectories in it, so a file named by its own name alone is a file
+    /// nobody can find: that is how two source archives of eight megabytes sat
+    /// in the store unaccounted for.
+    #[test]
+    fn a_run_file_is_listed_by_where_it_sits_under_the_run_directory() {
+        let run = std::path::Path::new("/srv/vm/run/linux-builder");
+        let mut entry = healthy(Image::LinuxBuilder);
+        entry.run_files = vec![
+            FileInfo::new(run.join("overlay.qcow2"), 3 * 1024 * 1024, BUILT),
+            FileInfo::new(run.join("job").join("job.sh"), 200, BUILT),
+        ];
+        let text = render(&inventory(vec![entry]), now());
+        assert!(text.contains("overlay.qcow2  3.0 MiB"), "{text}");
+        let nested = std::path::Path::new("job").join("job.sh");
+        assert!(text.contains(&nested.display().to_string()), "{text}");
     }
 
     #[test]

@@ -129,15 +129,29 @@ impl OutputTail {
     /// A log that is shorter than what was already printed is a guest that
     /// started the job again, which the runner does by removing the results
     /// directory first. That reads as a fresh log rather than as nothing new.
+    ///
+    /// The log arrives decoded from whatever bytes the guest had written when
+    /// the poll read the file, so a multi-byte character caught half-written
+    /// comes back as one three-byte replacement character and turns into itself
+    /// a poll later. That moves every byte after it, which is why an index into
+    /// the previous decode is not trusted here: what the last poll ended in is
+    /// held back rather than printed, and clamping to a character boundary keeps
+    /// a stale index from landing inside a character and panicking.
     pub fn absorb<'a>(&mut self, log: &'a str) -> Option<&'a str> {
         if log.len() < self.printed {
             self.printed = 0;
         }
+        while self.printed > 0 && !log.is_char_boundary(self.printed) {
+            self.printed -= 1;
+        }
         let fresh = &log[self.printed..];
+        // A trailing replacement character is a character the guest is still
+        // writing, so it waits for the poll that has the whole of it.
+        let fresh = fresh.trim_end_matches(char::REPLACEMENT_CHARACTER);
         if fresh.is_empty() {
             return None;
         }
-        self.printed = log.len();
+        self.printed += fresh.len();
         Some(fresh)
     }
 }
@@ -359,6 +373,34 @@ mod tests {
         // that got shorter is a new job rather than nothing to say.
         assert_eq!(tail.absorb("Compiling se\n"), Some("Compiling se\n"));
         assert_eq!(tail.absorb("Compiling se\n"), None);
+    }
+
+    /// The guest's log is decoded from the bytes that were there when the poll
+    /// read it, so a character the job was in the middle of writing arrives as
+    /// one replacement character and becomes itself on the next poll. Both
+    /// lengths change under a byte index kept from the poll before: a four-byte
+    /// character grows the log by a byte, which used to put the index inside a
+    /// character and panic seven minutes into a build, and a two- or three-byte
+    /// one leaves it the same length or shorter, which used to drop the rest of
+    /// the line in silence.
+    #[test]
+    fn a_character_caught_half_written_neither_panics_nor_swallows_the_line() {
+        for (half, whole) in [
+            ("Compiling \u{fffd}", "Compiling \u{1f389}"),
+            ("Compiling \u{fffd}", "Compiling \u{20ac}b"),
+            ("Compiling \u{fffd}", "Compiling \u{e9}b"),
+        ] {
+            let mut tail = OutputTail::new();
+            let mut printed = String::new();
+            if let Some(fresh) = tail.absorb(half) {
+                printed.push_str(fresh);
+            }
+            if let Some(fresh) = tail.absorb(whole) {
+                printed.push_str(fresh);
+            }
+            assert_eq!(printed, whole, "{whole:?}");
+            assert_eq!(tail.absorb(whole), None, "{whole:?}");
+        }
     }
 
     #[test]

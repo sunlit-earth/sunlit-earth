@@ -41,20 +41,59 @@ The desktop e2e suite runs in local VMs instead of taking over the developer's d
 ```bash
 cargo xtask vm doctor              # Unelevated, read-only: can this host run the VM suite?
 cargo xtask vm setup               # The one command that changes the host. Elevated on Windows.
-cargo xtask vm build-image <windows|linux>   # An install, then a manifest. Tens of minutes.
-cargo xtask vm up <target> [--desktop <kde|gnome|xfce|cinnamon>]   # An interactive guest, with the current binaries in it
-cargo xtask vm ssh <target>        # A shell in the running guest
-cargo xtask vm view <target>       # Its desktop (vmconnect for Hyper-V, VNC for QEMU)
-cargo xtask vm smoke <target>      # Boot, run a trivial job through the guest contract, take it down
+cargo xtask vm build-image <image>  # An install or a layer, then a manifest. Minutes to an hour.
+cargo xtask vm up <image> [--desktop <kde|gnome|xfce|cinnamon>]   # An interactive guest, with the current binaries in it
+cargo xtask vm ssh <image>         # A shell in the running guest
+cargo xtask vm view <image>        # Its desktop (vmconnect for Hyper-V, VNC for QEMU)
+cargo xtask vm smoke <image>       # Boot, run a trivial job through the guest contract, take it down
 cargo xtask vm status              # Images, media, overlays, running VMs, disk footprint
-cargo xtask vm down <windows|linux|all>      # End the guest, keep the golden image
-cargo xtask vm purge <windows|linux|all> [--vm] [--image] [--iso] [-f]
+cargo xtask vm down <image|all>    # End the guest, keep the image
+cargo xtask vm purge <image|all> [--vm] [--image] [--iso] [-f]
 cargo xtask e2e --target <host|windows|linux> [--keep] [--allow-expired-image] [--desktop <d>]
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-dirty]
 ```
+
+An `<image>` is one of four slugs: `windows` and `linux` are the desktop guests the e2e
+suite runs in, and `windows-builder` and `linux-builder` are where `dist` builds a
+release binary. A `<target>` is an operating system, which is what `e2e` and `dist` take,
+because each of them picks the image it needs itself.
 
 The host tools the VM commands run go through `host::facts::resolve_tool`, which asks `PATH` and then the places an installer is known to leave a program without putting it on `PATH`: QEMU's and TightVNC's own directories under Program Files, winget's links directory, and scoop's shims directory under `%SCOOP%` or `~\scoop` and `%SCOOP_GLOBAL%` or `%ProgramData%\scoop`. Both package managers append to the *user* `PATH`, so a tool installed in the shell that is now running the xtask is installed and invisible; a lookup that missed it would make `vm setup` plan an install that winget then refuses as redundant, and `vm view` claim a viewer is absent. The VNC viewers are in `facts::VNC_VIEWERS`, executable names rather than package identifiers, and `vm view` of a QEMU guest resolves them the same way `vm doctor` reports them. Two lookups stay on bare `PATH` deliberately and say so where they sit: the Packer ISO tools, because Packer resolves them itself and a fallback location would not help it, and `store::windows_media`'s choice between `curl` and `wget`.
 
 `vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `vm down` is the cheap teardown: it ends the guest and deletes its run state, which the next boot recreates. `vm purge` is the disk-space one: everything a target has on disk unless `--vm`, `--image`, or `--iso` narrows it, and it asks before deleting unless `-f` is given. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
+**The store holds an image per slug, not an image per target** (`provider::target::Image`).
+An image is either a *base*, installed from media, or a *layer*, provisioned over a named
+parent:
+
+| slug | kind | what it is for |
+|---|---|---|
+| `windows` | base | Windows 11 Enterprise evaluation, four desktops' worth of nothing: the e2e guest |
+| `linux` | base | Debian 13 with four desktops: the e2e guest |
+| `windows-builder` | layer over `windows` | release builds |
+| `linux-builder` | base, Ubuntu 22.04 | release builds |
+
+What keys on the image is what belongs to one disk: every path under `images/`, `run/`,
+`build/` and `results/`, the VM name, the manifest, the run record, and how much of the
+host a guest of it gets (`provider::resources_for`, which both hypervisors read, so a
+builder's 8 GiB and eight cores cannot come apart between the two). What keys on the
+target is everything about the operating system: the provider matrix, the guest root, the
+job scripts, the SSH account, and the device models the Packer templates and the QEMU
+command line have to agree about. `Image::target()` is the bridge, and the two desktop
+images keep their original slugs so every path they had is the path they have.
+
+A layer is a differencing child, which is what makes the Windows builder twenty minutes
+and a few gigabytes rather than an hour and another fifteen: `commands::build_layer`
+creates the child, boots it, runs `toolchain.ps1` and then `finalize.ps1` over SSH, shuts
+it down, drops the VM keeping the disk, and moves the disk into the store. The cost is
+that the file cannot be read without its parent: Hyper-V refuses to attach a child whose
+parent's identifier changed and qcow2 reads garbage silently, so the layer's manifest
+records the parent's checksum as the parent's own manifest states it and the inventory
+calls a mismatch `ImageCondition::Detached` and blocks the boot. The evaluation clock is
+the parent's too, recorded in the same place: provisioning a layer over an eighty-day-old
+install does not reset the licence. A purge of a base lists its layers with it, and
+`SUNLIT_EARTH_VM_PROVIDER` is refused for a layer, because converting a differencing
+child between formats means flattening it through a full copy of its parent.
+
 **The builder matrix mirrors the runtime provider matrix**, and `commands::build_image::builder_for` is the one place that decides it:
 
 | | Windows host | Linux host |
@@ -69,6 +108,38 @@ Both builders report on the install while it runs, because neither Packer nor Wi
 The build VM carries the same `sunlit-e2e-windows` name a runtime guest does and writes a `RunState` with a build reason before it exists, so `vm status`, `vm view`, `vm ssh`, `vm down`, and the one-VM-at-a-time rule all apply to a build. Every failure from the point the create script could have run asks Hyper-V whether the VM is there and says which of the three answers it got, because that script is one process that stops at its first error and most of its statements leave a registered VM behind. A failed build keeps its guest and prints how to reach and remove it; `vm down windows` takes the VM and the unfinished disk together, a `--iso` purge ends a build first because a build holds both DVDs for the whole install, and a build that is still running is refused as something to clear away. Anything that ends a build says so before it does: `StartReason::cost_of_ending` is the one clause, read by the one-VM-at-a-time refusal and by a teardown's listing and question alike, and a purge that ends a build without taking its run state names the record and the disk it leaves.
 
 `e2e --target <guest>` copies three things in: the app, the test harness, and the fixtures, plus the repository's `textures/` when it holds the assets rather than Git LFS pointers (checked by size, since a pointer file exists and cannot be decoded). `test_render_and_exit` samples the globe by color, so without them a guest renders the procedural grid; the job then omits `SUNLIT_EARTH_TEXTURES` rather than naming a directory that is not there, which is the same thing that happens to `cargo e2e` on a host in that state. The generated Windows job also sets `SLINT_BACKEND=winit-software` (`commands::e2e::WINDOWS_SLINT_BACKEND`): a Hyper-V guest's synthetic display adapter offers no OpenGL and Windows ships no software implementation of it, so Slint's default renderer cannot start at all and the app dies with "Could not locate glCreateShader symbol" before its event loop. WARP does not cover that, because WARP is Direct3D and Slint asks for GL. The Linux job sets no backend, because Mesa is a software GL implementation and llvmpipe answers there. Both details live in the generated job, which is per run: neither needs an image rebuild.
+
+`cargo xtask dist` is the release path, and it is the one place decision 8's
+"build on the host and copy the binaries in" does not apply. That rule is right for a
+debug build of a test harness, where the host's toolchain is the fast path for iterating
+on a test; it is wrong for a release, where the point is that the host is not in the
+build. So `commands::dist` boots a pristine overlay of the target's builder image, copies
+in a `git archive` of `HEAD` without `textures/`, and runs `cargo build --release
+--locked -p sunlit-earth` in there with `cargo` named by absolute path. Nothing else of
+the host reaches it: no `target/`, no `~/.cargo`, no environment, and the toolchain is
+installed by the name `rust-toolchain.toml` pins (`guest::toolchain`).
+
+Two claims a release binary makes cannot be checked by running it, so the builder reads
+its own output with the tools it has and the host parses that: `dumpbin /dependents` must
+name neither `vcruntime140.dll` nor `msvcp140.dll`, which is `crt-static` proven on the
+artifact, and `readelf -d` with `objdump -T` must show a glibc floor of at most 2.35 and
+the four libraries the Linux port links. A guest with the Visual C++ redistributable
+installed runs a dynamically linked binary perfectly well, which is exactly why running
+it proves nothing about that. What running it does prove is the other half, so the binary
+is then staged into the *desktop* image of the same target and asked for one 640x360
+`render`, whose result is measured from its own PNG header: a render that failed after
+opening its output still leaves a file. `--no-verify` skips that boot. The output is
+`<target dir>/dist/<target>/`, replaced wholesale on success and untouched on failure,
+holding the binary, `build-info.json`, the builder's `output.log` as `build.log`, and the
+verification render. A dirty working tree is refused before anything boots, because the
+archive is of `HEAD` and a record whose commit does not describe the binary is the one
+thing it must not be.
+
+A build says what it is doing while it does it: `job::OutputTail` reads the guest's
+`output.log` on every poll and prints what is new, tracked by how much has been printed
+already, because a forty-minute compile that says nothing is indistinguishable from a
+wedged one. The e2e path does not take the hook; its suite finishes in under a minute and
+its log is printed once at the end.
 
 A guest is also something a person looks at, so staging writes two more things into either one (`guest::handover`): a launcher that starts the app with the environment this boot gave it, and two shortcuts, one for that launcher and one for the guest root. In a Windows guest they are `C:\sunlit-e2e\run-app.cmd`, which sets the same `SLINT_BACKEND` the job sets and `SUNLIT_EARTH_TEXTURES` under the same condition, and two `.lnk` files on the console user's desktop. Per boot for the same reason the job script is per run, and generated rather than shipped in the image because the launcher has to know what this boot staged. A Windows guest also offers one of two consoles, and `handover::enable_enhanced_session` is what decides which. The image ships with Remote Desktop Services disabled, so a guest running a suite offers no enhanced session (`EnhancedSessionModeState` 6 rather than 2) and `vmconnect` opens a basic session that asks for nothing: an enhanced session is RDP, and connecting moves the console session into it, which is where the windowed tests keep their desktop. A guest being handed to a person has nothing of ours running in it, so `vm up` and `e2e --keep` turn the service back on, blank the account's password and clear `LimitBlankPasswordUse`, which is what makes the credential dialog a thing to dismiss rather than fill in. That buys the one thing a basic session cannot do at all: a window that resizes, with the guest's desktop following it. What happened is recorded rather than inferred: `vm::hand_over` writes `RunState::handed_over` from the marker the guest itself printed, and that field, not the start reason, is what `vm view` reads to decide whether to answer the connection dialog and which of the two consoles to describe. The reason is chosen before the boot, so it can answer neither question; `Keep` is written at the same moment, which is what lets `vm status` tell a run in progress from one that is over. Each command's closing text comes from the same facts (`vm::Prepared`), so `vm smoke --keep`, which stages nothing and hands nothing over, is described as the empty desktop it is. A guest whose image predates the Remote Desktop Services disable still offers an enhanced session, and staleness only warns at boot, so the note for a guest nobody handed over says to cancel a credential dialog that appears anyway rather than sign in. The display-configuration dialog in front of an enhanced session is answered by `vm view`, which writes `vmconnect`'s own per-VM settings file (`hyperv::vmconnect_settings`) before starting it, sweeps the ones earlier guests left, and takes the file with the VM when one is destroyed: those settings are filed under the VM's identifier, which is new on every boot, so the dialog's own remember-me checkbox lasts exactly one guest. Runtime is enough for all three, so none of it needs an image rebuild; the disable is an image property only because the service refuses to stop once started, and `finalize.ps1` fails a build whose start type is anything else.
 
@@ -133,9 +204,11 @@ sunlit-earth/
   textures/          # local JXL assets, not part of the build: the two 8K Earth maps,
                      # the Moon's 1024x512 surface and the 4096x2048 Milky Way
                      # panorama, with PROVENANCE.md beside them
-  vm/                # Packer templates and guest assets for the test VMs
+  vm/                # Templates and guest assets, one directory per image slug
     linux/           # Debian 13, four desktops on Xorg, cloud-init seed
     windows/         # Windows 11 Enterprise eval, autounattend, bootstrap
+    linux-builder/   # Ubuntu 22.04, a Rust toolchain, no graphics stack
+    windows-builder/ # the two scripts that turn a child of the Windows image into a builder
 ```
 
 The package inside `crates/sunlit-app` is still named `sunlit-earth`, so the binary, `CARGO_BIN_EXE_sunlit-earth`, and `target/release/sunlit-earth.exe` in the release workflow are unchanged by the directory name.
@@ -487,6 +560,16 @@ Key details:
 
 ## Key Constraints
 
+- `rust-toolchain.toml` pins the channel (`1.94.0`, profile minimal, rustfmt and clippy).
+  rustup honours it in this checkout whatever the host's default is, which is intended:
+  a release build has to be able to say which compiler made it, and the builder images
+  install the channel `guest::toolchain::pinned` reads out of that file. A developer whose
+  default is newer sees `rustc -V` differ inside and outside the checkout.
+- `.cargo/config.toml` links the C runtime statically on `x86_64-pc-windows-msvc`
+  (`-C target-feature=+crt-static`). Every Windows build of this tree agrees, the e2e
+  binaries and a local `cargo build --release` included, and the `cc` crate follows it
+  with `/MT` for the Astronomy Engine's C. A clean Windows 10 then needs no Visual C++
+  redistributable, which is what `dist --target windows` proves on the artifact.
 - `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `scene/sky.rs`, `wallpaper.rs`, `config.rs`, `memory.rs`, and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments. New FFI, on any platform, follows that pattern; the macOS `task_info` call in `memory.rs` is the most recent example.
 - Slint is pinned to `~1.17` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during resize, and then capped by the quality tier.

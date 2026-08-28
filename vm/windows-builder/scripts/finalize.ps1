@@ -22,6 +22,53 @@ $problems = @()
 $libclang = 'C:\tools\llvm\bin\libclang.dll'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 
+# Before the checks rather than after them, so that anything the trim breaks
+# fails this build instead of a release build a week later.
+Write-Output '== trimming what a build does not read'
+# A differencing child records every block the guest wrote, including the ones it
+# then freed: the installer downloads, the LLVM archive and the 2 GiB tree it was
+# unpacked into are all gone from the file system and all still in the layer.
+# Deleting is not enough on its own, which is what the ReTrim below is for.
+$disposable = @(
+    # The Visual Studio installer's own cache. `--nocache` asks it not to keep
+    # one and it keeps part of one anyway. What it is for is repair, modify and
+    # uninstall, none of which happen to a throwaway guest.
+    'C:\ProgramData\Package Cache',
+    # Windows Update and Delivery Optimization both downloaded during the
+    # provisioning, because this is the one part of a layer build with a network.
+    'C:\Windows\SoftwareDistribution\Download',
+    'C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache',
+    "$env:TEMP",
+    'C:\Windows\Temp'
+)
+foreach ($path in $disposable) {
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    $before = (Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Measure-Object -Property Length -Sum).Sum
+    # Contents rather than the directory, since some of these are recreated by a
+    # service that expects to own them. Files a service still holds open are left
+    # where they are: a slightly larger layer is better than a failed build.
+    Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    $after = (Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Measure-Object -Property Length -Sum).Sum
+    Write-Output ('   {0}: {1:N0} MB freed' -f $path, ((($before - $after) / 1MB)))
+}
+
+# The step that makes the deletions visible to the host. Without it the blocks
+# above stay allocated in the differencing disk and `Optimize-VHD` has nothing to
+# reclaim, because a virtual disk learns a block is free only when the guest's
+# file system says so. Not `sdelete` and not a zero-fill: writing zeroes over the
+# free space would allocate every block it touched, which is the opposite of the
+# point.
+Write-Output '== telling the virtual disk which blocks are free'
+try {
+    Optimize-Volume -DriveLetter C -ReTrim -ErrorAction Stop
+    Write-Output '   retrimmed'
+} catch {
+    Write-Output "   could not retrim ($($_.Exception.Message)); the layer will be larger"
+}
+
 Write-Output '== the Rust toolchain'
 $cargo = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
 $rustc = Join-Path $env:USERPROFILE '.cargo\bin\rustc.exe'

@@ -124,7 +124,7 @@ pub fn run(runner: &dyn Runner, store: &Store, image: Image, host: HostOs) -> Re
     build_image::forget_host_keys(store);
     outcome?;
 
-    finish(store, image, parent, &backing, &staged)
+    finish(runner, store, image, parent, &backing, &staged)
 }
 
 /// What the parent is, and in which format the child has to be made.
@@ -425,8 +425,67 @@ fn shut_down(
     Ok(())
 }
 
+/// Give back the blocks the guest freed, before the manifest measures the file.
+///
+/// The guest's own `finalize.ps1` deletes what a build does not read and then
+/// retrims the volume, which is what tells the virtual disk those blocks are
+/// free; this is the half that shrinks the file. It runs after the move and
+/// before `record`, so the manifest's size and checksum describe the disk as it
+/// will be read, and it is best effort: a layer that could not be compacted is a
+/// larger layer and not a failed build.
+///
+/// Hyper-V only. A qcow2 layer exists only on a Linux host, where the guest's
+/// discards reach a sparse file directly and nothing on the host has to be run;
+/// compacting one would mean `qemu-img convert` into a copy and a rename over the
+/// original, which is the step the Debian template already turns off.
+fn compact(runner: &dyn Runner, disk: &Path, provider: ProviderKind) {
+    if provider != ProviderKind::HyperV {
+        return;
+    }
+    let before = std::fs::metadata(disk).map(|m| m.len()).unwrap_or_default();
+    println!("compacting {}", disk.display());
+    // Not through `run_script`, whose failure is a build failure. `Optimize-VHD`
+    // needs the Hyper-V module and a disk nothing has attached, and both are
+    // conditions this step can lose without costing anything but bytes.
+    let outcome = runner
+        .capture(&crate::runner::powershell(&compact_script(disk)))
+        .map_err(|e| e.to_string())
+        .and_then(|out| {
+            if out.success() {
+                Ok(())
+            } else {
+                Err(out.stderr.trim().to_owned())
+            }
+        });
+    match outcome {
+        Ok(()) => {
+            let after = std::fs::metadata(disk).map(|m| m.len()).unwrap_or_default();
+            println!(
+                "  {} -> {}",
+                util::format_bytes(before),
+                util::format_bytes(after)
+            );
+        }
+        Err(e) => println!("  could not compact it ({e}); the layer keeps its full size"),
+    }
+}
+
+/// What compacting one asks Hyper-V for.
+///
+/// `Full` rather than the default `Quick`: quick mode gives back only the blocks
+/// the disk's own allocation table already calls free, and what the guest just
+/// did was mark blocks free in its file system. Full mode mounts the disk
+/// read-only and reads that file system, which is the only way the two agree.
+pub fn compact_script(disk: &Path) -> String {
+    format!(
+        "Optimize-VHD -Path {} -Mode Full -ErrorAction Stop",
+        crate::runner::ps_quote(disk)
+    )
+}
+
 /// Move the finished layer into the image store and write its manifest.
 fn finish(
+    runner: &dyn Runner,
     store: &Store,
     image: Image,
     parent: Image,
@@ -447,6 +506,7 @@ fn finish(
         ));
     }
     build_image::move_file(staged, &final_disk)?;
+    compact(runner, &final_disk, backing.provider);
 
     let images = vec![build_image::record(&final_disk)?];
     let template_hash = crate::store::hash::read_tree(&store::template_dir(image))
@@ -581,5 +641,31 @@ mod tests {
         assert!(text.contains("sunlit-e2e-windows-builder"), "{text}");
         assert!(text.contains("vm ssh windows-builder"), "{text}");
         assert!(text.contains("vm down windows-builder"), "{text}");
+    }
+
+    #[test]
+    fn only_a_vhdx_layer_is_compacted_on_the_host() {
+        let disk = PathBuf::from("C:/vm/images/windows-builder/layer.vhdx");
+
+        let script = compact_script(&disk);
+        assert!(script.contains("Optimize-VHD"), "{script}");
+        // Quick mode gives back nothing here: what the guest did was mark blocks
+        // free in its own file system.
+        assert!(script.contains("-Mode Full"), "{script}");
+        assert!(
+            script.contains("'C:/vm/images/windows-builder/layer.vhdx'"),
+            "{script}"
+        );
+
+        let runner = crate::runner::fake::FakeRunner::new()
+            .on("Optimize-VHD", crate::runner::CommandOutput::ok(""));
+        compact(&runner, &disk, ProviderKind::HyperV);
+        assert_eq!(runner.calls().len(), 1);
+
+        // A qcow2 layer's discards reach a sparse file with nothing on the host
+        // to run, so this must issue no command rather than a failing one.
+        let runner = crate::runner::fake::FakeRunner::new();
+        compact(&runner, &disk, ProviderKind::Qemu);
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
     }
 }

@@ -79,6 +79,26 @@ fn test_camera_zoom_roundtrip() {
     approx::assert_relative_eq!(window.get_camera_zoom(), 0.75);
 }
 
+/// The Earth lens travels with the rest of the camera, so a round trip is the
+/// whole of its bridge: nothing derives it and nothing else writes it.
+#[test]
+fn test_camera_fov_roundtrips_through_scene_params() {
+    let window = create_window();
+    window.set_camera_fov(96.0);
+    let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
+    approx::assert_relative_eq!(params.camera.fov_deg, 96.0);
+
+    let restored = sunlit_core::params::SceneParams {
+        camera: sunlit_core::scene::camera::CameraParams {
+            fov_deg: 42.0,
+            ..params.camera
+        },
+        ..params
+    };
+    sunlit_earth::ui_callbacks::apply_params_to_window(&window, &restored);
+    approx::assert_relative_eq!(window.get_camera_fov(), 42.0);
+}
+
 #[test]
 fn test_bool_property_roundtrip() {
     let window = create_window();

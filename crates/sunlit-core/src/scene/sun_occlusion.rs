@@ -492,7 +492,7 @@ mod tests {
     /// and 60 degrees is the sky slider's own minimum rather than a number from
     /// outside the product's range.
     const AGREEING_SKY_FOV: f32 = 60.0;
-    const CAMERA_FOV: f32 = 20.0;
+    const CAMERA_FOV: f32 = crate::scene::camera::DEFAULT_CAMERA_FOV;
 
     fn agreeing_viewport() -> Vec2 {
         let aspect =

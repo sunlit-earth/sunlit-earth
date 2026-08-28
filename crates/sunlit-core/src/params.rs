@@ -111,6 +111,7 @@ impl SceneParams {
                 tilt_deg: config.tilt,
                 yaw_deg: config.yaw,
                 pitch_deg: config.pitch,
+                fov_deg: config.camera_fov,
             },
             texture_index: config.texture_index,
             sample_count: config.sample_count,
@@ -172,6 +173,7 @@ impl SceneParams {
         config.tilt = self.camera.tilt_deg;
         config.yaw = self.camera.yaw_deg;
         config.pitch = self.camera.pitch_deg;
+        config.camera_fov = self.camera.fov_deg;
         config.texture_index = self.texture_index;
         config.sample_count = self.sample_count;
         config.terminator_width = self.terminator_width;
@@ -572,6 +574,16 @@ mod tests {
                 SceneParams {
                     camera: CameraParams {
                         pitch_deg: 30.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
+                "fov",
+                SceneParams {
+                    camera: CameraParams {
+                        fov_deg: 45.0,
                         ..base.camera
                     },
                     ..base

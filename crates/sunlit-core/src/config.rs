@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::scene::camera::CameraParams;
+use crate::scene::camera::{CAMERA_FOV_MAX, CAMERA_FOV_MIN, CameraParams};
 
 /// How much the app is allowed to spend on looking good.
 ///
@@ -160,6 +160,10 @@ pub struct AppConfig {
     // Framing
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Vertical field of view of the Earth lens, in degrees, between
+    /// [`CAMERA_FOV_MIN`] and [`CAMERA_FOV_MAX`]. The sky has its own lens and
+    /// its own `sky_fov`; this one frames the globe.
+    pub camera_fov: f32,
 
     // Rendering
     pub texture_index: i32,
@@ -274,6 +278,10 @@ impl AppConfig {
     /// covers a present one with a value nothing offers.
     fn sanitize(&mut self) {
         self.texture_resolution = resolve_texture_resolution(self.texture_resolution);
+        // The one parameter whose out-of-range value is not an ugly picture but
+        // no picture at all: the perspective projection divides by
+        // `tan(fov / 2)`, which is zero at 0 degrees and infinite at 180.
+        self.camera_fov = self.camera_fov.clamp(CAMERA_FOV_MIN, CAMERA_FOV_MAX);
     }
 }
 
@@ -289,6 +297,7 @@ impl Default for AppConfig {
             pitch: cam.pitch_deg,
             offset_x: cam.offset_x,
             offset_y: cam.offset_y,
+            camera_fov: cam.fov_deg,
             texture_index: 3,
             texture_resolution: DEFAULT_TEXTURE_RESOLUTION,
             sample_count: 8,
@@ -595,6 +604,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+    use crate::scene::camera::DEFAULT_CAMERA_FOV;
 
     // --- config_path resolution ---
 
@@ -716,6 +726,35 @@ mod tests {
     }
 
     #[test]
+    fn the_earth_lens_defaults_to_the_narrow_one_the_presets_were_framed_at() {
+        assert_relative_eq!(AppConfig::default().camera_fov, DEFAULT_CAMERA_FOV);
+    }
+
+    #[test]
+    fn deserialize_missing_the_earth_lens_fills_the_default() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.camera_fov, DEFAULT_CAMERA_FOV);
+    }
+
+    /// Zero and 180 are the two lenses the perspective projection has no answer
+    /// for, so the loader is the guard: a hand-edited file is a text file.
+    #[test]
+    fn loading_a_config_with_a_degenerate_lens_repairs_it() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_bad_fov");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        fs::write(&path, "[sunlit.earth]\ncamera_fov = 180.0\n").unwrap();
+        assert_relative_eq!(load_config_from(&path).camera_fov, CAMERA_FOV_MAX);
+
+        fs::write(&path, "[sunlit.earth]\ncamera_fov = 0.0\n").unwrap();
+        assert_relative_eq!(load_config_from(&path).camera_fov, CAMERA_FOV_MIN);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn deserialize_missing_sky_fov_uses_reviewed_wide_angle() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.sky_fov, 140.0);
@@ -785,6 +824,7 @@ mod tests {
             pitch: 5.0,
             offset_x: 0.3,
             offset_y: -0.2,
+            camera_fov: 35.0,
             texture_index: 1,
             texture_resolution: 8192,
             sample_count: 4,
@@ -923,6 +963,7 @@ mod tests {
             pitch: -5.0,
             offset_x: 0.1,
             offset_y: -0.3,
+            camera_fov: 65.0,
             texture_index: 2,
             texture_resolution: 2048,
             sample_count: 4,

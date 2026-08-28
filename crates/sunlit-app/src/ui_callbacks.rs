@@ -112,6 +112,7 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         win.set_camera_tilt(preset.tilt_deg);
         win.set_camera_yaw(preset.yaw_deg);
         win.set_camera_pitch(preset.pitch_deg);
+        win.set_camera_fov(preset.fov_deg);
         engine.push_params(&win);
     });
 }
@@ -297,6 +298,7 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_camera_tilt(cam.tilt_deg);
     window.set_camera_yaw(cam.yaw_deg);
     window.set_camera_pitch(cam.pitch_deg);
+    window.set_camera_fov(cam.fov_deg);
     window.set_terminator_width(params.terminator_width);
     window.set_diffuse_shading(params.diffuse_shading);
     window.set_diffuse_floor(params.diffuse_floor);
@@ -359,6 +361,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
             tilt_deg: window.get_camera_tilt(),
             yaw_deg: window.get_camera_yaw(),
             pitch_deg: window.get_camera_pitch(),
+            fov_deg: window.get_camera_fov(),
         },
         texture_index: window.get_texture_index(),
         sample_count: aa_counts.get(aa_index).copied().unwrap_or(1),

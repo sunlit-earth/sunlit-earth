@@ -197,6 +197,7 @@ export component MainWindow inherits Window {
     in-out property <float> camera-tilt: 0;
     in-out property <float> camera-yaw: 0;
     in-out property <float> camera-pitch: 0;
+    in-out property <float> camera-fov: 20;
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
     in-out property <float> terminator-width: 0.1;
@@ -548,6 +549,16 @@ export component MainWindow inherits Window {
                         title: "Framing";
                         VerticalLayout {
                             spacing: 4px;
+
+                            camera-fov-slider := SettingRow {
+                                label: "Field of view";
+                                hint: "How wide the Earth lens is: narrow flattens the globe the way a long lens does, wide exaggerates its curvature. The sky behind it has a lens of its own.";
+                                minimum: 10.0;
+                                maximum: 170.0;
+                                value <=> root.camera-fov;
+                                value-text: round(root.camera-fov) + "°";
+                                changed => { root.sliders-changed(); }
+                            }
 
                             offset-x-slider := SettingRow {
                                 label: "Offset X";

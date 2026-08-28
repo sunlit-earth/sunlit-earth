@@ -82,6 +82,7 @@ pub(super) fn write_uniforms<'a>(
     camera.tilt_deg = cam.tilt_deg;
     camera.yaw_deg = cam.yaw_deg;
     camera.pitch_deg = cam.pitch_deg;
+    camera.fov_deg = cam.fov_deg;
     let mvp = camera.mvp_matrix(aspect);
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();

@@ -136,6 +136,7 @@ Two more things either way:
 ## Release builds
 
 ```
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-expired-image] [--allow-dirty]
 cargo xtask dist --target linux            # one target
 cargo xtask dist                           # both, in sequence
 cargo xtask dist --target windows --no-verify --keep
@@ -189,8 +190,14 @@ archive is of the commit and a record whose commit does not describe the binary 
 thing it must not be. Untracked files are not dirt: they can never reach the guest.
 
 `--keep` leaves the last guest of the run up, which is the desktop guest when verification
-ran and the builder when it did not. A kept builder still holds the source tree and its
-`target/release`, so a build can be repeated in there by hand.
+ran and the builder when it did not. One guest, not one per target: a run of both targets
+takes each guest down before the next boots, because a guest that is still registered
+refuses the next boot, so only the last target of the run keeps anything. A kept builder
+still holds the source tree and its `target/release`, so a build can be repeated in there
+by hand, and the closing summary names the guest that is still up.
+
+`--allow-expired-image` builds anyway when the Windows evaluation behind the image has
+run out, which the section below is about.
 
 ## The Windows evaluation expires
 

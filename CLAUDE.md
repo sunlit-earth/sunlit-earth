@@ -50,7 +50,7 @@ cargo xtask vm status              # Images, media, overlays, running VMs, disk 
 cargo xtask vm down <image|all>    # End the guest, keep the image
 cargo xtask vm purge <image|all> [--vm] [--image] [--iso] [-f]
 cargo xtask e2e --target <host|windows|linux> [--keep] [--allow-expired-image] [--desktop <d>]
-cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-dirty]
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-expired-image] [--allow-dirty]
 ```
 
 An `<image>` is one of four slugs: `windows` and `linux` are the desktop guests the e2e

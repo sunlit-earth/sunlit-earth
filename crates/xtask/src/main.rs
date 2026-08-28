@@ -341,3 +341,69 @@ fn wsl_ready(runner: &dyn runner::Runner, windows: &facts::WindowsFacts) -> bool
         .capture(&probe)
         .is_ok_and(|out| out.stdout.contains("READY"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// The two teardowns take their own enum, because `all` is not an image and
+    /// clap needs one type for the argument. Nothing else joins the two lists,
+    /// so a fifth image would leave `vm down` and `vm purge` unable to name it
+    /// with nothing failing anywhere, which is the same pair of lists
+    /// `the_guest_accepts_exactly_the_sessions_the_host_can_ask_for` exists to
+    /// hold together.
+    #[test]
+    fn the_teardowns_can_name_every_image_and_nothing_else() {
+        use clap::ValueEnum;
+        let named: Vec<teardown::Selection> = TeardownImage::value_variants()
+            .iter()
+            .copied()
+            .map(teardown::Selection::from)
+            .collect();
+        for image in Image::ALL {
+            assert!(
+                named
+                    .iter()
+                    .any(|s| matches!(s, teardown::Selection::One(one) if *one == image)),
+                "no `vm down`/`vm purge` argument names {image}"
+            );
+        }
+        assert!(
+            named
+                .iter()
+                .any(|s| matches!(s, teardown::Selection::All)),
+            "nothing names all of them"
+        );
+        assert_eq!(named.len(), Image::ALL.len() + 1);
+    }
+
+    /// A flag nobody documented is a flag nobody finds. Both documents spell
+    /// `dist` out in one line, and the line has to be the command as it is:
+    /// `--allow-expired-image` was in neither until this test asked.
+    #[test]
+    fn the_docs_spell_out_every_flag_dist_takes() {
+        let cli = Cli::command();
+        let dist = cli.find_subcommand("dist").expect("a dist subcommand");
+        let flags: Vec<String> = dist
+            .get_arguments()
+            .filter_map(clap::Arg::get_long)
+            .filter(|long| *long != "help" && *long != "version")
+            .map(|long| format!("--{long}"))
+            .collect();
+        assert!(flags.len() >= 5, "{flags:?}");
+
+        for doc in ["CLAUDE.md", "docs/vm-setup.md"] {
+            let path = store::repo_root().join(doc);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let usage = text
+                .lines()
+                .find(|line| line.starts_with("cargo xtask dist ["))
+                .unwrap_or_else(|| panic!("{doc} has no `cargo xtask dist [...]` usage line"));
+            for flag in &flags {
+                assert!(usage.contains(flag), "{doc} does not name {flag}: {usage}");
+            }
+        }
+    }
+}

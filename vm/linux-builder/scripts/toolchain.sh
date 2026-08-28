@@ -7,7 +7,9 @@
 # there is nothing for a software adapter to render, and a builder with a GPU
 # stack in it is a builder that can accidentally be asked to run a test.
 # `binutils` is there for `readelf` and `objdump`, which is how the build job
-# reads its own output back and proves the glibc floor.
+# reads its own output back and proves the glibc floor. There is no `git`: the
+# source arrives as a tar the host made, the lockfile names no git dependency,
+# and cargo's registry protocol needs none.
 #
 # `RUST_CHANNEL` comes from the Packer template, which the xtask fills in from
 # `rust-toolchain.toml`. A release build installs the pinned channel by name
@@ -37,8 +39,7 @@ apt-get install -y --no-install-recommends \
   libxkbcommon-dev \
   binutils \
   curl \
-  ca-certificates \
-  git
+  ca-certificates
 
 # rustup as the account the build runs as, not as root: the job names
 # `$HOME/.cargo/bin/cargo` by absolute path, and root's home is not that account's.

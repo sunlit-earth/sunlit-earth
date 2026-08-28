@@ -587,12 +587,28 @@ pub fn execute(
     }
 
     for dir in &plan.dirs {
-        // Only ever removes an empty directory, so anything unexpected inside
-        // survives and shows up in the next `vm status`.
-        let _ = std::fs::remove_dir(dir);
+        remove_if_empty(dir);
     }
 
     outcome
+}
+
+/// Remove `dir` and any empty directory inside it, deepest first.
+///
+/// Only ever an empty directory, so anything unexpected inside survives and
+/// shows up in the next `vm status`, which scans a run directory whole. The
+/// nesting matters because the directories a teardown names have subdirectories
+/// in them: without this, emptying one would leave the outer directory standing
+/// for good, which reads as run state that could not be removed.
+fn remove_if_empty(dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                remove_if_empty(&entry.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 /// The closing report.
@@ -1288,5 +1304,26 @@ mod tests {
         assert!(plain.contains("golden images are untouched"), "{plain}");
         let purged = render_outcome(&outcome, Scope::EVERYTHING);
         assert!(purged.contains("build-image"), "{purged}");
+    }
+
+    /// A run directory has directories in it, so the teardown has to reach
+    /// through them; and the rule that it removes only empty ones is what keeps
+    /// anything unexpected inside for the next `vm status` to report.
+    #[test]
+    fn a_teardown_reaches_through_a_directory_and_stops_at_anything_left_in_one() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_remove_if_empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("job")).expect("temp tree");
+        std::fs::create_dir_all(dir.join("dist")).expect("temp tree");
+        std::fs::write(dir.join("dist").join("src.tar"), b"x").expect("write");
+
+        remove_if_empty(&dir);
+        assert!(!dir.join("job").exists(), "an empty directory survived");
+        assert!(dir.join("dist").join("src.tar").is_file());
+        assert!(dir.is_dir(), "a directory with a file under it was removed");
+
+        std::fs::remove_file(dir.join("dist").join("src.tar")).expect("remove");
+        remove_if_empty(&dir);
+        assert!(!dir.exists());
     }
 }

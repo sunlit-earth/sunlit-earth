@@ -391,7 +391,7 @@ pub fn scan(store: &Store) -> Inventory {
                 .into_iter()
                 .filter(|f| f.name().starts_with(image.disk_stem()))
                 .collect(),
-            run_files: list_files(&store.run_dir(image)),
+            run_files: list_tree(&store.run_dir(image)),
             build_files: list_tree(&store.build_dir(image)),
             manifest_bytes: file_info(&store.manifest(image)).map(|f| f.bytes),
             ..ImageInventory::default()
@@ -475,8 +475,11 @@ fn list_files(dir: &Path) -> Vec<FileInfo> {
     out
 }
 
-/// Every file under `dir`, recursively. The image builder's working directory
-/// is the only nested one, and it is nested arbitrarily deep.
+/// Every file under `dir`, recursively. Both the image builder's working
+/// directory and a run directory are nested: the first arbitrarily deep, the
+/// second by one level, for the job scratch and for a source archive the copy
+/// into the guest did not get to. What is not counted here is what `vm status`
+/// does not report and `vm down` does not delete.
 fn list_tree(dir: &Path) -> Vec<FileInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();

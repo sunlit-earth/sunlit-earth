@@ -611,10 +611,14 @@ impl crate::provider::Provider for QemuProvider<'_> {
         launch.validate()?;
         if image.target() == Target::Linux {
             let (width, height) = launch.console;
-            let session = launch.desktop.map_or_else(
-                || "the image's own default desktop".to_owned(),
-                |d| format!("the {} session", d.label()),
-            );
+            let session = if image.has_desktop() {
+                launch.desktop.map_or_else(
+                    || "the image's own default desktop".to_owned(),
+                    |d| format!("the {} session", d.label()),
+                )
+            } else {
+                "a text console, since this image has no desktop".to_owned()
+            };
             println!("console: {width}x{height}, into {session}");
         }
         let log = self.store.vm_log(image);

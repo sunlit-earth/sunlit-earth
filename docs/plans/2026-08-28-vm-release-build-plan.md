@@ -145,8 +145,23 @@ What one target does, in order: read the pinned toolchain and the git facts and 
 
 ## Departures
 
-None yet.
+1. **A layer's evaluation clock is read from the timestamp it recorded for its parent, not from the parent's manifest at the moment of asking.** Decision 3 says the expiry is derived from the parent's manifest and never from the layer's own timestamp, and both halves of that hold; what differs is when the parent's build time is read. `build_layer` copies it into the layer's `ParentRecord` alongside the parent's checksum, and `Manifest::eval_epoch` reads it from there. The two answers can only differ if the parent was rebuilt under the layer, and that changes the parent's checksum, which makes the layer `Detached` and blocks a boot before anything asks about the clock. Recording it keeps the inventory's judgement a pure function of one manifest plus the small `ParentFacts` the scan collects, rather than making every condition query read a second manifest.
+
+2. **The crate registry is not warmed into either builder, as decision 18 anticipated.** Neither image ships a `~/.cargo/registry`, so every build downloads the lockfile's crates. Warming one would have meant a source archive in both builders' provisioning and a `cargo fetch` whose failure modes are the network's, in exchange for a minute or two per build, and it would have made the images depend on the lockfile of the day they were built. The download is visible in the build's own output, `--locked` and the checksums make it identical every time, and `CARGO_NET_RETRY` is set in both jobs.
+
+3. **`resources_for` lives in `provider`, not in `provider::qemu`.** Decision 6 asks for one function that the Hyper-V create script and the QEMU launch both read, and the QEMU module was the wrong home for the one the Hyper-V provider now consumes. `provider::resources_for(image)` is that function; `hyperv::MEMORY_BYTES` and `hyperv::CPUS` are gone, both create scripts take the pair as an argument, and the test that pinned the two providers against each other now reads the printed figure back out of the lifecycle text for every image.
+
+4. **`vm smoke` asks each image about what it has.** The Linux smoke job probed the X server, which a builder does not have: the first live smoke of `linux-builder` printed `xdpyinfo: command not found` and still passed, which reads as a broken image rather than a script asking the wrong question. `vm::smoke_script` now asks a desktop image for its display and a builder for its `cargo -V`. Not in the plan, and the same class of thing as the boot line that used to promise a builder guest a desktop session.
 
 ## Validation record
 
-None yet.
+### The Linux builder image
+
+`cargo xtask vm build-image linux-builder`, on this Windows host through Packer and QEMU on WHPX:
+
+- **Second attempt succeeded in 1 minute 12 seconds** of Packer time, plus the Ubuntu cloud image download on the first (700 MB, cached afterwards under the build directory).
+- **`golden.qcow2` is 3.1 GiB** (3,323,854,848 bytes) against the Debian desktop image's 4.0 GiB, on a 48 GiB virtual disk. `fstrim` reported 44 GiB trimmed at the end.
+- The first attempt failed in `finalize.sh` with exit 141, which is SIGPIPE: `ldd --version | head -1` under `pipefail` kills `ldd` when `head` closes the pipe. `awk 'NR == 1'` reads to EOF and does not. Worth knowing before writing another `| head` in a script with `set -o pipefail`.
+- `finalize.sh`'s checks all passed on the second attempt: `rustc +1.94.0 -vV` and `cargo +1.94.0 -V` answer, `libclang.so` is at `/usr/lib/llvm-14/lib/`, and `readelf` and `objdump` are both on `PATH`.
+
+`cargo xtask vm smoke linux-builder`: **SSH answered 16 seconds after the boot, the readiness marker was already there (0 s), the job ran and its results came back, and the guest was destroyed. 17 seconds in total.** The boot-time marker unit is what makes the wait for a session return immediately in an image that has none, which is decision 5's whole claim.

@@ -799,26 +799,7 @@ pub fn smoke(
     let started = std::time::Instant::now();
     let mut session = boot(runner, &store, image, StartReason::Run, false, desktop)?;
 
-    let script = match image.target() {
-        Target::Windows => concat!(
-            "@echo off\r\n",
-            "echo sunlit-e2e smoke\r\n",
-            "hostname\r\n",
-            "whoami\r\n",
-            "echo %SUNLIT_E2E_ARTIFACTS%\r\n",
-            "echo smoke > %SUNLIT_E2E_ARTIFACTS%\\smoke.txt\r\n",
-        ),
-        Target::Linux => concat!(
-            "#!/usr/bin/env bash\n",
-            "set -eux\n",
-            "echo 'sunlit-e2e smoke'\n",
-            "hostname\n",
-            "id\n",
-            "echo \"DISPLAY=$DISPLAY\"\n",
-            "xdpyinfo -display \"$DISPLAY\" | head -3\n",
-            "echo smoke > \"$SUNLIT_E2E_ARTIFACTS/smoke.txt\"\n",
-        ),
-    };
+    let script = smoke_script(image);
 
     println!("running a trivial job through the guest contract");
     let scratch = store.run_dir(image).join("job");
@@ -827,7 +808,7 @@ pub fn smoke(
         session.provider.as_ref(),
         &session.state,
         image.target(),
-        script,
+        &script,
         &scratch,
         Duration::from_mins(5),
     ) {
@@ -883,6 +864,42 @@ pub fn smoke(
     Ok(u8::from(code != 0))
 }
 
+/// The trivial job the smoke test runs.
+///
+/// What it asks the guest differs by what the guest has. A desktop image is
+/// asked to prove there is an X server the job can reach, which is the half of
+/// the contract a builder cannot have; a builder is asked for the toolchain
+/// instead, which is the thing that makes it one. Asking either question of the
+/// wrong image prints a command-not-found line that reads as a defect.
+pub fn smoke_script(image: Image) -> String {
+    match image.target() {
+        Target::Windows => concat!(
+            "@echo off\r\n",
+            "echo sunlit-e2e smoke\r\n",
+            "hostname\r\n",
+            "whoami\r\n",
+            "echo %SUNLIT_E2E_ARTIFACTS%\r\n",
+            "echo smoke > %SUNLIT_E2E_ARTIFACTS%\\smoke.txt\r\n",
+        )
+        .to_owned(),
+        Target::Linux => format!(
+            "#!/usr/bin/env bash\n\
+             set -eux\n\
+             echo 'sunlit-e2e smoke'\n\
+             hostname\n\
+             id\n\
+             echo \"DISPLAY=$DISPLAY\"\n\
+             {probe}\
+             echo smoke > \"$SUNLIT_E2E_ARTIFACTS/smoke.txt\"\n",
+            probe = if image.has_desktop() {
+                "xdpyinfo -display \"$DISPLAY\" | head -3\n"
+            } else {
+                "\"$HOME/.cargo/bin/cargo\" -V\n"
+            },
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -920,6 +937,31 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("--allow-expired-image"), "{text}");
+    }
+
+    /// The smoke test proves the guest contract, and what there is to prove
+    /// differs: a desktop image has a session for a job to reach, a builder has
+    /// a compiler. Asking the wrong question prints a command that is not there,
+    /// which reads as a broken image rather than a wrong script.
+    #[test]
+    fn the_smoke_job_asks_each_image_about_what_it_has() {
+        let desktop = smoke_script(Image::Linux);
+        assert!(desktop.contains("xdpyinfo"), "{desktop}");
+        assert!(!desktop.contains("cargo"), "{desktop}");
+
+        let builder = smoke_script(Image::LinuxBuilder);
+        assert!(builder.contains(".cargo/bin/cargo"), "{builder}");
+        assert!(!builder.contains("xdpyinfo"), "{builder}");
+
+        for image in Image::ALL {
+            let script = smoke_script(image);
+            assert!(script.contains("smoke.txt"), "{image}");
+            if image.target() == Target::Windows {
+                assert!(script.contains("\r\n"), "{image}");
+            } else {
+                assert!(!script.contains('\r'), "{image}");
+            }
+        }
     }
 
     #[test]

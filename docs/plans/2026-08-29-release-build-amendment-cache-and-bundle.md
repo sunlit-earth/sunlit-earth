@@ -316,6 +316,50 @@ The two-render difference moved from 23.3 to **22.6** on Linux between two runs 
 minutes apart, which is the Earth turning. The floor of 8.0 has three times that of
 headroom and the drift is a tenth of the margin.
 
+### `cargo xtask dist --target windows --no-cache`
+
+Of `c1ca9af`, clean tree, verification on, green end to end. The last run of step 5, and
+the one that makes acceptance criterion 3 a measurement.
+
+| | |
+|---|---|
+| the cache going in | nothing, and the reason is in the record |
+| the build itself | **8m 10s** |
+| the whole target | **9m 49s** |
+| the cache coming out | nothing |
+| the binary | 29,183,488 bytes, 26 imports, none of them the Visual C++ runtime |
+| the bundle | 9 files, 25.4 MiB as a zip |
+| the two renders | **22.7** of a channel step apart |
+
+`build-info.json`'s `cache` section, which is criterion 3 in the file rather than in a
+sentence: `{"archive": "registry", "restored": false, "reason": "--no-cache was given",
+"saved": false}` and the same for `target`. Neither half ran, and both said why.
+
+**Cold is not one number.** This build compiled everything from nothing, as the cold run of
+`3efb649` did, and took 8m 10s against that one's 6m 58s. So the cold figure carries more
+than a minute of spread on this host, and the warm saving is a saving of minutes rather
+than a figure good to the second. What the four Windows runs put a range on is the
+distance between the build and the whole target, which is 1m 31s to 2m 18s of two boots and,
+where there was a cache, two transfers.
+
+**The Windows half of the byte-identity question cannot be answered by hashing, and this
+run is what settled that.** The binary is
+`78752bcb50bc7a6f6cf0458792c837b0e9fc04c48cb54217dc10589ee49ebba5` against the warm run's
+`89d8718c3270bfe60b9d0fdcc0b4e9e91af2ac00038b8f8caec8271cb332863d`, and the cause is not
+the cache: the PE header's `TimeDateStamp` in this binary reads 2026-08-29T16:58:54Z, which
+is the minute the link finished. Every MSVC link stamps its own wall clock into the file
+unless `/Brepro` is passed, which nothing here passes, so no two Windows builds of one
+commit can ever hash the same however they were built. What that does not prove is that
+nothing *else* differs, and proving it would take two more Windows runs compared with the
+timestamp and the debug directory normalized away, which is not worth twenty minutes for a
+question the Linux side already answers: three Linux binaries of three runs, one cold and
+two warm, are byte for byte identical, and that is the comparison the "a cache makes one
+build depend on an earlier one" risk actually needed.
+
+The two-render difference is 22.7 here against 19.2 and 19.1 on the two Windows runs two
+and a half hours earlier, which is the Earth having turned thirty-seven degrees between
+them. Both ends of that are three times the floor of 8.0.
+
 ### The soak test in a whole-workspace run
 
 `cargo test -p sunlit-core --test soak` passes alone and `cargo test -p sunlit-core`

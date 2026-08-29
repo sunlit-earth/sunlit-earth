@@ -157,3 +157,88 @@ no layer rebuild. The host's own `tar.exe` is bsdtar 3.8.4 and the guest's is 3.
 is the same libarchive line with the same zstd support; decision 23's mechanism was
 measured on both rather than assumed to carry from one to the other. The guest was torn
 down afterwards and the store went back to 64.9 GiB.
+
+### `cargo xtask dist --target linux`, cold and warm
+
+Three runs on 2026-08-29, the first two of which failed at the last step for two
+different reasons, both recorded below because the first was a real defect and the
+second is worth knowing about the tooling.
+
+| | cold, of `f273bd2` | warm, of `3efb649` | warm again |
+|---|---|---|---|
+| the cache going in | nothing on this host yet | registry 122.3 MiB, target 612.6 MiB | the same, one build newer |
+| the build itself | **5m 28s** | **3m 49s** | **2m 59s** |
+| the whole target | did not finish | did not finish | **4m 35s**, two boots included |
+| the cache coming out | registry 122.3 MiB, target 612.6 MiB | target only | target only |
+| the binary | 31,852,608 bytes | the same | the same |
+| the bundle | 19 files | 19 files | 19 files, **27.5 MiB** as `.tar.gz` |
+| the two renders | **23.5** of a channel step apart | 23.4 | 23.3 |
+
+**The warm build is the headline: 3m 49s against 5m 28s, and 2m 59s on the third run**,
+where the cold figure includes downloading 519 crates and compiling every one of them.
+What is left is the workspace's own crates and the fat-LTO link, which is the floor the
+risks section predicted and which no cache can take away. The third run is faster than
+the second because the second's cache was made by a build whose own `target/` was cold:
+the second run compiled the workspace crates into a directory that already held every
+dependency, and the third restored *that*.
+
+**Decision 26 held on the second run and every one after it**: the registry was restored
+and not re-saved, because `Cargo.lock` had not moved, so 122 MiB stayed on the host
+instead of crossing the wire twice. `build-info.json` says so per archive, which is
+decision 27 in the file rather than in a sentence: `"restored": true, "saved": false` for
+the registry and `true`/`true` for the build directory.
+
+**The warm binary and the cold binary are byte for byte the same**, sha256
+`fc89d33af112ceb8c271cba81ae8cad66684c483d84934f36653adb2ccbf5167` on both. That is
+worth knowing rather than a criterion, and it is slightly stronger than the question
+asked: the two runs were of different commits, which differ only in files under
+`crates/xtask/`, and `cargo build -p sunlit-earth` compiles none of those.
+
+**Decision 32 measured, which is the number the threshold was waiting for.** The bundle's
+own render and one made against an empty textures directory are **23.3 to 23.5 of a
+channel step apart**, against a floor of 8.0 in `dist::TEXTURE_LOOKUP_FLOOR`. The three
+runs agree to two tenths, which is the Earth turning between them, so the floor sits
+roughly three times above the signal and a hundred times above the noise.
+
+The tarball, read back on the host with a tool that had nothing to do with writing it:
+19 entries, all under one `sunlit-earth-0.1.0-linux/` directory, `sunlit-earth` and
+`assets/linux/install-user.sh` at **0755** and everything else at 0644, which is
+acceptance criterion 6. `target/dist/linux/` holds the binary, `build-info.json`,
+`build.log`, `smoke.png` and the 27.5 MiB tarball.
+
+**The first failure was a real defect, and the live pass is what found it.** Both the cold
+run and the first warm run got as far as the two-render comparison, proved the textures
+were found, and then failed to write the final record into the bundle: the verification
+guest's own teardown had deleted the bundle directory, because departure 3 had put it on
+`vm::run_state_paths`. That list is what a run's own teardown removes as it ends a guest,
+and the bundle outlives the guest it is staged into by the few seconds it takes to seal
+it. Fixed in `3efb649` by taking it off that list and leaving it in the run directory,
+where `vm status` still counts it and `vm down` still sweeps it, because those take the
+directory whole rather than reading the list. The test walks a teardown over a bundle
+scratch and fails on the old code.
+
+**The second failure was not a defect and cost a run anyway.** `target/debug/xtask.exe`
+was still the binary from before the fix, because `cargo test -p xtask` builds the test
+binary and not the bin, so the run that was meant to prove the fix exercised the bug
+again. Worth writing down for anyone driving live runs from a built binary rather than
+through `cargo xtask`.
+
+`vm status` after the cold run, which is acceptance criterion 5's first half:
+
+```
+linux-builder: ok (current)
+  build cache: 4 files (734.8 MiB); `cargo xtask vm purge linux-builder --cache` frees it
+  footprint: 3.1 GiB image, 607 B run state, 734.8 MiB build cache
+total: 65.5 GiB
+  64.8 GiB in golden images and media, 1.2 KiB in run state, 734.8 MiB in build caches
+  `cargo xtask vm purge all --cache` frees the build caches; the next release build is then a cold one
+```
+
+### The Linux builder with `zstd` in it
+
+`zstd` joined the package list (decision 22) because GNU tar's `--zstd` shells out to that
+program rather than linking a library, which is the one thing the Windows guest did not
+need. Rebuilt in **1 minute 17 seconds** to **3,305,504,768 bytes (3.08 GiB)**, which is
+44 MB *smaller* than the image without it: the difference is what a fresh `apt` run left
+behind rather than anything zstd added. `cargo xtask vm smoke linux-builder` passes on it
+with `cargo 1.94.0` from the probe.

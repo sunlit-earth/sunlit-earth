@@ -1308,7 +1308,7 @@ fn seal_bundle(
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
         util::format_bytes(bytes),
-        util::count(archived.len(), "entry")
+        util::count(archived.len(), "file")
     );
     Ok(archive)
 }

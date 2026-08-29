@@ -211,8 +211,6 @@ pub struct SunPlacement {
     /// The painted globe's silhouette, which every horizon effect is measured
     /// against.
     pub globe: ScreenCircle,
-    /// The atmosphere shell's painted radius, around the same center.
-    pub atmosphere_radius_pixels: f32,
     /// Width of the horizon zone in pixels.
     pub zone_width_pixels: f32,
     /// Vertical magnification of the refracted disk: one where nothing bends.
@@ -556,7 +554,6 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
                 transit_fraction: 0.0,
             },
             globe,
-            atmosphere_radius_pixels: atmosphere.radius,
             zone_width_pixels: horizon_zone_width(
                 globe.radius,
                 atmosphere.radius,
@@ -627,7 +624,6 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
         disk_radius_pixels: disc.radius,
         visibility,
         globe,
-        atmosphere_radius_pixels: atmosphere.radius,
         zone_width_pixels: zone,
         squash,
         glare_tint,

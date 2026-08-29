@@ -77,7 +77,6 @@ struct Uniforms {
     sun_horizon_gain: f32,
     sun_globe_center: [f32; 2],
     sun_globe_radius: f32,
-    sun_atmosphere_radius: f32,
     sun_zone_width: f32,
     sun_squash: f32,
     sun_halo_radius: f32,
@@ -86,6 +85,7 @@ struct Uniforms {
     atmo_sunrise_g: f32,
     sun_flux: f32,
     _pad7: f32,
+    _pad8: f32,
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);
@@ -621,7 +621,6 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         // draw no Sun.
         sun_globe_center: [size as f32 * 0.5, size as f32 * 0.5],
         sun_globe_radius: 100.0,
-        sun_atmosphere_radius: 110.0,
         sun_zone_width: 10.0,
         sun_squash: 1.0,
         sun_halo_radius: 3.0,
@@ -630,6 +629,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         atmo_sunrise_g: 0.5,
         sun_flux: 1.0,
         _pad7: 0.0,
+        _pad8: 0.0,
     }
 }
 
@@ -793,7 +793,6 @@ struct Uniforms {
     sun_horizon_gain: f32,
     sun_globe_center: vec2<f32>,
     sun_globe_radius: f32,
-    sun_atmosphere_radius: f32,
     sun_zone_width: f32,
     sun_squash: f32,
     sun_halo_radius: f32,
@@ -802,6 +801,7 @@ struct Uniforms {
     atmo_sunrise_g: f32,
     sun_flux: f32,
     _pad7: f32,
+    _pad8: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -895,14 +895,13 @@ fn main() {
     output[65] = uniforms.sun_globe_center.x;
     output[66] = uniforms.sun_globe_center.y;
     output[67] = uniforms.sun_globe_radius;
-    output[68] = uniforms.sun_atmosphere_radius;
-    output[69] = uniforms.sun_zone_width;
-    output[70] = uniforms.sun_squash;
-    output[71] = uniforms.sun_halo_radius;
-    output[72] = uniforms.sun_reddening;
-    output[73] = uniforms.atmo_sunrise_glow;
-    output[74] = uniforms.atmo_sunrise_g;
-    output[75] = uniforms.sun_flux;
+    output[68] = uniforms.sun_zone_width;
+    output[69] = uniforms.sun_squash;
+    output[70] = uniforms.sun_halo_radius;
+    output[71] = uniforms.sun_reddening;
+    output[72] = uniforms.atmo_sunrise_glow;
+    output[73] = uniforms.atmo_sunrise_g;
+    output[74] = uniforms.sun_flux;
 }
 ";
 
@@ -1007,7 +1006,6 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         sun_horizon_gain: 2.25,
         sun_globe_center: [64.5, 33.25],
         sun_globe_radius: 41.5,
-        sun_atmosphere_radius: 42.75,
         sun_zone_width: 6.25,
         sun_squash: 0.45,
         sun_halo_radius: 4.25,
@@ -1016,6 +1014,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         atmo_sunrise_g: 0.62,
         sun_flux: 0.72,
         _pad7: 0.0,
+        _pad8: 0.0,
     };
 
     let uniform_buf = ctx
@@ -1026,8 +1025,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 76 floats
-    let output_size = (76 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 75 floats
+    let output_size = (75 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1359,14 +1358,13 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (65, 64.5, "sun_globe_center.x"),
         (66, 33.25, "sun_globe_center.y"),
         (67, 41.5, "sun_globe_radius"),
-        (68, 42.75, "sun_atmosphere_radius"),
-        (69, 6.25, "sun_zone_width"),
-        (70, 0.45, "sun_squash"),
-        (71, 4.25, "sun_halo_radius"),
-        (72, 1.35, "sun_reddening"),
-        (73, 1.85, "atmo_sunrise_glow"),
-        (74, 0.62, "atmo_sunrise_g"),
-        (75, 0.72, "sun_flux"),
+        (68, 6.25, "sun_zone_width"),
+        (69, 0.45, "sun_squash"),
+        (70, 4.25, "sun_halo_radius"),
+        (71, 1.35, "sun_reddening"),
+        (72, 1.85, "atmo_sunrise_glow"),
+        (73, 0.62, "atmo_sunrise_g"),
+        (74, 0.72, "sun_flux"),
     ] {
         assert!(
             (values[index] - expected).abs() < eps,

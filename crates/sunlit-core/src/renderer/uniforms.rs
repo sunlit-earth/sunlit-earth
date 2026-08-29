@@ -83,12 +83,11 @@ pub(crate) struct Uniforms {
     /// Exposure gain, the eye's lag as the disk clears the band. One is the
     /// physical answer.
     pub sun_horizon_gain: f32, // 4 bytes
-    /// The painted globe's silhouette in pixels, and the two radii that bound
-    /// the horizon zone with it. Every horizon effect is measured in this
-    /// annulus, which is decision 2's rule applied to the band.
+    /// The painted globe's silhouette in pixels, which every horizon effect
+    /// is measured outward from. That is decision 2's rule applied to the
+    /// band: the annulus the viewer can see, not the one an ephemeris has.
     pub sun_globe_center: [f32; 2], // 8 bytes
     pub sun_globe_radius: f32,         // 4 bytes
-    pub sun_atmosphere_radius: f32,    // 4 bytes
     /// Width of the horizon zone in pixels: the painted annulus, or the disk's
     /// diameter times `sun_horizon_depth`, whichever is wider.
     pub sun_zone_width: f32, // 4 bytes
@@ -104,6 +103,7 @@ pub(crate) struct Uniforms {
     /// amplitude is a compressive function of.
     pub sun_flux: f32, // 4 bytes
     pub _pad7: f32,                    // 4 bytes
+    pub _pad8: f32,                    // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);

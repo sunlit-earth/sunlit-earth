@@ -198,7 +198,6 @@ pub(super) fn write_uniforms<'a>(
         sun_horizon_gain: sun.horizon_gain,
         sun_globe_center: sun.globe.center.into(),
         sun_globe_radius: sun.globe.radius,
-        sun_atmosphere_radius: sun.atmosphere_radius_pixels,
         sun_zone_width: sun.zone_width_pixels,
         sun_squash: sun.squash,
         sun_halo_radius: params.sun_halo_radius,
@@ -207,6 +206,7 @@ pub(super) fn write_uniforms<'a>(
         atmo_sunrise_g: sun_occlusion::henyey_greenstein_asymmetry(params.atmo_sunrise_width),
         sun_flux: sun.flux,
         _pad7: 0.0,
+        _pad8: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

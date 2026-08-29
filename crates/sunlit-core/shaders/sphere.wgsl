@@ -59,15 +59,15 @@ struct Uniforms {
     sun_horizon_gain: f32,            // 4 bytes, offset 492
     sun_globe_center: vec2<f32>,      // 8 bytes, offset 496
     sun_globe_radius: f32,            // 4 bytes, offset 504
-    sun_atmosphere_radius: f32,       // 4 bytes, offset 508
-    sun_zone_width: f32,              // 4 bytes, offset 512
-    sun_squash: f32,                  // 4 bytes, offset 516
-    sun_halo_radius: f32,             // 4 bytes, offset 520
-    sun_reddening: f32,               // 4 bytes, offset 524
-    atmo_sunrise_glow: f32,           // 4 bytes, offset 528
-    atmo_sunrise_g: f32,              // 4 bytes, offset 532
-    sun_flux: f32,                    // 4 bytes, offset 536
-    _pad7: f32,                       // 4 bytes, offset 540
+    sun_zone_width: f32,              // 4 bytes, offset 508
+    sun_squash: f32,                  // 4 bytes, offset 512
+    sun_halo_radius: f32,             // 4 bytes, offset 516
+    sun_reddening: f32,               // 4 bytes, offset 520
+    atmo_sunrise_glow: f32,           // 4 bytes, offset 524
+    atmo_sunrise_g: f32,              // 4 bytes, offset 528
+    sun_flux: f32,                    // 4 bytes, offset 532
+    _pad7: f32,                       // 4 bytes, offset 536
+    _pad8: f32,                       // 4 bytes, offset 540
 };
 
 @group(0) @binding(0)

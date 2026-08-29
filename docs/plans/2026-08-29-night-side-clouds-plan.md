@@ -490,3 +490,30 @@ here.
 One thing the subagent could not verify and flagged: the multiple-scattering octave
 coefficients circulating in community write-ups do not trace to a primary source. No number
 from them is used here.
+
+## Departures
+
+**1. The three sentinel cases are one case over three modes.** Tests section item 4 asks
+for three engine cases, one per single-texture mode. It is one case that loops over the
+three, because each engine in this suite creates its own wgpu device and holds `GPU_SERIAL`
+for its lifetime: three cases means three devices for one claim. The loop names the mode in
+every printed line and in the assertion message, so a failure says which mode carries it,
+and the body is what three copies would have been. It also reads both hemispheres from one
+camera by moving the *sun* rather than the eye, which the plan does not specify: in a
+single-texture mode the globe ignores the sun, so the ground under the window is the same
+texels at noon and at midnight and the whole difference between the two readings is the
+layer's own shading.
+
+**2. The second golden is a close-up, not a second whole-globe framing.** Tests section item
+2 asks for two goldens across the terminator. The first is the whole globe at the framing
+the plan describes. The second was going to be the same framing with the ground's
+terminator narrowed, and that turned out to test almost nothing: with the deck at 0.85
+opacity over the transition the two references differed by a mean of well under the
+tolerance, and `every_golden_case_is_distinguishable` would have had to be argued with
+rather than satisfied. So it is a close-up instead, at the latitude where the fixture's
+equatorial band ends, which puts lit ground, unlit ground, lit deck and unlit deck in one
+frame. Measured against the committed references: reverting `cloud_night` to 0.05 fails both
+cases (means 5.57 and 6.33 against 2.00), while zeroing the shell shift fails the whole-globe
+case on its outlier count alone (mean 1.86, 4.32 percent) and fails the close-up on both
+counts (mean 8.44, 19.73 percent). The shift is held by the close-up, and that is the reason
+it exists.

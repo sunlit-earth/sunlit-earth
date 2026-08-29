@@ -40,6 +40,10 @@ use sunlit_core::scene::camera::{CameraParams, PRESETS};
 
 mod support;
 
+/// The texture mode that blends the day and night maps, as `texture_index`
+/// spells it.
+const BLEND_MODE: i32 = 3;
+
 /// Golden images are small on purpose: they live in git.
 const WIDTH: u32 = 512;
 const HEIGHT: u32 = 256;
@@ -102,9 +106,15 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     // renders with a Moon wherever the sky puts one at the pinned instant,
     // which is what makes the default-on Moon visible to this suite at all
     // instead of quietly absent from it.
+    //
+    // The day and night maps are fixtures too, and they are here for the cloud
+    // cases: the layer is shaded against the sun, so pinning it wants a mode
+    // that is, and blend mode is the only one. Every other case renders the
+    // grid, which reads neither slot.
+    let surface = support::write_surface_fixtures(Path::new(env!("CARGO_TARGET_TMPDIR")));
     config.texture_paths = vec![
-        None,
-        None,
+        Some(surface.day),
+        Some(surface.night),
         Some(support::write_moon_fixture(Path::new(env!(
             "CARGO_TARGET_TMPDIR"
         )))),
@@ -112,6 +122,10 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
             "CARGO_TARGET_TMPDIR"
         )))),
     ];
+    // The cloud slot comes from the fetcher rather than from a path, so without
+    // a source no case here could draw a cloud pixel at all; `base_params`
+    // turns the layer off for every case that is not about it.
+    config.cloud = Some(std::sync::Arc::new(support::FixtureClouds::bands()));
     Mutex::new(sunlit_core::engine::start(config))
 });
 
@@ -140,6 +154,9 @@ fn base_params() -> SceneParams {
         // background; the two panorama cases switch it on, and its own engine
         // cases pin what a golden cannot see anyway.
         milky_way_intensity: 0.0,
+        // Off for the same reason, and it has to be said explicitly now that
+        // the engine has a cloud source: the layer covers half the frame.
+        cloud_opacity: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;
@@ -241,6 +258,17 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     }
     if params.milky_way_intensity > 0.0 {
         wait_for_slot_texture(&engine, "milky_way_texture");
+    }
+    if params.cloud_opacity > 0.0 {
+        wait_for_slot_texture(&engine, "cloud_texture");
+    }
+    // Blend mode is the one that reads the two surface slots, and nothing
+    // spawns their decodes until a case asks for the mode: the first blend case
+    // to run would otherwise export the frame the fallback draws, which is the
+    // grid. That is what happened to the first pair of cloud references.
+    if params.texture_index == BLEND_MODE {
+        wait_for_slot_texture(&engine, "day_texture");
+        wait_for_slot_texture(&engine, "night_texture");
     }
     let pixels = crop(
         &engine
@@ -622,6 +650,59 @@ fn golden_panorama_at_a_narrow_sky() {
     check_golden("panorama_at_a_narrow_sky", &params);
 }
 
+/// The framing the two cloud cases share: the terminator down the middle of the
+/// frame, at the instant every case here renders.
+///
+/// One hemisphere alone would pass with either half of this change reverted, so
+/// the frame has to hold both: the floor is what the night half shows, the ramp
+/// and its nightward shift are what the middle shows, and the day half is what
+/// says nothing about the lit side moved.
+fn cloud_params() -> SceneParams {
+    let base = base_params();
+    SceneParams {
+        texture_index: BLEND_MODE,
+        camera: CameraParams {
+            longitude: 90.0,
+            latitude: 0.0,
+            zoom: 0.26,
+            ..base.camera
+        },
+        // What `base_params` turned off, back at the value the product ships.
+        cloud_opacity: SceneParams::default().cloud_opacity,
+        ..base
+    }
+}
+
+/// The cloud layer across the terminator at the default settings.
+#[test]
+fn golden_clouds_across_the_terminator() {
+    check_golden("clouds_across_the_terminator", &cloud_params());
+}
+
+/// The two terminators side by side, close enough to see them apart.
+///
+/// The camera sits over the terminator at the latitude where the fixture's
+/// equatorial band ends, so the frame holds four quadrants: lit ground, unlit
+/// ground, lit deck, unlit deck. The ground's edge is the product's own
+/// `terminator_width` and the deck's is `CLOUD_TERMINATOR_WIDTH` centered three
+/// degrees further into the night, which at this zoom is tens of pixels rather
+/// than the ten the whole globe would give. That is what makes this the case a
+/// revert of either the shift or the width fails: the cloud edge moves against a
+/// ground edge that did not.
+#[test]
+fn golden_cloud_terminator_close_up() {
+    let base = cloud_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            latitude: support::CLOUD_FIXTURE_BAND_EDGE,
+            zoom: 0.04,
+            ..base.camera
+        },
+        ..base
+    };
+    check_golden("cloud_terminator_close_up", &params);
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a
@@ -712,6 +793,8 @@ fn every_golden_case_is_distinguishable() {
         "moon_crescent",
         "panorama_behind_the_stars",
         "panorama_at_a_narrow_sky",
+        "clouds_across_the_terminator",
+        "cloud_terminator_close_up",
     ];
 
     let mut unnamed: Vec<String> = Vec::new();
@@ -768,3 +851,4 @@ fn every_golden_case_is_distinguishable() {
         }
     }
 }
+

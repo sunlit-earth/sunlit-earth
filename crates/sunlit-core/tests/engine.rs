@@ -3447,3 +3447,173 @@ fn the_panorama_follows_the_texture_resolution_cap() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// Clouds on the night side
+// ---------------------------------------------------------------------------
+
+/// The size the cloud cases export at. Small on purpose: what they measure is
+/// the mean of one window, not a picture.
+const CLOUD_CASE_SIZE: (u32, u32) = (256, 128);
+
+/// Half-width of that window, in pixels. The frame's center is the point the
+/// camera sits over, and the night map's city is thirty degrees away from it,
+/// which is well outside this at every zoom that fills the frame.
+const CLOUD_WINDOW: u32 = 6;
+
+/// Mean channel value over a square window at the center of an exported frame.
+#[allow(clippy::cast_precision_loss)]
+fn center_window_mean(pixels: &[u8], size: (u32, u32)) -> f64 {
+    let (width, height) = size;
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for y in height / 2 - CLOUD_WINDOW..height / 2 + CLOUD_WINDOW {
+        for x in width / 2 - CLOUD_WINDOW..width / 2 + CLOUD_WINDOW {
+            let px = ((y * width + x) * 4) as usize;
+            total += u64::from(pixels[px]) + u64::from(pixels[px + 1]) + u64::from(pixels[px + 2]);
+            count += 3;
+        }
+    }
+    total as f64 / count as f64
+}
+
+/// Parameters the cloud cases share: the fixture surface, the camera over the
+/// point the case is about, and nothing else in the window.
+///
+/// The atmosphere, the stars and the Sun are all off so that the window holds
+/// the globe and the layer over it and nothing else, and `hour` is what moves
+/// the sun: the camera stays where it is, so the surface under the window is the
+/// same texels whichever side of the terminator the case asks for.
+fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> SceneParams {
+    let mut params = SceneParams {
+        texture_index,
+        sample_count: 1,
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        sun_glow: 0.0,
+        camera: sunlit_core::scene::camera::CameraParams {
+            longitude,
+            latitude: 0.0,
+            zoom: 0.26,
+            ..sunlit_core::scene::camera::CameraParams::default()
+        },
+        ..SceneParams::default()
+    };
+    params.datetime.use_custom = true;
+    params.datetime.custom_hour = hour;
+    params.datetime.custom_day_of_year = 80;
+    params.datetime.custom_year = 2026;
+    params
+}
+
+/// Start an engine on the fixture surface with the banded cloud fixture behind
+/// the cloud slot, in blend mode, and wait until both have arrived.
+fn cloud_harness(dir: &Path, params: SceneParams) -> (Harness, support::SurfaceFixtures) {
+    let surface = support::write_surface_fixtures(dir);
+    let paths = surface.paths();
+    let clouds = Arc::new(support::FixtureClouds::bands())
+        as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+    let cache = dir.to_path_buf();
+    let harness = Harness::start(move |config| {
+        config.texture_paths = paths;
+        config.cache_dir = Some(cache);
+        config.cloud = Some(clouds);
+        config.params = params;
+    });
+    harness.wait_for_textures("the fixture surface");
+    harness.wait_for_slot_texture("cloud_texture");
+    (harness, surface)
+}
+
+/// Noon UTC, where the frame center of a camera at longitude 180 is as deep into
+/// the night as the globe goes, and midnight, where the same pixels are lit.
+const NIGHT_HOUR: f32 = 12.0;
+const DAY_HOUR: f32 = 0.0;
+
+/// The defect this change is about, in one assertion: a cloud on the night side
+/// has to be brighter than the ground it covers.
+///
+/// The fixture's unlit base is what `BlackMarble_2016.jxl` reads over unlit
+/// land, and at the old hardcoded 0.05 the deck came out at 0.063 against it,
+/// so this fails on the code before this change rather than merely measuring
+/// something.
+#[test]
+fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_ordering");
+    let params = cloud_case_params(3, 180.0, NIGHT_HOUR);
+    let (harness, _surface) = cloud_harness(&dir, params);
+
+    let covered = harness
+        .engine
+        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+        .expect("the engine should be able to export");
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+            cloud_opacity: 0.0,
+            ..params
+        })));
+    let bare = harness
+        .engine
+        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+        .expect("the engine should be able to export");
+
+    let (covered, bare) = (
+        center_window_mean(&covered, CLOUD_CASE_SIZE),
+        center_window_mean(&bare, CLOUD_CASE_SIZE),
+    );
+    println!("night side: {covered:.1} under the deck, {bare:.1} with the land bare");
+    assert!(
+        covered > bare + 8.0,
+        "a night-side cloud reads {covered:.1} over ground that reads {bare:.1}: \
+         the layer is darkening the night side instead of lighting it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The cloud layer is shaded by the sun in every texture mode, not only in the
+/// one whose terminator uniform is real.
+///
+/// `write_uniforms` puts -1.0 in `terminator_width` outside blend mode, as the
+/// sentinel that tells `fs_sphere` to ignore the sun, and `fs_cloud` used to
+/// read the same uniform: its ramp became `smoothstep(1.0, -1.0, n_dot_l)`,
+/// which the specification calls indeterminate and which the standard formula
+/// inverts, so clouds were bright at local midnight and dark at noon. The three
+/// single-texture modes are the ones that carry it.
+///
+/// The camera does not move between the two readings and the mode ignores the
+/// sun, so the ground under the window is the same texels in both: the whole
+/// difference is the layer's own shading.
+#[test]
+fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
+    const MODES: [(i32, &str); 3] = [(0, "grid"), (1, "day"), (2, "night")];
+
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_sentinel");
+    // Blend mode at startup, so both file-backed slots are loaded before any
+    // single-texture mode asks for one and no reading falls back to the grid.
+    let (harness, _surface) = cloud_harness(&dir, cloud_case_params(3, 180.0, NIGHT_HOUR));
+
+    for (mode, name) in MODES {
+        let mut means = Vec::new();
+        for hour in [DAY_HOUR, NIGHT_HOUR] {
+            harness
+                .engine
+                .send(EngineCommand::UpdateParams(Box::new(cloud_case_params(
+                    mode, 180.0, hour,
+                ))));
+            let pixels = harness
+                .engine
+                .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+                .expect("the engine should be able to export");
+            means.push(center_window_mean(&pixels, CLOUD_CASE_SIZE));
+        }
+        let (lit, unlit) = (means[0], means[1]);
+        println!("{name} mode: {lit:.1} at noon, {unlit:.1} at midnight");
+        assert!(
+            lit > unlit + 40.0,
+            "in {name} mode the deck reads {lit:.1} at noon and {unlit:.1} at midnight: \
+             the cloud ramp is reading the sentinel rather than its own width"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

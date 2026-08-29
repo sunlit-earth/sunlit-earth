@@ -1384,25 +1384,41 @@ fn uniform_buffer_field_offsets_match_wgsl() {
 /// evaluates is the source the renderer compiles rather than a copy of it.
 const SHARED_RULE_PROBE: &str = "
 @group(1) @binding(0) var<storage, read_write> rule_out: array<f32>;
+@group(1) @binding(1) var<storage, read> rule_heights: array<f32>;
 
 @compute @workgroup_size(1)
 fn shared_rule_probe() {
     rule_out[0] = output_pixel_scale();
     rule_out[1] = sky_lens_edge_radius();
+    for (var i = 0u; i < arrayLength(&rule_heights); i = i + 1u) {
+        let transmitted = limb_transmission_km(rule_heights[i]);
+        rule_out[2u + i * 4u] = transmitted.r;
+        rule_out[3u + i * 4u] = transmitted.g;
+        rule_out[4u + i * 4u] = transmitted.b;
+        rule_out[5u + i * 4u] = limb_disk_amplitude(transmitted.g);
+    }
 }
 ";
 
-/// The output-density ramp and the sky lens's edge radius exist once in WGSL
-/// and once in `scene::sun_occlusion`, and both pairings matter at the pixel:
-/// the CPU sizes the Sun's disk with the ramp and the shader draws that disk's
-/// antialiased edge with it, and the CPU measures occlusion at a screen
-/// position the shader has to draw the Sun at.
+/// Heights through the band the third rule is compared at: the surface, the
+/// few kilometres where the disk fades out, the rows the research table names,
+/// and the top of the band where the path takes nothing.
+const RULE_HEIGHTS_KM: [f32; 9] = [0.0, 2.0, 5.0, 8.0, 13.0, 20.0, 27.0, 50.0, 95.565];
+
+/// Three rules exist once in WGSL and once in `scene::sun_occlusion`, and every
+/// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
+/// ramp and the shader draws that disk's antialiased edge with it; the CPU
+/// measures occlusion at a screen position the shader has to draw the Sun at;
+/// and the CPU integrates the light path over the visible disk to decide what
+/// color and how bright the glare is while the shader draws the disk that glare
+/// is supposed to have come from.
 ///
-/// The heights avoid 1080 and below, where the ramp clamps to 1.0 and any two
-/// knees agree: every golden and every engine frame renders there, so nothing
-/// else in the suite can see a divergence at all.
+/// The viewport heights avoid 1080 and below, where the ramp clamps to 1.0 and
+/// any two knees agree: every golden and every engine frame renders there, so
+/// nothing else in the suite can see a divergence at all.
 #[test]
-fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
+#[allow(clippy::too_many_lines)]
+fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
     let ctx = RENDER_CTX.lock().unwrap();
 
     let wgsl_source = format!(
@@ -1428,13 +1444,20 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
             cache: None,
         });
 
-    let output_size = 2 * std::mem::size_of::<f32>() as u64;
+    let output_size = ((2 + RULE_HEIGHTS_KM.len() * 4) * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("shared_rule_probe_output"),
         size: output_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
+    let heights_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shared_rule_probe_heights"),
+            contents: bytemuck::cast_slice(&RULE_HEIGHTS_KM),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
     let uniform_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("shared_rule_probe_uniforms"),
         size: std::mem::size_of::<Uniforms>() as u64,
@@ -1452,16 +1475,23 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
     let output_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &pipeline.get_bind_group_layout(1),
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: output_buf.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: output_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: heights_buf.as_entire_binding(),
+            },
+        ],
     });
 
-    let probe = |height: f32, sky_fov: f32| {
+    let probe = |height: f32, sky_fov: f32, reddening: f32| {
         let uniforms = Uniforms {
             viewport_size: [height * 16.0 / 9.0, height],
             sky_fov,
+            sun_reddening: reddening,
             ..default_test_uniforms(64)
         };
         ctx.queue
@@ -1481,8 +1511,7 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
         }
         ctx.queue.submit(std::iter::once(encoder.finish()));
         let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
-        let values: &[f32] = bytemuck::cast_slice(&data);
-        (values[0], values[1])
+        bytemuck::cast_slice::<u8, f32>(&data).to_vec()
     };
 
     // Below the knee, on it, three points up the ramp, and past the ceiling.
@@ -1490,19 +1519,48 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
         // Under the lower clamp, both ends of the slider's range, and over the
         // upper one.
         for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0] {
-            let (shader_scale, shader_edge) = probe(height, sky_fov);
-            let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
-            let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
-            assert!(
-                (shader_scale - cpu_scale).abs() < 1e-6,
-                "the density ramp at {height} pixels: the shader says {shader_scale}, \
-                 scene::sun_occlusion::pixel_scale says {cpu_scale}"
-            );
-            assert!(
-                (shader_edge - cpu_edge).abs() < 2e-5 * cpu_edge,
-                "the sky lens edge radius at {sky_fov} degrees: the shader says {shader_edge}, \
-                 scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}"
-            );
+            // Both ends of the reddening slider and the measured atmosphere in
+            // between; zero is the white Sun and has to stay exactly white.
+            for &reddening in &[0.0_f32, 1.0, 2.0] {
+                let values = probe(height, sky_fov, reddening);
+                let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
+                let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
+                assert!(
+                    (values[0] - cpu_scale).abs() < 1e-6,
+                    "the density ramp at {height} pixels: the shader says {}, \
+                     scene::sun_occlusion::pixel_scale says {cpu_scale}",
+                    values[0]
+                );
+                assert!(
+                    (values[1] - cpu_edge).abs() < 2e-5 * cpu_edge,
+                    "the sky lens edge radius at {sky_fov} degrees: the shader says {}, \
+                     scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}",
+                    values[1]
+                );
+                for (index, km) in RULE_HEIGHTS_KM.iter().enumerate() {
+                    let cpu = sunlit_core::scene::sun_occlusion::limb_transmission(*km, reddening);
+                    let shader = glam::Vec3::new(
+                        values[2 + index * 4],
+                        values[3 + index * 4],
+                        values[4 + index * 4],
+                    );
+                    // Relative, because the band runs over ten decades and an
+                    // absolute bound would say nothing at the bottom of it.
+                    let apart = (shader - cpu).abs() / cpu.abs().max(glam::Vec3::splat(1e-30));
+                    assert!(
+                        apart.max_element() < 2e-3,
+                        "the light path at {km} km and reddening {reddening}: the shader says \
+                         {shader}, scene::sun_occlusion::limb_transmission says {cpu}"
+                    );
+                    let cpu_fade = sunlit_core::scene::sun_occlusion::limb_disk_amplitude(cpu.y);
+                    assert!(
+                        (values[5 + index * 4] - cpu_fade).abs() < 1e-3,
+                        "the disk's fade at {km} km: the shader says {}, \
+                         scene::sun_occlusion::limb_disk_amplitude says {cpu_fade}",
+                        values[5 + index * 4]
+                    );
+                }
+            }
         }
     }
 }

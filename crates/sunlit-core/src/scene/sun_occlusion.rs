@@ -760,6 +760,289 @@ mod tests {
         }
     }
 
+    // --- the light path through the band ---
+
+    /// Mallama's Table 3.2, as the amendment's research reconstructs it: the
+    /// lowest altitude of the ray, the cumulative air mass along it, and what
+    /// fraction of green light comes out the far side.
+    const MALLAMA_TABLE: [(f32, f32, f32); 11] = [
+        (32.0, 0.6, 0.90),
+        (27.0, 1.3, 0.79),
+        (22.0, 2.7, 0.62),
+        (20.0, 3.8, 0.51),
+        (18.0, 5.0, 0.41),
+        (15.0, 8.5, 0.22),
+        (13.0, 13.0, 0.10),
+        (8.0, 24.0, 0.014),
+        (5.0, 37.0, 0.0013),
+        (2.6, 50.0, 0.0001),
+        (0.8, 62.0, 0.00001),
+    ];
+
+    #[test]
+    fn the_exponential_reproduces_the_measured_air_masses() {
+        for (height, air_mass, _) in MALLAMA_TABLE {
+            let modeled = limb_air_mass(height, 1.0);
+            let ratio = modeled / air_mass;
+            assert!(
+                (0.79..=1.21).contains(&ratio),
+                "at {height} km the table has {air_mass} air masses and the model {modeled}"
+            );
+        }
+    }
+
+    /// Transmission is exponential in air mass, so the fifth the fit is worth
+    /// at the top of the band is a factor of one and a half at the bottom of
+    /// it. Twenty percent holds where the air mass is small; at 13 km the
+    /// model is 16 percent short of the table's 13 air masses and that comes
+    /// out as 41 percent more green.
+    #[test]
+    fn the_transmitted_green_follows_the_table_where_the_air_mass_is_small() {
+        for (height, _, transmitted) in MALLAMA_TABLE.iter().take(6) {
+            let modeled = limb_transmission(*height, 1.0).y;
+            let ratio = modeled / transmitted;
+            assert!(
+                (0.8..=1.2).contains(&ratio),
+                "at {height} km the table transmits {transmitted} of the green and the model {modeled}"
+            );
+        }
+        let deep = limb_transmission(13.0, 1.0).y;
+        assert!(
+            (deep / 0.10 - 1.412).abs() < 0.05,
+            "the 13 km row is the one the exponential fit misses; got {deep}"
+        );
+    }
+
+    #[test]
+    fn the_band_reddens_downward_and_whitens_upward() {
+        let mut previous = limb_hue(0.0, 1.0);
+        assert!(
+            previous.y < 0.02 && previous.z < 0.001,
+            "a ray that grazes the surface is red, got {previous}"
+        );
+        for step in 1..=48 {
+            #[allow(clippy::cast_precision_loss)]
+            let hue = limb_hue(step as f32 * 2.0, 1.0);
+            assert!(
+                hue.y >= previous.y && hue.z >= previous.z,
+                "the band has to warm downward and cool upward, but {hue} sits above {previous}"
+            );
+            previous = hue;
+        }
+        let high = limb_hue(50.0, 1.0);
+        assert!(
+            (high - Vec3::ONE).abs().max_element() < 0.02,
+            "above the weather the path takes nothing out, got {high}"
+        );
+    }
+
+    #[test]
+    fn a_reddening_of_zero_is_the_sun_that_knows_nothing_about_the_band() {
+        for height in [-40.0, 0.0, 9.0, 96.0] {
+            assert_eq!(limb_transmission(height, 0.0), Vec3::ONE);
+            assert_relative_eq!(limb_disk_amplitude(limb_transmission(height, 0.0).y), 1.0);
+        }
+    }
+
+    /// A tenth of the Sun is still a blinding source, so the disk clips white
+    /// down to about nine kilometres and only then starts to go.
+    #[test]
+    fn the_disk_clips_white_until_the_path_carries_almost_nothing() {
+        assert_relative_eq!(limb_disk_amplitude(limb_transmission(12.0, 1.0).y), 1.0);
+        assert_relative_eq!(limb_disk_amplitude(limb_transmission(9.0, 1.0).y), 1.0);
+        assert!(limb_disk_amplitude(limb_transmission(7.0, 1.0).y) < 0.9);
+        assert!(limb_disk_amplitude(limb_transmission(2.0, 1.0).y) < 0.1);
+    }
+
+    // --- the flux the visible disk delivers ---
+
+    /// A disk clear of the band delivers all of its light and is white doing
+    /// it, and both have to be exact: the goldens with a Sun well above the
+    /// limb come back byte for byte only if nothing here rounds.
+    #[test]
+    fn a_disk_clear_of_the_band_carries_all_of_its_light() {
+        let (tint, transmission) = integrate_disk(400.0, 4.0, 100.0, 100.0, 8.0, 95.565, 1.0, 1.0);
+        assert_eq!(transmission, 1.0);
+        assert_eq!(tint, Vec3::ONE);
+    }
+
+    /// Half the disk behind the limb with the visible half in the lowest tenth
+    /// of the band: the area says a half and the light says far less, which is
+    /// the whole reason the glare is a function of flux and not of area.
+    #[test]
+    fn a_disk_half_behind_the_limb_in_the_red_carries_almost_nothing() {
+        let (tint, transmission) = integrate_disk(100.0, 5.0, 100.0, 100.0, 50.0, 95.565, 1.0, 1.0);
+        assert!(
+            transmission < 0.05,
+            "the visible half is in the red, so it cannot carry {transmission} of the light"
+        );
+        assert!(
+            tint.z < tint.y && tint.y < tint.x,
+            "and what it carries is red, got {tint}"
+        );
+    }
+
+    // --- the exposure gain ---
+
+    #[test]
+    fn the_glare_peaks_where_the_disk_clears_the_zone_and_settles_above_it() {
+        assert_relative_eq!(exposure_gain(-2.0, 3.0, 4.0), 3.0);
+        assert_relative_eq!(exposure_gain(1.0, 3.0, 4.0), 3.0);
+        assert!(exposure_gain(2.0, 3.0, 4.0) < 3.0);
+        assert!(exposure_gain(2.0, 3.0, 4.0) > exposure_gain(4.0, 3.0, 4.0));
+        assert_relative_eq!(exposure_gain(5.0, 3.0, 4.0), 1.0);
+        assert_relative_eq!(exposure_gain(80.0, 3.0, 4.0), 1.0);
+    }
+
+    #[test]
+    fn a_boost_of_one_is_the_physical_answer_at_every_height() {
+        for height in [-3.0, 0.0, 1.0, 2.5, 40.0] {
+            assert_relative_eq!(exposure_gain(height, 1.0, 4.0), 1.0);
+        }
+    }
+
+    // --- refraction ---
+
+    #[test]
+    fn no_refraction_leaves_the_disk_exactly_where_it_is() {
+        for height in [-9.0, -0.46, 0.0, 0.3, 7.0] {
+            let (apparent, squash) = refract(height, 0.0);
+            assert_eq!(apparent, height);
+            assert_eq!(squash, 1.0);
+        }
+    }
+
+    /// The derived figures: a seventh of the vertical size at the horizon, and
+    /// most of it back by a third of the way up the band.
+    #[test]
+    fn the_flattening_matches_the_orbital_measurements() {
+        let (apparent, squash) = refract(-0.46, 1.0);
+        assert_relative_eq!(apparent, 0.0, epsilon = 1e-5);
+        assert_relative_eq!(squash, 0.137, epsilon = 0.002);
+        let one_third = 1.0 / 3.0 - 0.46 * (-REFRACTION_EXPONENT / 3.0).exp();
+        let (apparent, squash) = refract(one_third, 1.0);
+        assert_relative_eq!(apparent, 1.0 / 3.0, epsilon = 1e-4);
+        assert_relative_eq!(squash, 0.94, epsilon = 0.002);
+    }
+
+    #[test]
+    fn the_newton_solve_inverts_the_map_it_is_solving() {
+        for step in 0..60 {
+            #[allow(clippy::cast_precision_loss)]
+            let apparent = step as f32 * 0.05;
+            let geometric = apparent - 0.46 * (-REFRACTION_EXPONENT * apparent).exp();
+            let (solved, _) = refract(geometric, 1.0);
+            assert_relative_eq!(solved, apparent, epsilon = 1e-4);
+        }
+    }
+
+    #[test]
+    fn the_lift_is_monotonic_and_never_more_than_the_whole_atmosphere() {
+        let mut previous = f32::NEG_INFINITY;
+        for step in -40..60 {
+            #[allow(clippy::cast_precision_loss)]
+            let geometric = step as f32 * 0.05;
+            let (apparent, squash) = refract(geometric, 1.0);
+            assert!(
+                apparent > previous,
+                "the map has to be monotonic at {geometric}"
+            );
+            assert!(
+                apparent - geometric <= REFRACTION_LIFT_ZONES + 1e-5,
+                "a lift of {} at {geometric} is more than the atmosphere is worth",
+                apparent - geometric
+            );
+            assert!((0.1..=1.0).contains(&squash));
+            previous = apparent;
+        }
+    }
+
+    /// Flattening the disk about its own center and moving the limb it is cut
+    /// by are the same thing in area fractions, which is what lets `visibility`
+    /// stay circle against circle. Checked against the ellipse itself, sampled.
+    ///
+    /// The identity is exact where the limb is a straight line, and the limb is
+    /// a circle: scaling one axis takes a circle to an ellipse, so the pulled
+    /// back limb agrees with the moved circle where the disk sits and curves
+    /// away from it to either side. What that costs is a function of how large
+    /// the disk is against the globe, measured at the strongest flattening the
+    /// slider reaches: 0.025 of the visible fraction at the true half degree,
+    /// 0.065 at three times it and 0.121 at eight. It is worst where the disk
+    /// is deepest in the band, which is where its light is nearly gone, so a
+    /// glare already down to a hundredth is what carries the error.
+    #[test]
+    fn a_squashed_disk_against_the_limb_is_a_round_one_against_a_moved_limb() {
+        let globe_radius = 120.0_f32;
+        let disk_radius = 5.0_f32;
+        for squash in [0.15_f32, 0.4, 0.75, 1.0] {
+            for offset in [-4.0_f32, -2.0, 0.0, 3.0, 4.5] {
+                let center = globe_radius + offset;
+                let spread = 1.0 / squash - 1.0;
+                let moved = globe_radius + spread * (globe_radius - center);
+                let reported = visibility(
+                    ScreenCircle {
+                        center: Vec2::new(center, 0.0),
+                        radius: disk_radius,
+                    },
+                    ScreenCircle {
+                        center: Vec2::ZERO,
+                        radius: moved,
+                    },
+                    ScreenCircle {
+                        center: Vec2::ZERO,
+                        radius: moved,
+                    },
+                    None,
+                )
+                .visible_fraction;
+
+                // The ellipse the shader actually draws, sampled on a grid.
+                let steps: i16 = 400;
+                let mut inside = 0_u32;
+                let mut clear = 0_u32;
+                for row in 0..steps {
+                    for column in 0..steps {
+                        #[allow(clippy::cast_precision_loss)]
+                        let u = (f32::from(row) + 0.5) / f32::from(steps) * 2.0 - 1.0;
+                        #[allow(clippy::cast_precision_loss)]
+                        let v = (f32::from(column) + 0.5) / f32::from(steps) * 2.0 - 1.0;
+                        if u * u + v * v > 1.0 {
+                            continue;
+                        }
+                        inside += 1;
+                        let drawn = center + squash * u * disk_radius;
+                        let across = v * disk_radius;
+                        if (drawn * drawn + across * across).sqrt() > globe_radius {
+                            clear += 1;
+                        }
+                    }
+                }
+                let sampled = f64::from(clear) / f64::from(inside);
+                assert!(
+                    (f64::from(reported) - sampled).abs() < 0.03,
+                    "squash {squash} at offset {offset}: the identity says {reported} and the \
+                     ellipse itself {sampled}"
+                );
+            }
+        }
+    }
+
+    // --- the forward lobe's width ---
+
+    #[test]
+    fn the_asymmetry_puts_the_lobe_at_half_where_the_slider_says() {
+        for width in [10.0_f32, 30.0, 60.0, 90.0] {
+            let g = henyey_greenstein_asymmetry(width);
+            let cosine = width.to_radians().cos();
+            let lobe = ((1.0 - g) * (1.0 - g) / (1.0 + g * g - 2.0 * g * cosine)).powf(1.5);
+            assert_relative_eq!(lobe, 0.5, epsilon = 1e-3);
+        }
+        assert!(
+            henyey_greenstein_asymmetry(10.0) > henyey_greenstein_asymmetry(90.0),
+            "a narrower band is a more forward-scattering one"
+        );
+    }
+
     #[test]
     fn a_sun_clear_of_both_silhouettes_is_fully_visible() {
         let v = visibility(sun_at(300.0, 5.0), globe(), atmosphere(), None);

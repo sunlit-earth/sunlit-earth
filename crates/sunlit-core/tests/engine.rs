@@ -480,6 +480,83 @@ fn the_physical_exposure_has_no_peak() {
     );
 }
 
+/// The user's own framing: 3.7 Earth radii, 140 degrees of sky, the latitude
+/// and the framing the golden suite's `horizon_camera` uses.
+///
+/// The atmosphere is on, unlike the sun cases above, because what these
+/// measure is the band the shell draws. Three longitudes matter here, and all
+/// three are geometry rather than taste: at 163.35 the true Sun stands on the
+/// true limb, 15.68 degrees off the view axis, while its image through the sky
+/// lens is 195 pixels from the frame's center and the painted limb is 204, so
+/// there is no Sun to see anywhere near the limb; at 117.66 the image sits one
+/// horizon zone inside the painted limb, which takes a true Sun 57.1 degrees
+/// off the axis; and at 115.93 the disk's lower edge stands on the limb.
+fn horizon_params(longitude: f32) -> SceneParams {
+    let mut params = test_params();
+    params.datetime.custom_day_of_year = 172;
+    params.camera.longitude = longitude;
+    params.camera.latitude = -23.44;
+    params.camera.zoom = 0.227_047_34;
+    params.sky_fov = 140.0;
+    params
+}
+
+/// What the Sun and its band add to a frame, as red minus blue.
+///
+/// Against the same frame with both switched off, so the globe's own texture
+/// and the shell's own blue cancel and what is left is the light this
+/// amendment moved. Red minus blue because the band and the transmitted disk
+/// are red by construction and everything else the frame holds is not.
+fn sunrise_excess(longitude: f32) -> i64 {
+    let params = horizon_params(longitude);
+    let mut dark = params;
+    dark.sun_glow = 0.0;
+    dark.atmo_sunrise_glow = 0.0;
+    let harness = Harness::start(|config| config.params = dark);
+    let (dark, width, height) = harness.next_frame();
+    assert_eq!(
+        (width, height),
+        (512, 256),
+        "the longitudes this case picks are for one framing"
+    );
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(params)));
+    let (lit, _, _) = harness.next_frame();
+    lit.chunks_exact(4)
+        .zip(dark.chunks_exact(4))
+        .map(|(lit, dark)| {
+            i64::from(lit[0].saturating_sub(dark[0])) - i64::from(lit[2].saturating_sub(dark[2]))
+        })
+        .sum()
+}
+
+/// The glow arrives with the Sun's image rather than with the true Sun.
+///
+/// The lobe on the Rayleigh shell is measured through the sky lens, so it
+/// fires where the Sun is drawn. Measured at 512 by 256 with the lobe in the
+/// true scattering angle instead, the framing with no Sun to see adds 1287
+/// against the 12222 of the framing whose image stands on the limb, a ninth of
+/// it: a glow that arrives well before the Sun, which is what the user saw.
+/// Through the sky lens the same two are 381 and 31221, an eighty-second.
+#[test]
+fn the_sunrise_band_arrives_with_the_suns_image() {
+    let no_sun_to_see = sunrise_excess(163.353_15);
+    let image_at_the_limb = sunrise_excess(117.658_22);
+    let disk_emerged = sunrise_excess(115.931_64);
+    assert!(
+        no_sun_to_see * 20 < image_at_the_limb,
+        "a framing whose Sun is nowhere near the painted limb still reddened it \
+         by {no_sun_to_see} against the {image_at_the_limb} of one whose image \
+         stands on it"
+    );
+    assert!(
+        disk_emerged > image_at_the_limb,
+        "the emerged disk added {disk_emerged}, less than the {image_at_the_limb} \
+         of the framing that has no disk in it at all"
+    );
+}
+
 /// A Sun past the reach of an unpanned frame is drawn once a pan reaches it.
 ///
 /// Both sun draws cull themselves against `sky_corner_angle`, the angle of the

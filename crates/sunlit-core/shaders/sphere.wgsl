@@ -553,19 +553,25 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let night_fade = smoothstep(0.0, -0.3, n_dot_l);
     let color = mix(term_color * term_t * 0.5, day_color, day_t) * (1.0 - night_fade);
 
-    // The forward-scattering lobe around the Sun's own azimuth: a phase
-    // function in the view ray rather than in the surface normal, which is what
-    // the first attempt at this had and why it did nothing. Its color is the
+    // The forward-scattering lobe around the Sun's own azimuth. Its color is the
     // same light path the Sun's disk is drawn through, taken at this fragment's
     // own ray height, so the band is red where the ray grazes the surface and
     // white where it leaves the atmosphere.
+    //
+    // The scattering angle is the composite's, not the scene's: between the
+    // fragment's own sky-lens ray and the Sun's image, which is the frame every
+    // other term about the Sun is measured in. The globe is painted through the
+    // camera lens and the Sun through this one, so a lobe in the true angle
+    // peaks where the true Sun crosses the true limb, which at a close camera
+    // is many degrees from where the disk is drawn.
     //
     // The floor is subtracted and the remainder renormalized, the way the star
     // halo has the value at its own edge taken off: Henyey-Greenstein keeps a
     // few percent at every backscattering angle, and left in that few percent
     // warms the whole limb of every frame whose Sun is behind the camera, which
     // is not a lobe around anything.
-    let cos_scatter = -dot(uniforms.sun_dir, v);
+    let ray = sky_lens_direction(in.clip_position.xy);
+    let cos_scatter = dot(ray, normalize(uniforms.sun_view_dir));
     let g = uniforms.atmo_sunrise_g;
     let forward = pow((1.0 - g) * (1.0 - g) / max(1.0 + g * g - 2.0 * g * cos_scatter, 1e-4), 1.5);
     let backward = pow((1.0 - g) / (1.0 + g), 3.0);

@@ -655,6 +655,51 @@ fn golden_sunrise_band() {
     check_golden_in("sunrise_band", &params, SUNRISE_BAND_WINDOW);
 }
 
+/// The user's own camera: 3.7 Earth radii, and the sky at the width it ships
+/// at rather than the 60 degrees the four cases above are framed in.
+///
+/// This is where the two lenses disagree most. The globe subtends 15.68
+/// degrees from here, so the painted limb is 204 pixels out, while the sky lens
+/// puts a direction there only when it is 57 degrees off the view axis. A lobe
+/// in the true scattering angle therefore peaks with the Sun's image still 145
+/// pixels inside the painted disc, and is a quarter of its peak by the time the
+/// image reaches the limb.
+fn close_camera(longitude: f32) -> CameraParams {
+    CameraParams {
+        longitude,
+        latitude: -23.44,
+        zoom: 0.227_047_34,
+        ..CameraParams::default()
+    }
+}
+
+/// The strip the band runs down at the framing below, with the limb inside it.
+///
+/// The left limb crosses the frame's top and bottom edges at x 97 and reaches
+/// x 52 at half height, so 72 pixels from x 24 hold the whole of it and the
+/// annulus outside it. The band's own light is what has to be inside the
+/// window; the globe is nine other cases' business.
+const SUNRISE_BAND_CLOSE_WINDOW: Window = Window {
+    x: 24,
+    y: 0,
+    width: 72,
+    height: HEIGHT,
+};
+
+#[test]
+fn golden_sunrise_band_close() {
+    // The Sun's image one horizon zone inside the painted limb: near enough
+    // that the lobe is at its peak under it, far enough that no disk is drawn
+    // and what the reference holds is the band alone.
+    let base = base_params();
+    let params = SceneParams {
+        camera: close_camera(117.658_22),
+        sky_fov: 140.0,
+        ..base
+    };
+    check_golden_in("sunrise_band_close", &params, SUNRISE_BAND_CLOSE_WINDOW);
+}
+
 /// The window the Moon lands in at the framing below, with room around it for
 /// a Moon that moved to be visible rather than merely absent.
 const MOON_WINDOW: Window = Window {
@@ -894,6 +939,7 @@ fn every_golden_case_is_distinguishable() {
         "sun_grazing_the_limb",
         "sun_rising_through_the_band",
         "sunrise_band",
+        "sunrise_band_close",
         "moon_crescent",
         "panorama_behind_the_stars",
         "panorama_at_a_narrow_sky",

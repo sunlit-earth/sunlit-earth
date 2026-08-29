@@ -131,6 +131,11 @@ pub fn fine_drag_gain(sky_fov_deg: f32, preview_width_px: f32) -> f32 {
 /// never exceeds the coarse one: at the nearest zoom the two cross, and a
 /// slow hand there should not turn the globe faster than a fast one.
 ///
+/// The sweeping end returns the coarse gain itself rather than the interpolation
+/// evaluated at 1, because `fine + (coarse - fine)` is a rounding away from
+/// `coarse` at some of the zooms the slider reaches, and a sweep has to turn the
+/// globe by exactly what it always turned it by.
+///
 /// :param `speed_px_per_sec`: the cursor's smoothed speed
 /// :param coarse: the gain for a moving hand
 /// :param fine: the gain for a slow one
@@ -141,6 +146,9 @@ pub fn drag_gain(speed_px_per_sec: f32, coarse: f32, fine: f32) -> f32 {
     let speed = speed_px_per_sec.max(FINE_DRAG_SPEED);
     let t = ((speed / FINE_DRAG_SPEED).ln() / (COARSE_DRAG_SPEED / FINE_DRAG_SPEED).ln())
         .clamp(0.0, 1.0);
+    if t >= 1.0 {
+        return coarse;
+    }
     let eased = t * t * (3.0 - 2.0 * t);
     fine + (coarse - fine) * eased
 }
@@ -400,11 +408,32 @@ mod tests {
     }
 
     #[test]
-    fn the_fine_gain_is_the_same_at_every_zoom() {
-        let fine = fine_drag_gain(140.0, 1920.0);
-        let near = drag_gain(0.0, coarse_drag_gain(0.2), fine);
-        let far = drag_gain(0.0, coarse_drag_gain(0.9), fine);
-        assert_relative_eq!(near, far);
+    fn a_slow_hand_turns_the_globe_at_the_same_rate_at_every_zoom() {
+        // The fine gain is a property of the sky lens rather than of the
+        // camera, so the only thing that can make a slow drag differ between
+        // two zooms is the cap against the coarse gain. Walking the whole
+        // slider is what says where that is: at 140 degrees of sky it is never
+        // active and the rate is one number from end to end, and at 180 it is
+        // active at the nearest zooms and nowhere else.
+        for (sky_fov, capped_somewhere) in [(140.0_f32, false), (180.0, true)] {
+            let fine = fine_drag_gain(sky_fov, 1920.0);
+            let mut capped = 0;
+            for step in 0..=1000_u16 {
+                let coarse = coarse_drag_gain(f32::from(step) / 1000.0);
+                let gain = drag_gain(0.0, coarse, fine);
+                if coarse < fine {
+                    capped += 1;
+                    assert_relative_eq!(gain, coarse);
+                } else {
+                    assert_relative_eq!(gain, fine);
+                }
+            }
+            assert_eq!(
+                capped > 0,
+                capped_somewhere,
+                "at {sky_fov} degrees of sky the coarse gain capped the fine one                  at {capped} of 1001 zooms"
+            );
+        }
     }
 
     #[test]
@@ -431,15 +460,21 @@ mod tests {
 
     #[test]
     fn a_sweep_turns_the_globe_exactly_as_it_always_did() {
-        let zoom = 0.37;
-        let gain = drag_gain(
-            COARSE_DRAG_SPEED,
-            coarse_drag_gain(zoom),
-            fine_drag_gain(140.0, 1920.0),
-        );
-        let swept = apply_globe_drag_at(12.0, -5.0, 21.0, 9.0, -4.0, gain);
-        let before = apply_globe_drag(12.0, -5.0, 21.0, zoom, 9.0, -4.0);
-        assert_eq!(swept, before);
+        // Every zoom the slider reaches, because the blend's own arithmetic is
+        // where this could fail: `fine + (coarse - fine)` rounds away from
+        // `coarse` at 62 of these 1001 zooms, which is why the sweeping end
+        // returns the coarse gain itself.
+        let fine = fine_drag_gain(140.0, 1920.0);
+        for step in 0..=1000_u16 {
+            let zoom = f32::from(step) / 1000.0;
+            let gain = drag_gain(COARSE_DRAG_SPEED, coarse_drag_gain(zoom), fine);
+            let swept = apply_globe_drag_at(12.0, -5.0, 21.0, 9.0, -4.0, gain);
+            let before = apply_globe_drag(12.0, -5.0, 21.0, zoom, 9.0, -4.0);
+            assert_eq!(
+                swept, before,
+                "a sweep at zoom {zoom} turned the globe differently"
+            );
+        }
     }
 
     #[test]

@@ -487,7 +487,7 @@ fn the_physical_exposure_has_no_peak() {
 /// measure is the band the shell draws. Three longitudes matter here, and all
 /// three are geometry rather than taste: at 163.35 the true Sun stands on the
 /// true limb, 15.68 degrees off the view axis, while its image through the sky
-/// lens is 195 pixels from the frame's center and the painted limb is 204, so
+/// lens is 52 pixels from the frame's center and the painted limb is 204, so
 /// there is no Sun to see anywhere near the limb; at 117.66 the image sits one
 /// horizon zone inside the painted limb, which takes a true Sun 57.1 degrees
 /// off the axis; and at 115.93 the disk's lower edge stands on the limb.

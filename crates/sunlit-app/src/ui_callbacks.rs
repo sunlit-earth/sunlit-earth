@@ -20,12 +20,23 @@ use sunlit_core::scene::sun::DateTimeInput;
 ///
 /// The estimator and the moment of the previous move are this callback's
 /// alone: no other drag reads the cursor's speed, and the interval between two
-/// moves is the only thing the toolkit does not hand over.
+/// moves is the only thing the toolkit does not hand over. They are shared with
+/// the press, which clears both, because they describe one gesture: without
+/// that, a deliberate drag begun a few tens of milliseconds after a sweep
+/// inherits the sweep's speed and takes its first steps at the coarse gain.
 fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
     let window_weak = window.as_weak();
     let engine = link.clone();
-    let speed = std::cell::Cell::new(mouse_math::DragSpeed::default());
-    let previous_move = std::cell::Cell::new(None::<std::time::Instant>);
+    let speed = std::rc::Rc::new(std::cell::Cell::new(mouse_math::DragSpeed::default()));
+    let previous_move = std::rc::Rc::new(std::cell::Cell::new(None::<std::time::Instant>));
+
+    let pressed_speed = std::rc::Rc::clone(&speed);
+    let pressed_move = std::rc::Rc::clone(&previous_move);
+    window.on_mouse_drag_globe_begin(move || {
+        pressed_speed.set(mouse_math::DragSpeed::default());
+        pressed_move.set(None);
+    });
+
     window.on_mouse_drag_globe(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;

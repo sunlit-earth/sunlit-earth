@@ -264,6 +264,7 @@ export component MainWindow inherits Window {
     in property <int> max-day-of-year: 365;
 
     callback mouse-drag-globe(float, float);
+    callback mouse-drag-globe-begin();
     callback mouse-drag-frame(float, float);
     callback mouse-drag-orient(float, float);
     callback mouse-drag-tilt(float, float);
@@ -1325,6 +1326,9 @@ export component MainWindow inherits Window {
             pointer-event(event) => {
                 if event.button == PointerEventButton.left {
                     image-container.left-held = event.kind == PointerEventKind.down;
+                    if event.kind == PointerEventKind.down {
+                        root.mouse-drag-globe-begin();
+                    }
                 }
                 if event.button == PointerEventButton.right {
                     image-container.right-held = event.kind == PointerEventKind.down;

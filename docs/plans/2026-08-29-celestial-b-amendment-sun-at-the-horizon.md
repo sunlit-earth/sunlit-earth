@@ -274,7 +274,7 @@ One thing the gates did not catch until this round: `every_golden_case_is_distin
 
 ### Validation rounds
 
-**Round 1**, against `1d0fc26..1329839`: two majors and eight minors, all ten answered.
+**Round 1**, against `1d0fc26..1329839`: two majors and eight minors, all ten answered. The gates were run whole again at the end of it, at the counts the Gates section now carries, and regenerating the golden suite on both adapters afterwards left all sixteen references byte for byte. The WSL run before that one failed on the EGL flake, and the shading target alone then gave two passes and two failures in four runs, one of them failing eleven of its twelve cases: that is the GL stack in the guest rather than anything a change to a shader could do, since a shader that would not compile fails all twelve the same way every time.
 
 The first major is criterion 6, which the run had recorded as skipped in its status log and nowhere that ships. It is answered by doing the inspection rather than by writing the skip down: the section above is what was rendered, at what resolution, and what the three clauses came to. All three hold at the shipped defaults.
 

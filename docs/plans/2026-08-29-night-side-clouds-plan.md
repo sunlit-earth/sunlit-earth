@@ -589,3 +589,31 @@ time the entry is read there are five, because departure 4 added one, so four wo
 replaced one wrong number with another. The count is of the cases that render a cloud pixel:
 the ordering case, the sentinel case over three modes, the zero-is-off case, the resolution
 switch, and the dummy.
+
+## Validation
+
+**Round 1**, over `e2a28c6..3873beb`, by a fresh reviewer with no share of the implementation's
+context: zero majors, three minors, all three about text describing the code rather than about
+the code. The gates were rerun there on a forced full recompile of the three crates, so the
+clean clippy is not a replayed cache: 1146 passing, zero failing, the eleven desktop cases
+ignored as designed.
+
+What the round established beyond the findings is worth as much as the findings. Every
+measured number in the plan reproduced except one, the old constant's 17.1, which measures
+17.3 and is now that. The three new uniform fields were checked against the WGSL block field
+by field and sit on exactly the three consumed pads, with the following `vec4` still aligned.
+Both bind group rebuilds were deleted in turn to see what would fail: the purge one gives the
+predicted validation error, and the other one passes both engine cases and fails
+`golden_clouds_lit_by_city_light`, so each is held, but not by the test this document expected
+to hold it. Zeroing `CLOUD_TERMINATOR_WIDTH` to the globe's own width also fails the goldens,
+so the references hold the width as well as the shift, which was claimed but never measured.
+
+The three minors became departures 4 through 6 and two commits, `0635c20` and `7904fa8`:
+`the_dummy_night_map_lights_no_cloud`, which closes the one hole the round found in the suite
+rather than in the prose, and the corrections to this document, `CLAUDE.md`, `docs/roadmap.md`
+and the comment on `maybe_create_cloud_bind_group`. The mip level is a recorded decline with
+its measurement, in departure 5. No golden reference moved in either commit.
+
+Round 1 having reported no majors, the fix set was reviewed by the orchestrator against the
+diff rather than by a second round: three prose corrections and one engine case, with the
+gates rerun independently.

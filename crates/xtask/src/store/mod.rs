@@ -116,12 +116,19 @@ impl Store {
 
     /// Where the release bundle is assembled before it is archived and staged.
     ///
-    /// Run state like the job scratch and for the same reasons: it is built per
-    /// run out of what that run produced, the guest it is staged into is the one
-    /// that is about to be destroyed, and it means nothing once that guest is
-    /// gone. `dist` removes it when a target is finished with it whether the
-    /// target passed or failed, so this is what accounts for one a run died in
-    /// the middle of.
+    /// Run state in every sense the store cares about: it is built per run out
+    /// of what that run produced, it is copied into a guest that is about to be
+    /// destroyed, and it means nothing afterwards. So it sits in the run
+    /// directory, where `vm status` counts it and `vm down` and `vm purge` sweep
+    /// it with everything else there.
+    ///
+    /// It is deliberately *not* in `vm::run_state_paths`, which is the shorter
+    /// list a run's own teardown deletes as it ends a guest: the bundle outlives
+    /// the guest it was staged into by exactly the few seconds it takes to write
+    /// the final record into it and archive it, and putting it on that list made
+    /// the verification boot's own teardown delete the bundle it had just
+    /// proved. `dist` removes it when a target is finished with it, whichever
+    /// way the target went.
     pub fn bundle_scratch(&self, image: Image) -> PathBuf {
         self.run_dir(image).join("bundle")
     }

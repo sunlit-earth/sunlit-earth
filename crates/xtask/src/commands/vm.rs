@@ -125,13 +125,12 @@ impl Session<'_> {
 /// Linux guest and a Windows one under the QEMU cell of the provider matrix.
 /// `vm.log` is deliberately not in the list: a failed boot's message quotes its
 /// tail and names its path, and deleting it here would make that path a lie.
-pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 6] {
+pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 5] {
     [
         store.state_file(image),
         state.overlay.clone(),
         store.job_scratch(image),
         store.handover_scratch(image),
-        store.bundle_scratch(image),
         store.firmware_vars(image),
     ]
 }
@@ -1642,7 +1641,6 @@ mod tests {
                 state.overlay.clone(),
                 store.job_scratch(image),
                 store.handover_scratch(image),
-                store.bundle_scratch(image),
                 store.firmware_vars(image),
             ]
         );
@@ -1662,6 +1660,14 @@ mod tests {
         .expect("the launcher");
         std::fs::write(store.firmware_vars(image), b"vars").expect("the firmware variables");
         std::fs::write(store.vm_log(image), b"qemu").expect("the log");
+        // The bundle a release build assembles is in the run directory too, and
+        // it is the one thing there that outlives the guest it was staged into:
+        // `dist` writes the final record into it and archives it after the
+        // verification boot is over. It was on the list above once, and the
+        // teardown then deleted the bundle that boot had just proved.
+        std::fs::create_dir_all(store.bundle_scratch(image)).expect("the bundle scratch");
+        std::fs::write(store.bundle_scratch(image).join("sunlit-earth"), b"elf")
+            .expect("the bundled binary");
 
         session.tear_down(&store).expect("the teardown");
 
@@ -1673,6 +1679,15 @@ mod tests {
         // The log is what a failed boot's message quotes and names, so a
         // teardown is not what removes it.
         assert!(store.vm_log(image).is_file());
+        assert!(store.bundle_scratch(image).is_dir());
+        // What removes the bundle is `dist` itself, and what sweeps one a run
+        // died in the middle of is `vm down`, which takes the run directory
+        // whole rather than reading this list.
+        assert!(
+            store
+                .bundle_scratch(image)
+                .starts_with(store.run_dir(image))
+        );
         let _ = std::fs::remove_dir_all(store.root());
     }
 

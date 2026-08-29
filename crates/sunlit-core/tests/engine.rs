@@ -296,6 +296,12 @@ fn sun_off_and_on(longitude: f32) -> (Vec<u8>, Vec<u8>) {
 
 /// The same for a framing the caller has already adjusted.
 fn sun_off_and_on_framed(params: SceneParams) -> (Vec<u8>, Vec<u8>) {
+    sun_off_and_on_at(params, 1.5)
+}
+
+/// The same again at a glare strength of the caller's choosing, for a case
+/// that needs the disk clipped white while the glare around it is not.
+fn sun_off_and_on_at(params: SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
     let mut off = params;
     off.sun_glow = 0.0;
     let harness = Harness::start(|config| config.params = off);
@@ -306,7 +312,7 @@ fn sun_off_and_on_framed(params: SceneParams) -> (Vec<u8>, Vec<u8>) {
         "the longitudes these cases pick are for one framing"
     );
     let mut on = params;
-    on.sun_glow = 1.5;
+    on.sun_glow = glow;
     harness
         .engine
         .send(EngineCommand::UpdateParams(Box::new(on)));
@@ -514,6 +520,41 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
         "the pan brings the frame's nearest pixel to 10.2 degrees from the \
          Sun, but only {painted} pixels gained more than four levels and the \
          brightest gained {brightest}"
+    );
+}
+
+/// A disk the size slider has enlarged is drawn where its crescent reaches
+/// the corner, which the true half degree alone would leave outside.
+///
+/// The disk draw culls itself on a cone of its own angular radius, and
+/// `sun_size` multiplies that radius, so the cone the cull measures has to
+/// carry the size the draw does. At longitude 105 the Sun stands 76.62
+/// degrees off the view axis against a 76.11 degree corner: the true half
+/// degree puts the whole disk outside the frame and eight times it puts a
+/// crescent of it inside the top left one. The glare is the same either way,
+/// and a quarter of the glow is where the core is already clipped white
+/// (`SUN_CORE_GAIN` is 4) while the bloom around it is not, so a gain of more
+/// than 200 levels is the disk and nothing else: measured, the crescent is 32
+/// pixels and the glare without it gains at most 52.
+#[test]
+fn an_enlarged_disk_reaching_the_frame_corner_is_drawn() {
+    let mut framed = sun_params(105.0);
+    framed.sun_size = 8.0;
+    framed.sun_rays = 0.0;
+    let (off, on) = sun_off_and_on_at(framed, 0.25);
+    let clipped = off
+        .chunks_exact(4)
+        .zip(on.chunks_exact(4))
+        .filter(|(dark, lit)| {
+            [0, 1, 2]
+                .iter()
+                .any(|&c| lit[c].saturating_sub(dark[c]) > 200)
+        })
+        .count();
+    assert!(
+        clipped > 12,
+        "the enlarged disk's crescent reaches inside the frame's corner, but \
+         only {clipped} pixels there gained more than 200 levels"
     );
 }
 

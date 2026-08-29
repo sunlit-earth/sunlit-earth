@@ -941,7 +941,9 @@ fn vs_sun_disk(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) v
     if uniforms.sun_glow <= 0.0 {
         return SUN_OFF_SCREEN;
     }
-    let disc = sun_disc(radians(SUN_ANGULAR_RADIUS_DEGREES));
+    // The cone the size slider asks for, not the true half degree: what this
+    // decides is whether any of the disk that is drawn is inside the frame.
+    let disc = sun_disc(radians(SUN_ANGULAR_RADIUS_DEGREES * uniforms.sun_size));
     if !disc.on_screen {
         return SUN_OFF_SCREEN;
     }

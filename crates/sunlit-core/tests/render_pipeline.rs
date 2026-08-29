@@ -65,7 +65,7 @@ struct Uniforms {
     sun_rays: f32,
     sun_flare: f32,
     sun_visible: f32,
-    sun_transit: f32,
+    sun_size: f32,
     sun_view_dir: [f32; 3],
     sun_disk_radius: f32,
     moon_model: [f32; 16],
@@ -73,9 +73,22 @@ struct Uniforms {
     moon_earthshine: f32,
     milky_way_intensity: f32,
     cloud_opacity_night: f32,
+    sun_glare_tint: [f32; 3],
+    sun_horizon_gain: f32,
+    sun_globe_center: [f32; 2],
+    sun_globe_radius: f32,
+    sun_atmosphere_radius: f32,
+    sun_zone_width: f32,
+    sun_squash: f32,
+    sun_halo_radius: f32,
+    sun_reddening: f32,
+    atmo_sunrise_glow: f32,
+    atmo_sunrise_g: f32,
+    sun_flux: f32,
+    _pad7: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -591,7 +604,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         sun_rays: 0.0,
         sun_flare: 0.0,
         sun_visible: 1.0,
-        sun_transit: 0.0,
+        sun_size: 1.0,
         sun_view_dir: [0.0, 0.0, -1.0],
         sun_disk_radius: 2.0,
         moon_model: MOON_MODEL_IDENTITY,
@@ -601,6 +614,22 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         // the layer's draw is not among the ones they encode.
         milky_way_intensity: 0.0,
         cloud_opacity_night: 0.55,
+        sun_glare_tint: [1.0, 1.0, 1.0],
+        sun_horizon_gain: 1.0,
+        // A globe of a hundred pixels with a ten pixel band around it, so the
+        // shell's own forward lobe has a height to read even where these cases
+        // draw no Sun.
+        sun_globe_center: [size as f32 * 0.5, size as f32 * 0.5],
+        sun_globe_radius: 100.0,
+        sun_atmosphere_radius: 110.0,
+        sun_zone_width: 10.0,
+        sun_squash: 1.0,
+        sun_halo_radius: 3.0,
+        sun_reddening: 1.0,
+        atmo_sunrise_glow: 0.0,
+        atmo_sunrise_g: 0.5,
+        sun_flux: 1.0,
+        _pad7: 0.0,
     }
 }
 
@@ -752,7 +781,7 @@ struct Uniforms {
     sun_rays: f32,
     sun_flare: f32,
     sun_visible: f32,
-    sun_transit: f32,
+    sun_size: f32,
     sun_view_dir: vec3<f32>,
     sun_disk_radius: f32,
     moon_model: mat4x4<f32>,
@@ -760,6 +789,19 @@ struct Uniforms {
     moon_earthshine: f32,
     milky_way_intensity: f32,
     cloud_opacity_night: f32,
+    sun_glare_tint: vec3<f32>,
+    sun_horizon_gain: f32,
+    sun_globe_center: vec2<f32>,
+    sun_globe_radius: f32,
+    sun_atmosphere_radius: f32,
+    sun_zone_width: f32,
+    sun_squash: f32,
+    sun_halo_radius: f32,
+    sun_reddening: f32,
+    atmo_sunrise_glow: f32,
+    atmo_sunrise_g: f32,
+    sun_flux: f32,
+    _pad7: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -827,7 +869,7 @@ fn main() {
     output[43] = uniforms.sun_rays;
     output[44] = uniforms.sun_flare;
     output[45] = uniforms.sun_visible;
-    output[46] = uniforms.sun_transit;
+    output[46] = uniforms.sun_size;
     output[47] = uniforms.sun_view_dir.x;
     output[48] = uniforms.sun_view_dir.y;
     output[49] = uniforms.sun_view_dir.z;
@@ -845,6 +887,22 @@ fn main() {
     output[58] = uniforms.cloud_night;
     output[59] = uniforms.cloud_terminator;
     output[60] = uniforms.cloud_opacity_night;
+    // the horizon block
+    output[61] = uniforms.sun_glare_tint.r;
+    output[62] = uniforms.sun_glare_tint.g;
+    output[63] = uniforms.sun_glare_tint.b;
+    output[64] = uniforms.sun_horizon_gain;
+    output[65] = uniforms.sun_globe_center.x;
+    output[66] = uniforms.sun_globe_center.y;
+    output[67] = uniforms.sun_globe_radius;
+    output[68] = uniforms.sun_atmosphere_radius;
+    output[69] = uniforms.sun_zone_width;
+    output[70] = uniforms.sun_squash;
+    output[71] = uniforms.sun_halo_radius;
+    output[72] = uniforms.sun_reddening;
+    output[73] = uniforms.atmo_sunrise_glow;
+    output[74] = uniforms.atmo_sunrise_g;
+    output[75] = uniforms.sun_flux;
 }
 ";
 
@@ -933,7 +991,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         sun_rays: 0.45,
         sun_flare: 0.8,
         sun_visible: 0.6,
-        sun_transit: 0.3,
+        sun_size: 2.75,
         sun_view_dir: [0.0, 0.6, -0.8],
         sun_disk_radius: 7.5,
         // Column major, so the last column's first component is the Moon's x
@@ -945,6 +1003,19 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         moon_earthshine: 0.35,
         milky_way_intensity: 0.65,
         cloud_opacity_night: 0.61,
+        sun_glare_tint: [0.95, 0.55, 0.15],
+        sun_horizon_gain: 2.25,
+        sun_globe_center: [64.5, 33.25],
+        sun_globe_radius: 41.5,
+        sun_atmosphere_radius: 42.75,
+        sun_zone_width: 6.25,
+        sun_squash: 0.45,
+        sun_halo_radius: 4.25,
+        sun_reddening: 1.35,
+        atmo_sunrise_glow: 1.85,
+        atmo_sunrise_g: 0.62,
+        sun_flux: 0.72,
+        _pad7: 0.0,
     };
 
     let uniform_buf = ctx
@@ -955,8 +1026,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 58 floats
-    let output_size = (61 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 76 floats
+    let output_size = (76 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1228,8 +1299,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         values[45]
     );
     assert!(
-        (values[46] - 0.3).abs() < eps,
-        "sun_transit: got {}, expected 0.3",
+        (values[46] - 2.75).abs() < eps,
+        "sun_size: got {}, expected 2.75",
         values[46]
     );
     assert!(
@@ -1280,6 +1351,29 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         "cloud_opacity_night: got {}, expected 0.61",
         values[60]
     );
+    for (index, expected, name) in [
+        (61, 0.95, "sun_glare_tint.r"),
+        (62, 0.55, "sun_glare_tint.g"),
+        (63, 0.15, "sun_glare_tint.b"),
+        (64, 2.25, "sun_horizon_gain"),
+        (65, 64.5, "sun_globe_center.x"),
+        (66, 33.25, "sun_globe_center.y"),
+        (67, 41.5, "sun_globe_radius"),
+        (68, 42.75, "sun_atmosphere_radius"),
+        (69, 6.25, "sun_zone_width"),
+        (70, 0.45, "sun_squash"),
+        (71, 4.25, "sun_halo_radius"),
+        (72, 1.35, "sun_reddening"),
+        (73, 1.85, "atmo_sunrise_glow"),
+        (74, 0.62, "atmo_sunrise_g"),
+        (75, 0.72, "sun_flux"),
+    ] {
+        assert!(
+            (values[index] - expected).abs() < eps,
+            "{name}: got {}, expected {expected}",
+            values[index]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

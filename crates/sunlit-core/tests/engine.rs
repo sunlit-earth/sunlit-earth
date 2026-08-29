@@ -43,6 +43,11 @@ fn test_params() -> SceneParams {
     let mut params = SceneParams {
         texture_index: 0,
         sample_count: 1,
+        // Camera mode is off for every case here, the way the goldens pin it:
+        // the spikes and the ghosts reach past the glare's own cone, so a
+        // default-on flare would put pixels in frames that are counting what
+        // the Sun itself paints.
+        sun_flare: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;

@@ -319,6 +319,8 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_nightglow_intensity(params.nightglow_intensity);
     window.set_nightglow_falloff(params.nightglow_falloff);
     window.set_nightglow_balance(params.nightglow_balance);
+    window.set_atmo_sunrise_glow(params.atmo_sunrise_glow);
+    window.set_atmo_sunrise_width(params.atmo_sunrise_width);
     window.set_sky_fov(params.sky_fov);
     window.set_star_intensity(params.star_intensity);
     window.set_star_size(params.star_size);
@@ -329,6 +331,13 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_sun_glow(params.sun_glow);
     window.set_sun_rays(params.sun_rays);
     window.set_sun_flare(params.sun_flare);
+    window.set_sun_size(params.sun_size);
+    window.set_sun_halo_radius(params.sun_halo_radius);
+    window.set_sun_horizon_boost(params.sun_horizon_boost);
+    window.set_sun_horizon_reach(params.sun_horizon_reach);
+    window.set_sun_horizon_depth(params.sun_horizon_depth);
+    window.set_sun_reddening(params.sun_reddening);
+    window.set_sun_refraction(params.sun_refraction);
     window.set_moon_brightness(params.moon_brightness);
     window.set_moon_size(params.moon_size);
     window.set_moon_earthshine(params.moon_earthshine);
@@ -387,6 +396,8 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         nightglow_intensity: window.get_nightglow_intensity(),
         nightglow_falloff: window.get_nightglow_falloff(),
         nightglow_balance: window.get_nightglow_balance(),
+        atmo_sunrise_glow: window.get_atmo_sunrise_glow(),
+        atmo_sunrise_width: window.get_atmo_sunrise_width(),
         sky_fov: window.get_sky_fov(),
         star_intensity: window.get_star_intensity(),
         star_size: window.get_star_size(),
@@ -397,6 +408,13 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         sun_glow: window.get_sun_glow(),
         sun_rays: window.get_sun_rays(),
         sun_flare: window.get_sun_flare(),
+        sun_size: window.get_sun_size(),
+        sun_halo_radius: window.get_sun_halo_radius(),
+        sun_horizon_boost: window.get_sun_horizon_boost(),
+        sun_horizon_reach: window.get_sun_horizon_reach(),
+        sun_horizon_depth: window.get_sun_horizon_depth(),
+        sun_reddening: window.get_sun_reddening(),
+        sun_refraction: window.get_sun_refraction(),
         moon_brightness: window.get_moon_brightness(),
         moon_size: window.get_moon_size(),
         moon_earthshine: window.get_moon_earthshine(),

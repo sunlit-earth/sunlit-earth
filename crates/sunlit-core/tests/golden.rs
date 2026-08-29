@@ -159,6 +159,11 @@ fn base_params() -> SceneParams {
         // hemispheres, because either one alone still draws the layer.
         cloud_opacity: 0.0,
         cloud_opacity_night: 0.0,
+        // Camera mode is pinned off rather than left at its default for the
+        // same reason: the aperture spikes and the ghosts reach outside the
+        // glare's cone and would put streaks and blobs in every reference with
+        // a Sun anywhere near the frame.
+        sun_flare: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;

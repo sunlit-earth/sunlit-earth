@@ -46,6 +46,76 @@ pub fn pixel_scale(viewport_height: f32) -> f32 {
     (viewport_height / 1080.0).clamp(1.0, 2.0)
 }
 
+/// Earth's radius in kilometres, which is what turns a shell radius in Earth
+/// radii into the height of the band it stands for.
+pub const EARTH_RADIUS_KM: f32 = 6371.0;
+
+/// Scale height of the density the light path runs through, in kilometres.
+///
+/// One number serves the extinction and the refraction alike: `70 exp(-h / 7)`
+/// reproduces Mallama's cumulative air masses to about a fifth over the whole
+/// band, and Kipping's ray tracing fits 6.911 km to the lensing.
+const ATMOSPHERE_SCALE_HEIGHT_KM: f32 = 7.0;
+
+/// Air masses along a ray that grazes the surface, from Mallama's table.
+const HORIZON_AIR_MASS: f32 = 70.0;
+
+/// Transmission per air mass for red, green and blue.
+///
+/// Mallama states 90 percent for red and 73 percent for blue; green is fitted
+/// to his own altitude and transmission pairs, and Kipping's lowtran7 figures
+/// for a sea-level path give the same chromatic ratio from another direction.
+const CHANNEL_TRANSMISSION: [f32; 3] = [0.90, 0.836, 0.73];
+
+/// Cumulative air mass along a light path whose lowest point is `height_km`.
+///
+/// Below the surface the path is the surface-grazing one: nothing carries more
+/// atmosphere than the whole of it, and the exponential would otherwise run
+/// away where the disk sits behind the painted limb.
+#[must_use]
+pub fn limb_air_mass(height_km: f32, reddening: f32) -> f32 {
+    HORIZON_AIR_MASS * (-height_km.max(0.0) / ATMOSPHERE_SCALE_HEIGHT_KM).exp() * reddening
+}
+
+/// What that path leaves of the light, per channel.
+///
+/// Mirrored by `limb_transmission_km` in `sphere.wgsl`, which is what colors
+/// the Sun's disk per fragment and the Rayleigh shell's forward lobe; this
+/// spelling is what the CPU integrates over the visible disk. `reddening` zero
+/// is the white Sun that knows nothing about the band.
+#[must_use]
+pub fn limb_transmission(height_km: f32, reddening: f32) -> Vec3 {
+    let air_mass = limb_air_mass(height_km, reddening);
+    Vec3::new(
+        CHANNEL_TRANSMISSION[0].powf(air_mass),
+        CHANNEL_TRANSMISSION[1].powf(air_mass),
+        CHANNEL_TRANSMISSION[2].powf(air_mass),
+    )
+}
+
+/// The same light as a hue: divided by its largest channel, which red always
+/// is. What the disk and the glare are tinted with, since both are clipped
+/// bright long before the path stops carrying anything.
+#[must_use]
+pub fn limb_hue(height_km: f32, reddening: f32) -> Vec3 {
+    let transmitted = limb_transmission(height_km, reddening);
+    transmitted / transmitted.max_element().max(1e-30)
+}
+
+/// How far the disk is drawn where the path carries almost nothing.
+///
+/// A tenth of the Sun is still a blinding source, so the disk clips at full
+/// brightness wherever the green channel carries more than 2.5 percent, about
+/// nine kilometres, and fades out below that instead of being cut where the
+/// painted globe begins. Mirrored by `limb_disk_amplitude` in `sphere.wgsl`.
+#[must_use]
+pub fn limb_disk_amplitude(green_transmission: f32) -> f32 {
+    (green_transmission * DISK_FADE_GAIN).clamp(0.0, 1.0).sqrt()
+}
+
+/// Where the disk stops being clipped white, as a gain on the green channel.
+const DISK_FADE_GAIN: f32 = 40.0;
+
 /// A circle on the framebuffer, in pixels, with y running down.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScreenCircle {
@@ -90,18 +160,72 @@ pub struct SunPlacementInputs {
     /// a glare fading behind something invisible is as incoherent as one
     /// burning around a Moon that hides the disk.
     pub moon_disc: Option<ScreenCircle>,
+    pub horizon: SunHorizonParams,
 }
 
-/// Everything the uniform encoder needs to place and fade the Sun.
+/// The five horizon controls and the size, bundled because they travel
+/// together from `SceneParams` into every function below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunHorizonParams {
+    /// Multiplier on the disk's angular radius, before the pixel floor.
+    pub size: f32,
+    /// Thickness of the horizon zone in Sun diameters. Zero leaves the zone at
+    /// the painted annulus, which is the physically thin band.
+    pub depth: f32,
+    /// Scale on the air mass. Zero is a Sun the band does not touch.
+    pub reddening: f32,
+    /// Scale on the lift and the flattening. Zero is the geometric Sun.
+    pub refraction: f32,
+    /// How much brighter the glare peaks as the disk clears the zone.
+    pub boost: f32,
+    /// How far above the zone, in zone widths, that peak decays away.
+    pub reach: f32,
+}
+
+impl SunHorizonParams {
+    /// The settings that leave the Sun exactly where geometry puts it, white,
+    /// unmagnified and unboosted: what everything here answered before the
+    /// band existed.
+    pub const GEOMETRIC: Self = Self {
+        size: 1.0,
+        depth: 0.0,
+        reddening: 0.0,
+        refraction: 0.0,
+        boost: 1.0,
+        reach: 1.0,
+    };
+}
+
+/// Everything the uniform encoder needs to place, color and fade the Sun.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SunPlacement {
-    /// Sun direction in view space, unit length. The shader rebuilds the
-    /// screen position from this, so there is one formula and not two.
+    /// Sun direction in view space, unit length, after refraction has lifted
+    /// it. The shader rebuilds the screen position from this, so there is one
+    /// formula and not two.
     pub view_direction: Vec3,
     /// The disk's radius in pixels, never below
-    /// [`MIN_BODY_DISK_RADIUS_PIXELS`] times the density ramp.
+    /// [`MIN_BODY_DISK_RADIUS_PIXELS`] times the density ramp. This is the
+    /// unsquashed radius, which is what the quad has to span.
     pub disk_radius_pixels: f32,
     pub visibility: SunVisibility,
+    /// The painted globe's silhouette, which every horizon effect is measured
+    /// against.
+    pub globe: ScreenCircle,
+    /// The atmosphere shell's painted radius, around the same center.
+    pub atmosphere_radius_pixels: f32,
+    /// Width of the horizon zone in pixels.
+    pub zone_width_pixels: f32,
+    /// Vertical magnification of the refracted disk: one where nothing bends.
+    pub squash: f32,
+    /// Mean transmitted hue of the visible disk, weighted by what of it is
+    /// drawn. What the glare is made of.
+    pub glare_tint: Vec3,
+    /// Visible area times what the path through the band transmits: the
+    /// illuminance the source delivers, which is what veiling glare scales
+    /// with. One for a disk clear of the band.
+    pub flux: f32,
+    /// The exposure gain, an eye that has not caught up with the disk.
+    pub horizon_gain: f32,
 }
 
 /// The horizontal half-extent of the sky lens in projected-plane units.
@@ -183,32 +307,216 @@ pub fn globe_screen_circle(
     }
 }
 
-/// Place the Sun and measure what the globe hides of it.
+/// How far the atmosphere lifts a ray that grazes the surface, in zone widths.
+///
+/// 65.5 arcminutes at the station's horizon is 44 km of the ray's own lowest
+/// altitude, and the band from the surface to the shell is 96 km of it.
+const REFRACTION_LIFT_ZONES: f32 = 0.46;
+
+/// How fast that lift falls off with height, in reciprocal zone widths: the
+/// 96 km band over the 7 km scale height.
+const REFRACTION_EXPONENT: f32 = 13.7;
+
+/// Where a disk at geometric height `height` in zone widths is seen, and how
+/// far the same bending flattens it.
+///
+/// The forward map is `height = apparent - lift * exp(-k * apparent)`, whose
+/// slope is what magnifies the image, so the vertical magnification is that
+/// slope's inverse. The map is monotonic and reaches `-lift` at an apparent
+/// height of zero; below that the lift saturates, because no ray bends by more
+/// than the whole atmosphere is worth and the exponential would otherwise run
+/// away behind the painted limb.
+///
+/// At `refraction` zero this is the identity with no magnification at all,
+/// which is what leaves the geometric Sun exactly where it was.
+#[must_use]
+pub fn refract(height: f32, refraction: f32) -> (f32, f32) {
+    let lift = REFRACTION_LIFT_ZONES * refraction;
+    if lift <= 0.0 {
+        return (height, 1.0);
+    }
+    let slope = REFRACTION_EXPONENT * lift;
+    if height <= -lift {
+        return (height + lift, 1.0 / (1.0 + slope));
+    }
+    let mut apparent = (height + lift * (-REFRACTION_EXPONENT * height.max(0.0)).exp()).max(0.0);
+    for _ in 0..12 {
+        let falloff = (-REFRACTION_EXPONENT * apparent).exp();
+        let residual = apparent - lift * falloff - height;
+        apparent = (apparent - residual / (1.0 + slope * falloff)).max(0.0);
+    }
+    let falloff = (-REFRACTION_EXPONENT * apparent).exp();
+    (apparent, 1.0 / (1.0 + slope * falloff))
+}
+
+/// The view-space direction a framebuffer position looks along.
+///
+/// The analytic inverse of [`sky_lens_disc`] at a zero half-angle, and the same
+/// inversion `sky_lens_direction` performs in `sphere.wgsl`. Refraction is the
+/// one thing that needs it here: the lift is a distance on screen, and the
+/// honest way to turn it back into a direction is the lens itself rather than a
+/// second linearization of it.
+#[must_use]
+pub fn sky_lens_direction(
+    position: Vec2,
+    sky_fov_deg: f32,
+    screen_offset: Vec2,
+    viewport: Vec2,
+) -> Vec3 {
+    let ndc = Vec2::new(
+        position.x / viewport.x * 2.0 - 1.0,
+        1.0 - position.y / viewport.y * 2.0,
+    );
+    let aspect = viewport.x / viewport.y;
+    let projected = (ndc - screen_offset) / Vec2::new(1.0, aspect);
+    let length = projected.length();
+    let radial = if length > 1e-6 {
+        projected / length
+    } else {
+        Vec2::X
+    };
+    let theta = 2.0 * (length * sky_lens_edge_radius(sky_fov_deg)).atan();
+    Vec3::new(radial.x * theta.sin(), radial.y * theta.sin(), -theta.cos())
+}
+
+/// Strips the disk's radial extent is integrated over for the glare's color and
+/// flux. Fine enough that the sum reproduces the closed-form visible area to
+/// well under a percent, and it runs once a frame.
+const FLUX_STRIPS: usize = 64;
+
+/// The asymmetry parameter that puts the forward lobe's half strength at
+/// `half_width_deg` of scattering angle.
+///
+/// Henyey-Greenstein normalized to one at zero scattering angle is
+/// `((1 - g)^2 / (1 + g^2 - 2 g cos t))^1.5`; setting that to a half at `t`
+/// gives a quadratic in `g` whose two roots are reciprocals, so the forward one
+/// is the smaller. Derived here rather than in the shader because it is one
+/// solve a frame against one per rim fragment.
+#[must_use]
+pub fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
+    let cosine = half_width_deg.to_radians().cos();
+    let half = 0.5_f32.powf(2.0 / 3.0);
+    let sum = (2.0 - 2.0 * half * cosine) / (1.0 - half);
+    let root = (sum * sum - 4.0).max(0.0).sqrt();
+    (0.5 * (sum - root)).clamp(0.0, 0.995)
+}
+
+/// The exposure gain: how much brighter the glare is than its flux says.
+///
+/// Neither an eye exposed for the night side nor a camera has caught up while
+/// an orbital sunrise happens, and a still frame has no time axis, so the lag
+/// is mapped onto how far the disk's lower edge has climbed above the zone. It
+/// holds at `boost` until the whole disk stands clear and settles to one over
+/// `reach` zone widths above that, which is the sequence a rising Sun reads as.
+#[must_use]
+pub fn exposure_gain(lower_edge_height: f32, boost: f32, reach: f32) -> f32 {
+    let settled = smoothstep(1.0, 1.0 + reach.max(1e-3), lower_edge_height);
+    1.0 + (boost - 1.0) * (1.0 - settled)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The mean hue of the visible disk and the mean of what its light path
+/// transmits, both over the part of the disk the globe leaves showing.
+///
+/// Strips of constant distance from the globe's center, because that distance
+/// is what the band's height is measured along: every point of one strip looks
+/// through the same path. Each strip contributes the disk's own arc there, so
+/// the weights alone integrate to the visible area; the visible fraction itself
+/// comes from the closed form rather than from this sum, which is what keeps a
+/// disk clear of the band at exactly one.
+///
+/// The hue is weighted by what of the disk is drawn: a part of it the band has
+/// already taken to nothing contributes no light to a glare made of the light
+/// that reached the eye.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+fn integrate_disk(
+    center_distance: f32,
+    disk_radius: f32,
+    limb_distance: f32,
+    globe_radius: f32,
+    zone_width: f32,
+    band_height_km: f32,
+    squash: f32,
+    reddening: f32,
+) -> (Vec3, f32) {
+    if center_distance <= 1e-4 || disk_radius <= 0.0 {
+        return (Vec3::ONE, 0.0);
+    }
+    let lowest = (center_distance - disk_radius).max(limb_distance);
+    let highest = center_distance + disk_radius;
+    if highest <= lowest {
+        return (Vec3::ONE, 0.0);
+    }
+    let step = (highest - lowest) / FLUX_STRIPS as f32;
+    let mut weight_total = 0.0;
+    let mut transmitted_total = 0.0;
+    let mut hue_total = Vec3::ZERO;
+    let mut drawn_total = 0.0;
+    let mut highest_hue = Vec3::ONE;
+    for strip in 0..FLUX_STRIPS {
+        let radius = lowest + (strip as f32 + 0.5) * step;
+        let cosine = ((radius * radius + center_distance * center_distance
+            - disk_radius * disk_radius)
+            / (2.0 * radius * center_distance))
+            .clamp(-1.0, 1.0);
+        let weight = 2.0 * radius * cosine.acos() * step;
+        // Where this strip is drawn once refraction has flattened the disk
+        // about its own center.
+        let drawn = center_distance + squash * (radius - center_distance);
+        let height = (drawn - globe_radius) / zone_width * band_height_km;
+        let transmitted = limb_transmission(height, reddening);
+        let hue = transmitted / transmitted.max_element().max(1e-30);
+        let amplitude = limb_disk_amplitude(transmitted.y);
+        weight_total += weight;
+        transmitted_total += weight * transmitted.y;
+        hue_total += weight * amplitude * hue;
+        drawn_total += weight * amplitude;
+        highest_hue = hue;
+    }
+    let mean_transmission = if weight_total > 0.0 {
+        transmitted_total / weight_total
+    } else {
+        0.0
+    };
+    let tint = if drawn_total > 1e-6 {
+        hue_total / drawn_total
+    } else {
+        highest_hue
+    };
+    (tint, mean_transmission)
+}
+
+/// How thick the horizon zone is, in pixels.
+///
+/// The painted annulus is the physical reading, and it is one or two pixels on
+/// a preview at the default zooms, which is not enough for a gradient across
+/// the disk to exist at all. `depth` widens it in disk diameters, which is also
+/// about what the station sees: the band is four and a half disks there and the
+/// disk spans a fifth of it.
+fn horizon_zone_width(
+    globe_radius: f32,
+    atmosphere_radius: f32,
+    depth: f32,
+    disk_radius: f32,
+) -> f32 {
+    let annulus = (atmosphere_radius - globe_radius).max(0.0);
+    annulus.max(depth * 2.0 * disk_radius).max(1e-4)
+}
+
+/// Place the Sun, color it by the path its light took, and measure what the
+/// globe hides of it.
+#[allow(clippy::too_many_lines)]
 pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
-    let view_direction = (inputs.view * inputs.sun_world_direction.extend(0.0))
+    let horizon = inputs.horizon;
+    let true_direction = (inputs.view * inputs.sun_world_direction.extend(0.0))
         .truncate()
         .normalize_or_zero();
     let floor = MIN_BODY_DISK_RADIUS_PIXELS * pixel_scale(inputs.viewport.y);
-    let disc = sky_lens_disc(
-        view_direction,
-        SUN_ANGULAR_RADIUS_DEGREES.to_radians(),
-        inputs.sky_fov_deg,
-        inputs.screen_offset,
-        inputs.viewport,
-    );
-    let Some(mut disc) = disc else {
-        // The Sun sits at the antipode of the view axis, off screen whatever
-        // the globe does: nothing hides it, and nothing draws it either.
-        return SunPlacement {
-            view_direction,
-            disk_radius_pixels: floor,
-            visibility: SunVisibility {
-                visible_fraction: 1.0,
-                transit_fraction: 0.0,
-            },
-        };
-    };
-    disc.radius = disc.radius.max(floor);
+    let half_angle = (SUN_ANGULAR_RADIUS_DEGREES * horizon.size).to_radians();
     let globe = globe_screen_circle(
         inputs.mvp,
         inputs.eye_distance,
@@ -223,10 +531,108 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
         inputs.camera_fov_deg,
         inputs.viewport,
     );
+    let band_height_km = (inputs.atmosphere_radius - 1.0) * EARTH_RADIUS_KM;
+    let imaged = |direction: Vec3| {
+        sky_lens_disc(
+            direction,
+            half_angle,
+            inputs.sky_fov_deg,
+            inputs.screen_offset,
+            inputs.viewport,
+        )
+        .map(|mut disc| {
+            disc.radius = disc.radius.max(floor);
+            disc
+        })
+    };
+    let Some(disc) = imaged(true_direction) else {
+        // The Sun sits at the antipode of the view axis, off screen whatever
+        // the globe does: nothing hides it, and nothing draws it either.
+        return SunPlacement {
+            view_direction: true_direction,
+            disk_radius_pixels: floor,
+            visibility: SunVisibility {
+                visible_fraction: 1.0,
+                transit_fraction: 0.0,
+            },
+            globe,
+            atmosphere_radius_pixels: atmosphere.radius,
+            zone_width_pixels: horizon_zone_width(
+                globe.radius,
+                atmosphere.radius,
+                horizon.depth,
+                floor,
+            ),
+            squash: 1.0,
+            glare_tint: Vec3::ONE,
+            flux: 1.0,
+            horizon_gain: 1.0,
+        };
+    };
+
+    let zone = horizon_zone_width(globe.radius, atmosphere.radius, horizon.depth, disc.radius);
+    let geometric_height = (disc.center.distance(globe.center) - globe.radius) / zone;
+    let (apparent_height, squash) = refract(geometric_height, horizon.refraction);
+    let lift = (apparent_height - geometric_height) * zone;
+    // A lift of nothing leaves the direction untouched rather than sending it
+    // through the lens and back, so a Sun the band cannot reach does not move
+    // by whatever that round trip costs in the last bits.
+    let (view_direction, disc) = if lift > 0.0 {
+        let radial = (disc.center - globe.center)
+            .try_normalize()
+            .unwrap_or(Vec2::X);
+        let lifted = sky_lens_direction(
+            disc.center + radial * lift,
+            inputs.sky_fov_deg,
+            inputs.screen_offset,
+            inputs.viewport,
+        );
+        imaged(lifted).map_or((true_direction, disc), |moved| (lifted, moved))
+    } else {
+        (true_direction, disc)
+    };
+
+    // Flattening the disk about its own center is the same, in area fractions,
+    // as leaving it round and moving the limb that cuts it: the scale runs
+    // along the cut's own normal, so it takes every fraction with it.
+    let center_distance = disc.center.distance(globe.center);
+    let spread = 1.0 / squash - 1.0;
+    let moved = |radius: f32| radius + spread * (radius - center_distance);
+    let visibility = visibility(
+        disc,
+        ScreenCircle {
+            center: globe.center,
+            radius: moved(globe.radius),
+        },
+        ScreenCircle {
+            center: globe.center,
+            radius: moved(atmosphere.radius),
+        },
+        inputs.moon_disc,
+    );
+
+    let (glare_tint, mean_transmission) = integrate_disk(
+        center_distance,
+        disc.radius,
+        moved(globe.radius),
+        globe.radius,
+        zone,
+        band_height_km,
+        squash,
+        horizon.reddening,
+    );
+    let lower_edge = (center_distance - squash * disc.radius - globe.radius) / zone;
     SunPlacement {
         view_direction,
         disk_radius_pixels: disc.radius,
-        visibility: visibility(disc, globe, atmosphere, inputs.moon_disc),
+        visibility,
+        globe,
+        atmosphere_radius_pixels: atmosphere.radius,
+        zone_width_pixels: zone,
+        squash,
+        glare_tint,
+        flux: visibility.visible_fraction * mean_transmission,
+        horizon_gain: exposure_gain(lower_edge, horizon.boost, horizon.reach),
     }
 }
 
@@ -524,6 +930,7 @@ mod tests {
                 screen_offset: Vec2::ZERO,
                 viewport,
                 moon_disc: None,
+                horizon: SunHorizonParams::GEOMETRIC,
             });
             let reference = angular_visible_fraction(sun, eye, 1.0);
             worst = worst.max((placement.visibility.visible_fraction - reference).abs());
@@ -558,6 +965,7 @@ mod tests {
             screen_offset: Vec2::ZERO,
             viewport,
             moon_disc,
+            horizon: SunHorizonParams::GEOMETRIC,
         };
         let clear = place_sun(&inputs(None));
         assert_relative_eq!(clear.visibility.visible_fraction, 1.0);
@@ -692,6 +1100,7 @@ mod tests {
                 screen_offset,
                 viewport,
                 moon_disc: None,
+                horizon: SunHorizonParams::GEOMETRIC,
             })
             .visibility
             .visible_fraction
@@ -729,6 +1138,7 @@ mod tests {
             screen_offset: Vec2::ZERO,
             viewport,
             moon_disc: None,
+            horizon: SunHorizonParams::GEOMETRIC,
         });
         assert_relative_eq!(placement.disk_radius_pixels, MIN_BODY_DISK_RADIUS_PIXELS);
     }
@@ -749,6 +1159,7 @@ mod tests {
             screen_offset: Vec2::ZERO,
             viewport,
             moon_disc: None,
+            horizon: SunHorizonParams::GEOMETRIC,
         });
         assert_relative_eq!(placement.visibility.visible_fraction, 0.0);
     }

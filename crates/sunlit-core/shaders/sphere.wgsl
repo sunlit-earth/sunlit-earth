@@ -47,7 +47,7 @@ struct Uniforms {
     sun_rays: f32,                    // 4 bytes, offset 368
     sun_flare: f32,                   // 4 bytes, offset 372
     sun_visible: f32,                 // 4 bytes, offset 376
-    sun_transit: f32,                 // 4 bytes, offset 380
+    sun_size: f32,                    // 4 bytes, offset 380
     sun_view_dir: vec3<f32>,          // 12 bytes, offset 384
     sun_disk_radius: f32,             // 4 bytes, offset 396
     moon_model: mat4x4<f32>,          // 64 bytes, offset 400
@@ -55,6 +55,19 @@ struct Uniforms {
     moon_earthshine: f32,             // 4 bytes, offset 468
     milky_way_intensity: f32,         // 4 bytes, offset 472
     cloud_opacity_night: f32,         // 4 bytes, offset 476
+    sun_glare_tint: vec3<f32>,        // 12 bytes, offset 480
+    sun_horizon_gain: f32,            // 4 bytes, offset 492
+    sun_globe_center: vec2<f32>,      // 8 bytes, offset 496
+    sun_globe_radius: f32,            // 4 bytes, offset 504
+    sun_atmosphere_radius: f32,       // 4 bytes, offset 508
+    sun_zone_width: f32,              // 4 bytes, offset 512
+    sun_squash: f32,                  // 4 bytes, offset 516
+    sun_halo_radius: f32,             // 4 bytes, offset 520
+    sun_reddening: f32,               // 4 bytes, offset 524
+    atmo_sunrise_glow: f32,           // 4 bytes, offset 528
+    atmo_sunrise_g: f32,              // 4 bytes, offset 532
+    sun_flux: f32,                    // 4 bytes, offset 536
+    _pad7: f32,                       // 4 bytes, offset 540
 };
 
 @group(0) @binding(0)
@@ -440,6 +453,67 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(brightness, mix(night_alpha, day_alpha, sunlit));
 }
 
+// ---------------------------------------------------------------------------
+// The light path through the band
+//
+// One model serves the Sun's disk, the glare's color and the Rayleigh shell's
+// forward lobe: how much of the light survives a path whose lowest point is a
+// given height above the surface, and what color it is by the time it arrives.
+// Mirrored by `limb_air_mass`, `limb_transmission` and `limb_disk_amplitude`
+// in `scene::sun_occlusion`, which is what integrates it over the visible disk.
+// It takes a height or a framebuffer position and nothing about the Sun, so
+// the Moon can be given the same limb without moving anything here.
+// ---------------------------------------------------------------------------
+
+const EARTH_RADIUS_KM: f32 = 6371.0;
+const ATMOSPHERE_SCALE_HEIGHT_KM: f32 = 7.0;
+const HORIZON_AIR_MASS: f32 = 70.0;
+/// Transmission per air mass for red, green and blue: Mallama's 90 and 73
+/// percent with green fitted to his own table.
+const CHANNEL_TRANSMISSION: vec3<f32> = vec3<f32>(0.90, 0.836, 0.73);
+/// Where the disk stops being clipped white, as a gain on the green channel.
+const DISK_FADE_GAIN: f32 = 40.0;
+
+fn limb_air_mass(height_km: f32) -> f32 {
+    return HORIZON_AIR_MASS
+        * exp(-max(height_km, 0.0) / ATMOSPHERE_SCALE_HEIGHT_KM)
+        * uniforms.sun_reddening;
+}
+
+fn limb_transmission_km(height_km: f32) -> vec3<f32> {
+    return pow(CHANNEL_TRANSMISSION, vec3<f32>(limb_air_mass(height_km)));
+}
+
+/// The same light as a hue: divided by its largest channel, which red always
+/// is, because the disk and the glare are clipped bright long before the path
+/// stops carrying anything.
+fn limb_hue_km(height_km: f32) -> vec3<f32> {
+    let transmitted = limb_transmission_km(height_km);
+    return transmitted / max(max(transmitted.r, transmitted.g), max(transmitted.b, 1e-30));
+}
+
+/// How far the disk is still drawn where the path carries almost nothing: a
+/// tenth of the Sun is a blinding source, so it clips white down to about nine
+/// kilometres and fades out below rather than being cut at the painted limb.
+fn limb_disk_amplitude(green_transmission: f32) -> f32 {
+    return sqrt(saturate(green_transmission * DISK_FADE_GAIN));
+}
+
+/// How high in the band a framebuffer position sits, in kilometres.
+///
+/// The painted annulus between the globe's silhouette and the atmosphere
+/// shell's stands for the whole band, widened to `sun_zone_width` so the
+/// gradient exists on a preview where the annulus is a pixel.
+fn limb_band_height(position: vec2<f32>) -> f32 {
+    let band_km = (uniforms.rayleigh_radius - 1.0) * EARTH_RADIUS_KM;
+    let outside = length(position - uniforms.sun_globe_center) - uniforms.sun_globe_radius;
+    return outside / max(uniforms.sun_zone_width, 0.0001) * band_km;
+}
+
+fn limb_transmission(position: vec2<f32>) -> vec3<f32> {
+    return limb_transmission_km(limb_band_height(position));
+}
+
 // --- Rayleigh scattering shell (closest to surface, ~1.003 radius) ---
 
 @vertex
@@ -479,10 +553,33 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let night_fade = smoothstep(0.0, -0.3, n_dot_l);
     let color = mix(term_color * term_t * 0.5, day_color, day_t) * (1.0 - night_fade);
 
+    // The forward-scattering lobe around the Sun's own azimuth: a phase
+    // function in the view ray rather than in the surface normal, which is what
+    // the first attempt at this had and why it did nothing. Its color is the
+    // same light path the Sun's disk is drawn through, taken at this fragment's
+    // own ray height, so the band is red where the ray grazes the surface and
+    // white where it leaves the atmosphere.
+    //
+    // The floor is subtracted and the remainder renormalized, the way the star
+    // halo has the value at its own edge taken off: Henyey-Greenstein keeps a
+    // few percent at every backscattering angle, and left in that few percent
+    // warms the whole limb of every frame whose Sun is behind the camera, which
+    // is not a lobe around anything.
+    let cos_scatter = -dot(uniforms.sun_dir, v);
+    let g = uniforms.atmo_sunrise_g;
+    let forward = pow((1.0 - g) * (1.0 - g) / max(1.0 + g * g - 2.0 * g * cos_scatter, 1e-4), 1.5);
+    let backward = pow((1.0 - g) / (1.0 + g), 3.0);
+    let lobe = max(forward - backward, 0.0) / max(1.0 - backward, 1e-4);
+    let ray_height = (r * sqrt(max(1.0 - n_dot_v * n_dot_v, 0.0)) - 1.0) * EARTH_RADIUS_KM;
+    // The atmosphere at the top of the band sees the Sun some ten degrees past
+    // the surface terminator, so the gate reaches a little into the night side.
+    let sunlit = smoothstep(-0.2, 0.0, n_dot_l);
+    let sunrise = limb_hue_km(ray_height) * lobe * sunlit * uniforms.atmo_sunrise_glow;
+
     // In-scattering: blue light scattered toward the viewer.
     // Extinction: original light blocked by the atmosphere (controlled by haze).
     // Both share the same spatial profile (rim) since they're the same interaction.
-    let scatter = color * rim * uniforms.rayleigh_intensity;
+    let scatter = (color + sunrise) * rim * uniforms.rayleigh_intensity;
     let extinction = rim * uniforms.rayleigh_intensity * uniforms.rayleigh_haze;
     return vec4<f32>(scatter, extinction);
 }
@@ -615,6 +712,8 @@ const SUN_CORONA_TIP_DEGREES: f32 = 4.5;
 const SUN_CORONA_MIN_TIP_PIXELS: f32 = 2.0;
 const SUN_CORONA_GAIN: f32 = 0.22;
 
+/// The halo's reviewed radius, and what the width below is stated against: the
+/// slider moves the ring and its width together, so the ratio is the constant.
 const SUN_HALO_DEGREES: f32 = 3.0;
 const SUN_HALO_WIDTH_DEGREES: f32 = 1.1;
 const SUN_HALO_STRENGTH: f32 = 0.07;
@@ -625,9 +724,6 @@ const SUN_SPIKE_SHARPNESS: f32 = 48.0;
 const SUN_SPIKE_GAIN: f32 = 0.5;
 const SUN_GHOST_GAIN: f32 = 0.1;
 
-/// Where the glare goes as the line of sight grazes the lower atmosphere: the
-/// long slant path scatters the blue out and leaves a concentrated orange.
-const SUN_TRANSIT_COLOR: vec3<f32> = vec3<f32>(1.0, 0.42, 0.13);
 const SUN_GLARE_COLOR: vec3<f32> = vec3<f32>(1.0, 0.97, 0.92);
 
 struct SunDisc {
@@ -728,7 +824,13 @@ fn sky_lens_direction(position: vec2<f32>) -> vec3<f32> {
 /// bright close in.
 fn sun_bloom(degrees_out: f32) -> f32 {
     let d = max(degrees_out, 0.0001);
-    let inner = 1.0 / (1.0 + pow(d / SUN_BLOOM_INNER_DEGREES, SUN_BLOOM_INNER_POWER));
+    // The point spread function is convolved with the source, so a larger disk
+    // has a flat top out to its own edge and the same falloff beyond it. Only
+    // this lobe follows the source; the outer one, the needles and the ring
+    // belong to the eye and stay in absolute degrees.
+    let inner_degrees = SUN_BLOOM_INNER_DEGREES
+        + (uniforms.sun_size - 1.0) * SUN_ANGULAR_RADIUS_DEGREES;
+    let inner = 1.0 / (1.0 + pow(d / inner_degrees, SUN_BLOOM_INNER_POWER));
     let outer = SUN_BLOOM_OUTER_WEIGHT
         / (1.0 + pow(d / SUN_BLOOM_OUTER_DEGREES, SUN_BLOOM_OUTER_POWER));
     return inner + outer;
@@ -775,7 +877,9 @@ fn sun_corona(degrees_out: f32, azimuth: f32, pixels_per_degree: f32, scale: f32
 /// a red outer edge, from the lens fibers acting as a radial grating. Low
 /// enough in alpha to be a detail rather than an object.
 fn sun_halo(degrees_out: f32) -> vec3<f32> {
-    let across = (degrees_out - SUN_HALO_DEGREES) / SUN_HALO_WIDTH_DEGREES;
+    let radius = uniforms.sun_halo_radius;
+    let width = SUN_HALO_WIDTH_DEGREES * radius / SUN_HALO_DEGREES;
+    let across = (degrees_out - radius) / width;
     let ring = exp(-across * across * 3.0);
     let color = mix(
         vec3<f32>(0.45, 0.62, 1.0),
@@ -850,7 +954,19 @@ fn vs_sun_disk(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) v
 
 @fragment
 fn fs_sun_disk(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let radius = length(position.xy - sun_screen_position());
+    let sun_pixels = sun_screen_position();
+    let offset = position.xy - sun_pixels;
+    // Refraction flattens the disk toward the horizon, which is an ellipse with
+    // its short axis along the radius from the globe's center. The quad keeps
+    // the unsquashed extent, so what changes is the distance this measures.
+    var radius = length(offset);
+    let outward = sun_pixels - uniforms.sun_globe_center;
+    if uniforms.sun_squash < 1.0 && length(outward) > 0.0001 {
+        let axis = normalize(outward);
+        let along = dot(offset, axis);
+        let across = length(offset - axis * along);
+        radius = length(vec2<f32>(along / max(uniforms.sun_squash, 0.0001), across));
+    }
     let edge = SUN_CORE_EDGE_PIXELS * output_pixel_scale();
     let core = 1.0 - smoothstep(
         uniforms.sun_disk_radius - edge,
@@ -860,8 +976,12 @@ fn fs_sun_disk(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     // The gain scales the level, not the profile: multiplying the shape and
     // then clamping would eat the antialiased edge and leave a hard square of
     // white a few pixels across.
-    let amplitude = core * saturate(uniforms.sun_glow * SUN_CORE_GAIN);
-    return vec4<f32>(vec3<f32>(amplitude), amplitude);
+    let transmitted = limb_transmission(position.xy);
+    let hue = transmitted / max(max(transmitted.r, transmitted.g), max(transmitted.b, 1e-30));
+    let amplitude = core
+        * saturate(uniforms.sun_glow * SUN_CORE_GAIN)
+        * limb_disk_amplitude(transmitted.g);
+    return vec4<f32>(hue * amplitude, amplitude);
 }
 
 @vertex
@@ -903,10 +1023,11 @@ fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
         * smoothstep(core_degrees, core_degrees * 2.5, degrees_out)
         * uniforms.sun_rays
         * SUN_CORONA_GAIN;
-    let tint = mix(SUN_GLARE_COLOR, SUN_TRANSIT_COLOR, uniforms.sun_transit);
-    let dim = mix(1.0, 0.6, uniforms.sun_transit);
+    // The mean color of the light the visible disk is sending, rather than one
+    // fixed orange keyed on how much of the disk is in the band.
+    let tint = SUN_GLARE_COLOR * uniforms.sun_glare_tint;
 
-    var color = tint * (bloom + corona) * dim + sun_halo(degrees_out);
+    var color = tint * (bloom + corona) + sun_halo(degrees_out);
     if uniforms.sun_flare > 0.0 {
         color = color + SUN_GLARE_COLOR * sun_spikes(degrees_out, azimuth)
             * uniforms.sun_flare * SUN_SPIKE_GAIN;
@@ -915,7 +1036,13 @@ fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
     if uniforms.sun_flare > 0.0 {
         color = color + sun_ghosts(position.xy, sun_pixels) * uniforms.sun_flare;
     }
-    color = color * uniforms.sun_glow * uniforms.sun_visible;
+    // Veiling glare scales with the illuminance the source delivers, which is
+    // the visible area times what the path transmits; the square root is
+    // Stevens' exponent for a point source and the low-dynamic-range stand-in
+    // for the compression an HDR pipeline would do. A tenth of a clear disk
+    // then glares at a third rather than at a tenth, which is why a sliver over
+    // the horizon glares at all. The gain on top is the eye's own lag.
+    color = color * uniforms.sun_glow * uniforms.sun_horizon_gain * sqrt(uniforms.sun_flux);
 
     return vec4<f32>(color + dither(position), 0.0);
 }

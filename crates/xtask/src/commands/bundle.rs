@@ -544,7 +544,7 @@ fn list(prefix: &str, items: &[&str]) -> String {
 /// The line the closing summary prints about a bundle that was written.
 pub fn summary(archive: &Path) -> String {
     format!(
-        "  and {}, which holds the binary with its textures beside it, the          record and the licence",
+        "  and {}, which holds the binary with its textures beside it, the record and the licence",
         archive.display()
     )
 }

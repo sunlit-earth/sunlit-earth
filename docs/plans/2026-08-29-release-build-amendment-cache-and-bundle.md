@@ -587,3 +587,41 @@ tip, which is `f8a1d52`'s code with this document and the two guides on top of i
 The WSL leg was not re-run. Nothing here compiles differently there: the three changes are
 xtask's generated job text, one serde attribute pair and two prose files, and `cargo test -p
 xtask` is the whole of what covers them.
+
+### Validator round 2's two minors, and the run that shows both, 2026-08-29
+
+Round 2 found no majors and two minors, and both are about a Windows build saying what it
+did: the fingerprint drop that could fail without anyone hearing it (departure 8) and the
+console that could lose a job's last lines (departure 9). One run proves both, because the
+Windows job is where each of them lives: `cargo xtask dist --target windows` at `9afae7c`,
+over the warm cache the earlier runs left behind, **built in 7m54s and verified in the
+desktop guest**, with the bundle's own render 23.9 channel steps from the grid and the
+25.4 MiB zip read back and matched.
+
+**The drop is loud and it passed.** The console shows `cache: dropping this workspace out of
+the restored build directory` and then exactly `sunlit-earth` and `sunlit-core` compiling
+and nothing else, with no refusal line between them: on a real restore of a 619.1 MiB build
+directory every `sunlit-*` fingerprint and the cached binary went, which is what the new
+check asks about. That the check can also fail was measured where it would happen rather
+than in the job text alone, against a real `cmd.exe`: with nothing holding the files it drops
+the two `sunlit-*` directories and the exe, leaves a `wgpu-*` fingerprint alone and exits 0,
+and with a handle open on a file inside one of them it prints that path and exits 1. The
+line it exits from leans on `if COND cmd & exit /b 1` binding both halves to the condition
+inside a batch file, which is the opposite of what a command prompt does with the same text,
+so that was probed too, twice and independently.
+
+**The last of the guest's output is on the console now.** The run before this one stopped at
+`cache: packing the build directory at 18:18:02.31` and said nothing more from inside the
+guest; this one carries `cache: packing the build directory ended at 19:15:39.83` and the
+artifacts listing after it. The whole of it, in fact: the console's copy of the guest's log
+is line for line what `target\dist\windows\build.log` holds, which is that same file pulled
+out of the guest after the job ended. What the two readings say about this host is that the
+pack took 12.9s, and that the registry unpack, the one step decision 26's warning is about,
+took 27.2s here against the 62.2s the earlier run measured, so that cost is variable as well
+as large.
+
+Gate at this point: `cargo test -p xtask`, 540 cases green, which is the 538 of the previous
+tip plus `a_drop_that_did_not_happen_ends_the_build` and
+`the_last_of_the_output_survives_a_job_that_ends_mid_poll`. Both fail on the code as it was,
+each with the symptom it is about. The whole-workspace gates were left to be run once at the
+tip rather than twice here.

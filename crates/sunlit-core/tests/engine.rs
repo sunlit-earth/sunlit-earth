@@ -269,13 +269,16 @@ fn wider_sky_fov_reveals_more_catalog_directions() {
 /// At noon on day 172 the subsolar point is near the prime meridian, so a
 /// camera on the far side looks at the night side with the Sun somewhere
 /// beyond the limb. Which side of the painted limb it lands on is what the
-/// longitude picks: 160 clears it, 170.5 grazes the atmosphere band, and 176
-/// puts it well inside the painted disc. The atmosphere is off so that the
-/// only thing these cases can be measuring is the Sun.
+/// longitude picks: 160 stands a whole horizon zone and its adaptation reach
+/// clear of the band, 168 puts the disk's lower edge exactly at the top of the
+/// zone, 170.5 grazes the atmosphere band, 172 leaves the disk inside the band
+/// with a hundredth of its light, and 176 puts it well inside the painted disc.
+/// The atmosphere is off so that the only thing these cases can be measuring is
+/// the Sun.
 ///
-/// Those three numbers are for the 512 by 256 the preview quantizes down to,
+/// Those five numbers are for the 512 by 256 the preview quantizes down to,
 /// which `sun_off_and_on` asserts rather than assumes: at another aspect ratio
-/// the painted silhouette is a different size and all three move.
+/// the painted silhouette is a different size and all five move.
 fn sun_params(longitude: f32) -> SceneParams {
     let mut params = test_params();
     params.datetime.custom_day_of_year = 172;
@@ -311,6 +314,14 @@ fn sun_off_and_on_framed(params: SceneParams) -> (Vec<u8>, Vec<u8>) {
     (off, on)
 }
 
+/// Refraction is what could have taken this case away, and does not.
+///
+/// The lift is at most 0.46 of a horizon zone, which is 1.47 pixels here, and
+/// it is spent long before this framing: the lifted disk's centre sits 78.6
+/// pixels from the globe's own centre with a radius of 1.6 against a painted
+/// limb at 81.35, so its whole image is inside. What the squash then does runs
+/// the same way, since the flattened disk is compared against a limb moved out
+/// by the same factor, which at the saturated squash here is 98.7 pixels.
 #[test]
 fn a_sun_behind_the_painted_globe_paints_nothing() {
     let (off, on) = sun_off_and_on(176.0);
@@ -374,6 +385,90 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
         grazing > clear * 1.3,
         "a Sun in the transit band should glare warmer than a clear one, \
          but red over blue was {grazing:.2} against {clear:.2}"
+    );
+}
+
+/// Pixels the Sun added more than four levels to, and the whole of the light
+/// it added.
+///
+/// The total rather than the brightest pixel, which is what the amendment's
+/// criterion 4 asks for and cannot have: the disk is drawn clipped white
+/// wherever it is drawn at all, so a framing that carries any of it at all has
+/// a brightest gain of 254 whatever the exposure does, and the two framings
+/// below would compare equal at every setting. The gain multiplies the glare's
+/// amplitude, so what it moves is how much light there is.
+fn sun_light(params: SceneParams) -> (usize, u64) {
+    let (off, on) = sun_off_and_on_framed(params);
+    let mut painted = 0;
+    let mut total = 0;
+    for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+        let gained = [0, 1, 2].map(|c| lit[c].saturating_sub(dark[c]));
+        if gained.iter().any(|&value| value > 4) {
+            painted += 1;
+        }
+        total += gained.into_iter().map(u64::from).sum::<u64>();
+    }
+    (painted, total)
+}
+
+/// A disk the band has taken almost all of still glares.
+///
+/// At longitude 172 the disk is three quarters clear of the painted limb and
+/// carries 1.1 percent of its light, which is what the compressive response is
+/// for: the tenth of that the square root leaves is a glare a person sees, and
+/// a linear one would be a frame with a red dot in it. Measured, it paints
+/// 3527 pixels, and 558 of them with the exposure gain taken out.
+#[test]
+fn a_sliver_of_sun_over_the_limb_still_glares() {
+    let (painted, _) = sun_light(sun_params(172.0));
+    assert!(
+        painted > 2000,
+        "a sliver of Sun in the band painted only {painted} pixels"
+    );
+}
+
+/// The glare peaks as the disk stands clear of the horizon zone.
+///
+/// Both framings carry the whole disk and all of its light, so the flux, the
+/// tint and the squash are the same at each and the exposure gain is the only
+/// thing between them: 3 at 168, where the disk's lower edge is at the top of
+/// the zone, and 1 at 160, where it is past the adaptation reach. Measured, the
+/// first adds 2.74 times what the second does rather than the gain's own 3,
+/// because the brightest of the glare is clipped at both.
+#[test]
+fn the_glare_peaks_as_the_disk_clears_the_horizon() {
+    let (_, at_the_zone) = sun_light(sun_params(168.0));
+    let (_, well_clear) = sun_light(sun_params(160.0));
+    assert!(
+        at_the_zone > well_clear * 2,
+        "the glare at the top of the zone added {at_the_zone} against \
+         {well_clear} for a Sun well clear of it, which is no peak at all"
+    );
+}
+
+/// At `sun_horizon_boost` 1 there is no peak, which is the physical answer.
+///
+/// The same two framings, so what is left when the gain is 1 at both is the
+/// difference between two positions on the frame: the glare falls on a
+/// different part of the globe's own brightness at each, and where it is
+/// clipped is where the two cannot agree exactly. Measured, that is 0.971
+/// against the 2.74 the case above gets at the default.
+#[test]
+fn the_physical_exposure_has_no_peak() {
+    let flat = |longitude: f32| {
+        let mut params = sun_params(longitude);
+        params.sun_horizon_boost = 1.0;
+        sun_light(params).1
+    };
+    let at_the_zone = flat(168.0);
+    let well_clear = flat(160.0);
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = at_the_zone as f64 / well_clear as f64;
+    assert!(
+        (0.9..1.1).contains(&ratio),
+        "with the boost at 1 the two framings should glare alike, but the one \
+         at the top of the zone added {at_the_zone} against {well_clear}, a \
+         ratio of {ratio:.3}"
     );
 }
 

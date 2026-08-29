@@ -190,8 +190,17 @@ because a render that found no textures still writes a perfectly valid PNG of th
 procedural grid. So the guest renders twice, once against an empty textures directory it
 creates and once from the bundle, and the host compares them: below eight channel steps of
 mean difference the bundle is refused as one that did not find its own assets. Live runs
-measure 19 to 23. `--no-verify` skips that boot, and skips the archive with it, since a
-bundle is sealed only once the verification has passed.
+measure 19 to 23.
+
+`--no-verify` skips that boot and nothing else. The bundle is still assembled and still
+archived, because a build asked to be quick is still a build somebody wants the artifact
+of, and withholding it would make the flag useless. What that costs is the only thing the
+boot was buying, so the run says it three times: the line that names the archive says
+nothing has run it, the closing summary says the target was "not verified", and
+`build-info.json` carries `"verified_in": null` and a null `texture_lookup_delta` rather
+than leaving both fields out. Those two are the only optional fields in the record that
+are written when they are empty, and they are written because the record travels inside
+the bundle: whoever unpacks it is not the person who watched the command run.
 
 `--allow-dirty` builds `HEAD` from a working tree with uncommitted changes and records
 `dirty: true`; without it a dirty tree is refused before anything boots, because the

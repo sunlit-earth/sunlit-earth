@@ -995,8 +995,15 @@ pub struct BuildInfo {
     /// the texture assets rather than Git LFS pointers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<BundleInfo>,
-    /// The desktop image the binary was run in, when verification ran.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The desktop image the binary was run in, or `null` where `--no-verify`
+    /// skipped that boot.
+    ///
+    /// Written either way rather than left out, unlike every other optional
+    /// field here. The record travels inside the bundle, so the person reading
+    /// it is usually not the person who ran the command and saw the two lines
+    /// that said so; a field that is not there reads as one the writer had no
+    /// answer for, and "nobody ran this" is an answer.
+    #[serde(default)]
     pub verified_in: Option<String>,
     pub xtask_version: String,
 }
@@ -1015,8 +1022,10 @@ pub struct BundleInfo {
     pub archive: String,
     pub entries: usize,
     /// The mean channel difference between the bundle's own render and one made
-    /// against an empty textures directory, when the verification boot ran.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// against an empty textures directory, or `null` where no boot rendered
+    /// from this bundle at all. Present either way, for the reason
+    /// `verified_in` is.
+    #[serde(default)]
     pub texture_lookup_delta: Option<f64>,
 }
 
@@ -1245,7 +1254,10 @@ fn one_target(
         println!("{target}: {}", dist.join(exe_name(target)).display());
         println!("  built from {} in the {builder} image", git.describe);
         if let Some(archive) = &archive {
-            println!("{}", bundle::summary(&dist.join(file_name(archive))));
+            println!(
+                "{}",
+                bundle::summary(&dist.join(file_name(archive)), verified.is_some())
+            );
         }
         println!("  {}", runtime_requirements(target));
         Ok(format!(
@@ -2825,6 +2837,20 @@ mod tests {
         let mut bare = info.clone();
         bare.bundle = None;
         assert!(!bare.to_json().contains("bundle"), "{}", bare.to_json());
+
+        // The two verification fields are the exception, and they are the
+        // exception because the record travels inside the bundle: a reader who
+        // never saw the command run has to be able to tell an unverified
+        // release from one nobody wrote the field for.
+        let mut unverified = info.clone();
+        unverified.verified_in = None;
+        if let Some(bundle) = unverified.bundle.as_mut() {
+            bundle.texture_lookup_delta = None;
+        }
+        let json = unverified.to_json();
+        assert!(json.contains("\"verified_in\": null"), "{json}");
+        assert!(json.contains("\"texture_lookup_delta\": null"), "{json}");
+        assert_eq!(BuildInfo::from_json(&json).expect("round trip"), unverified);
     }
 
     #[test]

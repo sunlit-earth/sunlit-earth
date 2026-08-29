@@ -541,12 +541,25 @@ fn list(prefix: &str, items: &[&str]) -> String {
     }
 }
 
-/// The line the closing summary prints about a bundle that was written.
-pub fn summary(archive: &Path) -> String {
-    format!(
+/// What the closing summary prints about a bundle that was written.
+///
+/// A bundle nothing ran carries the caveat on the same line that names it,
+/// rather than leaving it to the run summary underneath: `--no-verify` writes
+/// the archive like any other run, and the one thing that separates it from a
+/// verified one is a sentence somebody has to still be reading to see.
+pub fn summary(archive: &Path, verified: bool) -> String {
+    let mut text = format!(
         "  and {}, which holds the binary with its textures beside it, the record and the licence",
         archive.display()
-    )
+    );
+    if !verified {
+        text.push_str(
+            "\n  nothing has run this bundle: --no-verify skipped the boot that renders \
+             from it, so nothing has shown that its textures are found where it puts them, \
+             and its record says so with a null verified_in",
+        );
+    }
+    text
 }
 
 /// Why there is no bundle, when the host holds Git LFS pointers rather than the
@@ -898,12 +911,24 @@ mod tests {
     }
 
     /// The closing line names the archive and what is in it, because the point
-    /// of a bundle is that a reader knows it is not just a binary.
+    /// of a bundle is that a reader knows it is not just a binary. A bundle
+    /// nothing ran says that on the same line, because `--no-verify` writes an
+    /// archive that is in every other way the one a full run writes.
     #[test]
-    fn the_closing_line_names_the_archive_and_what_it_holds() {
-        let text = summary(Path::new("/t/dist/linux/sunlit-earth-0.1.0-linux.tar.gz"));
-        assert!(text.contains("sunlit-earth-0.1.0-linux.tar.gz"), "{text}");
-        assert!(text.contains("textures"), "{text}");
+    fn the_closing_line_names_the_archive_and_whether_anything_ran_it() {
+        let path = Path::new("/t/dist/linux/sunlit-earth-0.1.0-linux.tar.gz");
+        let verified = summary(path, true);
+        assert!(
+            verified.contains("sunlit-earth-0.1.0-linux.tar.gz"),
+            "{verified}"
+        );
+        assert!(verified.contains("textures"), "{verified}");
+        assert!(!verified.contains("--no-verify"), "{verified}");
+
+        let unverified = summary(path, false);
+        assert!(unverified.starts_with(&verified), "{unverified}");
+        assert!(unverified.contains("--no-verify"), "{unverified}");
+        assert!(unverified.contains("verified_in"), "{unverified}");
     }
 
     /// The one line a run without the assets prints instead of a bundle.

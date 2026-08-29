@@ -199,7 +199,11 @@ measure. The record is written into the bundle after that boot rather than befor
 the copy inside the archive and the copy beside it are one file, which also means a bundle
 that failed its own texture check is never archived. Where the host's `textures/` is still
 Git LFS pointers there is no bundle at all: one line says so and the loose binary is
-verified as before. `--no-verify` skips the boot. The output is
+verified as before. `--no-verify` skips the boot and nothing else: the archive is written
+like any other run's, and what says otherwise is the line naming it, the closing summary,
+and the two fields the record writes as `null` rather than leaving out, `verified_in` and
+the bundle's `texture_lookup_delta`, since that record travels inside the archive to
+somebody who did not watch the command run. The output is
 `<target dir>/dist/<target>/`, replaced wholesale on success and untouched on failure,
 holding the binary, the bundle archive, `build-info.json`, the builder's `output.log` as
 `build.log`, and the verification render. A dirty working tree is refused before anything boots, because the

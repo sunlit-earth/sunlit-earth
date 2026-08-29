@@ -561,6 +561,58 @@ fn golden_sun_grazing_the_limb() {
     check_golden("sun_grazing_the_limb", &params);
 }
 
+/// The camera the two horizon cases share, at the zoom where the painted
+/// annulus and the disk are the same few pixels.
+///
+/// The eye sits at the anti-subsolar latitude and swings round in longitude,
+/// which is the one family of framings where the Sun climbs the painted limb
+/// sideways rather than off the top: the vertical half of a 512 by 256 frame
+/// carries twice the angle the horizontal one does, so a Sun placed above the
+/// globe is off screen before it has cleared anything. At zoom 0.26 the
+/// silhouette is 177 pixels across, the annulus 2.7 and the disk 4.6, so the
+/// horizon zone is the disk's own diameter and the whole gradient is inside it.
+fn horizon_camera(longitude: f32) -> CameraParams {
+    CameraParams {
+        longitude,
+        latitude: -23.44,
+        zoom: 0.26,
+        ..CameraParams::default()
+    }
+}
+
+#[test]
+fn golden_sun_rising_through_the_band() {
+    // The disk half in the zone, with the atmosphere off so that what the
+    // reference holds is the disk's own gradient and the glare the flux model
+    // gives it, and nothing the shell draws.
+    let base = base_params();
+    let params = SceneParams {
+        camera: horizon_camera(157.1),
+        sky_fov: SUN_CASE_SKY_FOV,
+        atmo_enabled: false,
+        ..base
+    };
+    check_golden("sun_rising_through_the_band", &params);
+}
+
+#[test]
+fn golden_sunrise_band() {
+    // The same framing a little further round, with the Sun behind the limb so
+    // that what is left in the frame is the band the atmosphere takes around
+    // it. The band is turned up for the reason `sun_grazing_the_limb` turns the
+    // glare up: at the default it is a thread a few levels deep along a limb
+    // the grid texture already paints bright, and a reference that lost it
+    // entirely would still pass.
+    let base = base_params();
+    let params = SceneParams {
+        camera: horizon_camera(157.7),
+        sky_fov: SUN_CASE_SKY_FOV,
+        atmo_sunrise_glow: 3.0,
+        ..base
+    };
+    check_golden("sunrise_band", &params);
+}
+
 /// The window the Moon lands in at the framing below, with room around it for
 /// a Moon that moved to be visible rather than merely absent.
 const MOON_WINDOW: Window = Window {

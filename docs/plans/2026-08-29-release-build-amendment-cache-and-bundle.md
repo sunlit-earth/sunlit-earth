@@ -462,3 +462,21 @@ test binaries as separate processes, so a target added anywhere in the workspace
 that timing without being the cause. What is not yet known is whether it fails the same
 way at `13fbb88`, which is the question a successor should settle before anyone spends
 more on it.
+
+The observation now has a home outside this plan: `docs/roadmap.md` carries it under Bugs
+and polish, beside the WSL `tests/shading.rs` flake it resembles, with the question about
+`13fbb88` written down as the first thing to establish.
+
+### The acceptance criteria, and where each was shown
+
+| | shown by | what it came to |
+|---|---|---|
+| 1 | the four cold and warm runs above | Linux 3m 49s against 5m 28s, Windows 4m 04s against 6m 58s, both archives restored |
+| 2 | every run's own linkage line, and `build-info.json` | 26 imports and none of them the Visual C++ runtime; glibc 2.35 and the four Linux libraries; the `cache` section says per archive which of the two the build was |
+| 3 | `dist --target windows --no-cache` | `"restored": false, "reason": "--no-cache was given", "saved": false` for both archives |
+| 4 | the tampered sidecars | two refusals in one run, each naming the field that moved, and departure 4, which the tamper is what found |
+| 5 | `vm down`, `vm status` and a no-flag purge | 607 B of run state taken, 734.8 MiB of cache left, and all four cache files listed before the question |
+| 6 | reading both archives back | 19 entries under one directory with 0755 on the Linux binary, 9 under one directory on Windows with the JXL stored |
+| 7 | the two renders in the desktop guest | 19 to 23 channel steps against a floor of 8.0, and `smoke.png` is the bundle's own render |
+| 8 | the pointer-only checkout | no bundle, two lines saying which file and why, and the loose binary verified and published as before |
+| 9 | step 7's gates at the tip | below |

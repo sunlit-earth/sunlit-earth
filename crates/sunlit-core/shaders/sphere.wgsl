@@ -29,8 +29,8 @@ struct Uniforms {
     nightglow_orange_radius: f32,  // 4 bytes, offset 184
     nightglow_green_radius: f32,   // 4 bytes, offset 188
     rayleigh_haze: f32,            // 4 bytes, offset 192
-    _pad3: f32,                    // 4 bytes, offset 196
-    _pad4: f32,                    // 4 bytes, offset 200
+    cloud_night: f32,              // 4 bytes, offset 196
+    cloud_terminator: f32,         // 4 bytes, offset 200
     _pad5: f32,                    // 4 bytes, offset 204
     sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
@@ -406,7 +406,16 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let cloud_density = pow(floored, 1.0 / max(uniforms.cloud_gamma, 0.01));
     let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
-    let brightness = mix(0.05, 1.0, smoothstep(-uniforms.terminator_width, uniforms.terminator_width, n_dot_l));
+    // A cloud top at the shell's radius keeps the direct beam until the Sun is
+    // sqrt(1 - 1/r^2) below its local horizontal, 3.14 degrees at this radius,
+    // which is the same tangent condition fs_rayleigh calls earth_limb_ndotv.
+    // So the ramp is centered there rather than on the ground's terminator.
+    let shell_shift = sqrt(1.0 - 1.0 / (uniforms.cloud_sphere_radius * uniforms.cloud_sphere_radius));
+    let w = uniforms.cloud_terminator;
+    let sunlit = smoothstep(-shell_shift - w, -shell_shift + w, n_dot_l);
+    // cloud_night is a fraction of display white, not an irradiance: see the
+    // field's doc comment in uniforms.rs.
+    let brightness = mix(uniforms.cloud_night, 1.0, sunlit);
     return vec4<f32>(brightness, brightness, brightness, cloud_density * uniforms.cloud_opacity);
 }
 

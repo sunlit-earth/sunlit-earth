@@ -215,6 +215,7 @@ export component MainWindow inherits Window {
     in-out property <float> cloud-opacity: 0.85;
     in-out property <float> cloud-floor: 0.25;
     in-out property <float> cloud-gamma: 0.65;
+    in-out property <float> cloud-night: 0.25;
     in-out property <bool> atmo-enabled: true;
     in-out property <float> rayleigh-intensity: 0.5;
     in-out property <float> rayleigh-sharpness: 50.0;
@@ -678,6 +679,17 @@ export component MainWindow inherits Window {
                                 maximum: 2.0;
                                 value <=> root.cloud-gamma;
                                 value-text: round(root.cloud-gamma * 100) / 100;
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            cloud-night-slider := SettingRow {
+                                label: "Night side";
+                                hint: "How bright a cloud is on the night hemisphere, where the real light is far too faint to draw at this exposure.";
+                                minimum: 0.0;
+                                maximum: 0.6;
+                                value <=> root.cloud-night;
+                                value-text: round(root.cloud-night * 100) + "%";
                                 value-width: 35px;
                                 changed => { root.sliders-changed(); }
                             }

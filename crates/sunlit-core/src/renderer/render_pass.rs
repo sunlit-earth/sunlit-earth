@@ -1,8 +1,8 @@
 use std::sync::mpsc;
 
 use crate::params::{
-    CLOUD_SPHERE_RADIUS, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS, RAYLEIGH_RADIUS,
-    SceneParams,
+    CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
+    RAYLEIGH_RADIUS, SceneParams,
 };
 use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
 use crate::scene::moon;
@@ -156,8 +156,8 @@ pub(super) fn write_uniforms<'a>(
         nightglow_orange_radius: NIGHTGLOW_ORANGE_RADIUS,
         nightglow_green_radius: NIGHTGLOW_GREEN_RADIUS,
         rayleigh_haze: params.rayleigh_haze,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_night: params.cloud_night,
+        cloud_terminator: CLOUD_TERMINATOR_WIDTH,
         _pad5: 0.0,
         sky_view: sky_view.to_cols_array(),
         world_from_eqj: [

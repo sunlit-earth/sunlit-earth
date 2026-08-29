@@ -13,6 +13,13 @@ use crate::scene::sun::DateTimeInput;
 
 /// Radius of the cloud shell, just above the surface.
 pub const CLOUD_SPHERE_RADIUS: f32 = 1.0015;
+/// Half-width of the cloud layer's own terminator ramp, in units of n dot l.
+///
+/// Wider than the globe's 0.1: the shell's tangent condition already shifts the
+/// ramp 3.14 degrees nightward, and the cloud tops that have lost the direct
+/// beam are still lit by a twilight sky for several degrees after that. A
+/// constant rather than a slider, because nobody wants to tune two terminators.
+pub const CLOUD_TERMINATOR_WIDTH: f32 = 0.18;
 /// Radius of the Rayleigh scattering shell.
 pub const RAYLEIGH_RADIUS: f32 = 1.015;
 /// Radius of the orange (sodium D + iron oxide) nightglow shell.
@@ -50,6 +57,11 @@ pub struct SceneParams {
     pub cloud_opacity: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
+    /// Brightness of a cloud on the night hemisphere, as a fraction of display
+    /// white. Not an irradiance: the night side is about 18.6 stops under the
+    /// day side and this frame has one exposure for both, so the value is a
+    /// choice about how much of that gap to compress into 8 bits.
+    pub cloud_night: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -126,6 +138,7 @@ impl SceneParams {
             cloud_opacity: config.cloud_opacity,
             cloud_floor: config.cloud_floor,
             cloud_gamma: config.cloud_gamma,
+            cloud_night: config.cloud_night,
             atmo_enabled: config.atmo_enabled,
             rayleigh_intensity: config.rayleigh_intensity,
             rayleigh_sharpness: config.rayleigh_sharpness,
@@ -187,6 +200,7 @@ impl SceneParams {
         config.cloud_opacity = self.cloud_opacity;
         config.cloud_floor = self.cloud_floor;
         config.cloud_gamma = self.cloud_gamma;
+        config.cloud_night = self.cloud_night;
         config.atmo_enabled = self.atmo_enabled;
         config.rayleigh_intensity = self.rayleigh_intensity;
         config.rayleigh_sharpness = self.rayleigh_sharpness;
@@ -258,6 +272,7 @@ impl SceneParams {
             cloud_opacity: q(self.cloud_opacity),
             cloud_floor: q(self.cloud_floor),
             cloud_gamma: q(self.cloud_gamma),
+            cloud_night: q(self.cloud_night),
             rayleigh_intensity: q(self.effective_rayleigh_intensity()),
             rayleigh_sharpness: q(self.rayleigh_sharpness),
             rayleigh_haze: q(self.rayleigh_haze),
@@ -318,6 +333,7 @@ pub struct ParamsDigest {
     pub cloud_opacity: i32,
     pub cloud_floor: i32,
     pub cloud_gamma: i32,
+    pub cloud_night: i32,
     pub rayleigh_intensity: i32,
     pub rayleigh_sharpness: i32,
     pub rayleigh_haze: i32,
@@ -677,6 +693,13 @@ mod tests {
                 "cloud_gamma",
                 SceneParams {
                     cloud_gamma: 0.5,
+                    ..base
+                },
+            ),
+            (
+                "cloud_night",
+                SceneParams {
+                    cloud_night: 0.4,
                     ..base
                 },
             ),

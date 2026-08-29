@@ -483,7 +483,10 @@ and polish, beside the WSL `tests/shading.rs` flake it resembles, with the quest
 
 ### The gates at the tip
 
-Step 7 and acceptance criterion 9, run at `0c55fc2`.
+Step 7 and acceptance criterion 9, run at `0c55fc2`. Only `CLAUDE.md` and this document
+moved after that, and the one test that reads either is
+`the_docs_spell_out_every_flag_dist_takes`, which was re-run green at the tip along with
+`cargo fmt --check`, `cargo clippy --all-targets` and the whole of `cargo test -p xtask`.
 
 | gate | result |
 |---|---|

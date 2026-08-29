@@ -254,8 +254,8 @@ cargo xtask vm purge linux-builder --cache   # free one
 
 Two archives per builder under `<store>/cache/<slug>/`, because the two halves change at
 different rates: `registry.tar.zst` is the guest's cargo registry, which moves only when
-`Cargo.lock` does and is not packed again while it has not, and `target.tar.zst` is the
-build directory, which moves every time. Measured: 122.3 and 612.6 MiB on Linux, 118.5 and
+`Cargo.lock` does and is not packed again while a restored one's has not, and
+`target.tar.zst` is the build directory, which moves every time. Measured: 122.3 and 612.6 MiB on Linux, 118.5 and
 619.1 on Windows.
 
 | | Linux | Windows |

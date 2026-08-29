@@ -157,8 +157,10 @@ extracted with `-m`, so no committed file can look older than an artifact built 
 `--locked` and the lockfile's checksums mean a restored registry holds only what the
 network would have handed over; and `cache::restorable` discards a cache whole rather than
 merging it when the channel or the builder image moves, in a line naming the field that
-moved. A failed build saves nothing, and the registry is not packed again while
-`Cargo.lock` has not moved. `--no-cache` skips restore and save both, and
+moved. A failed build saves nothing, and the registry is not packed again while a
+*restored* one's `Cargo.lock` has not moved: a sidecar that was refused describes an
+archive nothing will read again, so reading its hash as "the host already has this" would
+leave the registry cold until the lockfile happened to move. `--no-cache` skips restore and save both, and
 `build-info.json`'s `cache` section says per archive which of those happened, so what a
 release inherited is readable afterwards rather than taken on trust. Measured warm against
 cold: 4m 04s against 6m 58s on Windows and 3m 49s against 5m 28s on Linux, for archives of

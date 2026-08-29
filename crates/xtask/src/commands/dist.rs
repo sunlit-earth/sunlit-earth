@@ -1382,12 +1382,15 @@ fn plan_cache(
             Ok(sidecar) => sidecar,
             Err(e) => {
                 report.reason = Some(e);
-                reports.push(report);
-                continue;
+                None
             }
         };
         match &sidecar {
-            None => report.reason = Some("there is none for this image yet".to_owned()),
+            None => {
+                report
+                    .reason
+                    .get_or_insert_with(|| "there is none for this image yet".to_owned());
+            }
             Some(sidecar) => {
                 if let Err(why) = cache::restorable(sidecar, facts) {
                     report.reason = Some(why);
@@ -1412,10 +1415,16 @@ fn plan_cache(
         }
         // Decision 26: `--locked` means an unchanged lockfile is an unchanged
         // registry, so an ordinary build has nothing new to send back for it.
+        //
+        // Only a sidecar this run actually restored can say that, which is what
+        // the filter is: one that was refused describes an archive no future
+        // build will read either, so skipping the save on its lockfile hash
+        // would leave the registry dead until `Cargo.lock` happened to move.
         let worth = match kind {
-            cache::Kind::Registry => {
-                cache::registry_worth_saving(sidecar.as_ref(), &facts.lockfile_hash)
-            }
+            cache::Kind::Registry => cache::registry_worth_saving(
+                sidecar.as_ref().filter(|_| report.restored),
+                &facts.lockfile_hash,
+            ),
             cache::Kind::Target => true,
         };
         if worth {
@@ -2355,11 +2364,16 @@ mod tests {
         assert_eq!(job.restore, cache::Kind::ALL.to_vec());
         assert_eq!(job.save, cache::Kind::ALL.to_vec());
 
-        // A channel that moved is, and the line names it.
+        // A channel that moved is, and the line names it. Both halves are then
+        // worth packing, the registry included: its recorded lockfile hash
+        // still matches, but the archive that hash describes is one this build
+        // refused and every later build will refuse too, so reading it as "the
+        // host already has this" would leave the registry cold for good.
         let mut moved_channel = facts.clone();
         moved_channel.channel = "1.95.0".to_owned();
         let (job, reports) = plan_cache(&store, builder, &moved_channel, true);
         assert!(job.restore.is_empty(), "{job:?}");
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
         for report in &reports {
             assert!(
                 report.reason.as_ref().is_some_and(|r| r.contains("1.95.0")),
@@ -2387,6 +2401,47 @@ mod tests {
         for report in &reports {
             assert_eq!(report.reason.as_deref(), Some("--no-cache was given"));
             assert!(!report.restored && !report.saved);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sidecar nothing can read is a cache nothing can use, and the one thing
+    /// that must not follow is that nothing replaces it.
+    ///
+    /// The archive beside it is never restored again, so a run that also
+    /// declined to pack a fresh one would leave the store holding a file every
+    /// future build reads the sidecar of and refuses.
+    #[test]
+    fn a_sidecar_that_cannot_be_read_is_a_reason_to_pack_and_not_a_reason_to_stop() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_dist_unreadable_sidecar");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let builder = Image::LinuxBuilder;
+        let facts = cache::Facts {
+            channel: "1.94.0".to_owned(),
+            image: builder.slug().to_owned(),
+            template_hash: "crc32:1a2b3c4d".to_owned(),
+            image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
+            lockfile_hash: "crc32:deadbeef".to_owned(),
+        };
+        std::fs::create_dir_all(store.cache_dir(builder)).expect("mkdir");
+        for kind in cache::Kind::ALL {
+            std::fs::write(store.cache_archive(builder, kind), b"archive").expect("write");
+            std::fs::write(store.cache_sidecar(builder, kind), b"{ not json").expect("sidecar");
+        }
+
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert!(job.restore.is_empty(), "{job:?}");
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+        for report in &reports {
+            assert!(!report.restored, "{report:?}");
+            assert!(
+                report
+                    .reason
+                    .as_ref()
+                    .is_some_and(|r| r.contains("malformed")),
+                "{report:?}"
+            );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

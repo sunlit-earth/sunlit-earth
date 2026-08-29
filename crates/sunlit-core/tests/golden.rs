@@ -595,6 +595,21 @@ fn golden_sun_rising_through_the_band() {
     check_golden("sun_rising_through_the_band", &params);
 }
 
+/// The strip of frame the band runs down, with the limb in the middle of it.
+///
+/// The band is a thread along the limb and the frame is mostly the globe's
+/// bright grid, so a full-frame reference has the same weakness the Moon's had:
+/// deleting the lobe entirely comes to a mean of 0.21 over the whole frame with
+/// 0.40 percent of pixels outliers, which passes on both counts. Over this
+/// strip it is 1.52 and 2.83 percent, which fails on the second. What the strip
+/// leaves out is the glare, and the case beside this one is about that.
+const SUNRISE_BAND_WINDOW: Window = Window {
+    x: 72,
+    y: 0,
+    width: 72,
+    height: HEIGHT,
+};
+
 #[test]
 fn golden_sunrise_band() {
     // The same framing a little further round, with the Sun behind the limb so
@@ -610,7 +625,7 @@ fn golden_sunrise_band() {
         atmo_sunrise_glow: 3.0,
         ..base
     };
-    check_golden("sunrise_band", &params);
+    check_golden_in("sunrise_band", &params, SUNRISE_BAND_WINDOW);
 }
 
 /// The window the Moon lands in at the framing below, with room around it for

@@ -10,6 +10,7 @@ pub mod build_hyperv;
 pub mod build_image;
 pub mod build_layer;
 pub mod build_watch;
+pub mod bundle;
 pub mod dist;
 pub mod doctor;
 pub mod e2e;

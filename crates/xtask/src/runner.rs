@@ -529,7 +529,7 @@ pub mod fake {
     //! A [`Runner`] that answers from a table instead of a machine.
 
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
 
     use super::{Cmd, CommandOutput, ProcessIdentity, Runner};
     use std::io;
@@ -538,6 +538,8 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeRunner {
         responses: Vec<(String, CommandOutput)>,
+        /// Answers that change under a wait, consulted before `responses`.
+        sequences: RefCell<Vec<(String, VecDeque<CommandOutput>)>>,
         tools: HashMap<String, PathBuf>,
         /// Behind a `RefCell` because `terminate` removes from it: a process
         /// that was killed and is still reported as running would make the
@@ -557,6 +559,24 @@ pub mod fake {
         #[must_use]
         pub fn on(mut self, key: &str, output: CommandOutput) -> Self {
             self.responses.push((key.to_owned(), output));
+            self
+        }
+
+        /// Answer the calls matching `key` with each of `outputs` in turn, the
+        /// last one from then on.
+        ///
+        /// A guest changes while something waits on it, and a fixed table can
+        /// only describe a guest that does not: a job finishing between two
+        /// reads of one poll is a pair of answers rather than one.
+        #[must_use]
+        pub fn on_each(
+            mut self,
+            key: &str,
+            outputs: impl IntoIterator<Item = CommandOutput>,
+        ) -> Self {
+            self.sequences
+                .get_mut()
+                .push((key.to_owned(), outputs.into_iter().collect()));
             self
         }
 
@@ -595,6 +615,16 @@ pub mod fake {
                 cmd.script.clone().unwrap_or_default()
             );
             self.calls.borrow_mut().push(rendered.clone());
+            for (key, outputs) in self.sequences.borrow_mut().iter_mut() {
+                if haystack.contains(key.as_str())
+                    && let Some(next) = outputs.front().cloned()
+                {
+                    if outputs.len() > 1 {
+                        outputs.pop_front();
+                    }
+                    return Ok(next);
+                }
+            }
             for (key, output) in &self.responses {
                 if haystack.contains(key.as_str()) {
                     return Ok(output.clone());

@@ -88,18 +88,27 @@ pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(),
 /// them it tests the procedural grid and says so, which is the same thing that
 /// happens to `cargo e2e` on a host in this state.
 pub fn host_textures(repo: &Path) -> Option<PathBuf> {
-    let dir = repo.join("textures");
-    // An array rather than a vector, so the sizes and the names cannot get
-    // out of step with each other.
-    let sizes = TEXTURE_FILES.map(|name| std::fs::metadata(dir.join(name)).ok().map(|m| m.len()));
-    match textures_verdict(sizes) {
-        Ok(()) => Some(dir),
+    match textures_present(repo) {
+        Ok(dir) => Some(dir),
         Err(why) => {
-            println!("not staging {}: {why}", dir.display());
+            println!("not staging {}: {why}", repo.join("textures").display());
             println!("  the guest will render the procedural grid, as this host would");
             None
         }
     }
+}
+
+/// The same question without the commentary, for a caller with its own to make.
+///
+/// `dist` asks it about the release bundle rather than about staging, and what
+/// it has to say when the answer is no is decision 33's sentence rather than
+/// this one's.
+pub fn textures_present(repo: &Path) -> Result<PathBuf, String> {
+    let dir = repo.join("textures");
+    // An array rather than a vector, so the sizes and the names cannot get
+    // out of step with each other.
+    let sizes = TEXTURE_FILES.map(|name| std::fs::metadata(dir.join(name)).ok().map(|m| m.len()));
+    textures_verdict(sizes).map(|()| dir)
 }
 
 /// The `cargo` invocation that builds the suite without running it.

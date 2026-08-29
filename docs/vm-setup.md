@@ -136,7 +136,7 @@ Two more things either way:
 ## Release builds
 
 ```
-cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-expired-image] [--allow-dirty]
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cache] [--allow-expired-image] [--allow-dirty]
 cargo xtask dist --target linux            # one target
 cargo xtask dist                           # both, in sequence
 cargo xtask dist --target windows --no-verify --keep
@@ -152,16 +152,18 @@ LLVM, Visual Studio and `RUSTFLAGS` make of the tree and records none of it.
 
 A run of one target is four to six minutes plus two boots, measured on this host: a cold
 release build with fat LTO takes about five minutes on the eight virtual cores a builder
-gets. `--target all` does both in sequence, one VM at a time, and prints a line per
-target; a failure in one does not stop the other, and the command exits nonzero if either
-failed.
+gets, and a warm one, which is the ordinary case once the build cache below exists, takes
+three to four. `--target all` does both in sequence, one VM at a time, and prints a line
+per target; a failure in one does not stop the other, and the command exits nonzero if
+either failed.
 
 The results land in `target/dist/<target>/`:
 
 | file | what it is |
 |---|---|
 | `sunlit-earth` / `sunlit-earth.exe` | the binary |
-| `build-info.json` | the commit, `git describe`, whether the tree was dirty, the channel, the guest's own `rustc -vV`, the builder image and its manifest, the linkage, and which image verified it |
+| `sunlit-earth-<version>-<target>.zip` / `.tar.gz` | the release bundle: the binary with the textures, the license and the record |
+| `build-info.json` | the commit, `git describe`, whether the tree was dirty, the channel, the guest's own `rustc -vV`, the builder image and its manifest, the linkage, what the build cache did, what the bundle is, and which image verified it |
 | `build.log` | everything cargo said in the guest |
 | `smoke.png` | the 640x360 render the desktop guest produced, when verification ran |
 
@@ -178,11 +180,27 @@ and `libfontconfig`: X11, xcb, xkbcommon and EGL are opened at run time rather t
 linked, which is what lets the binary start on a machine with no display. A build whose
 linkage disagrees is refused with the offending name in the message.
 
-What running it *does* prove is the other half, and that is the verification boot: the
-binary is staged into the desktop guest, which did not build it, and asked for one
-`render`. The result is measured from its own PNG header rather than from its size,
-because a render that failed after opening its output still leaves a file. `--no-verify`
-skips that boot.
+What running it *does* prove is the other half, and that is the verification boot: what the
+desktop guest is staged with is the release bundle, which did not come from that guest, and
+the render is asked for with no `SUNLIT_EARTH_TEXTURES` set at all, so the app has to find
+its textures the way it will on a user's machine, beside its own executable. The result is
+measured from its own PNG header rather than from its size, because a render that failed
+after opening its output still leaves a file, and it is measured a second way as well,
+because a render that found no textures still writes a perfectly valid PNG of the
+procedural grid. So the guest renders twice, once against an empty textures directory it
+creates and once from the bundle, and the host compares them: below eight channel steps of
+mean difference the bundle is refused as one that did not find its own assets. Live runs
+measure 19 to 23.
+
+`--no-verify` skips that boot and nothing else. The bundle is still assembled and still
+archived, because a build asked to be quick is still a build somebody wants the artifact
+of, and withholding it would make the flag useless. What that costs is the only thing the
+boot was buying, so the run says it three times: the line that names the archive says
+nothing has run it, the closing summary says the target was "not verified", and
+`build-info.json` carries `"verified_in": null` and a null `texture_lookup_delta` rather
+than leaving both fields out. Those two are the only optional fields in the record that
+are written when they are empty, and they are written because the record travels inside
+the bundle: whoever unpacks it is not the person who watched the command run.
 
 `--allow-dirty` builds `HEAD` from a working tree with uncommitted changes and records
 `dirty: true`; without it a dirty tree is refused before anything boots, because the
@@ -198,6 +216,96 @@ by hand, and the closing summary names the guest that is still up.
 
 `--allow-expired-image` builds anyway when the Windows evaluation behind the image has
 run out, which the section below is about.
+
+## The release bundle
+
+`target/dist/<target>/` holds the loose binary, which is what the linkage checks are made
+against and what is easiest to run a host-side `render` with, and beside it one archive
+that is the thing to hand somebody. It is a zip on Windows and a `.tar.gz` on Linux, each
+unpacking into a single directory named `sunlit-earth-<version>-<target>`, so unpacking
+anywhere produces one folder rather than a scattering. The version is the workspace
+manifest's, not `git describe`, which has no tags to work from here; the commit is inside,
+in the record.
+
+| in the bundle | why |
+|---|---|
+| `sunlit-earth` / `sunlit-earth.exe` | 0755 in the tarball, so nobody has to `chmod +x` |
+| `textures/` | the four JXL assets and `PROVENANCE.md`, which is the attribution for the imagery. Without them the app draws the procedural grid |
+| `build-info.json` | the same record as beside it, so it travels with the binary it describes |
+| `LICENSE` | the GPL 3.0 text the workspace declares |
+| `ATTRIBUTION.md` | the star catalog's, which is baked into the binary and cannot travel any other way |
+| `assets/` | Linux only: the desktop entry, the hicolor icons, the SVG master and `install-user.sh`, which exists exactly for someone holding a binary and no package. Windows needs no equivalent, because the icon is a resource inside the exe |
+
+The zip stores the JXL entries and deflates the rest: they are compressed images already,
+and deflating them would spend time to make the archive very slightly larger. Measured, the
+Windows bundle is 25.4 MiB with the exe going from 29.2 to 12.5 MB, and the Linux one 27.5
+MiB.
+
+Where the host's `textures/**` is still Git LFS pointers there is nothing to put in a
+bundle, so none is written: the run says so in one line, verifies the loose binary the way
+it did before there were bundles, and produces `target/dist/<target>/` as usual. A bundle
+without the textures would be a bundle that renders a grid under a name promising a
+release.
+
+## The build cache
+
+A builder guest is a throwaway overlay, so nothing a build learns survives it and every run
+would otherwise download and compile all 519 crates. So a build packs what it produced
+before its guest is destroyed, and the next build of the same image on the same channel
+unpacks it again:
+
+```
+cargo xtask dist --target linux              # uses the cache if there is a matching one
+cargo xtask dist --target linux --no-cache   # neither restores nor saves
+cargo xtask vm status                        # what the caches cost
+cargo xtask vm purge linux-builder --cache   # free one
+```
+
+Two archives per builder under `<store>/cache/<slug>/`, because the two halves change at
+different rates: `registry.tar.zst` is the guest's cargo registry, which moves only when
+`Cargo.lock` does and is not packed again while a restored one's has not, and
+`target.tar.zst` is the build directory, which moves every time. Measured: 122.3 and 612.6 MiB on Linux, 118.5 and
+619.1 on Windows.
+
+| | Linux | Windows |
+|---|---|---|
+| cold build | 5m 28s | 6m 58s |
+| warm build | 3m 49s | 4m 04s |
+
+Fat LTO puts a floor under that: `lto = true` with one codegen unit means the final link
+reads every dependency's bitcode on every build, so a warm build is not a fast build, it is
+a build without the download and the dependency compile. Expect minutes rather than
+seconds.
+
+The cache is not free either, and every step of it says what it cost while the build runs,
+so the log is where to look rather than a document. Measured at the tip: the whole round
+trip, both archives in, unpacked, packed and back out, is 44 to 64 seconds on Linux and
+1m 42s on Windows. Most of the Windows figure is one number, the 62 seconds it takes to
+unpack a 118 MiB crate registry there against 5 on Linux, which is the tens of thousands of
+small files that made the guest do the unpacking in the first place. So on Windows the cache
+wins by less than the build times alone suggest. It still wins, because the alternative to a
+62 second unpack is downloading the index and every crate again, but anyone reading the two
+columns above should know what is under them.
+
+A cache cannot change what is built, and that is a property rather than a hope. The source
+tree is extracted with `-m` so that no committed file can look older than an artifact built
+from it; `--locked` and the lockfile's checksums mean a restored registry can only hold
+what the network would have handed over; and a cache is discarded whole rather than merged
+the moment the pinned channel or the builder image changes, in a line naming the field that
+moved. The first of those is an argument about the guest's clock, so it does not stand on
+its own: a restored build directory gives up this workspace's own fingerprints and the
+binary linked from them before the build starts, which makes `sunlit-core` and
+`sunlit-earth` units cargo compiles again whatever the times say. What the cache serves is
+the dependency tree, which is where all of its value was anyway. A build that failed saves nothing, because a failure caused by what was in a cache
+would otherwise stick. `build-info.json` records per archive whether it was restored, what
+it matched, and whether a fresh one was written, so a release says for itself what it
+inherited. Three Linux binaries of three separate runs, cold and warm, are byte for byte
+identical.
+
+The cache is inventory rather than run state, which is the opposite of everything else a
+run leaves behind: `vm down` never touches it, because what it holds is minutes of
+compiling that nothing recreates without doing the compiling again. `vm status` counts it
+per image and names the command that frees it.
 
 ## The Windows evaluation expires
 
@@ -221,11 +329,12 @@ cargo xtask vm purge <image|all>             # that, the image, and the media
 cargo xtask vm purge windows --iso           # only the 6.6 GB download
 cargo xtask vm purge linux --image           # only the image and its leftovers
 cargo xtask vm purge windows-builder --image # only the layer, leaving its parent
+cargo xtask vm purge linux-builder --cache   # only the build cache dist left
 ```
 
-`vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image.
+`vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image. What it never takes is the build cache, which is the one thing under the store that nothing recreates for free: the next release build would have to compile it all again.
 
-`vm purge` deletes what took time to get: the golden image, its manifest, the build directory's leftovers, and the cached installation media, which for Windows is the download, the prompt-free copy made from it, and the small record saying which download that copy came from. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The three flags are additive, and none of them means all of it.
+`vm purge` deletes what took time to get: the golden image, its manifest, the build directory's leftovers, and the cached installation media, which for Windows is the download, the prompt-free copy made from it, and the small record saying which download that copy came from. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The four flags are additive, and none of them means all of it.
 
 A purge that has to stop a guest says what stopping it costs, on the line that says it is being stopped and in the question, and `-f` skips the question rather than the warning. That matters for one guest only: an image build. A purge that ends a build stops there and does not also clear the build's record and the disk its install had written, since those are run state and no flag asked for them; it names both and points at `vm down <target>`, which is what a `vm status` full of a build that is not running is telling you afterwards.
 
@@ -234,6 +343,8 @@ A purge of a base takes its layers with it, and lists them before it asks. That 
 Neither command touches anything that is not the xtask's own. Every VM it creates is named `sunlit-e2e-<image>`, every file it writes lives under the image store, and a state file naming anything else is reported and left alone.
 
 The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Windows and `~/.local/share/SunlitEarth/vm` on Linux. Set `SUNLIT_EARTH_VM_DIR` to put them somewhere else, on a bigger disk for instance. Measured on this host: the Windows image is 14.9 GiB of qcow2 plus 19.3 GiB of VHDX, `windows-builder` 13.5 GiB, the Debian image 4.0 GiB, and `linux-builder` 3.1 GiB, with the Windows download another 6.6 GB, which comes to 64.8 GiB in all. Budget 70 to 80 GB for all four images plus their overlays and the media, and remember that an overlay grows with what a run writes into it: a release build's `target/release` lives in one, and one came to 6.2 GiB.
+
+The build caches are on top of that and grow with use rather than with the images: 737.6 MiB for `windows-builder` and 734.8 MiB for `linux-builder`, so 1.4 GiB once both targets have been built once. Each is two archives and their sidecars, and each replaces itself on the next build rather than accumulating. `vm purge <image> --cache` frees one and `vm purge all --cache` frees both, at the cost of making the next release build a cold one.
 
 The layer is the one image whose size is worth knowing why. 4.8 GiB of it is the toolchain and the rest is a Windows guest having been booted, because a differencing child records every block the guest wrote, including the ones it freed again. So `finalize.ps1` deletes the installer caches and retrims the volume, which is what tells a virtual disk a block is free, and the build compacts the disk on the host afterwards: 16.5 GiB down to 13.5, of which the compaction is 2.3 and the deletions 0.8. Changing what it trims means rebuilding the layer, which is four minutes.
 

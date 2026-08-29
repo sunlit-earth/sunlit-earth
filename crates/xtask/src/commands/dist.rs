@@ -21,11 +21,13 @@
 //! machine that did not build it: that is what proves it starts and renders
 //! somewhere other than in a guest with a compiler in it.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::bundle::{self, Bundled};
 use crate::commands::vm;
 use crate::guest::artifacts;
 use crate::guest::job::{self, OutputTail};
@@ -33,6 +35,7 @@ use crate::guest::toolchain::Toolchain;
 use crate::provider;
 use crate::provider::target::{Image, Target};
 use crate::runner::{Cmd, Runner};
+use crate::store::cache;
 use crate::store::state::StartReason;
 use crate::store::{self, Store};
 use crate::util;
@@ -71,6 +74,9 @@ pub struct Options {
     pub keep: bool,
     /// Whether to run the binary in the desktop image afterwards.
     pub verify: bool,
+    /// Whether an earlier build in this image may hand anything to this one.
+    /// `false` is goal 4 in its original form, on demand.
+    pub cache: bool,
     pub allow_expired: bool,
     pub allow_dirty: bool,
 }
@@ -132,6 +138,24 @@ pub const VERIFY_TIMEOUT: Duration = Duration::from_mins(15);
 pub const SMOKE_WIDTH: u32 = 640;
 pub const SMOKE_HEIGHT: u32 = 360;
 pub const SMOKE_FILE: &str = "smoke.png";
+
+/// The other render of the same scene, made against a directory with nothing in
+/// it, which is the procedural grid by construction.
+pub const GRID_FILE: &str = "grid.png";
+
+/// The directory the grid render is pointed at, inside the guest.
+pub const EMPTY_TEXTURES: &str = "empty-textures";
+
+/// How far apart the two verification renders have to be before the bundle is
+/// believed to have found its textures.
+///
+/// A render that failed to find them still produces a 640x360 PNG of the
+/// procedural grid, so the header check cannot tell the two apart: this is what
+/// can. The floor is far above the fraction of a channel step a second or two of
+/// the Earth turning between the two renders accounts for, and far below the
+/// difference measured live between a grid and a textured globe, which is in the
+/// amendment's validation record.
+pub const TEXTURE_LOOKUP_FLOOR: f64 = 8.0;
 
 /// The lowest glibc a Linux release binary may require.
 ///
@@ -309,6 +333,74 @@ pub fn missing_toolchain(image: Image) -> String {
     )
 }
 
+/// Where the guest keeps the build directory.
+///
+/// Decision 25: out of the source tree, so the `rm -rf src` and the fresh
+/// extraction at the top of every job cannot touch it, the archive has one fixed
+/// path on both operating systems, and the executable is copied from a path that
+/// does not move with the source layout.
+pub const GUEST_TARGET_DIR: &str = "cargo-target";
+
+/// Where the job writes the archives the host pulls back out.
+///
+/// A directory of its own, so what the job packed can never be mistaken for
+/// what the host copied in: an archive to restore sits at the guest root beside
+/// the source archive, and one to save is written in here.
+pub const GUEST_CACHE_OUT: &str = "cache";
+
+/// Where the host copies a cache archive to, for the job to unpack.
+pub fn guest_cache_in(target: Target, kind: cache::Kind) -> String {
+    guest_join(target, provider::guest_root(target), &kind.archive())
+}
+
+/// Where the job writes one for the host to pull.
+pub fn guest_cache_out(target: Target, kind: cache::Kind) -> String {
+    let dir = guest_join(target, provider::guest_root(target), GUEST_CACHE_OUT);
+    guest_join(target, &dir, &kind.archive())
+}
+
+/// What the build job does about the cache.
+///
+/// Decided on the host before the guest boots, so the script carries exactly the
+/// clauses this run needs rather than a set of conditionals over files that may
+/// or may not be there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheJob {
+    /// The archives the host copied in, to unpack before the build.
+    pub restore: Vec<cache::Kind>,
+    /// The archives to pack afterwards, for the host to pull.
+    pub save: Vec<cache::Kind>,
+}
+
+/// The file the job writes to say what it actually packed.
+pub const CACHE_REPORT: &str = "cache.txt";
+
+/// What every crate of this workspace's fingerprint directory is named after.
+///
+/// `sunlit-core` and `sunlit-earth` are the two a release build compiles, and
+/// cargo files each unit's fingerprint under its own package name and a hash.
+/// Nothing else in the build directory begins with this.
+pub const WORKSPACE_FINGERPRINTS: &str = "sunlit-*";
+
+/// What a `cache.txt` line says was packed.
+const PACKED: &str = "packed ";
+
+/// Which archives the guest says it wrote.
+///
+/// The guest's own statement rather than the host's intention: a pack can fail
+/// on disk space after a build has already succeeded, and that must cost the
+/// cache rather than the build.
+pub fn parse_packed(text: &str) -> Vec<cache::Kind> {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix(PACKED))
+        .filter_map(|slug| {
+            cache::Kind::ALL
+                .into_iter()
+                .find(|kind| kind.slug() == slug.trim())
+        })
+        .collect()
+}
+
 /// The build job.
 ///
 /// Every path is absolute and nothing depends on `PATH`, which is the rule the
@@ -319,121 +411,448 @@ pub fn missing_toolchain(image: Image) -> String {
 /// 1.28.1 restored behind a variable; it is a no-op when the image already
 /// carries the channel.
 ///
+/// The source is extracted with `-m` and the cached trees deliberately without
+/// it (decision 23). `git archive` stamps its entries with the commit's own
+/// time, so rebuilding an older commit over a newer cache would otherwise
+/// present cargo with sources older than the artifacts and produce a binary of
+/// the previous commit under this commit's record. The cached trees keep the
+/// times they were archived with, because their whole value is that nothing in
+/// them looks newer than what was built from it.
+///
+/// That argument is about clocks, so it is not left to hold on its own: a
+/// restored build directory gives up this workspace's own fingerprints and the
+/// binary they link to before the build starts. A fingerprint that is not there
+/// is a unit cargo rebuilds whatever the times say, so `sunlit-core` and
+/// `sunlit-earth` are compiled from the extracted source in every warm build,
+/// and what the cache serves is the dependency tree `--locked` pins. Deleting
+/// the binary alone would not do it: cargo would notice the missing output and
+/// relink it out of whatever rlibs it still believed in.
+///
+/// A restore that fails clears what it was writing into and the build goes on
+/// cold, and a pack that fails costs the cache and not the build: by the time
+/// either happens the binary is either not built yet or already in the artifacts
+/// directory. The drop is the one step of the three that may end the build,
+/// because it is the guarantee rather than the convenience, and a guarantee
+/// that quietly did not happen is the binary of another commit. `set -e` is
+/// what says so on Linux; the Windows job looks at the directories again,
+/// since its `rmdir` runs in a loop whose errorlevel is its last iteration's.
+///
+/// Every cache step says what it cost, because the risk this cache was weighed
+/// against is that moving a gigabyte costs more than the compiling it saves and
+/// a whole-build total cannot be taken apart afterwards. The two jobs say it
+/// differently. bash has `SECONDS`, a counter that costs nothing to read, so
+/// the Linux job prints a duration. `cmd.exe` has no arithmetic on its own clock
+/// that is not either a process spawn per reading or a bet on the locale's time
+/// format, so the Windows job prints `%TIME%` on either side of each step and
+/// leaves the subtraction to whoever reads the log: two readings that cannot be
+/// wrong beat one number that can. The host times its own two copies itself and
+/// puts them in the record.
+///
 /// The last two steps are what make the release claims checkable on the host:
 /// the toolchain that built it, and the binary's own imports as the builder's
 /// tools report them.
-pub fn build_job(target: Target, pinned: &Toolchain) -> String {
+#[allow(clippy::too_many_lines)]
+pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> String {
     let channel = &pinned.channel;
     match target {
-        Target::Linux => format!(
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
-             root={root}\n\
-             export CARGO_NET_RETRY=5\n\
-             export CARGO_TERM_COLOR=never\n\
-             cargo=\"$HOME/.cargo/bin/cargo\"\n\
-             rustc=\"$HOME/.cargo/bin/rustc\"\n\
-             rustup=\"$HOME/.cargo/bin/rustup\"\n\
-             \"$rustup\" toolchain install {channel} --profile minimal\n\
-             rm -rf \"$root/src\"\n\
-             tar -xf \"$root/src.tar\" -C \"$root\"\n\
-             cd \"$root/src\"\n\
-             \"$cargo\" \"+{channel}\" build --release --locked -p sunlit-earth\n\
-             exe=\"$root/src/target/release/{exe}\"\n\
-             cp \"$exe\" \"$SUNLIT_E2E_ARTIFACTS/{exe}\"\n\
-             {{\n  \
-               \"$rustc\" \"+{channel}\" -vV\n  \
-               \"$cargo\" \"+{channel}\" -V\n\
-             }} > \"$SUNLIT_E2E_ARTIFACTS/toolchain.txt\"\n\
-             {{\n  \
-               echo '== readelf -d'\n  \
-               readelf -d \"$exe\"\n  \
-               echo '== objdump -T'\n  \
-               objdump -T \"$exe\"\n\
-             }} > \"$SUNLIT_E2E_ARTIFACTS/deps.txt\"\n\
-             ls -l \"$SUNLIT_E2E_ARTIFACTS\"\n",
-            root = crate::provider::GUEST_ROOT_LINUX,
-            exe = exe_name(target),
-        ),
-        Target::Windows => format!(
-            "@echo off\r\n\
-             set ROOT={root}\r\n\
-             set CARGO_NET_RETRY=5\r\n\
-             set CARGO_TERM_COLOR=never\r\n\
-             set LIBCLANG_PATH={libclang}\r\n\
-             set CARGO=%USERPROFILE%\\.cargo\\bin\\cargo.exe\r\n\
-             set RUSTC=%USERPROFILE%\\.cargo\\bin\\rustc.exe\r\n\
-             set RUSTUP=%USERPROFILE%\\.cargo\\bin\\rustup.exe\r\n\
-             \"%RUSTUP%\" toolchain install {channel} --profile minimal || exit /b 1\r\n\
-             if exist \"%ROOT%\\src\" rmdir /s /q \"%ROOT%\\src\"\r\n\
-             tar.exe -xf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
-             cd /d \"%ROOT%\\src\" || exit /b 1\r\n\
-             \"%CARGO%\" +{channel} build --release --locked -p sunlit-earth || exit /b 1\r\n\
-             set EXE=%ROOT%\\src\\target\\release\\{exe}\r\n\
-             copy /y \"%EXE%\" \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" || exit /b 1\r\n\
-             \"%RUSTC%\" +{channel} -vV > \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
-             \"%CARGO%\" +{channel} -V >> \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
-             set VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\r\n\
-             set DUMPBIN=\r\n\
-             for /f \"usebackq delims=\" %%i in (`\"%VSWHERE%\" -latest -products * \
-             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
-             -find **\\Hostx64\\x64\\dumpbin.exe`) do set DUMPBIN=%%i\r\n\
-             if not defined DUMPBIN echo no dumpbin found & exit /b 1\r\n\
-             \"%DUMPBIN%\" /dependents \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" \
-             > \"%SUNLIT_E2E_ARTIFACTS%\\deps.txt\" || exit /b 1\r\n\
-             dir \"%SUNLIT_E2E_ARTIFACTS%\"\r\n\
-             exit /b 0\r\n",
-            root = crate::provider::GUEST_ROOT_WINDOWS,
-            libclang = crate::commands::build_layer::LIBCLANG_DIR,
-            exe = exe_name(target),
-        ),
+        Target::Linux => {
+            let root = crate::provider::GUEST_ROOT_LINUX;
+            let exe = exe_name(target);
+            let mut script = format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 root={root}\n\
+                 export CARGO_NET_RETRY=5\n\
+                 export CARGO_TERM_COLOR=never\n\
+                 export CARGO_TARGET_DIR=\"$root/{GUEST_TARGET_DIR}\"\n\
+                 cargo=\"$HOME/.cargo/bin/cargo\"\n\
+                 rustc=\"$HOME/.cargo/bin/rustc\"\n\
+                 rustup=\"$HOME/.cargo/bin/rustup\"\n\
+                 \"$rustup\" toolchain install {channel} --profile minimal\n"
+            );
+            for kind in &cache_job.restore {
+                let (into, clear) = match kind {
+                    cache::Kind::Registry => (
+                        "\"$HOME\"",
+                        "\"$HOME/.cargo/registry\" \"$HOME/.cargo/git\"",
+                    ),
+                    cache::Kind::Target => ("\"$root\"", "\"$CARGO_TARGET_DIR\""),
+                };
+                let _ = write!(
+                    script,
+                    "echo 'cache: unpacking {label}'\n\
+                     unpack_started=$SECONDS\n\
+                     if tar -xf \"$root/{archive}\" -C {into}; then\n  \
+                       echo \"cache: unpacked {label} in $((SECONDS - unpack_started))s\"\n\
+                     else\n  \
+                       echo 'cache: {label} did not unpack; building cold'\n  \
+                       rm -rf {clear}\n\
+                     fi\n",
+                    label = kind.label(),
+                    archive = kind.archive(),
+                );
+                if *kind == cache::Kind::Target {
+                    let _ = write!(
+                        script,
+                        "echo 'cache: dropping this workspace out of the restored build directory'\n\
+                         rm -rf \"$CARGO_TARGET_DIR/release/.fingerprint\"/{WORKSPACE_FINGERPRINTS} \
+                         \"$CARGO_TARGET_DIR/release/{exe}\"\n"
+                    );
+                }
+            }
+            let _ = write!(
+                script,
+                "rm -rf \"$root/src\"\n\
+                 tar -xmf \"$root/src.tar\" -C \"$root\"\n\
+                 cd \"$root/src\"\n\
+                 \"$cargo\" \"+{channel}\" build --release --locked -p sunlit-earth\n\
+                 exe=\"$CARGO_TARGET_DIR/release/{exe}\"\n\
+                 cp \"$exe\" \"$SUNLIT_E2E_ARTIFACTS/{exe}\"\n\
+                 {{\n  \
+                   \"$rustc\" \"+{channel}\" -vV\n  \
+                   \"$cargo\" \"+{channel}\" -V\n\
+                 }} > \"$SUNLIT_E2E_ARTIFACTS/toolchain.txt\"\n\
+                 {{\n  \
+                   echo '== readelf -d'\n  \
+                   readelf -d \"$exe\"\n  \
+                   echo '== objdump -T'\n  \
+                   objdump -T \"$exe\"\n\
+                 }} > \"$SUNLIT_E2E_ARTIFACTS/deps.txt\"\n"
+            );
+            if !cache_job.save.is_empty() {
+                let _ = writeln!(script, "mkdir -p \"$root/{GUEST_CACHE_OUT}\"");
+            }
+            for kind in &cache_job.save {
+                let out = format!("$root/{GUEST_CACHE_OUT}/{}", kind.archive());
+                match kind {
+                    cache::Kind::Registry => {
+                        let _ = write!(
+                            script,
+                            "members=\"\"\n\
+                             if [ -d \"$HOME/.cargo/registry\" ]; then members=\"$members .cargo/registry\"; fi\n\
+                             if [ -d \"$HOME/.cargo/git\" ]; then members=\"$members .cargo/git\"; fi\n\
+                             pack_started=$SECONDS\n\
+                             if [ -n \"$members\" ] && tar --zstd -cf \"{out}\" -C \"$HOME\" $members; then\n  \
+                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n  \
+                               echo \"cache: packed {label} in $((SECONDS - pack_started))s\"\n\
+                             else\n  \
+                               echo 'cache: could not pack {label}'\n\
+                             fi\n",
+                            slug = kind.slug(),
+                            label = kind.label(),
+                        );
+                    }
+                    cache::Kind::Target => {
+                        let _ = write!(
+                            script,
+                            "pack_started=$SECONDS\n\
+                             if tar --zstd -cf \"{out}\" -C \"$root\" {GUEST_TARGET_DIR}; then\n  \
+                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n  \
+                               echo \"cache: packed {label} in $((SECONDS - pack_started))s\"\n\
+                             else\n  \
+                               echo 'cache: could not pack {label}'\n\
+                             fi\n",
+                            slug = kind.slug(),
+                            label = kind.label(),
+                        );
+                    }
+                }
+            }
+            let _ = writeln!(script, "ls -l \"$SUNLIT_E2E_ARTIFACTS\"");
+            script
+        }
+        Target::Windows => {
+            let root = crate::provider::GUEST_ROOT_WINDOWS;
+            let exe = exe_name(target);
+            let libclang = crate::commands::build_layer::LIBCLANG_DIR;
+            let mut script = format!(
+                "@echo off\r\n\
+                 set ROOT={root}\r\n\
+                 set CARGO_NET_RETRY=5\r\n\
+                 set CARGO_TERM_COLOR=never\r\n\
+                 set LIBCLANG_PATH={libclang}\r\n\
+                 set CARGO_TARGET_DIR=%ROOT%\\{GUEST_TARGET_DIR}\r\n\
+                 set CARGO=%USERPROFILE%\\.cargo\\bin\\cargo.exe\r\n\
+                 set RUSTC=%USERPROFILE%\\.cargo\\bin\\rustc.exe\r\n\
+                 set RUSTUP=%USERPROFILE%\\.cargo\\bin\\rustup.exe\r\n\
+                 \"%RUSTUP%\" toolchain install {channel} --profile minimal || exit /b 1\r\n"
+            );
+            for kind in &cache_job.restore {
+                // No parenthesized block: `cmd.exe` mishandles those, and a
+                // label costs one line and is unambiguous.
+                let into = match kind {
+                    cache::Kind::Registry => "%USERPROFILE%",
+                    cache::Kind::Target => "%ROOT%",
+                };
+                let _ = write!(
+                    script,
+                    "echo cache: unpacking {label} at %TIME%\r\n\
+                     tar.exe -xf \"%ROOT%\\{archive}\" -C \"{into}\"\r\n\
+                     if not errorlevel 1 goto cache_in_{slug}\r\n\
+                     echo cache: {label} did not unpack; building cold\r\n",
+                    label = kind.label(),
+                    archive = kind.archive(),
+                    slug = kind.slug(),
+                );
+                for path in match kind {
+                    cache::Kind::Registry => {
+                        vec![
+                            r"%USERPROFILE%\.cargo\registry",
+                            r"%USERPROFILE%\.cargo\git",
+                        ]
+                    }
+                    cache::Kind::Target => vec!["%CARGO_TARGET_DIR%"],
+                } {
+                    let _ = write!(script, "rmdir /s /q \"{path}\"\r\n");
+                }
+                let _ = write!(
+                    script,
+                    ":cache_in_{slug}\r\n\
+                     echo cache: unpacking {label} ended at %TIME%\r\n",
+                    slug = kind.slug(),
+                    label = kind.label(),
+                );
+                if *kind == cache::Kind::Target {
+                    let fingerprints = format!(
+                        r"%CARGO_TARGET_DIR%\release\.fingerprint\{WORKSPACE_FINGERPRINTS}"
+                    );
+                    let cached_exe = format!(r"%CARGO_TARGET_DIR%\release\{exe}");
+                    // The one clause in the cache region that may end the
+                    // build. Everything else here is a convenience, and a
+                    // convenience that failed costs a slower build; this drop
+                    // is a correctness guarantee, and one that quietly did not
+                    // happen is worse than a build that stopped. What it looks
+                    // at is the directories rather than an errorlevel, because
+                    // the loop's is its last iteration's: a handle held on the
+                    // first of two would be masked by the second deleting
+                    // cleanly.
+                    let _ = write!(
+                        script,
+                        "echo cache: dropping this workspace out of the restored build directory\r\n\
+                         for /d %%d in (\"{fingerprints}\") do rmdir /s /q \"%%d\"\r\n\
+                         if exist \"{cached_exe}\" del /f /q \"{cached_exe}\"\r\n\
+                         set STALE=\r\n\
+                         for /d %%d in (\"{fingerprints}\") do set STALE=%%d\r\n\
+                         if exist \"{cached_exe}\" set STALE={cached_exe}\r\n\
+                         if defined STALE echo cache: the restored build directory would not \
+                         give up %STALE% & exit /b 1\r\n"
+                    );
+                }
+            }
+            let _ = write!(
+                script,
+                "if exist \"%ROOT%\\src\" rmdir /s /q \"%ROOT%\\src\"\r\n\
+                 tar.exe -xmf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
+                 cd /d \"%ROOT%\\src\" || exit /b 1\r\n\
+                 \"%CARGO%\" +{channel} build --release --locked -p sunlit-earth || exit /b 1\r\n\
+                 set EXE=%CARGO_TARGET_DIR%\\release\\{exe}\r\n\
+                 copy /y \"%EXE%\" \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" || exit /b 1\r\n\
+                 \"%RUSTC%\" +{channel} -vV > \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
+                 \"%CARGO%\" +{channel} -V >> \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
+                 set VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\r\n\
+                 set DUMPBIN=\r\n\
+                 for /f \"usebackq delims=\" %%i in (`\"%VSWHERE%\" -latest -products * \
+                 -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+                 -find **\\Hostx64\\x64\\dumpbin.exe`) do set DUMPBIN=%%i\r\n\
+                 if not defined DUMPBIN echo no dumpbin found & exit /b 1\r\n\
+                 \"%DUMPBIN%\" /dependents \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" \
+                 > \"%SUNLIT_E2E_ARTIFACTS%\\deps.txt\" || exit /b 1\r\n"
+            );
+            if !cache_job.save.is_empty() {
+                let _ = write!(
+                    script,
+                    "if not exist \"%ROOT%\\{GUEST_CACHE_OUT}\" mkdir \"%ROOT%\\{GUEST_CACHE_OUT}\"\r\n"
+                );
+            }
+            for kind in &cache_job.save {
+                let out = format!("%ROOT%\\{GUEST_CACHE_OUT}\\{}", kind.archive());
+                let _ = write!(
+                    script,
+                    "echo cache: packing {label} at %TIME%\r\n",
+                    label = kind.label(),
+                );
+                // `&&` rather than a block, for the same reason as the label
+                // above: a pack that failed costs the cache and not the build,
+                // so nothing here may `exit /b`.
+                match kind {
+                    cache::Kind::Registry => {
+                        let _ = write!(
+                            script,
+                            "set MEMBERS=.cargo/registry\r\n\
+                             if exist \"%USERPROFILE%\\.cargo\\git\" set MEMBERS=%MEMBERS% .cargo/git\r\n\
+                             tar.exe --zstd -cf \"{out}\" -C \"%USERPROFILE%\" %MEMBERS% \
+                             && echo {PACKED}{slug}>> \"%SUNLIT_E2E_ARTIFACTS%\\{CACHE_REPORT}\"\r\n",
+                            slug = kind.slug(),
+                        );
+                    }
+                    cache::Kind::Target => {
+                        let _ = write!(
+                            script,
+                            "tar.exe --zstd -cf \"{out}\" -C \"%ROOT%\" {GUEST_TARGET_DIR} \
+                             && echo {PACKED}{slug}>> \"%SUNLIT_E2E_ARTIFACTS%\\{CACHE_REPORT}\"\r\n",
+                            slug = kind.slug(),
+                        );
+                    }
+                }
+                let _ = write!(
+                    script,
+                    "echo cache: packing {label} ended at %TIME%\r\n",
+                    label = kind.label(),
+                );
+            }
+            let _ = write!(script, "dir \"%SUNLIT_E2E_ARTIFACTS%\"\r\nexit /b 0\r\n");
+            script
+        }
     }
 }
 
-/// The verification job: one headless render in the desktop image.
+/// What the verification boot is asked to prove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verification<'a> {
+    /// The bundle, as a user would have it. Two renders of the same scene: one
+    /// with `SUNLIT_EARTH_TEXTURES` pointed at a directory the job creates and
+    /// leaves empty, which is the procedural grid by construction, and one with
+    /// the variable unset, which is the lookup a user's machine does.
+    Bundle {
+        /// The binary inside the staged bundle.
+        exe: &'a str,
+        /// The empty directory, which the job makes and nothing fills.
+        empty: &'a str,
+    },
+    /// The loose binary, which is what a run whose checkout holds Git LFS
+    /// pointers falls back to (decision 33). There is no second render to
+    /// compare against, because there are no textures to find, so this is the
+    /// plan's own verification: one render, measured from its own header.
+    Loose { exe: &'a str },
+}
+
+/// The verification job.
 ///
 /// The same smoke test `ci.yml` runs, for the same reason and with the same
 /// check on the result: it asserts the output is a PNG of the size asked for
-/// rather than merely a file of non-trivial size. `SUNLIT_EARTH_TEXTURES` is set
-/// exactly when the textures were staged, on the rule the e2e job follows: a
-/// directory that is not there would make the app fall back to the procedural
-/// grid anyway, and naming one would be a lie in the script.
-pub fn verify_job(target: Target, exe: &str, textures: Option<&str>) -> String {
+/// rather than merely a file of non-trivial size. What the bundle adds is the
+/// second render, because the first check cannot tell a globe from a grid.
+///
+/// The job changes directory to the guest root before it runs anything, and that
+/// is load-bearing rather than tidiness: `resolve_textures_dir` tries a
+/// working-directory-relative `textures` before it walks up from the executable,
+/// so a job that ran from inside the bundle would answer with the first branch
+/// and leave the walk-up, which is the one a bundle depends on, untested. The
+/// guest root has no `textures/` in it, because a bundle run stages none of its
+/// own and every boot is a fresh overlay of a golden disk.
+pub fn verify_job(target: Target, verification: &Verification) -> String {
     match target {
-        Target::Linux => format!(
-            "#!/usr/bin/env bash\n\
-             set -uo pipefail\n\
-             {textures}\
-             export RUST_BACKTRACE=1\n\
-             {exe} --version\n\
-             {exe} render --output \"$SUNLIT_E2E_ARTIFACTS/{file}\" \
-             --width {width} --height {height}\n",
-            textures = textures.map_or_else(String::new, |dir| format!(
-                "export SUNLIT_EARTH_TEXTURES={}\n",
-                artifacts::shell_quote(dir)
-            )),
-            exe = artifacts::shell_quote(exe),
-            file = SMOKE_FILE,
-            width = SMOKE_WIDTH,
-            height = SMOKE_HEIGHT,
-        ),
-        Target::Windows => format!(
-            "@echo off\r\n\
-             {textures}\
-             set RUST_BACKTRACE=1\r\n\
-             \"{exe}\" --version\r\n\
-             \"{exe}\" render --output \"%SUNLIT_E2E_ARTIFACTS%\\{file}\" \
-             --width {width} --height {height}\r\n\
-             exit /b %ERRORLEVEL%\r\n",
-            textures = textures.map_or_else(String::new, |dir| format!(
-                "set SUNLIT_EARTH_TEXTURES={dir}\r\n"
-            )),
-            exe = exe,
-            file = SMOKE_FILE,
-            width = SMOKE_WIDTH,
-            height = SMOKE_HEIGHT,
-        ),
+        Target::Linux => {
+            let mut script = format!(
+                "#!/usr/bin/env bash\nset -uo pipefail\nexport RUST_BACKTRACE=1\ncd {root}\n",
+                root = crate::provider::GUEST_ROOT_LINUX,
+            );
+            if let Verification::Bundle { empty, .. } = verification {
+                let empty = artifacts::shell_quote(empty);
+                let _ = write!(script, "rm -rf {empty}\nmkdir -p {empty}\n");
+            }
+            let exe = artifacts::shell_quote(match verification {
+                Verification::Bundle { exe, .. } | Verification::Loose { exe } => exe,
+            });
+            let _ = writeln!(script, "{exe} --version || exit 1");
+            if let Verification::Bundle { empty, .. } = verification {
+                let _ = writeln!(
+                    script,
+                    "SUNLIT_EARTH_TEXTURES={empty} {exe} render \
+                     --output \"$SUNLIT_E2E_ARTIFACTS/{GRID_FILE}\" \
+                     --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit 1",
+                    empty = artifacts::shell_quote(empty),
+                );
+            }
+            let _ = writeln!(
+                script,
+                "{exe} render --output \"$SUNLIT_E2E_ARTIFACTS/{SMOKE_FILE}\" \
+                 --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit 1"
+            );
+            script
+        }
+        Target::Windows => {
+            let mut script = format!(
+                "@echo off\r\nset RUST_BACKTRACE=1\r\ncd /d \"{root}\" || exit /b 1\r\n",
+                root = crate::provider::GUEST_ROOT_WINDOWS,
+            );
+            if let Verification::Bundle { empty, .. } = verification {
+                let _ = write!(
+                    script,
+                    "if exist \"{empty}\" rmdir /s /q \"{empty}\"\r\n\
+                     mkdir \"{empty}\" || exit /b 1\r\n"
+                );
+            }
+            let exe = match verification {
+                Verification::Bundle { exe, .. } | Verification::Loose { exe } => exe,
+            };
+            let _ = write!(script, "\"{exe}\" --version || exit /b 1\r\n");
+            if let Verification::Bundle { empty, .. } = verification {
+                let _ = write!(
+                    script,
+                    "set SUNLIT_EARTH_TEXTURES={empty}\r\n\
+                     \"{exe}\" render --output \"%SUNLIT_E2E_ARTIFACTS%\\{GRID_FILE}\" \
+                     --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit /b 1\r\n\
+                     set SUNLIT_EARTH_TEXTURES=\r\n"
+                );
+            }
+            let _ = write!(
+                script,
+                "\"{exe}\" render --output \"%SUNLIT_E2E_ARTIFACTS%\\{SMOKE_FILE}\" \
+                 --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit /b 1\r\n\
+                 exit /b 0\r\n"
+            );
+            script
+        }
     }
+}
+
+/// How far apart two renders of the same size are, as a mean channel difference
+/// over every sample.
+///
+/// Decoded rather than compared byte for byte: two PNG encodings of the same
+/// pixels can differ, and the question is whether the same scene was drawn from
+/// the same data.
+pub fn render_difference(grid: &[u8], bundled: &[u8]) -> Result<f64, String> {
+    let decode = |bytes: &[u8], what: &str| -> Result<image::RgbaImage, String> {
+        image::load_from_memory(bytes)
+            .map(image::DynamicImage::into_rgba8)
+            .map_err(|e| format!("the {what} render does not decode: {e}"))
+    };
+    let grid = decode(grid, "grid")?;
+    let bundled = decode(bundled, "bundle's")?;
+    if grid.dimensions() != bundled.dimensions() {
+        return Err(format!(
+            "the two renders are {:?} and {:?}, so they are not of the same scene",
+            grid.dimensions(),
+            bundled.dimensions()
+        ));
+    }
+    let total: u64 = grid
+        .as_raw()
+        .iter()
+        .zip(bundled.as_raw())
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    // Both numbers are far inside what an `f64` holds exactly: a 640x360 render
+    // is 921,600 samples and the largest total any pair of them can reach is 255
+    // times that.
+    #[allow(clippy::cast_precision_loss)]
+    let mean = total as f64 / grid.as_raw().len() as f64;
+    Ok(mean)
+}
+
+/// What to say when the two renders are not far enough apart.
+pub fn grid_refusal(delta: f64, results: &Path) -> String {
+    format!(
+        "the bundle's own render and one made against an empty textures directory \
+         differ by {delta:.2} of a channel step, under the {TEXTURE_LOOKUP_FLOOR:.1} \
+         this asks for: the binary did not find the `textures/` beside it, so the \
+         bundle would ship a procedural grid under a name that promises a release.\n\
+         Both renders are in {}, and it is `resolve_textures_dir` walking up from \
+         the executable that the bundle's layout depends on.",
+        results.display()
+    )
 }
 
 /// The width and height in a PNG's IHDR, or `None` if this is not a PNG.
@@ -598,7 +1017,11 @@ pub fn check_linkage(target: Target, deps: &str) -> Result<Linkage, String> {
 }
 
 /// What a release binary was built from, written beside it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` and not only `PartialEq` everywhere but here: the bundle's own section
+/// carries a measured difference between two renders, and a float has no total
+/// equality to derive.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BuildInfo {
     pub format_version: u32,
     pub target: String,
@@ -614,10 +1037,48 @@ pub struct BuildInfo {
     /// The builder image and what its manifest says about itself.
     pub builder: BuilderInfo,
     pub linkage: Linkage,
-    /// The desktop image the binary was run in, when verification ran.
+    /// What each half of the build cache did: restored and from when, or the
+    /// one-line reason it was not, and whether this run wrote a fresh one back.
+    /// Decision 27, which is what keeps decision 19's argument checkable after
+    /// the fact rather than a claim in a document.
+    #[serde(default)]
+    pub cache: Vec<cache::Report>,
+    /// The release bundle written beside the loose binary, when the host held
+    /// the texture assets rather than Git LFS pointers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<BundleInfo>,
+    /// The desktop image the binary was run in, or `null` where `--no-verify`
+    /// skipped that boot.
+    ///
+    /// Written either way rather than left out, unlike every other optional
+    /// field here. The record travels inside the bundle, so the person reading
+    /// it is usually not the person who ran the command and saw the two lines
+    /// that said so; a field that is not there reads as one the writer had no
+    /// answer for, and "nobody ran this" is an answer.
+    #[serde(default)]
     pub verified_in: Option<String>,
     pub xtask_version: String,
+}
+
+/// The bundle this run wrote, as its own record describes it.
+///
+/// The record travels inside the bundle as well as beside it, so it cannot
+/// carry the finished archive's size: that is a number the archive would have to
+/// contain about itself. What it carries instead is what the bundle is, and the
+/// one measurement that says the textures in it are found rather than assumed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleInfo {
+    /// The one directory an unpack produces, which is also the archive's stem.
+    pub name: String,
+    /// The archive's file name, beside the binary in the dist directory.
+    pub archive: String,
+    pub entries: usize,
+    /// The mean channel difference between the bundle's own render and one made
+    /// against an empty textures directory, or `null` where no boot rendered
+    /// from this bundle at all. Present either way, for the reason
+    /// `verified_in` is.
+    #[serde(default)]
+    pub texture_lookup_delta: Option<f64>,
 }
 
 /// Which image built it, and which build of that image.
@@ -726,6 +1187,10 @@ fn one_target(
         vm::check_image(store, desktop, options.allow_expired)?;
     }
     let builder_info = builder_info(store, builder)?;
+    // Read before anything boots too, for the same reason: a bundle is named
+    // after it, and a manifest that will not parse is a twenty-minute build
+    // wasted on a name that cannot be chosen.
+    let version = bundle::version(repo)?;
 
     let archive = archive_path(store, builder);
     let bytes = write_archive(runner, repo, &archive)?;
@@ -741,7 +1206,19 @@ fn one_target(
     );
     println!("  builder: {builder}, built {}", builder_info.built_utc);
 
-    let results = build_in_builder(runner, store, builder, pinned, &archive, options, kept)?;
+    let facts = cache_facts(pinned, builder, &builder_info, repo)?;
+    let product = build_in_builder(
+        runner,
+        store,
+        builder,
+        pinned,
+        &archive,
+        options,
+        kept,
+        &facts,
+        &git.commit,
+    )?;
+    let results = product.results;
 
     let exe = results.join("artifacts").join(exe_name(target));
     if !exe.is_file() {
@@ -759,16 +1236,7 @@ fn one_target(
         .to_owned();
     println!("  linkage: {}", linkage_summary(target, &linkage));
 
-    let smoke = if options.verify {
-        Some(verify_in_desktop(
-            runner, store, desktop, &exe, options, kept,
-        )?)
-    } else {
-        println!("  skipping the verification boot, because --no-verify was given");
-        None
-    };
-
-    let info = BuildInfo {
+    let mut info = BuildInfo {
         format_version: BUILD_INFO_VERSION,
         target: target.slug().to_owned(),
         commit: git.commit.clone(),
@@ -780,26 +1248,169 @@ fn one_target(
         toolchain,
         builder: builder_info,
         linkage,
-        verified_in: smoke.as_ref().map(|_| desktop.slug().to_owned()),
+        cache: product.cache,
+        bundle: None,
+        verified_in: None,
         xtask_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
 
-    let dist = dist_dir(target);
-    publish(&dist, &exe, &results, smoke.as_deref(), &info)?;
+    // Everything from here writes into the bundle scratch, which is run state:
+    // it belongs to the guest the bundle is staged into and is worth nothing
+    // once this target is done, so it goes whichever way the rest went.
+    let scratch = store.bundle_scratch(desktop);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let outcome = (|| -> Result<String, String> {
+        let bundled = assemble_bundle(repo, target, &version, &exe, &scratch, &mut info)?;
 
-    println!();
-    println!("{target}: {}", dist.join(exe_name(target)).display());
-    println!("  built from {} in the {builder} image", git.describe);
-    println!("  {}", runtime_requirements(target));
-    Ok(format!(
-        "{target}: built in {} and {}",
-        util::format_duration(started.elapsed()),
-        if smoke.is_some() {
-            format!("rendered in the {desktop} guest")
+        let verified = if options.verify {
+            Some(verify_in_desktop(
+                runner,
+                store,
+                desktop,
+                &exe,
+                bundled.as_ref(),
+                options,
+                kept,
+            )?)
         } else {
-            "not verified".to_owned()
+            println!("  skipping the verification boot, because --no-verify was given");
+            None
+        };
+
+        info.verified_in = verified.as_ref().map(|_| desktop.slug().to_owned());
+        if let (Some(bundle), Some(verified)) = (info.bundle.as_mut(), verified.as_ref()) {
+            bundle.texture_lookup_delta = verified.delta;
         }
-    ))
+        info.duration_secs = started.elapsed().as_secs();
+
+        // The record goes into the bundle only now, so that the copy inside it
+        // and the copy beside it are one file: what verification found is part
+        // of what a release binary was built from, and a bundle carrying a
+        // record that stopped short of it would be the stale one of two.
+        let archive = match &bundled {
+            Some(bundled) => Some(seal_bundle(bundled, &version, target, &scratch, &info)?),
+            None => None,
+        };
+
+        let dist = dist_dir(target);
+        publish(
+            &dist,
+            &exe,
+            &results,
+            verified.as_ref().map(|v| v.smoke.as_path()),
+            archive.as_deref(),
+            &info,
+        )?;
+
+        println!();
+        println!("{target}: {}", dist.join(exe_name(target)).display());
+        println!("  built from {} in the {builder} image", git.describe);
+        if let Some(archive) = &archive {
+            println!(
+                "{}",
+                bundle::summary(&dist.join(file_name(archive)), verified.is_some())
+            );
+        }
+        println!("  {}", runtime_requirements(target));
+        Ok(format!(
+            "{target}: built in {} and {}",
+            util::format_duration(started.elapsed()),
+            if verified.is_some() {
+                format!("rendered in the {desktop} guest")
+            } else {
+                "not verified".to_owned()
+            }
+        ))
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    outcome
+}
+
+/// Assemble the bundle, unless this checkout holds Git LFS pointers.
+///
+/// Decision 33: where there is nothing to put in a `textures/` there is no
+/// bundle to write and none to verify, so the run falls back to the plan's own
+/// verification and one line says why. A bundle without the assets would render
+/// the procedural grid under a name that promises a release, which is worse than
+/// not writing one.
+fn assemble_bundle(
+    repo: &Path,
+    target: Target,
+    version: &str,
+    exe: &Path,
+    scratch: &Path,
+    info: &mut BuildInfo,
+) -> Result<Option<Bundled>, String> {
+    let textures = match artifacts::textures_present(repo) {
+        Ok(dir) => dir,
+        Err(why) => {
+            println!("  no bundle: {why}");
+            println!("  {}", bundle::skipped_note());
+            return Ok(None);
+        }
+    };
+    let name = bundle::bundle_name(version, target);
+    let items = bundle::layout(
+        target,
+        &bundle::Sources {
+            repo,
+            exe,
+            textures: &textures,
+            // Rewritten in place by `seal_bundle` once verification has said
+            // what it found; written now so the directory that is staged into
+            // the guest is the whole bundle rather than most of it.
+            record: &info.to_json(),
+        },
+    );
+    let root = bundle::assemble(scratch, &name, &items)?;
+    info.bundle = Some(BundleInfo {
+        name: name.clone(),
+        archive: bundle::archive_name(version, target),
+        entries: items.len(),
+        texture_lookup_delta: None,
+    });
+    println!("  bundle:  {name}/, {}", util::count(items.len(), "file"));
+    Ok(Some(Bundled { name, root, items }))
+}
+
+/// Write the final record into the assembled bundle, archive it, and read the
+/// archive back with the crate that wrote it.
+///
+/// The read-back is the cheap half of proving the bundle: that the archive holds
+/// exactly what the directory holds, at the sizes the directory has. The
+/// expensive half is the two renders in the desktop guest.
+fn seal_bundle(
+    bundled: &Bundled,
+    version: &str,
+    target: Target,
+    scratch: &Path,
+    info: &BuildInfo,
+) -> Result<PathBuf, String> {
+    let record = bundled.root.join(bundle::RECORD);
+    std::fs::write(&record, info.to_json())
+        .map_err(|e| format!("cannot write {}: {e}", record.display()))?;
+
+    let format = bundle::Format::of(target);
+    let archive = scratch.join(bundle::archive_name(version, target));
+    let bytes = bundle::write(
+        format,
+        &bundled.root,
+        &bundled.name,
+        &bundled.items,
+        &archive,
+    )?;
+    let assembled = bundle::walk(&bundled.root)?;
+    let archived = bundle::read_back(format, &archive)?;
+    bundle::verify(&bundled.name, &assembled, &archived)?;
+    println!(
+        "  bundle:  {} ({}), {} read back and matched",
+        archive
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        util::format_bytes(bytes),
+        util::count(archived.len(), "file")
+    );
+    Ok(archive)
 }
 
 /// What the record says about the image that built it.
@@ -820,8 +1431,181 @@ fn builder_info(store: &Store, builder: Image) -> Result<BuilderInfo, String> {
     })
 }
 
+/// What this build is, for a cache sidecar to be compared against.
+fn cache_facts(
+    pinned: &Toolchain,
+    builder: Image,
+    info: &BuilderInfo,
+    repo: &Path,
+) -> Result<cache::Facts, String> {
+    let lockfile = repo.join("Cargo.lock");
+    let lockfile_hash = crate::store::hash::checksum_file(&lockfile)
+        .map_err(|e| format!("cannot read {}: {e}", lockfile.display()))?;
+    Ok(cache::Facts {
+        channel: pinned.channel.clone(),
+        image: builder.slug().to_owned(),
+        template_hash: info.template_hash.clone(),
+        image_built_utc: info.built_utc.clone(),
+        lockfile_hash,
+    })
+}
+
+/// Which halves of the cache this run may restore, and which it should save.
+///
+/// Decided before the guest boots, so the job script carries exactly the clauses
+/// this run needs. A refusal names the field that moved rather than saying
+/// nothing, because a cache that was silently not used and one that is not being
+/// written at all read the same from here.
+fn plan_cache(
+    store: &Store,
+    builder: Image,
+    facts: &cache::Facts,
+    enabled: bool,
+) -> (CacheJob, Vec<cache::Report>) {
+    let mut job = CacheJob::default();
+    let mut reports = Vec::new();
+    for kind in cache::Kind::ALL {
+        let mut report = cache::Report {
+            archive: kind.slug().to_owned(),
+            restored: false,
+            bytes: None,
+            written_utc: None,
+            reason: None,
+            saved: false,
+            copied_in_secs: None,
+            copied_out_secs: None,
+        };
+        if !enabled {
+            report.reason = Some("--no-cache was given".to_owned());
+            reports.push(report);
+            continue;
+        }
+        let sidecar = match cache::read_sidecar(&store.cache_sidecar(builder, kind)) {
+            Ok(sidecar) => sidecar,
+            Err(e) => {
+                report.reason = Some(e);
+                None
+            }
+        };
+        match &sidecar {
+            None => {
+                report
+                    .reason
+                    .get_or_insert_with(|| "there is none for this image yet".to_owned());
+            }
+            Some(sidecar) => {
+                if let Err(why) = cache::restorable(sidecar, facts) {
+                    report.reason = Some(why);
+                } else {
+                    let archive = store.cache_archive(builder, kind);
+                    match std::fs::metadata(&archive) {
+                        Ok(meta) if meta.is_file() => {
+                            job.restore.push(kind);
+                            report.restored = true;
+                            report.bytes = Some(meta.len());
+                            report.written_utc = Some(sidecar.written_utc.clone());
+                        }
+                        _ => {
+                            report.reason = Some(format!(
+                                "its sidecar is here and {} is not",
+                                archive.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // Decision 26: `--locked` means an unchanged lockfile is an unchanged
+        // registry, so an ordinary build has nothing new to send back for it.
+        //
+        // Only a sidecar this run actually restored can say that, which is what
+        // the filter is: one that was refused describes an archive no future
+        // build will read either, so skipping the save on its lockfile hash
+        // would leave the registry dead until `Cargo.lock` happened to move.
+        let worth = match kind {
+            cache::Kind::Registry => cache::registry_worth_saving(
+                sidecar.as_ref().filter(|_| report.restored),
+                &facts.lockfile_hash,
+            ),
+            cache::Kind::Target => true,
+        };
+        if worth {
+            job.save.push(kind);
+        }
+        reports.push(report);
+    }
+    (job, reports)
+}
+
+/// Pull one archive the guest packed, and write the sidecar that says what it
+/// was made from.
+///
+/// Temp-then-rename under a name carrying the process id, the discipline
+/// `assets::texture_cache` already uses, so an interrupted pull cannot leave a
+/// truncated archive for the next build to read. The sidecar goes last and its
+/// old copy goes first, so an interruption anywhere leaves an archive with no
+/// sidecar, which the next run reads as no cache at all.
+fn pull_cache(
+    session: &vm::Session,
+    store: &Store,
+    builder: Image,
+    kind: cache::Kind,
+    facts: &cache::Facts,
+    commit: &str,
+) -> Result<Pulled, String> {
+    let final_path = store.cache_archive(builder, kind);
+    let temp = cache::temp_path(&final_path);
+    let started = Instant::now();
+    session.provider.copy_out(
+        &session.state,
+        &guest_cache_out(builder.target(), kind),
+        &temp,
+    )?;
+    let copied_out_secs = started.elapsed().as_secs();
+    let bytes = std::fs::metadata(&temp)
+        .map(|meta| meta.len())
+        .map_err(|e| format!("the guest packed {kind} and nothing came back: {e}"))?;
+    let sidecar_path = store.cache_sidecar(builder, kind);
+    let _ = std::fs::remove_file(&sidecar_path);
+    cache::commit(&temp, &final_path)?;
+    let now = util::now_unix();
+    cache::write_sidecar(
+        &sidecar_path,
+        &cache::Sidecar {
+            format_version: cache::FORMAT_VERSION,
+            archive: kind.archive(),
+            bytes,
+            channel: facts.channel.clone(),
+            image: facts.image.clone(),
+            template_hash: facts.template_hash.clone(),
+            image_built_utc: facts.image_built_utc.clone(),
+            lockfile_hash: facts.lockfile_hash.clone(),
+            commit: commit.to_owned(),
+            written_utc: util::format_unix_utc(now),
+            written_unix: now,
+        },
+    )?;
+    Ok(Pulled {
+        bytes,
+        copied_out_secs,
+    })
+}
+
+/// What one archive cost to bring back: its size, and how long it took to
+/// cross.
+struct Pulled {
+    bytes: u64,
+    copied_out_secs: u64,
+}
+
+/// What the builder guest produced.
+struct BuildProduct {
+    results: PathBuf,
+    cache: Vec<cache::Report>,
+}
+
 /// Boot the builder, run the build, bring the results back, and take it down.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_in_builder(
     runner: &dyn Runner,
     store: &Store,
@@ -830,8 +1614,11 @@ fn build_in_builder(
     archive: &Path,
     options: Options,
     kept: &mut Option<Image>,
-) -> Result<PathBuf, String> {
+    facts: &cache::Facts,
+    commit: &str,
+) -> Result<BuildProduct, String> {
     let target = builder.target();
+    let (mut plan, mut reports) = plan_cache(store, builder, facts, options.cache);
     let mut session = vm::boot(
         runner,
         store,
@@ -843,7 +1630,7 @@ fn build_in_builder(
 
     // From here the guest exists, so nothing may return without saying what
     // happened to it.
-    let outcome = (|| -> Result<PathBuf, String> {
+    let outcome = (|| -> Result<BuildProduct, String> {
         let probe = session
             .provider
             .exec(&session.state, &toolchain_probe(target))?;
@@ -859,6 +1646,37 @@ fn build_in_builder(
         // leaves it where `vm status` counts it and `vm down` removes it.
         let _ = std::fs::remove_file(archive);
 
+        // A copy that failed is a cold build rather than a failed one, so the
+        // job is generated from what actually reached the guest.
+        plan.restore.retain(|kind| {
+            let from = store.cache_archive(builder, *kind);
+            let started = Instant::now();
+            match session
+                .provider
+                .copy_in(&session.state, &from, &guest_cache_in(target, *kind))
+            {
+                Ok(()) => {
+                    if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
+                        report.copied_in_secs = Some(started.elapsed().as_secs());
+                    }
+                    true
+                }
+                Err(e) => {
+                    println!("warning: {e}");
+                    if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
+                        report.restored = false;
+                        report.bytes = None;
+                        report.written_utc = None;
+                        report.reason = Some("it could not be copied into the guest".to_owned());
+                    }
+                    false
+                }
+            }
+        });
+        for report in &reports {
+            println!("{}", report.line());
+        }
+
         println!("  building; cargo's own output follows");
         let scratch = store.job_scratch(builder);
         let mut tail = OutputTail::new();
@@ -866,7 +1684,7 @@ fn build_in_builder(
             session.provider.as_ref(),
             &session.state,
             target,
-            &build_job(target, pinned),
+            &build_job(target, pinned, &plan),
             &scratch,
             BUILD_TIMEOUT,
             Some(&mut tail),
@@ -878,13 +1696,43 @@ fn build_in_builder(
             &results,
         )?;
         if code != 0 {
+            // Decision 26: a failed build's tree is not saved, because a build
+            // that failed because of what was in its cache would otherwise make
+            // that failure stick.
             return Err(format!(
                 "the build exited {code} inside the guest; its output is above and \
                  {} has what it wrote",
                 results.display()
             ));
         }
-        Ok(results)
+
+        let packed = parse_packed(
+            &std::fs::read_to_string(results.join("artifacts").join(CACHE_REPORT))
+                .unwrap_or_default(),
+        );
+        for kind in packed {
+            match pull_cache(&session, store, builder, kind, facts, commit) {
+                Ok(pulled) => {
+                    println!(
+                        "  cache:   {kind}: saved {}, {} to come back",
+                        util::format_bytes(pulled.bytes),
+                        util::format_duration(Duration::from_secs(pulled.copied_out_secs))
+                    );
+                    if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
+                        report.saved = true;
+                        report.copied_out_secs = Some(pulled.copied_out_secs);
+                    }
+                }
+                // The build is done and its binary is in the results: a cache
+                // that could not be brought back costs the next build's warmth
+                // and nothing else.
+                Err(e) => println!("warning: the {kind} cache was not saved: {e}"),
+            }
+        }
+        Ok(BuildProduct {
+            results,
+            cache: std::mem::take(&mut reports),
+        })
     })();
 
     // The builder is torn down whichever way it went, unless this is the last
@@ -932,22 +1780,35 @@ fn build_in_builder(
 /// What is in a builder that was kept.
 pub fn kept_builder_note(builder: Image) -> String {
     format!(
-        "The source tree it built is in the guest's own root, with its \
-         `target/release` beside it, so a build can be repeated in there by hand. \
-         `cargo xtask vm down {builder}` ends it and takes the overlay with it."
+        "The source tree it built is in the guest's own root, with \
+         `{GUEST_TARGET_DIR}/release` beside it rather than inside it, so a build \
+         can be repeated in there by hand. `cargo xtask vm down {builder}` ends it \
+         and takes the overlay with it."
     )
 }
 
-/// Boot the desktop image, stage the binary, render once, and take it down.
+/// What the verification boot found.
+#[derive(Debug, Clone)]
+struct Verified {
+    /// The render that goes into the dist directory: the bundle's own, when
+    /// there was a bundle.
+    smoke: PathBuf,
+    /// How far it is from the render made against an empty textures directory,
+    /// when there was a bundle to compare.
+    delta: Option<f64>,
+}
+
+/// Boot the desktop image, stage what is to be proved, render, and take it down.
 #[allow(clippy::too_many_lines)]
 fn verify_in_desktop(
     runner: &dyn Runner,
     store: &Store,
     desktop: Image,
     exe: &Path,
+    bundled: Option<&Bundled>,
     options: Options,
     kept: &mut Option<Image>,
-) -> Result<PathBuf, String> {
+) -> Result<Verified, String> {
     let target = desktop.target();
     println!();
     println!("  verifying it in the {desktop} guest, which did not build it");
@@ -960,36 +1821,44 @@ fn verify_in_desktop(
         None,
     )?;
 
-    let outcome = (|| -> Result<PathBuf, String> {
-        let bin_dir = provider::guest_bin(target);
-        session.provider.copy_in(&session.state, exe, &bin_dir)?;
-        let guest_exe = match target {
-            Target::Windows => format!(r"{bin_dir}\{}", exe_name(target)),
-            Target::Linux => format!("{bin_dir}/{}", exe_name(target)),
-        };
-        if target == Target::Linux {
-            // scp keeps the mode of what it copied, and the host's copy came out
-            // of a tar the guest wrote, so this is belt and braces rather than a
-            // fix for something observed.
-            let _ = session
+    let outcome = (|| -> Result<Verified, String> {
+        let root = provider::guest_root(target);
+        let empty = guest_join(target, root, EMPTY_TEXTURES);
+        let guest_exe = if let Some(bundled) = bundled {
+            println!("  staging the bundle, and nothing else");
+            session
                 .provider
-                .exec(&session.state, &format!("chmod +x {guest_exe}"));
-        }
-
-        // The same size check the e2e staging makes, and for the same reason: a
-        // checkout without the Git LFS objects holds pointer files under the
-        // asset names, and naming a directory of those costs a decode failure
-        // where naming nothing at all draws the procedural grid quietly.
-        let textures = artifacts::host_textures(&store::repo_root());
-        let guest_textures = match &textures {
-            Some(dir) => {
-                println!("  staging the textures from {}", dir.display());
-                session
-                    .provider
-                    .copy_in(&session.state, dir, &provider::guest_textures(target))?;
-                Some(provider::guest_textures(target))
+                .copy_in(&session.state, &bundled.root, &format!("{root}/"))?;
+            let staged = guest_join(target, root, &bundled.name);
+            let guest_exe = guest_join(target, &staged, exe_name(target));
+            if target == Target::Linux {
+                // scp carries a file's mode, and the tarball's header is what a
+                // user's own unpack reads; this is belt and braces over a
+                // directory copy rather than a fix for something observed.
+                let _ = session.provider.exec(
+                    &session.state,
+                    &format!("chmod +x {guest_exe} {staged}/assets/linux/install-user.sh"),
+                );
             }
-            None => None,
+            guest_exe
+        } else {
+            let bin_dir = provider::guest_bin(target);
+            session.provider.copy_in(&session.state, exe, &bin_dir)?;
+            let guest_exe = guest_join(target, &bin_dir, exe_name(target));
+            if target == Target::Linux {
+                let _ = session
+                    .provider
+                    .exec(&session.state, &format!("chmod +x {guest_exe}"));
+            }
+            guest_exe
+        };
+        let verification = if bundled.is_some() {
+            Verification::Bundle {
+                exe: &guest_exe,
+                empty: &empty,
+            }
+        } else {
+            Verification::Loose { exe: &guest_exe }
         };
 
         let scratch = store.job_scratch(desktop);
@@ -997,7 +1866,7 @@ fn verify_in_desktop(
             session.provider.as_ref(),
             &session.state,
             target,
-            &verify_job(target, &guest_exe, guest_textures.as_deref()),
+            &verify_job(target, &verification),
             &scratch,
             VERIFY_TIMEOUT,
         )?;
@@ -1018,26 +1887,33 @@ fn verify_in_desktop(
                  on a machine that did not build it"
             ));
         }
+
         let smoke = results.join("artifacts").join(SMOKE_FILE);
-        let bytes = std::fs::read(&smoke)
-            .map_err(|e| format!("the render brought back no {}: {e}", smoke.display()))?;
-        match png_size(&bytes) {
-            Some((SMOKE_WIDTH, SMOKE_HEIGHT)) => {
-                println!(
-                    "  rendered {SMOKE_WIDTH}x{SMOKE_HEIGHT}, {}",
-                    util::format_bytes(bytes.len() as u64)
-                );
-                Ok(smoke)
+        let bytes = read_render(&smoke)?;
+        println!(
+            "  rendered {SMOKE_WIDTH}x{SMOKE_HEIGHT}, {}",
+            util::format_bytes(bytes.len() as u64)
+        );
+
+        // Decision 32: a render that never found the textures still produces a
+        // 640x360 PNG, so the header check above cannot tell a globe from a
+        // grid. This can, and it is what makes the bundle's own texture lookup
+        // a tested claim rather than an assumed one.
+        let delta = if bundled.is_some() {
+            let grid = read_render(&results.join("artifacts").join(GRID_FILE))?;
+            let delta = render_difference(&grid, &bytes)?;
+            if delta < TEXTURE_LOOKUP_FLOOR {
+                return Err(grid_refusal(delta, &results.join("artifacts")));
             }
-            Some((width, height)) => Err(format!(
-                "the render is {width}x{height}, not the {SMOKE_WIDTH}x{SMOKE_HEIGHT} \
-                 it was asked for"
-            )),
-            None => Err(format!(
-                "{} is not a PNG, so nothing was drawn",
-                smoke.display()
-            )),
-        }
+            println!(
+                "  the bundle's own render is {delta:.1} of a channel step from the \
+                 grid, so its textures were found"
+            );
+            Some(delta)
+        } else {
+            None
+        };
+        Ok(Verified { smoke, delta })
     })();
 
     let keep = keeps_guest(
@@ -1073,11 +1949,51 @@ fn verify_in_desktop(
                     }
                 )
             );
-            println!("The binary this run built is in the guest's own bin directory.");
+            println!("{}", kept_desktop_note(bundled.is_some()));
         }
         Err(_) => println!("{}", vm::after_failure(&mut session, store, keep)),
     }
     outcome
+}
+
+/// What a kept verification guest has in it.
+pub fn kept_desktop_note(bundled: bool) -> String {
+    if bundled {
+        "The bundle this run wrote is unpacked in the guest's own root, which is \
+         what the render was made from."
+            .to_owned()
+    } else {
+        "The binary this run built is in the guest's own bin directory.".to_owned()
+    }
+}
+
+/// Read one render back and check its header says what was asked for.
+///
+/// A `render` that failed after opening its output still leaves a file, so the
+/// existence of one is not evidence that anything was drawn.
+fn read_render(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("the render brought back no {}: {e}", path.display()))?;
+    match png_size(&bytes) {
+        Some((SMOKE_WIDTH, SMOKE_HEIGHT)) => Ok(bytes),
+        Some((width, height)) => Err(format!(
+            "{} is {width}x{height}, not the {SMOKE_WIDTH}x{SMOKE_HEIGHT} it was \
+             asked for",
+            path.display()
+        )),
+        None => Err(format!(
+            "{} is not a PNG, so nothing was drawn",
+            path.display()
+        )),
+    }
+}
+
+/// Join two guest path components with the separator that guest's shell wants.
+pub fn guest_join(target: Target, base: &str, leaf: &str) -> String {
+    match target {
+        Target::Windows => format!(r"{base}\{leaf}"),
+        Target::Linux => format!("{base}/{leaf}"),
+    }
 }
 
 /// Replace the dist directory with what this run produced.
@@ -1090,6 +2006,7 @@ fn publish(
     exe: &Path,
     results: &Path,
     smoke: Option<&Path>,
+    archive: Option<&Path>,
     info: &BuildInfo,
 ) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(dist);
@@ -1107,8 +2024,19 @@ fn publish(
     if let Some(smoke) = smoke {
         copy(smoke, &dist.join(SMOKE_FILE))?;
     }
+    // The bundle moves in rather than being written here, because the scratch it
+    // was assembled in is run state and this directory is the artifact.
+    if let Some(archive) = archive {
+        copy(archive, &dist.join(file_name(archive)))?;
+    }
     std::fs::write(dist.join("build-info.json"), info.to_json())
         .map_err(|e| format!("cannot write build-info.json: {e}"))
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
@@ -1163,6 +2091,7 @@ mod tests {
             which,
             keep,
             verify,
+            cache: true,
             allow_expired: false,
             allow_dirty: false,
         }
@@ -1302,7 +2231,7 @@ mod tests {
         let pinned =
             crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses");
 
-        let linux = build_job(Target::Linux, &pinned);
+        let linux = build_job(Target::Linux, &pinned, &CacheJob::default());
         assert!(linux.contains("$HOME/.cargo/bin/cargo"), "{linux}");
         assert!(linux.contains("toolchain install 1.94.0"), "{linux}");
         assert!(
@@ -1315,7 +2244,7 @@ mod tests {
         assert!(linux.contains("$SUNLIT_E2E_ARTIFACTS/deps.txt"), "{linux}");
         assert!(!linux.contains("\r\n"), "a shell script with CRLF in it");
 
-        let windows = build_job(Target::Windows, &pinned);
+        let windows = build_job(Target::Windows, &pinned, &CacheJob::default());
         assert!(
             windows.contains(r"%USERPROFILE%\.cargo\bin\cargo.exe"),
             "{windows}"
@@ -1341,24 +2270,561 @@ mod tests {
         assert!(!windows.contains("%%%"), "{windows}");
     }
 
+    /// Decision 23, which is the cache's whole correctness argument. `git
+    /// archive` stamps its entries with the commit's own time, so a source tree
+    /// extracted over a newer cache without `-m` would present cargo with
+    /// sources older than the artifacts and produce a binary of the previous
+    /// commit under this commit's record. The cached trees keep the times they
+    /// were archived with, because their value is that nothing in them looks
+    /// newer than what was built from it.
     #[test]
-    fn the_verification_job_names_the_textures_only_when_they_were_staged() {
-        let with = verify_job(
-            Target::Linux,
-            "/var/lib/sunlit-e2e/bin/sunlit-earth",
-            Some("/t"),
+    fn the_source_is_stamped_at_extraction_and_the_cache_is_not() {
+        let pinned = pin();
+        let warm = CacheJob {
+            restore: cache::Kind::ALL.to_vec(),
+            save: Vec::new(),
+        };
+        for target in Target::ALL {
+            let job = build_job(target, &pinned, &warm);
+            assert!(job.contains("-xmf"), "{target}: {job}");
+            assert_eq!(job.matches("-xmf").count(), 1, "{target}: {job}");
+            assert!(job.contains("src.tar"), "{target}: {job}");
+            // Both cache archives are extracted, and neither with -m.
+            for kind in cache::Kind::ALL {
+                let line = job
+                    .lines()
+                    .find(|line| line.contains(&kind.archive()) && line.contains("-xf"))
+                    .unwrap_or_else(|| panic!("{target}: no restore of {kind} in {job}"));
+                assert!(!line.contains("-xmf"), "{target}: {line}");
+            }
+        }
+    }
+
+    fn pin() -> Toolchain {
+        crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses")
+    }
+
+    /// Step 5 asked for the pack and unpack times, and the risk they settle is
+    /// that moving a gigabyte costs more than the compiling it saves. A
+    /// whole-build total cannot be taken apart afterwards, so each step says
+    /// what it cost as it happens: a duration on Linux, where bash has a free
+    /// counter, and a reading of the clock on either side of the step on
+    /// Windows, where computing the difference would cost a process spawn or a
+    /// bet on the locale's time format.
+    #[test]
+    fn every_cache_step_says_what_it_cost() {
+        let pinned = pin();
+        let both = CacheJob {
+            restore: cache::Kind::ALL.to_vec(),
+            save: cache::Kind::ALL.to_vec(),
+        };
+
+        let linux = build_job(Target::Linux, &pinned, &both);
+        assert_eq!(
+            linux.matches("$((SECONDS - unpack_started))s").count(),
+            cache::Kind::ALL.len(),
+            "{linux}"
         );
-        assert!(with.contains("SUNLIT_EARTH_TEXTURES='/t'"), "{with}");
-        let without = verify_job(Target::Linux, "/var/lib/sunlit-e2e/bin/sunlit-earth", None);
-        assert!(!without.contains("SUNLIT_EARTH_TEXTURES"), "{without}");
+        assert_eq!(
+            linux.matches("$((SECONDS - pack_started))s").count(),
+            cache::Kind::ALL.len(),
+            "{linux}"
+        );
+
+        // Two readings per step, one on either side of it.
+        let windows = build_job(Target::Windows, &pinned, &both);
+        assert_eq!(
+            windows.matches("%TIME%").count(),
+            cache::Kind::ALL.len() * 4,
+            "{windows}"
+        );
 
         for target in Target::ALL {
-            let job = verify_job(target, "x", None);
-            assert!(job.contains("render"), "{target}: {job}");
+            let cold = build_job(target, &pinned, &CacheJob::default());
+            assert!(!cold.contains("SECONDS"), "{target}: {cold}");
+            assert!(!cold.contains("%TIME%"), "{target}: {cold}");
+        }
+    }
+
+    /// The second line of defence under decision 23, which is the one thing
+    /// this design must never get wrong: a binary of the previous commit under
+    /// this commit's record. `-m` makes the extracted source newer than the
+    /// restored artifacts, and that is an argument about the guest's clock. So
+    /// a restored build directory also gives up this workspace's fingerprints,
+    /// which makes cargo rebuild those crates whatever the times say, and the
+    /// binary that would otherwise be copied out unchanged.
+    #[test]
+    fn a_restored_build_directory_gives_up_this_workspace() {
+        let pinned = pin();
+        for target in Target::ALL {
+            let warm = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: cache::Kind::ALL.to_vec(),
+                    save: Vec::new(),
+                },
+            );
+            let drop_at = warm
+                .find(WORKSPACE_FINGERPRINTS)
+                .unwrap_or_else(|| panic!("{target}: nothing drops the fingerprints: {warm}"));
+            let unpack = warm
+                .find(&cache::Kind::Target.archive())
+                .expect("the target archive is unpacked");
+            let build = warm
+                .find("build --release")
+                .expect("the build is in the job");
+            assert!(drop_at > unpack, "{target}: {warm}");
+            assert!(drop_at < build, "{target}: {warm}");
+            // The exe the cache holds goes with them, so a link that did not
+            // happen cannot be copied out as this commit's.
+            let cached_exe = warm
+                .lines()
+                .filter(|line| line.contains(exe_name(target)))
+                .any(|line| line.contains("rm -rf") || line.contains("del /f /q"));
+            assert!(cached_exe, "{target}: {warm}");
+
+            // And none of it is in a job that restored nothing to drop.
+            let cold = build_job(target, &pinned, &CacheJob::default());
+            assert!(!cold.contains(WORKSPACE_FINGERPRINTS), "{target}: {cold}");
+            let registry_only = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: vec![cache::Kind::Registry],
+                    save: Vec::new(),
+                },
+            );
+            assert!(
+                !registry_only.contains(WORKSPACE_FINGERPRINTS),
+                "{target}: {registry_only}"
+            );
+        }
+    }
+
+    /// And the drop is loud on both targets, which is the difference between a
+    /// guarantee and a convenience: a fingerprint a handle was still held on is
+    /// a unit cargo may call fresh, and the whole of decision 23 rests on it
+    /// not being there. Linux gets that from `set -e`. The Windows job cannot,
+    /// because its `rmdir` runs in a loop whose errorlevel is its last
+    /// iteration's, so it looks at the directories again and refuses the build
+    /// while one of them is there.
+    #[test]
+    fn a_drop_that_did_not_happen_ends_the_build() {
+        let pinned = pin();
+        let warm = |target| {
+            build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: cache::Kind::ALL.to_vec(),
+                    save: Vec::new(),
+                },
+            )
+        };
+
+        let linux = warm(Target::Linux);
+        assert!(linux.contains("set -euo pipefail"), "{linux}");
+        let dropped = linux
+            .lines()
+            .find(|line| line.contains(WORKSPACE_FINGERPRINTS))
+            .expect("the fingerprints are dropped");
+        assert!(dropped.trim_start().starts_with("rm -rf"), "{dropped}");
+        assert!(!dropped.contains("||"), "{dropped}");
+
+        let windows = warm(Target::Windows);
+        let build = windows
+            .find("build --release")
+            .expect("the build is in the job");
+        let head = &windows[..build];
+        let drop_at = head
+            .find(r"do rmdir /s /q")
+            .expect("the fingerprints are dropped");
+        let looked_again = head[drop_at..]
+            .find(WORKSPACE_FINGERPRINTS)
+            .expect("nothing looks at the directories again");
+        let refused = head[drop_at..]
+            .find("exit /b 1")
+            .expect("a drop that did not happen goes unnoticed");
+        assert!(looked_again < refused, "{windows}");
+        assert!(
+            head[drop_at..][..refused].contains(exe_name(Target::Windows)),
+            "{windows}"
+        );
+    }
+
+    /// The job carries exactly the clauses this run needs, because the host
+    /// decides before the guest boots. A cold build's script mentions the cache
+    /// nowhere at all, which is what makes `--no-cache` the original goal 4
+    /// rather than a flag that skips a step.
+    #[test]
+    fn the_build_job_carries_only_the_cache_clauses_this_run_needs() {
+        let pinned = pin();
+        for target in Target::ALL {
+            let cold = build_job(target, &pinned, &CacheJob::default());
+            assert!(!cold.contains(".tar.zst"), "{target}: {cold}");
+            assert!(!cold.contains(GUEST_CACHE_OUT), "{target}: {cold}");
+            assert!(!cold.contains(CACHE_REPORT), "{target}: {cold}");
+            // The build directory moves out of the source tree whether or not
+            // there is a cache: decision 25 is about where the archive's one
+            // fixed path is, not about whether one is being made.
+            assert!(cold.contains(GUEST_TARGET_DIR), "{target}: {cold}");
+            assert!(!cold.contains("src/target/release"), "{target}: {cold}");
+            assert!(!cold.contains(r"src\target\release"), "{target}: {cold}");
+
+            let restore_only = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: vec![cache::Kind::Target],
+                    save: Vec::new(),
+                },
+            );
+            assert!(
+                restore_only.contains(&cache::Kind::Target.archive()),
+                "{target}: {restore_only}"
+            );
+            assert!(
+                !restore_only.contains(&cache::Kind::Registry.archive()),
+                "{target}: {restore_only}"
+            );
+            assert!(
+                !restore_only.contains(CACHE_REPORT),
+                "{target}: {restore_only}"
+            );
+
+            let save_only = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: Vec::new(),
+                    save: vec![cache::Kind::Registry],
+                },
+            );
+            assert!(save_only.contains(CACHE_REPORT), "{target}: {save_only}");
+            assert!(save_only.contains("--zstd -cf"), "{target}: {save_only}");
+            // A pack that failed costs the cache and not the build, so no line
+            // that packs may end the job.
+            let packing: Vec<&str> = save_only
+                .lines()
+                .filter(|line| line.contains("--zstd -cf"))
+                .collect();
+            assert_eq!(packing.len(), 1, "{target}: {save_only}");
+            assert!(!packing[0].contains("exit"), "{target}: {}", packing[0]);
+        }
+
+        // A batch file doubles its loop variable, and doubles it exactly.
+        let windows = build_job(
+            Target::Windows,
+            &pinned,
+            &CacheJob {
+                restore: cache::Kind::ALL.to_vec(),
+                save: cache::Kind::ALL.to_vec(),
+            },
+        );
+        assert!(windows.contains("%%i"), "{windows}");
+        assert!(!windows.contains("%%%"), "{windows}");
+        // And `cmd.exe` mishandles parenthesized blocks with the wrong line
+        // endings, so the restore clauses use labels instead of blocks.
+        assert!(!windows.contains(") else ("), "{windows}");
+        for kind in cache::Kind::ALL {
+            assert!(
+                windows.contains(&format!(":cache_in_{}", kind.slug())),
+                "{windows}"
+            );
+        }
+    }
+
+    /// What the host pulls is what the guest says it packed, not what the host
+    /// asked for: a pack can fail on disk space after the build has already
+    /// succeeded, and that must cost the cache rather than the build.
+    #[test]
+    fn the_host_pulls_what_the_guest_says_it_packed() {
+        assert_eq!(parse_packed(""), Vec::new());
+        assert_eq!(parse_packed("packed target\n"), vec![cache::Kind::Target]);
+        assert_eq!(
+            parse_packed("packed registry\npacked target\n"),
+            vec![cache::Kind::Registry, cache::Kind::Target]
+        );
+        // The job's own chatter is not a claim that anything was packed.
+        assert_eq!(
+            parse_packed("cache: could not pack the build directory\npacked registry\n"),
+            vec![cache::Kind::Registry]
+        );
+        assert_eq!(parse_packed("packed everything\n"), Vec::new());
+    }
+
+    /// An archive on its way in and one on its way out cannot be confused for
+    /// each other, because the guest reads one and writes the other.
+    #[test]
+    fn a_restored_archive_and_a_packed_one_sit_in_different_places() {
+        for target in Target::ALL {
+            for kind in cache::Kind::ALL {
+                let inbound = guest_cache_in(target, kind);
+                let outbound = guest_cache_out(target, kind);
+                assert_ne!(inbound, outbound, "{target} {kind}");
+                assert!(outbound.contains(GUEST_CACHE_OUT), "{outbound}");
+                assert!(!inbound.contains(GUEST_CACHE_OUT), "{inbound}");
+                assert!(inbound.ends_with(&kind.archive()), "{inbound}");
+                assert!(outbound.ends_with(&kind.archive()), "{outbound}");
+            }
+        }
+    }
+
+    /// Decisions 24 and 26 as the run applies them, over a store on disk: what
+    /// is restored, what is refused and why, and what is worth sending back.
+    #[test]
+    fn the_plan_restores_what_matches_and_names_what_moved() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_dist_plan_cache");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let builder = Image::LinuxBuilder;
+        let facts = cache::Facts {
+            channel: "1.94.0".to_owned(),
+            image: builder.slug().to_owned(),
+            template_hash: "crc32:1a2b3c4d".to_owned(),
+            image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
+            lockfile_hash: "crc32:deadbeef".to_owned(),
+        };
+
+        // Nothing on disk: both halves cold, both worth saving, and the reason
+        // says so rather than saying nothing.
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert!(job.restore.is_empty(), "{job:?}");
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+        for report in &reports {
+            assert!(!report.restored);
+            assert!(report.reason.as_ref().is_some_and(|r| r.contains("none")));
+        }
+
+        // Both halves present and matching: both restored, and the registry is
+        // not repacked because the lockfile did not move.
+        for kind in cache::Kind::ALL {
+            std::fs::create_dir_all(store.cache_dir(builder)).expect("mkdir");
+            std::fs::write(store.cache_archive(builder, kind), b"archive").expect("write");
+            cache::write_sidecar(
+                &store.cache_sidecar(builder, kind),
+                &cache::Sidecar {
+                    format_version: cache::FORMAT_VERSION,
+                    archive: kind.archive(),
+                    bytes: 7,
+                    channel: facts.channel.clone(),
+                    image: facts.image.clone(),
+                    template_hash: facts.template_hash.clone(),
+                    image_built_utc: facts.image_built_utc.clone(),
+                    lockfile_hash: facts.lockfile_hash.clone(),
+                    commit: "abc".to_owned(),
+                    written_utc: "2026-08-29T09:00:00Z".to_owned(),
+                    written_unix: 1,
+                },
+            )
+            .expect("sidecar");
+        }
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert_eq!(job.restore, cache::Kind::ALL.to_vec());
+        assert_eq!(job.save, vec![cache::Kind::Target]);
+        assert!(reports.iter().all(|r| r.restored), "{reports:?}");
+        assert!(
+            reports
+                .iter()
+                .all(|r| r.written_utc.as_deref() == Some("2026-08-29T09:00:00Z")),
+            "{reports:?}"
+        );
+
+        // A lockfile that moved is not a refusal, it is a reason to repack.
+        let mut moved_lock = facts.clone();
+        moved_lock.lockfile_hash = "crc32:00000000".to_owned();
+        let (job, _) = plan_cache(&store, builder, &moved_lock, true);
+        assert_eq!(job.restore, cache::Kind::ALL.to_vec());
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+
+        // A channel that moved is, and the line names it. Both halves are then
+        // worth packing, the registry included: its recorded lockfile hash
+        // still matches, but the archive that hash describes is one this build
+        // refused and every later build will refuse too, so reading it as "the
+        // host already has this" would leave the registry cold for good.
+        let mut moved_channel = facts.clone();
+        moved_channel.channel = "1.95.0".to_owned();
+        let (job, reports) = plan_cache(&store, builder, &moved_channel, true);
+        assert!(job.restore.is_empty(), "{job:?}");
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+        for report in &reports {
+            assert!(
+                report.reason.as_ref().is_some_and(|r| r.contains("1.95.0")),
+                "{report:?}"
+            );
+        }
+
+        // A sidecar with no archive beside it is a cache that is not there.
+        std::fs::remove_file(store.cache_archive(builder, cache::Kind::Target)).expect("rm");
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert_eq!(job.restore, vec![cache::Kind::Registry]);
+        let target = reports
+            .iter()
+            .find(|r| r.archive == cache::Kind::Target.slug())
+            .expect("a target report");
+        assert!(
+            target.reason.as_ref().is_some_and(|r| r.contains("is not")),
+            "{target:?}"
+        );
+
+        // `--no-cache` restores nothing and saves nothing, and the record says
+        // which of the two reasons it was.
+        let (job, reports) = plan_cache(&store, builder, &facts, false);
+        assert_eq!(job, CacheJob::default());
+        for report in &reports {
+            assert_eq!(report.reason.as_deref(), Some("--no-cache was given"));
+            assert!(!report.restored && !report.saved);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sidecar nothing can read is a cache nothing can use, and the one thing
+    /// that must not follow is that nothing replaces it.
+    ///
+    /// The archive beside it is never restored again, so a run that also
+    /// declined to pack a fresh one would leave the store holding a file every
+    /// future build reads the sidecar of and refuses.
+    #[test]
+    fn a_sidecar_that_cannot_be_read_is_a_reason_to_pack_and_not_a_reason_to_stop() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_dist_unreadable_sidecar");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let builder = Image::LinuxBuilder;
+        let facts = cache::Facts {
+            channel: "1.94.0".to_owned(),
+            image: builder.slug().to_owned(),
+            template_hash: "crc32:1a2b3c4d".to_owned(),
+            image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
+            lockfile_hash: "crc32:deadbeef".to_owned(),
+        };
+        std::fs::create_dir_all(store.cache_dir(builder)).expect("mkdir");
+        for kind in cache::Kind::ALL {
+            std::fs::write(store.cache_archive(builder, kind), b"archive").expect("write");
+            std::fs::write(store.cache_sidecar(builder, kind), b"{ not json").expect("sidecar");
+        }
+
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert!(job.restore.is_empty(), "{job:?}");
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+        for report in &reports {
+            assert!(!report.restored, "{report:?}");
+            assert!(
+                report
+                    .reason
+                    .as_ref()
+                    .is_some_and(|r| r.contains("malformed")),
+                "{report:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Decision 32. A render that never found the textures still produces a
+    /// 640x360 PNG, so the verification renders the same scene twice: once
+    /// against a directory the job creates and leaves empty, which is the grid
+    /// by construction, and once with the variable unset, which is the lookup a
+    /// user's machine does.
+    #[test]
+    fn the_bundles_verification_renders_the_grid_and_the_bundle_and_nothing_between() {
+        for target in Target::ALL {
+            let bundle = Verification::Bundle {
+                exe: "/b/sunlit-earth",
+                empty: "/e",
+            };
+            let job = verify_job(target, &bundle);
+            assert_eq!(job.matches("render --output").count(), 2, "{target}: {job}");
+            assert!(job.contains(GRID_FILE), "{target}: {job}");
+            assert!(job.contains(SMOKE_FILE), "{target}: {job}");
             assert!(job.contains("--width 640"), "{target}: {job}");
             assert!(job.contains("--height 360"), "{target}: {job}");
-            assert!(job.contains(SMOKE_FILE), "{target}: {job}");
+            // The empty directory is made by the job rather than assumed, and
+            // made empty rather than found empty.
+            assert!(job.contains("mkdir"), "{target}: {job}");
+
+            // The second render must see no `SUNLIT_EARTH_TEXTURES` at all, or
+            // it would be testing the variable rather than the bundle. The
+            // grid render is the last place the name may appear.
+            let last_set = job
+                .rfind("SUNLIT_EARTH_TEXTURES")
+                .expect("the grid render sets it");
+            let last_render = job.rfind("render --output").expect("two renders");
+            assert!(last_set < last_render, "{target}: {job}");
+
+            // And nothing runs from inside the bundle, because a
+            // working-directory-relative `textures` would answer before the
+            // walk-up the bundle's layout depends on.
+            let root = match target {
+                Target::Windows => crate::provider::GUEST_ROOT_WINDOWS,
+                Target::Linux => crate::provider::GUEST_ROOT_LINUX,
+            };
+            assert!(
+                job.contains(&format!("cd {root}")) || job.contains(&format!("cd /d \"{root}\"")),
+                "{target}: {job}"
+            );
         }
+
+        // The fallback is the plan's own verification: one render, and no
+        // textures directory to name, because there are none to find.
+        for target in Target::ALL {
+            let loose = verify_job(
+                target,
+                &Verification::Loose {
+                    exe: "/b/sunlit-earth",
+                },
+            );
+            assert_eq!(
+                loose.matches("render --output").count(),
+                1,
+                "{target}: {loose}"
+            );
+            assert!(
+                !loose.contains("SUNLIT_EARTH_TEXTURES"),
+                "{target}: {loose}"
+            );
+            assert!(!loose.contains(GRID_FILE), "{target}: {loose}");
+        }
+    }
+
+    /// A grid and a globe are far apart; two renders of the same globe seconds
+    /// apart are not. Both directions, because a floor nothing can fail is not
+    /// a check.
+    #[test]
+    fn the_two_renders_are_told_apart_by_how_far_they_are_from_each_other() {
+        let flat = |value: u8| {
+            let mut png = Vec::new();
+            let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([value, value, value, 255]));
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("encodes");
+            png
+        };
+        // The alpha channel is equal in both, so a difference of `d` over three
+        // channels of four is three quarters of `d`.
+        let far = render_difference(&flat(0), &flat(200)).expect("both decode");
+        assert!(far > TEXTURE_LOOKUP_FLOOR, "{far}");
+        let near = render_difference(&flat(120), &flat(121)).expect("both decode");
+        assert!(near < TEXTURE_LOOKUP_FLOOR, "{near}");
+        assert!(render_difference(&flat(9), &flat(9)).expect("identical") < 1e-9);
+
+        // Two renders of different sizes are not two renders of one scene.
+        let mut wide = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(9, 8))
+            .write_to(
+                &mut std::io::Cursor::new(&mut wide),
+                image::ImageFormat::Png,
+            )
+            .expect("encodes");
+        assert!(render_difference(&flat(0), &wide).is_err());
+        assert!(render_difference(b"not a png", &flat(0)).is_err());
+
+        let refusal = grid_refusal(0.3, Path::new("/t/results"));
+        assert!(refusal.contains("0.30"), "{refusal}");
+        assert!(
+            refusal.contains("/t/results") || refusal.contains(r"\t\results"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("resolve_textures_dir"), "{refusal}");
     }
 
     /// A `render` that failed after opening its output leaves a file behind, so
@@ -1490,6 +2956,16 @@ mod tests {
             duration_secs: 1_234,
             channel: "1.94.0".to_owned(),
             toolchain: "rustc 1.94.0".to_owned(),
+            cache: vec![cache::Report {
+                archive: cache::Kind::Target.slug().to_owned(),
+                restored: true,
+                bytes: Some(512_000_000),
+                written_utc: Some("2026-08-29T09:30:00Z".to_owned()),
+                reason: None,
+                saved: true,
+                copied_in_secs: Some(41),
+                copied_out_secs: Some(40),
+            }],
             builder: BuilderInfo {
                 image: Image::LinuxBuilder.slug().to_owned(),
                 template_hash: "crc32:deadbeef".to_owned(),
@@ -1503,6 +2979,12 @@ mod tests {
                 imports: Vec::new(),
                 crt_static: None,
             },
+            bundle: Some(BundleInfo {
+                name: "sunlit-earth-0.1.0-linux".to_owned(),
+                archive: "sunlit-earth-0.1.0-linux.tar.gz".to_owned(),
+                entries: 17,
+                texture_lookup_delta: Some(31.75),
+            }),
             verified_in: Some(Image::Linux.slug().to_owned()),
             xtask_version: "0.1.0".to_owned(),
         };
@@ -1516,6 +2998,31 @@ mod tests {
         // A Linux record carries no Windows fields at all rather than empty ones.
         assert!(!json.contains("crt_static"), "{json}");
         assert!(!json.contains("imports"), "{json}");
+        // And the bundle section says what was written and what the two renders
+        // in the desktop guest measured, which is decision 32 recorded rather
+        // than claimed.
+        assert!(json.contains("sunlit-earth-0.1.0-linux.tar.gz"), "{json}");
+        assert!(json.contains("texture_lookup_delta"), "{json}");
+
+        // A run with no bundle carries no bundle section at all, the way a
+        // Linux record carries no Windows fields.
+        let mut bare = info.clone();
+        bare.bundle = None;
+        assert!(!bare.to_json().contains("bundle"), "{}", bare.to_json());
+
+        // The two verification fields are the exception, and they are the
+        // exception because the record travels inside the bundle: a reader who
+        // never saw the command run has to be able to tell an unverified
+        // release from one nobody wrote the field for.
+        let mut unverified = info.clone();
+        unverified.verified_in = None;
+        if let Some(bundle) = unverified.bundle.as_mut() {
+            bundle.texture_lookup_delta = None;
+        }
+        let json = unverified.to_json();
+        assert!(json.contains("\"verified_in\": null"), "{json}");
+        assert!(json.contains("\"texture_lookup_delta\": null"), "{json}");
+        assert_eq!(BuildInfo::from_json(&json).expect("round trip"), unverified);
     }
 
     #[test]

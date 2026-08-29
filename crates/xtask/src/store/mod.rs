@@ -10,6 +10,7 @@
 //! and there are two disks per operating system now. The two desktop images
 //! keep their slugs, so every path they had is the path they have.
 
+pub mod cache;
 pub mod hash;
 pub mod inventory;
 pub mod manifest;
@@ -113,6 +114,25 @@ impl Store {
         self.run_dir(image).join("handover")
     }
 
+    /// Where the release bundle is assembled before it is archived and staged.
+    ///
+    /// Run state in every sense the store cares about: it is built per run out
+    /// of what that run produced, it is copied into a guest that is about to be
+    /// destroyed, and it means nothing afterwards. So it sits in the run
+    /// directory, where `vm status` counts it and `vm down` and `vm purge` sweep
+    /// it with everything else there.
+    ///
+    /// It is deliberately *not* in `vm::run_state_paths`, which is the shorter
+    /// list a run's own teardown deletes as it ends a guest: the bundle outlives
+    /// the guest it was staged into by exactly the few seconds it takes to write
+    /// the final record into it and archive it, and putting it on that list made
+    /// the verification boot's own teardown delete the bundle it had just
+    /// proved. `dist` removes it when a target is finished with it, whichever
+    /// way the target went.
+    pub fn bundle_scratch(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("bundle")
+    }
+
     /// The throwaway copy of the firmware's variables store a QEMU boot makes,
     /// so a guest writes its boot entries into its own rather than into the
     /// shared one the host installed.
@@ -134,6 +154,27 @@ impl Store {
 
     pub fn vm_log(&self, image: Image) -> PathBuf {
         self.run_dir(image).join("vm.log")
+    }
+
+    /// Where a builder image's build cache lives: one archive and one sidecar
+    /// per half, for the halves in `cache::Kind`.
+    ///
+    /// Outside `run/` deliberately (decision 28). Run state is what the next
+    /// boot recreates and what `vm down` removes, and a cache is the opposite of
+    /// both: it is the output of an earlier build that the guest which produced
+    /// it could not keep. So no teardown touches it unless a purge names it, and
+    /// `vm status` counts it separately from run state because the command that
+    /// reclaims it is a different one.
+    pub fn cache_dir(&self, image: Image) -> PathBuf {
+        self.root.join("cache").join(image.slug())
+    }
+
+    pub fn cache_archive(&self, image: Image, kind: cache::Kind) -> PathBuf {
+        self.cache_dir(image).join(kind.archive())
+    }
+
+    pub fn cache_sidecar(&self, image: Image, kind: cache::Kind) -> PathBuf {
+        self.cache_dir(image).join(kind.sidecar())
     }
 
     /// Downloaded installation media, cached so a rebuild does not re-download.
@@ -308,12 +349,18 @@ mod tests {
                 store.state_file(image),
                 store.job_scratch(image),
                 store.handover_scratch(image),
+                store.bundle_scratch(image),
                 store.firmware_vars(image),
                 store.build_disk(image),
                 store.build_dir(image),
                 store.results_dir(image),
                 store.vm_log(image),
+                store.cache_dir(image),
             ]);
+            for kind in cache::Kind::ALL {
+                paths.push(store.cache_archive(image, kind));
+                paths.push(store.cache_sidecar(image, kind));
+            }
         }
         for path in paths {
             assert!(
@@ -334,6 +381,7 @@ mod tests {
                 assert_ne!(store.run_dir(image), store.run_dir(*other));
                 assert_ne!(store.overlay(image), store.overlay(*other));
                 assert_ne!(store.manifest(image), store.manifest(*other));
+                assert_ne!(store.cache_dir(image), store.cache_dir(*other));
                 assert_ne!(template_dir(image), template_dir(*other));
             }
         }

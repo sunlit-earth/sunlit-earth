@@ -39,6 +39,16 @@ dirs = "6"
 # geometry only, has no use for.
 resvg = { version = "0.48", default-features = false }
 ico = "0.5"
+# The release bundle's two writers, xtask-only. Each target gets the archive its
+# own users expect: a zip, which Windows opens with no tool at all, and a
+# `.tar.gz`, which carries the binary's 0755 mode as an ordinary header field
+# rather than as a convention on top of the format. Both compress with `flate2`,
+# which `image`'s PNG support already put in the lockfile, so the pair costs the
+# workspace no new transitive tree; `zip` is cut down to that one method, since
+# bzip2, zstd and AES are three more C libraries to build for nothing.
+zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
+tar = "0.4"
+flate2 = "1"
 # Compiles the app's one Windows resource, the exe icon, in the build script.
 # It finds the toolchain's `rc.exe` or `windres` and vendors a fallback. The app
 # takes it as a `cfg(windows)` build dependency, which cargo resolves against

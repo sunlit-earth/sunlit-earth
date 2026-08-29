@@ -7,9 +7,12 @@
 # there is nothing for a software adapter to render, and a builder with a GPU
 # stack in it is a builder that can accidentally be asked to run a test.
 # `binutils` is there for `readelf` and `objdump`, which is how the build job
-# reads its own output back and proves the glibc floor. There is no `git`: the
-# source arrives as a tar the host made, the lockfile names no git dependency,
-# and cargo's registry protocol needs none.
+# reads its own output back and proves the glibc floor. `zstd` is there because
+# GNU tar's `--zstd` shells out to that program rather than linking a library,
+# and the build cache is a `.tar.zst` on both builders; the Windows guest needs
+# no equivalent, because its `tar.exe` is a bsdtar with libzstd inside it.
+# There is no `git`: the source arrives as a tar the host made, the lockfile
+# names no git dependency, and cargo's registry protocol needs none.
 #
 # `RUST_CHANNEL` comes from the Packer template, which the xtask fills in from
 # `rust-toolchain.toml`. A release build installs the pinned channel by name
@@ -38,6 +41,7 @@ apt-get install -y --no-install-recommends \
   libxcb-xfixes0-dev \
   libxkbcommon-dev \
   binutils \
+  zstd \
   curl \
   ca-certificates
 

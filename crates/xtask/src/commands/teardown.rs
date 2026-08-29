@@ -29,6 +29,12 @@ use crate::util::format_bytes;
 /// the next boot, an image is a build of tens of minutes, and the installation
 /// media is a 6.6 GB download. So they are separable, and `down` is exactly the
 /// cheapest one.
+///
+/// Four independent answers to four independent questions rather than a state
+/// machine, which is why `struct_excessive_bools` and `fn_params_excessive_bools`
+/// are allowed here: naming them together is the point, and the flags being
+/// additive is what makes "none of them" mean all of it.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scope {
     /// The guest itself, its throwaway overlay, and its run state.
@@ -37,14 +43,22 @@ pub struct Scope {
     pub image: bool,
     /// Cached installation media, which is the Windows evaluation ISO.
     pub iso: bool,
+    /// The build cache an earlier `dist` left on this host, which is the one
+    /// part `vm down` never takes (decision 28).
+    pub cache: bool,
 }
 
 impl Scope {
     /// What `vm down` does.
+    ///
+    /// The build cache is deliberately not in it: run state is what the next
+    /// boot recreates, and a cache is minutes of compiling that nothing
+    /// recreates without doing the compiling again.
     pub const RUN_STATE: Self = Self {
         vm: true,
         image: false,
         iso: false,
+        cache: false,
     };
 
     /// What `vm purge` does when nothing narrows it.
@@ -52,13 +66,20 @@ impl Scope {
         vm: true,
         image: true,
         iso: true,
+        cache: true,
     };
 
     /// A purge's flags. None of them means all of it, which is the documented
     /// default and the reason the flags are additive rather than exclusive.
-    pub fn from_flags(vm: bool, image: bool, iso: bool) -> Self {
-        if vm || image || iso {
-            Self { vm, image, iso }
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub fn from_flags(vm: bool, image: bool, iso: bool, cache: bool) -> Self {
+        if vm || image || iso || cache {
+            Self {
+                vm,
+                image,
+                iso,
+                cache,
+            }
         } else {
             Self::EVERYTHING
         }
@@ -84,6 +105,7 @@ impl Scope {
             self.vm.then_some("the VM and its run state"),
             self.image.then_some("the golden image"),
             self.iso.then_some("the installation media"),
+            self.cache.then_some("the build cache"),
         ]
         .into_iter()
         .flatten()
@@ -258,6 +280,7 @@ impl TeardownPlan {
 }
 
 /// Decide what a teardown would touch.
+#[allow(clippy::too_many_lines)]
 pub fn plan(
     store: &Store,
     inventory: &Inventory,
@@ -304,6 +327,9 @@ pub fn plan(
                 vm: true,
                 image: true,
                 iso: false,
+                // A cache keyed to an image that is going is dead weight the
+                // next build would refuse to restore anyway.
+                cache: true,
             }
         };
         let Some(entry) = inventory.for_image(image) else {
@@ -334,6 +360,13 @@ pub fn plan(
                 take(file, Some(image), &mut files, &mut refused);
             }
             dirs.push(store.run_dir(image));
+        }
+
+        if scope.cache {
+            for file in &entry.cache_files {
+                take(file, Some(image), &mut files, &mut refused);
+            }
+            dirs.push(store.cache_dir(image));
         }
 
         if scope.image {
@@ -806,7 +839,7 @@ mod tests {
             &store(),
             &inv,
             Selection::One(Image::Windows),
-            Scope::from_flags(false, false, true),
+            Scope::from_flags(false, false, true, false),
         );
         assert_eq!(plan.files.len(), 3, "{plan:?}");
         assert_eq!(plan.bytes(), 14 * 1024 * 1024 * 1024);
@@ -932,28 +965,57 @@ mod tests {
 
     #[test]
     fn a_purge_with_no_flags_means_all_of_it() {
-        assert_eq!(Scope::from_flags(false, false, false), Scope::EVERYTHING);
         assert_eq!(
-            Scope::from_flags(false, false, true),
+            Scope::from_flags(false, false, false, false),
+            Scope::EVERYTHING
+        );
+        assert_eq!(
+            Scope::from_flags(false, false, true, false),
             Scope {
                 vm: false,
                 image: false,
-                iso: true
+                iso: true,
+                cache: false
             }
         );
         // Additive rather than exclusive: two flags select two things.
         assert_eq!(
-            Scope::from_flags(false, true, true),
+            Scope::from_flags(false, true, true, false),
             Scope {
                 vm: false,
                 image: true,
-                iso: true
+                iso: true,
+                cache: false
             }
+        );
+        // The build cache is the one part `vm down` never takes and a purge
+        // reaches only when nothing narrows it or when `--cache` names it.
+        const { assert!(!Scope::RUN_STATE.cache) };
+        const { assert!(Scope::EVERYTHING.cache) };
+        assert_eq!(
+            Scope::from_flags(false, false, false, true),
+            Scope {
+                vm: false,
+                image: false,
+                iso: false,
+                cache: true
+            }
+        );
+        assert!(
+            Scope::from_flags(false, false, false, true)
+                .label()
+                .contains("build cache")
         );
         // `down` is the cheap one, and purge's flags cannot produce it by
         // accident: it never touches an image.
-        assert_ne!(Scope::RUN_STATE, Scope::from_flags(false, false, false));
-        assert_eq!(Scope::RUN_STATE, Scope::from_flags(true, false, false));
+        assert_ne!(
+            Scope::RUN_STATE,
+            Scope::from_flags(false, false, false, false)
+        );
+        assert_eq!(
+            Scope::RUN_STATE,
+            Scope::from_flags(true, false, false, false)
+        );
     }
 
     #[test]
@@ -964,12 +1026,12 @@ mod tests {
         // A Hyper-V child holds the golden image open, so an image purge stops
         // the VM as well.
         assert!(
-            Scope::from_flags(false, true, false).needs_the_vm_stopped(run),
+            Scope::from_flags(false, true, false, false).needs_the_vm_stopped(run),
             "deleting an image under a running differencing child"
         );
         // Media is different: a booted test guest finished with the ISO long
         // ago, whether there is a guest recorded or not.
-        let media = Scope::from_flags(false, false, true);
+        let media = Scope::from_flags(false, false, true, false);
         assert!(!media.needs_the_vm_stopped(run));
         assert!(!media.needs_the_vm_stopped(None));
         // Except under a build, which has both DVDs attached for the whole
@@ -991,7 +1053,7 @@ mod tests {
             &store(),
             &inv,
             Selection::One(Image::Windows),
-            Scope::from_flags(false, false, true),
+            Scope::from_flags(false, false, true, false),
         );
         assert_eq!(plan.vms.len(), 1, "{plan:?}");
         assert_eq!(plan.vms[0].reason, StartReason::Build);
@@ -1010,7 +1072,7 @@ mod tests {
             &store(),
             &inventory(vec![entry]),
             Selection::One(Image::Windows),
-            Scope::from_flags(false, false, true),
+            Scope::from_flags(false, false, true, false),
         );
 
         let text = plan.render();
@@ -1071,7 +1133,7 @@ mod tests {
             &store(),
             &inv,
             Selection::One(Image::Windows),
-            Scope::from_flags(false, false, true),
+            Scope::from_flags(false, false, true, false),
         );
         assert!(plan.vms.is_empty(), "{plan:?}");
         let paths: Vec<String> = plan

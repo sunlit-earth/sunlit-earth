@@ -215,23 +215,41 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
         .expect("a fixture pin parses");
     vec![
         (
-            "dist: build".to_owned(),
-            crate::commands::dist::build_job(crate::provider::target::Target::Linux, &pinned),
-        ),
-        (
-            "dist: verify".to_owned(),
-            crate::commands::dist::verify_job(
+            "dist: build, warm".to_owned(),
+            crate::commands::dist::build_job(
                 crate::provider::target::Target::Linux,
-                "/var/lib/sunlit-e2e/bin/sunlit-earth",
-                Some("/var/lib/sunlit-e2e/textures"),
+                &pinned,
+                &crate::commands::dist::CacheJob {
+                    restore: crate::store::cache::Kind::ALL.to_vec(),
+                    save: crate::store::cache::Kind::ALL.to_vec(),
+                },
             ),
         ),
         (
-            "dist: verify without textures".to_owned(),
+            "dist: build, cold".to_owned(),
+            crate::commands::dist::build_job(
+                crate::provider::target::Target::Linux,
+                &pinned,
+                &crate::commands::dist::CacheJob::default(),
+            ),
+        ),
+        (
+            "dist: verify the bundle".to_owned(),
             crate::commands::dist::verify_job(
                 crate::provider::target::Target::Linux,
-                "/var/lib/sunlit-e2e/bin/sunlit-earth",
-                None,
+                &crate::commands::dist::Verification::Bundle {
+                    exe: "/var/lib/sunlit-e2e/sunlit-earth-0.1.0-linux/sunlit-earth",
+                    empty: "/var/lib/sunlit-e2e/empty-textures",
+                },
+            ),
+        ),
+        (
+            "dist: verify the loose binary".to_owned(),
+            crate::commands::dist::verify_job(
+                crate::provider::target::Target::Linux,
+                &crate::commands::dist::Verification::Loose {
+                    exe: "/var/lib/sunlit-e2e/bin/sunlit-earth",
+                },
             ),
         ),
         (

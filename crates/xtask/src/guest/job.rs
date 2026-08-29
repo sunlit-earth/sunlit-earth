@@ -264,6 +264,25 @@ pub fn run_watching(
     wait_for_exit_code(provider, state, target, timeout, tail)
 }
 
+/// Print what the job has written since it was last asked.
+///
+/// A log that could not be read is not an error: the job is what this is
+/// watching, and one unanswered read of its log is the connection rather than
+/// the run.
+fn print_fresh_output(
+    provider: &dyn Provider,
+    state: &RunState,
+    log_command: &str,
+    tail: Option<&mut OutputTail>,
+) {
+    if let Some(tail) = tail
+        && let Ok(out) = provider.exec(state, log_command)
+        && let Some(fresh) = tail.absorb(&out.stdout)
+    {
+        print!("{fresh}");
+    }
+}
+
 /// Poll until `exit_code.txt` appears, printing what the job wrote since the
 /// last poll when a tail is given.
 pub fn wait_for_exit_code(
@@ -277,17 +296,16 @@ pub fn wait_for_exit_code(
     let log_command = output_log_command(target);
     let start = Instant::now();
     loop {
-        // Read before asking whether it is over, so the last of the output is
-        // printed even when both land in the same poll.
-        if let Some(tail) = tail.as_deref_mut()
-            && let Ok(out) = provider.exec(state, &log_command)
-            && let Some(fresh) = tail.absorb(&out.stdout)
-        {
-            print!("{fresh}");
-        }
+        print_fresh_output(provider, state, &log_command, tail.as_deref_mut());
         match provider.exec(state, &command) {
             Ok(out) => {
                 if let Some(code) = parse_exit_code(&out.stdout)? {
+                    // The read above and this answer are two round trips, so a
+                    // job that finished between them wrote its last lines after
+                    // the log was read. One more read has them, and the runner
+                    // writes the exit code once the job's output is closed, so
+                    // there is nothing after these.
+                    print_fresh_output(provider, state, &log_command, tail.as_deref_mut());
                     return Ok(code);
                 }
             }
@@ -593,6 +611,45 @@ mod tests {
                 None
             ),
             Ok(0)
+        );
+    }
+
+    /// A poll reads the log and then asks for the exit code, and those are two
+    /// round trips: a job that ends between them wrote its last lines after the
+    /// read. Without a read after the answer, that is the tail of a
+    /// forty-minute build lost from the console, which is where the docs send a
+    /// person to watch one.
+    #[test]
+    fn the_last_of_the_output_survives_a_job_that_ends_mid_poll() {
+        let runner = FakeRunner::new()
+            .on_each(
+                "output.log",
+                [
+                    CommandOutput::ok("cache: packing the build directory\n"),
+                    CommandOutput::ok("cache: packing the build directory\ncache: packed in 63s\n"),
+                ],
+            )
+            .on("exit_code.txt", CommandOutput::ok("0\n"));
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: None,
+        };
+        let mut tail = OutputTail::new();
+        assert_eq!(
+            wait_for_exit_code(
+                &provider,
+                &state(),
+                Target::Linux,
+                Duration::from_millis(200),
+                Some(&mut tail),
+            ),
+            Ok(0)
+        );
+        // Nothing of the whole log is still owed, and nothing was printed
+        // twice: the tail counts what it has printed against what it is given.
+        assert_eq!(
+            tail.absorb("cache: packing the build directory\ncache: packed in 63s\n"),
+            None
         );
     }
 }

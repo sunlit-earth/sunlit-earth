@@ -87,23 +87,23 @@ pub(crate) struct Uniforms {
     /// is measured outward from. That is decision 2's rule applied to the
     /// band: the annulus the viewer can see, not the one an ephemeris has.
     pub sun_globe_center: [f32; 2], // 8 bytes
-    pub sun_globe_radius: f32,         // 4 bytes
+    pub sun_globe_radius: f32,        // 4 bytes
     /// Width of the horizon zone in pixels: the painted annulus, or the disk's
     /// diameter times `sun_horizon_depth`, whichever is wider.
     pub sun_zone_width: f32, // 4 bytes
     /// Vertical magnification of the refracted disk, one where nothing bends.
     pub sun_squash: f32, // 4 bytes
-    pub sun_halo_radius: f32,          // 4 bytes
-    pub sun_reddening: f32,            // 4 bytes
-    pub atmo_sunrise_glow: f32,        // 4 bytes
+    pub sun_halo_radius: f32,         // 4 bytes
+    pub sun_reddening: f32,           // 4 bytes
+    pub atmo_sunrise_glow: f32,       // 4 bytes
     /// Henyey-Greenstein asymmetry for the forward lobe, derived on the CPU
     /// from the angle at which the lobe is to fall to half.
     pub atmo_sunrise_g: f32, // 4 bytes
     /// Visible area times what the band transmits, which is what the glare's
     /// amplitude is a compressive function of.
     pub sun_flux: f32, // 4 bytes
-    pub _pad7: f32,                    // 4 bytes
-    pub _pad8: f32,                    // 4 bytes
+    pub _pad7: f32,                   // 4 bytes
+    pub _pad8: f32,                   // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);

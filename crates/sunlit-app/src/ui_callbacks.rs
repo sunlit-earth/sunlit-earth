@@ -308,10 +308,10 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_fresnel_mix(params.fresnel_mix);
     window.set_fresnel_exp(params.fresnel_exp);
     window.set_cloud_opacity(params.cloud_opacity);
+    window.set_cloud_opacity_night(params.cloud_opacity_night);
     window.set_cloud_floor(params.cloud_floor);
     window.set_cloud_gamma(params.cloud_gamma);
     window.set_cloud_night(params.cloud_night);
-    window.set_cloud_city_gain(params.cloud_city_gain);
     window.set_atmo_enabled(params.atmo_enabled);
     window.set_rayleigh_intensity(params.rayleigh_intensity);
     window.set_rayleigh_sharpness(params.rayleigh_sharpness);
@@ -376,10 +376,10 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         fresnel_mix: window.get_fresnel_mix(),
         fresnel_exp: window.get_fresnel_exp(),
         cloud_opacity: window.get_cloud_opacity(),
+        cloud_opacity_night: window.get_cloud_opacity_night(),
         cloud_floor: window.get_cloud_floor(),
         cloud_gamma: window.get_cloud_gamma(),
         cloud_night: window.get_cloud_night(),
-        cloud_city_gain: window.get_cloud_city_gain(),
         atmo_enabled: window.get_atmo_enabled(),
         rayleigh_intensity: window.get_rayleigh_intensity(),
         rayleigh_sharpness: window.get_rayleigh_sharpness(),

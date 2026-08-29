@@ -39,9 +39,7 @@ pub(crate) struct Uniforms {
     /// Half-width of the cloud layer's terminator ramp. Never the globe's
     /// `terminator_width`, which carries a sentinel outside blend mode.
     pub cloud_terminator: f32, // 4 bytes
-    /// Weight on the blurred night-map sample a cloud base picks up. Zero is
-    /// the switch, and the shader takes no sample at all there.
-    pub cloud_city_gain: f32, // 4 bytes
+    pub _pad5: f32,                   // 4 bytes
     pub sky_view: [f32; 16],          // 64 bytes
     pub world_from_eqj: [[f32; 4]; 3], // 48 bytes
     pub viewport_size: [f32; 2],      // 8 bytes
@@ -73,7 +71,9 @@ pub(crate) struct Uniforms {
     /// Brightness of the Milky Way panorama. Zero never reaches the shader,
     /// because the draw is skipped.
     pub milky_way_intensity: f32, // 4 bytes
-    pub _pad6: f32,                   // 4 bytes
+    /// Opacity of a night-side cloud, as an optical depth scale rather than a
+    /// multiplier on coverage. See `fs_cloud`.
+    pub cloud_opacity_night: f32, // 4 bytes
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);

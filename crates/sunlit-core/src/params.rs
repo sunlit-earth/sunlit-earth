@@ -54,7 +54,14 @@ pub struct SceneParams {
     pub fresnel_exp: f32,
 
     // Clouds
+    /// Opacity of a cloud on the day hemisphere, a straight multiplier on the
+    /// source's own coverage.
     pub cloud_opacity: f32,
+    /// Opacity of a cloud on the night hemisphere, read as an optical depth
+    /// rather than as a multiplier, which is what lets the top of its range
+    /// cover the ground completely. See `fs_cloud` for why the two hemispheres
+    /// cannot share one number.
+    pub cloud_opacity_night: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
     /// Brightness of a cloud on the night hemisphere, as a fraction of display
@@ -62,9 +69,6 @@ pub struct SceneParams {
     /// day side and this frame has one exposure for both, so the value is a
     /// choice about how much of that gap to compress into 8 bits.
     pub cloud_night: f32,
-    /// How much of the light a city throws upward the cloud base over it picks
-    /// up. Zero is the switch: the shader samples nothing at all there.
-    pub cloud_city_gain: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -139,10 +143,10 @@ impl SceneParams {
             fresnel_mix: config.fresnel_mix,
             fresnel_exp: config.fresnel_exp,
             cloud_opacity: config.cloud_opacity,
+            cloud_opacity_night: config.cloud_opacity_night,
             cloud_floor: config.cloud_floor,
             cloud_gamma: config.cloud_gamma,
             cloud_night: config.cloud_night,
-            cloud_city_gain: config.cloud_city_gain,
             atmo_enabled: config.atmo_enabled,
             rayleigh_intensity: config.rayleigh_intensity,
             rayleigh_sharpness: config.rayleigh_sharpness,
@@ -202,10 +206,10 @@ impl SceneParams {
         config.fresnel_mix = self.fresnel_mix;
         config.fresnel_exp = self.fresnel_exp;
         config.cloud_opacity = self.cloud_opacity;
+        config.cloud_opacity_night = self.cloud_opacity_night;
         config.cloud_floor = self.cloud_floor;
         config.cloud_gamma = self.cloud_gamma;
         config.cloud_night = self.cloud_night;
-        config.cloud_city_gain = self.cloud_city_gain;
         config.atmo_enabled = self.atmo_enabled;
         config.rayleigh_intensity = self.rayleigh_intensity;
         config.rayleigh_sharpness = self.rayleigh_sharpness;
@@ -239,6 +243,12 @@ impl SceneParams {
 
     /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
     /// the draw call entirely.
+    /// Whether the cloud layer draws at all. Each hemisphere has its own
+    /// opacity, so one of them at zero is not the layer switched off.
+    pub fn draws_clouds(&self) -> bool {
+        self.cloud_opacity > 0.0 || self.cloud_opacity_night > 0.0
+    }
+
     pub fn effective_rayleigh_intensity(&self) -> f32 {
         if self.atmo_enabled {
             self.rayleigh_intensity
@@ -275,10 +285,10 @@ impl SceneParams {
             fresnel_mix: q(self.fresnel_mix),
             fresnel_exp: q(self.fresnel_exp),
             cloud_opacity: q(self.cloud_opacity),
+            cloud_opacity_night: q(self.cloud_opacity_night),
             cloud_floor: q(self.cloud_floor),
             cloud_gamma: q(self.cloud_gamma),
             cloud_night: q(self.cloud_night),
-            cloud_city_gain: q(self.cloud_city_gain),
             rayleigh_intensity: q(self.effective_rayleigh_intensity()),
             rayleigh_sharpness: q(self.rayleigh_sharpness),
             rayleigh_haze: q(self.rayleigh_haze),
@@ -337,10 +347,10 @@ pub struct ParamsDigest {
     pub fresnel_mix: i32,
     pub fresnel_exp: i32,
     pub cloud_opacity: i32,
+    pub cloud_opacity_night: i32,
     pub cloud_floor: i32,
     pub cloud_gamma: i32,
     pub cloud_night: i32,
-    pub cloud_city_gain: i32,
     pub rayleigh_intensity: i32,
     pub rayleigh_sharpness: i32,
     pub rayleigh_haze: i32,
@@ -690,6 +700,13 @@ mod tests {
                 },
             ),
             (
+                "cloud_opacity_night",
+                SceneParams {
+                    cloud_opacity_night: 0.5,
+                    ..base
+                },
+            ),
+            (
                 "cloud_floor",
                 SceneParams {
                     cloud_floor: 0.3,
@@ -707,13 +724,6 @@ mod tests {
                 "cloud_night",
                 SceneParams {
                     cloud_night: 0.4,
-                    ..base
-                },
-            ),
-            (
-                "cloud_city_gain",
-                SceneParams {
-                    cloud_city_gain: 1.3,
                     ..base
                 },
             ),

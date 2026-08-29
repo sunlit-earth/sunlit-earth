@@ -187,10 +187,10 @@ pub struct AppConfig {
 
     // Clouds
     pub cloud_opacity: f32,
+    pub cloud_opacity_night: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
     pub cloud_night: f32,
-    pub cloud_city_gain: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -313,10 +313,10 @@ impl Default for AppConfig {
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
             cloud_opacity: 0.85,
+            cloud_opacity_night: 0.55,
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
-            cloud_night: 0.25,
-            cloud_city_gain: 0.7,
+            cloud_night: 0.35,
             atmo_enabled: true,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 50.0,
@@ -796,10 +796,10 @@ mod tests {
     fn deserialize_missing_cloud_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         let defaults = AppConfig::default();
+        assert_relative_eq!(config.cloud_opacity_night, defaults.cloud_opacity_night);
         assert_relative_eq!(config.cloud_floor, defaults.cloud_floor);
         assert_relative_eq!(config.cloud_gamma, defaults.cloud_gamma);
         assert_relative_eq!(config.cloud_night, defaults.cloud_night);
-        assert_relative_eq!(config.cloud_city_gain, defaults.cloud_city_gain);
     }
 
     #[test]
@@ -844,10 +844,10 @@ mod tests {
             fresnel_mix: 0.5,
             fresnel_exp: 3.0,
             cloud_opacity: 0.6,
+            cloud_opacity_night: 0.45,
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
             cloud_night: 0.4,
-            cloud_city_gain: 1.2,
             atmo_enabled: false,
             rayleigh_intensity: 0.7,
             rayleigh_sharpness: 8.0,
@@ -985,10 +985,10 @@ mod tests {
             fresnel_mix: 0.7,
             fresnel_exp: 4.0,
             cloud_opacity: 0.6,
+            cloud_opacity_night: 0.95,
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
             cloud_night: 0.1,
-            cloud_city_gain: 0.3,
             atmo_enabled: false,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 7.0,

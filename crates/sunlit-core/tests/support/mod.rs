@@ -300,6 +300,26 @@ fn cloud_bands_image() -> image::RgbaImage {
     img
 }
 
+/// The raw cloud value of the even bands' partial sibling.
+///
+/// The banded map is 255 or nothing, so every cloud pixel in it has a density of
+/// one and any nonzero night opacity covers the ground completely. That is the
+/// one thing the real source never is: its median texel is 0.79 and only half a
+/// percent of it reaches 0.97. So the opacity cases use a map at one mid value
+/// instead, where the alpha a mapping produces is a number rather than a
+/// saturated one.
+pub const CLOUD_FIXTURE_PARTIAL: u8 = 178;
+
+/// A cloud map at one value everywhere.
+fn cloud_uniform_image(value: u8) -> image::RgbaImage {
+    let width = CLOUD_FIXTURE_WIDTH;
+    let mut img = image::RgbaImage::new(width, width / 2);
+    for (_, _, pixel) in img.enumerate_pixels_mut() {
+        *pixel = rgba([value, value, value]);
+    }
+    img
+}
+
 /// A cloud source that serves one generated map and then reports it unchanged.
 ///
 /// The cloud slot is fed by the fetcher rather than by `texture_paths`, so this
@@ -313,13 +333,23 @@ pub struct FixtureClouds {
 impl FixtureClouds {
     /// The banded map, encoded once.
     pub fn bands() -> Self {
+        Self::from_image(cloud_bands_image(), "cloud-bands-fixture")
+    }
+
+    /// One value everywhere, for a case that needs a density between the two
+    /// the bands offer.
+    pub fn uniform(value: u8) -> Self {
+        Self::from_image(cloud_uniform_image(value), "cloud-uniform-fixture")
+    }
+
+    fn from_image(image: image::RgbaImage, etag: &str) -> Self {
         let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(cloud_bands_image())
+        image::DynamicImage::ImageRgba8(image)
             .write_to(&mut bytes, image::ImageFormat::Png)
             .expect("encode the cloud fixture");
         Self {
             bytes: bytes.into_inner(),
-            etag: "cloud-bands-fixture".to_owned(),
+            etag: etag.to_owned(),
         }
     }
 }

@@ -3477,14 +3477,6 @@ fn center_window_mean(pixels: &[u8], size: (u32, u32)) -> f64 {
     total as f64 / count as f64
 }
 
-/// Pixels that differ between two exports of the same size.
-fn differing_pixels(one: &[u8], other: &[u8]) -> usize {
-    one.chunks_exact(4)
-        .zip(other.chunks_exact(4))
-        .filter(|(one, other)| one != other)
-        .count()
-}
-
 /// Parameters the cloud cases share: the fixture surface, the camera over the
 /// point the case is about, and nothing else in the window.
 ///
@@ -3492,14 +3484,10 @@ fn differing_pixels(one: &[u8], other: &[u8]) -> usize {
 /// the globe and the layer over it and nothing else, and `hour` is what moves
 /// the sun: the camera stays where it is, so the surface under the window is the
 /// same texels whichever side of the terminator the case asks for.
-///
-/// The city-light coupling is off, so that a case about the night floor measures
-/// the floor. The two cases that are about the coupling turn it on themselves.
 fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> SceneParams {
     let mut params = SceneParams {
         texture_index,
         sample_count: 1,
-        cloud_city_gain: 0.0,
         atmo_enabled: false,
         star_intensity: 0.0,
         sun_glow: 0.0,
@@ -3521,10 +3509,18 @@ fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> ScenePara
 /// Start an engine on the fixture surface with the banded cloud fixture behind
 /// the cloud slot, in blend mode, and wait until both have arrived.
 fn cloud_harness(dir: &Path, params: SceneParams) -> (Harness, support::SurfaceFixtures) {
+    cloud_harness_with(dir, params, support::FixtureClouds::bands())
+}
+
+/// The same, with the caller's own cloud map.
+fn cloud_harness_with(
+    dir: &Path,
+    params: SceneParams,
+    source: support::FixtureClouds,
+) -> (Harness, support::SurfaceFixtures) {
     let surface = support::write_surface_fixtures(dir);
     let paths = surface.paths();
-    let clouds = Arc::new(support::FixtureClouds::bands())
-        as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+    let clouds = Arc::new(source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
     let cache = dir.to_path_buf();
     let harness = Harness::start(move |config| {
         config.texture_paths = paths;
@@ -3546,9 +3542,11 @@ const DAY_HOUR: f32 = 0.0;
 /// has to be brighter than the ground it covers.
 ///
 /// The fixture's unlit base is what `BlackMarble_2016.jxl` reads over unlit
-/// land, and at the old hardcoded 0.05 the deck came out darker than it, 17.3
+/// land, and at the old hardcoded 0.05 the deck comes out darker than it, 13.0
 /// against 42.0 in the units this prints, so this fails on the code before this
-/// change rather than merely measuring something.
+/// change rather than merely measuring something. The deck reads its own value
+/// almost exactly, because the fixture's cloud is 255 or nothing and the night
+/// opacity covers the ground completely at any density of one.
 #[test]
 fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_ordering");
@@ -3563,6 +3561,7 @@ fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
         .engine
         .send(EngineCommand::UpdateParams(Box::new(SceneParams {
             cloud_opacity: 0.0,
+            cloud_opacity_night: 0.0,
             ..params
         })));
     let bare = harness
@@ -3630,208 +3629,64 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The mode that draws the globe from the day map alone, as `texture_index`
-/// spells it. The night slot stays loaded in it, so the cloud layer can still
-/// read the night map while nothing else does.
-const DAY_MODE: i32 = 1;
-
-/// City light at zero is gone rather than small.
+/// The night opacity covers the ground at the top of its range, and lets it
+/// through below.
 ///
-/// The two frames are the same scene in Day mode, one from an engine whose night
-/// slot is loaded and whose cloud bind group therefore samples the night map,
-/// and one from an engine that has no night map at all and holds the dummy in
-/// that binding. The globe is drawn from the day slot in both, so binding 3 of
-/// the cloud group is the only thing that differs, and at gain zero the frames
-/// have to be identical: the branch means nothing is sampled, where a multiply
-/// would leave the sample in the shader and the identity to floating point.
+/// The camera sits over the night map's city with the deck at one mid density
+/// over all of it, which is the framing the defect was reported in: the ground
+/// under the deck is display white and the deck itself is `cloud_night`, so what
+/// the blend does with the two is visible in one number. The old straight
+/// multiply could not reach the deck's own value from a density of 0.45 however
+/// far the slider went, which is what "one hundred percent still lets it
+/// through" meant.
 ///
-/// The second half is what keeps the first from being vacuous: the same engine
-/// at the default gain has to differ, or the night map is not reaching the layer
-/// in this mode at all and the comparison above compares nothing.
+/// The three readings also have to be ordered, or a mapping that covered the
+/// ground by ignoring the slider would pass the first assertion alone.
 #[test]
-fn city_light_at_zero_draws_the_frame_a_missing_night_map_draws() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_city_off");
-    let params = SceneParams {
-        cloud_city_gain: 0.0,
-        ..cloud_case_params(DAY_MODE, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR)
-    };
-
-    let (with_night_map, lit_by_cities) = {
-        // Blend mode first, so the night slot is loaded and the cloud group has
-        // been rebuilt around it; Day mode then keeps the view and stops the
-        // globe from reading it.
-        let (harness, _surface) = cloud_harness(
-            &dir,
-            cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR),
-        );
-        harness
-            .engine
-            .send(EngineCommand::UpdateParams(Box::new(params)));
-        let off = harness
-            .engine
-            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-            .expect("the engine should be able to export");
+fn the_night_opacity_reaches_full_cover() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_night_opacity");
+    let base = cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR);
+    let (harness, _surface) = cloud_harness_with(
+        &dir,
+        SceneParams {
+            cloud_opacity_night: 0.0,
+            ..base
+        },
+        support::FixtureClouds::uniform(support::CLOUD_FIXTURE_PARTIAL),
+    );
+    let read = |night_opacity: f32| {
         harness
             .engine
             .send(EngineCommand::UpdateParams(Box::new(SceneParams {
-                cloud_city_gain: SceneParams::default().cloud_city_gain,
-                ..params
+                cloud_opacity_night: night_opacity,
+                ..base
             })));
-        let on = harness
+        let pixels = harness
             .engine
             .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
             .expect("the engine should be able to export");
-        (off, on)
+        center_window_mean(&pixels, CLOUD_CASE_SIZE)
     };
 
-    let without_night_map = {
-        let surface = support::write_surface_fixtures(&dir);
-        let paths = vec![Some(surface.day), None];
-        let clouds = Arc::new(support::FixtureClouds::bands())
-            as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
-        let cache = dir.clone();
-        let harness = Harness::start(move |config| {
-            config.texture_paths = paths;
-            config.cache_dir = Some(cache);
-            config.cloud = Some(clouds);
-            config.params = params;
-        });
-        harness.wait_for_textures("the day fixture alone");
-        harness.wait_for_slot_texture("cloud_texture");
-        harness
-            .engine
-            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-            .expect("the engine should be able to export")
-    };
-
-    let differing = differing_pixels(&with_night_map, &without_night_map);
-    assert_eq!(
-        differing, 0,
-        "{differing} pixels differ between a cloud layer at city gain zero and \
-         one with no night map behind it at all"
+    let uncovered = read(0.0);
+    let partly = read(SceneParams::default().cloud_opacity_night);
+    let covered = read(1.0);
+    let deck = f64::from(base.cloud_night) * 255.0;
+    println!(
+        "night opacity 0 reads {uncovered:.1}, default reads {partly:.1}, 1 reads {covered:.1},          the deck alone would read {deck:.1}"
     );
 
-    let brightened = with_night_map
-        .chunks_exact(4)
-        .zip(lit_by_cities.chunks_exact(4))
-        .filter(|(off, on)| u32::from(on[0]) > u32::from(off[0]) + 8)
-        .count();
-    println!("city light at the default gain brightened {brightened} pixels");
     assert!(
-        brightened > 200,
-        "only {brightened} pixels brightened when the city glow was turned on, \
-         so the night map is not reaching the cloud layer in this mode and the \
-         identity above proves nothing"
+        (covered - deck).abs() < 2.0,
+        "at full night opacity the window reads {covered:.1} where the deck alone is {deck:.1},          so the ground under it is still showing through"
     );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The mode that draws the globe from the procedural grid, and the one mode that
-/// spawns no file-backed load at all.
-const GRID_MODE: i32 = 0;
-
-/// The dummy on binding 3 answers zero, so a deck in a mode that has loaded no
-/// night map reads the same at every city gain.
-///
-/// `resolve_textures` spawns a load only for the slot the current mode draws
-/// from, so an engine that has only ever been in Grid mode holds the dummy in
-/// its cloud group however `texture_paths` is set, and the one texel behind it
-/// is the whole of what the coupling can add there. Nothing else in the suite
-/// renders a cloud at a nonzero gain against the dummy, so a dummy that stopped
-/// reading black would brighten every deck a cold session draws.
-///
-/// The deck-off frame is what keeps the identity from being vacuous: it says the
-/// frame holds a deck rather than bare ground.
-#[test]
-fn the_dummy_night_map_lights_no_cloud() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_dummy");
-    let at_zero = cloud_case_params(GRID_MODE, 180.0, NIGHT_HOUR);
-    let (harness, _surface) = cloud_harness(
-        &dir,
-        SceneParams {
-            cloud_city_gain: SceneParams::default().cloud_city_gain,
-            ..at_zero
-        },
-    );
-    let export = || {
-        harness
-            .engine
-            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-            .expect("the engine should be able to export")
-    };
-
-    let lit = export();
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(at_zero)));
-    let off = export();
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(SceneParams {
-            cloud_opacity: 0.0,
-            ..at_zero
-        })));
-    let bare = export();
-
-    let drawn = differing_pixels(&lit, &bare);
-    println!("the deck covers {drawn} pixels of the grid at night");
     assert!(
-        drawn > 200,
-        "only {drawn} pixels change when the deck is switched off, so this frame \
-         holds no cloud and the identity below is about nothing"
+        uncovered > covered + 40.0,
+        "the window reads {uncovered:.1} with the deck switched off and {covered:.1} with it          covering, which is not the lit ground this case needs under the deck"
     );
-    let differing = differing_pixels(&lit, &off);
-    assert_eq!(
-        differing, 0,
-        "{differing} pixels differ between a deck at the default city gain and \
-         the same deck at zero, with no night map loaded behind either"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// A resolution switch with the night slot loaded and a cloud layer drawn.
-///
-/// The cloud bind group samples the night map, and the purge destroys that
-/// texture without touching the cloud slot, which is not file-backed. Without
-/// the rebuild on either side of the purge the next draw is a validation error
-/// rather than a wrong pixel, so this case fails by the engine dying rather than
-/// by a comparison.
-#[test]
-fn a_resolution_switch_survives_a_cloud_layer_that_samples_the_night_map() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_purge");
-    let (harness, _surface) = cloud_harness(
-        &dir,
-        cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR),
-    );
-    let before = harness
-        .engine
-        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-        .expect("the engine should be able to export");
-    assert!(has_lit_pixels(&before), "the globe should be visible first");
-
-    harness.engine.send(EngineCommand::SetTextureResolution(
-        support::SURFACE_FIXTURE_WIDTH / 2,
-    ));
-    harness.wait_for_textures("after switching down");
-    let after = harness
-        .engine
-        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-        .expect("the engine should still be able to export");
     assert!(
-        has_lit_pixels(&after),
-        "a frame after the purge has to come from the reloaded textures"
+        partly > covered + 5.0 && partly < uncovered - 5.0,
+        "the default night opacity reads {partly:.1}, which is not between the {covered:.1} of          full cover and the {uncovered:.1} of none, so the slider is not doing the covering"
     );
-
-    // Back up, which is the direction that would draw through a group rebuilt
-    // around a destroyed view if the rebuild happened at the wrong moment.
-    harness.engine.send(EngineCommand::SetTextureResolution(
-        support::SURFACE_FIXTURE_WIDTH,
-    ));
-    harness.wait_for_textures("after switching back up");
-    let again = harness
-        .engine
-        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-        .expect("the engine should still be able to export");
-    assert!(has_lit_pixels(&again));
     let _ = std::fs::remove_dir_all(&dir);
 }

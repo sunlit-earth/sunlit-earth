@@ -617,3 +617,80 @@ its measurement, in departure 5. No golden reference moved in either commit.
 Round 1 having reported no majors, the fix set was reviewed by the orchestrator against the
 diff rather than by a second round: three prose corrections and one engine case, with the
 gates rerun independently.
+
+## Follow-up: what the real assets showed
+
+Everything above was measured on fixtures, and two of its conclusions did not survive contact
+with the real textures. Both were reported from a running app rather than by a test, which is
+the part of this document's own risk section that turned out to matter.
+
+**The city-light coupling reads terrain, not lights, and is now off by default.** Decision 6
+assumed the night map is a map of lights over a dark base, and the fixture was built that way:
+a uniform unlit value with one bright patch on it. `BlackMarble_2016.jxl` as it sits on disk is
+not that. It carries a blue-tinted terrain layer whose brightness tracks surface albedo, and
+`gain * sample` therefore scales the terrain along with the lights. Measured on the cached
+decode of the file the app loads, at the mip level `fs_cloud` samples:
+
+| place | night map | lift at gain 0.7 | cities there |
+|---|---|---|---|
+| mid-Pacific | 0.034 | +0.024 | none |
+| Amazon | 0.051 | +0.036 | none |
+| central Australia | 0.116 | +0.081 | none |
+| Sahara | 0.172 | +0.121 | none |
+| Greenland interior | 0.222 | +0.155 | none |
+| Antarctica | 0.231 | +0.162 | none |
+| Tokyo | 0.289 | +0.202 | yes |
+| Nile delta | 0.585 | +0.409 | yes |
+
+An empty ice sheet takes 80 percent of the lift a megacity takes. By area, 98.6 percent of the
+map's texels are above 0.02 and only 0.33 percent are above 0.30, so the term reached its
+intended target on a third of a percent of the sphere and laid a pedestal over the rest, which
+is what "it just makes all night side clouds brighter" means. The blur is not the cause and was
+measured not to be: Tokyo's peak survives the mip level at 0.976 and the terrain base survives
+at ratio 1.00, so the derivation in departure 5 is doing what it was meant to.
+
+The term was then removed outright, and the whole of decision 6 with it: `cloud_city_gain`, its
+uniform, its slider, its two engine cases and the `clouds_lit_by_city_light` reference are gone,
+and the cloud bind group's binding 3 is the dummy again, which takes the two rebuild sites and
+the lifetime hazard they existed for with it. What settled it is that the effect the term was
+for is already there without it: below full night opacity the city lights read through the deck,
+which is what a thin cloud over a city looks like anyway. Fixing the term rather than removing
+it would have meant extracting the lights from this asset, where the chroma sign separates them
+(every place sampled without cities is blue-dominant, both city samples are neutral to warm), or
+replacing the asset with a lights-only night map. Neither is worth it for a second path to
+something the opacity already gives.
+
+What is worth keeping is the measurement, which is why it is written down here: the night map is
+not a map of lights, and anything else that samples it for light rather than for appearance will
+meet the same terrain layer.
+
+**The night side needed its own opacity, and the day side's mapping could not provide it.** A
+deck at 100 percent still let the ground through, for two reasons that compound. One alpha does
+not read the same on the two hemispheres: on the day side the deck is brighter than what it
+covers, so a partial alpha reads as solid cloud, while on the night side the deck is `cloud_night`
+and a city core is display white, so the same alpha reads as a veil. And the source cannot supply
+the density a multiplier needs. Measured on the published composite the app caches, its median
+texel is 0.79 and only 0.51 percent of it reaches 0.97, which through the default floor and gamma
+is a density of 0.45 for a cloud that looks solid, so `density * 1.0` is an alpha of 0.45.
+
+So `cloud_opacity` is now the day side's alone and `cloud_opacity_night` is a second control,
+read as an optical depth rather than as a multiplier: `depth = t / (1 - t)` clamped to at most 32
+by `NIGHT_OPACITY_MIN_TRANSMITTANCE`, and `alpha = 1 - pow(1 - density, depth)`. That form was
+chosen because it is zero at zero, reaches full cover at one, is monotonic between them, and
+leaves an edge that still fades, which a clamped multiply does not. The two are blended by the
+same `sunlit` factor the brightness ramp uses, so the terminator has one shape rather than two.
+`SceneParams::draws_clouds` is the draw gate, because one hemisphere at zero is no longer the
+layer switched off; three test call sites that had said `cloud_opacity: 0.0` to mean "no deck"
+had to learn to say both, which is the one hazard this split introduces.
+
+`cloud_night` moves from 0.25 to 0.35 at the same time, and the night opacity settles at 0.55.
+The two changes interact: the floor is now much closer to what a covered night pixel actually
+reads, where before the ground under it was contributing a third of the pixel.
+
+The fixture could not have caught either of these, and the reasons are worth keeping. Its night
+map is a lights-only map, which is the assumption that failed. Its cloud map is 255 or nothing,
+so every cloud pixel in it has a density of one and any nonzero night opacity covers the ground
+completely, which is why `FixtureClouds::uniform` exists: one mid value, where an alpha is a
+number rather than a saturated one. `the_night_opacity_reaches_full_cover` reads 246.7 with the
+deck off, 164.7 at the default and 89.0 at the top of the range against a deck worth 89.2, and
+the straight multiply reads 169.3 there.

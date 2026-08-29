@@ -213,10 +213,10 @@ export component MainWindow inherits Window {
     in-out property <float> night-gamma: 0.5;
     in-out property <float> night-saturation: 1.0;
     in-out property <float> cloud-opacity: 0.85;
+    in-out property <float> cloud-opacity-night: 0.55;
     in-out property <float> cloud-floor: 0.25;
     in-out property <float> cloud-gamma: 0.65;
-    in-out property <float> cloud-night: 0.25;
-    in-out property <float> cloud-city-gain: 0.7;
+    in-out property <float> cloud-night: 0.35;
     in-out property <bool> atmo-enabled: true;
     in-out property <float> rayleigh-intensity: 0.5;
     in-out property <float> rayleigh-sharpness: 50.0;
@@ -652,12 +652,23 @@ export component MainWindow inherits Window {
                             spacing: 4px;
 
                             cloud-opacity-slider := SettingRow {
-                                label: "Opacity";
-                                hint: "How strongly the live cloud layer covers the surface underneath it.";
+                                label: "Day opacity";
+                                hint: "How strongly the cloud layer covers the sunlit surface underneath it.";
                                 minimum: 0.0;
                                 maximum: 1.0;
                                 value <=> root.cloud-opacity;
                                 value-text: round(root.cloud-opacity * 100) + "%";
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            cloud-opacity-night-slider := SettingRow {
+                                label: "Night opacity";
+                                hint: "How strongly the cloud layer covers the night surface, where the city lights under it are far brighter than the cloud itself. At the top of the range nothing shines through.";
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.cloud-opacity-night;
+                                value-text: round(root.cloud-opacity-night * 100) + "%";
                                 value-width: 35px;
                                 changed => { root.sliders-changed(); }
                             }
@@ -685,7 +696,7 @@ export component MainWindow inherits Window {
                             }
 
                             cloud-night-slider := SettingRow {
-                                label: "Night side";
+                                label: "Night brightness";
                                 hint: "How bright a cloud is on the night hemisphere, where the real light is far too faint to draw at this exposure.";
                                 minimum: 0.0;
                                 maximum: 0.6;
@@ -695,16 +706,6 @@ export component MainWindow inherits Window {
                                 changed => { root.sliders-changed(); }
                             }
 
-                            cloud-city-gain-slider := SettingRow {
-                                label: "City glow";
-                                hint: "How much of the light cities throw upward the cloud bases over them pick up. Zero turns it off.";
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.cloud-city-gain;
-                                value-text: round(root.cloud-city-gain * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
                         }
                     }
 

@@ -396,37 +396,37 @@ beam has gone. That constant is also the sentinel fix: `write_uniforms` puts -1.
 `fs_cloud` used to read the same uniform, which reversed its `smoothstep` edges in the three
 single-texture modes.
 
-The night value is `cloud_night`, 0.25 by default, and it is an appearance parameter rather
+The night value is `cloud_night`, 0.30 by default, and it is an appearance parameter rather
 than an irradiance. The plan's own finding is why: the day side is about 18.6 stops brighter
 than the night side, by the sun-to-full-moon ratio and independently by the exposure settings
 of "Hello, World" against those of "The Blue Marble", which is more than any sensor or eye
 holds at once, so the frame is a tone map and the number is a decision about how much of that
 gap to compress. It is chosen against the texture it draws over: Black Marble's unlit land
 reads 0.137, its Antarctica and a typical city cluster 0.20, the Nile delta 0.36 and its cores
-1.0, so 0.25 puts a night cloud above every unlit surface and well below the lights.
+1.0, so 0.35 puts a night cloud above every unlit surface and well below the lights.
 
-`cloud_city_gain`, 0.7 by default, is the light a city throws onto the cloud base over it. It
-is why the cloud bind group's binding 3 is the night map rather than the dummy, and the mip
-level it samples at is derived from the source's own width, `max(log2(width / 1024), 0)`, so
-the blur is a fixed angle instead of one that reaches three times as far at 8192 as at 2048.
-Zero gates the sample rather than scaling it, so a run at zero reaches the same pixels a build
-without the term does, and `city_light_at_zero_draws_the_frame_a_missing_night_map_draws`
-holds that byte for byte; what no case in the suite distinguishes is the gate from a multiply
-by zero, which is the plan's departure 4. Which of the night map and the dummy sits on binding
-3 is a property of the session and not of the mode, since a load is spawned only for the slot
-the current mode draws from and nothing unloads one: a session that has been in blend mode
-keeps the map there in every mode afterwards, which is what both of those cases are built on,
-and `the_dummy_night_map_lights_no_cloud` is the one that renders a deck against the dummy and
-asks what it adds. The cost is that the group spans two slots with different lifetimes:
-`purge_file_backed_slots` destroys the night texture without touching the cloud slot, so both
-it and `process_decoded_textures` rebuild the group, and a miss is a validation error on the
-next draw rather than a wrong pixel. It is an extrapolation rather than a published technique,
-and it samples the whole night map rather than only its lights, so it lifts a night deck over
-unlit land too.
+Each hemisphere carries its own opacity, and only the day one is a multiplier on coverage.
+`cloud_opacity` is that multiplier and is unchanged. `cloud_opacity_night`, 0.55 by default, is
+read as an optical depth instead, `t / (1 - t)` clamped by `NIGHT_OPACITY_MIN_TRANSMITTANCE` to
+at most 32, and `alpha = 1 - pow(1 - density, depth)`. Two things forced that. The same alpha
+does not read the same on the two sides: a deck at `cloud_night` is darker than the city under
+it and far darker than a core at display white, so the surface wins a blend that on the day
+side it loses invisibly. And the source cannot supply the density a multiplier would need,
+because the published composite's median texel is 0.79 and only half a percent of it reaches
+0.97, which through the floor and gamma is a density of 0.45 for a cloud that looks solid. So a
+straight multiply at 100 percent left a third of the ground showing, which is what
+`the_night_opacity_reaches_full_cover` measures: over the fixture's city the window reads 246.7
+with the deck off, 164.7 at the default and 89.0 at the top of the range, against the 89.2 the
+deck alone is worth, where the straight multiply reads 169.3 at the top. The base of the `pow`
+is held off zero because WGSL computes it as `exp2(y * log2(x))`, so `pow(0, 0)`, which is a
+fully dense cloud at zero night opacity, is a NaN. `SceneParams::draws_clouds` is the draw gate, since one
+hemisphere at zero is not the layer switched off.
 
-Three references pin all of it, and not interchangeably: `clouds_across_the_terminator` holds
-the floor, `cloud_terminator_close_up` holds the shift and the width, and
-`clouds_lit_by_city_light` holds the coupling. They are the suite's first blend-mode goldens,
+Two references pin it, and not interchangeably: `clouds_across_the_terminator` holds the floor
+and `cloud_terminator_close_up` holds the shift and the width. Neither holds the night opacity:
+their cloud fixture is 255 or nothing, so every cloud pixel in it has a density of one and any
+nonzero night opacity covers the ground completely. `FixtureClouds::uniform` is the map at one
+mid value that the opacity case uses instead. They are the suite's first blend-mode goldens,
 which is why `check_golden_in` waits for `day_texture` and `night_texture`: nothing spawns
 those decodes until a case asks for the mode, and the first one to do so exported the frame
 the fallback draws.

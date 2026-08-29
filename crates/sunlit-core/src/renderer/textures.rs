@@ -93,9 +93,6 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 } else if msg.slot_index == super::NIGHT_SLOT {
                     res.night_texture_view = Some(tex_view);
                     maybe_create_composite_bind_group(res);
-                    // The cloud group samples this view too, and it was built
-                    // with the dummy in that binding before the slot landed.
-                    maybe_create_cloud_bind_group(res);
                 } else if msg.slot_index == res.layout().clouds() {
                     res.cloud_texture_view = Some(tex_view);
                     maybe_create_cloud_bind_group(res);
@@ -142,12 +139,6 @@ pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
     res.composite_bind_group = None;
     res.day_texture_view = None;
     res.night_texture_view = None;
-    // The cloud slot is not file-backed, so the loop below leaves its group
-    // alone, and that group holds the night view this line just dropped. A draw
-    // through it after the destroy below is a validation error rather than a
-    // wrong pixel, so it is rebuilt here with the dummy in that binding, and
-    // again when the night slot lands.
-    maybe_create_cloud_bind_group(res);
     res.last_resolved = None;
     res.last_state = None;
     res.last_rendered_index = 0;
@@ -191,30 +182,17 @@ pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
 
 /// Create the cloud bind group if the cloud texture view is available.
 ///
-/// Binding 3 is the night map, which `fs_cloud` samples for the city light a
-/// cloud base picks up from below, and the dummy where none has loaded, whose
-/// one texel answers zero and is the layer with the coupling switched off.
-/// Which of the two it holds belongs to the session rather than to the mode:
-/// `texture_routing::resolve_textures` spawns a load only for the slot the
-/// current mode draws from and nothing ever unloads one, so a session that has
-/// been in blend mode keeps the night map here in every mode afterwards.
-///
-/// So the group spans two slots with different lifetimes, and it has to be
-/// rebuilt whenever either moves: when the night slot lands, and after the purge
-/// destroys what it held.
+/// `fs_cloud` reads one texture, so binding 3 of the shared layout takes the
+/// dummy and the group depends on the cloud slot alone.
 pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
     if let Some(cloud_view) = &res.cloud_texture_view {
-        let night_view = res
-            .night_texture_view
-            .as_ref()
-            .unwrap_or(&res.dummy_texture_view);
         res.cloud_bind_group = Some(create_bind_group(
             &res.device,
             &res.bind_group_layout,
             &res.uniform_buffer,
             cloud_view,
             &res.sampler,
-            night_view,
+            &res.dummy_texture_view,
             "cloud_bind_group",
         ));
     }

@@ -375,6 +375,13 @@ pub struct CacheJob {
 /// The file the job writes to say what it actually packed.
 pub const CACHE_REPORT: &str = "cache.txt";
 
+/// What every crate of this workspace's fingerprint directory is named after.
+///
+/// `sunlit-core` and `sunlit-earth` are the two a release build compiles, and
+/// cargo files each unit's fingerprint under its own package name and a hash.
+/// Nothing else in the build directory begins with this.
+pub const WORKSPACE_FINGERPRINTS: &str = "sunlit-*";
+
 /// What a `cache.txt` line says was packed.
 const PACKED: &str = "packed ";
 
@@ -411,6 +418,15 @@ pub fn parse_packed(text: &str) -> Vec<cache::Kind> {
 /// the previous commit under this commit's record. The cached trees keep the
 /// times they were archived with, because their whole value is that nothing in
 /// them looks newer than what was built from it.
+///
+/// That argument is about clocks, so it is not left to hold on its own: a
+/// restored build directory gives up this workspace's own fingerprints and the
+/// binary they link to before the build starts. A fingerprint that is not there
+/// is a unit cargo rebuilds whatever the times say, so `sunlit-core` and
+/// `sunlit-earth` are compiled from the extracted source in every warm build,
+/// and what the cache serves is the dependency tree `--locked` pins. Deleting
+/// the binary alone would not do it: cargo would notice the missing output and
+/// relink it out of whatever rlibs it still believed in.
 ///
 /// A restore that fails clears what it was writing into and the build goes on
 /// cold, and a pack that fails costs the cache and not the build: by the time
@@ -457,6 +473,14 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                     label = kind.label(),
                     archive = kind.archive(),
                 );
+                if *kind == cache::Kind::Target {
+                    let _ = write!(
+                        script,
+                        "echo 'cache: dropping this workspace out of the restored build directory'\n\
+                         rm -rf \"$CARGO_TARGET_DIR/release/.fingerprint\"/{WORKSPACE_FINGERPRINTS} \
+                         \"$CARGO_TARGET_DIR/release/{exe}\"\n"
+                    );
+                }
             }
             let _ = write!(
                 script,
@@ -560,6 +584,18 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                     let _ = write!(script, "rmdir /s /q \"{path}\"\r\n");
                 }
                 let _ = write!(script, ":cache_in_{}\r\n", kind.slug());
+                if *kind == cache::Kind::Target {
+                    let fingerprints = format!(
+                        r"%CARGO_TARGET_DIR%\release\.fingerprint\{WORKSPACE_FINGERPRINTS}"
+                    );
+                    let cached_exe = format!(r"%CARGO_TARGET_DIR%\release\{exe}");
+                    let _ = write!(
+                        script,
+                        "echo cache: dropping this workspace out of the restored build directory\r\n\
+                         for /d %%d in (\"{fingerprints}\") do rmdir /s /q \"%%d\"\r\n\
+                         if exist \"{cached_exe}\" del /f /q \"{cached_exe}\"\r\n"
+                    );
+                }
             }
             let _ = write!(
                 script,
@@ -2177,6 +2213,62 @@ mod tests {
 
     fn pin() -> Toolchain {
         crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses")
+    }
+
+    /// The second line of defence under decision 23, which is the one thing
+    /// this design must never get wrong: a binary of the previous commit under
+    /// this commit's record. `-m` makes the extracted source newer than the
+    /// restored artifacts, and that is an argument about the guest's clock. So
+    /// a restored build directory also gives up this workspace's fingerprints,
+    /// which makes cargo rebuild those crates whatever the times say, and the
+    /// binary that would otherwise be copied out unchanged.
+    #[test]
+    fn a_restored_build_directory_gives_up_this_workspace() {
+        let pinned = pin();
+        for target in Target::ALL {
+            let warm = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: cache::Kind::ALL.to_vec(),
+                    save: Vec::new(),
+                },
+            );
+            let drop_at = warm
+                .find(WORKSPACE_FINGERPRINTS)
+                .unwrap_or_else(|| panic!("{target}: nothing drops the fingerprints: {warm}"));
+            let unpack = warm
+                .find(&cache::Kind::Target.archive())
+                .expect("the target archive is unpacked");
+            let build = warm
+                .find("build --release")
+                .expect("the build is in the job");
+            assert!(drop_at > unpack, "{target}: {warm}");
+            assert!(drop_at < build, "{target}: {warm}");
+            // The exe the cache holds goes with them, so a link that did not
+            // happen cannot be copied out as this commit's.
+            let cached_exe = warm
+                .lines()
+                .filter(|line| line.contains(exe_name(target)))
+                .any(|line| line.contains("rm -rf") || line.contains("del /f /q"));
+            assert!(cached_exe, "{target}: {warm}");
+
+            // And none of it is in a job that restored nothing to drop.
+            let cold = build_job(target, &pinned, &CacheJob::default());
+            assert!(!cold.contains(WORKSPACE_FINGERPRINTS), "{target}: {cold}");
+            let registry_only = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: vec![cache::Kind::Registry],
+                    save: Vec::new(),
+                },
+            );
+            assert!(
+                !registry_only.contains(WORKSPACE_FINGERPRINTS),
+                "{target}: {registry_only}"
+            );
+        }
     }
 
     /// The job carries exactly the clauses this run needs, because the host

@@ -273,7 +273,11 @@ tree is extracted with `-m` so that no committed file can look older than an art
 from it; `--locked` and the lockfile's checksums mean a restored registry can only hold
 what the network would have handed over; and a cache is discarded whole rather than merged
 the moment the pinned channel or the builder image changes, in a line naming the field that
-moved. A build that failed saves nothing, because a failure caused by what was in a cache
+moved. The first of those is an argument about the guest's clock, so it does not stand on
+its own: a restored build directory gives up this workspace's own fingerprints and the
+binary linked from them before the build starts, which makes `sunlit-core` and
+`sunlit-earth` units cargo compiles again whatever the times say. What the cache serves is
+the dependency tree, which is where all of its value was anyway. A build that failed saves nothing, because a failure caused by what was in a cache
 would otherwise stick. `build-info.json` records per archive whether it was restored, what
 it matched, and whether a fresh one was written, so a release says for itself what it
 inherited. Three Linux binaries of three separate runs, cold and warm, are byte for byte

@@ -153,7 +153,10 @@ The guest packs and unpacks both, because a restored registry is tens of thousan
 files and `scp -r` is a round trip per file; the host only stores and transfers them, so it
 needs no zstd of its own and `vm doctor`'s tool list is unchanged. What keeps it a cache
 rather than a shortcut is that it cannot decide what the binary is: the source tree is
-extracted with `-m`, so no committed file can look older than an artifact built from it;
+extracted with `-m`, so no committed file can look older than an artifact built from it,
+and because that is an argument about the guest's clock a restored build directory also
+gives up this workspace's own fingerprints and the binary linked from them, which makes
+`sunlit-core` and `sunlit-earth` units cargo compiles again whatever the times say;
 `--locked` and the lockfile's checksums mean a restored registry holds only what the
 network would have handed over; and `cache::restorable` discards a cache whole rather than
 merging it when the channel or the builder image moves, in a line naming the field that

@@ -405,7 +405,9 @@ is called done.
 
 ## Tests
 
-The suite renders no cloud pixel anywhere, and that has to be fixed before either part can
+No test in the suite measures a cloud pixel: `cloud_pipeline_renders_with_alpha` in
+`tests/render_pipeline.rs` encodes the draw and counts non-clear pixels, and nothing else reaches
+`fs_cloud` at all. That has to be fixed before either part can
 be called verified. The cloud slot is fed by the fetcher rather than by
 `config.texture_paths`, so `golden.rs` has never had a cloud texture and the draw is skipped
 in all twelve cases; `engine.rs` uses `cloud_opacity` only as a "something changed" knob for
@@ -624,7 +626,7 @@ Everything above was measured on fixtures, and two of its conclusions did not su
 with the real textures. Both were reported from a running app rather than by a test, which is
 the part of this document's own risk section that turned out to matter.
 
-**The city-light coupling reads terrain, not lights, and is now off by default.** Decision 6
+**The city-light coupling reads terrain, not lights, and has been removed.** D7
 assumed the night map is a map of lights over a dark base, and the fixture was built that way:
 a uniform unlit value with one bright patch on it. `BlackMarble_2016.jxl` as it sits on disk is
 not that. It carries a blue-tinted terrain layer whose brightness tracks surface albedo, and
@@ -649,8 +651,10 @@ is what "it just makes all night side clouds brighter" means. The blur is not th
 measured not to be: Tokyo's peak survives the mip level at 0.976 and the terrain base survives
 at ratio 1.00, so the derivation in departure 5 is doing what it was meant to.
 
-The term was then removed outright, and the whole of decision 6 with it: `cloud_city_gain`, its
-uniform, its slider, its two engine cases and the `clouds_lit_by_city_light` reference are gone,
+The term was then removed outright, and the whole of D7 with it: `cloud_city_gain`, its uniform,
+its slider, the `clouds_lit_by_city_light` reference and three engine cases are gone, the third
+being test item 7's resolution switch, which existed for the bind group hazard and asserted less
+than `a_resolution_switch_reloads_the_textures_in_both_directions` already does,
 and the cloud bind group's binding 3 is the dummy again, which takes the two rebuild sites and
 the lifetime hazard they existed for with it. What settled it is that the effect the term was
 for is already there without it: below full night opacity the city lights read through the deck,
@@ -693,4 +697,4 @@ so every cloud pixel in it has a density of one and any nonzero night opacity co
 completely, which is why `FixtureClouds::uniform` exists: one mid value, where an alpha is a
 number rather than a saturated one. `the_night_opacity_reaches_full_cover` reads 246.7 with the
 deck off, 164.7 at the default and 89.0 at the top of the range against a deck worth 89.2, and
-the straight multiply reads 169.3 there.
+the straight multiply reads 175.3 there.

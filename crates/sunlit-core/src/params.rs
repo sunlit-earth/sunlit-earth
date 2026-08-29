@@ -241,14 +241,14 @@ impl SceneParams {
         config.custom_year = self.datetime.custom_year;
     }
 
-    /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
-    /// the draw call entirely.
     /// Whether the cloud layer draws at all. Each hemisphere has its own
     /// opacity, so one of them at zero is not the layer switched off.
     pub fn draws_clouds(&self) -> bool {
         self.cloud_opacity > 0.0 || self.cloud_opacity_night > 0.0
     }
 
+    /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
+    /// the draw call entirely.
     pub fn effective_rayleigh_intensity(&self) -> f32 {
         if self.atmo_enabled {
             self.rayleigh_intensity

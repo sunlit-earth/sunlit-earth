@@ -396,7 +396,7 @@ beam has gone. That constant is also the sentinel fix: `write_uniforms` puts -1.
 `fs_cloud` used to read the same uniform, which reversed its `smoothstep` edges in the three
 single-texture modes.
 
-The night value is `cloud_night`, 0.30 by default, and it is an appearance parameter rather
+The night value is `cloud_night`, 0.35 by default, and it is an appearance parameter rather
 than an irradiance. The plan's own finding is why: the day side is about 18.6 stops brighter
 than the night side, by the sun-to-full-moon ratio and independently by the exposure settings
 of "Hello, World" against those of "The Blue Marble", which is more than any sensor or eye
@@ -417,7 +417,7 @@ because the published composite's median texel is 0.79 and only half a percent o
 straight multiply at 100 percent left a third of the ground showing, which is what
 `the_night_opacity_reaches_full_cover` measures: over the fixture's city the window reads 246.7
 with the deck off, 164.7 at the default and 89.0 at the top of the range, against the 89.2 the
-deck alone is worth, where the straight multiply reads 169.3 at the top. The base of the `pow`
+deck alone is worth, where the straight multiply reads 175.3 at the top. The base of the `pow`
 is held off zero because WGSL computes it as `exp2(y * log2(x))`, so `pow(0, 0)`, which is a
 fully dense cloud at zero night opacity, is a NaN. `SceneParams::draws_clouds` is the draw gate, since one
 hemisphere at zero is not the layer switched off.

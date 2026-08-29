@@ -173,9 +173,8 @@ pub fn write_panorama_landmark_fixture(
 
 /// Width of the day and night surface fixtures.
 ///
-/// Exactly the 1024 texels `fs_cloud` measures its city-light blur against, so
-/// the mip level it picks on these is zero because the width says so rather
-/// than because the clamp under it caught a narrower map.
+/// Wide enough that a case can put a camera close to one of the night map's
+/// landmarks without reading a single texel across the window.
 pub const SURFACE_FIXTURE_WIDTH: u32 = 1024;
 
 /// The day map's one colour. Flat on purpose: every case that loads these is
@@ -215,8 +214,8 @@ impl SurfaceFixtures {
 ///
 /// The night map is the interesting one: an unlit base bright enough to be
 /// measured against, and one city with a saturated core and a dimmer cluster
-/// around it, which is the structure a uniform ambient term cannot represent
-/// and the city-light coupling is about.
+/// around it, so a case has both a dark ground and a ground at display white to
+/// put a cloud deck over.
 pub fn write_surface_fixtures(dir: &Path) -> SurfaceFixtures {
     let width = SURFACE_FIXTURE_WIDTH;
     let height = width / 2;
@@ -370,6 +369,6 @@ impl sunlit_core::assets::cloud_source::CloudSource for FixtureClouds {
     }
 
     fn describe(&self) -> String {
-        "cloud bands fixture".to_owned()
+        format!("cloud fixture ({})", self.etag)
     }
 }

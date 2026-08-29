@@ -2728,6 +2728,7 @@ fn panorama_params() -> SceneParams {
         sun_glow: 0.0,
         moon_brightness: 0.0,
         cloud_opacity: 0.0,
+        cloud_opacity_night: 0.0,
         atmo_enabled: false,
         milky_way_intensity: 1.0,
         camera: sunlit_core::scene::camera::CameraParams {
@@ -3626,6 +3627,55 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
              the cloud ramp is reading the sentinel rather than its own width"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Either opacity at zero switches off its own hemisphere and not the layer.
+///
+/// The banded fixture is 255 or nothing, so the deck over the frame center has a
+/// density of one, and the night map's city is under it: the ground reads near
+/// display white and the deck reads `cloud_night`, so which of the two the frame
+/// holds is one number. At a night opacity of zero the night side has to show
+/// the ground even though the day slider is up, and with only the night slider
+/// up the layer still has to draw, which is what `draws_clouds` is for.
+///
+/// A density of one at a night opacity of zero is also `pow(0, 0)` before
+/// `fs_cloud` holds the base off zero, so this is the shape that reaches it.
+#[test]
+fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_hemispheres");
+    let base = cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR);
+    let (harness, _surface) = cloud_harness(&dir, base);
+    let read = |day: f32, night: f32| {
+        harness
+            .engine
+            .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+                cloud_opacity: day,
+                cloud_opacity_night: night,
+                ..base
+            })));
+        center_window_mean(
+            &harness
+                .engine
+                .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+                .expect("the engine should be able to export"),
+            CLOUD_CASE_SIZE,
+        )
+    };
+
+    let day_only = read(base.cloud_opacity, 0.0);
+    let night_only = read(0.0, base.cloud_opacity_night);
+    let deck = f64::from(base.cloud_night) * 255.0;
+    println!("day slider alone reads {day_only:.1}, night slider alone reads {night_only:.1}");
+
+    assert!(
+        day_only > deck + 40.0,
+        "with the night opacity at zero the night side reads {day_only:.1}, which is the deck          at {deck:.1} rather than the lit ground under it"
+    );
+    assert!(
+        (night_only - deck).abs() < 2.0,
+        "with only the night opacity up the night side reads {night_only:.1} rather than the          deck's {deck:.1}, so the layer is not drawing when the day slider is zero"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

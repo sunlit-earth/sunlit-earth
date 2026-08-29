@@ -47,8 +47,8 @@ struct Uniforms {
     nightglow_orange_radius: f32,
     nightglow_green_radius: f32,
     rayleigh_haze: f32,
-    _pad3: f32,
-    _pad4: f32,
+    cloud_night: f32,
+    cloud_terminator: f32,
     _pad5: f32,
     sky_view: [f32; 16],
     world_from_eqj: [[f32; 4]; 3],
@@ -72,7 +72,7 @@ struct Uniforms {
     moon_brightness: f32,
     moon_earthshine: f32,
     milky_way_intensity: f32,
-    _pad6: f32,
+    cloud_opacity_night: f32,
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);
@@ -566,8 +566,8 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         nightglow_orange_radius: 1.014,
         nightglow_green_radius: 1.015,
         rayleigh_haze: 0.55,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_night: 0.35,
+        cloud_terminator: sunlit_core::params::CLOUD_TERMINATOR_WIDTH,
         _pad5: 0.0,
         sky_view: glam::Mat4::IDENTITY.to_cols_array(),
         world_from_eqj: [
@@ -600,7 +600,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         // These cases bind the Earth's own texture rather than a panorama, and
         // the layer's draw is not among the ones they encode.
         milky_way_intensity: 0.0,
-        _pad6: 0.0,
+        cloud_opacity_night: 0.55,
     }
 }
 
@@ -734,8 +734,8 @@ struct Uniforms {
     nightglow_orange_radius: f32,
     nightglow_green_radius: f32,
     rayleigh_haze: f32,
-    _pad3: f32,
-    _pad4: f32,
+    cloud_night: f32,
+    cloud_terminator: f32,
     _pad5: f32,
     sky_view: mat4x4<f32>,
     world_from_eqj: mat3x3<f32>,
@@ -759,7 +759,7 @@ struct Uniforms {
     moon_brightness: f32,
     moon_earthshine: f32,
     milky_way_intensity: f32,
-    _pad6: f32,
+    cloud_opacity_night: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -841,6 +841,10 @@ fn main() {
     output[56] = uniforms.moon_earthshine;
     // the Milky Way
     output[57] = uniforms.milky_way_intensity;
+    // the cloud layer's own three
+    output[58] = uniforms.cloud_night;
+    output[59] = uniforms.cloud_terminator;
+    output[60] = uniforms.cloud_opacity_night;
 }
 ";
 
@@ -907,8 +911,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         nightglow_orange_radius: 1.014,
         nightglow_green_radius: 1.015,
         rayleigh_haze: 0.55,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_night: 0.31,
+        cloud_terminator: 0.19,
         _pad5: 0.0,
         sky_view: mvp,
         world_from_eqj: [
@@ -940,7 +944,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         moon_brightness: 1.25,
         moon_earthshine: 0.35,
         milky_way_intensity: 0.65,
-        _pad6: 0.0,
+        cloud_opacity_night: 0.61,
     };
 
     let uniform_buf = ctx
@@ -952,7 +956,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         });
 
     // Output buffer: 58 floats
-    let output_size = (58 * std::mem::size_of::<f32>()) as u64;
+    let output_size = (61 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1260,6 +1264,21 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         (values[57] - 0.65).abs() < eps,
         "milky_way_intensity: got {}, expected 0.65",
         values[57]
+    );
+    assert!(
+        (values[58] - 0.31).abs() < eps,
+        "cloud_night: got {}, expected 0.31",
+        values[58]
+    );
+    assert!(
+        (values[59] - 0.19).abs() < eps,
+        "cloud_terminator: got {}, expected 0.19",
+        values[59]
+    );
+    assert!(
+        (values[60] - 0.61).abs() < eps,
+        "cloud_opacity_night: got {}, expected 0.61",
+        values[60]
     );
 }
 

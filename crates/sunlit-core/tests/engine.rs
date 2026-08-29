@@ -273,8 +273,10 @@ fn wider_sky_fov_reveals_more_catalog_directions() {
 /// clear of the band, 168 puts the disk's lower edge exactly at the top of the
 /// zone, 170.5 grazes the atmosphere band, 172 leaves the disk inside the band
 /// with a hundredth of its light, and 176 puts it well inside the painted disc.
-/// The atmosphere is off so that the only thing these cases can be measuring is
-/// the Sun.
+/// The two cases about a draw's own cull take the same family further round,
+/// to 68 and 105, where the Sun is past a frame's corner rather than near the
+/// limb. The atmosphere is off so that the only thing these cases can be
+/// measuring is the Sun.
 ///
 /// Those five numbers are for the 512 by 256 the preview quantizes down to,
 /// which `sun_off_and_on` asserts rather than assumes: at another aspect ratio

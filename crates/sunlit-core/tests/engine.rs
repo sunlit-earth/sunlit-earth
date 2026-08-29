@@ -3477,6 +3477,14 @@ fn center_window_mean(pixels: &[u8], size: (u32, u32)) -> f64 {
     total as f64 / count as f64
 }
 
+/// Pixels that differ between two exports of the same size.
+fn differing_pixels(one: &[u8], other: &[u8]) -> usize {
+    one.chunks_exact(4)
+        .zip(other.chunks_exact(4))
+        .filter(|(one, other)| one != other)
+        .count()
+}
+
 /// Parameters the cloud cases share: the fixture surface, the camera over the
 /// point the case is about, and nothing else in the window.
 ///
@@ -3696,11 +3704,7 @@ fn city_light_at_zero_draws_the_frame_a_missing_night_map_draws() {
             .expect("the engine should be able to export")
     };
 
-    let differing = with_night_map
-        .chunks_exact(4)
-        .zip(without_night_map.chunks_exact(4))
-        .filter(|(a, b)| a != b)
-        .count();
+    let differing = differing_pixels(&with_night_map, &without_night_map);
     assert_eq!(
         differing, 0,
         "{differing} pixels differ between a cloud layer at city gain zero and \
@@ -3718,6 +3722,69 @@ fn city_light_at_zero_draws_the_frame_a_missing_night_map_draws() {
         "only {brightened} pixels brightened when the city glow was turned on, \
          so the night map is not reaching the cloud layer in this mode and the \
          identity above proves nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The mode that draws the globe from the procedural grid, and the one mode that
+/// spawns no file-backed load at all.
+const GRID_MODE: i32 = 0;
+
+/// The dummy on binding 3 answers zero, so a deck in a mode that has loaded no
+/// night map reads the same at every city gain.
+///
+/// `resolve_textures` spawns a load only for the slot the current mode draws
+/// from, so an engine that has only ever been in Grid mode holds the dummy in
+/// its cloud group however `texture_paths` is set, and the one texel behind it
+/// is the whole of what the coupling can add there. Nothing else in the suite
+/// renders a cloud at a nonzero gain against the dummy, so a dummy that stopped
+/// reading black would brighten every deck a cold session draws.
+///
+/// The deck-off frame is what keeps the identity from being vacuous: it says the
+/// frame holds a deck rather than bare ground.
+#[test]
+fn the_dummy_night_map_lights_no_cloud() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_dummy");
+    let at_zero = cloud_case_params(GRID_MODE, 180.0, NIGHT_HOUR);
+    let (harness, _surface) = cloud_harness(
+        &dir,
+        SceneParams {
+            cloud_city_gain: SceneParams::default().cloud_city_gain,
+            ..at_zero
+        },
+    );
+    let export = || {
+        harness
+            .engine
+            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+            .expect("the engine should be able to export")
+    };
+
+    let lit = export();
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(at_zero)));
+    let off = export();
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+            cloud_opacity: 0.0,
+            ..at_zero
+        })));
+    let bare = export();
+
+    let drawn = differing_pixels(&lit, &bare);
+    println!("the deck covers {drawn} pixels of the grid at night");
+    assert!(
+        drawn > 200,
+        "only {drawn} pixels change when the deck is switched off, so this frame \
+         holds no cloud and the identity below is about nothing"
+    );
+    let differing = differing_pixels(&lit, &off);
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels differ between a deck at the default city gain and \
+         the same deck at zero, with no night map loaded behind either"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

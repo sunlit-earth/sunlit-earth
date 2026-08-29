@@ -175,16 +175,16 @@ fn base_params() -> SceneParams {
 
 /// The part of a rendered frame a case is compared over.
 ///
-/// Every case but one compares the whole frame. The Moon is the exception, and
-/// the reason is arithmetic rather than taste: at 60 degrees of sky and eight
-/// times its size, the largest the disk can be in any coherent framing, it is 31
-/// pixels across in a 512 by 256 frame. Removing it entirely then comes to a
-/// mean channel difference of 0.22 against a tolerance of 2.00, so a full-frame
+/// Most cases compare the whole frame, and three do not. Each of the three is
+/// arithmetic rather than taste, and all three are the same arithmetic: a thing
+/// a few dozen pixels across cannot move a 512 by 256 frame past a tolerance
+/// meant for a whole picture. Removing the Moon entirely comes to a mean
+/// channel difference of 0.22 against a tolerance of 2.00, so a full-frame
 /// reference would go on passing with the feature deleted, which is precisely
-/// the failure phase B's goldens taught. Comparing the window the Moon is in
-/// puts the same loss at a mean of 3.12 with 1.71 percent of pixels outliers,
-/// which fails on both counts, and what the window leaves out is the globe,
-/// which nine other cases pin.
+/// the failure phase B's goldens taught; over the window it is 3.12 with 1.71
+/// percent of pixels outliers. `sunrise_band` and `sun_rising_through_the_band`
+/// carry their own measurements above their windows. What each window leaves
+/// out is the globe, which nine other cases pin.
 #[derive(Clone, Copy)]
 struct Window {
     x: u32,
@@ -569,7 +569,7 @@ fn golden_sun_grazing_the_limb() {
 /// sideways rather than off the top: the vertical half of a 512 by 256 frame
 /// carries twice the angle the horizontal one does, so a Sun placed above the
 /// globe is off screen before it has cleared anything. At zoom 0.26 the
-/// silhouette is 177 pixels across, the annulus 2.7 and the disk 4.6, so the
+/// silhouette's radius is 177 pixels, the annulus 2.7 and the disk 4.6, so the
 /// horizon zone is the disk's own diameter and the whole gradient is inside it.
 fn horizon_camera(longitude: f32) -> CameraParams {
     CameraParams {

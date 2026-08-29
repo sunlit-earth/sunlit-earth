@@ -89,4 +89,67 @@ The user's answers of 2026-08-29: the sliders' resolution stays as it is; the pr
 
 ## Departures and validation record
 
-To be filled in during implementation, numbered from 1, each with reasoning and the measured figures, then the round record as the first amendment's has it.
+Recorded during implementation on 2026-08-29, in the order the amendment met reality.
+
+1. **Criterion 1's inversion is not there, and the measurement it names is empty at the framing that needed it.** The criterion says the excess is "larger with the image one zone width inside the painted limb than with the true Sun aligned to the true limb, and larger still with the disk emerged", and that "today the first comparison is inverted". Measured before anything moved, at 1920 by 1080, 3.7 Earth radii and 140 degrees of sky, the band's own red excess over the whole frame is 23204 with the true Sun on the true limb, 172272 with the image one zone inside the painted limb, and 154072 with the disk emerged: the first comparison holds today and the second does not. Under the criterion's own restriction it is worse, because that region is empty: at the first framing the Sun's image is 195 pixels from the frame's center and the glare's thirty degree cone images as a circle reaching 585 pixels out, while the painted limb is at 860, so no limb pixel is within the glare's reach of the image and the excess there is exactly zero on either shader. What the defect actually is, is amplitude: the lobe at the painted limb is 0.27 of its peak when the Sun's image arrives and 1.0 when the true Sun crosses the true limb, and the fix reverses those. So the engine case measures the light the Sun and the band together add to a frame, red minus blue, at the three framings the criterion names, and asserts that the framing whose Sun has no image near the limb adds under a twentieth of what the framing whose image stands on the limb does. At 512 by 256 that is 381 against 31221 with the lobe in the sky lens and 1287 against 12222 with it in the true scattering angle, so the case fails on the old shader by a factor of two and passes on the new one by a factor of five. The criterion's third clause is kept as it stands and is a sanity check rather than a test of the defect: 145013 against 31221 now, 127854 against 12222 before. The failure was verified by injection, restoring the old line in `fs_rayleigh` and running the case.
+
+2. **The lobe's azimuth was already right, and only its amplitude moved.** Decision 12 had already observed that both lenses are radially symmetric about the view axis and take the same pan, so the band's peak sits at the Sun's image's azimuth in either frame. Measured at the emergence framing at 3.7 Earth radii, the band's red excess along the limb peaks 2 degrees of azimuth from the Sun's image both before and after the change. The decision's diagnosis is right about what goes wrong and this is what it does to the picture: the band does not move around the limb, it brightens where the disk is and dims where it is not. At 3.7 Earth radii the band's whole-frame excess falls from 23204 to 5512 at the framing with no Sun to see and rises from 172272 to 535804 at the framing whose image stands on the limb.
+
+3. **At 2 Earth radii there is no limb in the frame, so criterion 2's judgment cannot be made there.** The globe subtends `asin(1 / 2)`, 30 degrees, from that camera, and a 16 by 9 frame at the default 20 degree camera lens reaches 17.40 degrees at its horizontal edge, so the painted silhouette's radius is 1768 pixels against a frame corner at 1101: the globe covers every pixel, the Sun's image at the emergence framing lands at -509, -448, and the band adds nothing to the frame at all, zero pixels touched. The nearest distance whose limb is on a 16 by 9 frame is 3.344. The six frames are rendered and kept anyway, as the record of what that camera shows, and the sequence is judged at 3.7, 9 and 40.
+
+4. **The fine gain's formula and its description disagree by a factor of two, and the formula is what shipped.** Decision 15 calls `degrees(2 * tan(sky_fov / 4) / preview_width_px)` "the angle one pixel spans at the center of the sky lens". It is half of that: the sky lens puts a direction `theta` off the axis at `tan(theta / 2) / tan(sky_fov / 4)` in half-widths, so a pixel at the axis spans `4 tan(sky_fov / 4) / width`. Every number the decision and criterion 3 state is the formula's rather than the description's, 0.042 degrees per pixel at 140 degrees of sky on a 1920 pixel preview, 0.060 at 180, and "about half a pixel per mouse pixel near the frame's center", so the formula shipped unchanged and the sentence around it now says half the angle a pixel spans. Criterion 3's clause about the fine gain equalling the lens's angle per pixel is tested as the thing that number is for: `the_fine_gain_moves_the_suns_image_half_a_pixel` projects two directions through `sky_lens_disc`, the projection the Sun's own image goes through, and holds the ratio to a part in a thousand at 60, 140 and 180 degrees of sky. It measures across four degrees rather than across one gain because recovering a hundredth of a degree from a direction costs an `acos` of a cosine that is exactly 1.0 in f32, and the lens is linear to a part in ten thousand over four degrees.
+
+5. **`apply_globe_drag` keeps its signature and delegates.** Criterion 3 asks that a drag above the high threshold reproduce today's rotation exactly. Rather than give the existing function a seventh parameter and move its five call sites and its tests, the rotation is now `apply_globe_drag_at`, which takes the gain, and `apply_globe_drag` is that function with `coarse_drag_gain(zoom)`. One rotation, two gains, and the existing cases are untouched.
+
+6. **`glam` joins the app's dev-dependencies.** The fine gain is a statement about the sky lens, so it is checked against the lens rather than against a second spelling of it, and `sky_lens_disc` takes and returns `glam` types. Test-only: the app's runtime dependencies are unchanged.
+
+7. **The drag's thresholds were not tuned by hand.** Step 3 asks for the three framings to be dragged through in the running app and the two speeds and the time constant tuned there. This run has no way to drive a mouse on the user's desktop, so the shipped values are decision 15's proposals unchanged: 60 and 600 logical pixels a second and a 60 millisecond time constant. Nothing about the feel of them has been observed, and the roadmap item says so. What is verified is the arithmetic: the ends, the monotonicity, the continuity, the estimator's convergence and its interval cap all have cases, and `a_sweep_turns_the_globe_exactly_as_it_always_did` holds the top end to the old behavior exactly.
+
+### What shipped
+
+`atmo_sunrise_width` is unchanged in number, 30 degrees, and changed in meaning: it is now the sky-lens angle at which the lobe falls to half. No other control moved, and no control was added.
+
+| decision 15's constant | shipped | in |
+|---|---|---|
+| the speed at and below which the gain is the fine one | 60 logical pixels a second | `mouse_math::FINE_DRAG_SPEED` |
+| the speed at and above which it is the coarse one | 600 | `mouse_math::COARSE_DRAG_SPEED` |
+| the estimator's time constant | 60 milliseconds | `mouse_math::DRAG_SPEED_TIME_CONSTANT` |
+| the longest interval that still counts as one drag | 500 milliseconds | `mouse_math::DRAG_SPEED_MAX_INTERVAL` |
+
+All four are proposals rather than measurements, and departure 7 says why they are still proposals.
+
+### The references that moved
+
+Regenerated on both local adapters and compared against the references as they stood at the plan commit. Seven of the sixteen moved and the two adapters agree about every one of them to a thousandth of a level.
+
+| reference | mean on warp | mean on lavapipe | outliers on warp | why |
+|---|---|---|---|---|
+| `rayleigh` | 0.1148 | 0.1149 | none | a day-side frame at the widest of the shell: the lobe's floor moved when its angle did |
+| `sunrise_band` | 0.0339 | 0.0334 | none | over its own 72 by 256 strip. Framed at 60 degrees of sky where the two lenses nearly agree, which is why the case this amendment exists for moves by a thirtieth of a level |
+| `clouds_across_the_terminator` | 0.0241 | 0.0241 | 88 pixels | the same residual, on a frame whose limb the cloud shell sits over |
+| `nightglow` | 0.0172 | 0.0172 | 55 pixels | a night-side framing whose Sun is behind the globe, which is where the lobe fires |
+| `default` | 0.0027 | 0.0027 | none | the floor again, on a day-side frame |
+| `sun_over_the_night_side` | 0.0012 | 0.0012 | none | the same |
+| `sun_grazing_the_limb` | 0.0009 | 0.0009 | none | the same |
+
+Criterion 5 predicted five movers and got four of them. The one that did not move is `sun_rising_through_the_band`, byte for byte on both adapters, and the reason is in its own body: it renders with `atmo_enabled: false`, so there is no Rayleigh shell in it to carry a lobe. Everything the criterion predicted byte for byte came back byte for byte: `close_up`, `moon_crescent`, `night_side_with_stars`, `large_crisp_stars`, `bright_star_halos`, `panorama_behind_the_stars`, `panorama_at_a_narrow_sky` and `cloud_terminator_close_up`. The three it predicted would move by a residual or not at all all moved by a residual, `rayleigh`'s being the largest movement in the set.
+
+### Teeth
+
+`sunrise_band_close` renders at the shipped `atmo_sunrise_glow` of 1.0, unlike its sibling: it needs no amplification, because at 3.7 Earth radii the band is fifteen pixels of a limb that crosses the whole frame rather than a thread on a small globe.
+
+| case | deletion | over the case's own window | over the whole frame |
+|---|---|---|---|
+| `sunrise_band_close` | `atmo_sunrise_glow` 1 to 0 | 0.7644 mean, 2.490 percent | 0.1087, 0.356 percent |
+
+The tolerance is a mean of 2.00 or one percent of pixels differing by more than 24, and a deletion has teeth when it passes either. Over the window it fails on the outlier count; over the whole frame it passes on both, which is what the window is for and is the same arithmetic `sunrise_band` and `moon_crescent` needed.
+
+### Criterion 2, and what the sequence showed
+
+Six framings at each of 2, 3.7, 9 and 40 Earth radii, 1920 by 1080 on the real textures at 140 degrees of sky with `sun_flare` at the user's own 0, chosen by geometry rather than by hand: the first three by the fraction of the disk the limb leaves visible (0.02, 0.25, 0.60), the fourth by the disk's lower edge standing on the painted limb, and the last two by its center standing 2 and 8 horizon zones above it. Distance 2 is departure 3 and is not judged.
+
+- **The band peaks under the emerging disk.** At the emergence framing the band's own light, measured against the same frame with `atmo_sunrise_glow` at 0, is 85 percent within the glare's reach of the Sun's image at 3.7 Earth radii, 95 percent at 9 and 100 percent at 40, and its centroid is 154, 77 and 23 pixels from the image against painted silhouettes of 860, 342 and 77 pixels. Along the limb it peaks 2 degrees of azimuth from the image.
+- **No dark gap.** The radial profile outward through the Sun's image falls monotonically from the clipped disk through the band into space at all three distances, with no trough between them: at 3.7 it is 765, 753, 728, 662, 582, 533, 447 over the two zone widths above the limb.
+- **The disk sits on the glow.** At 3.7 the lifted disk is inside the warm band rather than above it, and the band runs on along the limb to either side of it. This is a reading of the renders rather than the user's own judgment, which the criterion asks for and this run cannot make: the frames and their configurations are in the run directory for that.
+
+One thing the renders show that the amendment did not predict. At 3.7 Earth radii the outermost pixel or two of the shell reads magenta rather than pale blue, where before it read violet: the lobe is now at full strength at the limb, its hue at the top of the band is nearly white, and white over the shell's own blue is pink. It is the amplitude the change was for, arriving on the one part of the band whose light path is short, and `atmo_sunrise_glow` scales the whole lobe linearly if it is too much. Also at that distance the disk is invisible until it very nearly stands clear, because refraction has flattened it to a pixel and the band has taken almost all of its light: the first three framings of the sequence show a band and no Sun, and the fourth shows a Sun. That is the physics the first amendment built and not something this one changed, and it is exactly why the drag needed a finer gain, since the whole of it happens inside four pixels of the Sun's image.

@@ -277,6 +277,16 @@ reads every dependency's bitcode on every build, so a warm build is not a fast b
 a build without the download and the dependency compile. Expect minutes rather than
 seconds.
 
+The cache is not free either, and every step of it says what it cost while the build runs,
+so the log is where to look rather than a document. Measured at the tip: the whole round
+trip, both archives in, unpacked, packed and back out, is 44 to 64 seconds on Linux and
+1m 42s on Windows. Most of the Windows figure is one number, the 62 seconds it takes to
+unpack a 118 MiB crate registry there against 5 on Linux, which is the tens of thousands of
+small files that made the guest do the unpacking in the first place. So on Windows the cache
+wins by less than the build times alone suggest. It still wins, because the alternative to a
+62 second unpack is downloading the index and every crate again, but anyone reading the two
+columns above should know what is under them.
+
 A cache cannot change what is built, and that is a property rather than a hope. The source
 tree is extracted with `-m` so that no committed file can look older than an artifact built
 from it; `--locked` and the lockfile's checksums mean a restored registry can only hold

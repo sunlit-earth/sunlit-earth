@@ -511,3 +511,74 @@ this branch touched: nothing here compiles `sunlit-core`.
 The soak test passed inside the whole-workspace `cargo test` on Windows here, which is the
 other half of the observation above rather than a contradiction of it: two failures and
 three passes now, on trees that differ by nothing it compiles.
+
+### What the cache itself costs, and validator round 1's three minors
+
+Round 1 found no majors and three minors. Two were things the code did not do that a
+document said it did, and the third was step 5's pack, unpack and transfer times, which
+were never measured because nothing was instrumented to measure them. All three are closed
+here, in departures 5, 6 and 7, and three live runs at `f8a1d52` are what says so.
+
+**The times, which is the ending that was taken.** Step 5's figures could have been
+recorded as not itemized, since the whole-target totals already settle the risk they were
+for, but the plan's discipline is that an unmeasured figure is measured or recorded as
+unmeasured, and instrumenting it is cheap. So each cache step now says what it cost as it
+happens and the host puts its own two transfers in the record.
+
+| | Linux, two runs | Windows |
+|---|---|---|
+| registry, 122.3 / 118.5 MiB, into the guest | under 1s, 1s | under 1s |
+| registry, unpacked in the guest | 5s, 5s | 62.2s |
+| build directory, 612.6 / 619.1 MiB, into the guest | 4s, 4s | 3s |
+| build directory, unpacked in the guest | 11s, 13s | 21.3s |
+| build directory, packed in the guest | 9s, 23s | 12.4s |
+| build directory, back out to the host | 15s, 18s | 3s |
+| the whole cache round trip | 44s, 64s | 1m 42s |
+| cargo's own time in the same run | 3m 54s, 5m 00s | 5m 40s |
+
+The registry is restored on every build and packed only when `Cargo.lock` has moved, so its
+two figures are a restore cost with no matching save, which is decision 26 working.
+
+Two things in that table are worth reading twice. **A registry unpacks twelve times slower
+in the Windows guest than in the Linux one**, 62.2s against 5s for an archive of the same
+size, which is exactly the tens-of-thousands-of-small-files cost decision 21 named as the
+reason the guest unpacks rather than the host copying a tree in. And **the Windows cache's
+own round trip is 1m 42s against a cold build's 6m 58s and a warm one's 5m 40s here**, so
+on that target the cache is a smaller win than the build times alone suggest: it is still a
+win, because a cold registry is a full index and crate download rather than a 62 second
+unpack, but the margin is real and it is now written down rather than assumed. The Linux
+side is not close: 44s to 64s against the same saving. Nothing is changed in response,
+because the numbers carry more than a minute of spread (cargo took 3m 54s and 5m 00s on two
+runs of the same sources), and a design decision taken on figures that noisy would be a
+guess wearing a table.
+
+**A restored build directory now gives up this workspace, and the runs show it.** Both jobs
+printed `cache: dropping this workspace out of the restored build directory` and then
+compiled exactly `sunlit-earth` and `sunlit-core` and nothing else, which is what departure
+5 asks for: the two crates of this tree are rebuilt from the extracted source whatever the
+guest's clock says, and the dependency tree below them comes out of the cache. Both binaries
+verified in their desktop guests afterwards, at 21.5 and 23.9 channel steps from the grid
+against the floor of 8.0.
+
+**`--no-verify` writes a bundle that says nothing ran it.** The third run was
+`dist --target linux --no-verify`, which had neither a test nor a live run before. It wrote
+`target/dist/linux/` with the archive in it, printed the caveat on the line naming the
+archive, and closed with "linux: built in 6m35s and not verified". Both copies of the
+record, the one beside the archive and the one inside it, carry `"verified_in": null` and a
+null `texture_lookup_delta`. That is the correction departure 6 makes to
+`docs/vm-setup.md`, shown from both ends.
+
+### The gates at the tip of the minors
+
+Run at `f8a1d52` on Windows, and again at the tip once the record above was written, since
+only this document and the two guides moved after it.
+
+| gate | result |
+|---|---|
+| `cargo test` | green, thirteen targets, 538 in xtask against 536 before these three |
+| `cargo clippy --all-targets` | **zero warnings**, workspace-wide |
+| `cargo fmt --check` | clean |
+
+The WSL leg was not re-run. Nothing here compiles differently there: the three changes are
+xtask's generated job text, one serde attribute pair and two prose files, and `cargo test -p
+xtask` is the whole of what covers them.

@@ -164,10 +164,15 @@ moved. A failed build saves nothing, and the registry is not packed again while 
 *restored* one's `Cargo.lock` has not moved: a sidecar that was refused describes an
 archive nothing will read again, so reading its hash as "the host already has this" would
 leave the registry cold until the lockfile happened to move. `--no-cache` skips restore and save both, and
-`build-info.json`'s `cache` section says per archive which of those happened, so what a
-release inherited is readable afterwards rather than taken on trust. Measured warm against
-cold: 4m 04s against 6m 58s on Windows and 3m 49s against 5m 28s on Linux, for archives of
-about 120 MiB and 615 MiB. The cache is inventory rather than run state, so `vm status`
+`build-info.json`'s `cache` section says per archive which of those happened and what each
+transfer cost, so what a release inherited is readable afterwards rather than taken on
+trust. Measured warm against cold: 4m 04s against 6m 58s on Windows and 3m 49s against
+5m 28s on Linux, for archives of about 120 MiB and 615 MiB. The cache's own round trip is
+44 to 64 seconds on Linux and 1m 42s on Windows, and 62 of those Windows seconds are one
+step, unpacking the crate registry, which is the small-files cost that put the unpacking in
+the guest to begin with; every step prints what it took, a duration on Linux and a reading
+of the clock on either side of it on Windows, where computing the difference would cost a
+process spawn or a bet on the locale's time format. The cache is inventory rather than run state, so `vm status`
 counts it per image, `vm down` never takes it, and `vm purge <image> --cache` is what frees
 it.
 

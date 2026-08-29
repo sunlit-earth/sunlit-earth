@@ -181,4 +181,75 @@ Four questions were open when this amendment was drafted; the user answered all 
 
 ## Departures and validation record
 
-To be filled during implementation, in the order the amendment meets reality.
+Recorded during implementation on 2026-08-29, in the order the amendment met reality.
+
+1. **The uniform block carries `sun_size` rather than a precomputed bloom scale, and gained a flux of its own.** Step 1's list names "the bloom inner scale" as a uniform. Passing the size instead keeps `SUN_BLOOM_INNER_DEGREES` in the shader where its five siblings are; computing the scale on the CPU would have put a shader constant on the Rust side, which is the duplication the shared-rule probe exists to police. `sun_flux` is beyond the list for a different reason: `sun_visible` is still what culls the glare draw, the flux is what scales it, and after decision 10 those are two different numbers.
+
+2. **The refracted direction is recovered through the lens rather than through a pixels-per-degree linearization.** Decision 11 says the apparent center is written back "by rotating the true direction away from the globe's center by the lift converted through the pixels-per-degree at the Sun". `place_sun` instead moves the disc's center radially by the lift in pixels and inverts the sky lens analytically (`sky_lens_direction`, the Rust twin of the shader's function of the same name), then re-images the disc from the direction that comes back. Same intent, exact rather than linearized, and it reuses one formula instead of adding a second. A lift of exactly zero skips the round trip, so a Sun the band cannot reach keeps its bits.
+
+3. **The squashed-visibility identity is exact for a straight limb and approximate for a circular one.** Decision 11 says scaling along the cut's normal preserves area fractions, which holds where the limb is a line. Scaling one axis takes the globe's circle to an ellipse, so the pulled-back limb agrees with the moved circle where the disk sits and curves away to either side of it. Measured at the strongest flattening the slider reaches, against the drawn ellipse sampled on a 400 by 400 grid: 0.025 of the visible fraction at the true half degree, 0.065 at three times it, 0.121 at eight. It is worst where the disk is deepest in the band, which is where its light is nearly gone, so a glare already down to a hundredth is what carries the error. Kept rather than replaced, because the closed form is what returns exactly 1.0 for a clear disk, and every golden with a Sun above the limb depends on that.
+
+4. **The forward lobe has its backscatter floor subtracted and the remainder renormalized.** Decision 12 says the lobe is Henyey-Greenstein in the scattering angle. Plain Henyey-Greenstein keeps 3.3 percent of its peak at every backscattering angle at the default width, which is a warm ring around the whole limb of every frame whose Sun is behind the camera: not a lobe around anything. The floor is subtracted and the rest renormalized, which is what `star_halo_profile` does at its own edge. With it, `default` and `rayleigh` moved by 0.0002 and 0.0087 of a level; without it both move by several.
+
+5. **Criterion 1's twenty percent on the transmitted green does not hold below fifteen kilometers, and cannot.** The exponential air mass reproduces Mallama's table to within 21 percent at every row of it, but transmission is exponential in air mass, so a sixth of an air mass at eleven air masses is 41 percent of the green. Ratios of model to table: 0.98 at 32 km, 0.97 at 27, 0.94 at 22, 0.95 at 20, 0.94 at 18, 1.04 at 15, then 1.41 at 13, 1.31 at 8 and 1.66 at 5. `the_transmitted_green_follows_the_table_where_the_air_mass_is_small` holds the top six rows to twenty percent and pins the 13 km row at 1.41 with the reason beside it.
+
+6. **Criterion 3's prediction about which references come back byte for byte is wrong for two of them.** The criterion named `sun_grazing_the_limb` as the one that moves and predicted that `sun_over_the_night_side`, the three star cases, `nightglow` and every reference without a Sun would be unchanged. Regenerated on both local adapters, five moved rather than one, and the two extra are the forward lobe rather than a regression: `nightglow` is a night-side framing whose Sun is behind the globe, which is exactly where the lobe fires, and it reddens 390 pixels of its limb past the outlier threshold. `default` and `rayleigh` are day-side frames where the lobe is at its subtracted floor, and what is left of it there is one or two levels. The whole measurement is in the validation record below. Byte for byte on both adapters, as predicted: `close_up`, `night_side_with_stars`, `large_crisp_stars`, `bright_star_halos`, `moon_crescent`, `panorama_behind_the_stars` and `panorama_at_a_narrow_sky`.
+
+7. **The two new goldens are framed at zoom 0.26 rather than the 0.10 criterion 3 named.** The criterion asked for "a zoom where the zone holds the disk (about 0.10, where the painted annulus is 7 pixels on 512 by 256)". They run at 0.26, which is `base_params`' own zoom and the one every other case in the suite is framed at, where the annulus is 2.7 pixels and the zone is `sun_horizon_depth` disk diameters instead, which at the default depth is exactly the disk. What that costs is a narrower zone than the criterion had in mind, since the annulus it names is wider than the disk and the zone it names is therefore the annulus. Departure 9 is where that bill arrives and what pays it is the Sun's own size rather than the zoom, because the zoom is what puts these two cases against the same globe the other fourteen sit against.
+
+8. **`sunrise_band` compares the strip of frame the band runs down, not the whole frame.** The plan asked for two goldens and said nothing about windows. The band is a thread along a limb the grid texture already paints bright, so deleting the lobe entirely comes to a mean of 0.21 over the whole frame with 0.40 percent of pixels outliers, which passes on both counts: the reference would go on passing with the feature deleted. Over a 72 by 256 strip with the limb down the middle of it the same loss is 1.52 and 2.83 percent, which fails on the second. That is the treatment `moon_crescent` already needed, for the same arithmetic reason.
+
+9. **`sun_rising_through_the_band` needed the same treatment and one more: four times the Sun's size.** As first framed, at longitude 157.1 and the true half degree, the disk had barely entered the band: deleting the reddening moved the whole frame by a mean of 0.26 with no pixel differing by more than eight levels, and deleting the other two moved it less. The arithmetic says why. The disk is 4.6 pixels across there, the horizon zone is the same 4.6 pixels because the depth default makes it the disk's diameter, one zone width stands for the shell's 96 km, and the part of the band that colors anything is its lowest thirty kilometers, which is a pixel and a half. `sun_size` scales the disk and the zone together, so at four times the size the whole geometry is the shipped one at four times the pixels, which is what `moon_size` does for `moon_crescent` and for the same reason. The case is now at longitude 157.3 with `sun_size` 4, where the disk crosses the painted limb with 83 percent of itself showing, carries 36 percent of its light and is flattened to 0.57 of its height, and it compares the 80 by 80 window the disk and the near half of its glare land in. Measured there, deleting the tint comes to a mean of 55.33 with 83.09 percent of pixels outliers, the exposure gain to 56.03 with 98.58, and the lift and the squash to 6.19 with 4.58. The window is what the third one needs: over the whole frame at the same framing those are 10.04 with 16.80 percent, 7.27 with 11.00, and 0.91 with 0.22, so a full-frame reference would pass with refraction deleted.
+
+10. **Criterion 4's "brightest pixel" cannot tell the exposure gain anything, so the engine cases measure the light the Sun adds.** The criterion asks that "the glare's brightest pixel at the moment the disk clears the zone exceeds its value with the Sun well clear, and equals it at boost 1". The disk is drawn clipped white wherever it is drawn at all, so any framing that shows any of it has a brightest gain of 254 over the same frame with `sun_glow` at zero, at every exposure and both boosts: the measurement is constant where the criterion needs it to move. What the gain multiplies is the glare's amplitude, so the cases sum what the Sun adds to the frame instead. At the two framings the criterion names, and with everything but the gain equal at both, the one at the top of the zone adds 2.74 times what the one well clear of it does, and 0.971 times with the boost at 1. The 2.74 rather than 3 and the 0.971 rather than 1 are both clipping: the brightest of the glare saturates at both framings, and the two sit over different parts of the globe's own brightness.
+
+### What shipped
+
+Every default in the Controls table shipped as the table proposed it, and every one of them is still provisional in the sense question 4 settled: the user reviews them against the implementation and this record is where a change would go.
+
+| field | shipped |
+|---|---|
+| `sun_glow` | 1.0, unchanged |
+| `sun_rays` | 0.6, unchanged |
+| `sun_size` | 1.0 |
+| `sun_halo_radius` | 3.0 degrees |
+| `sun_flare` | 0.15, clamped to 1.0 by `AppConfig::sanitize` |
+| `sun_horizon_boost` | 3.0 |
+| `sun_horizon_reach` | 4.0 |
+| `sun_horizon_depth` | 1.0 |
+| `sun_reddening` | 1.0 |
+| `sun_refraction` | 1.0 |
+| `atmo_sunrise_glow` | 1.0 |
+| `atmo_sunrise_width` | 30 degrees |
+
+### The references that moved
+
+Measured over the whole frame against the references as they stood at the plan commit, on both local adapters. The two adapters agree to a thousandth of a level everywhere, which is itself worth recording: the transmission's `pow` and the lobe's `pow(x, 1.5)` are smooth functions of smooth inputs, and the risk list's worry about cross-adapter stability did not materialize.
+
+| reference | mean on warp | mean on lavapipe | outliers on warp | why |
+|---|---|---|---|---|
+| `sun_grazing_the_limb` | 14.7043 | 14.7145 | 21.61 percent | the reference this amendment exists to move: the flat orange transit tint and the 0.6 dimming are gone, replaced by the transmitted hue and the flux model |
+| `nightglow` | 0.2873 | 0.2875 | 0.30 percent | the forward lobe reddens its limb, on 390 pixels of it past the outlier threshold and 185 levels at the most |
+| `sun_over_the_night_side` | 0.0274 | 0.0274 | 0.08 percent | the same lobe, on about a hundred pixels of limb. The Sun itself is unchanged: its flux, gain, squash and tint come out exactly 1.0, 1.0, 1.0 and white |
+| `rayleigh` | 0.0087 | 0.0086 | none | a day-side frame, so the lobe is at its subtracted floor; what is left is one or two levels |
+| `default` | 0.0002 | 0.0002 | none | the same residual, on 83 pixels, one level each |
+
+### Teeth
+
+| case | deletion | over the case's own window | over the whole frame |
+|---|---|---|---|
+| `sun_rising_through_the_band` | `sun_reddening` 0 | 55.33 mean, 83.09 percent | 10.04, 16.80 percent |
+| `sun_rising_through_the_band` | `sun_horizon_boost` 1 | 56.03, 98.58 percent | 7.27, 11.00 percent |
+| `sun_rising_through_the_band` | `sun_refraction` 0 | 6.19, 4.58 percent | 0.91, 0.22 percent |
+| `sunrise_band` | `atmo_sunrise_glow` 0 | 1.52, 2.83 percent | 0.21, 0.40 percent |
+| `sunrise_band` | `sun_reddening` 0 | 37.52, 57.48 percent | not measured |
+| `sunrise_band` | `sun_horizon_boost` 1 | 1.31, 0.93 percent | not measured |
+| `sunrise_band` | `sun_refraction` 0 | 1.11, 0.07 percent | not measured |
+
+The tolerance is a mean of 2.00 or one percent of pixels differing by more than 24, and a deletion has teeth when it passes either. Each of the four effects is pinned by one of the first four rows. The last three say what the band case does not pin, which is why the rising case exists beside it: the band is drawn from the shell rather than from the disk, so the gain and the squash barely reach it, and its dependence on the reddening is the lobe's own color rather than the disk's.
+
+### Gates
+
+`cargo fmt --check`, `cargo clippy --all-targets` and `cargo test` are green on Windows against `warp`, and `cargo test --workspace` is green in WSL against `lavapipe`: 466 unit cases in the core, 57 engine, 16 golden, 21 render pipeline, 12 shading, the soak, 46 and 2 in the app, 28 in the Slint suite and 501 in the xtask, with the ten desktop e2e cases ignored as always. The golden suite ran three times in a row without the update variable on each adapter after its references were regenerated.
+
+One thing the gates did not catch until this round: `every_golden_case_is_distinguishable` reads the reference directory and fails on any file its own list does not name, and the two new references were not on that list, so the case had been failing since they arrived. Naming them there is what makes them part of the guard, and what the guard then does with them is only the presence check, because all three windowed cases are a size of their own and the pairwise comparison has no meaning across two sizes.

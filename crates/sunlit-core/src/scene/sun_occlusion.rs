@@ -46,11 +46,11 @@ pub fn pixel_scale(viewport_height: f32) -> f32 {
     (viewport_height / 1080.0).clamp(1.0, 2.0)
 }
 
-/// Earth's radius in kilometres, which is what turns a shell radius in Earth
+/// Earth's radius in kilometers, which is what turns a shell radius in Earth
 /// radii into the height of the band it stands for.
 pub const EARTH_RADIUS_KM: f32 = 6371.0;
 
-/// Scale height of the density the light path runs through, in kilometres.
+/// Scale height of the density the light path runs through, in kilometers.
 ///
 /// One number serves the extinction and the refraction alike: `70 exp(-h / 7)`
 /// reproduces Mallama's cumulative air masses to about a fifth over the whole
@@ -106,7 +106,7 @@ pub fn limb_hue(height_km: f32, reddening: f32) -> Vec3 {
 ///
 /// A tenth of the Sun is still a blinding source, so the disk clips at full
 /// brightness wherever the green channel carries more than 2.5 percent, about
-/// nine kilometres, and fades out below that instead of being cut where the
+/// nine kilometers, and fades out below that instead of being cut where the
 /// painted globe begins. Mirrored by `limb_disk_amplitude` in `sphere.wgsl`.
 #[must_use]
 pub fn limb_disk_amplitude(green_transmission: f32) -> f32 {
@@ -845,7 +845,7 @@ mod tests {
     }
 
     /// A tenth of the Sun is still a blinding source, so the disk clips white
-    /// down to about nine kilometres and only then starts to go.
+    /// down to about nine kilometers and only then starts to go.
     #[test]
     fn the_disk_clips_white_until_the_path_carries_almost_nothing() {
         assert_relative_eq!(limb_disk_amplitude(limb_transmission(12.0, 1.0).y), 1.0);

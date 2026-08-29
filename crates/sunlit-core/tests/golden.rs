@@ -607,7 +607,7 @@ fn golden_sun_rising_through_the_band() {
     // Four times the size for the reason `moon_crescent` is eight times its
     // own: at its true half degree the disk is 4.6 pixels across in a 512 by
     // 256 frame, the horizon zone is the same 4.6 pixels, and the part of the
-    // band that colors anything is the lowest thirty kilometres of it, which
+    // band that colors anything is the lowest thirty kilometers of it, which
     // comes to a pixel and a half. `sun_size` scales the disk and the zone
     // together, so the whole of the geometry is the shipped one at four times
     // the pixels, and the gradient the case is named for exists to be compared.

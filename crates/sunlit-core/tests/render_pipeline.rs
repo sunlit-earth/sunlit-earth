@@ -1401,7 +1401,7 @@ fn shared_rule_probe() {
 ";
 
 /// Heights through the band the third rule is compared at: the surface, the
-/// few kilometres where the disk fades out, the rows the research table names,
+/// few kilometers where the disk fades out, the rows the research table names,
 /// and the top of the band where the path takes nothing.
 const RULE_HEIGHTS_KM: [f32; 9] = [0.0, 2.0, 5.0, 8.0, 13.0, 20.0, 27.0, 50.0, 95.565];
 

@@ -494,12 +494,12 @@ fn limb_hue_km(height_km: f32) -> vec3<f32> {
 
 /// How far the disk is still drawn where the path carries almost nothing: a
 /// tenth of the Sun is a blinding source, so it clips white down to about nine
-/// kilometres and fades out below rather than being cut at the painted limb.
+/// kilometers and fades out below rather than being cut at the painted limb.
 fn limb_disk_amplitude(green_transmission: f32) -> f32 {
     return sqrt(saturate(green_transmission * DISK_FADE_GAIN));
 }
 
-/// How high in the band a framebuffer position sits, in kilometres.
+/// How high in the band a framebuffer position sits, in kilometers.
 ///
 /// The painted annulus between the globe's silhouette and the atmosphere
 /// shell's stands for the whole band, widened to `sun_zone_width` so the

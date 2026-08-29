@@ -21,11 +21,13 @@
 //! machine that did not build it: that is what proves it starts and renders
 //! somewhere other than in a guest with a compiler in it.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::bundle::{self, Bundled};
 use crate::commands::vm;
 use crate::guest::artifacts;
 use crate::guest::job::{self, OutputTail};
@@ -132,6 +134,24 @@ pub const VERIFY_TIMEOUT: Duration = Duration::from_mins(15);
 pub const SMOKE_WIDTH: u32 = 640;
 pub const SMOKE_HEIGHT: u32 = 360;
 pub const SMOKE_FILE: &str = "smoke.png";
+
+/// The other render of the same scene, made against a directory with nothing in
+/// it, which is the procedural grid by construction.
+pub const GRID_FILE: &str = "grid.png";
+
+/// The directory the grid render is pointed at, inside the guest.
+pub const EMPTY_TEXTURES: &str = "empty-textures";
+
+/// How far apart the two verification renders have to be before the bundle is
+/// believed to have found its textures.
+///
+/// A render that failed to find them still produces a 640x360 PNG of the
+/// procedural grid, so the header check cannot tell the two apart: this is what
+/// can. The floor is far above the fraction of a channel step a second or two of
+/// the Earth turning between the two renders accounts for, and far below the
+/// difference measured live between a grid and a textured globe, which is in the
+/// amendment's validation record.
+pub const TEXTURE_LOOKUP_FLOOR: f64 = 8.0;
 
 /// The lowest glibc a Linux release binary may require.
 ///
@@ -390,50 +410,153 @@ pub fn build_job(target: Target, pinned: &Toolchain) -> String {
     }
 }
 
-/// The verification job: one headless render in the desktop image.
+/// What the verification boot is asked to prove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verification<'a> {
+    /// The bundle, as a user would have it. Two renders of the same scene: one
+    /// with `SUNLIT_EARTH_TEXTURES` pointed at a directory the job creates and
+    /// leaves empty, which is the procedural grid by construction, and one with
+    /// the variable unset, which is the lookup a user's machine does.
+    Bundle {
+        /// The binary inside the staged bundle.
+        exe: &'a str,
+        /// The empty directory, which the job makes and nothing fills.
+        empty: &'a str,
+    },
+    /// The loose binary, which is what a run whose checkout holds Git LFS
+    /// pointers falls back to (decision 33). There is no second render to
+    /// compare against, because there are no textures to find, so this is the
+    /// plan's own verification: one render, measured from its own header.
+    Loose { exe: &'a str },
+}
+
+/// The verification job.
 ///
 /// The same smoke test `ci.yml` runs, for the same reason and with the same
 /// check on the result: it asserts the output is a PNG of the size asked for
-/// rather than merely a file of non-trivial size. `SUNLIT_EARTH_TEXTURES` is set
-/// exactly when the textures were staged, on the rule the e2e job follows: a
-/// directory that is not there would make the app fall back to the procedural
-/// grid anyway, and naming one would be a lie in the script.
-pub fn verify_job(target: Target, exe: &str, textures: Option<&str>) -> String {
+/// rather than merely a file of non-trivial size. What the bundle adds is the
+/// second render, because the first check cannot tell a globe from a grid.
+///
+/// The job changes directory to the guest root before it runs anything, and that
+/// is load-bearing rather than tidiness: `resolve_textures_dir` tries a
+/// working-directory-relative `textures` before it walks up from the executable,
+/// so a job that ran from inside the bundle would answer with the first branch
+/// and leave the walk-up, which is the one a bundle depends on, untested. The
+/// guest root has no `textures/` in it, because a bundle run stages none of its
+/// own and every boot is a fresh overlay of a golden disk.
+pub fn verify_job(target: Target, verification: &Verification) -> String {
     match target {
-        Target::Linux => format!(
-            "#!/usr/bin/env bash\n\
-             set -uo pipefail\n\
-             {textures}\
-             export RUST_BACKTRACE=1\n\
-             {exe} --version\n\
-             {exe} render --output \"$SUNLIT_E2E_ARTIFACTS/{file}\" \
-             --width {width} --height {height}\n",
-            textures = textures.map_or_else(String::new, |dir| format!(
-                "export SUNLIT_EARTH_TEXTURES={}\n",
-                artifacts::shell_quote(dir)
-            )),
-            exe = artifacts::shell_quote(exe),
-            file = SMOKE_FILE,
-            width = SMOKE_WIDTH,
-            height = SMOKE_HEIGHT,
-        ),
-        Target::Windows => format!(
-            "@echo off\r\n\
-             {textures}\
-             set RUST_BACKTRACE=1\r\n\
-             \"{exe}\" --version\r\n\
-             \"{exe}\" render --output \"%SUNLIT_E2E_ARTIFACTS%\\{file}\" \
-             --width {width} --height {height}\r\n\
-             exit /b %ERRORLEVEL%\r\n",
-            textures = textures.map_or_else(String::new, |dir| format!(
-                "set SUNLIT_EARTH_TEXTURES={dir}\r\n"
-            )),
-            exe = exe,
-            file = SMOKE_FILE,
-            width = SMOKE_WIDTH,
-            height = SMOKE_HEIGHT,
-        ),
+        Target::Linux => {
+            let mut script = format!(
+                "#!/usr/bin/env bash\nset -uo pipefail\nexport RUST_BACKTRACE=1\ncd {root}\n",
+                root = crate::provider::GUEST_ROOT_LINUX,
+            );
+            if let Verification::Bundle { empty, .. } = verification {
+                let empty = artifacts::shell_quote(empty);
+                let _ = write!(script, "rm -rf {empty}\nmkdir -p {empty}\n");
+            }
+            let exe = artifacts::shell_quote(match verification {
+                Verification::Bundle { exe, .. } | Verification::Loose { exe } => exe,
+            });
+            let _ = writeln!(script, "{exe} --version || exit 1");
+            if let Verification::Bundle { empty, .. } = verification {
+                let _ = writeln!(
+                    script,
+                    "SUNLIT_EARTH_TEXTURES={empty} {exe} render \
+                     --output \"$SUNLIT_E2E_ARTIFACTS/{GRID_FILE}\" \
+                     --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit 1",
+                    empty = artifacts::shell_quote(empty),
+                );
+            }
+            let _ = writeln!(
+                script,
+                "{exe} render --output \"$SUNLIT_E2E_ARTIFACTS/{SMOKE_FILE}\" \
+                 --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit 1"
+            );
+            script
+        }
+        Target::Windows => {
+            let mut script = format!(
+                "@echo off\r\nset RUST_BACKTRACE=1\r\ncd /d \"{root}\" || exit /b 1\r\n",
+                root = crate::provider::GUEST_ROOT_WINDOWS,
+            );
+            if let Verification::Bundle { empty, .. } = verification {
+                let _ = write!(
+                    script,
+                    "if exist \"{empty}\" rmdir /s /q \"{empty}\"\r\n\
+                     mkdir \"{empty}\" || exit /b 1\r\n"
+                );
+            }
+            let exe = match verification {
+                Verification::Bundle { exe, .. } | Verification::Loose { exe } => exe,
+            };
+            let _ = write!(script, "\"{exe}\" --version || exit /b 1\r\n");
+            if let Verification::Bundle { empty, .. } = verification {
+                let _ = write!(
+                    script,
+                    "set SUNLIT_EARTH_TEXTURES={empty}\r\n\
+                     \"{exe}\" render --output \"%SUNLIT_E2E_ARTIFACTS%\\{GRID_FILE}\" \
+                     --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit /b 1\r\n\
+                     set SUNLIT_EARTH_TEXTURES=\r\n"
+                );
+            }
+            let _ = write!(
+                script,
+                "\"{exe}\" render --output \"%SUNLIT_E2E_ARTIFACTS%\\{SMOKE_FILE}\" \
+                 --width {SMOKE_WIDTH} --height {SMOKE_HEIGHT} || exit /b 1\r\n\
+                 exit /b 0\r\n"
+            );
+            script
+        }
     }
+}
+
+/// How far apart two renders of the same size are, as a mean channel difference
+/// over every sample.
+///
+/// Decoded rather than compared byte for byte: two PNG encodings of the same
+/// pixels can differ, and the question is whether the same scene was drawn from
+/// the same data.
+pub fn render_difference(grid: &[u8], bundled: &[u8]) -> Result<f64, String> {
+    let decode = |bytes: &[u8], what: &str| -> Result<image::RgbaImage, String> {
+        image::load_from_memory(bytes)
+            .map(image::DynamicImage::into_rgba8)
+            .map_err(|e| format!("the {what} render does not decode: {e}"))
+    };
+    let grid = decode(grid, "grid")?;
+    let bundled = decode(bundled, "bundle's")?;
+    if grid.dimensions() != bundled.dimensions() {
+        return Err(format!(
+            "the two renders are {:?} and {:?}, so they are not of the same scene",
+            grid.dimensions(),
+            bundled.dimensions()
+        ));
+    }
+    let total: u64 = grid
+        .as_raw()
+        .iter()
+        .zip(bundled.as_raw())
+        .map(|(a, b)| u64::from(a.abs_diff(*b)))
+        .sum();
+    // Both numbers are far inside what an `f64` holds exactly: a 640x360 render
+    // is 921,600 samples and the largest total any pair of them can reach is 255
+    // times that.
+    #[allow(clippy::cast_precision_loss)]
+    let mean = total as f64 / grid.as_raw().len() as f64;
+    Ok(mean)
+}
+
+/// What to say when the two renders are not far enough apart.
+pub fn grid_refusal(delta: f64, results: &Path) -> String {
+    format!(
+        "the bundle's own render and one made against an empty textures directory \
+         differ by {delta:.2} of a channel step, under the {TEXTURE_LOOKUP_FLOOR:.1} \
+         this asks for: the binary did not find the `textures/` beside it, so the \
+         bundle would ship a procedural grid under a name that promises a release.\n\
+         Both renders are in {}, and it is `resolve_textures_dir` walking up from \
+         the executable that the bundle's layout depends on.",
+        results.display()
+    )
 }
 
 /// The width and height in a PNG's IHDR, or `None` if this is not a PNG.
@@ -598,7 +721,11 @@ pub fn check_linkage(target: Target, deps: &str) -> Result<Linkage, String> {
 }
 
 /// What a release binary was built from, written beside it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` and not only `PartialEq` everywhere but here: the bundle's own section
+/// carries a measured difference between two renders, and a float has no total
+/// equality to derive.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BuildInfo {
     pub format_version: u32,
     pub target: String,
@@ -614,10 +741,33 @@ pub struct BuildInfo {
     /// The builder image and what its manifest says about itself.
     pub builder: BuilderInfo,
     pub linkage: Linkage,
+    /// The release bundle written beside the loose binary, when the host held
+    /// the texture assets rather than Git LFS pointers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<BundleInfo>,
     /// The desktop image the binary was run in, when verification ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_in: Option<String>,
     pub xtask_version: String,
+}
+
+/// The bundle this run wrote, as its own record describes it.
+///
+/// The record travels inside the bundle as well as beside it, so it cannot
+/// carry the finished archive's size: that is a number the archive would have to
+/// contain about itself. What it carries instead is what the bundle is, and the
+/// one measurement that says the textures in it are found rather than assumed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleInfo {
+    /// The one directory an unpack produces, which is also the archive's stem.
+    pub name: String,
+    /// The archive's file name, beside the binary in the dist directory.
+    pub archive: String,
+    pub entries: usize,
+    /// The mean channel difference between the bundle's own render and one made
+    /// against an empty textures directory, when the verification boot ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_lookup_delta: Option<f64>,
 }
 
 /// Which image built it, and which build of that image.
@@ -726,6 +876,10 @@ fn one_target(
         vm::check_image(store, desktop, options.allow_expired)?;
     }
     let builder_info = builder_info(store, builder)?;
+    // Read before anything boots too, for the same reason: a bundle is named
+    // after it, and a manifest that will not parse is a twenty-minute build
+    // wasted on a name that cannot be chosen.
+    let version = bundle::version(repo)?;
 
     let archive = archive_path(store, builder);
     let bytes = write_archive(runner, repo, &archive)?;
@@ -759,16 +913,7 @@ fn one_target(
         .to_owned();
     println!("  linkage: {}", linkage_summary(target, &linkage));
 
-    let smoke = if options.verify {
-        Some(verify_in_desktop(
-            runner, store, desktop, &exe, options, kept,
-        )?)
-    } else {
-        println!("  skipping the verification boot, because --no-verify was given");
-        None
-    };
-
-    let info = BuildInfo {
+    let mut info = BuildInfo {
         format_version: BUILD_INFO_VERSION,
         target: target.slug().to_owned(),
         commit: git.commit.clone(),
@@ -780,26 +925,165 @@ fn one_target(
         toolchain,
         builder: builder_info,
         linkage,
-        verified_in: smoke.as_ref().map(|_| desktop.slug().to_owned()),
+        bundle: None,
+        verified_in: None,
         xtask_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
 
-    let dist = dist_dir(target);
-    publish(&dist, &exe, &results, smoke.as_deref(), &info)?;
+    // Everything from here writes into the bundle scratch, which is run state:
+    // it belongs to the guest the bundle is staged into and is worth nothing
+    // once this target is done, so it goes whichever way the rest went.
+    let scratch = store.bundle_scratch(desktop);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let outcome = (|| -> Result<String, String> {
+        let bundled = assemble_bundle(repo, target, &version, &exe, &scratch, &mut info)?;
 
-    println!();
-    println!("{target}: {}", dist.join(exe_name(target)).display());
-    println!("  built from {} in the {builder} image", git.describe);
-    println!("  {}", runtime_requirements(target));
-    Ok(format!(
-        "{target}: built in {} and {}",
-        util::format_duration(started.elapsed()),
-        if smoke.is_some() {
-            format!("rendered in the {desktop} guest")
+        let verified = if options.verify {
+            Some(verify_in_desktop(
+                runner,
+                store,
+                desktop,
+                &exe,
+                bundled.as_ref(),
+                options,
+                kept,
+            )?)
         } else {
-            "not verified".to_owned()
+            println!("  skipping the verification boot, because --no-verify was given");
+            None
+        };
+
+        info.verified_in = verified.as_ref().map(|_| desktop.slug().to_owned());
+        if let (Some(bundle), Some(verified)) = (info.bundle.as_mut(), verified.as_ref()) {
+            bundle.texture_lookup_delta = verified.delta;
         }
-    ))
+        info.duration_secs = started.elapsed().as_secs();
+
+        // The record goes into the bundle only now, so that the copy inside it
+        // and the copy beside it are one file: what verification found is part
+        // of what a release binary was built from, and a bundle carrying a
+        // record that stopped short of it would be the stale one of two.
+        let archive = match &bundled {
+            Some(bundled) => Some(seal_bundle(bundled, &version, target, &scratch, &info)?),
+            None => None,
+        };
+
+        let dist = dist_dir(target);
+        publish(
+            &dist,
+            &exe,
+            &results,
+            verified.as_ref().map(|v| v.smoke.as_path()),
+            archive.as_deref(),
+            &info,
+        )?;
+
+        println!();
+        println!("{target}: {}", dist.join(exe_name(target)).display());
+        println!("  built from {} in the {builder} image", git.describe);
+        if let Some(archive) = &archive {
+            println!("{}", bundle::summary(&dist.join(file_name(archive))));
+        }
+        println!("  {}", runtime_requirements(target));
+        Ok(format!(
+            "{target}: built in {} and {}",
+            util::format_duration(started.elapsed()),
+            if verified.is_some() {
+                format!("rendered in the {desktop} guest")
+            } else {
+                "not verified".to_owned()
+            }
+        ))
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    outcome
+}
+
+/// Assemble the bundle, unless this checkout holds Git LFS pointers.
+///
+/// Decision 33: where there is nothing to put in a `textures/` there is no
+/// bundle to write and none to verify, so the run falls back to the plan's own
+/// verification and one line says why. A bundle without the assets would render
+/// the procedural grid under a name that promises a release, which is worse than
+/// not writing one.
+fn assemble_bundle(
+    repo: &Path,
+    target: Target,
+    version: &str,
+    exe: &Path,
+    scratch: &Path,
+    info: &mut BuildInfo,
+) -> Result<Option<Bundled>, String> {
+    let textures = match artifacts::textures_present(repo) {
+        Ok(dir) => dir,
+        Err(why) => {
+            println!("  no bundle: {why}");
+            println!("  {}", bundle::skipped_note());
+            return Ok(None);
+        }
+    };
+    let name = bundle::bundle_name(version, target);
+    let items = bundle::layout(
+        target,
+        &bundle::Sources {
+            repo,
+            exe,
+            textures: &textures,
+            // Rewritten in place by `seal_bundle` once verification has said
+            // what it found; written now so the directory that is staged into
+            // the guest is the whole bundle rather than most of it.
+            record: &info.to_json(),
+        },
+    );
+    let root = bundle::assemble(scratch, &name, &items)?;
+    info.bundle = Some(BundleInfo {
+        name: name.clone(),
+        archive: bundle::archive_name(version, target),
+        entries: items.len(),
+        texture_lookup_delta: None,
+    });
+    println!("  bundle:  {name}/, {}", util::count(items.len(), "file"));
+    Ok(Some(Bundled { name, root, items }))
+}
+
+/// Write the final record into the assembled bundle, archive it, and read the
+/// archive back with the crate that wrote it.
+///
+/// The read-back is the cheap half of proving the bundle: that the archive holds
+/// exactly what the directory holds, at the sizes the directory has. The
+/// expensive half is the two renders in the desktop guest.
+fn seal_bundle(
+    bundled: &Bundled,
+    version: &str,
+    target: Target,
+    scratch: &Path,
+    info: &BuildInfo,
+) -> Result<PathBuf, String> {
+    let record = bundled.root.join(bundle::RECORD);
+    std::fs::write(&record, info.to_json())
+        .map_err(|e| format!("cannot write {}: {e}", record.display()))?;
+
+    let format = bundle::Format::of(target);
+    let archive = scratch.join(bundle::archive_name(version, target));
+    let bytes = bundle::write(
+        format,
+        &bundled.root,
+        &bundled.name,
+        &bundled.items,
+        &archive,
+    )?;
+    let assembled = bundle::walk(&bundled.root)?;
+    let archived = bundle::read_back(format, &archive)?;
+    bundle::verify(&bundled.name, &assembled, &archived)?;
+    println!(
+        "  bundle:  {} ({}), {} read back and matched",
+        archive
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        util::format_bytes(bytes),
+        util::count(archived.len(), "entry")
+    );
+    Ok(archive)
 }
 
 /// What the record says about the image that built it.
@@ -938,16 +1222,28 @@ pub fn kept_builder_note(builder: Image) -> String {
     )
 }
 
-/// Boot the desktop image, stage the binary, render once, and take it down.
+/// What the verification boot found.
+#[derive(Debug, Clone)]
+struct Verified {
+    /// The render that goes into the dist directory: the bundle's own, when
+    /// there was a bundle.
+    smoke: PathBuf,
+    /// How far it is from the render made against an empty textures directory,
+    /// when there was a bundle to compare.
+    delta: Option<f64>,
+}
+
+/// Boot the desktop image, stage what is to be proved, render, and take it down.
 #[allow(clippy::too_many_lines)]
 fn verify_in_desktop(
     runner: &dyn Runner,
     store: &Store,
     desktop: Image,
     exe: &Path,
+    bundled: Option<&Bundled>,
     options: Options,
     kept: &mut Option<Image>,
-) -> Result<PathBuf, String> {
+) -> Result<Verified, String> {
     let target = desktop.target();
     println!();
     println!("  verifying it in the {desktop} guest, which did not build it");
@@ -960,36 +1256,44 @@ fn verify_in_desktop(
         None,
     )?;
 
-    let outcome = (|| -> Result<PathBuf, String> {
-        let bin_dir = provider::guest_bin(target);
-        session.provider.copy_in(&session.state, exe, &bin_dir)?;
-        let guest_exe = match target {
-            Target::Windows => format!(r"{bin_dir}\{}", exe_name(target)),
-            Target::Linux => format!("{bin_dir}/{}", exe_name(target)),
-        };
-        if target == Target::Linux {
-            // scp keeps the mode of what it copied, and the host's copy came out
-            // of a tar the guest wrote, so this is belt and braces rather than a
-            // fix for something observed.
-            let _ = session
+    let outcome = (|| -> Result<Verified, String> {
+        let root = provider::guest_root(target);
+        let empty = guest_join(target, root, EMPTY_TEXTURES);
+        let guest_exe = if let Some(bundled) = bundled {
+            println!("  staging the bundle, and nothing else");
+            session
                 .provider
-                .exec(&session.state, &format!("chmod +x {guest_exe}"));
-        }
-
-        // The same size check the e2e staging makes, and for the same reason: a
-        // checkout without the Git LFS objects holds pointer files under the
-        // asset names, and naming a directory of those costs a decode failure
-        // where naming nothing at all draws the procedural grid quietly.
-        let textures = artifacts::host_textures(&store::repo_root());
-        let guest_textures = match &textures {
-            Some(dir) => {
-                println!("  staging the textures from {}", dir.display());
-                session
-                    .provider
-                    .copy_in(&session.state, dir, &provider::guest_textures(target))?;
-                Some(provider::guest_textures(target))
+                .copy_in(&session.state, &bundled.root, &format!("{root}/"))?;
+            let staged = guest_join(target, root, &bundled.name);
+            let guest_exe = guest_join(target, &staged, exe_name(target));
+            if target == Target::Linux {
+                // scp carries a file's mode, and the tarball's header is what a
+                // user's own unpack reads; this is belt and braces over a
+                // directory copy rather than a fix for something observed.
+                let _ = session.provider.exec(
+                    &session.state,
+                    &format!("chmod +x {guest_exe} {staged}/assets/linux/install-user.sh"),
+                );
             }
-            None => None,
+            guest_exe
+        } else {
+            let bin_dir = provider::guest_bin(target);
+            session.provider.copy_in(&session.state, exe, &bin_dir)?;
+            let guest_exe = guest_join(target, &bin_dir, exe_name(target));
+            if target == Target::Linux {
+                let _ = session
+                    .provider
+                    .exec(&session.state, &format!("chmod +x {guest_exe}"));
+            }
+            guest_exe
+        };
+        let verification = if bundled.is_some() {
+            Verification::Bundle {
+                exe: &guest_exe,
+                empty: &empty,
+            }
+        } else {
+            Verification::Loose { exe: &guest_exe }
         };
 
         let scratch = store.job_scratch(desktop);
@@ -997,7 +1301,7 @@ fn verify_in_desktop(
             session.provider.as_ref(),
             &session.state,
             target,
-            &verify_job(target, &guest_exe, guest_textures.as_deref()),
+            &verify_job(target, &verification),
             &scratch,
             VERIFY_TIMEOUT,
         )?;
@@ -1018,26 +1322,33 @@ fn verify_in_desktop(
                  on a machine that did not build it"
             ));
         }
+
         let smoke = results.join("artifacts").join(SMOKE_FILE);
-        let bytes = std::fs::read(&smoke)
-            .map_err(|e| format!("the render brought back no {}: {e}", smoke.display()))?;
-        match png_size(&bytes) {
-            Some((SMOKE_WIDTH, SMOKE_HEIGHT)) => {
-                println!(
-                    "  rendered {SMOKE_WIDTH}x{SMOKE_HEIGHT}, {}",
-                    util::format_bytes(bytes.len() as u64)
-                );
-                Ok(smoke)
+        let bytes = read_render(&smoke)?;
+        println!(
+            "  rendered {SMOKE_WIDTH}x{SMOKE_HEIGHT}, {}",
+            util::format_bytes(bytes.len() as u64)
+        );
+
+        // Decision 32: a render that never found the textures still produces a
+        // 640x360 PNG, so the header check above cannot tell a globe from a
+        // grid. This can, and it is what makes the bundle's own texture lookup
+        // a tested claim rather than an assumed one.
+        let delta = if bundled.is_some() {
+            let grid = read_render(&results.join("artifacts").join(GRID_FILE))?;
+            let delta = render_difference(&grid, &bytes)?;
+            if delta < TEXTURE_LOOKUP_FLOOR {
+                return Err(grid_refusal(delta, &results.join("artifacts")));
             }
-            Some((width, height)) => Err(format!(
-                "the render is {width}x{height}, not the {SMOKE_WIDTH}x{SMOKE_HEIGHT} \
-                 it was asked for"
-            )),
-            None => Err(format!(
-                "{} is not a PNG, so nothing was drawn",
-                smoke.display()
-            )),
-        }
+            println!(
+                "  the bundle's own render is {delta:.1} of a channel step from the \
+                 grid, so its textures were found"
+            );
+            Some(delta)
+        } else {
+            None
+        };
+        Ok(Verified { smoke, delta })
     })();
 
     let keep = keeps_guest(
@@ -1073,11 +1384,51 @@ fn verify_in_desktop(
                     }
                 )
             );
-            println!("The binary this run built is in the guest's own bin directory.");
+            println!("{}", kept_desktop_note(bundled.is_some()));
         }
         Err(_) => println!("{}", vm::after_failure(&mut session, store, keep)),
     }
     outcome
+}
+
+/// What a kept verification guest has in it.
+pub fn kept_desktop_note(bundled: bool) -> String {
+    if bundled {
+        "The bundle this run wrote is unpacked in the guest's own root, which is \
+         what the render was made from."
+            .to_owned()
+    } else {
+        "The binary this run built is in the guest's own bin directory.".to_owned()
+    }
+}
+
+/// Read one render back and check its header says what was asked for.
+///
+/// A `render` that failed after opening its output still leaves a file, so the
+/// existence of one is not evidence that anything was drawn.
+fn read_render(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("the render brought back no {}: {e}", path.display()))?;
+    match png_size(&bytes) {
+        Some((SMOKE_WIDTH, SMOKE_HEIGHT)) => Ok(bytes),
+        Some((width, height)) => Err(format!(
+            "{} is {width}x{height}, not the {SMOKE_WIDTH}x{SMOKE_HEIGHT} it was \
+             asked for",
+            path.display()
+        )),
+        None => Err(format!(
+            "{} is not a PNG, so nothing was drawn",
+            path.display()
+        )),
+    }
+}
+
+/// Join two guest path components with the separator that guest's shell wants.
+pub fn guest_join(target: Target, base: &str, leaf: &str) -> String {
+    match target {
+        Target::Windows => format!(r"{base}\{leaf}"),
+        Target::Linux => format!("{base}/{leaf}"),
+    }
 }
 
 /// Replace the dist directory with what this run produced.
@@ -1090,6 +1441,7 @@ fn publish(
     exe: &Path,
     results: &Path,
     smoke: Option<&Path>,
+    archive: Option<&Path>,
     info: &BuildInfo,
 ) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(dist);
@@ -1107,8 +1459,19 @@ fn publish(
     if let Some(smoke) = smoke {
         copy(smoke, &dist.join(SMOKE_FILE))?;
     }
+    // The bundle moves in rather than being written here, because the scratch it
+    // was assembled in is run state and this directory is the artifact.
+    if let Some(archive) = archive {
+        copy(archive, &dist.join(file_name(archive)))?;
+    }
     std::fs::write(dist.join("build-info.json"), info.to_json())
         .map_err(|e| format!("cannot write build-info.json: {e}"))
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
@@ -1341,24 +1704,111 @@ mod tests {
         assert!(!windows.contains("%%%"), "{windows}");
     }
 
+    /// Decision 32. A render that never found the textures still produces a
+    /// 640x360 PNG, so the verification renders the same scene twice: once
+    /// against a directory the job creates and leaves empty, which is the grid
+    /// by construction, and once with the variable unset, which is the lookup a
+    /// user's machine does.
     #[test]
-    fn the_verification_job_names_the_textures_only_when_they_were_staged() {
-        let with = verify_job(
-            Target::Linux,
-            "/var/lib/sunlit-e2e/bin/sunlit-earth",
-            Some("/t"),
-        );
-        assert!(with.contains("SUNLIT_EARTH_TEXTURES='/t'"), "{with}");
-        let without = verify_job(Target::Linux, "/var/lib/sunlit-e2e/bin/sunlit-earth", None);
-        assert!(!without.contains("SUNLIT_EARTH_TEXTURES"), "{without}");
-
+    fn the_bundles_verification_renders_the_grid_and_the_bundle_and_nothing_between() {
         for target in Target::ALL {
-            let job = verify_job(target, "x", None);
-            assert!(job.contains("render"), "{target}: {job}");
+            let bundle = Verification::Bundle {
+                exe: "/b/sunlit-earth",
+                empty: "/e",
+            };
+            let job = verify_job(target, &bundle);
+            assert_eq!(job.matches("render --output").count(), 2, "{target}: {job}");
+            assert!(job.contains(GRID_FILE), "{target}: {job}");
+            assert!(job.contains(SMOKE_FILE), "{target}: {job}");
             assert!(job.contains("--width 640"), "{target}: {job}");
             assert!(job.contains("--height 360"), "{target}: {job}");
-            assert!(job.contains(SMOKE_FILE), "{target}: {job}");
+            // The empty directory is made by the job rather than assumed, and
+            // made empty rather than found empty.
+            assert!(job.contains("mkdir"), "{target}: {job}");
+
+            // The second render must see no `SUNLIT_EARTH_TEXTURES` at all, or
+            // it would be testing the variable rather than the bundle. The
+            // grid render is the last place the name may appear.
+            let last_set = job
+                .rfind("SUNLIT_EARTH_TEXTURES")
+                .expect("the grid render sets it");
+            let last_render = job.rfind("render --output").expect("two renders");
+            assert!(last_set < last_render, "{target}: {job}");
+
+            // And nothing runs from inside the bundle, because a
+            // working-directory-relative `textures` would answer before the
+            // walk-up the bundle's layout depends on.
+            let root = match target {
+                Target::Windows => crate::provider::GUEST_ROOT_WINDOWS,
+                Target::Linux => crate::provider::GUEST_ROOT_LINUX,
+            };
+            assert!(
+                job.contains(&format!("cd {root}")) || job.contains(&format!("cd /d \"{root}\"")),
+                "{target}: {job}"
+            );
         }
+
+        // The fallback is the plan's own verification: one render, and no
+        // textures directory to name, because there are none to find.
+        for target in Target::ALL {
+            let loose = verify_job(
+                target,
+                &Verification::Loose {
+                    exe: "/b/sunlit-earth",
+                },
+            );
+            assert_eq!(
+                loose.matches("render --output").count(),
+                1,
+                "{target}: {loose}"
+            );
+            assert!(
+                !loose.contains("SUNLIT_EARTH_TEXTURES"),
+                "{target}: {loose}"
+            );
+            assert!(!loose.contains(GRID_FILE), "{target}: {loose}");
+        }
+    }
+
+    /// A grid and a globe are far apart; two renders of the same globe seconds
+    /// apart are not. Both directions, because a floor nothing can fail is not
+    /// a check.
+    #[test]
+    fn the_two_renders_are_told_apart_by_how_far_they_are_from_each_other() {
+        let flat = |value: u8| {
+            let mut png = Vec::new();
+            let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([value, value, value, 255]));
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("encodes");
+            png
+        };
+        // The alpha channel is equal in both, so a difference of `d` over three
+        // channels of four is three quarters of `d`.
+        let far = render_difference(&flat(0), &flat(200)).expect("both decode");
+        assert!(far > TEXTURE_LOOKUP_FLOOR, "{far}");
+        let near = render_difference(&flat(120), &flat(121)).expect("both decode");
+        assert!(near < TEXTURE_LOOKUP_FLOOR, "{near}");
+        assert!(render_difference(&flat(9), &flat(9)).expect("identical") < 1e-9);
+
+        // Two renders of different sizes are not two renders of one scene.
+        let mut wide = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(9, 8))
+            .write_to(
+                &mut std::io::Cursor::new(&mut wide),
+                image::ImageFormat::Png,
+            )
+            .expect("encodes");
+        assert!(render_difference(&flat(0), &wide).is_err());
+        assert!(render_difference(b"not a png", &flat(0)).is_err());
+
+        let refusal = grid_refusal(0.3, Path::new("/t/results"));
+        assert!(refusal.contains("0.30"), "{refusal}");
+        assert!(
+            refusal.contains("/t/results") || refusal.contains(r"\t\results"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("resolve_textures_dir"), "{refusal}");
     }
 
     /// A `render` that failed after opening its output leaves a file behind, so
@@ -1503,6 +1953,12 @@ mod tests {
                 imports: Vec::new(),
                 crt_static: None,
             },
+            bundle: Some(BundleInfo {
+                name: "sunlit-earth-0.1.0-linux".to_owned(),
+                archive: "sunlit-earth-0.1.0-linux.tar.gz".to_owned(),
+                entries: 17,
+                texture_lookup_delta: Some(31.75),
+            }),
             verified_in: Some(Image::Linux.slug().to_owned()),
             xtask_version: "0.1.0".to_owned(),
         };
@@ -1516,6 +1972,17 @@ mod tests {
         // A Linux record carries no Windows fields at all rather than empty ones.
         assert!(!json.contains("crt_static"), "{json}");
         assert!(!json.contains("imports"), "{json}");
+        // And the bundle section says what was written and what the two renders
+        // in the desktop guest measured, which is decision 32 recorded rather
+        // than claimed.
+        assert!(json.contains("sunlit-earth-0.1.0-linux.tar.gz"), "{json}");
+        assert!(json.contains("texture_lookup_delta"), "{json}");
+
+        // A run with no bundle carries no bundle section at all, the way a
+        // Linux record carries no Windows fields.
+        let mut bare = info.clone();
+        bare.bundle = None;
+        assert!(!bare.to_json().contains("bundle"), "{}", bare.to_json());
     }
 
     #[test]

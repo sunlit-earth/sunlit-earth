@@ -219,19 +219,22 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
             crate::commands::dist::build_job(crate::provider::target::Target::Linux, &pinned),
         ),
         (
-            "dist: verify".to_owned(),
+            "dist: verify the bundle".to_owned(),
             crate::commands::dist::verify_job(
                 crate::provider::target::Target::Linux,
-                "/var/lib/sunlit-e2e/bin/sunlit-earth",
-                Some("/var/lib/sunlit-e2e/textures"),
+                &crate::commands::dist::Verification::Bundle {
+                    exe: "/var/lib/sunlit-e2e/sunlit-earth-0.1.0-linux/sunlit-earth",
+                    empty: "/var/lib/sunlit-e2e/empty-textures",
+                },
             ),
         ),
         (
-            "dist: verify without textures".to_owned(),
+            "dist: verify the loose binary".to_owned(),
             crate::commands::dist::verify_job(
                 crate::provider::target::Target::Linux,
-                "/var/lib/sunlit-e2e/bin/sunlit-earth",
-                None,
+                &crate::commands::dist::Verification::Loose {
+                    exe: "/var/lib/sunlit-e2e/bin/sunlit-earth",
+                },
             ),
         ),
         (

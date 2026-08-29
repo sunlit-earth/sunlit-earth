@@ -125,12 +125,13 @@ impl Session<'_> {
 /// Linux guest and a Windows one under the QEMU cell of the provider matrix.
 /// `vm.log` is deliberately not in the list: a failed boot's message quotes its
 /// tail and names its path, and deleting it here would make that path a lie.
-pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 5] {
+pub fn run_state_paths(store: &Store, image: Image, state: &RunState) -> [std::path::PathBuf; 6] {
     [
         store.state_file(image),
         state.overlay.clone(),
         store.job_scratch(image),
         store.handover_scratch(image),
+        store.bundle_scratch(image),
         store.firmware_vars(image),
     ]
 }
@@ -1640,6 +1641,7 @@ mod tests {
                 state.overlay.clone(),
                 store.job_scratch(image),
                 store.handover_scratch(image),
+                store.bundle_scratch(image),
                 store.firmware_vars(image),
             ]
         );

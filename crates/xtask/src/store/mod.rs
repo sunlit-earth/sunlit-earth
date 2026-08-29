@@ -113,6 +113,18 @@ impl Store {
         self.run_dir(image).join("handover")
     }
 
+    /// Where the release bundle is assembled before it is archived and staged.
+    ///
+    /// Run state like the job scratch and for the same reasons: it is built per
+    /// run out of what that run produced, the guest it is staged into is the one
+    /// that is about to be destroyed, and it means nothing once that guest is
+    /// gone. `dist` removes it when a target is finished with it whether the
+    /// target passed or failed, so this is what accounts for one a run died in
+    /// the middle of.
+    pub fn bundle_scratch(&self, image: Image) -> PathBuf {
+        self.run_dir(image).join("bundle")
+    }
+
     /// The throwaway copy of the firmware's variables store a QEMU boot makes,
     /// so a guest writes its boot entries into its own rather than into the
     /// shared one the host installed.
@@ -308,6 +320,7 @@ mod tests {
                 store.state_file(image),
                 store.job_scratch(image),
                 store.handover_scratch(image),
+                store.bundle_scratch(image),
                 store.firmware_vars(image),
                 store.build_disk(image),
                 store.build_dir(image),

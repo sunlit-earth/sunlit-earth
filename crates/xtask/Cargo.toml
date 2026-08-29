@@ -23,6 +23,12 @@ csv = { workspace = true }
 resvg = { workspace = true }
 ico = { workspace = true }
 image = { workspace = true }
+# The release bundle: one assembled directory written out by whichever writer
+# the target names. See the comment in the workspace manifest for why there are
+# two of them rather than one format for both.
+zip = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

@@ -60,7 +60,7 @@ because each of them picks the image it needs itself.
 
 The host tools the VM commands run go through `host::facts::resolve_tool`, which asks `PATH` and then the places an installer is known to leave a program without putting it on `PATH`: QEMU's and TightVNC's own directories under Program Files, winget's links directory, and scoop's shims directory under `%SCOOP%` or `~\scoop` and `%SCOOP_GLOBAL%` or `%ProgramData%\scoop`. Both package managers append to the *user* `PATH`, so a tool installed in the shell that is now running the xtask is installed and invisible; a lookup that missed it would make `vm setup` plan an install that winget then refuses as redundant, and `vm view` claim a viewer is absent. The VNC viewers are in `facts::VNC_VIEWERS`, executable names rather than package identifiers, and `vm view` of a QEMU guest resolves them the same way `vm doctor` reports them. Two lookups stay on bare `PATH` deliberately and say so where they sit: the Packer ISO tools, because Packer resolves them itself and a fallback location would not help it, and `store::windows_media`'s choice between `curl` and `wget`.
 
-`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `vm down` is the cheap teardown: it ends the guest and deletes its run state, which the next boot recreates. A command that boots a guest of its own tears it down the same way when it is finished with it, and `vm::run_state_paths` is the one list of what that removes: the record, the overlay, and the three things a boot writes beside them, each named by the `Store` method the writer uses, which are the scratch a job's script was written into (`job_scratch`), the scratch the Windows hand-over launcher is staged in (`handover_scratch`), and the per-VM copy of the firmware's variables a QEMU boot makes (`firmware_vars`). So a green run leaves `vm status` nothing to report. `vm.log` is deliberately outside that list, because a failed boot's message quotes its tail and names its path. `vm purge` is the disk-space one: everything a target has on disk unless `--vm`, `--image`, or `--iso` narrows it, and it asks before deleting unless `-f` is given. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
+`vm setup` never reboots or signs anyone out; it reports what needs one. `vm doctor` changes nothing. `vm down` is the cheap teardown: it ends the guest and deletes its run state, which the next boot recreates. A command that boots a guest of its own tears it down the same way when it is finished with it, and `vm::run_state_paths` is the one list of what that removes: the record, the overlay, and the three things a boot writes beside them, each named by the `Store` method the writer uses, which are the scratch a job's script was written into (`job_scratch`), the scratch the Windows hand-over launcher is staged in (`handover_scratch`), and the per-VM copy of the firmware's variables a QEMU boot makes (`firmware_vars`). So a green run leaves `vm status` nothing to report. Two things in the run directory are deliberately outside that list: `vm.log`, because a failed boot's message quotes its tail and names its path, and the bundle a release build assembles (`bundle_scratch`), because it outlives the guest it was staged into by the seconds it takes to write the final record into it and archive it, and a teardown that took it deleted the bundle whose textures that boot had just proved. `dist` removes its own, and `vm down` and `vm purge` sweep one a dead run left behind, because both take the run directory whole rather than reading the list. `vm purge` is the disk-space one: everything a target has on disk unless `--vm`, `--image`, `--iso`, or `--cache` narrows it, and it asks before deleting unless `-f` is given. `e2e --target host` is what `cargo e2e` does, kept as one command so the manual real-GPU run and the VM runs are the same thing.
 **The store holds an image per slug, not an image per target** (`provider::target::Image`).
 An image is either a *base*, installed from media, or a *layer*, provisioned over a named
 parent:
@@ -141,7 +141,30 @@ build. So `commands::dist` boots a pristine overlay of the target's builder imag
 in a `git archive` of `HEAD` without `textures/`, and runs `cargo build --release
 --locked -p sunlit-earth` in there with `cargo` named by absolute path. Nothing else of
 the host reaches it: no `target/`, no `~/.cargo`, no environment, and the toolchain is
-installed by the name `rust-toolchain.toml` pins (`guest::toolchain`).
+installed by the name `rust-toolchain.toml` pins (`guest::toolchain`). The one thing a
+build may inherit is what an earlier build of the same image on the same channel left
+behind, which is the build cache, and never anything of the host's own.
+
+That cache is `<store>/cache/<builder slug>/`, two zstd archives with a JSON sidecar each
+(`store::cache`): `registry.tar.zst` is the guest's `~/.cargo/registry` and `~/.cargo/git`,
+and `target.tar.zst` is its build directory, which `CARGO_TARGET_DIR` puts at
+`<guest root>/cargo-target` so the `rm -rf src` at the top of every job cannot reach it.
+The guest packs and unpacks both, because a restored registry is tens of thousands of small
+files and `scp -r` is a round trip per file; the host only stores and transfers them, so it
+needs no zstd of its own and `vm doctor`'s tool list is unchanged. What keeps it a cache
+rather than a shortcut is that it cannot decide what the binary is: the source tree is
+extracted with `-m`, so no committed file can look older than an artifact built from it;
+`--locked` and the lockfile's checksums mean a restored registry holds only what the
+network would have handed over; and `cache::restorable` discards a cache whole rather than
+merging it when the channel or the builder image moves, in a line naming the field that
+moved. A failed build saves nothing, and the registry is not packed again while
+`Cargo.lock` has not moved. `--no-cache` skips restore and save both, and
+`build-info.json`'s `cache` section says per archive which of those happened, so what a
+release inherited is readable afterwards rather than taken on trust. Measured warm against
+cold: 4m 04s against 6m 58s on Windows and 3m 49s against 5m 28s on Linux, for archives of
+about 120 MiB and 615 MiB. The cache is inventory rather than run state, so `vm status`
+counts it per image, `vm down` never takes it, and `vm purge <image> --cache` is what frees
+it.
 
 Two claims a release binary makes cannot be checked by running it, so the builder reads
 its own output with the tools it has and the host parses that: `dumpbin /dependents` must
@@ -149,13 +172,31 @@ name neither `vcruntime140.dll` nor `msvcp140.dll`, which is `crt-static` proven
 artifact, and `readelf -d` with `objdump -T` must show a glibc floor of at most 2.35 and
 the four libraries the Linux port links. A guest with the Visual C++ redistributable
 installed runs a dynamically linked binary perfectly well, which is exactly why running
-it proves nothing about that. What running it does prove is the other half, so the binary
-is then staged into the *desktop* image of the same target and asked for one 640x360
-`render`, whose result is measured from its own PNG header: a render that failed after
-opening its output still leaves a file. `--no-verify` skips that boot. The output is
+it proves nothing about that. What running it does prove is the other half, and what is run
+is the release bundle rather than the loose binary. `commands::bundle` assembles one
+directory, named `sunlit-earth-<version>-<target>` after the version in the workspace
+manifest rather than after `git describe`, which this repository has no tags for: the
+binary, `textures/` with the four JXL assets and their `PROVENANCE.md`, `build-info.json`,
+`LICENSE`, and the star catalog's `ATTRIBUTION.md`, plus `assets/` on Linux, where
+`install-user.sh` is the whole install story and on Windows the icon is a resource inside
+the exe. It is then written as the archive its target expects, a zip that stores the JXL
+entries and deflates the rest, or a `.tar.gz` where 0755 on the binary is an ordinary
+header field, and read back with the same crate that wrote it. The *directory* is what the
+desktop guest is staged with, and the render is asked for with no `SUNLIT_EARTH_TEXTURES`
+at all, so what is under test is the lookup a user's machine does: `resolve_textures_dir`
+walking up from the executable to the `textures/` beside it. A render that failed to find
+them still writes a 640x360 PNG of the procedural grid, so its header cannot tell the two
+apart and the job renders twice, once against an empty textures directory it creates and
+once from the bundle, and the host decodes both and refuses a mean difference under
+`dist::TEXTURE_LOOKUP_FLOOR`, which is 8.0 channel steps against the 19 to 23 the live runs
+measure. The record is written into the bundle after that boot rather than before it, so
+the copy inside the archive and the copy beside it are one file, which also means a bundle
+that failed its own texture check is never archived. Where the host's `textures/` is still
+Git LFS pointers there is no bundle at all: one line says so and the loose binary is
+verified as before. `--no-verify` skips the boot. The output is
 `<target dir>/dist/<target>/`, replaced wholesale on success and untouched on failure,
-holding the binary, `build-info.json`, the builder's `output.log` as `build.log`, and the
-verification render. A dirty working tree is refused before anything boots, because the
+holding the binary, the bundle archive, `build-info.json`, the builder's `output.log` as
+`build.log`, and the verification render. A dirty working tree is refused before anything boots, because the
 archive is of `HEAD` and a record whose commit does not describe the binary is the one
 thing it must not be. `--keep` leaves one guest of the whole run up, not one per target:
 the next boot is refused while another guest is registered, so `dist::keeps_guest` narrows

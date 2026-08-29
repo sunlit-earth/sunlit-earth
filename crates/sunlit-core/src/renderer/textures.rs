@@ -192,10 +192,12 @@ pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
 /// Create the cloud bind group if the cloud texture view is available.
 ///
 /// Binding 3 is the night map, which `fs_cloud` samples for the city light a
-/// cloud base picks up from below, and the dummy where there is none: in Grid
-/// and Day modes, and in a checkout without the Git LFS objects, there is no
-/// night texture and the dummy answers zero, which is the layer with the
-/// coupling switched off.
+/// cloud base picks up from below, and the dummy where none has loaded, whose
+/// one texel answers zero and is the layer with the coupling switched off.
+/// Which of the two it holds belongs to the session rather than to the mode:
+/// `texture_routing::resolve_textures` spawns a load only for the slot the
+/// current mode draws from and nothing ever unloads one, so a session that has
+/// been in blend mode keeps the night map here in every mode afterwards.
 ///
 /// So the group spans two slots with different lifetimes, and it has to be
 /// rebuilt whenever either moves: when the night slot lands, and after the purge

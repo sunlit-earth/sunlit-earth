@@ -428,12 +428,16 @@ the dirty check. So:
 4. **Three engine cases for the sentinel**, one per single-texture mode, asserting that a
    dayside cloud pixel is brighter than a night-side one. Each fails today.
 5. **A golden for the city glow**, in blend mode over the night hemisphere with a night
-   fixture that has a bright patch in a known place, so the reference shows the deck
-   brightening over the patch and not elsewhere. One case, because the effect is one term.
+   fixture that has a bright patch in a known place, so the reference shows the deck taking
+   the light under it. What it lifts is the whole night deck and not only the part over the
+   patch, by about 0.09 of display white over the fixture's unlit base, because the term
+   samples the night map rather than only its lights; the patch is where the lift is largest
+   and is what makes the gradient visible. One case, because the effect is one term.
 6. **An engine case that zero is off**, rendering the same scene at `cloud_city_gain` of
    zero and comparing byte for byte against the same scene with the night texture absent.
-   That is what D7's "zero has to mean gone" asserts, and it is the case that fails if the
-   branch is replaced by a multiply.
+   That is what D7's "zero has to mean gone" asserts. It does not tell the branch from a
+   multiply, and departure 4 is where that is measured, where the branch's reason is stated,
+   and where the case added beside it is described.
 7. **An engine case across the resolution switch** with both a cloud source and the night
    slot loaded, asserting a frame still arrives after the purge. Without the two rebuilds
    part two describes, that is a validation error rather than a wrong pixel, so the case
@@ -533,3 +537,55 @@ asks for the mode, so the first of them exported the frame the fallback draws, w
 grid, and blessed it. `check_golden_in` now waits for `day_texture` and `night_texture` when
 the mode is blend, the way it already waited for the Moon and the panorama. The next
 blend-mode case would have hit the same thing.
+
+**4. Test item 6 does not tell the branch from a multiply, and the branch stays anyway.**
+Item 6 as written claimed the zero case "fails if the branch is replaced by a multiply", and
+that is false as measured: with the `if` in `fs_cloud` replaced by an unconditional
+`textureSampleLevel` times the gain, `city_light_at_zero_draws_the_frame_a_missing_night_map_draws`
+still passes, because `0.0 * finite` is exactly `0.0` in IEEE 754 and everything an
+`Rgba8Unorm` texel can carry is finite. So what the suite holds is D7's requirement itself,
+that a run at zero reaches the pixels a build without the term reaches, and it holds it for
+whichever of the two spellings is in the file. The branch stays because the identity the
+multiply leans on is conditional where the branch is not: `0.0 * NaN` and `0.0 * inf` are
+`NaN`, so a multiply makes "zero is off" a property of what the sampler can return rather
+than of the code. Nothing can put either in that texture today, which is why this is a
+defect in the claim and not in the pixels.
+
+What the round added beside it is the other half of the same gate,
+`the_dummy_night_map_lights_no_cloud`. Nothing rendered a cloud at a nonzero gain against
+the dummy, so the one texel `gpu_setup` writes into it was the only thing saying the
+coupling adds nothing where no night map has loaded, and a dummy that stopped reading black
+would have brightened every deck a cold session draws with no case to notice. Grid mode
+spawns no file-backed load, so a deck drawn there reads the dummy however `texture_paths` is
+set, and the frame at the default gain has to be the frame at zero: measured, a dummy of
+8/255 fails it at 9568 pixels of 32768, where the zero case above passes right through the
+same change.
+
+**5. No case for the mip level, and the measurement that says why.** The level
+`fs_cloud` samples the night map at is `max(log2(width / 1024), 0)`, which exists to keep
+the blur a fixed angle, and every night fixture in the suite is 1024 wide, so the derivation
+is always zero in a test and a hardcoded zero would be invisible. The obvious case is the
+same fixture content at two widths with the cloud pixel asserted to agree, and it was built
+and measured before being dropped: Day mode over the city core's edge at zoom 0.04, 512x256,
+with the night fixture written at 1024, 2048 and 4096 from the same degree-space marks. As
+shipped, 1024 against 2048 gives a maximum channel difference of 34 and a mean absolute
+difference of 0.215, and 1024 against 4096 gives 34 and 0.214. With the level pinned to zero
+the same pairs give 51 and 0.282, and 60 and 0.305. That is 1.5x on the maximum over a floor
+of 34 of 255, and the count of differing pixels moves the wrong way entirely, 5239 as shipped
+against 3904 pinned.
+
+The floor is inherent to the comparison rather than to the code. The 1024 fixture is a point
+evaluation of a mark measured in degrees, while level 1 of the 2048 fixture is a box average
+of that mark's hard edges, so the two maps disagree along the city's boundary whatever level
+the shader reads. A case built on it would be a tolerance chosen to sit inside a 1.5x gap on
+one adapter, which is the shape of a test that passes for reasons nobody checked. Making the
+two maps agree means an area-averaging fixture generator, a second one beside the existing
+writer, and that is more machinery than the claim is worth. So the derivation is held by the
+comment on it and by nothing executable, and this is the note that says so.
+
+**6. The roadmap entry says five engine cases and not four.** Validation round 1 found the
+entry claiming five where the range under review had added four, and asked for four. By the
+time the entry is read there are five, because departure 4 added one, so four would have
+replaced one wrong number with another. The count is of the cases that render a cloud pixel:
+the ordering case, the sentinel case over three modes, the zero-is-off case, the resolution
+switch, and the dummy.

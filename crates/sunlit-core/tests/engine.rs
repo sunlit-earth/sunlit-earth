@@ -3546,9 +3546,9 @@ const DAY_HOUR: f32 = 0.0;
 /// has to be brighter than the ground it covers.
 ///
 /// The fixture's unlit base is what `BlackMarble_2016.jxl` reads over unlit
-/// land, and at the old hardcoded 0.05 the deck came out at 0.063 against it,
-/// so this fails on the code before this change rather than merely measuring
-/// something.
+/// land, and at the old hardcoded 0.05 the deck came out darker than it, 17.3
+/// against 42.0 in the units this prints, so this fails on the code before this
+/// change rather than merely measuring something.
 #[test]
 fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_ordering");

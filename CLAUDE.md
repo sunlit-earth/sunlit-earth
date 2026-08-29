@@ -411,7 +411,13 @@ level it samples at is derived from the source's own width, `max(log2(width / 10
 the blur is a fixed angle instead of one that reaches three times as far at 8192 as at 2048.
 Zero gates the sample rather than scaling it, so a run at zero reaches the same pixels a build
 without the term does, and `city_light_at_zero_draws_the_frame_a_missing_night_map_draws`
-holds that byte for byte. The cost is that the group spans two slots with different lifetimes:
+holds that byte for byte; what no case in the suite distinguishes is the gate from a multiply
+by zero, which is the plan's departure 4. Which of the night map and the dummy sits on binding
+3 is a property of the session and not of the mode, since a load is spawned only for the slot
+the current mode draws from and nothing unloads one: a session that has been in blend mode
+keeps the map there in every mode afterwards, which is what both of those cases are built on,
+and `the_dummy_night_map_lights_no_cloud` is the one that renders a deck against the dummy and
+asks what it adds. The cost is that the group spans two slots with different lifetimes:
 `purge_file_backed_slots` destroys the night texture without touching the cloud slot, so both
 it and `process_decoded_textures` rebuild the group, and a miss is a validation error on the
 next draw rather than a wrong pixel. It is an extrapolation rather than a published technique,

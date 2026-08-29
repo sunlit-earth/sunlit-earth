@@ -480,3 +480,25 @@ and polish, beside the WSL `tests/shading.rs` flake it resembles, with the quest
 | 7 | the two renders in the desktop guest | 19 to 23 channel steps against a floor of 8.0, and `smoke.png` is the bundle's own render |
 | 8 | the pointer-only checkout | no bundle, two lines saying which file and why, and the loose binary verified and published as before |
 | 9 | step 7's gates at the tip | below |
+
+### The gates at the tip
+
+Step 7 and acceptance criterion 9, run at `0c55fc2`.
+
+| gate | result |
+|---|---|
+| `cargo test` on Windows | green, thirteen targets, no warnings: 450 unit, 54 engine, 14 golden, 21 render pipeline, 12 shading, the soak in 60.2s, 46 and 2 and 27 in the app, 536 in xtask, 11 e2e cases ignored as they always are |
+| `cargo clippy --all-targets` | **zero warnings**, workspace-wide |
+| `cargo fmt --check` | clean |
+| the WSL leg | green on the second run, thirteen targets, 525 in xtask, which is 536 less the Windows-only cases |
+
+The WSL leg's first run failed the way `docs/roadmap.md` says it does: `tests/shading.rs`'s
+`software_adapter_produces_correct_results` panicking on `Result::unwrap()` of `BadAccess`
+at `wgpu-hal-28.0.1/src/gles/egl.rs:308`, which took the remaining targets with it because
+`cargo test` stops at the first failing one. The second run passed that target in 0.16s and
+everything after it. That is the documented flake at its documented rate and not something
+this branch touched: nothing here compiles `sunlit-core`.
+
+The soak test passed inside the whole-workspace `cargo test` on Windows here, which is the
+other half of the observation above rather than a contradiction of it: two failures and
+three passes now, on trees that differ by nothing it compiles.

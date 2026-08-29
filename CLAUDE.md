@@ -182,8 +182,9 @@ binary, `textures/` with the four JXL assets and their `PROVENANCE.md`, `build-i
 `LICENSE`, and the star catalog's `ATTRIBUTION.md`, plus `assets/` on Linux, where
 `install-user.sh` is the whole install story and on Windows the icon is a resource inside
 the exe. It is then written as the archive its target expects, a zip that stores the JXL
-entries and deflates the rest, or a `.tar.gz` where 0755 on the binary is an ordinary
-header field, and read back with the same crate that wrote it. The *directory* is what the
+entries and deflates the rest (the `zip` crate), or a `.tar.gz` where 0755 on the binary is
+an ordinary header field (`tar` over the `flate2` that `image` already pulls in), and read
+back with the same crate that wrote it. Both writers are xtask-only. The *directory* is what the
 desktop guest is staged with, and the render is asked for with no `SUNLIT_EARTH_TEXTURES`
 at all, so what is under test is the lookup a user's machine does: `resolve_textures_dir`
 walking up from the executable to the `textures/` beside it. A render that failed to find

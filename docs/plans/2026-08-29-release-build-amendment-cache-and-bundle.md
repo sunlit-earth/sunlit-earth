@@ -139,6 +139,8 @@ Recorded in this document the way the plan records its own, appended as the work
 
     The list it is off is `vm::run_state_paths`, and it was on it for the first two live runs, which is what those runs found. That list is the shorter one a run's *own* teardown deletes as it ends a guest, and the bundle is the one thing in the run directory that outlives the guest it was staged into: departure 2 writes the final record into it after the verification boot, so that boot's teardown deleted the bundle whose textures it had just proved. Taking it off the list is `3efb649`, with a test that walks a teardown over a bundle scratch and fails on the old code. The cache is outside `run_state_paths` too, and decision 28 puts it there for the same reason read the other way round: a teardown must never take minutes of compiling that nothing recreates.
 
+4. **Decision 26's registry rule asks about a cache that was restored, not about any sidecar on disk.** The decision says the registry is skipped when its recorded lockfile hash matches this build's, and that is right for the case it was written for: a warm build whose registry came off the host has nothing new to send back. It is wrong for a refused one. A sidecar refused for a moved channel or a rebuilt image still records the lockfile its archive was made from, so on the literal rule a run that had just declined to restore the registry also declined to replace it, and the archive stayed there being refused by every later build while none of them ever wrote a fresh one. The registry would have been cold until `Cargo.lock` happened to move, which on a settled dependency tree is not soon. The same shape reached further through the sidecar reader, where an unreadable sidecar left the loop before the save decision was reached at all, so one corrupt file froze both archives rather than one. So `plan_cache` now asks `registry_worth_saving` about the sidecar this run actually restored and about no other, and a sidecar that cannot be read is a reason to pack rather than a reason to stop. Decision 26's sentence stands with its scope named: a recorded hash is evidence only while the cache it describes is the one the host will hand over next time. Both halves have an assertion that fails on the code as it was, and it was found by building acceptance criterion 4's tamper, which is the only situation on this branch where a sidecar is refused and the run then carries on.
+
 ## Validation record
 
 ### The zstd probe in the Windows builder, 2026-08-29
@@ -359,6 +361,91 @@ build depend on an earlier one" risk actually needed.
 The two-render difference is 22.7 here against 19.2 and 19.1 on the two Windows runs two
 and a half hours earlier, which is the Earth having turned thirty-seven degrees between
 them. Both ends of that are three times the floor of 8.0.
+
+### `vm down`, `vm status` and a purge: acceptance criterion 5
+
+Three commands, no boot, in that order on 2026-08-29 with a warm Linux cache on disk.
+
+`cargo xtask vm down linux-builder` deleted one file, `vm.log` at 607 B, and said "the
+golden images are untouched". `vm status` afterwards read `no overlays or run state` and,
+on the next line, `build cache: 4 files (734.8 MiB); cargo xtask vm purge linux-builder
+--cache frees it`, with the footprint line naming the cache as a third figure beside the
+image and the run state. So the cheap teardown leaves the expensive thing alone, which is
+decision 28 as a measurement.
+
+`cargo xtask vm purge linux-builder` with no flags listed all four cache files first, ahead
+of the golden image and Packer's leftovers, and asked to "delete the VM and its run state,
+the golden image, the installation media, and the build cache for linux-builder, freeing
+4.5 GiB?". Answered `n`: "nothing was deleted", and the four files were still there
+afterwards.
+
+### A cache refused twice over: acceptance criterion 4
+
+Both halves in one run, because the two archives can be refused for different reasons at
+once. Before `dist --target linux` of `77858d5`, `registry.json`'s `channel` was edited from
+`1.94.0` to `1.93.0` and `target.json`'s `image_built_utc` from the image's real
+`2026-08-29T11:19:05Z` to `2026-08-28T09:00:00Z`, both saved first and put back afterwards.
+The run's own two lines:
+
+```
+  cache:   registry: cold (the pinned toolchain channel was 1.93.0 and is 1.94.0 now)
+  cache:   target: cold (the builder image's build time was 2026-08-28T09:00:00Z and is 2026-08-29T11:19:05Z now)
+```
+
+The criterion names `rust-toolchain.toml` for the channel half and the sidecar for the
+image half. Both were done on the sidecar, and it is the same experiment: `restorable`
+compares the sidecar's field against the fact, so moving either side exercises the one
+comparison and produces the one message. Moving the pin would additionally have made the
+guest install a second toolchain, which tests rustup rather than the cache.
+
+**What the tamper found is departure 4**, and it is a defect rather than a curiosity: the
+refused registry was then not packed again either, because its recorded lockfile hash still
+matched this build's. On the code as it stood, a real channel bump or a real image rebuild
+would have left the registry archive refused by every later build and replaced by none of
+them, and every release build would have downloaded 519 crates until `Cargo.lock` moved for
+some other reason. The live run is where that is visible from both ends. The record says
+`"archive": "registry", "restored": false, "saved": false` beside the target's
+`"restored": false, "saved": true`, and on disk `target.json` had healed itself, carrying
+this run's commit and the image's real build time, while `registry.json` still said
+`1.93.0` and still carried the write time from four hours earlier. Fixed in `plan_cache`,
+with the two assertions departure 4 names, and the tampered sidecar put back from its
+backup afterwards so the store is consistent again.
+
+### A checkout with no textures in it: acceptance criterion 8
+
+The same run, from a second checkout rather than from the worktree. `SUNLIT_EARTH_REPO`
+pointed at a `GIT_LFS_SKIP_SMUDGE=1` clone of the same commit, whose four `textures/*.jxl`
+are the 131 and 132 byte pointer files a checkout without the LFS objects holds, and whose
+tree is otherwise clean, so the dirty-tree refusal never came into it and nothing had to be
+moved aside in the worktree. That is the criterion's own condition rather than an
+imitation of it, and it costs one `git clone` of 40 MB.
+
+What the run said, in the two lines decision 33 asks for, the first naming the file it
+measured and the second saying what follows:
+
+```
+  no bundle: world.topo.200405.jxl is 132 bytes, which is a Git LFS pointer rather than the asset; `git lfs pull` fetches it
+  no bundle: this checkout holds Git LFS pointers rather than the texture assets, and a bundle without them would render the procedural grid under a name that promises a release. `git lfs pull` fetches them; the loose binary and its record are in the dist directory either way.
+```
+
+It then did exactly what the plan did before there were bundles: staged the loose binary
+into the Linux desktop guest, rendered 640x360 at 108.2 KiB, and wrote
+`<repo>/target/dist/linux/` with the binary, `build-info.json`, `build.log` and
+`smoke.png` and no archive. The record carries no `bundle` section at all rather than an
+empty one, and `verified_in` still says `linux`. Exit 0, the whole target 7m 17s with a
+build of 6m 06s, which is a third cold Linux figure beside 5m 28s and the warm ones.
+
+The smoke render is 108.2 KiB against the 398.3 KiB of the Windows bundle's, which is the
+same fact from the other side: a procedural grid compresses to a quarter of what the Earth
+does, and that is exactly why the header check the plan started with could not tell the two
+apart and decision 32 measures the pixels instead.
+
+**A fourth Linux binary, and the strongest form of the comparison.** This build hashed
+`fc89d33af112ceb8c271cba81ae8cad66684c483d84934f36653adb2ccbf5167`, the same sha256 as the
+cold one, the warm one and the `--target all` one. It was built with *both* archives
+refused, from a different checkout on the host, at a commit three ahead of the first: four
+builds, two of them warm and two cold, one binary. Whatever a cache can do to a Linux build,
+this says it did not do it.
 
 ### The soak test in a whole-workspace run
 

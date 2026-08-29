@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::scene::camera::CameraParams;
+use crate::scene::camera::{CAMERA_FOV_MAX, CAMERA_FOV_MIN, CameraParams};
 
 /// How much the app is allowed to spend on looking good.
 ///
@@ -160,6 +160,10 @@ pub struct AppConfig {
     // Framing
     pub offset_x: f32,
     pub offset_y: f32,
+    /// Vertical field of view of the Earth lens, in degrees, between
+    /// [`CAMERA_FOV_MIN`] and [`CAMERA_FOV_MAX`]. The sky has its own lens and
+    /// its own `sky_fov`; this one frames the globe.
+    pub camera_fov: f32,
 
     // Rendering
     pub texture_index: i32,
@@ -183,8 +187,10 @@ pub struct AppConfig {
 
     // Clouds
     pub cloud_opacity: f32,
+    pub cloud_opacity_night: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
+    pub cloud_night: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -214,6 +220,28 @@ pub struct AppConfig {
     /// Zero is neutral and negative values make magnitudes more uniform.
     pub star_contrast: f32,
     pub star_mag_limit: f32,
+    /// Master strength of the Sun's glare, and the switch that puts the Sun in
+    /// the scene at all: zero draws neither the disk nor the glare.
+    pub sun_glow: f32,
+    /// Strength of the ciliary corona, the fine radial needles the eye adds
+    /// around a bright source.
+    pub sun_rays: f32,
+    /// Strength of camera mode: aperture spikes and lens ghosts, which belong
+    /// to an imaging device rather than to an eye. Zero by default.
+    pub sun_flare: f32,
+    /// Brightness of the Moon's sunlit face, and the switch that puts the Moon
+    /// in the scene at all: zero draws nothing.
+    pub moon_brightness: f32,
+    /// Multiplier on the Moon's radius, from its true angular size upward. The
+    /// honest way to a larger Moon is a narrower `sky_fov`, which magnifies the
+    /// sky around it too; this one magnifies the Moon alone.
+    pub moon_size: f32,
+    /// Floor under the Moon's unlit face: the earthshine that keeps a new moon
+    /// from disappearing altogether.
+    pub moon_earthshine: f32,
+    /// Brightness of the diffuse Milky Way panorama, and the switch that puts
+    /// it in the scene at all: zero skips the draw.
+    pub milky_way_intensity: f32,
 
     // Color correction
     pub day_gamma: f32,
@@ -252,6 +280,10 @@ impl AppConfig {
     /// covers a present one with a value nothing offers.
     fn sanitize(&mut self) {
         self.texture_resolution = resolve_texture_resolution(self.texture_resolution);
+        // The one parameter whose out-of-range value is not an ugly picture but
+        // no picture at all: the perspective projection divides by
+        // `tan(fov / 2)`, which is zero at 0 degrees and infinite at 180.
+        self.camera_fov = self.camera_fov.clamp(CAMERA_FOV_MIN, CAMERA_FOV_MAX);
     }
 }
 
@@ -267,6 +299,7 @@ impl Default for AppConfig {
             pitch: cam.pitch_deg,
             offset_x: cam.offset_x,
             offset_y: cam.offset_y,
+            camera_fov: cam.fov_deg,
             texture_index: 3,
             texture_resolution: DEFAULT_TEXTURE_RESOLUTION,
             sample_count: 8,
@@ -280,8 +313,10 @@ impl Default for AppConfig {
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
             cloud_opacity: 0.85,
+            cloud_opacity_night: 0.55,
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
+            cloud_night: 0.35,
             atmo_enabled: true,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 50.0,
@@ -296,6 +331,13 @@ impl Default for AppConfig {
             star_glow_radius: 8.0,
             star_contrast: 0.3,
             star_mag_limit: 6.5,
+            sun_glow: 1.0,
+            sun_rays: 0.6,
+            sun_flare: 0.0,
+            moon_brightness: 1.0,
+            moon_size: 1.0,
+            moon_earthshine: 0.05,
+            milky_way_intensity: 0.5,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -566,6 +608,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
+    use crate::scene::camera::DEFAULT_CAMERA_FOV;
 
     // --- config_path resolution ---
 
@@ -635,9 +678,84 @@ mod tests {
     }
 
     #[test]
+    fn default_sun_shows_the_glare_and_not_the_camera() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.sun_glow, 1.0);
+        assert_relative_eq!(config.sun_rays, 0.6);
+        assert_relative_eq!(config.sun_flare, 0.0);
+    }
+
+    #[test]
+    fn default_moon_is_visible_at_its_true_size() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.moon_brightness, 1.0);
+        assert_relative_eq!(config.moon_size, 1.0);
+        assert_relative_eq!(config.moon_earthshine, 0.05);
+    }
+
+    /// On by default, and at half strength: the panorama's own tone map is a
+    /// neutral one, so the slider is where the band stops competing with the
+    /// globe it sits behind.
+    #[test]
+    fn the_milky_way_defaults_to_half_strength() {
+        assert_relative_eq!(AppConfig::default().milky_way_intensity, 0.5);
+    }
+
+    #[test]
+    fn deserialize_missing_the_milky_way_fills_the_default() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.milky_way_intensity, 0.5);
+    }
+
+    #[test]
+    fn deserialize_missing_moon_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.moon_brightness, 1.0);
+        assert_relative_eq!(config.moon_size, 1.0);
+        assert_relative_eq!(config.moon_earthshine, 0.05);
+    }
+
+    #[test]
+    fn deserialize_missing_sun_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.sun_glow, 1.0);
+        assert_relative_eq!(config.sun_rays, 0.6);
+        assert_relative_eq!(config.sun_flare, 0.0);
+    }
+
+    #[test]
     fn deserialize_missing_star_brightness_uses_two_times_gain() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.star_intensity, 2.0);
+    }
+
+    #[test]
+    fn the_earth_lens_defaults_to_the_narrow_one_the_presets_were_framed_at() {
+        assert_relative_eq!(AppConfig::default().camera_fov, DEFAULT_CAMERA_FOV);
+    }
+
+    #[test]
+    fn deserialize_missing_the_earth_lens_fills_the_default() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.camera_fov, DEFAULT_CAMERA_FOV);
+    }
+
+    /// Zero and 180 are the two lenses the perspective projection has no answer
+    /// for, so the loader is the guard: a hand-edited file is a text file.
+    #[test]
+    fn loading_a_config_with_a_degenerate_lens_repairs_it() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_bad_fov");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        fs::write(&path, "[sunlit.earth]\ncamera_fov = 180.0\n").unwrap();
+        assert_relative_eq!(load_config_from(&path).camera_fov, CAMERA_FOV_MAX);
+
+        fs::write(&path, "[sunlit.earth]\ncamera_fov = 0.0\n").unwrap();
+        assert_relative_eq!(load_config_from(&path).camera_fov, CAMERA_FOV_MIN);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -678,8 +796,10 @@ mod tests {
     fn deserialize_missing_cloud_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
         let defaults = AppConfig::default();
+        assert_relative_eq!(config.cloud_opacity_night, defaults.cloud_opacity_night);
         assert_relative_eq!(config.cloud_floor, defaults.cloud_floor);
         assert_relative_eq!(config.cloud_gamma, defaults.cloud_gamma);
+        assert_relative_eq!(config.cloud_night, defaults.cloud_night);
     }
 
     #[test]
@@ -710,6 +830,7 @@ mod tests {
             pitch: 5.0,
             offset_x: 0.3,
             offset_y: -0.2,
+            camera_fov: 35.0,
             texture_index: 1,
             texture_resolution: 8192,
             sample_count: 4,
@@ -723,8 +844,10 @@ mod tests {
             fresnel_mix: 0.5,
             fresnel_exp: 3.0,
             cloud_opacity: 0.6,
+            cloud_opacity_night: 0.45,
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
+            cloud_night: 0.4,
             atmo_enabled: false,
             rayleigh_intensity: 0.7,
             rayleigh_sharpness: 8.0,
@@ -739,6 +862,13 @@ mod tests {
             star_glow_radius: 8.0,
             star_contrast: 0.7,
             star_mag_limit: 5.8,
+            sun_glow: 1.4,
+            sun_rays: 0.3,
+            sun_flare: 0.9,
+            moon_brightness: 1.3,
+            moon_size: 2.5,
+            moon_earthshine: 0.12,
+            milky_way_intensity: 0.8,
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -841,6 +971,7 @@ mod tests {
             pitch: -5.0,
             offset_x: 0.1,
             offset_y: -0.3,
+            camera_fov: 65.0,
             texture_index: 2,
             texture_resolution: 2048,
             sample_count: 4,
@@ -854,8 +985,10 @@ mod tests {
             fresnel_mix: 0.7,
             fresnel_exp: 4.0,
             cloud_opacity: 0.6,
+            cloud_opacity_night: 0.95,
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
+            cloud_night: 0.1,
             atmo_enabled: false,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 7.0,
@@ -870,6 +1003,13 @@ mod tests {
             star_glow_radius: 7.5,
             star_contrast: 0.65,
             star_mag_limit: 6.2,
+            sun_glow: 0.8,
+            sun_rays: 0.9,
+            sun_flare: 0.4,
+            moon_brightness: 0.6,
+            moon_size: 6.0,
+            moon_earthshine: 0.3,
+            milky_way_intensity: 1.6,
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

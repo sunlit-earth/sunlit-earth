@@ -13,6 +13,13 @@ use crate::scene::sun::DateTimeInput;
 
 /// Radius of the cloud shell, just above the surface.
 pub const CLOUD_SPHERE_RADIUS: f32 = 1.0015;
+/// Half-width of the cloud layer's own terminator ramp, in units of n dot l.
+///
+/// Wider than the globe's 0.1: the shell's tangent condition already shifts the
+/// ramp 3.14 degrees nightward, and the cloud tops that have lost the direct
+/// beam are still lit by a twilight sky for several degrees after that. A
+/// constant rather than a slider, because nobody wants to tune two terminators.
+pub const CLOUD_TERMINATOR_WIDTH: f32 = 0.18;
 /// Radius of the Rayleigh scattering shell.
 pub const RAYLEIGH_RADIUS: f32 = 1.015;
 /// Radius of the orange (sodium D + iron oxide) nightglow shell.
@@ -47,9 +54,21 @@ pub struct SceneParams {
     pub fresnel_exp: f32,
 
     // Clouds
+    /// Opacity of a cloud on the day hemisphere, a straight multiplier on the
+    /// source's own coverage.
     pub cloud_opacity: f32,
+    /// Opacity of a cloud on the night hemisphere, read as an optical depth
+    /// rather than as a multiplier, which is what lets the top of its range
+    /// cover the ground completely. See `fs_cloud` for why the two hemispheres
+    /// cannot share one number.
+    pub cloud_opacity_night: f32,
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
+    /// Brightness of a cloud on the night hemisphere, as a fraction of display
+    /// white. Not an irradiance: the night side is about 18.6 stops under the
+    /// day side and this frame has one exposure for both, so the value is a
+    /// choice about how much of that gap to compress into 8 bits.
+    pub cloud_night: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -68,6 +87,19 @@ pub struct SceneParams {
     pub star_glow_radius: f32,
     pub star_contrast: f32,
     pub star_mag_limit: f32,
+
+    // The Sun as a visible object
+    pub sun_glow: f32,
+    pub sun_rays: f32,
+    pub sun_flare: f32,
+
+    // The Moon
+    pub moon_brightness: f32,
+    pub moon_size: f32,
+    pub moon_earthshine: f32,
+
+    // The Milky Way
+    pub milky_way_intensity: f32,
 
     // Color correction (gamma values, not slider positions)
     pub day_gamma: f32,
@@ -98,6 +130,7 @@ impl SceneParams {
                 tilt_deg: config.tilt,
                 yaw_deg: config.yaw,
                 pitch_deg: config.pitch,
+                fov_deg: config.camera_fov,
             },
             texture_index: config.texture_index,
             sample_count: config.sample_count,
@@ -110,8 +143,10 @@ impl SceneParams {
             fresnel_mix: config.fresnel_mix,
             fresnel_exp: config.fresnel_exp,
             cloud_opacity: config.cloud_opacity,
+            cloud_opacity_night: config.cloud_opacity_night,
             cloud_floor: config.cloud_floor,
             cloud_gamma: config.cloud_gamma,
+            cloud_night: config.cloud_night,
             atmo_enabled: config.atmo_enabled,
             rayleigh_intensity: config.rayleigh_intensity,
             rayleigh_sharpness: config.rayleigh_sharpness,
@@ -126,6 +161,13 @@ impl SceneParams {
             star_glow_radius: config.star_glow_radius,
             star_contrast: config.star_contrast,
             star_mag_limit: config.star_mag_limit,
+            sun_glow: config.sun_glow,
+            sun_rays: config.sun_rays,
+            sun_flare: config.sun_flare,
+            moon_brightness: config.moon_brightness,
+            moon_size: config.moon_size,
+            moon_earthshine: config.moon_earthshine,
+            milky_way_intensity: config.milky_way_intensity,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
@@ -152,6 +194,7 @@ impl SceneParams {
         config.tilt = self.camera.tilt_deg;
         config.yaw = self.camera.yaw_deg;
         config.pitch = self.camera.pitch_deg;
+        config.camera_fov = self.camera.fov_deg;
         config.texture_index = self.texture_index;
         config.sample_count = self.sample_count;
         config.terminator_width = self.terminator_width;
@@ -163,8 +206,10 @@ impl SceneParams {
         config.fresnel_mix = self.fresnel_mix;
         config.fresnel_exp = self.fresnel_exp;
         config.cloud_opacity = self.cloud_opacity;
+        config.cloud_opacity_night = self.cloud_opacity_night;
         config.cloud_floor = self.cloud_floor;
         config.cloud_gamma = self.cloud_gamma;
+        config.cloud_night = self.cloud_night;
         config.atmo_enabled = self.atmo_enabled;
         config.rayleigh_intensity = self.rayleigh_intensity;
         config.rayleigh_sharpness = self.rayleigh_sharpness;
@@ -179,6 +224,13 @@ impl SceneParams {
         config.star_glow_radius = self.star_glow_radius;
         config.star_contrast = self.star_contrast;
         config.star_mag_limit = self.star_mag_limit;
+        config.sun_glow = self.sun_glow;
+        config.sun_rays = self.sun_rays;
+        config.sun_flare = self.sun_flare;
+        config.moon_brightness = self.moon_brightness;
+        config.moon_size = self.moon_size;
+        config.moon_earthshine = self.moon_earthshine;
+        config.milky_way_intensity = self.milky_way_intensity;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
@@ -187,6 +239,12 @@ impl SceneParams {
         config.custom_hour = self.datetime.custom_hour;
         config.custom_day_of_year = f32::from(self.datetime.custom_day_of_year);
         config.custom_year = self.datetime.custom_year;
+    }
+
+    /// Whether the cloud layer draws at all. Each hemisphere has its own
+    /// opacity, so one of them at zero is not the layer switched off.
+    pub fn draws_clouds(&self) -> bool {
+        self.cloud_opacity > 0.0 || self.cloud_opacity_night > 0.0
     }
 
     /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
@@ -227,8 +285,10 @@ impl SceneParams {
             fresnel_mix: q(self.fresnel_mix),
             fresnel_exp: q(self.fresnel_exp),
             cloud_opacity: q(self.cloud_opacity),
+            cloud_opacity_night: q(self.cloud_opacity_night),
             cloud_floor: q(self.cloud_floor),
             cloud_gamma: q(self.cloud_gamma),
+            cloud_night: q(self.cloud_night),
             rayleigh_intensity: q(self.effective_rayleigh_intensity()),
             rayleigh_sharpness: q(self.rayleigh_sharpness),
             rayleigh_haze: q(self.rayleigh_haze),
@@ -242,6 +302,13 @@ impl SceneParams {
             star_glow_radius: q(self.star_glow_radius),
             star_contrast: q(self.star_contrast),
             star_mag_limit: q(self.star_mag_limit),
+            sun_glow: q(self.sun_glow),
+            sun_rays: q(self.sun_rays),
+            sun_flare: q(self.sun_flare),
+            moon_brightness: q(self.moon_brightness),
+            moon_size: q(self.moon_size),
+            moon_earthshine: q(self.moon_earthshine),
+            milky_way_intensity: q(self.milky_way_intensity),
             day_gamma: q(self.day_gamma),
             day_saturation: q(self.day_saturation),
             night_gamma: q(self.night_gamma),
@@ -280,8 +347,10 @@ pub struct ParamsDigest {
     pub fresnel_mix: i32,
     pub fresnel_exp: i32,
     pub cloud_opacity: i32,
+    pub cloud_opacity_night: i32,
     pub cloud_floor: i32,
     pub cloud_gamma: i32,
+    pub cloud_night: i32,
     pub rayleigh_intensity: i32,
     pub rayleigh_sharpness: i32,
     pub rayleigh_haze: i32,
@@ -295,6 +364,13 @@ pub struct ParamsDigest {
     pub star_glow_radius: i32,
     pub star_contrast: i32,
     pub star_mag_limit: i32,
+    pub sun_glow: i32,
+    pub sun_rays: i32,
+    pub sun_flare: i32,
+    pub moon_brightness: i32,
+    pub moon_size: i32,
+    pub moon_earthshine: i32,
+    pub milky_way_intensity: i32,
     pub day_gamma: i32,
     pub day_saturation: i32,
     pub night_gamma: i32,
@@ -537,6 +613,16 @@ mod tests {
                 },
             ),
             (
+                "fov",
+                SceneParams {
+                    camera: CameraParams {
+                        fov_deg: 45.0,
+                        ..base.camera
+                    },
+                    ..base
+                },
+            ),
+            (
                 "texture_index",
                 SceneParams {
                     texture_index: 1,
@@ -614,6 +700,13 @@ mod tests {
                 },
             ),
             (
+                "cloud_opacity_night",
+                SceneParams {
+                    cloud_opacity_night: 0.5,
+                    ..base
+                },
+            ),
+            (
                 "cloud_floor",
                 SceneParams {
                     cloud_floor: 0.3,
@@ -624,6 +717,13 @@ mod tests {
                 "cloud_gamma",
                 SceneParams {
                     cloud_gamma: 0.5,
+                    ..base
+                },
+            ),
+            (
+                "cloud_night",
+                SceneParams {
+                    cloud_night: 0.4,
                     ..base
                 },
             ),
@@ -722,6 +822,55 @@ mod tests {
                 "star_mag_limit",
                 SceneParams {
                     star_mag_limit: 5.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_glow",
+                SceneParams {
+                    sun_glow: 1.7,
+                    ..base
+                },
+            ),
+            (
+                "sun_rays",
+                SceneParams {
+                    sun_rays: 0.15,
+                    ..base
+                },
+            ),
+            (
+                "sun_flare",
+                SceneParams {
+                    sun_flare: 0.85,
+                    ..base
+                },
+            ),
+            (
+                "moon_brightness",
+                SceneParams {
+                    moon_brightness: 0.4,
+                    ..base
+                },
+            ),
+            (
+                "moon_size",
+                SceneParams {
+                    moon_size: 4.5,
+                    ..base
+                },
+            ),
+            (
+                "moon_earthshine",
+                SceneParams {
+                    moon_earthshine: 0.2,
+                    ..base
+                },
+            ),
+            (
+                "milky_way_intensity",
+                SceneParams {
+                    milky_way_intensity: 1.4,
                     ..base
                 },
             ),

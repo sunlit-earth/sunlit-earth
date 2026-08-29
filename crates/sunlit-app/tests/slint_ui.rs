@@ -79,6 +79,26 @@ fn test_camera_zoom_roundtrip() {
     approx::assert_relative_eq!(window.get_camera_zoom(), 0.75);
 }
 
+/// The Earth lens travels with the rest of the camera, so a round trip is the
+/// whole of its bridge: nothing derives it and nothing else writes it.
+#[test]
+fn test_camera_fov_roundtrips_through_scene_params() {
+    let window = create_window();
+    window.set_camera_fov(96.0);
+    let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
+    approx::assert_relative_eq!(params.camera.fov_deg, 96.0);
+
+    let restored = sunlit_core::params::SceneParams {
+        camera: sunlit_core::scene::camera::CameraParams {
+            fov_deg: 42.0,
+            ..params.camera
+        },
+        ..params
+    };
+    sunlit_earth::ui_callbacks::apply_params_to_window(&window, &restored);
+    approx::assert_relative_eq!(window.get_camera_fov(), 42.0);
+}
+
 #[test]
 fn test_bool_property_roundtrip() {
     let window = create_window();
@@ -108,6 +128,13 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     window.set_star_glow_radius(26.0);
     window.set_star_contrast(-0.67);
     window.set_star_mag_limit(5.4);
+    window.set_sun_glow(2.4);
+    window.set_sun_rays(1.3);
+    window.set_sun_flare(0.7);
+    window.set_moon_brightness(1.7);
+    window.set_moon_size(5.5);
+    window.set_moon_earthshine(0.21);
+    window.set_milky_way_intensity(1.15);
     let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
     approx::assert_relative_eq!(params.sky_fov, 165.0);
     approx::assert_relative_eq!(params.star_intensity, 0.73);
@@ -116,6 +143,13 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     approx::assert_relative_eq!(params.star_glow_radius, 26.0);
     approx::assert_relative_eq!(params.star_contrast, -0.67);
     approx::assert_relative_eq!(params.star_mag_limit, 5.4);
+    approx::assert_relative_eq!(params.sun_glow, 2.4);
+    approx::assert_relative_eq!(params.sun_rays, 1.3);
+    approx::assert_relative_eq!(params.sun_flare, 0.7);
+    approx::assert_relative_eq!(params.moon_brightness, 1.7);
+    approx::assert_relative_eq!(params.moon_size, 5.5);
+    approx::assert_relative_eq!(params.moon_earthshine, 0.21);
+    approx::assert_relative_eq!(params.milky_way_intensity, 1.15);
 }
 
 #[test]
@@ -129,6 +163,13 @@ fn test_celestial_properties_apply_from_scene_params() {
         star_glow_radius: 29.0,
         star_contrast: -0.76,
         star_mag_limit: 5.9,
+        sun_glow: 0.4,
+        sun_rays: 1.8,
+        sun_flare: 1.1,
+        moon_brightness: 0.8,
+        moon_size: 3.5,
+        moon_earthshine: 0.17,
+        milky_way_intensity: 0.35,
         ..sunlit_core::params::SceneParams::default()
     };
     sunlit_earth::ui_callbacks::apply_params_to_window(&window, &params);
@@ -139,6 +180,13 @@ fn test_celestial_properties_apply_from_scene_params() {
     approx::assert_relative_eq!(window.get_star_glow_radius(), 29.0);
     approx::assert_relative_eq!(window.get_star_contrast(), -0.76);
     approx::assert_relative_eq!(window.get_star_mag_limit(), 5.9);
+    approx::assert_relative_eq!(window.get_sun_glow(), 0.4);
+    approx::assert_relative_eq!(window.get_sun_rays(), 1.8);
+    approx::assert_relative_eq!(window.get_sun_flare(), 1.1);
+    approx::assert_relative_eq!(window.get_moon_brightness(), 0.8);
+    approx::assert_relative_eq!(window.get_moon_size(), 3.5);
+    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.17);
+    approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.35);
 }
 
 #[test]
@@ -151,6 +199,28 @@ fn test_default_star_tuning_uses_balanced_profile() {
     approx::assert_relative_eq!(window.get_star_glow_radius(), 8.0);
     approx::assert_relative_eq!(window.get_star_contrast(), 0.3);
     approx::assert_relative_eq!(window.get_star_mag_limit(), 6.5);
+}
+
+#[test]
+fn test_default_sun_shows_the_glare_and_not_the_camera() {
+    let window = create_window();
+    approx::assert_relative_eq!(window.get_sun_glow(), 1.0);
+    approx::assert_relative_eq!(window.get_sun_rays(), 0.6);
+    approx::assert_relative_eq!(window.get_sun_flare(), 0.0);
+}
+
+#[test]
+fn test_default_moon_is_visible_at_its_true_size() {
+    let window = create_window();
+    approx::assert_relative_eq!(window.get_moon_brightness(), 1.0);
+    approx::assert_relative_eq!(window.get_moon_size(), 1.0);
+    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.05);
+}
+
+#[test]
+fn test_default_milky_way_is_on_at_half_strength() {
+    let window = create_window();
+    approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.5);
 }
 
 // ---------------------------------------------------------------------------

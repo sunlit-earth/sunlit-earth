@@ -1,8 +1,23 @@
 # Running the desktop e2e suite in a VM
 
-The desktop end-to-end suite opens real windows, uses a real tray icon, and sets a real wallpaper. On a development machine that means it takes the desktop over for a minute; anywhere without an interactive desktop, including every hosted CI runner, it cannot run at all. This is how to run it in a local virtual machine instead.
+The desktop end-to-end suite opens real windows, uses a real tray icon, and sets a real wallpaper. On a development machine that means it takes the desktop over for a minute; anywhere without an interactive desktop, including every hosted CI runner, it cannot run at all. This is how to run it in a local virtual machine instead. The same machinery builds the release binaries; that part is under [Release builds](#release-builds) below.
 
-Everything goes through `cargo xtask`. The design is in [plans/2026-08-19-phase3-vm-orchestration-plan.md](plans/2026-08-19-phase3-vm-orchestration-plan.md), and the Linux guest's overhaul in [plans/2026-08-21-phase5-linux-vm-and-parity-plan.md](plans/2026-08-21-phase5-linux-vm-and-parity-plan.md).
+Everything goes through `cargo xtask`. The design is in [plans/2026-08-19-phase3-vm-orchestration-plan.md](plans/2026-08-19-phase3-vm-orchestration-plan.md), the Linux guest's overhaul in [plans/2026-08-21-phase5-linux-vm-and-parity-plan.md](plans/2026-08-21-phase5-linux-vm-and-parity-plan.md), and the release builds in [plans/2026-08-28-vm-release-build-plan.md](plans/2026-08-28-vm-release-build-plan.md).
+
+## Four images
+
+The store holds four, and every `vm` command takes one of their slugs:
+
+| slug | what it is | what it is for |
+|---|---|---|
+| `windows` | Windows 11 Enterprise evaluation | the e2e guest |
+| `linux` | Debian 13 with four desktops | the e2e guest |
+| `windows-builder` | a layer over `windows`, plus MSVC, libclang and rustup | release builds |
+| `linux-builder` | Ubuntu 22.04, a toolchain, no graphics stack | release builds |
+
+The two builders are not guests the suite can run in: neither has a desktop, and that is deliberate. A compiler in the images the suite runs in would cost the fidelity that found the missing Visual C++ runtime, because the guest that found it was a stock Windows.
+
+`windows-builder` is a *layer*: a differencing child of `windows`'s own disk, so it holds only what the toolchain install wrote. That makes it five minutes or so to build instead of an hour, and gigabytes instead of another fifteen, and it costs one thing: the file cannot be read without its parent. So the two are rebuilt and purged together, `vm status` lists the layer under the image it is a child of, and the layer's ninety-day evaluation clock is its parent's, which means a Windows rebuild for expiry costs the layer's few minutes on top of the hour.
 
 ## The four steps
 
@@ -20,7 +35,7 @@ cargo xtask e2e --target linux
 
 One convenience it warns about rather than installs is a VNC viewer, which only `vm view` of a QEMU guest needs. It looks for `vncviewer`, `tigervnc`, `tvnviewer`, `remmina` and `vinagre`, by name on `PATH` and then in the places an installer is known to leave a program without putting it there: TightVNC's own directory under Program Files, winget's links directory, and scoop's shims directory. `scoop install tightvnc` on Windows and `apt install tigervnc-viewer` on Linux both satisfy it. A viewer installed in the shell that is running `vm view` still counts, which is the point of not asking `PATH` alone: both winget and scoop append to the user `PATH`, and a shell that started earlier never sees it.
 
-`vm build-image <target>` builds a golden image. Expect the better part of an hour either way, plus several gigabytes of download: the Linux image installs four desktops, and the Windows one installs Windows. It is a one-time cost, repeated only when a template changes or a Windows evaluation expires.
+`vm build-image <image>` builds one. What it costs varies by an order of magnitude: `linux-builder` is a minute or two of provisioning over a 700 MB download, `windows-builder` is about five minutes of Visual Studio installer over its parent's disk, and the two desktop images are the better part of an hour each plus several gigabytes, because one installs four desktops and the other installs Windows. All of them are a one-time cost, repeated only when a template changes or a Windows evaluation expires.
 
 Which mechanism performs the install depends on the host, and it mirrors the hypervisor the finished guest runs on:
 
@@ -32,6 +47,8 @@ Which mechanism performs the install depends on the host, and it mirrors the hyp
 The one cell that is not Packer is the one QEMU cannot do: on a Windows host QEMU runs on the WHPX accelerator, and a WHPX guest with more than one vCPU does not survive the reset Windows Setup performs after copying its files. The measurements are under Troubleshooting below. So on a Windows host the xtask installs Windows itself, on the hypervisor the guest will run on anyway: it repacks the installation media without its boot prompt, builds the unattend CD with oscdimg, creates a generation 2 VM, watches the install with a line a minute, runs the same finalize script over SSH, shuts the guest down, keeps its disk and drops the VM, and converts that disk to qcow2 for the QEMU provider. No Packer, no QEMU process, no keypress, and no network on the host after the ISO download. The guest itself fetches one thing at first logon, the Visual C++ runtime, because Windows does not ship it and every Rust binary the suite runs needs it.
 
 Either way the result is one canonical install in two formats, so the Hyper-V provider and the QEMU provider boot the same Windows. What differs is only which format is derived from which.
+
+The Windows layer is the third answer, and it does not depend on the host: nothing is installed, so nothing needs Packer or an installer at all. What does depend on the host is the format the child is made in, which is the same table again: a differencing VHDX on a Windows host, a qcow2 with a backing file on a Linux one. That is why a layer has one format per host and why `SUNLIT_EARTH_VM_PROVIDER` is refused for one: converting a differencing child means flattening it through a full copy of its parent.
 
 `e2e --target <host|windows|linux>` runs the suite. `--target host` is what `cargo e2e` does: this desktop, with its real GPU. The other two boot a pristine VM, copy the current binaries in, run the suite in the guest's console session, pull the results back, and destroy the VM.
 
@@ -116,6 +133,72 @@ Two more things either way:
 - Watching a run is harmless. Clicking, typing, or moving the mouse during one perturbs the tests, which is the whole point of them having a desktop to themselves.
 - A basic session carries no clipboard, and neither does the VNC console of a Linux guest. An enhanced session is RDP, so it does: text can be pasted straight into a guest that was handed over. Files go in through `vm ssh` and `scp` either way.
 
+## Release builds
+
+```
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-expired-image] [--allow-dirty]
+cargo xtask dist --target linux            # one target
+cargo xtask dist                           # both, in sequence
+cargo xtask dist --target windows --no-verify --keep
+```
+
+`dist` builds the `sunlit-earth` binary in release mode inside a pristine overlay of that
+target's builder image, and then proves the result runs in the *desktop* image of the same
+target. What reaches the build is a `git archive` of `HEAD` without `textures/`, and the
+name of the channel `rust-toolchain.toml` pins. Nothing else: no host `target/`
+directory, no host `~/.cargo`, no host environment. That is the whole point of the command
+existing beside `cargo build --release`, which builds whatever this machine's toolchain,
+LLVM, Visual Studio and `RUSTFLAGS` make of the tree and records none of it.
+
+A run of one target is four to six minutes plus two boots, measured on this host: a cold
+release build with fat LTO takes about five minutes on the eight virtual cores a builder
+gets. `--target all` does both in sequence, one VM at a time, and prints a line per
+target; a failure in one does not stop the other, and the command exits nonzero if either
+failed.
+
+The results land in `target/dist/<target>/`:
+
+| file | what it is |
+|---|---|
+| `sunlit-earth` / `sunlit-earth.exe` | the binary |
+| `build-info.json` | the commit, `git describe`, whether the tree was dirty, the channel, the guest's own `rustc -vV`, the builder image and its manifest, the linkage, and which image verified it |
+| `build.log` | everything cargo said in the guest |
+| `smoke.png` | the 640x360 render the desktop guest produced, when verification ran |
+
+The directory is replaced wholesale on success and left alone on failure, so a failed
+rebuild leaves the previous artifact where it was.
+
+Two things about a release binary cannot be checked by running it, so the builder reads
+its own output and the host checks what it reported. On Windows `dumpbin /dependents` must
+name neither `vcruntime140.dll` nor `msvcp140.dll`: the C runtime is linked in, so a clean
+Windows 10 needs no redistributable, and a guest that *has* the redistributable would run
+a dynamically linked binary perfectly well and prove nothing. On Linux `readelf -d` and
+`objdump -T` must show a glibc floor of at most 2.35 and only `libc`, `libm`, `libgcc_s`
+and `libfontconfig`: X11, xcb, xkbcommon and EGL are opened at run time rather than
+linked, which is what lets the binary start on a machine with no display. A build whose
+linkage disagrees is refused with the offending name in the message.
+
+What running it *does* prove is the other half, and that is the verification boot: the
+binary is staged into the desktop guest, which did not build it, and asked for one
+`render`. The result is measured from its own PNG header rather than from its size,
+because a render that failed after opening its output still leaves a file. `--no-verify`
+skips that boot.
+
+`--allow-dirty` builds `HEAD` from a working tree with uncommitted changes and records
+`dirty: true`; without it a dirty tree is refused before anything boots, because the
+archive is of the commit and a record whose commit does not describe the binary is the one
+thing it must not be. Untracked files are not dirt: they can never reach the guest.
+
+`--keep` leaves the last guest of the run up, which is the desktop guest when verification
+ran and the builder when it did not. One guest, not one per target: a run of both targets
+takes each guest down before the next boots, because a guest that is still registered
+refuses the next boot, so only the last target of the run keeps anything. A kept builder
+still holds the source tree and its `target/release`, so a build can be repeated in there
+by hand, and the closing summary names the guest that is still up.
+
+`--allow-expired-image` builds anyway when the Windows evaluation behind the image has
+run out, which the section below is about.
+
 ## The Windows evaluation expires
 
 The Windows guest is built from the Windows 11 Enterprise evaluation, which runs for 90 days from installation. The clock starts during the image build and never resets, because the image is read-only and every run boots a throwaway overlay of it.
@@ -133,10 +216,11 @@ The fix is `cargo xtask vm build-image windows`, which is also the only way to g
 `cargo xtask vm status` lists what exists: the golden images with their sizes and build dates, the cached installation media, any overlays including ones a crashed run left behind, any VM that is registered or running and how to reach it, and what all of it costs. It prints the command to reclaim each part next to the numbers.
 
 ```
-cargo xtask vm down <windows|linux|all>      # the guest and its run state
-cargo xtask vm purge <windows|linux|all>     # that, the golden image, and the media
+cargo xtask vm down <image|all>              # the guest and its run state
+cargo xtask vm purge <image|all>             # that, the image, and the media
 cargo xtask vm purge windows --iso           # only the 6.6 GB download
-cargo xtask vm purge linux --image           # only the golden image and its leftovers
+cargo xtask vm purge linux --image           # only the image and its leftovers
+cargo xtask vm purge windows-builder --image # only the layer, leaving its parent
 ```
 
 `vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image.
@@ -145,9 +229,15 @@ cargo xtask vm purge linux --image           # only the golden image and its lef
 
 A purge that has to stop a guest says what stopping it costs, on the line that says it is being stopped and in the question, and `-f` skips the question rather than the warning. That matters for one guest only: an image build. A purge that ends a build stops there and does not also clear the build's record and the disk its install had written, since those are run state and no flag asked for them; it names both and points at `vm down <target>`, which is what a `vm status` full of a build that is not running is telling you afterwards.
 
-Neither command touches anything that is not the xtask's own. Every VM it creates is named `sunlit-e2e-<target>`, every file it writes lives under the image store, and a state file naming anything else is reported and left alone.
+A purge of a base takes its layers with it, and lists them before it asks. That is not tidiness: a differencing child without the disk it was made from is not a smaller image, it is an unreadable file. The other direction is free, so `vm purge windows-builder --image` takes the layer and leaves the Windows image alone, and rebuilding the layer is minutes rather than an hour.
 
-The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Windows and `~/.local/share/SunlitEarth/vm` on Linux. Set `SUNLIT_EARTH_VM_DIR` to put them somewhere else, on a bigger disk for instance. Budget 40 to 60 GB for both images plus their overlays and the 6.6 GB Windows download.
+Neither command touches anything that is not the xtask's own. Every VM it creates is named `sunlit-e2e-<image>`, every file it writes lives under the image store, and a state file naming anything else is reported and left alone.
+
+The images live outside the repository, in `%LOCALAPPDATA%\SunlitEarth\vm` on Windows and `~/.local/share/SunlitEarth/vm` on Linux. Set `SUNLIT_EARTH_VM_DIR` to put them somewhere else, on a bigger disk for instance. Measured on this host: the Windows image is 14.9 GiB of qcow2 plus 19.3 GiB of VHDX, `windows-builder` 13.5 GiB, the Debian image 4.0 GiB, and `linux-builder` 3.1 GiB, with the Windows download another 6.6 GB, which comes to 64.8 GiB in all. Budget 70 to 80 GB for all four images plus their overlays and the media, and remember that an overlay grows with what a run writes into it: a release build's `target/release` lives in one, and one came to 6.2 GiB.
+
+The layer is the one image whose size is worth knowing why. 4.8 GiB of it is the toolchain and the rest is a Windows guest having been booted, because a differencing child records every block the guest wrote, including the ones it freed again. So `finalize.ps1` deletes the installer caches and retrims the volume, which is what tells a virtual disk a block is free, and the build compacts the disk on the host afterwards: 16.5 GiB down to 13.5, of which the compaction is 2.3 and the deletions 0.8. Changing what it trims means rebuilding the layer, which is four minutes.
+
+Moving the store breaks a layer's parent chain, because a differencing child records where its parent was. That was already true of the overlays a run creates, which the next boot recreates anyway; for the Windows layer it means a rebuild of the layer after a move.
 
 The prompt-free copy of that download does not stay in that budget. A native Windows build repacks the media to take the boot prompt out of it, and a build that produced an image deletes the copy and the record beside it on the way out: it is 6.6 GB of derived data, and remaking it costs minutes against a build that costs an hour. A build that failed keeps it and says so, since the retry is the one occasion when that saving is worth having.
 
@@ -241,3 +331,11 @@ Then, at the `(qemu)` prompt, which is the human form of the QMP `system_reset` 
 **The render case fails on a color, such as "Sahara: expected yellowish/sandy".** The guest has no textures, so it rendered the procedural grid and the sampled points are whatever the grid has there. The run says at the top whether it staged them and why not; `git lfs pull` is the usual answer.
 
 **A test fails in the guest but passes on the desktop.** The results are pulled back to the image store and the path is printed at the end of the run: `output.log` is the suite's own output and `artifacts/` is whatever it wrote. `e2e --target <t> --keep` leaves the VM up so you can look at it from the inside.
+
+**`vm status` says the `windows-builder` image is detached.** A layer is a differencing child, and its parent is no longer the disk it was built over. Usually that means the Windows image was rebuilt, which changes its checksum and therefore the identity the layer recorded; moving the image store does it too, and so does a layer whose manifest lost its parent record. Whatever the cause, the answer is the same and it is cheap: `cargo xtask vm build-image windows-builder`. This is checked before a boot rather than after it, because Hyper-V would refuse the attach with a message about a broken chain and qcow2 would read the file without refusing at all.
+
+**A `dist` run says the builder guest has no cargo in it.** The guest booted and the probe found no `cargo` where the job would name it, so the source archive was never copied in. That is an image built before the toolchain was added, or one whose provisioning did not finish: `cargo xtask vm build-image <image>` rebuilds it. The check exists because the alternative is a build that fails twenty seconds into its job with "cargo is not recognized", forty minutes' worth of expectation earlier.
+
+**A release build in the Linux builder dies with no error, and the log ends mid-compile.** That is the shape an out-of-memory kill takes: the kernel kills `rustc` and cargo reports a signal. A builder gets 8 GiB and eight cores, and the release profile is fat LTO with one codegen unit, so the last few crates hold a lot at once. If it recurs, the fix in reach is fewer parallel jobs: add `--jobs 4` to the `cargo build` line in `commands::dist::build_job`, which costs minutes rather than the build. The measured build on this host does not come close, so this is a note rather than a known failure.
+
+**A release build in the Windows builder stops after exactly three hours.** That is the guest's own ceiling rather than the xtask's: the job runs through the `sunlit-e2e-job` scheduled task, whose `ExecutionTimeLimit` the image sets to three hours, and the task is ended without the job writing an exit code. The `dist` timeout is two hours and is a constant in `commands::dist`; the task's limit is in the parent image's `bootstrap.ps1`, so raising that one is a Windows image rebuild and an hour. A build that gets anywhere near either number is a build worth understanding first: the measured one is five minutes.

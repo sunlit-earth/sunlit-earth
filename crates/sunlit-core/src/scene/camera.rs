@@ -11,6 +11,8 @@ pub struct CameraParams {
     pub tilt_deg: f32,
     pub yaw_deg: f32,
     pub pitch_deg: f32,
+    /// Vertical field of view of the Earth lens, in degrees.
+    pub fov_deg: f32,
 }
 
 impl Default for CameraParams {
@@ -24,9 +26,21 @@ impl Default for CameraParams {
             tilt_deg: 0.0,
             yaw_deg: 0.0,
             pitch_deg: 0.0,
+            fov_deg: DEFAULT_CAMERA_FOV,
         }
     }
 }
+
+/// The Earth lens a preset and a fresh config start from.
+pub const DEFAULT_CAMERA_FOV: f32 = 20.0;
+/// Narrowest Earth lens the settings window offers, in degrees.
+pub const CAMERA_FOV_MIN: f32 = 10.0;
+/// Widest Earth lens the settings window offers, in degrees.
+///
+/// The perspective projection scales by `1 / tan(fov / 2)`, which reaches zero
+/// at 180 degrees and takes the whole scene to a point with it. 170 is as wide
+/// as the lens goes while the projection is still finite.
+pub const CAMERA_FOV_MAX: f32 = 170.0;
 
 /// Camera presets for the 3x3 preset grid in the UI.
 ///
@@ -43,6 +57,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 30.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 1: N. America
     CameraParams {
@@ -54,6 +69,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 0.0,
         offset_x: 0.0,
         offset_y: 0.28,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 2: S. America
     CameraParams {
@@ -65,6 +81,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 0.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 3: Africa
     CameraParams {
@@ -76,6 +93,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 0.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 4: Asia
     CameraParams {
@@ -87,6 +105,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 0.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 5: Oceania
     CameraParams {
@@ -98,6 +117,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: -26.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 6: Pacific
     CameraParams {
@@ -109,6 +129,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 0.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 7: Blue Marble
     CameraParams {
@@ -120,6 +141,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 0.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
     // 8: Earthrise
     CameraParams {
@@ -131,6 +153,7 @@ pub const PRESETS: [CameraParams; 9] = [
         pitch_deg: 45.0,
         offset_x: 0.0,
         offset_y: 0.0,
+        fov_deg: DEFAULT_CAMERA_FOV,
     },
 ];
 
@@ -184,7 +207,7 @@ impl OrbitalCamera {
             // up vector, making look_at_rh produce a NaN view matrix.
             latitude_deg: latitude_deg.clamp(-89.9, 89.9),
             distance,
-            fov_deg: 20.0,
+            fov_deg: DEFAULT_CAMERA_FOV,
             offset_x: 0.0,
             offset_y: 0.0,
             tilt_deg: 0.0,
@@ -643,6 +666,51 @@ mod tests {
         }
     }
 
+    /// The lens is what decides how much of the frame the globe fills, so the
+    /// invariant is a comparison rather than a number: the same point on the
+    /// limb, seen through a wider lens, lands closer to the middle.
+    #[test]
+    fn a_wider_lens_puts_the_limb_closer_to_the_centre() {
+        let aspect = 16.0 / 9.0;
+        let limb = glam::Vec4::new(0.0, 1.0, 0.0, 1.0);
+
+        let mut narrow = OrbitalCamera::new(0.0, 0.0, 5.0);
+        narrow.fov_deg = CAMERA_FOV_MIN;
+        let mut wide = OrbitalCamera::new(0.0, 0.0, 5.0);
+        wide.fov_deg = CAMERA_FOV_MAX;
+
+        let narrow_clip = narrow.mvp_matrix(aspect) * limb;
+        let wide_clip = wide.mvp_matrix(aspect) * limb;
+        assert!(
+            (wide_clip.y / wide_clip.w).abs() < (narrow_clip.y / narrow_clip.w).abs(),
+            "wide {} should sit closer to the centre than narrow {}",
+            wide_clip.y / wide_clip.w,
+            narrow_clip.y / narrow_clip.w
+        );
+    }
+
+    /// Both ends of the slider, because the projection divides by
+    /// `tan(fov / 2)` and that is what the range exists to stay away from.
+    #[test]
+    fn every_lens_the_slider_offers_projects_finitely() {
+        let aspect = 16.0 / 9.0;
+        let mut fov = CAMERA_FOV_MIN;
+        while fov <= CAMERA_FOV_MAX {
+            let mut cam = OrbitalCamera::new(10.0, 20.0, 5.0);
+            cam.fov_deg = fov;
+            let mvp = cam.mvp_matrix(aspect);
+            assert!(
+                mvp.to_cols_array().iter().all(|v| v.is_finite()),
+                "a {fov} degree lens produced a non-finite MVP"
+            );
+            assert!(
+                mvp.determinant().abs() > f32::EPSILON,
+                "a {fov} degree lens collapsed the projection"
+            );
+            fov += 5.0;
+        }
+    }
+
     #[test]
     fn all_presets_produce_valid_mvp() {
         let aspect = 16.0 / 9.0;
@@ -653,6 +721,7 @@ mod tests {
             cam.tilt_deg = p.tilt_deg;
             cam.yaw_deg = p.yaw_deg;
             cam.pitch_deg = p.pitch_deg;
+            cam.fov_deg = p.fov_deg;
 
             let mvp = cam.mvp_matrix(aspect);
             assert!(

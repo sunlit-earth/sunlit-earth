@@ -54,7 +54,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 let tex = create_mipmapped_texture(
                     &res.device,
                     &res.queue,
-                    &super::slot_label(msg.slot_index),
+                    &res.slot_label(msg.slot_index),
                     img.width,
                     img.height,
                     img.pixels,
@@ -93,7 +93,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 } else if msg.slot_index == super::NIGHT_SLOT {
                     res.night_texture_view = Some(tex_view);
                     maybe_create_composite_bind_group(res);
-                } else if msg.slot_index == super::CLOUDS_SLOT {
+                } else if msg.slot_index == res.layout().clouds() {
                     res.cloud_texture_view = Some(tex_view);
                     maybe_create_cloud_bind_group(res);
                 }
@@ -181,6 +181,9 @@ pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
 }
 
 /// Create the cloud bind group if the cloud texture view is available.
+///
+/// `fs_cloud` reads one texture, so binding 3 of the shared layout takes the
+/// dummy and the group depends on the cloud slot alone.
 pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
     if let Some(cloud_view) = &res.cloud_texture_view {
         res.cloud_bind_group = Some(create_bind_group(
@@ -189,7 +192,7 @@ pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
             &res.uniform_buffer,
             cloud_view,
             &res.sampler,
-            &res.dummy_texture_view, // binding 3 unused by fs_cloud
+            &res.dummy_texture_view,
             "cloud_bind_group",
         ));
     }

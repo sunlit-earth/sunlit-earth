@@ -1,11 +1,13 @@
 use std::sync::mpsc;
 
 use crate::params::{
-    CLOUD_SPHERE_RADIUS, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS, RAYLEIGH_RADIUS,
-    SceneParams,
+    CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
+    RAYLEIGH_RADIUS, SceneParams,
 };
 use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
+use crate::scene::moon;
 use crate::scene::sky::SkyState;
+use crate::scene::sun_occlusion;
 
 use super::Renderer;
 use super::uniforms::Uniforms;
@@ -52,20 +54,26 @@ impl<'a> RenderTarget<'a> {
     }
 }
 
-/// Build a `Uniforms` struct and write it to the GPU buffer.
+/// Build a `Uniforms` struct and write it to the GPU buffer, and say whether
+/// the Moon the caller selected is one the frame can draw.
 ///
 /// This is one of the two translation points for `SceneParams` (the other is
 /// the Slint bridge in the app): everything the shader reads is derived here
-/// and nowhere else.
-#[allow(clippy::cast_precision_loss)]
-pub(super) fn write_uniforms(
+/// and nowhere else. The Moon's placement is part of that derivation, and the
+/// placement is what decides whether there is a silhouette to draw at all, so
+/// this is also the one place that can narrow the selection: a Moon with no
+/// disc is returned as `None` and never reaches the pass.
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[must_use]
+pub(super) fn write_uniforms<'a>(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
     params: &SceneParams,
     viewport_width: u32,
     viewport_height: u32,
     inputs: &FrameInputs,
-) {
+    moon_selected: Option<Moon<'a>>,
+) -> Option<Moon<'a>> {
     let aspect = viewport_width as f32 / viewport_height as f32;
     let cam = &params.camera;
     let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
@@ -74,10 +82,45 @@ pub(super) fn write_uniforms(
     camera.tilt_deg = cam.tilt_deg;
     camera.yaw_deg = cam.yaw_deg;
     camera.pitch_deg = cam.pitch_deg;
+    camera.fov_deg = cam.fov_deg;
     let mvp = camera.mvp_matrix(aspect);
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();
     let sky_rotation = inputs.sky.world_from_eqj;
+    let viewport = glam::Vec2::new(viewport_width as f32, viewport_height as f32);
+    let screen_offset = glam::Vec2::new(-cam.offset_x, -cam.offset_y);
+    let moon = moon::place_moon(&moon::MoonPlacementInputs {
+        position: inputs.sky.moon_position,
+        rotation: inputs.sky.moon_rotation,
+        eye: eye_pos,
+        view: sky_view,
+        size: params.moon_size,
+        sky_fov_deg: params.sky_fov,
+        screen_offset,
+        viewport,
+    });
+    // A Moon with no disc has no image on screen to draw: the cone `place_moon`
+    // measured either reaches the view antipode, where the stereographic lens
+    // has no finite circle, or contains the eye. Every mesh vertex is inside
+    // that same tangent cone, so a disc is exactly the condition under which
+    // the projection has a finite answer for all of them, and without one the
+    // mesh's triangles sweep the whole frame.
+    let moon_drawn = moon_selected.filter(|_| moon.disc.is_some());
+    let sun = sun_occlusion::place_sun(&sun_occlusion::SunPlacementInputs {
+        sun_world_direction: inputs.sky.sun_direction,
+        view: sky_view,
+        mvp,
+        eye_distance: camera.distance,
+        sky_fov_deg: params.sky_fov,
+        camera_fov_deg: camera.fov_deg,
+        atmosphere_radius: RAYLEIGH_RADIUS,
+        screen_offset,
+        viewport,
+        // Only a Moon that is actually drawn hides anything: a glare fading
+        // behind something invisible is the same incoherence as one burning
+        // around a Moon that covers the disk.
+        moon_disc: moon_drawn.and(moon.disc),
+    });
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
         sun_dir: inputs.sky.sun_direction.into(),
@@ -102,6 +145,7 @@ pub(super) fn write_uniforms(
         night_saturation: params.night_saturation,
         cloud_sphere_radius: CLOUD_SPHERE_RADIUS,
         cloud_opacity: params.cloud_opacity,
+        cloud_opacity_night: params.cloud_opacity_night,
         cloud_floor: params.cloud_floor,
         cloud_gamma: params.cloud_gamma,
         rayleigh_intensity: params.effective_rayleigh_intensity(),
@@ -113,8 +157,8 @@ pub(super) fn write_uniforms(
         nightglow_orange_radius: NIGHTGLOW_ORANGE_RADIUS,
         nightglow_green_radius: NIGHTGLOW_GREEN_RADIUS,
         rayleigh_haze: params.rayleigh_haze,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_night: params.cloud_night,
+        cloud_terminator: CLOUD_TERMINATOR_WIDTH,
         _pad5: 0.0,
         sky_view: sky_view.to_cols_array(),
         world_from_eqj: [
@@ -122,8 +166,8 @@ pub(super) fn write_uniforms(
             sky_rotation.y_axis.extend(0.0).into(),
             sky_rotation.z_axis.extend(0.0).into(),
         ],
-        viewport_size: [viewport_width as f32, viewport_height as f32],
-        screen_offset: [-cam.offset_x, -cam.offset_y],
+        viewport_size: viewport.into(),
+        screen_offset: screen_offset.into(),
         star_intensity: params.star_intensity,
         star_mag_limit: params.star_mag_limit,
         star_size: params.star_size,
@@ -131,24 +175,45 @@ pub(super) fn write_uniforms(
         star_glow_radius: params.star_glow_radius,
         star_contrast: params.star_contrast,
         sky_fov: params.sky_fov,
-        _pad6: 0.0,
+        sun_glow: params.sun_glow,
+        sun_rays: params.sun_rays,
+        sun_flare: params.sun_flare,
+        sun_visible: sun.visibility.visible_fraction,
+        sun_transit: sun.visibility.transit_fraction,
+        sun_view_dir: sun.view_direction.into(),
+        sun_disk_radius: sun.disk_radius_pixels,
+        moon_model: moon.model.to_cols_array(),
+        moon_brightness: params.moon_brightness,
+        moon_earthshine: params.moon_earthshine,
+        milky_way_intensity: params.milky_way_intensity,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+    moon_drawn
 }
 
 /// Encode and submit a render pass with the given target and bind group.
 ///
-/// Draw order: Earth sphere, cloud overlay (alpha blended), Rayleigh scattering
-/// (premultiplied alpha), nightglow orange (additive), nightglow green (additive).
-/// Clouds draw before atmosphere because they're in the troposphere, well below
-/// the scattering and airglow layers. All overlays reuse the already-bound
-/// vertex and index buffers from the Earth draw.
+/// Draw order: the Milky Way, stars and planets, the Sun's disk, the Moon, the
+/// Earth sphere, the cloud overlay (alpha blended), Rayleigh scattering
+/// (premultiplied alpha), nightglow orange and green (additive), and the Sun's
+/// glare. The Milky Way is first because it is the background every other
+/// celestial draw sits on. The Moon
+/// is after the disk so a Moon crossing the Sun covers its body, and before the
+/// Earth so the painted globe covers the Moon. Clouds draw
+/// before the atmosphere because they are in the troposphere, well below the
+/// scattering and airglow layers; the glare draws after all of it because it
+/// forms in the observer rather than in the scene. The shell overlays reuse
+/// the already-bound vertex and index buffers from the Earth draw, and the two
+/// sun quads bind nothing at all.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &RenderTarget,
+    milky_way: Option<MilkyWay<'_>>,
     stars: Option<Stars<'_>>,
+    sun: Option<Sun<'_>>,
+    moon: Option<Moon<'_>>,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
     vertex_buffer: &wgpu::Buffer,
@@ -175,10 +240,17 @@ pub(super) fn encode_and_submit(
                 depth_slice: None,
                 resolve_target: target.resolve_target,
                 ops: wgpu::Operations {
+                    // Near black rather than the faint blue this was while it
+                    // was the whole sky. With stars, the planets, the Sun and a
+                    // panorama on it, a blue-tinted clear reads as haze under
+                    // the band and, where the band is dark, as a floor the
+                    // stars sit on. Unconditional, so a checkout without the
+                    // panorama's Git LFS object does not change color the day
+                    // it arrives.
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.02,
-                        g: 0.02,
-                        b: 0.05,
+                        r: 0.005,
+                        g: 0.005,
+                        b: 0.01,
                         a: 1.0,
                     }),
                     store: wgpu::StoreOp::Store,
@@ -195,6 +267,15 @@ pub(super) fn encode_and_submit(
             ..Default::default()
         });
 
+        // The background the rest of the sky is drawn on, and the one draw here
+        // that always covers the whole frame: the sky lens has an image of
+        // every pixel of it.
+        if let Some(milky_way) = milky_way {
+            pass.set_pipeline(milky_way.pipeline);
+            pass.set_bind_group(0, milky_way.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+
         if let Some(stars) = stars {
             pass.set_pipeline(stars.pipeline);
             pass.set_bind_group(0, stars.bind_group, &[]);
@@ -202,6 +283,26 @@ pub(super) fn encode_and_submit(
             pass.draw(0..4, 0..stars.catalog_count);
             pass.set_vertex_buffer(0, stars.planet_buffer.slice(..));
             pass.draw(0..4, 0..5);
+        }
+
+        // The Sun's body belongs to the sky: drawn here, the opaque Earth
+        // covers whatever falls inside its painted disc, and so does a Moon
+        // crossing it, which is the next draw.
+        if let Some(sun) = sun {
+            pass.set_pipeline(sun.disk_pipeline);
+            pass.set_bind_group(0, sun.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+
+        // The Moon has its own texture and so its own bind group, but the same
+        // mesh as the Earth, which the Earth draw below binds and the overlay
+        // shells then reuse.
+        if let Some(moon) = moon {
+            pass.set_pipeline(moon.pipeline);
+            pass.set_bind_group(0, moon.bind_group, &[]);
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..index_count, 0, 0..1);
         }
 
         pass.set_pipeline(pipeline);
@@ -241,6 +342,14 @@ pub(super) fn encode_and_submit(
             pass.set_bind_group(0, bg, &[]);
             pass.draw_indexed(0..index_count, 0, 0..1);
         }
+
+        // The glare forms in the observer, so it goes over the scene rather
+        // than into it, faded by how much of the disk the globe left visible.
+        if let Some(sun) = sun {
+            pass.set_pipeline(sun.glare_pipeline);
+            pass.set_bind_group(0, sun.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
     }
 
     queue.submit(std::iter::once(encoder.finish()));
@@ -255,13 +364,14 @@ pub(super) fn execute_render_pass(
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
 ) {
-    write_uniforms(
+    let moon = write_uniforms(
         &res.queue,
         &res.uniform_buffer,
         params,
         res.render_width,
         res.render_height,
         inputs,
+        Moon::select(res, params),
     );
 
     let resolve_view = res
@@ -275,12 +385,17 @@ pub(super) fn execute_render_pass(
     );
 
     let overlays = Overlays::select(res, params, bind_group);
+    let milky_way = MilkyWay::select(res, params);
     let stars = Stars::select(res, params, bind_group);
+    let sun = Sun::select(res, params, bind_group);
     encode_and_submit(
         &res.device,
         &res.queue,
         &target,
+        milky_way,
         stars,
+        sun,
+        moon,
         &res.pipeline,
         bind_group,
         &res.vertex_buffer,
@@ -295,6 +410,33 @@ pub(super) fn execute_render_pass(
         overlays.cloud.0,
         overlays.cloud.1,
     );
+}
+
+/// The Milky Way's draw, with the bind group holding the panorama.
+#[derive(Clone, Copy)]
+pub(super) struct MilkyWay<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+}
+
+impl<'a> MilkyWay<'a> {
+    /// Zero intensity is the switch, and a panorama whose texture has not
+    /// arrived is not drawn either: it is an overlay, like the clouds and the
+    /// Moon, so its absence is a sky without a band rather than something to
+    /// wait for.
+    ///
+    /// Nothing about the frame can narrow this further. The draw is the whole
+    /// frame and the lens has an image of every pixel of it, so unlike the
+    /// Moon's there is no geometry here that can fail to appear.
+    pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
+        if params.milky_way_intensity <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            pipeline: &res.milky_way_pipeline,
+            bind_group: res.milky_way_bind_group()?,
+        })
+    }
 }
 
 /// The star and planet resources selected for a visible celestial background.
@@ -319,6 +461,57 @@ impl<'a> Stars<'a> {
             catalog_count: crate::assets::stars::embedded_catalog()
                 .visible_count(params.star_mag_limit),
             planet_buffer: &res.planet_buffer,
+        })
+    }
+}
+
+/// The two sun draws, selected together because one switch governs both.
+#[derive(Clone, Copy)]
+pub(super) struct Sun<'a> {
+    disk_pipeline: &'a wgpu::RenderPipeline,
+    glare_pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+}
+
+impl<'a> Sun<'a> {
+    /// Zero glare takes the Sun out of the scene entirely, body included: the
+    /// slider is the switch as well as the strength.
+    pub fn select(
+        res: &'a Renderer,
+        params: &SceneParams,
+        bind_group: &'a wgpu::BindGroup,
+    ) -> Option<Self> {
+        (params.sun_glow > 0.0).then_some(Self {
+            disk_pipeline: &res.sun_disk_pipeline,
+            glare_pipeline: &res.sun_glare_pipeline,
+            bind_group,
+        })
+    }
+}
+
+/// The Moon's draw, with the bind group holding its own surface texture.
+#[derive(Clone, Copy)]
+pub(super) struct Moon<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+}
+
+impl<'a> Moon<'a> {
+    /// Zero brightness is the switch, and a Moon whose texture has not arrived
+    /// is not drawn either: it is an overlay, like the clouds, so its absence
+    /// is a picture without a Moon rather than something to wait for.
+    ///
+    /// Both of those are properties of the configuration. The third condition,
+    /// whether this frame's geometry puts a silhouette on screen at all, is a
+    /// property of the frame, so [`write_uniforms`] applies it where the
+    /// placement is and hands back what is left.
+    pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
+        if params.moon_brightness <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            pipeline: &res.moon_pipeline,
+            bind_group: res.moon_bind_group()?,
         })
     }
 }
@@ -367,7 +560,7 @@ impl<'a> Overlays<'a> {
             rayleigh: atmo(rayleigh_on, &res.rayleigh_pipeline),
             nightglow_orange: atmo(nightglow_on, &res.nightglow_orange_pipeline),
             nightglow_green: atmo(nightglow_on, &res.nightglow_green_pipeline),
-            cloud: if params.cloud_opacity > 0.0 && res.cloud_bind_group.is_some() {
+            cloud: if params.draws_clouds() && res.cloud_bind_group.is_some() {
                 (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
             } else {
                 (None, None)

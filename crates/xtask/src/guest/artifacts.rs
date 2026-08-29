@@ -17,7 +17,7 @@ use crate::commands::vm::Session;
 use crate::guest::cargo_json::{self, Artifact};
 use crate::guest::handover;
 use crate::provider;
-use crate::provider::target::{HostOs, Target};
+use crate::provider::target::{HostOs, Image, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store::{self, Store};
 
@@ -41,10 +41,15 @@ pub struct HostArtifacts {
 
 /// The texture files the app resolves, and therefore the ones the guest needs.
 ///
-/// `resolve_texture_paths` in the app names these two, and nothing else
+/// `resolve_texture_paths` in the app names these four, and nothing else
 /// connects the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
-/// reads that function and asserts both are still spelled this way.
-pub const TEXTURE_FILES: [&str; 2] = ["world.topo.200405.jxl", "BlackMarble_2016.jxl"];
+/// reads that function and asserts all of them are still spelled this way.
+pub const TEXTURE_FILES: [&str; 4] = [
+    "world.topo.200405.jxl",
+    "BlackMarble_2016.jxl",
+    "lroc_color_poles_1k.jxl",
+    "milkyway_2020_4k.jxl",
+];
 
 /// Smaller than any real asset here and far larger than a Git LFS pointer.
 const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
@@ -58,8 +63,8 @@ const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 /// than staging nothing: the app would fail to decode them, and a failed decode
 /// leaves the slot in the state `Renderer::textures_ready` never reports ready
 /// (the open roadmap item), so a guest would wait for an event that cannot
-/// arrive. Size is what tells the two apart, since the smaller of the two real
-/// assets is over a megabyte.
+/// arrive. Size is what tells the two apart, since the smallest of the three real
+/// assets is over 250 KiB.
 pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(), String> {
     for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
         match size {
@@ -82,7 +87,7 @@ pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(),
 /// Sahara and the Atlantic: with the assets it tests the real map, and without
 /// them it tests the procedural grid and says so, which is the same thing that
 /// happens to `cargo e2e` on a host in this state.
-fn host_textures(repo: &Path) -> Option<PathBuf> {
+pub fn host_textures(repo: &Path) -> Option<PathBuf> {
     let dir = repo.join("textures");
     // An array rather than a vector, so the sizes and the names cannot get
     // out of step with each other.
@@ -278,7 +283,7 @@ fn build_in_wsl(
     }
     let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;
 
-    let staging = store.build_dir(Target::Linux).join("artifacts");
+    let staging = store.build_dir(Image::Linux).join("artifacts");
     std::fs::create_dir_all(&staging)
         .map_err(|e| format!("cannot create {}: {e}", staging.display()))?;
     let staging_wsl = wslpath(runner, distro, "-u", &staging.to_string_lossy())?;
@@ -368,7 +373,7 @@ pub fn guest_paths(target: Target, app: &str, harness: &str, textures: bool) -> 
 
 /// Build for a guest and copy everything in.
 pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<GuestPaths, String> {
-    let target = session.target;
+    let target = session.image.target();
     let built = build(runner, store, target)?;
 
     println!("copying the binaries into the guest");
@@ -418,7 +423,7 @@ pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<Gu
         session.provider.as_ref(),
         &session.state,
         store,
-        target,
+        session.image,
         &paths,
     ) {
         println!("warning: {e}");
@@ -560,19 +565,45 @@ mod tests {
 
     #[test]
     fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
-        // Both real: the size of the day and night assets in this repository.
-        assert_eq!(textures_verdict([Some(2_574_413), Some(1_382_310)]), Ok(()));
+        // All real: the sizes of the four assets in this repository.
+        let real = [
+            Some(2_574_413),
+            Some(1_382_310),
+            Some(285_458),
+            Some(9_874_855),
+        ];
+        assert_eq!(textures_verdict(real), Ok(()));
 
         // A pointer file is a few hundred bytes and is otherwise a file like
         // any other, so existence is not the question to ask.
-        let err = textures_verdict([Some(130), Some(1_382_310)]).unwrap_err();
+        let mut pointer = real;
+        pointer[0] = Some(130);
+        let err = textures_verdict(pointer).unwrap_err();
         assert!(err.contains("world.topo.200405.jxl"), "{err}");
         assert!(err.contains("git lfs pull"), "{err}");
 
         // Missing is reported as missing rather than as a pointer.
-        let err = textures_verdict([Some(2_574_413), None]).unwrap_err();
+        let mut absent = real;
+        absent[1] = None;
+        let err = textures_verdict(absent).unwrap_err();
         assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
         assert!(!err.contains("pointer"), "{err}");
+
+        // The Moon is held to the same floor as the rest, which its 285 KB
+        // clears by a wide margin.
+        let mut moon = real;
+        moon[2] = Some(130);
+        let err = textures_verdict(moon).unwrap_err();
+        assert!(err.contains("lroc_color_poles_1k.jxl"), "{err}");
+        assert!(err.contains("git lfs pull"), "{err}");
+
+        // And so is the panorama, which the render case does not sample but
+        // which a guest without it draws an empty sky for.
+        let mut panorama = real;
+        panorama[3] = Some(130);
+        let err = textures_verdict(panorama).unwrap_err();
+        assert!(err.contains("milkyway_2020_4k.jxl"), "{err}");
+        assert!(err.contains("git lfs pull"), "{err}");
     }
 
     /// The app decides which files it loads; the xtask decides which files the
@@ -600,7 +631,7 @@ mod tests {
                 "the app no longer resolves {name}, so staging it is pointless"
             );
         }
-        // Both slots, and no third one the guest would be missing.
+        // Every slot, and no further one the guest would be missing.
         assert_eq!(body.matches(".jxl").count(), TEXTURE_FILES.len());
     }
 }

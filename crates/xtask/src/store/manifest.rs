@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::provider::target::Target;
+use crate::provider::target::Image;
 use crate::util;
 
 /// Bumped when a field changes meaning rather than merely appearing.
@@ -32,20 +32,58 @@ pub struct ImageRecord {
     pub checksum: String,
 }
 
+/// The image a layer was provisioned over, as it stood at the time.
+///
+/// A layer is a differencing child, so its parent is part of its identity and
+/// must not change under it: `Hyper-V` refuses to attach a child whose parent's
+/// identifier changed, and qcow2 reads garbage silently rather than refusing.
+/// Recording the parent's own checksum for the exact file the layer backs onto
+/// is what lets the inventory answer "is this layer still attached to the disk
+/// it was built over" without reading either disk (plan decision 3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParentRecord {
+    /// The parent image's slug.
+    pub image: String,
+    /// The backing file inside the parent's image directory, which is the disk
+    /// format of whichever host built the layer.
+    pub file: String,
+    /// What the parent's own manifest recorded for that file. Compared against
+    /// the parent's manifest rather than against the disk, so the check costs
+    /// nothing and stays honest about where the number came from.
+    pub checksum: String,
+    /// The parent's build time, which is the instant the evaluation clock
+    /// started running. A layer's own timestamp says when it was provisioned and
+    /// nothing about the licence it inherited.
+    #[serde(default)]
+    pub built_unix: u64,
+}
+
 /// What `vm build-image` writes next to the images it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     #[serde(default)]
     pub format_version: u32,
+    /// The image's slug. Defaulted, because manifests written when there was
+    /// one image per target carry only `target`, and those two images are the
+    /// ones whose slugs are the same either way.
+    #[serde(default)]
+    pub image: String,
+    /// The operating system inside it.
     #[serde(default)]
     pub target: String,
-    /// Hash of `vm/<target>/` at build time, from `hash::template_hash`.
+    /// The image this one is a differencing child of, for a layer.
+    #[serde(default)]
+    pub parent: Option<ParentRecord>,
+    /// Hash of `vm/<slug>/` at build time, from `hash::template_hash`.
     #[serde(default)]
     pub template_hash: String,
-    /// Build completion, in seconds since the Unix epoch. This is the number
-    /// the evaluation clock is measured from: the Windows licence starts
-    /// running during the build and never resets, because every run boots a
-    /// throwaway overlay of a read-only image.
+    /// Build completion, in seconds since the Unix epoch. For a base this is
+    /// the number the evaluation clock is measured from: the Windows licence
+    /// starts running during the build and never resets, because every run
+    /// boots a throwaway overlay of a read-only image. For a layer it is when
+    /// the layer was provisioned, which the template-currency check uses and
+    /// the expiry check must not: the clock belongs to the installation, and
+    /// that is the parent's.
     #[serde(default)]
     pub built_unix: u64,
     /// The same instant in RFC 3339, so the file is readable without tooling.
@@ -64,7 +102,7 @@ pub struct Manifest {
 impl Manifest {
     /// A manifest for a build that just finished.
     pub fn new(
-        target: Target,
+        image: Image,
         template_hash: String,
         built_unix: u64,
         source: String,
@@ -73,7 +111,9 @@ impl Manifest {
     ) -> Self {
         Self {
             format_version: MANIFEST_VERSION,
-            target: target.slug().to_owned(),
+            image: image.slug().to_owned(),
+            target: image.target().slug().to_owned(),
+            parent: None,
             template_hash,
             built_unix,
             built_utc: util::format_unix_utc(built_unix),
@@ -83,14 +123,30 @@ impl Manifest {
         }
     }
 
-    pub fn from_json(text: &str) -> Result<Self, String> {
-        serde_json::from_str(text).map_err(|e| format!("malformed manifest: {e}"))
+    /// The same, for a layer, carrying what its parent looked like.
+    pub fn with_parent(mut self, parent: ParentRecord) -> Self {
+        self.parent = Some(parent);
+        self
     }
 
-    /// The record for one file, by name.
-    #[cfg(test)]
-    pub fn record(&self, file: &str) -> Option<&ImageRecord> {
+    /// The image this manifest is about, if it names one this xtask knows.
+    ///
+    /// A manifest with no image field is one written when there was one image
+    /// per target, so it can only be about that target's desktop image.
+    pub fn image(&self) -> Option<Image> {
+        if self.image.trim().is_empty() {
+            return crate::provider::target::Target::parse(&self.target).map(Image::desktop);
+        }
+        Image::parse(&self.image)
+    }
+
+    /// The record for one of the parent's files, by name.
+    pub fn record_for(&self, file: &str) -> Option<&ImageRecord> {
         self.images.iter().find(|r| r.file == file)
+    }
+
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        serde_json::from_str(text).map_err(|e| format!("malformed manifest: {e}"))
     }
 
     pub fn to_json(&self) -> String {
@@ -110,12 +166,25 @@ impl Manifest {
         }
     }
 
-    /// Where this image sits on its evaluation clock, for targets that have
-    /// one.
-    pub fn eval_state(&self, target: Target, now_unix: u64) -> Option<EvalState> {
-        target
+    /// The instant this image's evaluation licence started running.
+    ///
+    /// A layer inherits its parent's installation and therefore its parent's
+    /// clock, so it reads the timestamp it recorded for the parent rather than
+    /// its own. A layer with no parent record is one whose manifest predates the
+    /// field or was hand-edited, and the inventory calls that detached before
+    /// anything asks this.
+    pub fn eval_epoch(&self) -> u64 {
+        match &self.parent {
+            Some(parent) => parent.built_unix,
+            None => self.built_unix,
+        }
+    }
+
+    /// Where this image sits on its evaluation clock, for images that have one.
+    pub fn eval_state(&self, image: Image, now_unix: u64) -> Option<EvalState> {
+        image
             .has_eval_expiry()
-            .then(|| eval_state(self.built_unix, now_unix))
+            .then(|| eval_state(self.eval_epoch(), now_unix))
     }
 }
 
@@ -205,7 +274,7 @@ mod tests {
 
     fn sample() -> Manifest {
         Manifest::new(
-            Target::Windows,
+            Image::Windows,
             "crc32:deadbeef".to_owned(),
             1_755_600_000,
             "windows11-enterprise-eval.iso".to_owned(),
@@ -254,10 +323,61 @@ mod tests {
     fn records_are_found_by_file_name() {
         let manifest = sample();
         assert_eq!(
-            manifest.record("golden.qcow2").map(|r| r.bytes),
+            manifest.record_for("golden.qcow2").map(|r| r.bytes),
             Some(21_474_836_480)
         );
-        assert!(manifest.record("golden.vhdx").is_none());
+        assert!(manifest.record_for("golden.vhdx").is_none());
+    }
+
+    #[test]
+    fn a_manifest_from_before_there_were_four_images_reads_as_a_desktop_one() {
+        let parsed = Manifest::from_json(r#"{"target":"windows","built_unix":10}"#)
+            .expect("an older manifest parses");
+        assert_eq!(parsed.image(), Some(Image::Windows));
+        assert_eq!(sample().image(), Some(Image::Windows));
+        // And an image nothing knows is not guessed at.
+        let odd = Manifest::from_json(r#"{"image":"freebsd","target":"freebsd"}"#).expect("parses");
+        assert_eq!(odd.image(), None);
+    }
+
+    /// A layer's licence is its parent's, so its expiry is measured from the
+    /// parent's build and not from its own. Provisioning a layer over a
+    /// two-month-old install must not reset the clock to today.
+    #[test]
+    fn a_layer_reads_its_evaluation_clock_off_its_parent() {
+        let parent_built = 1_000 * SECS_PER_DAY;
+        let layer = Manifest::new(
+            Image::WindowsBuilder,
+            "crc32:aaaa".to_owned(),
+            parent_built + 60 * SECS_PER_DAY,
+            "images/windows/golden.vhdx".to_owned(),
+            "xtask".to_owned(),
+            Vec::new(),
+        )
+        .with_parent(ParentRecord {
+            image: Image::Windows.slug().to_owned(),
+            file: "golden.vhdx".to_owned(),
+            checksum: "crc32:12345678".to_owned(),
+            built_unix: parent_built,
+        });
+
+        assert_eq!(layer.eval_epoch(), parent_built);
+        let now = parent_built + 80 * SECS_PER_DAY;
+        assert_eq!(
+            layer.eval_state(Image::WindowsBuilder, now),
+            Some(EvalState::Expiring {
+                days_used: 80,
+                days_left: 10
+            }),
+            "a layer provisioned 20 days ago over an 80-day-old install is 80 days in"
+        );
+        // Its own timestamp is what the template-currency check uses, so it is
+        // still recorded and still readable.
+        assert_eq!(layer.built_unix, parent_built + 60 * SECS_PER_DAY);
+        let parsed = Manifest::from_json(&layer.to_json()).expect("round trip");
+        assert_eq!(parsed, layer);
+        assert_eq!(parsed.image(), Some(Image::WindowsBuilder));
+        assert_eq!(parsed.target, "windows");
     }
 
     #[test]
@@ -347,11 +467,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_windows_image_carries_an_evaluation_state() {
+    fn only_the_windows_installation_carries_an_evaluation_state() {
         let manifest = sample();
         let now = manifest.built_unix + 100 * SECS_PER_DAY;
-        assert!(manifest.eval_state(Target::Windows, now).is_some());
-        assert!(manifest.eval_state(Target::Linux, now).is_none());
+        assert!(manifest.eval_state(Image::Windows, now).is_some());
+        assert!(manifest.eval_state(Image::WindowsBuilder, now).is_some());
+        assert!(manifest.eval_state(Image::Linux, now).is_none());
+        assert!(manifest.eval_state(Image::LinuxBuilder, now).is_none());
     }
 
     #[test]

@@ -29,8 +29,8 @@ struct Uniforms {
     nightglow_orange_radius: f32,  // 4 bytes, offset 184
     nightglow_green_radius: f32,   // 4 bytes, offset 188
     rayleigh_haze: f32,            // 4 bytes, offset 192
-    _pad3: f32,                    // 4 bytes, offset 196
-    _pad4: f32,                    // 4 bytes, offset 200
+    cloud_night: f32,              // 4 bytes, offset 196
+    cloud_terminator: f32,         // 4 bytes, offset 200
     _pad5: f32,                    // 4 bytes, offset 204
     sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
@@ -43,7 +43,18 @@ struct Uniforms {
     star_glow_radius: f32,            // 4 bytes, offset 352
     star_contrast: f32,               // 4 bytes, offset 356
     sky_fov: f32,                     // 4 bytes, offset 360
-    _pad6: f32,                       // 4 bytes, offset 364
+    sun_glow: f32,                    // 4 bytes, offset 364
+    sun_rays: f32,                    // 4 bytes, offset 368
+    sun_flare: f32,                   // 4 bytes, offset 372
+    sun_visible: f32,                 // 4 bytes, offset 376
+    sun_transit: f32,                 // 4 bytes, offset 380
+    sun_view_dir: vec3<f32>,          // 12 bytes, offset 384
+    sun_disk_radius: f32,             // 4 bytes, offset 396
+    moon_model: mat4x4<f32>,          // 64 bytes, offset 400
+    moon_brightness: f32,             // 4 bytes, offset 464
+    moon_earthshine: f32,             // 4 bytes, offset 468
+    milky_way_intensity: f32,         // 4 bytes, offset 472
+    cloud_opacity_night: f32,         // 4 bytes, offset 476
 };
 
 @group(0) @binding(0)
@@ -90,6 +101,64 @@ const STAR_HALO_PEAK_AT_FULL_STRENGTH: f32 = 0.2;
 /// this is the whole halo and not the part of it the sprite quad had room for.
 const STAR_HALO_SIGMAS: f32 = 2.5;
 const PI: f32 = 3.141592653589793;
+
+/// Output-density ramp: 1.0 at 1080p and below, 2.0 at 4K and above.
+///
+/// Everything drawn at a size in pixels reads this, so a sprite does not
+/// shrink to a quarter of its physical size as output density rises.
+fn output_pixel_scale() -> f32 {
+    return clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+}
+
+/// The horizontal half-extent of the sky lens in projected-plane units. A
+/// direction `theta` from the view axis lands at `tan(theta / 2)`, and this is
+/// what puts the frame's horizontal edge at NDC 1. Mirrored by
+/// `sky_lens_edge_radius` in `scene::sun_occlusion`.
+fn sky_lens_edge_radius() -> f32 {
+    return tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
+}
+
+struct SkyLensPoint {
+    /// Where the direction lands, in NDC, pan included.
+    ndc: vec2<f32>,
+    /// Its angle from the view axis, which is what says whether it is in front
+    /// of the lens at all.
+    theta: f32,
+};
+
+/// The sky lens's forward projection: where a view-space direction lands.
+///
+/// Stereographic, so a direction `theta` off the view axis lands at
+/// `tan(theta / 2)` along its own radial direction, and one uniform scale takes
+/// that to NDC. The inverse is `sky_lens_direction`, and the image of a cone
+/// about a direction is `sun_disc`; this is the point mapping the star sprites
+/// and the Moon's vertices both go through.
+fn sky_lens_project(view_direction: vec3<f32>) -> SkyLensPoint {
+    let theta = acos(clamp(-view_direction.z, -1.0, 1.0));
+    let transverse_length = length(view_direction.xy);
+    var radial_direction = vec2<f32>(0.0);
+    if transverse_length > 0.000001 {
+        radial_direction = view_direction.xy / transverse_length;
+    }
+    let projected_radius = tan(min(theta, PI - 0.001) * 0.5);
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    var out: SkyLensPoint;
+    out.ndc = radial_direction * projected_radius / sky_lens_edge_radius()
+        * vec2<f32>(1.0, aspect)
+        + uniforms.screen_offset;
+    out.theta = theta;
+    return out;
+}
+
+/// The view-space direction a catalog direction points along.
+///
+/// Two rotations: the equatorial J2000 frame into the world, then the world
+/// into the eye. Everything drawn from a celestial direction goes through this
+/// one composition, and `milky_way_direction` is its inverse.
+fn view_from_eqj(eqj_direction: vec3<f32>) -> vec3<f32> {
+    let world_direction = uniforms.world_from_eqj * eqj_direction;
+    return normalize((uniforms.sky_view * vec4<f32>(world_direction, 0.0)).xyz);
+}
 
 fn star_prominence(magnitude: f32) -> f32 {
     return 1.0 - smoothstep(0.0, 4.0, magnitude);
@@ -144,23 +213,12 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
     );
     let corner = corners[vertex_index];
     let magnitude = in.color_magnitude.a * 10.0 - 2.0;
-    let world_direction = uniforms.world_from_eqj * in.direction;
-    let view_direction = normalize((uniforms.sky_view * vec4<f32>(world_direction, 0.0)).xyz);
-    let theta = acos(clamp(-view_direction.z, -1.0, 1.0));
-    let transverse_length = length(view_direction.xy);
-    var radial_direction = vec2<f32>(0.0);
-    if transverse_length > 0.000001 {
-        radial_direction = view_direction.xy / transverse_length;
-    }
-    let projected_radius = tan(min(theta, PI - 0.001) * 0.5);
-    let edge_radius = tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
-    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
-    let center = radial_direction * projected_radius / edge_radius * vec2<f32>(1.0, aspect);
-    let visible = theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
-    let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+    let point = sky_lens_project(view_from_eqj(in.direction));
+    let visible = point.theta < PI - 0.001 && magnitude <= uniforms.star_mag_limit;
+    let pixel_scale = output_pixel_scale();
     let sprite_radius = star_sprite_radius_pixels(magnitude, pixel_scale);
     let sprite_offset = corner * (2.0 * sprite_radius / uniforms.viewport_size);
-    let clip = vec4<f32>(center + uniforms.screen_offset + sprite_offset, 1.0, 1.0);
+    let clip = vec4<f32>(point.ndc + sprite_offset, 1.0, 1.0);
 
     var out: StarOutput;
     out.clip_position = select(vec4<f32>(2.0, 2.0, 1.0, 1.0), clip, visible);
@@ -172,7 +230,7 @@ fn vs_star(in: StarInput, @builtin(vertex_index) vertex_index: u32) -> StarOutpu
 
 @fragment
 fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
-    let pixel_scale = clamp(uniforms.viewport_size.y / 1080.0, 1.0, 2.0);
+    let pixel_scale = output_pixel_scale();
     let sprite_radius = star_sprite_radius_pixels(in.magnitude, pixel_scale);
     let position_pixels = in.local_position * sprite_radius;
     let radius = length(position_pixels);
@@ -189,6 +247,60 @@ fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
     let compressed_flux = pow(10.0, -contrast_exponent * in.magnitude);
     let amplitude = uniforms.star_intensity * compressed_flux * (core + halo);
     return vec4<f32>(in.color * amplitude, amplitude);
+}
+
+// ---------------------------------------------------------------------------
+// The Moon
+//
+// A textured sphere at its true position, distance and orientation, drawn with
+// the sky: after the stars and the Sun's disk, before the Earth, so the painted
+// globe covers whatever falls inside its own disc and a Moon crossing the Sun
+// covers the disk. Its vertices reach the screen as directions from the eye
+// through the same sky lens the stars use, which is what makes parallax and
+// apparent size exact at every camera distance; its own front-to-back is
+// back-face culling, exact on a convex sphere, rather than a depth test between
+// two lenses that would mean nothing.
+// ---------------------------------------------------------------------------
+
+/// Width of the terminator, in units of n dot l.
+///
+/// The Moon has no atmosphere to scatter light past the shadow line, so this is
+/// as narrow as it can be without aliasing rather than a lit-side gradient.
+const MOON_TERMINATOR_WIDTH: f32 = 0.03;
+
+struct MoonOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) world_normal: vec3<f32>,
+};
+
+@vertex
+fn vs_moon(in: VertexInput) -> MoonOutput {
+    let world_position = (uniforms.moon_model * vec4<f32>(in.position, 1.0)).xyz;
+    let view_direction = normalize(
+        (uniforms.sky_view * vec4<f32>(world_position - uniforms.eye_pos, 0.0)).xyz
+    );
+    var out: MoonOutput;
+    // No offscreen guard here, unlike `vs_star`: a sprite's four vertices share
+    // one direction, so one verdict moves all of them, where a mesh judged per
+    // vertex would keep every triangle that straddles the verdict. The whole
+    // mesh is inside one cone, and `scene::moon::place_moon` measures that cone
+    // before the draw is submitted at all.
+    out.clip_position = vec4<f32>(sky_lens_project(view_direction).ndc, 1.0, 1.0);
+    out.uv = in.uv;
+    // The model matrix carries a uniform scale and a rotation, so the position
+    // is the normal here too, once it is normalized.
+    out.world_normal = normalize((uniforms.moon_model * vec4<f32>(in.position, 0.0)).xyz);
+    return out;
+}
+
+@fragment
+fn fs_moon(in: MoonOutput) -> @location(0) vec4<f32> {
+    let albedo = textureSample(sphere_texture, sphere_sampler, in.uv).rgb;
+    let n_dot_l = dot(normalize(in.world_normal), normalize(uniforms.sun_dir));
+    let sunlit = smoothstep(-MOON_TERMINATOR_WIDTH, MOON_TERMINATOR_WIDTH, n_dot_l);
+    let shade = max(sunlit, clamp(uniforms.moon_earthshine, 0.0, 1.0));
+    return vec4<f32>(albedo * shade * uniforms.moon_brightness, 1.0);
 }
 
 @vertex
@@ -287,6 +399,11 @@ fn vs_cloud(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+// Smallest transmittance the night opacity slider can ask for, which is what
+// its top end means: one over this is the largest optical depth, and at 32 a
+// cloud the source gives a coverage of 0.1 still hides what is under it.
+const NIGHT_OPACITY_MIN_TRANSMITTANCE: f32 = 0.03125;
+
 @fragment
 fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let raw = textureSample(sphere_texture, sphere_sampler, in.uv).r;
@@ -294,8 +411,33 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let cloud_density = pow(floored, 1.0 / max(uniforms.cloud_gamma, 0.01));
     let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
-    let brightness = mix(0.05, 1.0, smoothstep(-uniforms.terminator_width, uniforms.terminator_width, n_dot_l));
-    return vec4<f32>(brightness, brightness, brightness, cloud_density * uniforms.cloud_opacity);
+    // A cloud top at the shell's radius keeps the direct beam until the Sun is
+    // sqrt(1 - 1/r^2) below its local horizontal, 3.14 degrees at this radius,
+    // which is the same tangent condition fs_rayleigh calls earth_limb_ndotv.
+    // So the ramp is centered there rather than on the ground's terminator.
+    let shell_shift = sqrt(1.0 - 1.0 / (uniforms.cloud_sphere_radius * uniforms.cloud_sphere_radius));
+    let w = uniforms.cloud_terminator;
+    let sunlit = smoothstep(-shell_shift - w, -shell_shift + w, n_dot_l);
+    // cloud_night is a fraction of display white, not an irradiance: see the
+    // field's doc comment in uniforms.rs.
+    let brightness = mix(vec3<f32>(uniforms.cloud_night), vec3<f32>(1.0), sunlit);
+    // The two hemispheres carry their own opacity, because one alpha does not
+    // read the same on both. A deck at cloud_night is darker than what it covers
+    // on the night side, where a city core is display white, so the surface wins
+    // a blend that on the day side it loses invisibly; and half a percent of the
+    // source's texels get past a raw 0.97, so a density of 0.45 is what a cloud
+    // that looks solid is worth and a straight multiply cannot reach full cover
+    // from it. The day side keeps that multiply. The night side reads its slider
+    // as an optical depth, which is what puts full cover at the top of the range
+    // and leaves an edge that still fades.
+    let depth = uniforms.cloud_opacity_night
+        / max(1.0 - uniforms.cloud_opacity_night, NIGHT_OPACITY_MIN_TRANSMITTANCE);
+    // The base is held off zero because pow(0, 0) is a NaN through WGSL's
+    // exp2(y * log2(x)), and a fully dense cloud at zero night opacity is
+    // exactly that call.
+    let night_alpha = saturate(1.0 - pow(max(1.0 - cloud_density, 1e-6), depth));
+    let day_alpha = cloud_density * uniforms.cloud_opacity;
+    return vec4<f32>(brightness, mix(night_alpha, day_alpha, sunlit));
 }
 
 // --- Rayleigh scattering shell (closest to surface, ~1.003 radius) ---
@@ -429,4 +571,434 @@ fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
     let rgb = color * rim * intensity * night_mask * time_mod * lat_mod;
 
     return vec4<f32>(rgb + dither(in.clip_position), 0.0);
+}
+
+// --- The Sun ---
+//
+// Two draws, because the Sun is two things at once. Its body is a celestial
+// object, drawn with the sky and covered by the painted globe like anything
+// else there. Its glare forms in the observer rather than in the scene, so it
+// is a second quad drawn last over everything, faded by the fraction of the
+// disk the globe leaves visible rather than by whether the disk survived the
+// depth test. One draw could be occluded or overlaying, not both.
+//
+// Every falloff is measured in degrees from the sun's center, reconstructed
+// per fragment by inverting the sky lens, so the composition is correct at any
+// sky field of view instead of being tied to a pixel radius.
+
+/// Angular radius of the Sun's disk, matching `SUN_ANGULAR_RADIUS_DEGREES` in
+/// `scene::sun_occlusion`.
+const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
+/// How far from the center the glare quad reaches. Past this the composite is
+/// below one 8-bit step at any usable glare strength.
+const SUN_GLARE_REACH_DEGREES: f32 = 30.0;
+/// Width of the core's antialiased boundary, in pixels at 1080p.
+const SUN_CORE_EDGE_PIXELS: f32 = 0.8;
+/// How fast the core saturates as the glare slider leaves zero. The core is
+/// the one clipped white object in the scene, so it reaches full white well
+/// before the slider does, and still fades out rather than popping when the
+/// Sun is switched off.
+const SUN_CORE_GAIN: f32 = 4.0;
+
+const SUN_BLOOM_INNER_DEGREES: f32 = 0.8;
+const SUN_BLOOM_INNER_POWER: f32 = 2.0;
+const SUN_BLOOM_OUTER_DEGREES: f32 = 7.0;
+const SUN_BLOOM_OUTER_POWER: f32 = 1.8;
+const SUN_BLOOM_OUTER_WEIGHT: f32 = 0.09;
+const SUN_BLOOM_GAIN: f32 = 1.0;
+
+const SUN_CORONA_LOBES: f32 = 36.0;
+const SUN_CORONA_TIP_DEGREES: f32 = 4.5;
+/// Narrowest a needle's tip is allowed to be. Below about two pixels the lobe
+/// pattern stops being a pattern and starts being adapter-dependent noise, so
+/// the count comes down instead.
+const SUN_CORONA_MIN_TIP_PIXELS: f32 = 2.0;
+const SUN_CORONA_GAIN: f32 = 0.22;
+
+const SUN_HALO_DEGREES: f32 = 3.0;
+const SUN_HALO_WIDTH_DEGREES: f32 = 1.1;
+const SUN_HALO_STRENGTH: f32 = 0.07;
+
+const SUN_SPIKE_COUNT: f32 = 6.0;
+const SUN_SPIKE_REACH_DEGREES: f32 = 10.0;
+const SUN_SPIKE_SHARPNESS: f32 = 48.0;
+const SUN_SPIKE_GAIN: f32 = 0.5;
+const SUN_GHOST_GAIN: f32 = 0.1;
+
+/// Where the glare goes as the line of sight grazes the lower atmosphere: the
+/// long slant path scatters the blue out and leaves a concentrated orange.
+const SUN_TRANSIT_COLOR: vec3<f32> = vec3<f32>(1.0, 0.42, 0.13);
+const SUN_GLARE_COLOR: vec3<f32> = vec3<f32>(1.0, 0.97, 0.92);
+
+struct SunDisc {
+    /// Center of the cone's image, in NDC.
+    center: vec2<f32>,
+    /// Its radius, in normalized projected-plane units.
+    radius: f32,
+    /// Whether any part of the cone is inside the frame.
+    on_screen: bool,
+    /// Whether the cone reaches the antipode, where its image is the exterior
+    /// of a circle and the quad has to be the whole frame.
+    unbounded: bool,
+}
+
+fn ndc_to_pixels(ndc: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        (ndc.x + 1.0) * 0.5 * uniforms.viewport_size.x,
+        (1.0 - ndc.y) * 0.5 * uniforms.viewport_size.y,
+    );
+}
+
+/// The angle the frame's furthest corner sits at, allowing for the pan.
+fn sky_corner_angle() -> f32 {
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let corner = vec2<f32>(1.0, 1.0) + abs(uniforms.screen_offset);
+    let projected = length(vec2<f32>(corner.x, corner.y / aspect)) * sky_lens_edge_radius();
+    return 2.0 * atan(projected);
+}
+
+/// The image of a cone of half-angle `half_angle` about the Sun.
+///
+/// The sky lens is conformal, so the cone images as a disc whose extremes
+/// along the radial direction are the images of `theta - half_angle` and
+/// `theta + half_angle`. Keeping the first signed is what lets a cone that
+/// contains the view axis straddle the origin with no special case. Mirrors
+/// `sky_lens_disc` in `scene::sun_occlusion`.
+fn sun_disc(half_angle: f32) -> SunDisc {
+    let direction = normalize(uniforms.sun_view_dir);
+    let theta = acos(clamp(-direction.z, -1.0, 1.0));
+    let transverse = length(direction.xy);
+    var radial = vec2<f32>(1.0, 0.0);
+    if transverse > 0.000001 {
+        radial = direction.xy / transverse;
+    }
+    let edge = sky_lens_edge_radius();
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let near = tan((theta - half_angle) * 0.5) / edge;
+    let far = tan(min(theta + half_angle, PI - 0.001) * 0.5) / edge;
+
+    var out: SunDisc;
+    out.center = radial * ((near + far) * 0.5) * vec2<f32>(1.0, aspect) + uniforms.screen_offset;
+    out.radius = (far - near) * 0.5;
+    out.on_screen = theta - half_angle <= sky_corner_angle();
+    out.unbounded = theta + half_angle >= PI - 0.001;
+    return out;
+}
+
+/// The Sun's center in framebuffer pixels.
+fn sun_screen_position() -> vec2<f32> {
+    return ndc_to_pixels(sun_disc(0.0).center);
+}
+
+/// How many pixels one degree is worth where the Sun is.
+///
+/// The stereographic radius is `tan(theta / 2)`, so the radial scale is
+/// `(1 + r^2) / 2` times the on-axis one: a degree near the frame's edge
+/// covers several times the pixels it does on the view axis, and every size
+/// the composite states in pixels has to know that.
+fn sun_pixels_per_degree() -> f32 {
+    let direction = normalize(uniforms.sun_view_dir);
+    let theta = acos(clamp(-direction.z, -1.0, 1.0));
+    let r = tan(min(theta, PI - 0.001) * 0.5);
+    let per_radian = uniforms.viewport_size.x * 0.25 * (1.0 + r * r) / sky_lens_edge_radius();
+    return per_radian * PI / 180.0;
+}
+
+/// The view-space direction a framebuffer position looks along, by inverting
+/// the sky lens analytically.
+fn sky_lens_direction(position: vec2<f32>) -> vec3<f32> {
+    let ndc = vec2<f32>(
+        position.x / uniforms.viewport_size.x * 2.0 - 1.0,
+        1.0 - position.y / uniforms.viewport_size.y * 2.0,
+    );
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let projected = (ndc - uniforms.screen_offset) / vec2<f32>(1.0, aspect);
+    let length_projected = length(projected);
+    var radial = vec2<f32>(1.0, 0.0);
+    if length_projected > 0.000001 {
+        radial = projected / length_projected;
+    }
+    let theta = 2.0 * atan(length_projected * sky_lens_edge_radius());
+    return vec3<f32>(radial * sin(theta), -cos(theta));
+}
+
+/// Veiling glare: a bright inner lobe over a much fainter one that carries the
+/// tail out past ten degrees. Inverse power rather than Gaussian, because a
+/// Gaussian that is bright close in has no tail and one with a tail is not
+/// bright close in.
+fn sun_bloom(degrees_out: f32) -> f32 {
+    let d = max(degrees_out, 0.0001);
+    let inner = 1.0 / (1.0 + pow(d / SUN_BLOOM_INNER_DEGREES, SUN_BLOOM_INNER_POWER));
+    let outer = SUN_BLOOM_OUTER_WEIGHT
+        / (1.0 + pow(d / SUN_BLOOM_OUTER_DEGREES, SUN_BLOOM_OUTER_POWER));
+    return inner + outer;
+}
+
+/// Fade the whole sun-centered composite to zero before the quad ends.
+///
+/// A term still carrying anything where its quad stops draws that quad's own
+/// edge as a straight line, which is what `star_halo_profile` exists to
+/// prevent for the star sprites. Here the quad is the image of a cone, so one
+/// angular window covers every term at once.
+fn sun_glare_window(degrees_out: f32) -> f32 {
+    return 1.0 - smoothstep(SUN_GLARE_REACH_DEGREES * 0.65, SUN_GLARE_REACH_DEGREES, degrees_out);
+}
+
+/// Integer hash, deliberately not the usual `fract(sin(...))` one: that feeds
+/// a transcendental a large argument, where adapters disagree in the low bits,
+/// and the needles are exactly the sort of high-frequency detail that turns
+/// such a disagreement into a golden failure. This is bit-identical anywhere.
+fn sun_hash(value: u32) -> f32 {
+    var h = value * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return f32((h >> 22u) ^ h) / 4294967296.0;
+}
+
+/// The ciliary corona: dozens of thin needles of varying length, low contrast,
+/// radiating from the core. Diffraction in the eye rather than in a lens,
+/// which is why it belongs in the default look.
+fn sun_corona(degrees_out: f32, azimuth: f32, pixels_per_degree: f32, scale: f32) -> f32 {
+    let tip_pixels = SUN_CORONA_TIP_DEGREES * pixels_per_degree;
+    let affordable = floor(PI * tip_pixels / (SUN_CORONA_MIN_TIP_PIXELS * scale));
+    let lobes = clamp(affordable, 8.0, SUN_CORONA_LOBES);
+    let position = (azimuth / (2.0 * PI) + 0.5) * lobes;
+    let cell = floor(position);
+    let index = u32(max(cell, 0.0));
+    let reach = SUN_CORONA_TIP_DEGREES * (0.4 + 0.6 * sun_hash(index));
+    let strength = 0.5 + 0.5 * sun_hash(index + 9871u);
+    let across = pow(0.5 - 0.5 * cos(2.0 * PI * (position - cell)), 1.2);
+    let along = clamp(1.0 - degrees_out / reach, 0.0, 1.0);
+    return strength * across * along * along;
+}
+
+/// The lenticular halo: a faint ring near three degrees with a blue inner and
+/// a red outer edge, from the lens fibers acting as a radial grating. Low
+/// enough in alpha to be a detail rather than an object.
+fn sun_halo(degrees_out: f32) -> vec3<f32> {
+    let across = (degrees_out - SUN_HALO_DEGREES) / SUN_HALO_WIDTH_DEGREES;
+    let ring = exp(-across * across * 3.0);
+    let color = mix(
+        vec3<f32>(0.45, 0.62, 1.0),
+        vec3<f32>(1.0, 0.55, 0.35),
+        clamp(across * 0.5 + 0.5, 0.0, 1.0),
+    );
+    return color * ring * SUN_HALO_STRENGTH;
+}
+
+/// Aperture diffraction spikes. Screen-fixed on purpose: they belong to an
+/// imaging device, and the tilt control rolls that device, so the pattern that
+/// does not turn in frame is the correct one.
+fn sun_spikes(degrees_out: f32, azimuth: f32) -> f32 {
+    let lobes = pow(abs(cos(azimuth * SUN_SPIKE_COUNT * 0.5)), SUN_SPIKE_SHARPNESS);
+    let along = clamp(1.0 - degrees_out / SUN_SPIKE_REACH_DEGREES, 0.0, 1.0);
+    return lobes * along * along;
+}
+
+/// Internal-reflection ghosts, spaced along the axis from the Sun through the
+/// frame's center, which is the geometry a real lens produces and the reason
+/// this whole mode is off by default: in a still wallpaper they read to some
+/// eyes as smudges on the display.
+fn sun_ghosts(position: vec2<f32>, sun_pixels: vec2<f32>) -> vec3<f32> {
+    var placements = array<f32, 3>(0.45, 0.95, 1.35);
+    var sizes = array<f32, 3>(0.06, 0.095, 0.035);
+    var tints = array<vec3<f32>, 3>(
+        vec3<f32>(0.45, 0.75, 1.0),
+        vec3<f32>(1.0, 0.72, 0.45),
+        vec3<f32>(0.6, 1.0, 0.7),
+    );
+    let axis = uniforms.viewport_size * 0.5 - sun_pixels;
+    let span = length(uniforms.viewport_size) * 0.5;
+    var total = vec3<f32>(0.0);
+    for (var i = 0; i < 3; i = i + 1) {
+        let center = sun_pixels + axis * placements[i];
+        let reach = max(sizes[i] * span, 1.0);
+        let profile = clamp(1.0 - length(position - center) / reach, 0.0, 1.0);
+        total = total + tints[i] * profile * profile * SUN_GHOST_GAIN;
+    }
+    return total;
+}
+
+/// The four corners of a screen-aligned quad, generated from the vertex index
+/// so the three draws that use one need no vertex buffer.
+fn sky_quad_corner(vertex_index: u32) -> vec2<f32> {
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+    return corners[vertex_index];
+}
+
+const SUN_OFF_SCREEN: vec4<f32> = vec4<f32>(2.0, 2.0, 1.0, 1.0);
+
+@vertex
+fn vs_sun_disk(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    if uniforms.sun_glow <= 0.0 {
+        return SUN_OFF_SCREEN;
+    }
+    let disc = sun_disc(radians(SUN_ANGULAR_RADIUS_DEGREES));
+    if !disc.on_screen {
+        return SUN_OFF_SCREEN;
+    }
+    // Sized from the radius the CPU floored rather than from the cone, so the
+    // quad and the disk the fragment shader draws are the same circle.
+    let extent = uniforms.sun_disk_radius + SUN_CORE_EDGE_PIXELS * output_pixel_scale();
+    let offset = sky_quad_corner(vertex_index) * (2.0 * extent / uniforms.viewport_size);
+    return vec4<f32>(disc.center + offset, 1.0, 1.0);
+}
+
+@fragment
+fn fs_sun_disk(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let radius = length(position.xy - sun_screen_position());
+    let edge = SUN_CORE_EDGE_PIXELS * output_pixel_scale();
+    let core = 1.0 - smoothstep(
+        uniforms.sun_disk_radius - edge,
+        uniforms.sun_disk_radius + edge,
+        radius,
+    );
+    // The gain scales the level, not the profile: multiplying the shape and
+    // then clamping would eat the antialiased edge and leave a hard square of
+    // white a few pixels across.
+    let amplitude = core * saturate(uniforms.sun_glow * SUN_CORE_GAIN);
+    return vec4<f32>(vec3<f32>(amplitude), amplitude);
+}
+
+@vertex
+fn vs_sun_glare(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    if uniforms.sun_glow <= 0.0 || uniforms.sun_visible <= 0.0 {
+        return SUN_OFF_SCREEN;
+    }
+    let corner = sky_quad_corner(vertex_index);
+    let disc = sun_disc(radians(SUN_GLARE_REACH_DEGREES));
+    if !disc.on_screen {
+        return SUN_OFF_SCREEN;
+    }
+    // Camera mode puts ghosts on the far side of the frame's center, so the
+    // cone no longer bounds what this draw touches.
+    if disc.unbounded || uniforms.sun_flare > 0.0 {
+        return vec4<f32>(corner, 1.0, 1.0);
+    }
+    let aspect = uniforms.viewport_size.x / uniforms.viewport_size.y;
+    let offset = corner * disc.radius * vec2<f32>(1.0, aspect);
+    return vec4<f32>(disc.center + offset, 1.0, 1.0);
+}
+
+@fragment
+fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let sun_direction = normalize(uniforms.sun_view_dir);
+    let ray = sky_lens_direction(position.xy);
+    let degrees_out = degrees(acos(clamp(dot(ray, sun_direction), -1.0, 1.0)));
+    let scale = output_pixel_scale();
+    let sun_pixels = sun_screen_position();
+    let offset = position.xy - sun_pixels;
+    // Framebuffer azimuth with y flipped back up: both the corona and the
+    // spikes are the observer's, so they are measured in the frame.
+    let azimuth = atan2(-offset.y, offset.x);
+    let pixels_per_degree = sun_pixels_per_degree();
+    let core_degrees = uniforms.sun_disk_radius / max(pixels_per_degree, 0.0001);
+
+    let bloom = sun_bloom(degrees_out) * SUN_BLOOM_GAIN;
+    let corona = sun_corona(degrees_out, azimuth, pixels_per_degree, scale)
+        * smoothstep(core_degrees, core_degrees * 2.5, degrees_out)
+        * uniforms.sun_rays
+        * SUN_CORONA_GAIN;
+    let tint = mix(SUN_GLARE_COLOR, SUN_TRANSIT_COLOR, uniforms.sun_transit);
+    let dim = mix(1.0, 0.6, uniforms.sun_transit);
+
+    var color = tint * (bloom + corona) * dim + sun_halo(degrees_out);
+    if uniforms.sun_flare > 0.0 {
+        color = color + SUN_GLARE_COLOR * sun_spikes(degrees_out, azimuth)
+            * uniforms.sun_flare * SUN_SPIKE_GAIN;
+    }
+    color = color * sun_glare_window(degrees_out);
+    if uniforms.sun_flare > 0.0 {
+        color = color + sun_ghosts(position.xy, sun_pixels) * uniforms.sun_flare;
+    }
+    color = color * uniforms.sun_glow * uniforms.sun_visible;
+
+    return vec4<f32>(color + dither(position), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// The Milky Way
+//
+// The diffuse band as a panorama of the whole celestial sphere, sampled per
+// pixel through the inverse of the lens the sprites are projected with. It is
+// the first draw of the pass, before the stars, so everything else in the sky
+// sits on top of it; source position here is after the Sun only because
+// `sky_lens_direction` has to be declared before it is called.
+// ---------------------------------------------------------------------------
+
+/// Where the loader's own orientation pass leaves right ascension zero.
+///
+/// The panorama in `textures/` is a standard astronomical all-sky map, centered
+/// on right ascension zero with right ascension increasing to the left, and
+/// `assets::texture_loader::orient` mirrors every equirectangular source it
+/// loads and then shifts it a quarter width. The mirror is what turns right
+/// ascension the right way round for this map and the shift is what moves its
+/// zero to here. `textures/PROVENANCE.md` records the measurement that the
+/// source's layout is the one this inverts.
+const PANORAMA_RIGHT_ASCENSION_ZERO: f32 = 0.25;
+
+/// The panorama's UV for a unit direction in equatorial J2000 coordinates.
+fn milky_way_uv(direction: vec3<f32>) -> vec2<f32> {
+    let u = atan2(direction.y, direction.x) / (2.0 * PI) + PANORAMA_RIGHT_ASCENSION_ZERO;
+    let v = 0.5 - asin(clamp(direction.z, -1.0, 1.0)) / PI;
+    return vec2<f32>(u, v);
+}
+
+/// The equatorial J2000 direction a framebuffer position looks along.
+///
+/// The inverse of `sky_lens_project` after `view_from_eqj`, which is what puts
+/// the panorama at the same scale and orientation as the sprites drawn on top
+/// of it. The lens half is phase B's and the two transposes are this layer's.
+fn milky_way_direction(position: vec2<f32>) -> vec3<f32> {
+    let view_direction = sky_lens_direction(position);
+    let world_direction = (transpose(uniforms.sky_view) * vec4<f32>(view_direction, 0.0)).xyz;
+    return transpose(uniforms.world_from_eqj) * world_direction;
+}
+
+/// One screen-space derivative of `milky_way_uv`, taken from the direction's own
+/// derivative rather than from the coordinate's.
+///
+/// `atan2` jumps a full turn across its branch cut, so a hardware derivative of
+/// `u` there is a whole texture width wide and the sampler answers that one
+/// pixel column with the coarsest mip: the average of the entire panorama,
+/// drawn as a line from pole to pole. The direction is continuous across the
+/// cut, so carrying its derivative through the map by the chain rule is what
+/// keeps the gradient continuous too. Both denominators vanish at the celestial
+/// poles, where the derivative really is unbounded and the coarse mip a pole
+/// then selects is the right answer rather than an artifact; the floors are
+/// there so it is a large number rather than a division by zero.
+fn milky_way_uv_gradient(direction: vec3<f32>, derivative: vec3<f32>) -> vec2<f32> {
+    let horizontal = max(dot(direction.xy, direction.xy), 1.0e-12);
+    let du = (direction.x * derivative.y - direction.y * derivative.x)
+        / (2.0 * PI * horizontal);
+    let dv = -derivative.z / (PI * max(sqrt(1.0 - direction.z * direction.z), 1.0e-6));
+    return vec2<f32>(du, dv);
+}
+
+/// The whole frame, always: the sky lens has an image of every pixel of it
+/// short of the antipode, and the antipode is past the corner at every field of
+/// view the slider offers, so there is no region to leave undrawn and nothing
+/// here to cull. Whether the layer is drawn at all is `MilkyWay::select`.
+@vertex
+fn vs_milky_way(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(sky_quad_corner(vertex_index), 1.0, 1.0);
+}
+
+@fragment
+fn fs_milky_way(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let direction = normalize(milky_way_direction(position.xy));
+    let uv = milky_way_uv(direction);
+    let sky = textureSampleGrad(
+        sphere_texture,
+        sphere_sampler,
+        uv,
+        milky_way_uv_gradient(direction, dpdx(direction)),
+        milky_way_uv_gradient(direction, dpdy(direction)),
+    ).rgb;
+    let color = sky * uniforms.milky_way_intensity;
+    return vec4<f32>(color + dither(position), 0.0);
 }

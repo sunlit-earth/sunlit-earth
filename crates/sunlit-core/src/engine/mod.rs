@@ -25,7 +25,7 @@ use crate::config::QualityTier;
 use crate::memory_report::MemoryReport;
 use crate::params::SceneParams;
 use crate::renderer::{
-    CLOUDS_SLOT, RenderOutcome, Renderer, RendererConfig, quantize_to_granularity,
+    RenderOutcome, Renderer, RendererConfig, SlotLayout, quantize_to_granularity,
     resolve_sample_count,
 };
 use crate::scene::sky::{self, SkyState};
@@ -171,9 +171,9 @@ impl EngineConfig {
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
             force_software: true,
-            // Two file-backed slots (day, night) so the slot layout matches
-            // production even when no texture files are present.
-            texture_paths: vec![None, None],
+            // Four file-backed slots (day, night, moon, Milky Way) so the slot
+            // layout matches production even when no texture files are present.
+            texture_paths: vec![None, None, None, None],
             preview_size,
             preview_enabled: true,
             params: SceneParams::default(),
@@ -511,11 +511,11 @@ impl Engine {
         // impossible by construction until the mailbox could be injected.
         // Failing here means failing before `ready` is sent, which turns it into
         // a panic in `start` rather than a thread that quietly died.
-        let slot_count = texture_paths.len() + 2;
+        let slots = SlotLayout::new(texture_paths.len());
         if let Some(mailbox) = &mailbox {
             assert_eq!(
                 mailbox.slot_count(),
-                slot_count,
+                slots.count(),
                 "the texture mailbox must have one slot per texture: the grid, \
                  {} file-backed, and the cloud overlay",
                 texture_paths.len()
@@ -530,7 +530,7 @@ impl Engine {
         });
         crate::memory::log_memory_usage("engine: after wgpu init");
 
-        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(slot_count));
+        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()));
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
@@ -581,6 +581,7 @@ impl Engine {
                 cloud_poll_interval,
                 now,
                 texture_resolution,
+                slots.clouds(),
             )
         });
 
@@ -1014,6 +1015,7 @@ impl CloudWorker {
 ///
 /// It never touches the GPU: it parks decoded frames in the mailbox and pokes
 /// the engine, which uploads them on its own schedule.
+#[allow(clippy::too_many_arguments)]
 fn spawn_cloud_worker(
     source: Arc<dyn CloudSource>,
     mailbox: TextureMailbox,
@@ -1022,6 +1024,7 @@ fn spawn_cloud_worker(
     interval: Duration,
     now: Duration,
     texture_resolution: u32,
+    clouds_slot: usize,
 ) -> CloudWorker {
     info!(source = %source.describe(), poll_secs = interval.as_secs(), "cloud source configured");
 
@@ -1038,7 +1041,7 @@ fn spawn_cloud_worker(
                 source,
                 mailbox,
                 notify,
-                CLOUDS_SLOT,
+                clouds_slot,
                 cache_dir,
                 texture_resolution,
             );

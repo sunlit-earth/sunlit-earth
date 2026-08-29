@@ -8,3 +8,9 @@ custom_hour = 17.0
 custom_day_of_year = 172
 custom_year = 2026
 cloud_opacity = 0.0
+# Off for the same reason the clouds are: this case samples the globe and its
+# four corners by color, and a layer that paints the whole sky puts a value
+# there that the corner check cannot tell from a globe. The panorama's own
+# rendering is pinned in `sunlit-core`, and `test_memory_report` still runs on
+# the app's defaults, so the guest staging of the file is still seen to land.
+milky_way_intensity = 0.0

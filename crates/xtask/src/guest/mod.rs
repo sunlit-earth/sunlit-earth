@@ -8,3 +8,4 @@ pub mod job;
 #[cfg(test)]
 pub mod script_syntax;
 pub mod ssh;
+pub mod toolchain;

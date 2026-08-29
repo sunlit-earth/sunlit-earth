@@ -373,6 +373,11 @@ fn rgb_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 3] {
 /// globe that is exactly where it should be. What the case actually means is
 /// that the corner is mostly empty, which a patch can say and a pixel cannot.
 /// Stars are small and sparse; a globe filling the corner is neither.
+///
+/// What a patch cannot survive is a layer that paints every pixel of the sky,
+/// so the fixture config switches the Milky Way off for the same reason it
+/// switches the clouds off: this case reads the picture by color, and both of
+/// those put a color where it reads.
 const CORNER_PATCH: u32 = 16;
 const CORNER_BLACK_FRACTION: f64 = 0.5;
 

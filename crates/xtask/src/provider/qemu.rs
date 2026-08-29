@@ -12,7 +12,7 @@ use crate::provider::Stopped;
 use crate::provider::console;
 use crate::provider::desktop::Desktop;
 use crate::provider::qmp;
-use crate::provider::target::{HostOs, ProviderKind, Target};
+use crate::provider::target::{HostOs, Image, ProviderKind, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store::Store;
 use crate::store::state::{RunState, StartReason};
@@ -156,16 +156,6 @@ pub fn classify(identity: Option<&crate::runner::ProcessIdentity>, vm_name: &str
     }
 }
 
-/// Memory and processor count per guest.
-pub fn resources_for(target: Target) -> (u32, u32) {
-    match target {
-        // Windows needs the headroom, and the e2e suite renders an 8K-capable
-        // pipeline on a CPU rasterizer inside it.
-        Target::Windows => (6144, 4),
-        Target::Linux => (4096, 4),
-    }
-}
-
 /// The default console resolution for a QEMU guest that can be told one.
 ///
 /// A VNC viewer scales, unlike a basic `vmconnect` session, so there is nothing
@@ -268,7 +258,9 @@ pub fn nic_device_for(target: Target) -> &'static str {
 pub struct Launch {
     pub name: String,
     pub overlay: PathBuf,
-    pub target: Target,
+    /// Which image this guest is a child of. The devices below are chosen from
+    /// its operating system, the memory and cores from the image itself.
+    pub image: Image,
     pub memory_mb: u32,
     pub cpus: u32,
     pub accelerator: String,
@@ -327,11 +319,11 @@ impl Launch {
                 self.overlay.display()
             ),
             "-device".into(),
-            format!("{},drive=hd0", disk_device_for(self.target)),
+            format!("{},drive=hd0", disk_device_for(self.image.target())),
             "-netdev".into(),
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", self.ssh_port),
             "-device".into(),
-            format!("{},netdev=net0", nic_device_for(self.target)),
+            format!("{},netdev=net0", nic_device_for(self.image.target())),
             // No local window, and a VNC server on loopback that costs nothing
             // until somebody attaches (plan decision 7). This is what makes the
             // console available at any moment without a decision up front.
@@ -344,8 +336,8 @@ impl Launch {
             "-rtc".into(),
             "base=utc".into(),
         ];
-        args.extend(display_args(self.target, self.console));
-        if let Some(pointer) = pointer_device_for(self.target) {
+        args.extend(display_args(self.image.target(), self.console));
+        if let Some(pointer) = pointer_device_for(self.image.target()) {
             args.push("-device".into());
             args.push(pointer.to_owned());
         }
@@ -419,10 +411,10 @@ impl<'a> QemuProvider<'a> {
         classify(self.runner.process_identity(pid).as_ref(), &state.vm_name)
     }
 
-    /// The target a state file names, defaulting to the Linux one only so the
+    /// The image a state file names, defaulting to the Linux one only so the
     /// message-building path cannot panic on a corrupt file.
-    fn target_of(state: &RunState) -> Target {
-        state.target().unwrap_or(Target::Linux)
+    fn image_of(state: &RunState) -> Image {
+        state.image().unwrap_or(Image::Linux)
     }
 
     /// What there is to say about a QEMU that is no longer running: its last
@@ -431,7 +423,7 @@ impl<'a> QemuProvider<'a> {
     /// and this is the only place they can be read back from.
     fn post_mortem(&self, state: &RunState) -> String {
         let name = &state.vm_name;
-        let log = self.store.vm_log(Self::target_of(state));
+        let log = self.store.vm_log(Self::image_of(state));
         match std::fs::read_to_string(&log) {
             Ok(text) => {
                 let tail = log_tail(&text);
@@ -492,17 +484,17 @@ impl<'a> QemuProvider<'a> {
     /// would not bind. The fallbacks are for a record written before ports
     /// could move, whose serde defaults left `0` and `None` behind; no guest
     /// was ever forwarded on port 0.
-    pub fn launch_for(&self, target: Target, state: &RunState) -> Launch {
-        let (memory_mb, cpus) = resources_for(target);
-        let firmware = if target == Target::Windows {
-            self.per_vm_firmware(target)
+    pub fn launch_for(&self, image: Image, state: &RunState) -> Launch {
+        let (memory_mb, cpus) = crate::provider::resources_for(image);
+        let firmware = if image.target() == Target::Windows {
+            self.per_vm_firmware(image)
         } else {
             None
         };
         Launch {
-            name: target.vm_name(),
+            name: image.vm_name(),
             overlay: state.overlay.clone(),
-            target,
+            image,
             memory_mb,
             cpus,
             accelerator: crate::commands::build_image::accelerator_for(self.host).to_owned(),
@@ -522,11 +514,11 @@ impl<'a> QemuProvider<'a> {
     /// Copy the firmware's variables store into the run directory, so each VM
     /// writes its boot entries into its own throwaway copy rather than into the
     /// shared one the host installed.
-    fn per_vm_firmware(&self, target: Target) -> Option<crate::provider::firmware::Firmware> {
+    fn per_vm_firmware(&self, image: Image) -> Option<crate::provider::firmware::Firmware> {
         let binary = crate::host::facts::resolve_tool(self.runner, "qemu-system-x86_64", self.host);
         let found = crate::provider::firmware::locate(self.host, binary.as_deref())?;
-        let copy = self.store.run_dir(target).join("efi-vars.fd");
-        if std::fs::create_dir_all(self.store.run_dir(target)).is_err()
+        let copy = self.store.firmware_vars(image);
+        if std::fs::create_dir_all(self.store.run_dir(image)).is_err()
             || std::fs::copy(&found.vars, &copy).is_err()
         {
             return Some(found);
@@ -538,7 +530,26 @@ impl<'a> QemuProvider<'a> {
     }
 }
 
-/// `qemu-img create` for a throwaway child of the golden image.
+/// Record how the guest will be reached, which is three loopback ports.
+///
+/// Picked now and recorded rather than fixed: `start` builds the command line
+/// from the record and everything later reads it too, and on a Windows host
+/// `WinNAT` reserves hundred-port blocks at moments of its own choosing, so a
+/// fixed port is a QEMU that exits before it has built the machine.
+pub fn fill_in_address(state: &mut RunState) -> Result<(), String> {
+    "127.0.0.1".clone_into(&mut state.ssh_host);
+    GUEST_USER.clone_into(&mut state.ssh_user);
+    state.ssh_port = pick_port("ssh", SSH_PORT)?;
+    state.qmp_port = Some(pick_port("qmp", QMP_PORT)?);
+    state.vnc = Some(format!(
+        "127.0.0.1:{}",
+        pick_port("vnc", vnc_port(VNC_DISPLAY))?
+    ));
+    Ok(())
+}
+
+/// `qemu-img create` for a differencing child of another disk: a throwaway
+/// overlay of a golden image, or the layer a builder image is.
 pub fn overlay_args(golden: &Path, overlay: &Path) -> Vec<String> {
     vec![
         "create".to_owned(),
@@ -559,16 +570,16 @@ impl crate::provider::Provider for QemuProvider<'_> {
         ProviderKind::Qemu
     }
 
-    fn create_from_golden(&self, target: Target, reason: StartReason) -> Result<RunState, String> {
-        let golden = self.store.qcow2(target);
+    fn create_from_golden(&self, image: Image, reason: StartReason) -> Result<RunState, String> {
+        let golden = self.store.qcow2(image);
         if !golden.is_file() {
             return Err(format!(
-                "no golden image at {}; `cargo xtask vm build-image {target}` builds one",
+                "no {image} image at {}; `cargo xtask vm build-image {image}` builds one",
                 golden.display()
             ));
         }
-        let overlay = self.store.qemu_overlay(target);
-        let run_dir = self.store.run_dir(target);
+        let overlay = self.store.qemu_overlay(image);
+        let run_dir = self.store.run_dir(image);
         std::fs::create_dir_all(&run_dir)
             .map_err(|e| format!("cannot create {}: {e}", run_dir.display()))?;
         let _ = std::fs::remove_file(&overlay);
@@ -582,46 +593,35 @@ impl crate::provider::Provider for QemuProvider<'_> {
             return Err(format!("qemu-img create failed: {}", out.stderr.trim()));
         }
 
-        let mut state = RunState::new(
-            target,
-            ProviderKind::Qemu,
-            overlay,
-            reason,
-            util::now_unix(),
-        );
-        "127.0.0.1".clone_into(&mut state.ssh_host);
-        GUEST_USER.clone_into(&mut state.ssh_user);
-        // Picked now and recorded, rather than fixed: `start` builds the
-        // command line from the record, and everything later reads it too.
-        state.ssh_port = pick_port("ssh", SSH_PORT)?;
-        state.qmp_port = Some(pick_port("qmp", QMP_PORT)?);
-        state.vnc = Some(format!(
-            "127.0.0.1:{}",
-            pick_port("vnc", vnc_port(VNC_DISPLAY))?
-        ));
+        let mut state = RunState::new(image, ProviderKind::Qemu, overlay, reason, util::now_unix());
+        fill_in_address(&mut state)?;
         Ok(state)
     }
 
     fn start(&self, state: &mut RunState) -> Result<(), String> {
-        let target = state
-            .target()
-            .ok_or_else(|| format!("unknown target '{}'", state.target))?;
+        let image = state
+            .image()
+            .ok_or_else(|| format!("unknown image '{}'", state.image))?;
         let binary = self.qemu_binary()?;
         // Everything about how to reach the guest, the desktop and the ports,
         // comes off the record rather than out of parameters: the command that
         // chose them is finished by the time anything starts a process, and
         // `vm status` has to be able to say the same things about this guest.
-        let launch = self.launch_for(target, state);
+        let launch = self.launch_for(image, state);
         launch.validate()?;
-        if target == Target::Linux {
+        if image.target() == Target::Linux {
             let (width, height) = launch.console;
-            let session = launch.desktop.map_or_else(
-                || "the image's own default desktop".to_owned(),
-                |d| format!("the {} session", d.label()),
-            );
+            let session = if image.has_desktop() {
+                launch.desktop.map_or_else(
+                    || "the image's own default desktop".to_owned(),
+                    |d| format!("the {} session", d.label()),
+                )
+            } else {
+                "a text console, since this image has no desktop".to_owned()
+            };
             println!("console: {width}x{height}, into {session}");
         }
-        let log = self.store.vm_log(target);
+        let log = self.store.vm_log(image);
         let pid = self
             .runner
             .spawn(
@@ -649,7 +649,7 @@ impl crate::provider::Provider for QemuProvider<'_> {
                     "pid {pid} is now {found}, not this VM's QEMU; the process id \
                      was reused, so nothing was stopped and nothing was deleted. \
                      Remove {} by hand once you are sure it is idle.",
-                    self.store.state_file(Self::target_of(state)).display()
+                    self.store.state_file(Self::image_of(state)).display()
                 ));
             }
             Ownership::Ours => {}
@@ -728,12 +728,12 @@ mod tests {
     use crate::provider::Provider as _;
     use crate::runner::fake::FakeRunner;
 
-    fn launch(target: Target) -> Launch {
-        let (memory_mb, cpus) = resources_for(target);
+    fn launch(image: Image) -> Launch {
+        let (memory_mb, cpus) = crate::provider::resources_for(image);
         Launch {
-            name: target.vm_name(),
+            name: image.vm_name(),
             overlay: PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
-            target,
+            image,
             memory_mb,
             cpus,
             accelerator: "kvm".to_owned(),
@@ -746,8 +746,8 @@ mod tests {
         }
     }
 
-    fn joined(target: Target) -> String {
-        launch(target).args().join(" ")
+    fn joined(image: Image) -> String {
+        launch(image).args().join(" ")
     }
 
     #[test]
@@ -760,7 +760,7 @@ mod tests {
         );
         let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
         let mut state = RunState::new(
-            Target::Linux,
+            Image::Linux,
             ProviderKind::Qemu,
             PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,
@@ -828,7 +828,7 @@ mod tests {
         let runner = FakeRunner::new().with_process(4242, "postgres", Some("postgres -D /data"));
         let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
         let mut state = RunState::new(
-            Target::Linux,
+            Image::Linux,
             ProviderKind::Qemu,
             PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,
@@ -852,7 +852,7 @@ mod tests {
         );
         let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
         let mut state = RunState::new(
-            Target::Linux,
+            Image::Linux,
             ProviderKind::Qemu,
             PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,
@@ -877,7 +877,7 @@ mod tests {
         let runner = FakeRunner::new();
         let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
         let mut state = RunState::new(
-            Target::Linux,
+            Image::Linux,
             ProviderKind::Qemu,
             PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,
@@ -933,7 +933,7 @@ mod tests {
 
     fn recorded_state() -> RunState {
         RunState::new(
-            Target::Linux,
+            Image::Linux,
             ProviderKind::Qemu,
             PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,
@@ -953,7 +953,7 @@ mod tests {
         state.ssh_port = 2224;
         state.qmp_port = Some(4446);
         state.vnc = Some("127.0.0.1:5903".to_owned());
-        let text = provider.launch_for(Target::Linux, &state).args().join(" ");
+        let text = provider.launch_for(Image::Linux, &state).args().join(" ");
         assert!(text.contains("hostfwd=tcp:127.0.0.1:2224-:22"), "{text}");
         assert!(
             text.contains("-qmp tcp:127.0.0.1:4446,server=on,wait=off"),
@@ -973,7 +973,7 @@ mod tests {
         state.ssh_port = 0;
         state.qmp_port = None;
         state.vnc = None;
-        let text = provider.launch_for(Target::Linux, &state).args().join(" ");
+        let text = provider.launch_for(Image::Linux, &state).args().join(" ");
         assert!(text.contains("hostfwd=tcp:127.0.0.1:2222-:22"), "{text}");
         assert!(text.contains("tcp:127.0.0.1:4444,server=on"), "{text}");
         assert!(text.contains("-vnc 127.0.0.1:0"), "{text}");
@@ -1033,7 +1033,7 @@ mod tests {
         let dir = std::env::temp_dir().join("sunlit_xtask_post_mortem");
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::new(&dir);
-        let log = store.vm_log(Target::Linux);
+        let log = store.vm_log(Image::Linux);
         std::fs::create_dir_all(log.parent().expect("run dir")).expect("create");
         std::fs::write(
             &log,
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn the_command_line_forwards_ssh_to_loopback_only() {
-        let text = joined(Target::Linux);
+        let text = joined(Image::Linux);
         assert!(text.contains("hostfwd=tcp:127.0.0.1:2222-:22"), "{text}");
         // Binding the forward to 0.0.0.0 would put a passwordless guest on the
         // network, which is the one thing this must not do.
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[test]
     fn the_console_is_always_available_on_loopback_vnc() {
-        let text = joined(Target::Linux);
+        let text = joined(Image::Linux);
         assert!(text.contains("-display none"), "{text}");
         assert!(text.contains("-vnc 127.0.0.1:0"), "{text}");
     }
@@ -1088,14 +1088,14 @@ mod tests {
         // Windows boot manager runs ("Unexpected VP exit code 4"), and the VM
         // then sits at the firmware logo forever. Both Packer templates carry
         // the same flag, which their own test checks.
-        for target in Target::ALL {
-            assert!(joined(target).contains("-cpu max"), "{target}");
+        for image in Image::ALL {
+            assert!(joined(image).contains("-cpu max"), "{image}");
         }
     }
 
     #[test]
     fn qmp_listens_without_blocking_the_boot() {
-        let text = joined(Target::Linux);
+        let text = joined(Image::Linux);
         // `wait=off` matters: with the default, QEMU would not start until
         // something connected to the monitor.
         assert!(
@@ -1112,27 +1112,27 @@ mod tests {
         // in-box driver for; virtio-blk needs one the Linux guest has and
         // Windows does not.
         assert!(
-            joined(Target::Windows).contains("-device ide-hd,drive=hd0"),
+            joined(Image::Windows).contains("-device ide-hd,drive=hd0"),
             "{}",
-            joined(Target::Windows)
+            joined(Image::Windows)
         );
         assert!(
-            joined(Target::Linux).contains("-device virtio-blk-pci,drive=hd0"),
+            joined(Image::Linux).contains("-device virtio-blk-pci,drive=hd0"),
             "{}",
-            joined(Target::Linux)
+            joined(Image::Linux)
         );
-        for target in Target::ALL {
-            assert!(joined(target).contains("if=none,id=hd0"), "{target}");
+        for image in Image::ALL {
+            assert!(joined(image).contains("if=none,id=hd0"), "{image}");
         }
     }
 
     #[test]
     fn a_bad_drive_interface_is_refused_before_anything_is_spawned() {
-        let mut broken = launch(Target::Windows);
+        let mut broken = launch(Image::Windows);
         broken.overlay = PathBuf::from("/srv/vm/o.qcow2,if=ahci");
         let err = broken.validate().unwrap_err();
         assert!(err.contains("'ahci' is not one QEMU accepts"), "{err}");
-        assert!(launch(Target::Linux).validate().is_ok());
+        assert!(launch(Image::Linux).validate().is_ok());
     }
 
     #[test]
@@ -1140,16 +1140,12 @@ mod tests {
         // `if=` is not free-form. An unaccepted value makes QEMU exit at
         // startup, and because the process is detached with its output in a
         // log, that surfaces ten minutes later as an SSH timeout.
-        let mut with_firmware = launch(Target::Windows);
+        let mut with_firmware = launch(Image::Windows);
         with_firmware.firmware = Some(crate::provider::firmware::Firmware {
             code: PathBuf::from("/fw/code.fd"),
             vars: PathBuf::from("/fw/vars.fd"),
         });
-        for launch in [
-            launch(Target::Linux),
-            launch(Target::Windows),
-            with_firmware,
-        ] {
+        for launch in [launch(Image::Linux), launch(Image::Windows), with_firmware] {
             for arg in launch.args() {
                 for field in arg.split(',') {
                     let Some(value) = field.strip_prefix("if=") else {
@@ -1166,15 +1162,15 @@ mod tests {
 
     #[test]
     fn the_windows_guest_gets_more_memory_than_the_linux_one() {
-        let (windows, _) = resources_for(Target::Windows);
-        let (linux, _) = resources_for(Target::Linux);
+        let (windows, _) = crate::provider::resources_for(Image::Windows);
+        let (linux, _) = crate::provider::resources_for(Image::Linux);
         assert!(windows > linux);
     }
 
     #[test]
     fn firmware_is_passed_only_when_there_is_some() {
-        assert!(!joined(Target::Linux).contains("pflash"));
-        let mut with_firmware = launch(Target::Windows);
+        assert!(!joined(Image::Linux).contains("pflash"));
+        let mut with_firmware = launch(Image::Windows);
         with_firmware.firmware = Some(crate::provider::firmware::Firmware {
             code: PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd"),
             vars: PathBuf::from("/srv/vm/run/windows/efi-vars.fd"),
@@ -1199,12 +1195,12 @@ mod tests {
     fn the_guest_clock_starts_from_utc() {
         // The renderer's whole output is a function of the date, so a guest
         // whose clock drifts to local time renders a different Earth.
-        assert!(joined(Target::Linux).contains("-rtc base=utc"));
+        assert!(joined(Image::Linux).contains("-rtc base=utc"));
     }
 
     #[test]
     fn the_vm_carries_the_ownership_prefix_into_qemu() {
-        assert!(joined(Target::Linux).contains("-name sunlit-e2e-linux"));
+        assert!(joined(Image::Linux).contains("-name sunlit-e2e-linux"));
     }
 
     #[test]
@@ -1216,18 +1212,18 @@ mod tests {
         assert_eq!(pointer_device_for(Target::Linux), Some("virtio-tablet-pci"));
         assert_eq!(pointer_device_for(Target::Windows), None);
         assert!(
-            joined(Target::Linux).contains("-device virtio-tablet-pci"),
+            joined(Image::Linux).contains("-device virtio-tablet-pci"),
             "{}",
-            joined(Target::Linux)
+            joined(Image::Linux)
         );
-        assert!(!joined(Target::Windows).contains("tablet"));
+        assert!(!joined(Image::Windows).contains("tablet"));
     }
 
     #[test]
     fn the_linux_console_is_a_size_the_host_chose_rather_than_one_the_guest_picked() {
         // `-device virtio-vga` rather than `-vga virtio`, because only the
         // device form carries the properties that set the preferred mode.
-        let args = launch(Target::Linux).args();
+        let args = launch(Image::Linux).args();
         assert!(
             args.join(" ")
                 .contains("-device virtio-vga,xres=1920,yres=1080"),
@@ -1235,7 +1231,7 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg == "-vga"), "{args:?}");
 
-        let mut small = launch(Target::Linux);
+        let mut small = launch(Image::Linux);
         small.console = (1280, 800);
         assert!(
             small.args().join(" ").contains("xres=1280,yres=800"),
@@ -1245,7 +1241,7 @@ mod tests {
 
         // The Windows guest's emulated VGA has no such property, and its console
         // is a Hyper-V matter anyway.
-        let windows = joined(Target::Windows);
+        let windows = joined(Image::Windows);
         assert!(windows.contains("-vga std"), "{windows}");
         assert!(!windows.contains("xres="), "{windows}");
     }
@@ -1255,12 +1251,12 @@ mod tests {
         // No flag means the image's own default, so a guest booted by anything
         // that does not know about this behaves as it always did.
         assert!(
-            !joined(Target::Linux).contains("fw_cfg"),
+            !joined(Image::Linux).contains("fw_cfg"),
             "{}",
-            joined(Target::Linux)
+            joined(Image::Linux)
         );
 
-        let mut with_desktop = launch(Target::Linux);
+        let mut with_desktop = launch(Image::Linux);
         with_desktop.desktop = Some(Desktop::Gnome);
         let text = with_desktop.args().join(" ");
         assert!(
@@ -1298,17 +1294,26 @@ mod template_agreement {
     //! convention connected the two sides, so this reads the templates.
 
     use super::{disk_device_for, display_args, nic_device_for};
-    use crate::provider::target::Target;
+    use crate::provider::target::{Image, Target};
     use crate::store::template_dir;
 
-    fn template(target: Target) -> String {
-        let dir = template_dir(target);
-        let name = match target {
-            Target::Windows => "windows11.pkr.hcl",
-            Target::Linux => "debian-13.pkr.hcl",
+    /// The Packer template of one image. A layer has none: it is provisioned
+    /// over its parent rather than installed, and `build_layer` is its builder.
+    fn template(image: Image) -> String {
+        let dir = template_dir(image);
+        let name = match image {
+            Image::Windows => "windows11.pkr.hcl",
+            Image::Linux => "debian-13.pkr.hcl",
+            Image::LinuxBuilder => "ubuntu-2204.pkr.hcl",
+            Image::WindowsBuilder => unreachable!("a layer has no Packer template"),
         };
         std::fs::read_to_string(dir.join(name))
-            .unwrap_or_else(|e| panic!("cannot read the {target} template: {e}"))
+            .unwrap_or_else(|e| panic!("cannot read the {image} template: {e}"))
+    }
+
+    /// Every image Packer builds, which is every one but the layer.
+    fn packer_images() -> impl Iterator<Item = Image> {
+        Image::ALL.into_iter().filter(|image| !image.is_layer())
     }
 
     /// The default of one `variable "name" {}` block, since a template has many
@@ -1342,7 +1347,7 @@ mod template_agreement {
         // floor rather than a preference. It is pinned because one vCPU is the
         // workaround for the WHPX reset fault and would otherwise look like a
         // free choice to make here.
-        let cores: u32 = variable_default(&template(Target::Windows), "cpus")
+        let cores: u32 = variable_default(&template(Image::Windows), "cpus")
             .parse()
             .expect("the cpus default is a number");
         assert!(cores >= 2, "Windows 11 Setup refuses {cores} core(s)");
@@ -1358,7 +1363,7 @@ mod template_agreement {
         // it, and asking for it in the Linux template too would invalidate
         // every Linux image already built for no behaviour anyone has observed.
         assert!(
-            template(Target::Windows).contains(r#"["-cpu", "max"]"#),
+            template(Image::Windows).contains(r#"["-cpu", "max"]"#),
             "the Windows template leaves the guest CPU at QEMU's default"
         );
     }
@@ -1369,7 +1374,7 @@ mod template_agreement {
         // none of them on this host, so the template asks Packer to type
         // nothing and opens a monitor for the xtask to press the key on. The
         // port has to be the one the xtask presses.
-        let text = template(Target::Windows);
+        let text = template(Image::Windows);
         assert!(text.contains("boot_command = []"), "{text}");
         assert!(
             text.contains(r#"["-qmp", "tcp:127.0.0.1:${var.qmp_port}"#),
@@ -1391,25 +1396,25 @@ mod template_agreement {
     fn the_windows_template_boots_its_installation_media_first() {
         // Without this the "Press any key to boot from CD or DVD" prompt never
         // appears, and no keypress can rescue the build.
-        let text = template(Target::Windows);
+        let text = template(Image::Windows);
         assert!(text.contains(r#"["-boot", "order=d"]"#), "{text}");
     }
 
     #[test]
     fn the_runtime_devices_match_the_templates() {
-        for target in Target::ALL {
-            let text = template(target);
+        for image in packer_images() {
+            let text = template(image);
 
             // Packer spells the network device the way QEMU's -device does.
             assert_eq!(
                 setting(&text, "net_device"),
-                nic_device_for(target),
-                "{target}: the image is installed with a different NIC than it boots with"
+                nic_device_for(image.target()),
+                "{image}: the image is installed with a different NIC than it boots with"
             );
 
             // The disk is spelled as an interface in Packer and as a device at
             // runtime, so the pairing is stated rather than compared.
-            let expected_interface = match disk_device_for(target) {
+            let expected_interface = match disk_device_for(image.target()) {
                 "ide-hd" => "ide",
                 "virtio-blk-pci" => "virtio",
                 other => panic!("unmapped disk device {other}"),
@@ -1417,21 +1422,21 @@ mod template_agreement {
             assert_eq!(
                 setting(&text, "disk_interface"),
                 expected_interface,
-                "{target}: the image is installed on a different disk controller than it boots from"
+                "{image}: the image is installed on a different disk controller than it boots from"
             );
 
             // Both machines are q35, which is what makes an ide-hd device land
             // on a SATA controller rather than a legacy IDE one.
-            assert_eq!(setting(&text, "machine_type"), "q35", "{target}");
+            assert_eq!(setting(&text, "machine_type"), "q35", "{image}");
 
             // The display is runtime-only: Packer never sees it, so this only
             // checks the device is one QEMU knows, in the form it takes it.
-            let display = display_args(target, (1920, 1080)).join(" ");
+            let display = display_args(image.target(), (1920, 1080)).join(" ");
             assert!(
                 ["-vga std", "-device virtio-vga,"]
                     .iter()
                     .any(|known| display.starts_with(known)),
-                "{target}: unknown display arguments {display}"
+                "{image}: unknown display arguments {display}"
             );
         }
     }

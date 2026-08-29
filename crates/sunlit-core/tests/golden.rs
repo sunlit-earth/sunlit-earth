@@ -38,6 +38,12 @@ use sunlit_core::engine::{EngineCommand, EngineConfig, EngineHandle};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
 
+mod support;
+
+/// The texture mode that blends the day and night maps, as `texture_index`
+/// spells it.
+const BLEND_MODE: i32 = 3;
+
 /// Golden images are small on purpose: they live in git.
 const WIDTH: u32 = 512;
 const HEIGHT: u32 = 256;
@@ -95,6 +101,31 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     config.force_software = true;
     config.preview_enabled = false;
     config.params = base_params();
+    // The Moon's slot points at a generated fixture rather than at the 1024
+    // pixel asset, which is Git LFS and may not be there. Every case therefore
+    // renders with a Moon wherever the sky puts one at the pinned instant,
+    // which is what makes the default-on Moon visible to this suite at all
+    // instead of quietly absent from it.
+    //
+    // The day and night maps are fixtures too, and they are here for the cloud
+    // cases: the layer is shaded against the sun, so pinning it wants a mode
+    // that is, and blend mode is the only one. Every other case renders the
+    // grid, which reads neither slot.
+    let surface = support::write_surface_fixtures(Path::new(env!("CARGO_TARGET_TMPDIR")));
+    config.texture_paths = vec![
+        Some(surface.day),
+        Some(surface.night),
+        Some(support::write_moon_fixture(Path::new(env!(
+            "CARGO_TARGET_TMPDIR"
+        )))),
+        Some(support::write_panorama_bands_fixture(Path::new(env!(
+            "CARGO_TARGET_TMPDIR"
+        )))),
+    ];
+    // The cloud slot comes from the fetcher rather than from a path, so without
+    // a source no case here could draw a cloud pixel at all; `base_params`
+    // turns the layer off for every case that is not about it.
+    config.cloud = Some(std::sync::Arc::new(support::FixtureClouds::bands()));
     Mutex::new(sunlit_core::engine::start(config))
 });
 
@@ -117,6 +148,17 @@ fn base_params() -> SceneParams {
             zoom: 0.26,
             ..CameraParams::default()
         },
+        // Off for every case but the two that are about it. The layer covers
+        // the whole frame by construction, so leaving it on would move all
+        // eleven other references and bury what each of them is for under one
+        // background; the two panorama cases switch it on, and its own engine
+        // cases pin what a golden cannot see anyway.
+        milky_way_intensity: 0.0,
+        // Off for the same reason, and it has to be said explicitly now that
+        // the engine has a cloud source: the layer covers half the frame. Both
+        // hemispheres, because either one alone still draws the layer.
+        cloud_opacity: 0.0,
+        cloud_opacity_night: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;
@@ -124,6 +166,50 @@ fn base_params() -> SceneParams {
     params.datetime.custom_day_of_year = 172;
     params.datetime.custom_year = 2026;
     params
+}
+
+/// The part of a rendered frame a case is compared over.
+///
+/// Every case but one compares the whole frame. The Moon is the exception, and
+/// the reason is arithmetic rather than taste: at 60 degrees of sky and eight
+/// times its size, the largest the disk can be in any coherent framing, it is 31
+/// pixels across in a 512 by 256 frame. Removing it entirely then comes to a
+/// mean channel difference of 0.22 against a tolerance of 2.00, so a full-frame
+/// reference would go on passing with the feature deleted, which is precisely
+/// the failure phase B's goldens taught. Comparing the window the Moon is in
+/// puts the same loss at a mean of 3.12 with 1.71 percent of pixels outliers,
+/// which fails on both counts, and what the window leaves out is the globe,
+/// which nine other cases pin.
+#[derive(Clone, Copy)]
+struct Window {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+const FULL_FRAME: Window = Window {
+    x: 0,
+    y: 0,
+    width: WIDTH,
+    height: HEIGHT,
+};
+
+/// Cut `window` out of a full-frame RGBA8 render.
+fn crop(pixels: &[u8], window: Window) -> Vec<u8> {
+    if window.x == 0 && window.y == 0 && window.width == WIDTH && window.height == HEIGHT {
+        return pixels.to_vec();
+    }
+    assert!(
+        window.x + window.width <= WIDTH && window.y + window.height <= HEIGHT,
+        "the window has to be inside the frame"
+    );
+    let mut out = Vec::with_capacity((window.width * window.height * 4) as usize);
+    for row in window.y..window.y + window.height {
+        let start = ((row * WIDTH + window.x) * 4) as usize;
+        out.extend_from_slice(&pixels[start..start + (window.width * 4) as usize]);
+    }
+    out
 }
 
 /// Reference directory for the adapter this run is using.
@@ -137,14 +223,61 @@ fn updating() -> bool {
     std::env::var("SUNLIT_EARTH_UPDATE_GOLDEN").is_ok()
 }
 
+/// Block until an overlay's fixture texture has reached the GPU, by its GPU
+/// label.
+///
+/// The Moon and the Milky Way are overlays, so nothing in the engine waits for
+/// them and `TexturesReady` excludes both. A case would otherwise race a decode
+/// that takes a few tens of milliseconds: the first case would render without
+/// the texture and the rest with it, which is a reference that depends on test
+/// order. The memory report is what says whether the renderer owns it.
+fn wait_for_slot_texture(engine: &EngineHandle, label: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        let report = engine
+            .memory_report()
+            .expect("the engine should answer with a report");
+        if report.expected.iter().any(|texture| texture.label == label) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the {label} fixture did not reach the GPU within a minute");
+}
+
 /// Render `params` and compare against `tests/golden/<adapter>/<name>.png`.
 fn check_golden(name: &str, params: &SceneParams) {
+    check_golden_in(name, params, FULL_FRAME);
+}
+
+/// The same, over one window of the frame.
+fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     let engine = engine();
     let adapter_key = engine.adapter_key().to_owned();
     engine.send(EngineCommand::UpdateParams(Box::new(*params)));
-    let pixels = engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
+    if params.moon_brightness > 0.0 {
+        wait_for_slot_texture(&engine, "moon_texture");
+    }
+    if params.milky_way_intensity > 0.0 {
+        wait_for_slot_texture(&engine, "milky_way_texture");
+    }
+    if params.draws_clouds() {
+        wait_for_slot_texture(&engine, "cloud_texture");
+    }
+    // Blend mode is the one that reads the two surface slots, and nothing
+    // spawns their decodes until a case asks for the mode: the first blend case
+    // to run would otherwise export the frame the fallback draws, which is the
+    // grid. That is what happened to the first pair of cloud references.
+    if params.texture_index == BLEND_MODE {
+        wait_for_slot_texture(&engine, "day_texture");
+        wait_for_slot_texture(&engine, "night_texture");
+    }
+    let pixels = crop(
+        &engine
+            .export_pixels(WIDTH, HEIGHT)
+            .expect("the engine should be able to export"),
+        window,
+    );
     drop(engine);
 
     announce_adapter(&adapter_key);
@@ -153,7 +286,8 @@ fn check_golden(name: &str, params: &SceneParams) {
 
     if updating() {
         std::fs::create_dir_all(&dir).expect("create golden directory");
-        sunlit_core::engine::save_png(&path, WIDTH, HEIGHT, &pixels).expect("write golden");
+        sunlit_core::engine::save_png(&path, window.width, window.height, &pixels)
+            .expect("write golden");
         return;
     }
 
@@ -182,7 +316,7 @@ fn check_golden(name: &str, params: &SceneParams) {
             .join(&adapter_key);
         std::fs::create_dir_all(&review).expect("create the review directory");
         let review_path = review.join(format!("{name}.png"));
-        sunlit_core::engine::save_png(&review_path, WIDTH, HEIGHT, &pixels)
+        sunlit_core::engine::save_png(&review_path, window.width, window.height, &pixels)
             .expect("write the review image");
         panic!(
             "golden reference {name} is missing at {}. This run's render is at {} \
@@ -198,7 +332,7 @@ fn check_golden(name: &str, params: &SceneParams) {
         .to_rgba8();
     assert_eq!(
         (reference.width(), reference.height()),
-        (WIDTH, HEIGHT),
+        (window.width, window.height),
         "golden {name} has the wrong size"
     );
 
@@ -354,6 +488,224 @@ fn golden_bright_star_halos() {
     check_golden("bright_star_halos", &params);
 }
 
+/// The camera the two sun cases share, up to the longitude and the zoom.
+///
+/// The eye sits at the latitude of the subsolar point and swings round in
+/// longitude, which puts the Sun beside the globe rather than above it. Above
+/// it is where the aspect ratio would have put it, and NDC y carries twice the
+/// angle NDC x does on a 512 by 256 frame, so a Sun clear of a limb this size
+/// would have been off the top.
+fn sun_camera(longitude: f32, zoom: f32) -> CameraParams {
+    CameraParams {
+        longitude,
+        latitude: -23.44,
+        zoom,
+        ..CameraParams::default()
+    }
+}
+
+/// Both sun cases run at the narrow end of the sky lens rather than at its
+/// 140 degree default, and that is what gives them teeth.
+///
+/// The field of view decides how many pixels a degree is worth: 512 of them
+/// across 140 degrees is three, so the whole Spencer composition lands inside
+/// forty pixels and a reference that lost the Sun entirely would still pass at
+/// a mean of 1.11 and half a percent of outliers. At 60 degrees a degree is
+/// eight pixels and the glare is most of the frame, which is the picture these
+/// cases are supposed to be about. What the Sun does at the default is pinned
+/// by the engine cases instead, where a count of painted pixels needs no
+/// tolerance at all.
+const SUN_CASE_SKY_FOV: f32 = 60.0;
+
+#[test]
+fn golden_sun_over_the_night_side() {
+    // Well clear of the painted limb, so nothing fades the glare: the clipped
+    // core, the corona needles, the halo ring and the veil are all at full
+    // strength against the sky and over the atmosphere shells.
+    let base = base_params();
+    let params = SceneParams {
+        camera: sun_camera(161.8, 0.45),
+        sky_fov: SUN_CASE_SKY_FOV,
+        ..base
+    };
+    check_golden("sun_over_the_night_side", &params);
+}
+
+#[test]
+fn golden_sun_grazing_the_limb() {
+    // Closer in and one degree further round, where the disk straddles the
+    // band between the painted silhouette and the atmosphere shell's: about
+    // 97 percent of it still visible and 57 percent of it looking through the
+    // lower atmosphere, which is what turns the glare warm and dims it. The
+    // closer zoom is what makes that band wide enough to hold most of a disk;
+    // at the other case's zoom it is one pixel across. Nothing else in the
+    // suite reaches that branch of the occlusion function.
+    //
+    // The glare is turned up because the tint is what this case is for and the
+    // tolerance has to be able to see it: at the default strength, losing the
+    // warm shift entirely comes to a mean of 2.33 against a tolerance of 2.00
+    // and 1.04 percent outliers against a limit of 1.00, which is a test that
+    // passes or fails on rounding. At 1.6 it is a test.
+    let base = base_params();
+    let params = SceneParams {
+        camera: sun_camera(160.75, 0.30),
+        sky_fov: SUN_CASE_SKY_FOV,
+        sun_glow: 1.6,
+        ..base
+    };
+    check_golden("sun_grazing_the_limb", &params);
+}
+
+/// The window the Moon lands in at the framing below, with room around it for
+/// a Moon that moved to be visible rather than merely absent.
+const MOON_WINDOW: Window = Window {
+    x: 90,
+    y: 73,
+    width: 96,
+    height: 96,
+};
+
+/// The Moon as a fat crescent, clear of the painted limb.
+///
+/// The instant is chosen so that the Moon sits beside the globe rather than
+/// behind it, and so that the camera's own displacement barely changes the
+/// phase: the eye is nine Earth radii from the geocenter and the Moon is sixty
+/// away, so a framing where that displacement is nearly perpendicular to the
+/// Sun's direction is one whose phase an ephemeris can be asked about. At 60
+/// degrees of sky and eight times the size the disk is 31 pixels across, which
+/// is what makes the crescent's orientation something a person can see.
+#[test]
+fn golden_moon_crescent() {
+    let base = base_params();
+    let mut params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        sun_glow: 0.0,
+        sky_fov: 60.0,
+        moon_size: 8.0,
+        ..base
+    };
+    params.datetime.custom_day_of_year = 199;
+    params.datetime.custom_hour = 16.0;
+    check_golden_in("moon_crescent", &params, MOON_WINDOW);
+}
+
+/// The panorama behind the stars at the default field of view.
+///
+/// The fixture is bands of declination, so what the reference shows is where
+/// the celestial sphere's parallels lie in this framing as well as that the
+/// layer is drawn at all: a reconstruction that had the sky rotated would bend
+/// the bands somewhere else. What it cannot show is the real asset's own
+/// layout, which is Git LFS and deliberately not what any reference here rests
+/// on; `the_real_panorama_has_the_galactic_plane_where_the_plane_is` in
+/// `tests/engine.rs` is where that lives.
+#[test]
+fn golden_panorama_behind_the_stars() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 1.0,
+        star_mag_limit: 6.0,
+        sun_glow: 0.0,
+        milky_way_intensity: 1.0,
+        ..base
+    };
+    check_golden("panorama_behind_the_stars", &params);
+}
+
+/// The same sky at the narrow end of the slider, where the layer is magnified
+/// about two and a half times more.
+///
+/// Two references at two fields of view are what makes the pair distinguishable
+/// for the reason decision 5 cares about: the bands are wider apart here and
+/// the globe is exactly the size it is in the other one.
+#[test]
+fn golden_panorama_at_a_narrow_sky() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 1.0,
+        star_mag_limit: 6.0,
+        sun_glow: 0.0,
+        sky_fov: 60.0,
+        milky_way_intensity: 1.0,
+        ..base
+    };
+    check_golden("panorama_at_a_narrow_sky", &params);
+}
+
+/// The framing the two cloud cases share: the terminator down the middle of the
+/// frame, at the instant every case here renders.
+///
+/// One hemisphere alone would pass with either half of this change reverted, so
+/// the frame has to hold both: the floor is what the night half shows, the ramp
+/// and its nightward shift are what the middle shows, and the day half is what
+/// says nothing about the lit side moved.
+fn cloud_params() -> SceneParams {
+    let base = base_params();
+    SceneParams {
+        texture_index: BLEND_MODE,
+        camera: CameraParams {
+            longitude: 90.0,
+            latitude: 0.0,
+            zoom: 0.26,
+            ..base.camera
+        },
+        // What `base_params` turned off, back at the values the product ships.
+        cloud_opacity: SceneParams::default().cloud_opacity,
+        cloud_opacity_night: SceneParams::default().cloud_opacity_night,
+        ..base
+    }
+}
+
+/// The cloud layer across the terminator at the default settings.
+#[test]
+fn golden_clouds_across_the_terminator() {
+    check_golden("clouds_across_the_terminator", &cloud_params());
+}
+
+/// The two terminators side by side, close enough to see them apart.
+///
+/// The camera sits over the terminator at the latitude where the fixture's
+/// equatorial band ends, so the frame holds four quadrants: lit ground, unlit
+/// ground, lit deck, unlit deck. The ground's edge is the product's own
+/// `terminator_width` and the deck's is `CLOUD_TERMINATOR_WIDTH` centered three
+/// degrees further into the night, which at this zoom is tens of pixels rather
+/// than the ten the whole globe would give. That is what makes this the case a
+/// revert of either the shift or the width fails: the cloud edge moves against a
+/// ground edge that did not.
+#[test]
+fn golden_cloud_terminator_close_up() {
+    let base = cloud_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            latitude: support::CLOUD_FIXTURE_BAND_EDGE,
+            zoom: 0.04,
+            ..base.camera
+        },
+        ..base
+    };
+    check_golden("cloud_terminator_close_up", &params);
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a
@@ -409,6 +761,13 @@ fn contact_sheet_of_every_preset() {
 /// Every pair of references must land outside the tolerance. If two of them
 /// compare equal, either the tolerance is too loose to catch a regression or
 /// one of the cases is not testing anything the others do not.
+///
+/// The names are spelled here rather than read off the directory, so that a
+/// reference file that went missing fails this case as well as the one that
+/// owns it. What the directory is read for is the other direction: a reference
+/// this list does not name is a case silently outside the guard, which is what
+/// happened when the two panorama references were added, and the closest pair
+/// in the set is exactly the pair most likely to arrive that way.
 #[test]
 fn every_golden_case_is_distinguishable() {
     if updating() {
@@ -432,7 +791,32 @@ fn every_golden_case_is_distinguishable() {
         "night_side_with_stars",
         "large_crisp_stars",
         "bright_star_halos",
+        "sun_over_the_night_side",
+        "sun_grazing_the_limb",
+        "moon_crescent",
+        "panorama_behind_the_stars",
+        "panorama_at_a_narrow_sky",
+        "clouds_across_the_terminator",
+        "cloud_terminator_close_up",
     ];
+
+    let mut unnamed: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read the golden directory") {
+        let file_name = entry.expect("a directory entry").file_name();
+        let file_name = file_name.to_string_lossy();
+        if let Some(stem) = file_name.strip_suffix(".png")
+            && !names.contains(&stem)
+        {
+            unnamed.push(file_name.into_owned());
+        }
+    }
+    unnamed.sort();
+    assert!(
+        unnamed.is_empty(),
+        "the {adapter_key} set holds {unnamed:?}, which this case does not name; \
+         add them to `names` so the guard compares them too"
+    );
+
     let mut images = Vec::new();
     for name in names {
         let path = dir.join(format!("{name}.png"));
@@ -447,6 +831,12 @@ fn every_golden_case_is_distinguishable() {
 
     for (i, a) in images.iter().enumerate() {
         for (j, b) in images.iter().enumerate().skip(i + 1) {
+            // Two references of different sizes are distinguishable by their
+            // sizes, and `compare` has no meaning across them. Only the Moon's
+            // window is a different size from the rest; see `Window`.
+            if a.dimensions() != b.dimensions() {
+                continue;
+            }
             let (mean, outliers) = compare(a.as_raw(), b.as_raw());
             println!(
                 "{} vs {}: mean {mean:.2}, outliers {:.2}%",

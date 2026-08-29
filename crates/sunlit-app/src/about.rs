@@ -8,11 +8,13 @@ use slint::ComponentHandle;
 use crate::{AboutWindow, MainWindow};
 
 /// Credits for data and libraries that contribute directly to the rendered image.
-pub const ATTRIBUTIONS: [&str; 5] = [
+pub const ATTRIBUTIONS: [&str; 7] = [
     "HYG Database v4.4 by David Nash, CC BY-SA 4.0, codeberg.org/astronexus/hyg",
     "Astronomy Engine by Don Cross, MIT License",
     "NASA Blue Marble 2004 surface imagery",
     "NASA Black Marble 2016 nighttime imagery",
+    "Lunar surface from the CGI Moon Kit by NASA's Scientific Visualization Studio",
+    "Milky Way from Deep Star Maps 2020 by NASA/GSFC/SVS, from Gaia DR2 (ESA/Gaia/DPAC)",
     "Live cloud composite provided by clouds.matteason.co.uk",
 ];
 
@@ -56,6 +58,29 @@ mod tests {
     use slint::Model;
 
     use super::*;
+
+    /// The CGI Moon Kit is public domain and asks for a credit line; this is
+    /// where it appears, and the asset's provenance file names the same words.
+    #[test]
+    fn the_moon_kit_credit_names_the_visualization_studio() {
+        assert!(
+            ATTRIBUTIONS.iter().any(|text| text.contains("CGI Moon Kit")
+                && text.contains("NASA's Scientific Visualization Studio")),
+            "{ATTRIBUTIONS:?}"
+        );
+    }
+
+    /// The SVS asks for its own credit and Gaia DR2 for a second one, so the
+    /// Milky Way's line has to carry both.
+    #[test]
+    fn the_milky_way_credit_names_the_studio_and_gaia() {
+        assert!(
+            ATTRIBUTIONS
+                .iter()
+                .any(|text| text.contains("NASA/GSFC/SVS") && text.contains("ESA/Gaia/DPAC")),
+            "{ATTRIBUTIONS:?}"
+        );
+    }
 
     #[test]
     fn settings_callback_shows_version_and_hyg_attribution() {

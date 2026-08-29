@@ -7,7 +7,7 @@ use crate::geometry::sphere::{self, Vertex};
 
 use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
-use super::{Renderer, RendererConfig};
+use super::{Renderer, RendererConfig, SLOT_LABELS};
 
 /// Usage flags for the offscreen preview target. `TEXTURE_BINDING` lets a
 /// client bind it directly (the Slint shell does), `COPY_SRC` lets the engine
@@ -176,7 +176,7 @@ pub(super) fn create_renderer(
     let grid_tex = create_mipmapped_texture(
         &device,
         &queue,
-        &super::slot_label(0),
+        SLOT_LABELS[0],
         GRID_TEX_WIDTH,
         GRID_TEX_HEIGHT,
         grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
@@ -241,6 +241,34 @@ pub(super) fn create_renderer(
 
     let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let star_pipeline = create_star_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let milky_way_pipeline = create_sky_quad_pipeline(
+        &device,
+        &pipeline_layout,
+        &shader,
+        sample_count,
+        "milky_way_pipeline",
+        "vs_milky_way",
+        "fs_milky_way",
+    );
+    let sun_disk_pipeline = create_sky_quad_pipeline(
+        &device,
+        &pipeline_layout,
+        &shader,
+        sample_count,
+        "sun_disk_pipeline",
+        "vs_sun_disk",
+        "fs_sun_disk",
+    );
+    let sun_glare_pipeline = create_sky_quad_pipeline(
+        &device,
+        &pipeline_layout,
+        &shader,
+        sample_count,
+        "sun_glare_pipeline",
+        "vs_sun_glare",
+        "fs_sun_glare",
+    );
+    let moon_pipeline = create_moon_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
     let rayleigh_pipeline =
         create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
@@ -254,6 +282,10 @@ pub(super) fn create_renderer(
     Renderer {
         pipeline,
         star_pipeline,
+        milky_way_pipeline,
+        sun_disk_pipeline,
+        sun_glare_pipeline,
+        moon_pipeline,
         star_buffer,
         planet_buffer,
         vertex_buffer,
@@ -297,6 +329,74 @@ pub(super) fn create_renderer(
         cloud_bind_group: None,
         cloud_texture_view: None,
     }
+}
+
+/// A screen-aligned quad the vertex shader generates from `vertex_index`
+/// alone, additive, with the depth test out of the way.
+///
+/// Three draws use it. The Milky Way is the pass's first, where everything
+/// after it overdraws it; the Sun's disk is scheduled with the sky, where the
+/// opaque globe drawn afterwards covers whatever falls inside its painted disc;
+/// the glare is scheduled last, where nothing covers it, which is what veiling
+/// glare does. None of them reads depth, so they differ only in when they run
+/// and which entry points they carry.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_sky_quad_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+    label: &str,
+    vs_entry: &str,
+    fs_entry: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some(vs_entry),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fs_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::OVER,
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            strip_index_format: None,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 pub(super) fn create_star_pipeline(
@@ -405,6 +505,61 @@ pub(super) fn create_pipeline(
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// The Moon: opaque, back-face culled, and out of the depth test's way.
+///
+/// Opaque because it has to cover the Sun's additive disk, which would show
+/// through anything else; back-face culled because that is what a convex
+/// sphere's own front-to-back needs and a depth comparison between the sky lens
+/// and the Earth's would compare two different projections; and no depth write,
+/// so the Earth still draws over it wherever the painted globe covers it.
+pub(super) fn create_moon_pipeline(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("moon_pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_moon"),
+            buffers: &[Vertex::buffer_layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_moon"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: COLOR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
@@ -709,6 +864,35 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
     res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.star_pipeline =
         create_star_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
+    res.milky_way_pipeline = create_sky_quad_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+        "milky_way_pipeline",
+        "vs_milky_way",
+        "fs_milky_way",
+    );
+    res.sun_disk_pipeline = create_sky_quad_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+        "sun_disk_pipeline",
+        "vs_sun_disk",
+        "fs_sun_disk",
+    );
+    res.sun_glare_pipeline = create_sky_quad_pipeline(
+        &res.device,
+        &res.pipeline_layout,
+        &res.shader,
+        sample_count,
+        "sun_glare_pipeline",
+        "vs_sun_glare",
+        "fs_sun_glare",
+    );
+    res.moon_pipeline =
+        create_moon_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.cloud_pipeline =
         create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.rayleigh_pipeline =

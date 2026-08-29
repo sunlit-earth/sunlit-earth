@@ -42,6 +42,7 @@ fn all_scripts() -> Vec<(String, String)> {
             r"C:\vm\golden.vhdx",
             r"C:\vm\overlay.vhdx",
             (1920, 1080),
+            crate::provider::resources_for(crate::provider::target::Image::Windows),
         ),
     ));
     scripts.push(("hyperv: state".to_owned(), hyperv::state_script(name)));
@@ -65,6 +66,7 @@ fn all_scripts() -> Vec<(String, String)> {
             std::path::Path::new(r"C:\vm store\iso\noprompt.iso"),
             std::path::Path::new(r"C:\vm store\build\windows\unattend.iso"),
             (1920, 1080),
+            crate::provider::resources_for(crate::provider::target::Image::Windows),
         ),
     ));
     scripts.push((
@@ -107,6 +109,25 @@ fn all_scripts() -> Vec<(String, String)> {
         crate::guest::handover::enhanced_session_script(hyperv::GUEST_USER),
     ));
 
+    // The layer build's own commands, which run inside the guest over SSH.
+    for script in [
+        crate::commands::build_layer::TOOLCHAIN_SCRIPT,
+        crate::commands::build_layer::FINALIZE_SCRIPT,
+    ] {
+        let leaf = std::path::Path::new(script)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        scripts.push((
+            format!("layer: run {leaf}"),
+            crate::commands::build_layer::script_command(
+                &crate::commands::build_layer::script_destination(&leaf),
+                "1.94.0",
+            ),
+        ));
+    }
+
     // The scripts that ship in the repo and run inside the guest. A typo in
     // one of these surfaces forty minutes into a Windows image build, which is
     // the most expensive place in this phase to find one.
@@ -126,15 +147,33 @@ fn all_scripts() -> Vec<(String, String)> {
     scripts
 }
 
-/// The guest-side scripts of one kind that ship in `vm/windows/scripts`.
+/// The guest-side scripts of one kind that ship under a Windows image's
+/// template directory.
+///
+/// Every such directory, not the desktop image's alone: the layer ships its own
+/// two scripts, and a list is a thing to forget to add to.
 fn windows_guest_scripts(extension: &str) -> Vec<std::path::PathBuf> {
-    scripts_in(
-        &crate::store::repo_root()
-            .join("vm")
-            .join("windows")
-            .join("scripts"),
-        extension,
-    )
+    template_scripts(crate::provider::target::Target::Windows, extension)
+}
+
+/// Every script of one kind under the template directories of the images of one
+/// operating system.
+fn template_scripts(
+    target: crate::provider::target::Target,
+    extension: &str,
+) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for image in crate::provider::target::Image::ALL
+        .into_iter()
+        .filter(|image| image.target() == target)
+    {
+        let dir = crate::store::template_dir(image).join("scripts");
+        if dir.is_dir() {
+            out.extend(scripts_in(&dir, extension));
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Every file with the given extension in a directory, sorted.
@@ -169,7 +208,32 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
         "e2e-1a2b",
         false,
     );
+    // The release build's own two jobs. The build one is the longest generated
+    // script in the crate and the only one that runs for tens of minutes, so a
+    // syntax error in it costs a boot and a source copy before it says anything.
+    let pinned = crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n")
+        .expect("a fixture pin parses");
     vec![
+        (
+            "dist: build".to_owned(),
+            crate::commands::dist::build_job(crate::provider::target::Target::Linux, &pinned),
+        ),
+        (
+            "dist: verify".to_owned(),
+            crate::commands::dist::verify_job(
+                crate::provider::target::Target::Linux,
+                "/var/lib/sunlit-e2e/bin/sunlit-earth",
+                Some("/var/lib/sunlit-e2e/textures"),
+            ),
+        ),
+        (
+            "dist: verify without textures".to_owned(),
+            crate::commands::dist::verify_job(
+                crate::provider::target::Target::Linux,
+                "/var/lib/sunlit-e2e/bin/sunlit-earth",
+                None,
+            ),
+        ),
         (
             "handover: launcher".to_owned(),
             crate::guest::handover::linux_launcher_script(&paths),
@@ -191,7 +255,7 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
 /// place for a syntax error to surface.
 fn linux_guest_scripts() -> Vec<std::path::PathBuf> {
     let repo = crate::store::repo_root();
-    let mut scripts = scripts_in(&repo.join("vm").join("linux").join("scripts"), "sh");
+    let mut scripts = template_scripts(crate::provider::target::Target::Linux, "sh");
     scripts.extend(scripts_in(&repo.join("assets").join("linux"), "sh"));
     scripts
 }

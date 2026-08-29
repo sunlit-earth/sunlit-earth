@@ -24,7 +24,7 @@
 use crate::commands::e2e::WINDOWS_SLINT_BACKEND;
 use crate::guest::artifacts::{GuestPaths, shell_quote};
 use crate::provider::Provider;
-use crate::provider::target::Target;
+use crate::provider::target::{Image, Target};
 use crate::runner::{encode_command, encode_text};
 use crate::store::Store;
 use crate::store::state::RunState;
@@ -358,11 +358,11 @@ pub fn prepare(
     provider: &dyn Provider,
     state: &RunState,
     store: &Store,
-    target: Target,
+    image: Image,
     paths: &GuestPaths,
 ) -> Result<(), String> {
-    match target {
-        Target::Windows => prepare_windows(provider, state, store, target, paths),
+    match image.target() {
+        Target::Windows => prepare_windows(provider, state, store, image, paths),
         Target::Linux => prepare_linux(provider, state, paths),
     }
 }
@@ -388,10 +388,10 @@ fn prepare_windows(
     provider: &dyn Provider,
     state: &RunState,
     store: &Store,
-    target: Target,
+    image: Image,
     paths: &GuestPaths,
 ) -> Result<(), String> {
-    let scratch = store.run_dir(target).join("handover");
+    let scratch = store.handover_scratch(image);
     std::fs::create_dir_all(&scratch)
         .map_err(|e| format!("cannot create {}: {e}", scratch.display()))?;
     let local = scratch.join(LAUNCHER);
@@ -869,14 +869,14 @@ mod tests {
             crate::provider::target::HostOs::Windows,
         );
         let state = crate::store::state::RunState::new(
-            Target::Linux,
+            Image::Linux,
             crate::provider::target::ProviderKind::Qemu,
             std::path::PathBuf::from("/tmp/overlay.qcow2"),
             crate::store::state::StartReason::Up,
             0,
         );
         assert_eq!(
-            prepare(&provider, &state, &store, Target::Linux, &linux_paths(true)),
+            prepare(&provider, &state, &store, Image::Linux, &linux_paths(true)),
             Ok(())
         );
         assert_eq!(runner.calls().len(), 1, "{:?}", runner.calls());
@@ -896,7 +896,7 @@ mod tests {
             &store,
             crate::provider::target::HostOs::Windows,
         );
-        let err = prepare(&provider, &state, &store, Target::Linux, &linux_paths(true))
+        let err = prepare(&provider, &state, &store, Image::Linux, &linux_paths(true))
             .expect_err("no marker is no hand-over");
         assert!(err.contains("xdg-user-dir"), "{err}");
     }
@@ -919,7 +919,7 @@ mod tests {
             crate::provider::target::HostOs::Windows,
         );
         let state = crate::store::state::RunState::new(
-            Target::Linux,
+            Image::Linux,
             crate::provider::target::ProviderKind::Qemu,
             std::path::PathBuf::from("/tmp/overlay.qcow2"),
             crate::store::state::StartReason::Up,

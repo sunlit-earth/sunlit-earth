@@ -112,6 +112,7 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         win.set_camera_tilt(preset.tilt_deg);
         win.set_camera_yaw(preset.yaw_deg);
         win.set_camera_pitch(preset.pitch_deg);
+        win.set_camera_fov(preset.fov_deg);
         engine.push_params(&win);
     });
 }
@@ -297,6 +298,7 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_camera_tilt(cam.tilt_deg);
     window.set_camera_yaw(cam.yaw_deg);
     window.set_camera_pitch(cam.pitch_deg);
+    window.set_camera_fov(cam.fov_deg);
     window.set_terminator_width(params.terminator_width);
     window.set_diffuse_shading(params.diffuse_shading);
     window.set_diffuse_floor(params.diffuse_floor);
@@ -306,8 +308,10 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_fresnel_mix(params.fresnel_mix);
     window.set_fresnel_exp(params.fresnel_exp);
     window.set_cloud_opacity(params.cloud_opacity);
+    window.set_cloud_opacity_night(params.cloud_opacity_night);
     window.set_cloud_floor(params.cloud_floor);
     window.set_cloud_gamma(params.cloud_gamma);
+    window.set_cloud_night(params.cloud_night);
     window.set_atmo_enabled(params.atmo_enabled);
     window.set_rayleigh_intensity(params.rayleigh_intensity);
     window.set_rayleigh_sharpness(params.rayleigh_sharpness);
@@ -322,6 +326,13 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_star_glow_radius(params.star_glow_radius);
     window.set_star_contrast(params.star_contrast);
     window.set_star_mag_limit(params.star_mag_limit);
+    window.set_sun_glow(params.sun_glow);
+    window.set_sun_rays(params.sun_rays);
+    window.set_sun_flare(params.sun_flare);
+    window.set_moon_brightness(params.moon_brightness);
+    window.set_moon_size(params.moon_size);
+    window.set_moon_earthshine(params.moon_earthshine);
+    window.set_milky_way_intensity(params.milky_way_intensity);
     window.set_day_gamma(gamma_value_to_slider(params.day_gamma));
     window.set_day_saturation(params.day_saturation);
     window.set_night_gamma(gamma_value_to_slider(params.night_gamma));
@@ -352,6 +363,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
             tilt_deg: window.get_camera_tilt(),
             yaw_deg: window.get_camera_yaw(),
             pitch_deg: window.get_camera_pitch(),
+            fov_deg: window.get_camera_fov(),
         },
         texture_index: window.get_texture_index(),
         sample_count: aa_counts.get(aa_index).copied().unwrap_or(1),
@@ -364,8 +376,10 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         fresnel_mix: window.get_fresnel_mix(),
         fresnel_exp: window.get_fresnel_exp(),
         cloud_opacity: window.get_cloud_opacity(),
+        cloud_opacity_night: window.get_cloud_opacity_night(),
         cloud_floor: window.get_cloud_floor(),
         cloud_gamma: window.get_cloud_gamma(),
+        cloud_night: window.get_cloud_night(),
         atmo_enabled: window.get_atmo_enabled(),
         rayleigh_intensity: window.get_rayleigh_intensity(),
         rayleigh_sharpness: window.get_rayleigh_sharpness(),
@@ -380,6 +394,13 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         star_glow_radius: window.get_star_glow_radius(),
         star_contrast: window.get_star_contrast(),
         star_mag_limit: window.get_star_mag_limit(),
+        sun_glow: window.get_sun_glow(),
+        sun_rays: window.get_sun_rays(),
+        sun_flare: window.get_sun_flare(),
+        moon_brightness: window.get_moon_brightness(),
+        moon_size: window.get_moon_size(),
+        moon_earthshine: window.get_moon_earthshine(),
+        milky_way_intensity: window.get_milky_way_intensity(),
         day_gamma: gamma_slider_to_value(window.get_day_gamma()),
         day_saturation: window.get_day_saturation(),
         night_gamma: gamma_slider_to_value(window.get_night_gamma()),

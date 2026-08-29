@@ -87,6 +87,75 @@ pub fn session_ready_command(target: Target) -> String {
 /// The marker the session-ready probe looks for.
 pub const SESSION_READY_MARKER: &str = "SUNLIT_SESSION_READY";
 
+/// The command that prints the whole of the job's output so far.
+///
+/// `type` on Windows and `cat` on Linux, both of which read a file the job's own
+/// shell still holds open for writing. A job worth watching is one that runs for
+/// tens of minutes with nothing else to say for itself, which is what a release
+/// build is; the e2e suite finishes in under a minute and its log is printed
+/// once at the end.
+pub fn output_log_command(target: Target) -> String {
+    match target {
+        Target::Windows => format!(
+            r"if exist {0}\results\output.log type {0}\results\output.log",
+            crate::provider::GUEST_ROOT_WINDOWS
+        ),
+        Target::Linux => format!(
+            "cat {}/results/output.log 2>/dev/null || true",
+            crate::provider::GUEST_ROOT_LINUX
+        ),
+    }
+}
+
+/// How much of the job's log has been printed already.
+///
+/// The guest is asked for the whole log every poll and this decides what of it
+/// is new, because there is no `tail -c +N` that works the same in `cmd.exe`.
+/// Tracked in characters rather than lines so that a line the guest is still
+/// writing is not printed twice.
+#[derive(Debug, Clone, Default)]
+pub struct OutputTail {
+    printed: usize,
+}
+
+impl OutputTail {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The part of `log` that has not been printed yet, and nothing when there
+    /// is none.
+    ///
+    /// A log that is shorter than what was already printed is a guest that
+    /// started the job again, which the runner does by removing the results
+    /// directory first. That reads as a fresh log rather than as nothing new.
+    ///
+    /// The log arrives decoded from whatever bytes the guest had written when
+    /// the poll read the file, so a multi-byte character caught half-written
+    /// comes back as one three-byte replacement character and turns into itself
+    /// a poll later. That moves every byte after it, which is why an index into
+    /// the previous decode is not trusted here: what the last poll ended in is
+    /// held back rather than printed, and clamping to a character boundary keeps
+    /// a stale index from landing inside a character and panicking.
+    pub fn absorb<'a>(&mut self, log: &'a str) -> Option<&'a str> {
+        if log.len() < self.printed {
+            self.printed = 0;
+        }
+        while self.printed > 0 && !log.is_char_boundary(self.printed) {
+            self.printed -= 1;
+        }
+        let fresh = &log[self.printed..];
+        // A trailing replacement character is a character the guest is still
+        // writing, so it waits for the poll that has the whole of it.
+        let fresh = fresh.trim_end_matches(char::REPLACEMENT_CHARACTER);
+        if fresh.is_empty() {
+            return None;
+        }
+        self.printed += fresh.len();
+        Some(fresh)
+    }
+}
+
 /// Read an exit-code file's contents.
 ///
 /// Absent or still empty reads as "not finished"; anything else has to parse,
@@ -150,6 +219,28 @@ pub fn run(
     local_scratch: &Path,
     timeout: Duration,
 ) -> Result<i32, String> {
+    run_watching(
+        provider,
+        state,
+        target,
+        script,
+        local_scratch,
+        timeout,
+        None,
+    )
+}
+
+/// The same, printing the job's output as it arrives when a tail is given.
+#[allow(clippy::too_many_arguments)]
+pub fn run_watching(
+    provider: &dyn Provider,
+    state: &RunState,
+    target: Target,
+    script: &str,
+    local_scratch: &Path,
+    timeout: Duration,
+    tail: Option<&mut OutputTail>,
+) -> Result<i32, String> {
     std::fs::create_dir_all(local_scratch)
         .map_err(|e| format!("cannot create {}: {e}", local_scratch.display()))?;
     let local = local_scratch.join(job_file(target));
@@ -170,19 +261,30 @@ pub fn run(
         ));
     }
 
-    wait_for_exit_code(provider, state, target, timeout)
+    wait_for_exit_code(provider, state, target, timeout, tail)
 }
 
-/// Poll until `exit_code.txt` appears.
+/// Poll until `exit_code.txt` appears, printing what the job wrote since the
+/// last poll when a tail is given.
 pub fn wait_for_exit_code(
     provider: &dyn Provider,
     state: &RunState,
     target: Target,
     timeout: Duration,
+    mut tail: Option<&mut OutputTail>,
 ) -> Result<i32, String> {
     let command = exit_code_command(target);
+    let log_command = output_log_command(target);
     let start = Instant::now();
     loop {
+        // Read before asking whether it is over, so the last of the output is
+        // printed even when both land in the same poll.
+        if let Some(tail) = tail.as_deref_mut()
+            && let Ok(out) = provider.exec(state, &log_command)
+            && let Some(fresh) = tail.absorb(&out.stdout)
+        {
+            print!("{fresh}");
+        }
         match provider.exec(state, &command) {
             Ok(out) => {
                 if let Some(code) = parse_exit_code(&out.stdout)? {
@@ -254,6 +356,69 @@ mod tests {
         assert!(linux.contains("|| true"), "{linux}");
     }
 
+    /// The guest is asked for its whole log every poll, so what makes the
+    /// output readable is this deciding what is new. Printing a line twice is
+    /// the visible failure; printing nothing at all is the silent one.
+    #[test]
+    fn a_tail_prints_each_line_once_and_survives_a_restarted_job() {
+        let mut tail = OutputTail::new();
+        assert_eq!(tail.absorb(""), None);
+        assert_eq!(tail.absorb("Compiling wgpu\n"), Some("Compiling wgpu\n"));
+        assert_eq!(tail.absorb("Compiling wgpu\n"), None);
+        assert_eq!(
+            tail.absorb("Compiling wgpu\nCompiling slint\n"),
+            Some("Compiling slint\n")
+        );
+        // The runner clears the results directory when a job starts, so a log
+        // that got shorter is a new job rather than nothing to say.
+        assert_eq!(tail.absorb("Compiling se\n"), Some("Compiling se\n"));
+        assert_eq!(tail.absorb("Compiling se\n"), None);
+    }
+
+    /// The guest's log is decoded from the bytes that were there when the poll
+    /// read it, so a character the job was in the middle of writing arrives as
+    /// one replacement character and becomes itself on the next poll. Both
+    /// lengths change under a byte index kept from the poll before: a four-byte
+    /// character grows the log by a byte, which used to put the index inside a
+    /// character and panic seven minutes into a build, and a two- or three-byte
+    /// one leaves it the same length or shorter, which used to drop the rest of
+    /// the line in silence.
+    #[test]
+    fn a_character_caught_half_written_neither_panics_nor_swallows_the_line() {
+        for (half, whole) in [
+            ("Compiling \u{fffd}", "Compiling \u{1f389}"),
+            ("Compiling \u{fffd}", "Compiling \u{20ac}b"),
+            ("Compiling \u{fffd}", "Compiling \u{e9}b"),
+        ] {
+            let mut tail = OutputTail::new();
+            let mut printed = String::new();
+            if let Some(fresh) = tail.absorb(half) {
+                printed.push_str(fresh);
+            }
+            if let Some(fresh) = tail.absorb(whole) {
+                printed.push_str(fresh);
+            }
+            assert_eq!(printed, whole, "{whole:?}");
+            assert_eq!(tail.absorb(whole), None, "{whole:?}");
+        }
+    }
+
+    #[test]
+    fn the_log_probe_is_quiet_when_there_is_no_log_yet() {
+        let windows = output_log_command(Target::Windows);
+        assert!(windows.starts_with("if exist "), "{windows}");
+        assert!(windows.contains("type "), "{windows}");
+        let linux = output_log_command(Target::Linux);
+        assert!(linux.contains("cat "), "{linux}");
+        assert!(linux.contains("|| true"), "{linux}");
+        for target in Target::ALL {
+            assert!(
+                output_log_command(target).contains("output.log"),
+                "{target}"
+            );
+        }
+    }
+
     #[test]
     fn an_absent_exit_code_reads_as_still_running() {
         assert_eq!(parse_exit_code(""), Ok(None));
@@ -302,7 +467,11 @@ mod tests {
         fn kind(&self) -> ProviderKind {
             ProviderKind::Qemu
         }
-        fn create_from_golden(&self, _: Target, _: StartReason) -> Result<RunState, String> {
+        fn create_from_golden(
+            &self,
+            _: crate::provider::target::Image,
+            _: StartReason,
+        ) -> Result<RunState, String> {
             unreachable!("the waits create nothing")
         }
         fn start(&self, _: &mut RunState) -> Result<(), String> {
@@ -330,7 +499,7 @@ mod tests {
 
     fn state() -> RunState {
         let mut state = RunState::new(
-            Target::Linux,
+            crate::provider::target::Image::Linux,
             ProviderKind::Qemu,
             std::path::PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
             StartReason::Run,
@@ -401,6 +570,7 @@ mod tests {
             &state(),
             Target::Linux,
             Duration::from_millis(200),
+            None,
         )
         .unwrap_err();
         assert!(err.contains("stopped while the job was running"), "{err}");
@@ -419,7 +589,8 @@ mod tests {
                 &provider,
                 &state(),
                 Target::Linux,
-                Duration::from_millis(200)
+                Duration::from_millis(200),
+                None
             ),
             Ok(0)
         );

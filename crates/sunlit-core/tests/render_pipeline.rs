@@ -47,8 +47,8 @@ struct Uniforms {
     nightglow_orange_radius: f32,
     nightglow_green_radius: f32,
     rayleigh_haze: f32,
-    _pad3: f32,
-    _pad4: f32,
+    cloud_night: f32,
+    cloud_terminator: f32,
     _pad5: f32,
     sky_view: [f32; 16],
     world_from_eqj: [[f32; 4]; 3],
@@ -61,10 +61,21 @@ struct Uniforms {
     star_glow_radius: f32,
     star_contrast: f32,
     sky_fov: f32,
-    _pad6: f32,
+    sun_glow: f32,
+    sun_rays: f32,
+    sun_flare: f32,
+    sun_visible: f32,
+    sun_transit: f32,
+    sun_view_dir: [f32; 3],
+    sun_disk_radius: f32,
+    moon_model: [f32; 16],
+    moon_brightness: f32,
+    moon_earthshine: f32,
+    milky_way_intensity: f32,
+    cloud_opacity_night: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 368);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -555,8 +566,8 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         nightglow_orange_radius: 1.014,
         nightglow_green_radius: 1.015,
         rayleigh_haze: 0.55,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_night: 0.35,
+        cloud_terminator: sunlit_core::params::CLOUD_TERMINATOR_WIDTH,
         _pad5: 0.0,
         sky_view: glam::Mat4::IDENTITY.to_cols_array(),
         world_from_eqj: [
@@ -573,9 +584,32 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         star_glow_radius: 8.0,
         star_contrast: 0.3,
         sky_fov: 140.0,
-        _pad6: 0.0,
+        // These GPU cases render the Earth and its shells; the Sun's own two
+        // draws are covered by the engine and golden suites, and leaving the
+        // glare out here keeps a shading assertion measuring shading.
+        sun_glow: 0.0,
+        sun_rays: 0.0,
+        sun_flare: 0.0,
+        sun_visible: 1.0,
+        sun_transit: 0.0,
+        sun_view_dir: [0.0, 0.0, -1.0],
+        sun_disk_radius: 2.0,
+        moon_model: MOON_MODEL_IDENTITY,
+        moon_brightness: 0.0,
+        moon_earthshine: 0.0,
+        // These cases bind the Earth's own texture rather than a panorama, and
+        // the layer's draw is not among the ones they encode.
+        milky_way_intensity: 0.0,
+        cloud_opacity_night: 0.55,
     }
 }
+
+/// A model matrix that puts a unit Moon at the world origin. These cases draw
+/// no Moon (`moon_brightness` is zero), so what it has to be is valid rather
+/// than meaningful.
+const MOON_MODEL_IDENTITY: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -700,8 +734,8 @@ struct Uniforms {
     nightglow_orange_radius: f32,
     nightglow_green_radius: f32,
     rayleigh_haze: f32,
-    _pad3: f32,
-    _pad4: f32,
+    cloud_night: f32,
+    cloud_terminator: f32,
     _pad5: f32,
     sky_view: mat4x4<f32>,
     world_from_eqj: mat3x3<f32>,
@@ -714,7 +748,18 @@ struct Uniforms {
     star_glow_radius: f32,
     star_contrast: f32,
     sky_fov: f32,
-    _pad6: f32,
+    sun_glow: f32,
+    sun_rays: f32,
+    sun_flare: f32,
+    sun_visible: f32,
+    sun_transit: f32,
+    sun_view_dir: vec3<f32>,
+    sun_disk_radius: f32,
+    moon_model: mat4x4<f32>,
+    moon_brightness: f32,
+    moon_earthshine: f32,
+    milky_way_intensity: f32,
+    cloud_opacity_night: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -777,6 +822,29 @@ fn main() {
     output[39] = uniforms.star_glow_radius;
     output[40] = uniforms.star_contrast;
     output[41] = uniforms.sky_fov;
+    // sun params
+    output[42] = uniforms.sun_glow;
+    output[43] = uniforms.sun_rays;
+    output[44] = uniforms.sun_flare;
+    output[45] = uniforms.sun_visible;
+    output[46] = uniforms.sun_transit;
+    output[47] = uniforms.sun_view_dir.x;
+    output[48] = uniforms.sun_view_dir.y;
+    output[49] = uniforms.sun_view_dir.z;
+    output[50] = uniforms.sun_disk_radius;
+    // moon params
+    output[51] = uniforms.moon_model[0][0];
+    output[52] = uniforms.moon_model[1][1];
+    output[53] = uniforms.moon_model[2][2];
+    output[54] = uniforms.moon_model[3][0];
+    output[55] = uniforms.moon_brightness;
+    output[56] = uniforms.moon_earthshine;
+    // the Milky Way
+    output[57] = uniforms.milky_way_intensity;
+    // the cloud layer's own three
+    output[58] = uniforms.cloud_night;
+    output[59] = uniforms.cloud_terminator;
+    output[60] = uniforms.cloud_opacity_night;
 }
 ";
 
@@ -843,8 +911,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         nightglow_orange_radius: 1.014,
         nightglow_green_radius: 1.015,
         rayleigh_haze: 0.55,
-        _pad3: 0.0,
-        _pad4: 0.0,
+        cloud_night: 0.31,
+        cloud_terminator: 0.19,
         _pad5: 0.0,
         sky_view: mvp,
         world_from_eqj: [
@@ -861,7 +929,22 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         star_glow_radius: 6.0,
         star_contrast: 0.4,
         sky_fov: 123.0,
-        _pad6: 0.0,
+        sun_glow: 1.75,
+        sun_rays: 0.45,
+        sun_flare: 0.8,
+        sun_visible: 0.6,
+        sun_transit: 0.3,
+        sun_view_dir: [0.0, 0.6, -0.8],
+        sun_disk_radius: 7.5,
+        // Column major, so the last column's first component is the Moon's x
+        // position and the diagonal is its scale.
+        moon_model: [
+            0.25, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.75, 0.0, 12.5, 0.0, 0.0, 1.0,
+        ],
+        moon_brightness: 1.25,
+        moon_earthshine: 0.35,
+        milky_way_intensity: 0.65,
+        cloud_opacity_night: 0.61,
     };
 
     let uniform_buf = ctx
@@ -872,8 +955,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 42 floats
-    let output_size = (42 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 58 floats
+    let output_size = (61 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1124,6 +1207,436 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         "sky_fov: got {}, expected 123.0",
         values[41]
     );
+    assert!(
+        (values[42] - 1.75).abs() < eps,
+        "sun_glow: got {}, expected 1.75",
+        values[42]
+    );
+    assert!(
+        (values[43] - 0.45).abs() < eps,
+        "sun_rays: got {}, expected 0.45",
+        values[43]
+    );
+    assert!(
+        (values[44] - 0.8).abs() < eps,
+        "sun_flare: got {}, expected 0.8",
+        values[44]
+    );
+    assert!(
+        (values[45] - 0.6).abs() < eps,
+        "sun_visible: got {}, expected 0.6",
+        values[45]
+    );
+    assert!(
+        (values[46] - 0.3).abs() < eps,
+        "sun_transit: got {}, expected 0.3",
+        values[46]
+    );
+    assert!(
+        values[47].abs() < eps && (values[48] - 0.6).abs() < eps && (values[49] + 0.8).abs() < eps,
+        "sun_view_dir: got {:?}, expected [0.0, 0.6, -0.8]",
+        [values[47], values[48], values[49]]
+    );
+    assert!(
+        (values[50] - 7.5).abs() < eps,
+        "sun_disk_radius: got {}, expected 7.5",
+        values[50]
+    );
+    assert!(
+        (values[51] - 0.25).abs() < eps
+            && (values[52] - 0.5).abs() < eps
+            && (values[53] - 0.75).abs() < eps
+            && (values[54] - 12.5).abs() < eps,
+        "moon_model: got {:?}, expected [0.25, 0.5, 0.75, 12.5]",
+        [values[51], values[52], values[53], values[54]]
+    );
+    assert!(
+        (values[55] - 1.25).abs() < eps,
+        "moon_brightness: got {}, expected 1.25",
+        values[55]
+    );
+    assert!(
+        (values[56] - 0.35).abs() < eps,
+        "moon_earthshine: got {}, expected 0.35",
+        values[56]
+    );
+    assert!(
+        (values[57] - 0.65).abs() < eps,
+        "milky_way_intensity: got {}, expected 0.65",
+        values[57]
+    );
+    assert!(
+        (values[58] - 0.31).abs() < eps,
+        "cloud_night: got {}, expected 0.31",
+        values[58]
+    );
+    assert!(
+        (values[59] - 0.19).abs() < eps,
+        "cloud_terminator: got {}, expected 0.19",
+        values[59]
+    );
+    assert!(
+        (values[60] - 0.61).abs() < eps,
+        "cloud_opacity_night: got {}, expected 0.61",
+        values[60]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The two rules both sides of the boundary spell out
+// ---------------------------------------------------------------------------
+
+/// A compute entry point appended to the production shaders, so what it
+/// evaluates is the source the renderer compiles rather than a copy of it.
+const SHARED_RULE_PROBE: &str = "
+@group(1) @binding(0) var<storage, read_write> rule_out: array<f32>;
+
+@compute @workgroup_size(1)
+fn shared_rule_probe() {
+    rule_out[0] = output_pixel_scale();
+    rule_out[1] = sky_lens_edge_radius();
+}
+";
+
+/// The output-density ramp and the sky lens's edge radius exist once in WGSL
+/// and once in `scene::sun_occlusion`, and both pairings matter at the pixel:
+/// the CPU sizes the Sun's disk with the ramp and the shader draws that disk's
+/// antialiased edge with it, and the CPU measures occlusion at a screen
+/// position the shader has to draw the Sun at.
+///
+/// The heights avoid 1080 and below, where the ramp clamps to 1.0 and any two
+/// knees agree: every golden and every engine frame renders there, so nothing
+/// else in the suite can see a divergence at all.
+#[test]
+fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
+    let ctx = RENDER_CTX.lock().unwrap();
+
+    let wgsl_source = format!(
+        "{}\n{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+        SHARED_RULE_PROBE,
+    );
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shared_rule_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("shared_rule_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("shared_rule_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+    let output_size = 2 * std::mem::size_of::<f32>() as u64;
+    let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shared_rule_probe_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let uniform_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shared_rule_probe_uniforms"),
+        size: std::mem::size_of::<Uniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    let output_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: output_buf.as_entire_binding(),
+        }],
+    });
+
+    let probe = |height: f32, sky_fov: f32| {
+        let uniforms = Uniforms {
+            viewport_size: [height * 16.0 / 9.0, height],
+            sky_fov,
+            ..default_test_uniforms(64)
+        };
+        ctx.queue
+            .write_buffer(&uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniform_group, &[]);
+            pass.set_bind_group(1, &output_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
+        let values: &[f32] = bytemuck::cast_slice(&data);
+        (values[0], values[1])
+    };
+
+    // Below the knee, on it, three points up the ramp, and past the ceiling.
+    for &height in &[540.0_f32, 1080.0, 1350.0, 1620.0, 2160.0, 3240.0] {
+        // Under the lower clamp, both ends of the slider's range, and over the
+        // upper one.
+        for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0] {
+            let (shader_scale, shader_edge) = probe(height, sky_fov);
+            let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
+            let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
+            assert!(
+                (shader_scale - cpu_scale).abs() < 1e-6,
+                "the density ramp at {height} pixels: the shader says {shader_scale}, \
+                 scene::sun_occlusion::pixel_scale says {cpu_scale}"
+            );
+            assert!(
+                (shader_edge - cpu_edge).abs() < 2e-5 * cpu_edge,
+                "the sky lens edge radius at {sky_fov} degrees: the shader says {shader_edge}, \
+                 scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The panorama's reconstruction against the projection it inverts
+// ---------------------------------------------------------------------------
+
+/// A second compute entry point appended to the production shaders, so the
+/// four functions it composes are the ones the renderer compiles.
+const ROUND_TRIP_PROBE: &str = "
+@group(1) @binding(0) var<storage, read> trip_directions: array<vec4<f32>>;
+@group(1) @binding(1) var<storage, read_write> trip_results: array<vec4<f32>>;
+
+@compute @workgroup_size(1)
+fn round_trip_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    let eqj = normalize(trip_directions[index].xyz);
+    let point = sky_lens_project(view_from_eqj(eqj));
+    let back = normalize(milky_way_direction(ndc_to_pixels(point.ndc)));
+    trip_results[index] = vec4<f32>(back, point.theta);
+}
+";
+
+/// `milky_way_direction` has to be the exact inverse of `sky_lens_project`
+/// after `view_from_eqj`, because the panorama it samples sits under sprites the
+/// forward pair places. Two transposes and a lens inversion is three places a
+/// sign can be wrong, and every one of them yields a plausible-looking sky
+/// rather than an obviously broken one.
+///
+/// A round trip on the GPU rather than a re-derivation on the CPU: the forward
+/// half is production's, the inverse half is production's, and nothing here
+/// spells either of them out. Real camera and real astronomy, so both matrices
+/// are ones the renderer actually writes, and both signs of pan, which no other
+/// frame in this file carries.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
+    /// How far a direction may come back from where it went in, as a distance
+    /// between two unit vectors.
+    ///
+    /// The round trip is exact to 6.5e-7 on warp and to 1.5e-4 on lavapipe,
+    /// which is the two adapters' transcendentals rather than anything about
+    /// the chain, and 1.5e-4 is half a hundredth of a degree. This sits an
+    /// order of magnitude above the worse of them and three below the faults it
+    /// exists to catch, which are 1.229 and 0.546.
+    const TOLERANCE: f32 = 1.0e-3;
+
+    let ctx = RENDER_CTX.lock().unwrap();
+
+    let wgsl_source = format!(
+        "{}\n{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+        ROUND_TRIP_PROBE,
+    );
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("round_trip_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("round_trip_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("round_trip_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+    // A spread of equatorial J2000 directions: the poles, the equator all the
+    // way round, and two mid-latitude rings, so no component of either
+    // transpose can be zero everywhere.
+    let mut directions: Vec<[f32; 4]> = vec![[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, -1.0, 0.0]];
+    for declination in [-60.0_f32, -25.0, 0.0, 25.0, 60.0] {
+        for step in 0..12 {
+            let right_ascension = f32::from(u8::try_from(step).expect("a small index")) * 30.0;
+            let (ra, dec) = (right_ascension.to_radians(), declination.to_radians());
+            directions.push([dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin(), 0.0]);
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let count = directions.len() as u32;
+    let buffer_size = std::mem::size_of_val(directions.as_slice()) as u64;
+
+    let input_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("round_trip_probe_input"),
+            contents: bytemuck::cast_slice(&directions),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+    let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("round_trip_probe_output"),
+        size: buffer_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let uniform_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("round_trip_probe_uniforms"),
+        size: std::mem::size_of::<Uniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let uniform_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    let storage_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buf.as_entire_binding(),
+            },
+        ],
+    });
+
+    let datetime = sunlit_core::scene::sun::DateTimeInput {
+        use_custom: true,
+        custom_hour: 7.0,
+        custom_day_of_year: 172,
+        custom_year: 2026,
+    };
+    let sky = sunlit_core::scene::sky::compute_sky_state(&datetime);
+    let world_from_eqj = [
+        sky.world_from_eqj.x_axis.extend(0.0).into(),
+        sky.world_from_eqj.y_axis.extend(0.0).into(),
+        sky.world_from_eqj.z_axis.extend(0.0).into(),
+    ];
+
+    let probe = |sky_fov: f32, offset: glam::Vec2, viewport: glam::Vec2| {
+        let camera = sunlit_core::scene::camera::OrbitalCamera::new(
+            41.0,
+            -17.0,
+            sunlit_core::scene::camera::zoom_to_distance(0.45),
+        );
+        let uniforms = Uniforms {
+            sky_view: camera.view_matrix().to_cols_array(),
+            world_from_eqj,
+            viewport_size: viewport.into(),
+            screen_offset: offset.into(),
+            sky_fov,
+            ..default_test_uniforms(64)
+        };
+        ctx.queue
+            .write_buffer(&uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniform_group, &[]);
+            pass.set_bind_group(1, &storage_group, &[]);
+            pass.dispatch_workgroups(count, 1, 1);
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, buffer_size);
+        bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec()
+    };
+
+    // The two ends of the slider and the default, with no pan and a pan of
+    // either sign in both axes.
+    for sky_fov in [60.0_f32, 140.0, 180.0] {
+        for offset in [
+            glam::Vec2::ZERO,
+            glam::Vec2::new(0.35, 0.2),
+            glam::Vec2::new(-0.35, -0.2),
+        ] {
+            for viewport in [
+                glam::Vec2::new(1280.0, 720.0),
+                glam::Vec2::new(512.0, 512.0),
+            ] {
+                let results = probe(sky_fov, offset, viewport);
+                let mut checked = 0;
+                let mut worst = (0.0_f32, 0.0_f32);
+                for (sent, got) in directions.iter().zip(&results) {
+                    let sent = glam::Vec3::from_slice(&sent[0..3]).normalize();
+                    let theta = got[3];
+                    // Past this the projected radius is `tan(theta / 2)` of a
+                    // very large number and single precision has nothing left;
+                    // the shader clamps at the antipode for the same reason.
+                    if theta > 170.0_f32.to_radians() {
+                        continue;
+                    }
+                    checked += 1;
+                    let back = glam::Vec3::from_slice(&got[0..3]);
+                    // The straight-line distance between two unit vectors
+                    // rather than the angle between them: `acos` of a dot
+                    // product a couple of ULP short of one reports half a
+                    // milliradian that is entirely the measurement's, a floor
+                    // no round trip could ever get under.
+                    let apart = (sent - back).length();
+                    if apart > worst.0 {
+                        worst = (apart, theta.to_degrees());
+                    }
+                    assert!(
+                        apart < TOLERANCE,
+                        "at {sky_fov} degrees of sky, pan {offset:?}, viewport {viewport:?}:                          {sent:?} came back as {back:?}, {apart} away"
+                    );
+                }
+                println!(
+                    "fov {sky_fov} pan {offset:?} viewport {viewport:?}: worst {:.3e} at theta {:.1}",
+                    worst.0, worst.1
+                );
+                assert!(
+                    checked > 40,
+                    "only {checked} of the directions were inside the range this checks"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

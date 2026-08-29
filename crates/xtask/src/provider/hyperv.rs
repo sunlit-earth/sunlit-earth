@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::guest::ssh::SshTarget;
 use crate::provider::Stopped;
 use crate::provider::console;
-use crate::provider::target::{HostOs, ProviderKind, Target};
+use crate::provider::target::{HostOs, Image, ProviderKind, Target};
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
 use crate::store::Store;
 use crate::store::state::{RunState, StartReason};
@@ -31,9 +31,9 @@ pub const ADDRESS_TIMEOUT: Duration = Duration::from_mins(5);
 /// The account the golden image creates.
 pub const GUEST_USER: &str = "tester";
 
-/// Memory and processors for the guest.
-pub const MEMORY_BYTES: u64 = 6 * 1024 * 1024 * 1024;
-pub const CPUS: u32 = 4;
+// Memory and processors come from `crate::provider::resources_for`, which the
+// QEMU launch reads too: an image has one machine size whichever hypervisor is
+// holding it, and a builder gets more of the host than a desktop guest does.
 
 /// The modes the automatic choice picks from, smallest first.
 ///
@@ -131,7 +131,13 @@ pub fn parse_work_area(stdout: &str) -> Option<(u32, u32)> {
 /// Generation 2 because Windows 11 needs UEFI. Secure Boot is off: the image
 /// was installed with the requirement bypassed, and turning it on here would
 /// be asserting something about the disk that was never true.
-pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32)) -> String {
+pub fn create_script(
+    name: &str,
+    golden: &str,
+    overlay: &str,
+    console: (u32, u32),
+    (memory_mb, cpus): (u32, u32),
+) -> String {
     format!(
         "New-VHD -Path {overlay} -ParentPath {golden} -Differencing | Out-Null\n\
          New-VM -Name {name} -Generation 2 -MemoryStartupBytes {memory} \
@@ -147,8 +153,8 @@ pub fn create_script(name: &str, golden: &str, overlay: &str, console: (u32, u32
         golden = ps_quote(golden),
         overlay = ps_quote(overlay),
         switch = ps_quote(SWITCH),
-        memory = MEMORY_BYTES,
-        cpus = CPUS,
+        memory = u64::from(memory_mb) * 1024 * 1024,
+        cpus = cpus,
         video = video_script(name, console),
     )
 }
@@ -726,17 +732,17 @@ impl crate::provider::Provider for HypervProvider<'_> {
         ProviderKind::HyperV
     }
 
-    fn create_from_golden(&self, target: Target, reason: StartReason) -> Result<RunState, String> {
-        let golden = self.store.vhdx(target);
+    fn create_from_golden(&self, image: Image, reason: StartReason) -> Result<RunState, String> {
+        let golden = self.store.vhdx(image);
         if !golden.is_file() {
             return Err(format!(
-                "no golden VHDX at {}; `cargo xtask vm build-image {target}` builds one",
+                "no {image} VHDX at {}; `cargo xtask vm build-image {image}` builds one",
                 golden.display()
             ));
         }
-        let name = target.vm_name();
-        let overlay = self.store.overlay(target);
-        std::fs::create_dir_all(self.store.run_dir(target))
+        let name = image.vm_name();
+        let overlay = self.store.overlay(image);
+        std::fs::create_dir_all(self.store.run_dir(image))
             .map_err(|e| format!("cannot create the run directory: {e}"))?;
 
         // A leftover VM of ours holds the differencing disk open.
@@ -748,10 +754,11 @@ impl crate::provider::Provider for HypervProvider<'_> {
             &golden.to_string_lossy(),
             &overlay.to_string_lossy(),
             self.console_size(),
+            crate::provider::resources_for(image),
         ))?;
 
         let mut state = RunState::new(
-            target,
+            image,
             ProviderKind::HyperV,
             overlay,
             reason,
@@ -902,6 +909,18 @@ mod tests {
     use super::*;
     use crate::provider::Provider as _;
     use crate::provider::target::ProviderKind;
+
+    /// The create script for the Windows desktop guest, which is what most of
+    /// the cases below are about.
+    fn windows_create_script(console: (u32, u32)) -> String {
+        create_script(
+            "sunlit-e2e-windows",
+            "g.vhdx",
+            "o.vhdx",
+            console,
+            crate::provider::resources_for(Image::Windows),
+        )
+    }
     use crate::runner::CommandOutput;
     use crate::runner::fake::FakeRunner;
     use crate::store::state::{RunState, StartReason};
@@ -915,7 +934,7 @@ mod tests {
         let store = Store::new(r"C:\vm");
         let state = || {
             RunState::new(
-                Target::Windows,
+                Image::Windows,
                 ProviderKind::HyperV,
                 PathBuf::from(r"C:\vm\run\windows\overlay.vhdx"),
                 StartReason::Run,
@@ -953,6 +972,7 @@ mod tests {
             r"C:\vm\images\windows\golden.vhdx",
             r"C:\vm\run\windows\overlay.vhdx",
             (1920, 1080),
+            crate::provider::resources_for(Image::Windows),
         );
         assert!(script.contains("-Differencing"), "{script}");
         assert!(
@@ -1041,7 +1061,7 @@ mod tests {
 
     #[test]
     fn the_vm_is_generation_two_because_windows_11_needs_uefi() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
+        let script = windows_create_script((1920, 1080));
         assert!(script.contains("-Generation 2"), "{script}");
         assert!(script.contains("-EnableSecureBoot Off"), "{script}");
         assert!(script.contains("FirstBootDevice"), "{script}");
@@ -1049,14 +1069,14 @@ mod tests {
 
     #[test]
     fn the_vm_uses_the_switch_every_client_windows_has() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
+        let script = windows_create_script((1920, 1080));
         assert!(script.contains("-SwitchName 'Default Switch'"), "{script}");
         assert!(!script.contains("New-VMSwitch"), "{script}");
     }
 
     #[test]
     fn the_vm_never_starts_itself_or_takes_checkpoints() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
+        let script = windows_create_script((1920, 1080));
         assert!(
             script.contains("-AutomaticCheckpointsEnabled $false"),
             "{script}"
@@ -1212,7 +1232,7 @@ mod tests {
     /// refuses to run against one that is on.
     #[test]
     fn the_console_is_sized_in_the_create_script() {
-        let script = create_script("sunlit-e2e-windows", "g.vhdx", "o.vhdx", (1920, 1080));
+        let script = windows_create_script((1920, 1080));
         assert!(
             script.contains(
                 "Set-VMVideo -VMName 'sunlit-e2e-windows' -ResolutionType Single \
@@ -1267,9 +1287,15 @@ mod tests {
 
     #[test]
     fn every_script_names_a_vm_of_ours() {
-        let name = Target::Windows.vm_name();
+        let name = Image::Windows.vm_name();
         for script in [
-            create_script(&name, "g", "o", (1920, 1080)),
+            create_script(
+                &name,
+                "g",
+                "o",
+                (1920, 1080),
+                crate::provider::resources_for(Image::Windows),
+            ),
             state_script(&name),
             address_script(&name),
             destroy_script(&name),

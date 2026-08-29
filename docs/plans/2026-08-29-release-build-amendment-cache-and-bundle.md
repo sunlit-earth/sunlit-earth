@@ -570,8 +570,9 @@ null `texture_lookup_delta`. That is the correction departure 6 makes to
 
 ### The gates at the tip of the minors
 
-Run at `f8a1d52` on Windows, and again at the tip once the record above was written, since
-only this document and the two guides moved after it.
+Run on Windows over the whole of this work: `cargo test -p xtask` with `clippy` and `fmt`
+at each of the three code commits, and all three gates whole on the tree that became the
+tip, which is `f8a1d52`'s code with this document and the two guides on top of it.
 
 | gate | result |
 |---|---|

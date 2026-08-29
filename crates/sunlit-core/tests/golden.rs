@@ -580,19 +580,46 @@ fn horizon_camera(longitude: f32) -> CameraParams {
     }
 }
 
+/// The window the disk and the near half of its glare land in at the framing
+/// below.
+///
+/// The refraction is what decides the window. Deleting the tint moves the whole
+/// frame by a mean of 10.04 with 16.80 percent of pixels outliers and deleting
+/// the exposure gain by 7.27 with 11.00, both well past the tolerance, but
+/// deleting the lift and the squash moves it by 0.91 with 0.22 percent, which
+/// is a reference that passes with the effect gone. The disk is what refraction
+/// moves and the glare is most of the frame, so comparing where the disk is
+/// puts the three at 55.33 with 83.09 percent, 56.03 with 98.58, and 6.19 with
+/// 4.58.
+const RISING_SUN_WINDOW: Window = Window {
+    x: 40,
+    y: 76,
+    width: 80,
+    height: 80,
+};
+
 #[test]
 fn golden_sun_rising_through_the_band() {
-    // The disk half in the zone, with the atmosphere off so that what the
-    // reference holds is the disk's own gradient and the glare the flux model
-    // gives it, and nothing the shell draws.
+    // The disk crossing the painted limb inside the zone, with the atmosphere
+    // off so that what the reference holds is the disk's own gradient and the
+    // glare the flux model gives it, and nothing the shell draws.
+    //
+    // Four times the size for the reason `moon_crescent` is eight times its
+    // own: at its true half degree the disk is 4.6 pixels across in a 512 by
+    // 256 frame, the horizon zone is the same 4.6 pixels, and the part of the
+    // band that colors anything is the lowest thirty kilometres of it, which
+    // comes to a pixel and a half. `sun_size` scales the disk and the zone
+    // together, so the whole of the geometry is the shipped one at four times
+    // the pixels, and the gradient the case is named for exists to be compared.
     let base = base_params();
     let params = SceneParams {
-        camera: horizon_camera(157.1),
+        camera: horizon_camera(157.3),
         sky_fov: SUN_CASE_SKY_FOV,
         atmo_enabled: false,
+        sun_size: 4.0,
         ..base
     };
-    check_golden("sun_rising_through_the_band", &params);
+    check_golden_in("sun_rising_through_the_band", &params, RISING_SUN_WINDOW);
 }
 
 /// The strip of frame the band runs down, with the limb in the middle of it.
@@ -865,6 +892,8 @@ fn every_golden_case_is_distinguishable() {
         "bright_star_halos",
         "sun_over_the_night_side",
         "sun_grazing_the_limb",
+        "sun_rising_through_the_band",
+        "sunrise_band",
         "moon_crescent",
         "panorama_behind_the_stars",
         "panorama_at_a_narrow_sky",
@@ -904,8 +933,9 @@ fn every_golden_case_is_distinguishable() {
     for (i, a) in images.iter().enumerate() {
         for (j, b) in images.iter().enumerate().skip(i + 1) {
             // Two references of different sizes are distinguishable by their
-            // sizes, and `compare` has no meaning across them. Only the Moon's
-            // window is a different size from the rest; see `Window`.
+            // sizes, and `compare` has no meaning across them. The three
+            // windowed cases are each a size of their own, so what this leaves
+            // them with is the presence check above; see `Window`.
             if a.dimensions() != b.dimensions() {
                 continue;
             }

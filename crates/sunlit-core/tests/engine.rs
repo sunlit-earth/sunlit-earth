@@ -323,8 +323,8 @@ fn sun_off_and_on_at(params: SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
 /// Refraction is what could have taken this case away, and does not.
 ///
 /// The lift is at most 0.46 of a horizon zone, which is 1.47 pixels here, and
-/// it is spent long before this framing: the lifted disk's centre sits 78.6
-/// pixels from the globe's own centre with a radius of 1.6 against a painted
+/// it is spent long before this framing: the lifted disk's center sits 78.6
+/// pixels from the globe's own center with a radius of 1.6 against a painted
 /// limb at 81.35, so its whole image is inside. What the squash then does runs
 /// the same way, since the flattened disk is compared against a limb moved out
 /// by the same factor, which at the saturated squash here is 98.7 pixels.

@@ -431,7 +431,11 @@ pub fn parse_packed(text: &str) -> Vec<cache::Kind> {
 /// A restore that fails clears what it was writing into and the build goes on
 /// cold, and a pack that fails costs the cache and not the build: by the time
 /// either happens the binary is either not built yet or already in the artifacts
-/// directory.
+/// directory. The drop is the one step of the three that may end the build,
+/// because it is the guarantee rather than the convenience, and a guarantee
+/// that quietly did not happen is the binary of another commit. `set -e` is
+/// what says so on Linux; the Windows job looks at the directories again,
+/// since its `rmdir` runs in a loop whose errorlevel is its last iteration's.
 ///
 /// Every cache step says what it cost, because the risk this cache was weighed
 /// against is that moving a gigabyte costs more than the compiling it saves and
@@ -613,11 +617,25 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                         r"%CARGO_TARGET_DIR%\release\.fingerprint\{WORKSPACE_FINGERPRINTS}"
                     );
                     let cached_exe = format!(r"%CARGO_TARGET_DIR%\release\{exe}");
+                    // The one clause in the cache region that may end the
+                    // build. Everything else here is a convenience, and a
+                    // convenience that failed costs a slower build; this drop
+                    // is a correctness guarantee, and one that quietly did not
+                    // happen is worse than a build that stopped. What it looks
+                    // at is the directories rather than an errorlevel, because
+                    // the loop's is its last iteration's: a handle held on the
+                    // first of two would be masked by the second deleting
+                    // cleanly.
                     let _ = write!(
                         script,
                         "echo cache: dropping this workspace out of the restored build directory\r\n\
                          for /d %%d in (\"{fingerprints}\") do rmdir /s /q \"%%d\"\r\n\
-                         if exist \"{cached_exe}\" del /f /q \"{cached_exe}\"\r\n"
+                         if exist \"{cached_exe}\" del /f /q \"{cached_exe}\"\r\n\
+                         set STALE=\r\n\
+                         for /d %%d in (\"{fingerprints}\") do set STALE=%%d\r\n\
+                         if exist \"{cached_exe}\" set STALE={cached_exe}\r\n\
+                         if defined STALE echo cache: the restored build directory would not \
+                         give up %STALE% & exit /b 1\r\n"
                     );
                 }
             }
@@ -2382,6 +2400,57 @@ mod tests {
                 "{target}: {registry_only}"
             );
         }
+    }
+
+    /// And the drop is loud on both targets, which is the difference between a
+    /// guarantee and a convenience: a fingerprint a handle was still held on is
+    /// a unit cargo may call fresh, and the whole of decision 23 rests on it
+    /// not being there. Linux gets that from `set -e`. The Windows job cannot,
+    /// because its `rmdir` runs in a loop whose errorlevel is its last
+    /// iteration's, so it looks at the directories again and refuses the build
+    /// while one of them is there.
+    #[test]
+    fn a_drop_that_did_not_happen_ends_the_build() {
+        let pinned = pin();
+        let warm = |target| {
+            build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: cache::Kind::ALL.to_vec(),
+                    save: Vec::new(),
+                },
+            )
+        };
+
+        let linux = warm(Target::Linux);
+        assert!(linux.contains("set -euo pipefail"), "{linux}");
+        let dropped = linux
+            .lines()
+            .find(|line| line.contains(WORKSPACE_FINGERPRINTS))
+            .expect("the fingerprints are dropped");
+        assert!(dropped.trim_start().starts_with("rm -rf"), "{dropped}");
+        assert!(!dropped.contains("||"), "{dropped}");
+
+        let windows = warm(Target::Windows);
+        let build = windows
+            .find("build --release")
+            .expect("the build is in the job");
+        let head = &windows[..build];
+        let drop_at = head
+            .find(r"do rmdir /s /q")
+            .expect("the fingerprints are dropped");
+        let looked_again = head[drop_at..]
+            .find(WORKSPACE_FINGERPRINTS)
+            .expect("nothing looks at the directories again");
+        let refused = head[drop_at..]
+            .find("exit /b 1")
+            .expect("a drop that did not happen goes unnoticed");
+        assert!(looked_again < refused, "{windows}");
+        assert!(
+            head[drop_at..][..refused].contains(exe_name(Target::Windows)),
+            "{windows}"
+        );
     }
 
     /// The job carries exactly the clauses this run needs, because the host

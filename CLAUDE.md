@@ -382,6 +382,49 @@ The layer's slot is the fourth file-backed one and the only texture whose source
 
 Two goldens pin it, `panorama_behind_the_stars` and `panorama_at_a_narrow_sky`, the same night-side camera at the two ends of the field-of-view slider, both with the banded fixture rather than the real asset. `base_params` switches the layer off for every other case: it covers the whole frame, so leaving it on would move all eleven other references and bury what each of them is for. What a fixture cannot show is the asset's own layout, and `the_real_panorama_has_the_galactic_plane_where_the_plane_is` in `tests/engine.rs` is where that lives, sampling the rendered sky at the galactic center, both galactic poles and two stretches of the plane and asserting the ordering a mirrored reading inverts. Its sibling `no_bright_star_is_baked_into_the_real_panorama` holds the other property of the file itself, that the layer excludes the bright stars the sprites draw: on the asset as it sits on disk, at the position of every catalog record inside magnitude 1.3, a 3x3 texel core against the 41x41 window around it reads 1.26 at worst against a bound of two, where a star baked into the layer would saturate its texels and read 2.3 to 5. Both skip with a printed reason without the Git LFS object.
 
+### Clouds on the night side
+
+`fs_cloud` shades the shell rather than the ground, and the difference is three things. Its
+ramp is centered on the shell's own tangent condition, `sqrt(1 - 1/r^2)`, which at
+`CLOUD_SPHERE_RADIUS` is 0.0547 and puts the cloud terminator 3.14 degrees nightward of the
+globe's, the 9.6 km of altitude being what keeps a cloud top in the direct beam that much
+longer; `fs_rayleigh` computes the same expression for its own limb as `earth_limb_ndotv`. Its
+width is `params::CLOUD_TERMINATOR_WIDTH`, a constant at 0.18 rather than a slider, wider than
+the globe's 0.1 because twilight goes on lighting a cloud top for several degrees after the
+beam has gone. That constant is also the sentinel fix: `write_uniforms` puts -1.0 in
+`terminator_width` outside blend mode, as the flag `fs_sphere` reads to ignore the sun, and
+`fs_cloud` used to read the same uniform, which reversed its `smoothstep` edges in the three
+single-texture modes.
+
+The night value is `cloud_night`, 0.25 by default, and it is an appearance parameter rather
+than an irradiance. The plan's own finding is why: the day side is about 18.6 stops brighter
+than the night side, by the sun-to-full-moon ratio and independently by the exposure settings
+of "Hello, World" against those of "The Blue Marble", which is more than any sensor or eye
+holds at once, so the frame is a tone map and the number is a decision about how much of that
+gap to compress. It is chosen against the texture it draws over: Black Marble's unlit land
+reads 0.137, its Antarctica and a typical city cluster 0.20, the Nile delta 0.36 and its cores
+1.0, so 0.25 puts a night cloud above every unlit surface and well below the lights.
+
+`cloud_city_gain`, 0.7 by default, is the light a city throws onto the cloud base over it. It
+is why the cloud bind group's binding 3 is the night map rather than the dummy, and the mip
+level it samples at is derived from the source's own width, `max(log2(width / 1024), 0)`, so
+the blur is a fixed angle instead of one that reaches three times as far at 8192 as at 2048.
+Zero gates the sample rather than scaling it, so a run at zero reaches the same pixels a build
+without the term does, and `city_light_at_zero_draws_the_frame_a_missing_night_map_draws`
+holds that byte for byte. The cost is that the group spans two slots with different lifetimes:
+`purge_file_backed_slots` destroys the night texture without touching the cloud slot, so both
+it and `process_decoded_textures` rebuild the group, and a miss is a validation error on the
+next draw rather than a wrong pixel. It is an extrapolation rather than a published technique,
+and it samples the whole night map rather than only its lights, so it lifts a night deck over
+unlit land too.
+
+Three references pin all of it, and not interchangeably: `clouds_across_the_terminator` holds
+the floor, `cloud_terminator_close_up` holds the shift and the width, and
+`clouds_lit_by_city_light` holds the coupling. They are the suite's first blend-mode goldens,
+which is why `check_golden_in` waits for `day_texture` and `night_texture`: nothing spawns
+those decodes until a case asks for the mode, and the first one to do so exported the frame
+the fallback draws.
+
 ### Quality tiers
 
 `QualityTier` (low, medium, high) is persisted in the config and overridable per run with `--quality` (the override is not written back). It has no widget in the settings window, which is why `read_config_from_window` is a read-modify-write against the stored config rather than a fresh `AppConfig::default()`: any persisted setting the UI does not manage has to survive a save untouched. It caps the MSAA sample count (1, 4, unlimited) and the preview width (1280, 1920, unlimited, aspect preserved). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile.
@@ -422,7 +465,7 @@ The rule is "the highest supported count at most the requested one, otherwise th
 `shaders/blend.wgsl` and `shaders/sphere.wgsl` are concatenated at load time by `renderer/gpu_setup.rs`.
 
 - `blend.wgsl`: `blend_fragment()` (day/night blending with diffuse shading and a per-channel `min(night, day)` clamp), plus `apply_gamma()` and `adjust_saturation()`.
-- `sphere.wgsl`: star sprite and sphere vertex transforms, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). The Sun is `vs_sun_disk`/`fs_sun_disk` for its body and `vs_sun_glare`/`fs_sun_glare` for the observer's glare, both quads generated from `vertex_index` alone. The Moon is `vs_moon`/`fs_moon`, the sphere mesh through one model matrix and then `sky_lens_project`, which is the sky lens's forward projection factored out of `vs_star` when the Moon became its second consumer. The Milky Way is `vs_milky_way`/`fs_milky_way`, a screen quad that is always the whole frame, sampling the panorama through `milky_way_direction`, the inverse of `sky_lens_project` after `view_from_eqj`. Draw order: Milky Way, Stars and Planets, Sun disk, Moon, Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green, Sun glare. The pass clears to (0.005, 0.005, 0.01), which is near black because there is a real sky on it now; three engine cases in `tests/engine.rs` hardcode the resulting pixel as `[1, 1, 3, 255]`.
+- `sphere.wgsl`: star sprite and sphere vertex transforms, texture sampling, uniforms. Single-texture mode uses `terminator_width < 0` as a sentinel, and in that mode the shader ignores the sun entirely. `schlick_fresnel()` drives both specular modulation and the diffuse color shift on ocean pixels. `fs_cloud` applies the cloud floor and gamma, and shades the shell against its own geometry; see Clouds on the night side. Three concentric atmosphere shells, each with its own vertex/fragment pair: `vs_rayleigh`/`fs_rayleigh` (radius ~1.015), `vs_nightglow_orange`/`fs_nightglow_orange` (~1.014), `vs_nightglow_green`/`fs_nightglow_green` (~1.015). The Sun is `vs_sun_disk`/`fs_sun_disk` for its body and `vs_sun_glare`/`fs_sun_glare` for the observer's glare, both quads generated from `vertex_index` alone. The Moon is `vs_moon`/`fs_moon`, the sphere mesh through one model matrix and then `sky_lens_project`, which is the sky lens's forward projection factored out of `vs_star` when the Moon became its second consumer. The Milky Way is `vs_milky_way`/`fs_milky_way`, a screen quad that is always the whole frame, sampling the panorama through `milky_way_direction`, the inverse of `sky_lens_project` after `view_from_eqj`. Draw order: Milky Way, Stars and Planets, Sun disk, Moon, Earth, Clouds, Rayleigh, Nightglow Orange, Nightglow Green, Sun glare. The pass clears to (0.005, 0.005, 0.01), which is near black because there is a real sky on it now; three engine cases in `tests/engine.rs` hardcode the resulting pixel as `[1, 1, 3, 255]`.
 
 ### Wallpaper export
 

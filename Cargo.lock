@@ -5684,6 +5684,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "embed-resource",
+ "glam",
  "i-slint-backend-testing",
  "image",
  "interprocess",

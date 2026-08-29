@@ -15,28 +15,53 @@ use sunlit_core::scene::camera::{CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
 use sunlit_core::scene::sun::DateTimeInput;
 
-/// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
-/// tilt drag, scroll zoom, and preset application.
-pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
-    // Left-drag callback: rotate the globe (tilt-corrected)
+/// Register the left-drag: rotate the globe, tilt-corrected, at a gain that
+/// follows the hand.
+///
+/// The estimator and the moment of the previous move are this callback's
+/// alone: no other drag reads the cursor's speed, and the interval between two
+/// moves is the only thing the toolkit does not hand over.
+fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
     let window_weak = window.as_weak();
     let engine = link.clone();
+    let speed = std::cell::Cell::new(mouse_math::DragSpeed::default());
+    let previous_move = std::cell::Cell::new(None::<std::time::Instant>);
     window.on_mouse_drag_globe(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let (lon, lat) = mouse_math::apply_globe_drag(
+        let now = std::time::Instant::now();
+        let seconds = previous_move
+            .replace(Some(now))
+            .map_or(mouse_math::DRAG_SPEED_MAX_INTERVAL, |previous| {
+                now.duration_since(previous).as_secs_f32()
+            });
+        let mut estimator = speed.get();
+        let cursor_speed = estimator.observe(dx.hypot(dy), seconds);
+        speed.set(estimator);
+        let gain = mouse_math::drag_gain(
+            cursor_speed,
+            mouse_math::coarse_drag_gain(win.get_camera_zoom()),
+            mouse_math::fine_drag_gain(win.get_sky_fov(), win.get_viewport_width()),
+        );
+        let (lon, lat) = mouse_math::apply_globe_drag_at(
             win.get_camera_longitude(),
             win.get_camera_latitude(),
             win.get_camera_tilt(),
-            win.get_camera_zoom(),
             dx,
             dy,
+            gain,
         );
         win.set_camera_longitude(lon);
         win.set_camera_latitude(lat);
         engine.push_params(&win);
     });
+}
+
+/// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
+/// tilt drag, scroll zoom, and preset application.
+pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
+    register_globe_drag(window, link);
 
     // Right-drag callback: adjust framing (offset X/Y)
     let window_weak = window.as_weak();

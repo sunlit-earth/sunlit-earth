@@ -136,7 +136,7 @@ Two more things either way:
 ## Release builds
 
 ```
-cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-expired-image] [--allow-dirty]
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cache] [--allow-expired-image] [--allow-dirty]
 cargo xtask dist --target linux            # one target
 cargo xtask dist                           # both, in sequence
 cargo xtask dist --target windows --no-verify --keep
@@ -221,11 +221,12 @@ cargo xtask vm purge <image|all>             # that, the image, and the media
 cargo xtask vm purge windows --iso           # only the 6.6 GB download
 cargo xtask vm purge linux --image           # only the image and its leftovers
 cargo xtask vm purge windows-builder --image # only the layer, leaving its parent
+cargo xtask vm purge linux-builder --cache   # only the build cache dist left
 ```
 
 `vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image.
 
-`vm purge` deletes what took time to get: the golden image, its manifest, the build directory's leftovers, and the cached installation media, which for Windows is the download, the prompt-free copy made from it, and the small record saying which download that copy came from. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The three flags are additive, and none of them means all of it.
+`vm purge` deletes what took time to get: the golden image, its manifest, the build directory's leftovers, and the cached installation media, which for Windows is the download, the prompt-free copy made from it, and the small record saying which download that copy came from. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The four flags are additive, and none of them means all of it.
 
 A purge that has to stop a guest says what stopping it costs, on the line that says it is being stopped and in the question, and `-f` skips the question rather than the warning. That matters for one guest only: an image build. A purge that ends a build stops there and does not also clear the build's record and the disk its install had written, since those are run state and no flag asked for them; it names both and points at `vm down <target>`, which is what a `vm status` full of a build that is not running is telling you afterwards.
 

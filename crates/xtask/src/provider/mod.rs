@@ -124,6 +124,32 @@ pub trait Provider {
         }
     }
 
+    /// Pull one file back out, leaving whatever is beside it alone.
+    ///
+    /// `collect_results` clears its destination first, because a results
+    /// directory belongs whole to one job. A cache archive lands in a directory
+    /// that holds the other half of the cache and its sidecars, so this one
+    /// makes the parent and writes into it.
+    fn copy_out(&self, state: &RunState, remote: &str, local: &Path) -> Result<(), String> {
+        if let Some(parent) = local.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        let cmd = ssh::scp_from_command(&self.ssh_target(state), remote, local);
+        let out = self
+            .runner()
+            .capture(&cmd)
+            .map_err(|e| format!("cannot run scp: {e}"))?;
+        if out.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "copying {remote} out failed: {}",
+                out.stderr.trim()
+            ))
+        }
+    }
+
     /// Pull the results directory back out.
     fn collect_results(&self, state: &RunState, remote: &str, local: &Path) -> Result<(), String> {
         if let Some(parent) = local.parent() {

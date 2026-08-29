@@ -77,6 +77,10 @@ pub struct ImageInventory {
     pub build_files: Vec<FileInfo>,
     /// Overlays, state files, and logs from runs.
     pub run_files: Vec<FileInfo>,
+    /// The build cache an earlier `dist` in this image left on the host. Not
+    /// run state: `vm down` leaves it alone and only a purge that reaches it
+    /// takes it, so it is counted apart from the rest (decision 28).
+    pub cache_files: Vec<FileInfo>,
     pub state: Option<RunState>,
     pub state_error: Option<String>,
     /// Filled in by the provider layer: whether the recorded VM is alive.
@@ -107,8 +111,13 @@ impl ImageInventory {
         self.run_files.iter().map(|f| f.bytes).sum()
     }
 
+    /// Bytes only `vm purge <image> --cache` reclaims.
+    pub fn cache_bytes(&self) -> u64 {
+        self.cache_files.iter().map(|f| f.bytes).sum()
+    }
+
     pub fn total_bytes(&self) -> u64 {
-        self.image_bytes() + self.build_bytes() + self.run_bytes()
+        self.image_bytes() + self.build_bytes() + self.run_bytes() + self.cache_bytes()
     }
 
     /// The single most important thing to say about this target's image.
@@ -393,6 +402,7 @@ pub fn scan(store: &Store) -> Inventory {
                 .collect(),
             run_files: list_tree(&store.run_dir(image)),
             build_files: list_tree(&store.build_dir(image)),
+            cache_files: list_files(&store.cache_dir(image)),
             manifest_bytes: file_info(&store.manifest(image)).map(|f| f.bytes),
             ..ImageInventory::default()
         };

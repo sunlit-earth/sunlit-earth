@@ -10,6 +10,7 @@
 //! and there are two disks per operating system now. The two desktop images
 //! keep their slugs, so every path they had is the path they have.
 
+pub mod cache;
 pub mod hash;
 pub mod inventory;
 pub mod manifest;
@@ -146,6 +147,27 @@ impl Store {
 
     pub fn vm_log(&self, image: Image) -> PathBuf {
         self.run_dir(image).join("vm.log")
+    }
+
+    /// Where a builder image's build cache lives: one archive and one sidecar
+    /// per half, for the halves in `cache::Kind`.
+    ///
+    /// Outside `run/` deliberately (decision 28). Run state is what the next
+    /// boot recreates and what `vm down` removes, and a cache is the opposite of
+    /// both: it is the output of an earlier build that the guest which produced
+    /// it could not keep. So no teardown touches it unless a purge names it, and
+    /// `vm status` counts it separately from run state because the command that
+    /// reclaims it is a different one.
+    pub fn cache_dir(&self, image: Image) -> PathBuf {
+        self.root.join("cache").join(image.slug())
+    }
+
+    pub fn cache_archive(&self, image: Image, kind: cache::Kind) -> PathBuf {
+        self.cache_dir(image).join(kind.archive())
+    }
+
+    pub fn cache_sidecar(&self, image: Image, kind: cache::Kind) -> PathBuf {
+        self.cache_dir(image).join(kind.sidecar())
     }
 
     /// Downloaded installation media, cached so a rebuild does not re-download.
@@ -326,7 +348,12 @@ mod tests {
                 store.build_dir(image),
                 store.results_dir(image),
                 store.vm_log(image),
+                store.cache_dir(image),
             ]);
+            for kind in cache::Kind::ALL {
+                paths.push(store.cache_archive(image, kind));
+                paths.push(store.cache_sidecar(image, kind));
+            }
         }
         for path in paths {
             assert!(
@@ -347,6 +374,7 @@ mod tests {
                 assert_ne!(store.run_dir(image), store.run_dir(*other));
                 assert_ne!(store.overlay(image), store.overlay(*other));
                 assert_ne!(store.manifest(image), store.manifest(*other));
+                assert_ne!(store.cache_dir(image), store.cache_dir(*other));
                 assert_ne!(template_dir(image), template_dir(*other));
             }
         }

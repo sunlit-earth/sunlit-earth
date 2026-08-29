@@ -63,16 +63,29 @@ pub fn render(inventory: &Inventory, now_unix: u64) -> String {
         .map(|t| t.image_bytes() + t.build_bytes())
         .sum();
     let runs: u64 = inventory.images.iter().map(ImageInventory::run_bytes).sum();
+    let caches: u64 = inventory
+        .images
+        .iter()
+        .map(ImageInventory::cache_bytes)
+        .sum();
     let _ = writeln!(
         out,
-        "  {} in golden images and media, {} in run state",
+        "  {} in golden images and media, {} in run state, {} in build caches",
         format_bytes(images + inventory.iso_bytes()),
-        format_bytes(runs)
+        format_bytes(runs),
+        format_bytes(caches)
     );
     if runs > 0 {
         let _ = writeln!(
             out,
             "  `cargo xtask vm down all` frees the run state and leaves the images alone"
+        );
+    }
+    if caches > 0 {
+        let _ = writeln!(
+            out,
+            "  `cargo xtask vm purge all --cache` frees the build caches; the next \
+             release build is then a cold one"
         );
     }
     if images + inventory.iso_bytes() > 0 {
@@ -148,12 +161,16 @@ fn image_section(
 
     let _ = write!(out, "{}", run_state_section(image, entry, root));
 
-    let _ = writeln!(
+    let _ = write!(
         out,
         "  footprint: {} image, {} run state",
         format_bytes(entry.image_bytes()),
         format_bytes(entry.run_bytes())
     );
+    if entry.cache_bytes() > 0 {
+        let _ = write!(out, ", {} build cache", format_bytes(entry.cache_bytes()));
+    }
+    let _ = writeln!(out);
     out
 }
 
@@ -188,6 +205,25 @@ fn run_state_section(image: Image, entry: &ImageInventory, root: &std::path::Pat
                 .strip_prefix(&run_dir)
                 .map_or_else(|_| file.name(), |rest| rest.display().to_string());
             let _ = writeln!(out, "    {name}  {}", format_bytes(file.bytes));
+        }
+    }
+
+    // The cache is not run state, so it is listed apart from it and with the
+    // one command that reclaims it: `vm down` leaves it where it is on purpose,
+    // and a reader looking at gigabytes wants to know which command that is.
+    if entry.cache_files.is_empty() {
+        if image.is_builder() {
+            let _ = writeln!(out, "  no build cache");
+        }
+    } else {
+        let _ = writeln!(
+            out,
+            "  build cache: {} ({}); `cargo xtask vm purge {image} --cache` frees it",
+            crate::util::count(entry.cache_files.len(), "file"),
+            format_bytes(entry.cache_bytes())
+        );
+        for file in &entry.cache_files {
+            let _ = writeln!(out, "    {}  {}", file.name(), format_bytes(file.bytes));
         }
     }
 

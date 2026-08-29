@@ -74,6 +74,10 @@ enum Command {
         /// Skip the boot that runs the binary in the desktop image.
         #[arg(long)]
         no_verify: bool,
+        /// Download and compile everything, restoring nothing from an earlier
+        /// build in this image and saving nothing for the next one.
+        #[arg(long)]
+        no_cache: bool,
         /// Build even though an image's evaluation licence has expired.
         #[arg(long)]
         allow_expired_image: bool,
@@ -167,6 +171,9 @@ enum VmCommand {
         /// Only the cached installation media.
         #[arg(long)]
         iso: bool,
+        /// Only the build cache an earlier `dist` left on this host.
+        #[arg(long)]
+        cache: bool,
         /// Do not ask.
         #[arg(short, long)]
         force: bool,
@@ -213,6 +220,7 @@ fn main() -> ExitCode {
             target,
             keep,
             no_verify,
+            no_cache,
             allow_expired_image,
             allow_dirty,
         } => dist::run(
@@ -221,6 +229,7 @@ fn main() -> ExitCode {
                 which: target,
                 keep,
                 verify: !no_verify,
+                cache: !no_cache,
                 allow_expired: allow_expired_image,
                 allow_dirty,
             },
@@ -250,11 +259,12 @@ fn main() -> ExitCode {
                 vm,
                 image_only,
                 iso,
+                cache,
                 force,
             } => vm::purge(
                 &runner,
                 image.into(),
-                teardown::Scope::from_flags(vm, image_only, iso),
+                teardown::Scope::from_flags(vm, image_only, iso, cache),
                 force,
             ),
         },

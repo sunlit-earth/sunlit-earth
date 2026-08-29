@@ -1541,6 +1541,7 @@ mod tests {
                 },
                 keep: true,
                 verify: !text.contains("--no-verify"),
+                cache: true,
                 allow_expired: false,
                 allow_dirty: false,
             };

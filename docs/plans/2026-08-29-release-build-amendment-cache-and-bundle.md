@@ -136,3 +136,24 @@ Recorded in this document the way the plan records its own, appended as the work
 2. **The record goes into the bundle after the verification boot rather than before it.** The command's own description assembles the bundle directory and writes the archive, and only then boots the desktop image. Done that way, the `build-info.json` inside the bundle stops short of `verified_in` and of what the two renders measured, while the copy beside it in the dist directory carries both: two files of the same name with different contents, and the one a user actually receives is the poorer of the two. So the directory is assembled with the record as it stands, staged and verified, and then that one file is rewritten in place before the archive is written. The archive is therefore made after the verification rather than before it, which also means a bundle that failed its own texture-lookup check is never written at all. What it cannot carry either way is the archive's own size, since that is a number the archive would have to contain about itself; the bundle's section of the record names what the bundle is instead.
 
 3. **The bundle is assembled in the run directory of the guest it is staged into, and `dist` removes it when a target is done.** The plan says the bundle is built as a directory first and does not say where. It is run state by every test the store already applies: it is made per run out of what that run produced, it is copied into a guest that is about to be destroyed, and it is worth nothing afterwards. So `Store::bundle_scratch` sits beside `job_scratch` and `handover_scratch`, `vm::run_state_paths` takes it with the rest, and `dist` deletes it at the end of each target whichever way the target went. That is the opposite of the cache, which decision 28 keeps outside `run_state_paths` for exactly the same reason read the other way round: a teardown must never take it.
+
+## Validation record
+
+### The zstd probe in the Windows builder, 2026-08-29
+
+Decision 22's one open measurement, and the risk it carried, asked with `vm smoke
+windows-builder --keep` and three `vm ssh` lines rather than a `vm up`, which would have
+cost a host build of the e2e suite for nothing.
+
+| | |
+|---|---|
+| the guest's `tar.exe` | **bsdtar 3.8.1, libarchive 3.8.1, `libzstd/1.5.5`** linked in |
+| a standalone `zstd.exe` | absent, and not needed |
+| `tar --zstd -cf` | packs; `tar -xf` unpacks it again and `tar -tvf` lists it |
+| `tar -xmf` | stamped the extraction at 2026-08-29, where the same archive without `-m` restored the archived 2001-01-01 |
+
+So the Windows layer needs no zstd of its own, `toolchain.ps1` is untouched, and there is
+no layer rebuild. The host's own `tar.exe` is bsdtar 3.8.4 and the guest's is 3.8.1, which
+is the same libarchive line with the same zstd support; decision 23's mechanism was
+measured on both rather than assumed to carry from one to the other. The guest was torn
+down afterwards and the store went back to 64.9 GiB.

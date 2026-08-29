@@ -215,8 +215,23 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
         .expect("a fixture pin parses");
     vec![
         (
-            "dist: build".to_owned(),
-            crate::commands::dist::build_job(crate::provider::target::Target::Linux, &pinned),
+            "dist: build, warm".to_owned(),
+            crate::commands::dist::build_job(
+                crate::provider::target::Target::Linux,
+                &pinned,
+                &crate::commands::dist::CacheJob {
+                    restore: crate::store::cache::Kind::ALL.to_vec(),
+                    save: crate::store::cache::Kind::ALL.to_vec(),
+                },
+            ),
+        ),
+        (
+            "dist: build, cold".to_owned(),
+            crate::commands::dist::build_job(
+                crate::provider::target::Target::Linux,
+                &pinned,
+                &crate::commands::dist::CacheJob::default(),
+            ),
         ),
         (
             "dist: verify the bundle".to_owned(),

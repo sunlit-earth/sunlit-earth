@@ -35,6 +35,7 @@ use crate::guest::toolchain::Toolchain;
 use crate::provider;
 use crate::provider::target::{Image, Target};
 use crate::runner::{Cmd, Runner};
+use crate::store::cache;
 use crate::store::state::StartReason;
 use crate::store::{self, Store};
 use crate::util;
@@ -73,6 +74,9 @@ pub struct Options {
     pub keep: bool,
     /// Whether to run the binary in the desktop image afterwards.
     pub verify: bool,
+    /// Whether an earlier build in this image may hand anything to this one.
+    /// `false` is goal 4 in its original form, on demand.
+    pub cache: bool,
     pub allow_expired: bool,
     pub allow_dirty: bool,
 }
@@ -329,6 +333,67 @@ pub fn missing_toolchain(image: Image) -> String {
     )
 }
 
+/// Where the guest keeps the build directory.
+///
+/// Decision 25: out of the source tree, so the `rm -rf src` and the fresh
+/// extraction at the top of every job cannot touch it, the archive has one fixed
+/// path on both operating systems, and the executable is copied from a path that
+/// does not move with the source layout.
+pub const GUEST_TARGET_DIR: &str = "cargo-target";
+
+/// Where the job writes the archives the host pulls back out.
+///
+/// A directory of its own, so what the job packed can never be mistaken for
+/// what the host copied in: an archive to restore sits at the guest root beside
+/// the source archive, and one to save is written in here.
+pub const GUEST_CACHE_OUT: &str = "cache";
+
+/// Where the host copies a cache archive to, for the job to unpack.
+pub fn guest_cache_in(target: Target, kind: cache::Kind) -> String {
+    guest_join(target, provider::guest_root(target), &kind.archive())
+}
+
+/// Where the job writes one for the host to pull.
+pub fn guest_cache_out(target: Target, kind: cache::Kind) -> String {
+    let dir = guest_join(target, provider::guest_root(target), GUEST_CACHE_OUT);
+    guest_join(target, &dir, &kind.archive())
+}
+
+/// What the build job does about the cache.
+///
+/// Decided on the host before the guest boots, so the script carries exactly the
+/// clauses this run needs rather than a set of conditionals over files that may
+/// or may not be there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheJob {
+    /// The archives the host copied in, to unpack before the build.
+    pub restore: Vec<cache::Kind>,
+    /// The archives to pack afterwards, for the host to pull.
+    pub save: Vec<cache::Kind>,
+}
+
+/// The file the job writes to say what it actually packed.
+pub const CACHE_REPORT: &str = "cache.txt";
+
+/// What a `cache.txt` line says was packed.
+const PACKED: &str = "packed ";
+
+/// Which archives the guest says it wrote.
+///
+/// The guest's own statement rather than the host's intention: a pack can fail
+/// on disk space after a build has already succeeded, and that must cost the
+/// cache rather than the build.
+pub fn parse_packed(text: &str) -> Vec<cache::Kind> {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix(PACKED))
+        .filter_map(|slug| {
+            cache::Kind::ALL
+                .into_iter()
+                .find(|kind| kind.slug() == slug.trim())
+        })
+        .collect()
+}
+
 /// The build job.
 ///
 /// Every path is absolute and nothing depends on `PATH`, which is the rule the
@@ -339,74 +404,217 @@ pub fn missing_toolchain(image: Image) -> String {
 /// 1.28.1 restored behind a variable; it is a no-op when the image already
 /// carries the channel.
 ///
+/// The source is extracted with `-m` and the cached trees deliberately without
+/// it (decision 23). `git archive` stamps its entries with the commit's own
+/// time, so rebuilding an older commit over a newer cache would otherwise
+/// present cargo with sources older than the artifacts and produce a binary of
+/// the previous commit under this commit's record. The cached trees keep the
+/// times they were archived with, because their whole value is that nothing in
+/// them looks newer than what was built from it.
+///
+/// A restore that fails clears what it was writing into and the build goes on
+/// cold, and a pack that fails costs the cache and not the build: by the time
+/// either happens the binary is either not built yet or already in the artifacts
+/// directory.
+///
 /// The last two steps are what make the release claims checkable on the host:
 /// the toolchain that built it, and the binary's own imports as the builder's
 /// tools report them.
-pub fn build_job(target: Target, pinned: &Toolchain) -> String {
+#[allow(clippy::too_many_lines)]
+pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> String {
     let channel = &pinned.channel;
     match target {
-        Target::Linux => format!(
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
-             root={root}\n\
-             export CARGO_NET_RETRY=5\n\
-             export CARGO_TERM_COLOR=never\n\
-             cargo=\"$HOME/.cargo/bin/cargo\"\n\
-             rustc=\"$HOME/.cargo/bin/rustc\"\n\
-             rustup=\"$HOME/.cargo/bin/rustup\"\n\
-             \"$rustup\" toolchain install {channel} --profile minimal\n\
-             rm -rf \"$root/src\"\n\
-             tar -xf \"$root/src.tar\" -C \"$root\"\n\
-             cd \"$root/src\"\n\
-             \"$cargo\" \"+{channel}\" build --release --locked -p sunlit-earth\n\
-             exe=\"$root/src/target/release/{exe}\"\n\
-             cp \"$exe\" \"$SUNLIT_E2E_ARTIFACTS/{exe}\"\n\
-             {{\n  \
-               \"$rustc\" \"+{channel}\" -vV\n  \
-               \"$cargo\" \"+{channel}\" -V\n\
-             }} > \"$SUNLIT_E2E_ARTIFACTS/toolchain.txt\"\n\
-             {{\n  \
-               echo '== readelf -d'\n  \
-               readelf -d \"$exe\"\n  \
-               echo '== objdump -T'\n  \
-               objdump -T \"$exe\"\n\
-             }} > \"$SUNLIT_E2E_ARTIFACTS/deps.txt\"\n\
-             ls -l \"$SUNLIT_E2E_ARTIFACTS\"\n",
-            root = crate::provider::GUEST_ROOT_LINUX,
-            exe = exe_name(target),
-        ),
-        Target::Windows => format!(
-            "@echo off\r\n\
-             set ROOT={root}\r\n\
-             set CARGO_NET_RETRY=5\r\n\
-             set CARGO_TERM_COLOR=never\r\n\
-             set LIBCLANG_PATH={libclang}\r\n\
-             set CARGO=%USERPROFILE%\\.cargo\\bin\\cargo.exe\r\n\
-             set RUSTC=%USERPROFILE%\\.cargo\\bin\\rustc.exe\r\n\
-             set RUSTUP=%USERPROFILE%\\.cargo\\bin\\rustup.exe\r\n\
-             \"%RUSTUP%\" toolchain install {channel} --profile minimal || exit /b 1\r\n\
-             if exist \"%ROOT%\\src\" rmdir /s /q \"%ROOT%\\src\"\r\n\
-             tar.exe -xf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
-             cd /d \"%ROOT%\\src\" || exit /b 1\r\n\
-             \"%CARGO%\" +{channel} build --release --locked -p sunlit-earth || exit /b 1\r\n\
-             set EXE=%ROOT%\\src\\target\\release\\{exe}\r\n\
-             copy /y \"%EXE%\" \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" || exit /b 1\r\n\
-             \"%RUSTC%\" +{channel} -vV > \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
-             \"%CARGO%\" +{channel} -V >> \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
-             set VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\r\n\
-             set DUMPBIN=\r\n\
-             for /f \"usebackq delims=\" %%i in (`\"%VSWHERE%\" -latest -products * \
-             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
-             -find **\\Hostx64\\x64\\dumpbin.exe`) do set DUMPBIN=%%i\r\n\
-             if not defined DUMPBIN echo no dumpbin found & exit /b 1\r\n\
-             \"%DUMPBIN%\" /dependents \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" \
-             > \"%SUNLIT_E2E_ARTIFACTS%\\deps.txt\" || exit /b 1\r\n\
-             dir \"%SUNLIT_E2E_ARTIFACTS%\"\r\n\
-             exit /b 0\r\n",
-            root = crate::provider::GUEST_ROOT_WINDOWS,
-            libclang = crate::commands::build_layer::LIBCLANG_DIR,
-            exe = exe_name(target),
-        ),
+        Target::Linux => {
+            let root = crate::provider::GUEST_ROOT_LINUX;
+            let exe = exe_name(target);
+            let mut script = format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 root={root}\n\
+                 export CARGO_NET_RETRY=5\n\
+                 export CARGO_TERM_COLOR=never\n\
+                 export CARGO_TARGET_DIR=\"$root/{GUEST_TARGET_DIR}\"\n\
+                 cargo=\"$HOME/.cargo/bin/cargo\"\n\
+                 rustc=\"$HOME/.cargo/bin/rustc\"\n\
+                 rustup=\"$HOME/.cargo/bin/rustup\"\n\
+                 \"$rustup\" toolchain install {channel} --profile minimal\n"
+            );
+            for kind in &cache_job.restore {
+                let (into, clear) = match kind {
+                    cache::Kind::Registry => (
+                        "\"$HOME\"",
+                        "\"$HOME/.cargo/registry\" \"$HOME/.cargo/git\"",
+                    ),
+                    cache::Kind::Target => ("\"$root\"", "\"$CARGO_TARGET_DIR\""),
+                };
+                let _ = write!(
+                    script,
+                    "echo 'cache: unpacking {label}'\n\
+                     if ! tar -xf \"$root/{archive}\" -C {into}; then\n  \
+                       echo 'cache: {label} did not unpack; building cold'\n  \
+                       rm -rf {clear}\n\
+                     fi\n",
+                    label = kind.label(),
+                    archive = kind.archive(),
+                );
+            }
+            let _ = write!(
+                script,
+                "rm -rf \"$root/src\"\n\
+                 tar -xmf \"$root/src.tar\" -C \"$root\"\n\
+                 cd \"$root/src\"\n\
+                 \"$cargo\" \"+{channel}\" build --release --locked -p sunlit-earth\n\
+                 exe=\"$CARGO_TARGET_DIR/release/{exe}\"\n\
+                 cp \"$exe\" \"$SUNLIT_E2E_ARTIFACTS/{exe}\"\n\
+                 {{\n  \
+                   \"$rustc\" \"+{channel}\" -vV\n  \
+                   \"$cargo\" \"+{channel}\" -V\n\
+                 }} > \"$SUNLIT_E2E_ARTIFACTS/toolchain.txt\"\n\
+                 {{\n  \
+                   echo '== readelf -d'\n  \
+                   readelf -d \"$exe\"\n  \
+                   echo '== objdump -T'\n  \
+                   objdump -T \"$exe\"\n\
+                 }} > \"$SUNLIT_E2E_ARTIFACTS/deps.txt\"\n"
+            );
+            if !cache_job.save.is_empty() {
+                let _ = writeln!(script, "mkdir -p \"$root/{GUEST_CACHE_OUT}\"");
+            }
+            for kind in &cache_job.save {
+                let out = format!("$root/{GUEST_CACHE_OUT}/{}", kind.archive());
+                match kind {
+                    cache::Kind::Registry => {
+                        let _ = write!(
+                            script,
+                            "members=\"\"\n\
+                             if [ -d \"$HOME/.cargo/registry\" ]; then members=\"$members .cargo/registry\"; fi\n\
+                             if [ -d \"$HOME/.cargo/git\" ]; then members=\"$members .cargo/git\"; fi\n\
+                             if [ -n \"$members\" ] && tar --zstd -cf \"{out}\" -C \"$HOME\" $members; then\n  \
+                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n\
+                             else\n  \
+                               echo 'cache: could not pack {label}'\n\
+                             fi\n",
+                            slug = kind.slug(),
+                            label = kind.label(),
+                        );
+                    }
+                    cache::Kind::Target => {
+                        let _ = write!(
+                            script,
+                            "if tar --zstd -cf \"{out}\" -C \"$root\" {GUEST_TARGET_DIR}; then\n  \
+                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n\
+                             else\n  \
+                               echo 'cache: could not pack {label}'\n\
+                             fi\n",
+                            slug = kind.slug(),
+                            label = kind.label(),
+                        );
+                    }
+                }
+            }
+            let _ = writeln!(script, "ls -l \"$SUNLIT_E2E_ARTIFACTS\"");
+            script
+        }
+        Target::Windows => {
+            let root = crate::provider::GUEST_ROOT_WINDOWS;
+            let exe = exe_name(target);
+            let libclang = crate::commands::build_layer::LIBCLANG_DIR;
+            let mut script = format!(
+                "@echo off\r\n\
+                 set ROOT={root}\r\n\
+                 set CARGO_NET_RETRY=5\r\n\
+                 set CARGO_TERM_COLOR=never\r\n\
+                 set LIBCLANG_PATH={libclang}\r\n\
+                 set CARGO_TARGET_DIR=%ROOT%\\{GUEST_TARGET_DIR}\r\n\
+                 set CARGO=%USERPROFILE%\\.cargo\\bin\\cargo.exe\r\n\
+                 set RUSTC=%USERPROFILE%\\.cargo\\bin\\rustc.exe\r\n\
+                 set RUSTUP=%USERPROFILE%\\.cargo\\bin\\rustup.exe\r\n\
+                 \"%RUSTUP%\" toolchain install {channel} --profile minimal || exit /b 1\r\n"
+            );
+            for kind in &cache_job.restore {
+                // No parenthesized block: `cmd.exe` mishandles those, and a
+                // label costs one line and is unambiguous.
+                let into = match kind {
+                    cache::Kind::Registry => "%USERPROFILE%",
+                    cache::Kind::Target => "%ROOT%",
+                };
+                let _ = write!(
+                    script,
+                    "echo cache: unpacking {label}\r\n\
+                     tar.exe -xf \"%ROOT%\\{archive}\" -C \"{into}\"\r\n\
+                     if not errorlevel 1 goto cache_in_{slug}\r\n\
+                     echo cache: {label} did not unpack; building cold\r\n",
+                    label = kind.label(),
+                    archive = kind.archive(),
+                    slug = kind.slug(),
+                );
+                for path in match kind {
+                    cache::Kind::Registry => {
+                        vec![
+                            r"%USERPROFILE%\.cargo\registry",
+                            r"%USERPROFILE%\.cargo\git",
+                        ]
+                    }
+                    cache::Kind::Target => vec!["%CARGO_TARGET_DIR%"],
+                } {
+                    let _ = write!(script, "rmdir /s /q \"{path}\"\r\n");
+                }
+                let _ = write!(script, ":cache_in_{}\r\n", kind.slug());
+            }
+            let _ = write!(
+                script,
+                "if exist \"%ROOT%\\src\" rmdir /s /q \"%ROOT%\\src\"\r\n\
+                 tar.exe -xmf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
+                 cd /d \"%ROOT%\\src\" || exit /b 1\r\n\
+                 \"%CARGO%\" +{channel} build --release --locked -p sunlit-earth || exit /b 1\r\n\
+                 set EXE=%CARGO_TARGET_DIR%\\release\\{exe}\r\n\
+                 copy /y \"%EXE%\" \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" || exit /b 1\r\n\
+                 \"%RUSTC%\" +{channel} -vV > \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
+                 \"%CARGO%\" +{channel} -V >> \"%SUNLIT_E2E_ARTIFACTS%\\toolchain.txt\"\r\n\
+                 set VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe\r\n\
+                 set DUMPBIN=\r\n\
+                 for /f \"usebackq delims=\" %%i in (`\"%VSWHERE%\" -latest -products * \
+                 -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+                 -find **\\Hostx64\\x64\\dumpbin.exe`) do set DUMPBIN=%%i\r\n\
+                 if not defined DUMPBIN echo no dumpbin found & exit /b 1\r\n\
+                 \"%DUMPBIN%\" /dependents \"%SUNLIT_E2E_ARTIFACTS%\\{exe}\" \
+                 > \"%SUNLIT_E2E_ARTIFACTS%\\deps.txt\" || exit /b 1\r\n"
+            );
+            if !cache_job.save.is_empty() {
+                let _ = write!(
+                    script,
+                    "if not exist \"%ROOT%\\{GUEST_CACHE_OUT}\" mkdir \"%ROOT%\\{GUEST_CACHE_OUT}\"\r\n"
+                );
+            }
+            for kind in &cache_job.save {
+                let out = format!("%ROOT%\\{GUEST_CACHE_OUT}\\{}", kind.archive());
+                // `&&` rather than a block, for the same reason as the label
+                // above: a pack that failed costs the cache and not the build,
+                // so nothing here may `exit /b`.
+                match kind {
+                    cache::Kind::Registry => {
+                        let _ = write!(
+                            script,
+                            "set MEMBERS=.cargo/registry\r\n\
+                             if exist \"%USERPROFILE%\\.cargo\\git\" set MEMBERS=%MEMBERS% .cargo/git\r\n\
+                             tar.exe --zstd -cf \"{out}\" -C \"%USERPROFILE%\" %MEMBERS% \
+                             && echo {PACKED}{slug}>> \"%SUNLIT_E2E_ARTIFACTS%\\{CACHE_REPORT}\"\r\n",
+                            slug = kind.slug(),
+                        );
+                    }
+                    cache::Kind::Target => {
+                        let _ = write!(
+                            script,
+                            "tar.exe --zstd -cf \"{out}\" -C \"%ROOT%\" {GUEST_TARGET_DIR} \
+                             && echo {PACKED}{slug}>> \"%SUNLIT_E2E_ARTIFACTS%\\{CACHE_REPORT}\"\r\n",
+                            slug = kind.slug(),
+                        );
+                    }
+                }
+            }
+            let _ = write!(script, "dir \"%SUNLIT_E2E_ARTIFACTS%\"\r\nexit /b 0\r\n");
+            script
+        }
     }
 }
 
@@ -741,6 +949,12 @@ pub struct BuildInfo {
     /// The builder image and what its manifest says about itself.
     pub builder: BuilderInfo,
     pub linkage: Linkage,
+    /// What each half of the build cache did: restored and from when, or the
+    /// one-line reason it was not, and whether this run wrote a fresh one back.
+    /// Decision 27, which is what keeps decision 19's argument checkable after
+    /// the fact rather than a claim in a document.
+    #[serde(default)]
+    pub cache: Vec<cache::Report>,
     /// The release bundle written beside the loose binary, when the host held
     /// the texture assets rather than Git LFS pointers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -895,7 +1109,19 @@ fn one_target(
     );
     println!("  builder: {builder}, built {}", builder_info.built_utc);
 
-    let results = build_in_builder(runner, store, builder, pinned, &archive, options, kept)?;
+    let facts = cache_facts(pinned, builder, &builder_info, repo)?;
+    let product = build_in_builder(
+        runner,
+        store,
+        builder,
+        pinned,
+        &archive,
+        options,
+        kept,
+        &facts,
+        &git.commit,
+    )?;
+    let results = product.results;
 
     let exe = results.join("artifacts").join(exe_name(target));
     if !exe.is_file() {
@@ -925,6 +1151,7 @@ fn one_target(
         toolchain,
         builder: builder_info,
         linkage,
+        cache: product.cache,
         bundle: None,
         verified_in: None,
         xtask_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -1104,8 +1331,158 @@ fn builder_info(store: &Store, builder: Image) -> Result<BuilderInfo, String> {
     })
 }
 
+/// What this build is, for a cache sidecar to be compared against.
+fn cache_facts(
+    pinned: &Toolchain,
+    builder: Image,
+    info: &BuilderInfo,
+    repo: &Path,
+) -> Result<cache::Facts, String> {
+    let lockfile = repo.join("Cargo.lock");
+    let lockfile_hash = crate::store::hash::checksum_file(&lockfile)
+        .map_err(|e| format!("cannot read {}: {e}", lockfile.display()))?;
+    Ok(cache::Facts {
+        channel: pinned.channel.clone(),
+        image: builder.slug().to_owned(),
+        template_hash: info.template_hash.clone(),
+        image_built_utc: info.built_utc.clone(),
+        lockfile_hash,
+    })
+}
+
+/// Which halves of the cache this run may restore, and which it should save.
+///
+/// Decided before the guest boots, so the job script carries exactly the clauses
+/// this run needs. A refusal names the field that moved rather than saying
+/// nothing, because a cache that was silently not used and one that is not being
+/// written at all read the same from here.
+fn plan_cache(
+    store: &Store,
+    builder: Image,
+    facts: &cache::Facts,
+    enabled: bool,
+) -> (CacheJob, Vec<cache::Report>) {
+    let mut job = CacheJob::default();
+    let mut reports = Vec::new();
+    for kind in cache::Kind::ALL {
+        let mut report = cache::Report {
+            archive: kind.slug().to_owned(),
+            restored: false,
+            bytes: None,
+            written_utc: None,
+            reason: None,
+            saved: false,
+        };
+        if !enabled {
+            report.reason = Some("--no-cache was given".to_owned());
+            reports.push(report);
+            continue;
+        }
+        let sidecar = match cache::read_sidecar(&store.cache_sidecar(builder, kind)) {
+            Ok(sidecar) => sidecar,
+            Err(e) => {
+                report.reason = Some(e);
+                reports.push(report);
+                continue;
+            }
+        };
+        match &sidecar {
+            None => report.reason = Some("there is none for this image yet".to_owned()),
+            Some(sidecar) => {
+                if let Err(why) = cache::restorable(sidecar, facts) {
+                    report.reason = Some(why);
+                } else {
+                    let archive = store.cache_archive(builder, kind);
+                    match std::fs::metadata(&archive) {
+                        Ok(meta) if meta.is_file() => {
+                            job.restore.push(kind);
+                            report.restored = true;
+                            report.bytes = Some(meta.len());
+                            report.written_utc = Some(sidecar.written_utc.clone());
+                        }
+                        _ => {
+                            report.reason = Some(format!(
+                                "its sidecar is here and {} is not",
+                                archive.display()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // Decision 26: `--locked` means an unchanged lockfile is an unchanged
+        // registry, so an ordinary build has nothing new to send back for it.
+        let worth = match kind {
+            cache::Kind::Registry => {
+                cache::registry_worth_saving(sidecar.as_ref(), &facts.lockfile_hash)
+            }
+            cache::Kind::Target => true,
+        };
+        if worth {
+            job.save.push(kind);
+        }
+        reports.push(report);
+    }
+    (job, reports)
+}
+
+/// Pull one archive the guest packed, and write the sidecar that says what it
+/// was made from.
+///
+/// Temp-then-rename under a name carrying the process id, the discipline
+/// `assets::texture_cache` already uses, so an interrupted pull cannot leave a
+/// truncated archive for the next build to read. The sidecar goes last and its
+/// old copy goes first, so an interruption anywhere leaves an archive with no
+/// sidecar, which the next run reads as no cache at all.
+fn pull_cache(
+    session: &vm::Session,
+    store: &Store,
+    builder: Image,
+    kind: cache::Kind,
+    facts: &cache::Facts,
+    commit: &str,
+) -> Result<u64, String> {
+    let final_path = store.cache_archive(builder, kind);
+    let temp = cache::temp_path(&final_path);
+    session.provider.copy_out(
+        &session.state,
+        &guest_cache_out(builder.target(), kind),
+        &temp,
+    )?;
+    let bytes = std::fs::metadata(&temp)
+        .map(|meta| meta.len())
+        .map_err(|e| format!("the guest packed {kind} and nothing came back: {e}"))?;
+    let sidecar_path = store.cache_sidecar(builder, kind);
+    let _ = std::fs::remove_file(&sidecar_path);
+    cache::commit(&temp, &final_path)?;
+    let now = util::now_unix();
+    cache::write_sidecar(
+        &sidecar_path,
+        &cache::Sidecar {
+            format_version: cache::FORMAT_VERSION,
+            archive: kind.archive(),
+            bytes,
+            channel: facts.channel.clone(),
+            image: facts.image.clone(),
+            template_hash: facts.template_hash.clone(),
+            image_built_utc: facts.image_built_utc.clone(),
+            lockfile_hash: facts.lockfile_hash.clone(),
+            commit: commit.to_owned(),
+            written_utc: util::format_unix_utc(now),
+            written_unix: now,
+        },
+    )?;
+    Ok(bytes)
+}
+
+/// What the builder guest produced.
+struct BuildProduct {
+    results: PathBuf,
+    cache: Vec<cache::Report>,
+}
+
 /// Boot the builder, run the build, bring the results back, and take it down.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_in_builder(
     runner: &dyn Runner,
     store: &Store,
@@ -1114,8 +1491,11 @@ fn build_in_builder(
     archive: &Path,
     options: Options,
     kept: &mut Option<Image>,
-) -> Result<PathBuf, String> {
+    facts: &cache::Facts,
+    commit: &str,
+) -> Result<BuildProduct, String> {
     let target = builder.target();
+    let (mut plan, mut reports) = plan_cache(store, builder, facts, options.cache);
     let mut session = vm::boot(
         runner,
         store,
@@ -1127,7 +1507,7 @@ fn build_in_builder(
 
     // From here the guest exists, so nothing may return without saying what
     // happened to it.
-    let outcome = (|| -> Result<PathBuf, String> {
+    let outcome = (|| -> Result<BuildProduct, String> {
         let probe = session
             .provider
             .exec(&session.state, &toolchain_probe(target))?;
@@ -1143,6 +1523,31 @@ fn build_in_builder(
         // leaves it where `vm status` counts it and `vm down` removes it.
         let _ = std::fs::remove_file(archive);
 
+        // A copy that failed is a cold build rather than a failed one, so the
+        // job is generated from what actually reached the guest.
+        plan.restore.retain(|kind| {
+            let from = store.cache_archive(builder, *kind);
+            match session
+                .provider
+                .copy_in(&session.state, &from, &guest_cache_in(target, *kind))
+            {
+                Ok(()) => true,
+                Err(e) => {
+                    println!("warning: {e}");
+                    if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
+                        report.restored = false;
+                        report.bytes = None;
+                        report.written_utc = None;
+                        report.reason = Some("it could not be copied into the guest".to_owned());
+                    }
+                    false
+                }
+            }
+        });
+        for report in &reports {
+            println!("{}", report.line());
+        }
+
         println!("  building; cargo's own output follows");
         let scratch = store.job_scratch(builder);
         let mut tail = OutputTail::new();
@@ -1150,7 +1555,7 @@ fn build_in_builder(
             session.provider.as_ref(),
             &session.state,
             target,
-            &build_job(target, pinned),
+            &build_job(target, pinned, &plan),
             &scratch,
             BUILD_TIMEOUT,
             Some(&mut tail),
@@ -1162,13 +1567,38 @@ fn build_in_builder(
             &results,
         )?;
         if code != 0 {
+            // Decision 26: a failed build's tree is not saved, because a build
+            // that failed because of what was in its cache would otherwise make
+            // that failure stick.
             return Err(format!(
                 "the build exited {code} inside the guest; its output is above and \
                  {} has what it wrote",
                 results.display()
             ));
         }
-        Ok(results)
+
+        let packed = parse_packed(
+            &std::fs::read_to_string(results.join("artifacts").join(CACHE_REPORT))
+                .unwrap_or_default(),
+        );
+        for kind in packed {
+            match pull_cache(&session, store, builder, kind, facts, commit) {
+                Ok(bytes) => {
+                    println!("  cache:   {kind}: saved {}", util::format_bytes(bytes));
+                    if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
+                        report.saved = true;
+                    }
+                }
+                // The build is done and its binary is in the results: a cache
+                // that could not be brought back costs the next build's warmth
+                // and nothing else.
+                Err(e) => println!("warning: the {kind} cache was not saved: {e}"),
+            }
+        }
+        Ok(BuildProduct {
+            results,
+            cache: std::mem::take(&mut reports),
+        })
     })();
 
     // The builder is torn down whichever way it went, unless this is the last
@@ -1216,9 +1646,10 @@ fn build_in_builder(
 /// What is in a builder that was kept.
 pub fn kept_builder_note(builder: Image) -> String {
     format!(
-        "The source tree it built is in the guest's own root, with its \
-         `target/release` beside it, so a build can be repeated in there by hand. \
-         `cargo xtask vm down {builder}` ends it and takes the overlay with it."
+        "The source tree it built is in the guest's own root, with \
+         `{GUEST_TARGET_DIR}/release` beside it rather than inside it, so a build \
+         can be repeated in there by hand. `cargo xtask vm down {builder}` ends it \
+         and takes the overlay with it."
     )
 }
 
@@ -1526,6 +1957,7 @@ mod tests {
             which,
             keep,
             verify,
+            cache: true,
             allow_expired: false,
             allow_dirty: false,
         }
@@ -1665,7 +2097,7 @@ mod tests {
         let pinned =
             crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses");
 
-        let linux = build_job(Target::Linux, &pinned);
+        let linux = build_job(Target::Linux, &pinned, &CacheJob::default());
         assert!(linux.contains("$HOME/.cargo/bin/cargo"), "{linux}");
         assert!(linux.contains("toolchain install 1.94.0"), "{linux}");
         assert!(
@@ -1678,7 +2110,7 @@ mod tests {
         assert!(linux.contains("$SUNLIT_E2E_ARTIFACTS/deps.txt"), "{linux}");
         assert!(!linux.contains("\r\n"), "a shell script with CRLF in it");
 
-        let windows = build_job(Target::Windows, &pinned);
+        let windows = build_job(Target::Windows, &pinned, &CacheJob::default());
         assert!(
             windows.contains(r"%USERPROFILE%\.cargo\bin\cargo.exe"),
             "{windows}"
@@ -1702,6 +2134,261 @@ mod tests {
         // alone cannot tell the three apart.
         assert!(windows.contains("%%i"), "{windows}");
         assert!(!windows.contains("%%%"), "{windows}");
+    }
+
+    /// Decision 23, which is the cache's whole correctness argument. `git
+    /// archive` stamps its entries with the commit's own time, so a source tree
+    /// extracted over a newer cache without `-m` would present cargo with
+    /// sources older than the artifacts and produce a binary of the previous
+    /// commit under this commit's record. The cached trees keep the times they
+    /// were archived with, because their value is that nothing in them looks
+    /// newer than what was built from it.
+    #[test]
+    fn the_source_is_stamped_at_extraction_and_the_cache_is_not() {
+        let pinned = pin();
+        let warm = CacheJob {
+            restore: cache::Kind::ALL.to_vec(),
+            save: Vec::new(),
+        };
+        for target in Target::ALL {
+            let job = build_job(target, &pinned, &warm);
+            assert!(job.contains("-xmf"), "{target}: {job}");
+            assert_eq!(job.matches("-xmf").count(), 1, "{target}: {job}");
+            assert!(job.contains("src.tar"), "{target}: {job}");
+            // Both cache archives are extracted, and neither with -m.
+            for kind in cache::Kind::ALL {
+                let line = job
+                    .lines()
+                    .find(|line| line.contains(&kind.archive()) && line.contains("-xf"))
+                    .unwrap_or_else(|| panic!("{target}: no restore of {kind} in {job}"));
+                assert!(!line.contains("-xmf"), "{target}: {line}");
+            }
+        }
+    }
+
+    fn pin() -> Toolchain {
+        crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses")
+    }
+
+    /// The job carries exactly the clauses this run needs, because the host
+    /// decides before the guest boots. A cold build's script mentions the cache
+    /// nowhere at all, which is what makes `--no-cache` the original goal 4
+    /// rather than a flag that skips a step.
+    #[test]
+    fn the_build_job_carries_only_the_cache_clauses_this_run_needs() {
+        let pinned = pin();
+        for target in Target::ALL {
+            let cold = build_job(target, &pinned, &CacheJob::default());
+            assert!(!cold.contains(".tar.zst"), "{target}: {cold}");
+            assert!(!cold.contains(GUEST_CACHE_OUT), "{target}: {cold}");
+            assert!(!cold.contains(CACHE_REPORT), "{target}: {cold}");
+            // The build directory moves out of the source tree whether or not
+            // there is a cache: decision 25 is about where the archive's one
+            // fixed path is, not about whether one is being made.
+            assert!(cold.contains(GUEST_TARGET_DIR), "{target}: {cold}");
+            assert!(!cold.contains("src/target/release"), "{target}: {cold}");
+            assert!(!cold.contains(r"src\target\release"), "{target}: {cold}");
+
+            let restore_only = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: vec![cache::Kind::Target],
+                    save: Vec::new(),
+                },
+            );
+            assert!(
+                restore_only.contains(&cache::Kind::Target.archive()),
+                "{target}: {restore_only}"
+            );
+            assert!(
+                !restore_only.contains(&cache::Kind::Registry.archive()),
+                "{target}: {restore_only}"
+            );
+            assert!(
+                !restore_only.contains(CACHE_REPORT),
+                "{target}: {restore_only}"
+            );
+
+            let save_only = build_job(
+                target,
+                &pinned,
+                &CacheJob {
+                    restore: Vec::new(),
+                    save: vec![cache::Kind::Registry],
+                },
+            );
+            assert!(save_only.contains(CACHE_REPORT), "{target}: {save_only}");
+            assert!(save_only.contains("--zstd -cf"), "{target}: {save_only}");
+            // A pack that failed costs the cache and not the build, so no line
+            // that packs may end the job.
+            let packing: Vec<&str> = save_only
+                .lines()
+                .filter(|line| line.contains("--zstd -cf"))
+                .collect();
+            assert_eq!(packing.len(), 1, "{target}: {save_only}");
+            assert!(!packing[0].contains("exit"), "{target}: {}", packing[0]);
+        }
+
+        // A batch file doubles its loop variable, and doubles it exactly.
+        let windows = build_job(
+            Target::Windows,
+            &pinned,
+            &CacheJob {
+                restore: cache::Kind::ALL.to_vec(),
+                save: cache::Kind::ALL.to_vec(),
+            },
+        );
+        assert!(windows.contains("%%i"), "{windows}");
+        assert!(!windows.contains("%%%"), "{windows}");
+        // And `cmd.exe` mishandles parenthesized blocks with the wrong line
+        // endings, so the restore clauses use labels instead of blocks.
+        assert!(!windows.contains(") else ("), "{windows}");
+        for kind in cache::Kind::ALL {
+            assert!(
+                windows.contains(&format!(":cache_in_{}", kind.slug())),
+                "{windows}"
+            );
+        }
+    }
+
+    /// What the host pulls is what the guest says it packed, not what the host
+    /// asked for: a pack can fail on disk space after the build has already
+    /// succeeded, and that must cost the cache rather than the build.
+    #[test]
+    fn the_host_pulls_what_the_guest_says_it_packed() {
+        assert_eq!(parse_packed(""), Vec::new());
+        assert_eq!(parse_packed("packed target\n"), vec![cache::Kind::Target]);
+        assert_eq!(
+            parse_packed("packed registry\npacked target\n"),
+            vec![cache::Kind::Registry, cache::Kind::Target]
+        );
+        // The job's own chatter is not a claim that anything was packed.
+        assert_eq!(
+            parse_packed("cache: could not pack the build directory\npacked registry\n"),
+            vec![cache::Kind::Registry]
+        );
+        assert_eq!(parse_packed("packed everything\n"), Vec::new());
+    }
+
+    /// An archive on its way in and one on its way out cannot be confused for
+    /// each other, because the guest reads one and writes the other.
+    #[test]
+    fn a_restored_archive_and_a_packed_one_sit_in_different_places() {
+        for target in Target::ALL {
+            for kind in cache::Kind::ALL {
+                let inbound = guest_cache_in(target, kind);
+                let outbound = guest_cache_out(target, kind);
+                assert_ne!(inbound, outbound, "{target} {kind}");
+                assert!(outbound.contains(GUEST_CACHE_OUT), "{outbound}");
+                assert!(!inbound.contains(GUEST_CACHE_OUT), "{inbound}");
+                assert!(inbound.ends_with(&kind.archive()), "{inbound}");
+                assert!(outbound.ends_with(&kind.archive()), "{outbound}");
+            }
+        }
+    }
+
+    /// Decisions 24 and 26 as the run applies them, over a store on disk: what
+    /// is restored, what is refused and why, and what is worth sending back.
+    #[test]
+    fn the_plan_restores_what_matches_and_names_what_moved() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_dist_plan_cache");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::new(&dir);
+        let builder = Image::LinuxBuilder;
+        let facts = cache::Facts {
+            channel: "1.94.0".to_owned(),
+            image: builder.slug().to_owned(),
+            template_hash: "crc32:1a2b3c4d".to_owned(),
+            image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
+            lockfile_hash: "crc32:deadbeef".to_owned(),
+        };
+
+        // Nothing on disk: both halves cold, both worth saving, and the reason
+        // says so rather than saying nothing.
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert!(job.restore.is_empty(), "{job:?}");
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+        for report in &reports {
+            assert!(!report.restored);
+            assert!(report.reason.as_ref().is_some_and(|r| r.contains("none")));
+        }
+
+        // Both halves present and matching: both restored, and the registry is
+        // not repacked because the lockfile did not move.
+        for kind in cache::Kind::ALL {
+            std::fs::create_dir_all(store.cache_dir(builder)).expect("mkdir");
+            std::fs::write(store.cache_archive(builder, kind), b"archive").expect("write");
+            cache::write_sidecar(
+                &store.cache_sidecar(builder, kind),
+                &cache::Sidecar {
+                    format_version: cache::FORMAT_VERSION,
+                    archive: kind.archive(),
+                    bytes: 7,
+                    channel: facts.channel.clone(),
+                    image: facts.image.clone(),
+                    template_hash: facts.template_hash.clone(),
+                    image_built_utc: facts.image_built_utc.clone(),
+                    lockfile_hash: facts.lockfile_hash.clone(),
+                    commit: "abc".to_owned(),
+                    written_utc: "2026-08-29T09:00:00Z".to_owned(),
+                    written_unix: 1,
+                },
+            )
+            .expect("sidecar");
+        }
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert_eq!(job.restore, cache::Kind::ALL.to_vec());
+        assert_eq!(job.save, vec![cache::Kind::Target]);
+        assert!(reports.iter().all(|r| r.restored), "{reports:?}");
+        assert!(
+            reports
+                .iter()
+                .all(|r| r.written_utc.as_deref() == Some("2026-08-29T09:00:00Z")),
+            "{reports:?}"
+        );
+
+        // A lockfile that moved is not a refusal, it is a reason to repack.
+        let mut moved_lock = facts.clone();
+        moved_lock.lockfile_hash = "crc32:00000000".to_owned();
+        let (job, _) = plan_cache(&store, builder, &moved_lock, true);
+        assert_eq!(job.restore, cache::Kind::ALL.to_vec());
+        assert_eq!(job.save, cache::Kind::ALL.to_vec());
+
+        // A channel that moved is, and the line names it.
+        let mut moved_channel = facts.clone();
+        moved_channel.channel = "1.95.0".to_owned();
+        let (job, reports) = plan_cache(&store, builder, &moved_channel, true);
+        assert!(job.restore.is_empty(), "{job:?}");
+        for report in &reports {
+            assert!(
+                report.reason.as_ref().is_some_and(|r| r.contains("1.95.0")),
+                "{report:?}"
+            );
+        }
+
+        // A sidecar with no archive beside it is a cache that is not there.
+        std::fs::remove_file(store.cache_archive(builder, cache::Kind::Target)).expect("rm");
+        let (job, reports) = plan_cache(&store, builder, &facts, true);
+        assert_eq!(job.restore, vec![cache::Kind::Registry]);
+        let target = reports
+            .iter()
+            .find(|r| r.archive == cache::Kind::Target.slug())
+            .expect("a target report");
+        assert!(
+            target.reason.as_ref().is_some_and(|r| r.contains("is not")),
+            "{target:?}"
+        );
+
+        // `--no-cache` restores nothing and saves nothing, and the record says
+        // which of the two reasons it was.
+        let (job, reports) = plan_cache(&store, builder, &facts, false);
+        assert_eq!(job, CacheJob::default());
+        for report in &reports {
+            assert_eq!(report.reason.as_deref(), Some("--no-cache was given"));
+            assert!(!report.restored && !report.saved);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Decision 32. A render that never found the textures still produces a
@@ -1940,6 +2627,14 @@ mod tests {
             duration_secs: 1_234,
             channel: "1.94.0".to_owned(),
             toolchain: "rustc 1.94.0".to_owned(),
+            cache: vec![cache::Report {
+                archive: cache::Kind::Target.slug().to_owned(),
+                restored: true,
+                bytes: Some(512_000_000),
+                written_utc: Some("2026-08-29T09:30:00Z".to_owned()),
+                reason: None,
+                saved: true,
+            }],
             builder: BuilderInfo {
                 image: Image::LinuxBuilder.slug().to_owned(),
                 template_hash: "crc32:deadbeef".to_owned(),

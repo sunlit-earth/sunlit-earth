@@ -48,9 +48,9 @@ cargo xtask vm view <image>        # Its desktop (vmconnect for Hyper-V, VNC for
 cargo xtask vm smoke <image>       # Boot, run a trivial job through the guest contract, take it down
 cargo xtask vm status              # Images, media, overlays, running VMs, disk footprint
 cargo xtask vm down <image|all>    # End the guest, keep the image
-cargo xtask vm purge <image|all> [--vm] [--image] [--iso] [-f]
+cargo xtask vm purge <image|all> [--vm] [--image] [--iso] [--cache] [-f]
 cargo xtask e2e --target <host|windows|linux> [--keep] [--allow-expired-image] [--desktop <d>]
-cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--allow-expired-image] [--allow-dirty]
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cache] [--allow-expired-image] [--allow-dirty]
 ```
 
 An `<image>` is one of four slugs: `windows` and `linux` are the desktop guests the e2e

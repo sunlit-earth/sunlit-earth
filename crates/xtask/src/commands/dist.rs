@@ -433,6 +433,17 @@ pub fn parse_packed(text: &str) -> Vec<cache::Kind> {
 /// either happens the binary is either not built yet or already in the artifacts
 /// directory.
 ///
+/// Every cache step says what it cost, because the risk this cache was weighed
+/// against is that moving a gigabyte costs more than the compiling it saves and
+/// a whole-build total cannot be taken apart afterwards. The two jobs say it
+/// differently. bash has `SECONDS`, a counter that costs nothing to read, so
+/// the Linux job prints a duration. `cmd.exe` has no arithmetic on its own clock
+/// that is not either a process spawn per reading or a bet on the locale's time
+/// format, so the Windows job prints `%TIME%` on either side of each step and
+/// leaves the subtraction to whoever reads the log: two readings that cannot be
+/// wrong beat one number that can. The host times its own two copies itself and
+/// puts them in the record.
+///
 /// The last two steps are what make the release claims checkable on the host:
 /// the toolchain that built it, and the binary's own imports as the builder's
 /// tools report them.
@@ -466,7 +477,10 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                 let _ = write!(
                     script,
                     "echo 'cache: unpacking {label}'\n\
-                     if ! tar -xf \"$root/{archive}\" -C {into}; then\n  \
+                     unpack_started=$SECONDS\n\
+                     if tar -xf \"$root/{archive}\" -C {into}; then\n  \
+                       echo \"cache: unpacked {label} in $((SECONDS - unpack_started))s\"\n\
+                     else\n  \
                        echo 'cache: {label} did not unpack; building cold'\n  \
                        rm -rf {clear}\n\
                      fi\n",
@@ -513,8 +527,10 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                             "members=\"\"\n\
                              if [ -d \"$HOME/.cargo/registry\" ]; then members=\"$members .cargo/registry\"; fi\n\
                              if [ -d \"$HOME/.cargo/git\" ]; then members=\"$members .cargo/git\"; fi\n\
+                             pack_started=$SECONDS\n\
                              if [ -n \"$members\" ] && tar --zstd -cf \"{out}\" -C \"$HOME\" $members; then\n  \
-                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n\
+                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n  \
+                               echo \"cache: packed {label} in $((SECONDS - pack_started))s\"\n\
                              else\n  \
                                echo 'cache: could not pack {label}'\n\
                              fi\n",
@@ -525,8 +541,10 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                     cache::Kind::Target => {
                         let _ = write!(
                             script,
-                            "if tar --zstd -cf \"{out}\" -C \"$root\" {GUEST_TARGET_DIR}; then\n  \
-                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n\
+                            "pack_started=$SECONDS\n\
+                             if tar --zstd -cf \"{out}\" -C \"$root\" {GUEST_TARGET_DIR}; then\n  \
+                               echo '{PACKED}{slug}' >> \"$SUNLIT_E2E_ARTIFACTS/{CACHE_REPORT}\"\n  \
+                               echo \"cache: packed {label} in $((SECONDS - pack_started))s\"\n\
                              else\n  \
                                echo 'cache: could not pack {label}'\n\
                              fi\n",
@@ -564,7 +582,7 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                 };
                 let _ = write!(
                     script,
-                    "echo cache: unpacking {label}\r\n\
+                    "echo cache: unpacking {label} at %TIME%\r\n\
                      tar.exe -xf \"%ROOT%\\{archive}\" -C \"{into}\"\r\n\
                      if not errorlevel 1 goto cache_in_{slug}\r\n\
                      echo cache: {label} did not unpack; building cold\r\n",
@@ -583,7 +601,13 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                 } {
                     let _ = write!(script, "rmdir /s /q \"{path}\"\r\n");
                 }
-                let _ = write!(script, ":cache_in_{}\r\n", kind.slug());
+                let _ = write!(
+                    script,
+                    ":cache_in_{slug}\r\n\
+                     echo cache: unpacking {label} ended at %TIME%\r\n",
+                    slug = kind.slug(),
+                    label = kind.label(),
+                );
                 if *kind == cache::Kind::Target {
                     let fingerprints = format!(
                         r"%CARGO_TARGET_DIR%\release\.fingerprint\{WORKSPACE_FINGERPRINTS}"
@@ -624,6 +648,11 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
             }
             for kind in &cache_job.save {
                 let out = format!("%ROOT%\\{GUEST_CACHE_OUT}\\{}", kind.archive());
+                let _ = write!(
+                    script,
+                    "echo cache: packing {label} at %TIME%\r\n",
+                    label = kind.label(),
+                );
                 // `&&` rather than a block, for the same reason as the label
                 // above: a pack that failed costs the cache and not the build,
                 // so nothing here may `exit /b`.
@@ -647,6 +676,11 @@ pub fn build_job(target: Target, pinned: &Toolchain, cache_job: &CacheJob) -> St
                         );
                     }
                 }
+                let _ = write!(
+                    script,
+                    "echo cache: packing {label} ended at %TIME%\r\n",
+                    label = kind.label(),
+                );
             }
             let _ = write!(script, "dir \"%SUNLIT_E2E_ARTIFACTS%\"\r\nexit /b 0\r\n");
             script
@@ -1420,6 +1454,8 @@ fn plan_cache(
             written_utc: None,
             reason: None,
             saved: false,
+            copied_in_secs: None,
+            copied_out_secs: None,
         };
         if !enabled {
             report.reason = Some("--no-cache was given".to_owned());
@@ -1498,14 +1534,16 @@ fn pull_cache(
     kind: cache::Kind,
     facts: &cache::Facts,
     commit: &str,
-) -> Result<u64, String> {
+) -> Result<Pulled, String> {
     let final_path = store.cache_archive(builder, kind);
     let temp = cache::temp_path(&final_path);
+    let started = Instant::now();
     session.provider.copy_out(
         &session.state,
         &guest_cache_out(builder.target(), kind),
         &temp,
     )?;
+    let copied_out_secs = started.elapsed().as_secs();
     let bytes = std::fs::metadata(&temp)
         .map(|meta| meta.len())
         .map_err(|e| format!("the guest packed {kind} and nothing came back: {e}"))?;
@@ -1529,7 +1567,17 @@ fn pull_cache(
             written_unix: now,
         },
     )?;
-    Ok(bytes)
+    Ok(Pulled {
+        bytes,
+        copied_out_secs,
+    })
+}
+
+/// What one archive cost to bring back: its size, and how long it took to
+/// cross.
+struct Pulled {
+    bytes: u64,
+    copied_out_secs: u64,
 }
 
 /// What the builder guest produced.
@@ -1584,11 +1632,17 @@ fn build_in_builder(
         // job is generated from what actually reached the guest.
         plan.restore.retain(|kind| {
             let from = store.cache_archive(builder, *kind);
+            let started = Instant::now();
             match session
                 .provider
                 .copy_in(&session.state, &from, &guest_cache_in(target, *kind))
             {
-                Ok(()) => true,
+                Ok(()) => {
+                    if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
+                        report.copied_in_secs = Some(started.elapsed().as_secs());
+                    }
+                    true
+                }
                 Err(e) => {
                     println!("warning: {e}");
                     if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
@@ -1640,10 +1694,15 @@ fn build_in_builder(
         );
         for kind in packed {
             match pull_cache(&session, store, builder, kind, facts, commit) {
-                Ok(bytes) => {
-                    println!("  cache:   {kind}: saved {}", util::format_bytes(bytes));
+                Ok(pulled) => {
+                    println!(
+                        "  cache:   {kind}: saved {}, {} to come back",
+                        util::format_bytes(pulled.bytes),
+                        util::format_duration(Duration::from_secs(pulled.copied_out_secs))
+                    );
                     if let Some(report) = reports.iter_mut().find(|r| r.archive == kind.slug()) {
                         report.saved = true;
+                        report.copied_out_secs = Some(pulled.copied_out_secs);
                     }
                 }
                 // The build is done and its binary is in the results: a cache
@@ -2227,6 +2286,48 @@ mod tests {
         crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses")
     }
 
+    /// Step 5 asked for the pack and unpack times, and the risk they settle is
+    /// that moving a gigabyte costs more than the compiling it saves. A
+    /// whole-build total cannot be taken apart afterwards, so each step says
+    /// what it cost as it happens: a duration on Linux, where bash has a free
+    /// counter, and a reading of the clock on either side of the step on
+    /// Windows, where computing the difference would cost a process spawn or a
+    /// bet on the locale's time format.
+    #[test]
+    fn every_cache_step_says_what_it_cost() {
+        let pinned = pin();
+        let both = CacheJob {
+            restore: cache::Kind::ALL.to_vec(),
+            save: cache::Kind::ALL.to_vec(),
+        };
+
+        let linux = build_job(Target::Linux, &pinned, &both);
+        assert_eq!(
+            linux.matches("$((SECONDS - unpack_started))s").count(),
+            cache::Kind::ALL.len(),
+            "{linux}"
+        );
+        assert_eq!(
+            linux.matches("$((SECONDS - pack_started))s").count(),
+            cache::Kind::ALL.len(),
+            "{linux}"
+        );
+
+        // Two readings per step, one on either side of it.
+        let windows = build_job(Target::Windows, &pinned, &both);
+        assert_eq!(
+            windows.matches("%TIME%").count(),
+            cache::Kind::ALL.len() * 4,
+            "{windows}"
+        );
+
+        for target in Target::ALL {
+            let cold = build_job(target, &pinned, &CacheJob::default());
+            assert!(!cold.contains("SECONDS"), "{target}: {cold}");
+            assert!(!cold.contains("%TIME%"), "{target}: {cold}");
+        }
+    }
+
     /// The second line of defence under decision 23, which is the one thing
     /// this design must never get wrong: a binary of the previous commit under
     /// this commit's record. `-m` makes the extracted source newer than the
@@ -2793,6 +2894,8 @@ mod tests {
                 written_utc: Some("2026-08-29T09:30:00Z".to_owned()),
                 reason: None,
                 saved: true,
+                copied_in_secs: Some(41),
+                copied_out_secs: Some(40),
             }],
             builder: BuilderInfo {
                 image: Image::LinuxBuilder.slug().to_owned(),

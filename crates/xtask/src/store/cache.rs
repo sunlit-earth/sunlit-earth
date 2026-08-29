@@ -207,6 +207,18 @@ pub struct Report {
     pub reason: Option<String>,
     /// Whether this run wrote a fresh one back.
     pub saved: bool,
+    /// How long the archive took to reach the guest, and how long the fresh one
+    /// took to come back.
+    ///
+    /// The two halves of the risk this whole design was written against: an
+    /// archive is up to a gigabyte and it crosses an SSH boundary twice, so the
+    /// question is whether that costs more than the compiling it saves. The
+    /// answer is only readable if somebody wrote it down, and a build that is
+    /// over is the only thing that knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copied_in_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copied_out_secs: Option<u64>,
 }
 
 impl Report {
@@ -217,6 +229,13 @@ impl Report {
             text.push_str("restored");
             if let Some(bytes) = self.bytes {
                 let _ = write!(text, " from {}", crate::util::format_bytes(bytes));
+            }
+            if let Some(secs) = self.copied_in_secs {
+                let _ = write!(
+                    text,
+                    ", {} to reach the guest",
+                    crate::util::format_duration(std::time::Duration::from_secs(secs))
+                );
             }
             if let Some(written) = &self.written_utc {
                 let _ = write!(text, ", written {written}");
@@ -449,11 +468,16 @@ mod tests {
             written_utc: Some("2026-08-29T10:00:00Z".to_owned()),
             reason: None,
             saved: true,
+            copied_in_secs: Some(41),
+            copied_out_secs: Some(40),
         };
         let line = warm.line();
         assert!(line.contains("restored"), "{line}");
         assert!(line.contains("2026-08-29T10:00:00Z"), "{line}");
         assert!(line.contains("saved"), "{line}");
+        // The transfer is the cost this whole design was weighed against, so a
+        // warm line says what it was rather than leaving it to the totals.
+        assert!(line.contains("41s"), "{line}");
 
         let cold = Report {
             archive: Kind::Registry.slug().to_owned(),
@@ -462,6 +486,8 @@ mod tests {
             written_utc: None,
             reason: Some("the pinned toolchain channel was 1.93.0 and is 1.94.0 now".to_owned()),
             saved: true,
+            copied_in_secs: None,
+            copied_out_secs: None,
         };
         let line = cold.line();
         assert!(line.contains("cold"), "{line}");

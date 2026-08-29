@@ -2,6 +2,8 @@
 
 Written 2026-08-28, revised the same day after review. Follows the phase 3 VM orchestration plan (`2026-08-19-phase3-vm-orchestration-plan.md`), its Hyper-V amendment (`2026-08-20-phase3-amendment-hyperv-windows-build.md`) and the phase 5 Linux guest plan (`2026-08-21-phase5-linux-vm-and-parity-plan.md`). Intended for its own branch, `feat/vm-release-build`.
 
+Amended 2026-08-29 by [2026-08-29-release-build-amendment-cache-and-bundle.md](2026-08-29-release-build-amendment-cache-and-bundle.md), which adds a build cache held on the host between runs and a release bundle carrying the textures with the binary. That amendment narrows the "Publishing" non-goal, answers open question 1, and restates goal 4; read it beside this document rather than after it.
+
 ## Context
 
 There are two ways to get a release binary today, and neither is a clean one. `release.yml` builds Windows only, on a hosted runner that is billed and dispatched by hand. A local `cargo build --release` builds whatever this host's environment makes of the tree: the toolchain `rustup` happens to default to, the LLVM on `PATH`, the Visual Studio that is installed, `RUSTFLAGS` if any are set, and a `target/` directory that has seen every branch this checkout was ever on. Nothing records which of those a given binary came from.

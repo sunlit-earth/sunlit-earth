@@ -62,6 +62,9 @@ pub struct SceneParams {
     /// day side and this frame has one exposure for both, so the value is a
     /// choice about how much of that gap to compress into 8 bits.
     pub cloud_night: f32,
+    /// How much of the light a city throws upward the cloud base over it picks
+    /// up. Zero is the switch: the shader samples nothing at all there.
+    pub cloud_city_gain: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -139,6 +142,7 @@ impl SceneParams {
             cloud_floor: config.cloud_floor,
             cloud_gamma: config.cloud_gamma,
             cloud_night: config.cloud_night,
+            cloud_city_gain: config.cloud_city_gain,
             atmo_enabled: config.atmo_enabled,
             rayleigh_intensity: config.rayleigh_intensity,
             rayleigh_sharpness: config.rayleigh_sharpness,
@@ -201,6 +205,7 @@ impl SceneParams {
         config.cloud_floor = self.cloud_floor;
         config.cloud_gamma = self.cloud_gamma;
         config.cloud_night = self.cloud_night;
+        config.cloud_city_gain = self.cloud_city_gain;
         config.atmo_enabled = self.atmo_enabled;
         config.rayleigh_intensity = self.rayleigh_intensity;
         config.rayleigh_sharpness = self.rayleigh_sharpness;
@@ -273,6 +278,7 @@ impl SceneParams {
             cloud_floor: q(self.cloud_floor),
             cloud_gamma: q(self.cloud_gamma),
             cloud_night: q(self.cloud_night),
+            cloud_city_gain: q(self.cloud_city_gain),
             rayleigh_intensity: q(self.effective_rayleigh_intensity()),
             rayleigh_sharpness: q(self.rayleigh_sharpness),
             rayleigh_haze: q(self.rayleigh_haze),
@@ -334,6 +340,7 @@ pub struct ParamsDigest {
     pub cloud_floor: i32,
     pub cloud_gamma: i32,
     pub cloud_night: i32,
+    pub cloud_city_gain: i32,
     pub rayleigh_intensity: i32,
     pub rayleigh_sharpness: i32,
     pub rayleigh_haze: i32,
@@ -700,6 +707,13 @@ mod tests {
                 "cloud_night",
                 SceneParams {
                     cloud_night: 0.4,
+                    ..base
+                },
+            ),
+            (
+                "cloud_city_gain",
+                SceneParams {
+                    cloud_city_gain: 1.3,
                     ..base
                 },
             ),

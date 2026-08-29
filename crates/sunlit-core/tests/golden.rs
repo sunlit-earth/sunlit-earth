@@ -669,6 +669,11 @@ fn cloud_params() -> SceneParams {
         },
         // What `base_params` turned off, back at the value the product ships.
         cloud_opacity: SceneParams::default().cloud_opacity,
+        // The city-light coupling is off in both cases that share this framing,
+        // so that they are about the night floor and the ramp; the case below is
+        // what turns it on. That neither of these references moved when it
+        // landed is decision 7's own claim about what zero means.
+        cloud_city_gain: 0.0,
         ..base
     }
 }
@@ -701,6 +706,30 @@ fn golden_cloud_terminator_close_up() {
         ..base
     };
     check_golden("cloud_terminator_close_up", &params);
+}
+
+/// A cloud deck over a city, lit from below.
+///
+/// The camera sits over the night map's one city, deep on the night side, with
+/// the fixture's equatorial band across the middle of the frame: the city's core
+/// and cluster reach past the band's edges, so the reference holds the same light
+/// with a deck over it and without one. What it has to show is the deck
+/// brightening over the patch and nowhere else, which is the thing a uniform
+/// floor cannot do.
+#[test]
+fn golden_clouds_lit_by_city_light() {
+    let base = cloud_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: support::NIGHT_FIXTURE_CITY.0,
+            latitude: 0.0,
+            zoom: 0.10,
+            ..base.camera
+        },
+        cloud_city_gain: SceneParams::default().cloud_city_gain,
+        ..base
+    };
+    check_golden("clouds_lit_by_city_light", &params);
 }
 
 /// Render every camera preset into one image for human review.
@@ -795,6 +824,7 @@ fn every_golden_case_is_distinguishable() {
         "panorama_at_a_narrow_sky",
         "clouds_across_the_terminator",
         "cloud_terminator_close_up",
+        "clouds_lit_by_city_light",
     ];
 
     let mut unnamed: Vec<String> = Vec::new();
@@ -851,4 +881,3 @@ fn every_golden_case_is_distinguishable() {
         }
     }
 }
-

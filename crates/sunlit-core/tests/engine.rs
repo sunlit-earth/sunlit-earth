@@ -3484,10 +3484,14 @@ fn center_window_mean(pixels: &[u8], size: (u32, u32)) -> f64 {
 /// the globe and the layer over it and nothing else, and `hour` is what moves
 /// the sun: the camera stays where it is, so the surface under the window is the
 /// same texels whichever side of the terminator the case asks for.
+///
+/// The city-light coupling is off, so that a case about the night floor measures
+/// the floor. The two cases that are about the coupling turn it on themselves.
 fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> SceneParams {
     let mut params = SceneParams {
         texture_index,
         sample_count: 1,
+        cloud_city_gain: 0.0,
         atmo_enabled: false,
         star_intensity: 0.0,
         sun_glow: 0.0,
@@ -3615,5 +3619,152 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
              the cloud ramp is reading the sentinel rather than its own width"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The mode that draws the globe from the day map alone, as `texture_index`
+/// spells it. The night slot stays loaded in it, so the cloud layer can still
+/// read the night map while nothing else does.
+const DAY_MODE: i32 = 1;
+
+/// City light at zero is gone rather than small.
+///
+/// The two frames are the same scene in Day mode, one from an engine whose night
+/// slot is loaded and whose cloud bind group therefore samples the night map,
+/// and one from an engine that has no night map at all and holds the dummy in
+/// that binding. The globe is drawn from the day slot in both, so binding 3 of
+/// the cloud group is the only thing that differs, and at gain zero the frames
+/// have to be identical: the branch means nothing is sampled, where a multiply
+/// would leave the sample in the shader and the identity to floating point.
+///
+/// The second half is what keeps the first from being vacuous: the same engine
+/// at the default gain has to differ, or the night map is not reaching the layer
+/// in this mode at all and the comparison above compares nothing.
+#[test]
+fn city_light_at_zero_draws_the_frame_a_missing_night_map_draws() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_city_off");
+    let params = SceneParams {
+        cloud_city_gain: 0.0,
+        ..cloud_case_params(DAY_MODE, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR)
+    };
+
+    let (with_night_map, lit_by_cities) = {
+        // Blend mode first, so the night slot is loaded and the cloud group has
+        // been rebuilt around it; Day mode then keeps the view and stops the
+        // globe from reading it.
+        let (harness, _surface) = cloud_harness(
+            &dir,
+            cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR),
+        );
+        harness
+            .engine
+            .send(EngineCommand::UpdateParams(Box::new(params)));
+        let off = harness
+            .engine
+            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+            .expect("the engine should be able to export");
+        harness
+            .engine
+            .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+                cloud_city_gain: SceneParams::default().cloud_city_gain,
+                ..params
+            })));
+        let on = harness
+            .engine
+            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+            .expect("the engine should be able to export");
+        (off, on)
+    };
+
+    let without_night_map = {
+        let surface = support::write_surface_fixtures(&dir);
+        let paths = vec![Some(surface.day), None];
+        let clouds = Arc::new(support::FixtureClouds::bands())
+            as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+        let cache = dir.clone();
+        let harness = Harness::start(move |config| {
+            config.texture_paths = paths;
+            config.cache_dir = Some(cache);
+            config.cloud = Some(clouds);
+            config.params = params;
+        });
+        harness.wait_for_textures("the day fixture alone");
+        harness.wait_for_slot_texture("cloud_texture");
+        harness
+            .engine
+            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+            .expect("the engine should be able to export")
+    };
+
+    let differing = with_night_map
+        .chunks_exact(4)
+        .zip(without_night_map.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels differ between a cloud layer at city gain zero and \
+         one with no night map behind it at all"
+    );
+
+    let brightened = with_night_map
+        .chunks_exact(4)
+        .zip(lit_by_cities.chunks_exact(4))
+        .filter(|(off, on)| u32::from(on[0]) > u32::from(off[0]) + 8)
+        .count();
+    println!("city light at the default gain brightened {brightened} pixels");
+    assert!(
+        brightened > 200,
+        "only {brightened} pixels brightened when the city glow was turned on, \
+         so the night map is not reaching the cloud layer in this mode and the \
+         identity above proves nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A resolution switch with the night slot loaded and a cloud layer drawn.
+///
+/// The cloud bind group samples the night map, and the purge destroys that
+/// texture without touching the cloud slot, which is not file-backed. Without
+/// the rebuild on either side of the purge the next draw is a validation error
+/// rather than a wrong pixel, so this case fails by the engine dying rather than
+/// by a comparison.
+#[test]
+fn a_resolution_switch_survives_a_cloud_layer_that_samples_the_night_map() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_purge");
+    let (harness, _surface) = cloud_harness(
+        &dir,
+        cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR),
+    );
+    let before = harness
+        .engine
+        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+        .expect("the engine should be able to export");
+    assert!(has_lit_pixels(&before), "the globe should be visible first");
+
+    harness.engine.send(EngineCommand::SetTextureResolution(
+        support::SURFACE_FIXTURE_WIDTH / 2,
+    ));
+    harness.wait_for_textures("after switching down");
+    let after = harness
+        .engine
+        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+        .expect("the engine should still be able to export");
+    assert!(
+        has_lit_pixels(&after),
+        "a frame after the purge has to come from the reloaded textures"
+    );
+
+    // Back up, which is the direction that would draw through a group rebuilt
+    // around a destroyed view if the rebuild happened at the wrong moment.
+    harness.engine.send(EngineCommand::SetTextureResolution(
+        support::SURFACE_FIXTURE_WIDTH,
+    ));
+    harness.wait_for_textures("after switching back up");
+    let again = harness
+        .engine
+        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
+        .expect("the engine should still be able to export");
+    assert!(has_lit_pixels(&again));
     let _ = std::fs::remove_dir_all(&dir);
 }

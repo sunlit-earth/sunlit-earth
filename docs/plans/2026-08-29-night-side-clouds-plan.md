@@ -517,3 +517,19 @@ cases (means 5.57 and 6.33 against 2.00), while zeroing the shell shift fails th
 case on its outlier count alone (mean 1.86, 4.32 percent) and fails the close-up on both
 counts (mean 8.44, 19.73 percent). The shift is held by the close-up, and that is the reason
 it exists.
+
+**3. Which reference holds which claim, and one thing the suite did not have.** The two
+part-one references are not interchangeable. `clouds_across_the_terminator` holds the floor
+(mean 5.57 with `cloud_night` back at 0.05) and would *pass its mean* with the shell shift
+zeroed, failing only on the outlier count, 4.32 percent against a limit of 1.00.
+`cloud_terminator_close_up` holds both: 6.33 for the floor and 8.44 for the shift, with
+about a fifth of the frame outlying either way. `clouds_lit_by_city_light` holds the
+coupling, at a mean of 59.53 with the gain at zero. Read them that way rather than assuming
+both whole-frame cases cover everything.
+
+The other thing this change ran into belongs to the suite rather than to the clouds. These
+are the first blend-mode goldens, and nothing spawns the two surface decodes until a case
+asks for the mode, so the first of them exported the frame the fallback draws, which is the
+grid, and blessed it. `check_golden_in` now waits for `day_texture` and `night_texture` when
+the mode is blend, the way it already waited for the Moon and the panorama. The next
+blend-mode case would have hit the same thing.

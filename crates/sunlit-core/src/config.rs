@@ -190,6 +190,7 @@ pub struct AppConfig {
     pub cloud_floor: f32,
     pub cloud_gamma: f32,
     pub cloud_night: f32,
+    pub cloud_city_gain: f32,
 
     // Atmosphere
     pub atmo_enabled: bool,
@@ -315,6 +316,7 @@ impl Default for AppConfig {
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
             cloud_night: 0.25,
+            cloud_city_gain: 0.7,
             atmo_enabled: true,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 50.0,
@@ -797,6 +799,7 @@ mod tests {
         assert_relative_eq!(config.cloud_floor, defaults.cloud_floor);
         assert_relative_eq!(config.cloud_gamma, defaults.cloud_gamma);
         assert_relative_eq!(config.cloud_night, defaults.cloud_night);
+        assert_relative_eq!(config.cloud_city_gain, defaults.cloud_city_gain);
     }
 
     #[test]
@@ -844,6 +847,7 @@ mod tests {
             cloud_floor: 0.2,
             cloud_gamma: 0.3,
             cloud_night: 0.4,
+            cloud_city_gain: 1.2,
             atmo_enabled: false,
             rayleigh_intensity: 0.7,
             rayleigh_sharpness: 8.0,
@@ -984,6 +988,7 @@ mod tests {
             cloud_floor: 0.15,
             cloud_gamma: 0.5,
             cloud_night: 0.1,
+            cloud_city_gain: 0.3,
             atmo_enabled: false,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 7.0,

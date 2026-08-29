@@ -216,6 +216,7 @@ export component MainWindow inherits Window {
     in-out property <float> cloud-floor: 0.25;
     in-out property <float> cloud-gamma: 0.65;
     in-out property <float> cloud-night: 0.25;
+    in-out property <float> cloud-city-gain: 0.7;
     in-out property <bool> atmo-enabled: true;
     in-out property <float> rayleigh-intensity: 0.5;
     in-out property <float> rayleigh-sharpness: 50.0;
@@ -690,6 +691,17 @@ export component MainWindow inherits Window {
                                 maximum: 0.6;
                                 value <=> root.cloud-night;
                                 value-text: round(root.cloud-night * 100) + "%";
+                                value-width: 35px;
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            cloud-city-gain-slider := SettingRow {
+                                label: "City glow";
+                                hint: "How much of the light cities throw upward the cloud bases over them pick up. Zero turns it off.";
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.cloud-city-gain;
+                                value-text: round(root.cloud-city-gain * 100) / 100;
                                 value-width: 35px;
                                 changed => { root.sliders-changed(); }
                             }

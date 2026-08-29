@@ -158,7 +158,7 @@ pub(super) fn write_uniforms<'a>(
         rayleigh_haze: params.rayleigh_haze,
         cloud_night: params.cloud_night,
         cloud_terminator: CLOUD_TERMINATOR_WIDTH,
-        _pad5: 0.0,
+        cloud_city_gain: params.cloud_city_gain,
         sky_view: sky_view.to_cols_array(),
         world_from_eqj: [
             sky_rotation.x_axis.extend(0.0).into(),

@@ -31,7 +31,7 @@ struct Uniforms {
     rayleigh_haze: f32,            // 4 bytes, offset 192
     cloud_night: f32,              // 4 bytes, offset 196
     cloud_terminator: f32,         // 4 bytes, offset 200
-    _pad5: f32,                    // 4 bytes, offset 204
+    cloud_city_gain: f32,          // 4 bytes, offset 204
     sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
     viewport_size: vec2<f32>,         // 8 bytes, offset 320
@@ -413,10 +413,29 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let shell_shift = sqrt(1.0 - 1.0 / (uniforms.cloud_sphere_radius * uniforms.cloud_sphere_radius));
     let w = uniforms.cloud_terminator;
     let sunlit = smoothstep(-shell_shift - w, -shell_shift + w, n_dot_l);
+    // City light thrown onto the cloud base from below. An extrapolation
+    // rather than a published technique: upwelling light does reach cloud bases
+    // and the Day/Night Band shows the result, but this transfer function and
+    // this blur scale are chosen.
+    //
+    // The branch is what makes zero mean gone rather than small, so a run at
+    // zero reaches the pixels a build without this reaches. The level is derived
+    // from the source's own width rather than fixed, which keeps the blur a
+    // fixed angle instead of one that reaches three times as far at 8192 as at
+    // 2048; the max is for a source narrower than 1024, which the Earth's maps
+    // are not and a fixture may be.
+    var upwelling = vec3<f32>(0.0);
+    if uniforms.cloud_city_gain > 0.0 {
+        let dims = textureDimensions(night_texture, 0);
+        let level = max(log2(f32(dims.x) / 1024.0), 0.0);
+        upwelling = uniforms.cloud_city_gain
+            * textureSampleLevel(night_texture, sphere_sampler, in.uv, level).rgb;
+    }
     // cloud_night is a fraction of display white, not an irradiance: see the
     // field's doc comment in uniforms.rs.
-    let brightness = mix(uniforms.cloud_night, 1.0, sunlit);
-    return vec4<f32>(brightness, brightness, brightness, cloud_density * uniforms.cloud_opacity);
+    let night = vec3<f32>(uniforms.cloud_night) + upwelling;
+    let brightness = mix(night, vec3<f32>(1.0), sunlit);
+    return vec4<f32>(brightness, cloud_density * uniforms.cloud_opacity);
 }
 
 // --- Rayleigh scattering shell (closest to surface, ~1.003 radius) ---

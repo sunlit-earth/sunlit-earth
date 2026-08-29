@@ -175,6 +175,12 @@ pub fn restorable(sidecar: &Sidecar, facts: &Facts) -> Result<(), String> {
 /// Decision 26: `--locked` means an unchanged lockfile is an unchanged
 /// registry, so a build that did not move `Cargo.lock` has nothing new to send
 /// back and the several hundred megabytes stay where they are.
+///
+/// `existing` is the sidecar of a cache that was *restored*, and passing one
+/// that was refused instead is the bug this sentence exists to prevent: its
+/// hash describes an archive no later build will read either, so the answer
+/// would be no forever and the registry would stay cold until the lockfile
+/// happened to move.
 pub fn registry_worth_saving(existing: Option<&Sidecar>, lockfile_hash: &str) -> bool {
     existing.is_none_or(|sidecar| sidecar.lockfile_hash != lockfile_hash)
 }

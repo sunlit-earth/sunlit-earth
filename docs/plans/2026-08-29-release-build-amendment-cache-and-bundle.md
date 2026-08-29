@@ -242,3 +242,90 @@ need. Rebuilt in **1 minute 17 seconds** to **3,305,504,768 bytes (3.08 GiB)**, 
 44 MB *smaller* than the image without it: the difference is what a fresh `apt` run left
 behind rather than anything zstd added. `cargo xtask vm smoke linux-builder` passes on it
 with `cargo 1.94.0` from the probe.
+
+### `cargo xtask dist --target windows`, cold and warm
+
+Both green end to end at the first attempt, of `3efb649` and `a2e6407`.
+
+| | cold | warm |
+|---|---|---|
+| the cache going in | nothing on this host yet | registry 118.5 MiB, target 619.1 MiB |
+| the build itself | **6m 58s** | **4m 04s** |
+| the whole target | **8m 29s** | **5m 59s** |
+| the cache coming out | registry 118.5 MiB, target 619.1 MiB | target only |
+| the binary | 29,183,488 bytes, 26 imports, none of them the Visual C++ runtime | the same |
+| the bundle | 9 files | 9 files, **25.4 MiB** as a zip |
+| the two renders | **19.2** of a channel step apart | 19.1 |
+
+The saving is nearly three minutes on a seven-minute build, and it is the same shape as
+the Linux one: what a warm build still pays for is the workspace's own crates and the fat
+LTO link. The Windows registry archive is 118.5 MiB against Linux's 122.3 for the same
+lockfile, and the build directories are within a percent of each other at 619.1 and 612.6
+MiB, which is the two toolchains producing much the same bitcode from the same crates.
+
+`bsdtar --zstd` in the guest did what the probe said it would, with no zstd binary
+anywhere and no change to the layer.
+
+The zip, read back with a reader that had nothing to do with writing it, is decision 31's
+compression rule as a measurement rather than a claim:
+
+| entry | on disk | in the zip | method |
+|---|---|---|---|
+| `sunlit-earth.exe` | 29,183,488 | 12,548,176 | deflated |
+| the four `.jxl` textures | 14,117,036 | 14,117,036 | **stored** |
+| `LICENSE` | 35,149 | 12,122 | deflated |
+| `PROVENANCE.md`, `build-info.json`, `ATTRIBUTION.md` | 8,742 | 4,042 | deflated |
+
+So the binary compresses to 43% and the imagery to 100%, which is what storing already
+compressed data is for: deflating the four JXL files would have spent time to make the
+archive very slightly larger. Nine entries, all under one `sunlit-earth-0.1.0-windows/`
+directory, and no `assets/` at all, which is decision 30's deliberate asymmetry: there is
+nothing to install on Windows, because the icon is a resource inside the exe.
+
+### `cargo xtask dist --target all`, both targets warm
+
+Of `a2e6407`, clean tree, verification on: **11 minutes 17 seconds for both targets
+through four boots**, exit 0, two summary lines. Windows built in 6m 53s and Linux in
+4m 23s, each guest torn down before the next one booted.
+
+Against the plan's own `--target all` figures on the same host before there was a cache,
+which were 7m 46s and 5m 21s for thirteen minutes in total:
+
+| | plan, cold | here, warm |
+|---|---|---|
+| Windows | 7m 46s | **6m 53s** |
+| Linux | 5m 21s | **4m 23s** |
+| both, wall clock | ~13m | **11m 17s** |
+
+The per-target saving is smaller here than in the single-target runs above, and the
+reason is the transfer rather than the compile: each target now copies 740 MiB in and
+620 MiB back out on top of its build, and `--target all` pays that twice in one wall
+clock. The build times themselves are the ones to read: 4m 35s and 2m 50s inside the
+guests, against 6m 58s and 5m 28s cold.
+
+**Three Linux binaries of three different runs are byte for byte identical**, sha256
+`fc89d33af112ceb8c271cba81ae8cad66684c483d84934f36653adb2ccbf5167` on all of them: the
+cold one, the warm one, and this one. The Windows binary of this run is
+`89d8718c3270bfe60b9d0fdcc0b4e9e91af2ac00038b8f8caec8271cb332863d`; the cold Windows
+binary was overwritten by the warm run before it was hashed, so the Windows half of that
+comparison is still to make, and the `--no-cache` run is where it belongs.
+
+The two-render difference moved from 23.3 to **22.6** on Linux between two runs eleven
+minutes apart, which is the Earth turning. The floor of 8.0 has three times that of
+headroom and the drift is a tenth of the margin.
+
+### The soak test in a whole-workspace run
+
+`cargo test -p sunlit-core --test soak` passes alone and `cargo test -p sunlit-core`
+passes with it in the middle, both repeatedly. `cargo test` over the whole workspace
+failed it twice and then passed it twice, on an unchanged tree. Nothing on this branch
+touches `sunlit-core`: what it changes in the workspace manifest is three dependencies
+`xtask` alone consumes, and `dist` compiles neither.
+
+Left as an observation rather than chased, and it belongs to the project rather than to
+this amendment. The shape matches the "one GPU device at a time" constraint CLAUDE.md
+already records: `GPU_SERIAL` serializes within a process and `cargo test` runs separate
+test binaries as separate processes, so a target added anywhere in the workspace can move
+that timing without being the cause. What is not yet known is whether it fails the same
+way at `13fbb88`, which is the question a successor should settle before anyone spends
+more on it.

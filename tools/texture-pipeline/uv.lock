@@ -153,6 +153,15 @@ wheels = [
 ]
 
 [[package]]
+name = "openexr"
+version = "3.4.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/21/a3/8b57f9bef539c195363cf966bbdc02951d3ce5d0a9f612d262f7fe66caad/openexr-3.4.15.tar.gz", hash = "sha256:6c9a28a4f4089379c9c4fd301edaa4dba0ed315862c029f453690a8191370a47", size = 25673422, upload-time = "2026-08-21T23:13:29.49Z" }
+
+[[package]]
 name = "packaging"
 version = "26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -506,6 +515,7 @@ source = { editable = "." }
 dependencies = [
     { name = "geopandas" },
     { name = "numpy" },
+    { name = "openexr" },
     { name = "pillow" },
     { name = "pillow-jxl-plugin" },
     { name = "rasterio" },
@@ -525,6 +535,7 @@ dev = [
 requires-dist = [
     { name = "geopandas", specifier = ">=1.0" },
     { name = "numpy", specifier = ">=2.0" },
+    { name = "openexr", specifier = ">=3.3" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "pillow-jxl-plugin", specifier = ">=1.3.7" },
     { name = "rasterio", specifier = ">=1.4" },

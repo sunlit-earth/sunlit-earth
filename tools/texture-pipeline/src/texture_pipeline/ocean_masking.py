@@ -49,7 +49,7 @@ def rasterize_ocean_mask(
 
     if supersample > 1:
         img = Image.fromarray(mask, mode="L")
-        img = img.resize((width, height), resample=Image.LANCZOS)
+        img = img.resize((width, height), resample=Image.Resampling.LANCZOS)
         mask = np.array(img, dtype=np.uint8)
 
     return mask
@@ -113,9 +113,7 @@ def apply_coast_offset(
     if offset_pixels > 0:
         # Expand ocean into land via Gaussian blur
         img = Image.fromarray(mask, mode="L")
-        blurred = img.filter(
-            ImageFilter.GaussianBlur(radius=offset_pixels)
-        )
+        blurred = img.filter(ImageFilter.GaussianBlur(radius=offset_pixels))
         blurred_arr = np.array(blurred, dtype=np.uint8)
         # Preserve deep-ocean pixels at 255
         result = np.where(mask == 255, np.uint8(255), blurred_arr)
@@ -246,9 +244,7 @@ def detect_ice_regions(
 
     for r_start, r_end in bands:
         # Extract only the polar band from the image (avoids full float32)
-        band_arr = np.array(
-            image.crop((0, r_start, w, r_end)), dtype=np.float32
-        )
+        band_arr = np.array(image.crop((0, r_start, w, r_end)), dtype=np.float32)
         band_mask = ocean_mask[r_start:r_end, :]
         domain = band_mask > 0
 
@@ -264,8 +260,10 @@ def detect_ice_regions(
         ch_max = band_arr.max(axis=2)
         ch_min = band_arr.min(axis=2)
         sat = np.divide(
-            ch_max - ch_min, ch_max,
-            out=np.zeros_like(ch_max), where=ch_max > 0,
+            ch_max - ch_min,
+            ch_max,
+            out=np.zeros_like(ch_max),
+            where=ch_max > 0,
         )
 
         # Free the float32 image band early
@@ -310,9 +308,7 @@ def detect_ice_regions(
         band_ice = closed.astype(np.uint8) * 255
         if blur_radius > 0:
             ice_img = Image.fromarray(band_ice, mode="L")
-            ice_img = ice_img.filter(
-                ImageFilter.GaussianBlur(radius=blur_radius)
-            )
+            ice_img = ice_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
             blurred = np.array(ice_img, dtype=np.uint8)
             band_ice = np.maximum(band_ice, blurred)
         result[r_start:r_end, :] = band_ice

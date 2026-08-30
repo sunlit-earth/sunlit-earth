@@ -44,9 +44,7 @@ class TestRasterizeOceanMaskBinary:
 
 
 class TestRasterizeOceanMaskAntialiased:
-    def test_antialiased_at_supersample_2(
-        self, western_half_shapefile: Path
-    ) -> None:
+    def test_antialiased_at_supersample_2(self, western_half_shapefile: Path) -> None:
         mask = rasterize_ocean_mask(
             western_half_shapefile, width=100, height=50, supersample=2
         )

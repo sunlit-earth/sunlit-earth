@@ -7,7 +7,9 @@ import pillow_jxl  # noqa: F401 - registers JXL plugin
 from PIL import Image
 from typer.testing import CliRunner
 
+from texture_pipeline.exr import read_exr_rgb
 from texture_pipeline.main import app
+from texture_pipeline.milky_way import MilkyWayParams, process
 
 runner = CliRunner()
 
@@ -54,7 +56,7 @@ class TestEndToEndSingleWidth:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -89,7 +91,7 @@ class TestEndToEndMultipleWidths:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -126,7 +128,7 @@ class TestEndToEndPreservesSubdirectoryStructure:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -156,7 +158,7 @@ class TestEndToEndWithSharpening:
         result1 = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -173,7 +175,7 @@ class TestEndToEndWithSharpening:
         result2 = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -211,7 +213,7 @@ class TestEndToEndSkipNonImageFiles:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -239,7 +241,7 @@ class TestEndToEndEmptyInput:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -270,12 +272,17 @@ class TestEndToEndOceanMask:
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--effort", "1",
-                "--ocean-mask", str(eastern_half_shapefile),
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(eastern_half_shapefile),
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -309,13 +316,19 @@ class TestEndToEndOceanMask:
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--effort", "1",
-                "--ocean-mask", str(eastern_half_shapefile),
-                "--ocean-color", "0,0,255",
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(eastern_half_shapefile),
+                "--ocean-color",
+                "0,0,255",
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -338,13 +351,19 @@ class TestEndToEndOceanMask:
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--effort", "1",
-                "--ocean-mask", str(eastern_half_shapefile),
-                "--ocean-coast-offset", "3",
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(eastern_half_shapefile),
+                "--ocean-coast-offset",
+                "3",
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -373,11 +392,15 @@ class TestEndToEndWithoutOceanMaskUnchanged:
         result1 = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_a),
-                "--width", "64",
-                "--effort", "1",
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_a),
+                "--width",
+                "64",
+                "--effort",
+                "1",
             ],
         )
         assert result1.exit_code == 0
@@ -386,11 +409,15 @@ class TestEndToEndWithoutOceanMaskUnchanged:
         result2 = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_b),
-                "--width", "64",
-                "--effort", "1",
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_b),
+                "--width",
+                "64",
+                "--effort",
+                "1",
             ],
         )
         assert result2.exit_code == 0
@@ -414,13 +441,19 @@ class TestEndToEndOceanMaskMultipleWidths:
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--width", "32",
-                "--effort", "1",
-                "--ocean-mask", str(eastern_half_shapefile),
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--width",
+                "32",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(eastern_half_shapefile),
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -436,9 +469,7 @@ class TestEndToEndOceanMaskMultipleWidths:
             )
 
 
-def _create_polar_ice_jpeg(
-    path: Path, width: int, height: int
-) -> None:
+def _create_polar_ice_jpeg(path: Path, width: int, height: int) -> None:
     """Create a JPEG with bright ice-like pixels in the top rows (polar zone).
 
     Equirectangular: row 0 = +90, top rows = high Arctic.
@@ -459,9 +490,7 @@ def _create_polar_ice_jpeg(
 
 
 class TestEndToEndIcePreservedByDefault:
-    def test_ice_preserved(
-        self, tmp_path: Path, full_globe_shapefile: Path
-    ) -> None:
+    def test_ice_preserved(self, tmp_path: Path, full_globe_shapefile: Path) -> None:
         input_dir = tmp_path / "input"
         output_dir = tmp_path / "output"
         input_dir.mkdir()
@@ -471,12 +500,17 @@ class TestEndToEndIcePreservedByDefault:
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--effort", "1",
-                "--ocean-mask", str(full_globe_shapefile),
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(full_globe_shapefile),
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -508,12 +542,17 @@ class TestEndToEndIceDisabled:
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--effort", "1",
-                "--ocean-mask", str(full_globe_shapefile),
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(full_globe_shapefile),
                 "--no-ocean-preserve-ice",
             ],
         )
@@ -544,19 +583,22 @@ class TestEndToEndTropicalBrightNotPreserved:
         # Image with bright block only in the tropical zone (middle rows)
         arr = np.full((64, 128, 3), 10, dtype=np.uint8)
         arr[25:40, 80:120] = [240, 240, 240]  # bright tropical block
-        Image.fromarray(arr).save(
-            input_dir / "earth.jpg", format="JPEG", quality=98
-        )
+        Image.fromarray(arr).save(input_dir / "earth.jpg", format="JPEG", quality=98)
 
         result = runner.invoke(
             app,
             [
-                "convert",
-                "--input", str(input_dir),
-                "--output", str(output_dir),
-                "--width", "64",
-                "--effort", "1",
-                "--ocean-mask", str(full_globe_shapefile),
+                "earth",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(output_dir),
+                "--width",
+                "64",
+                "--effort",
+                "1",
+                "--ocean-mask",
+                str(full_globe_shapefile),
             ],
         )
         assert result.exit_code == 0, f"CLI failed: {result.output}"
@@ -572,3 +614,91 @@ class TestEndToEndTropicalBrightNotPreserved:
         assert lum.mean() < 80, (
             f"Expected tropical bright replaced, got luminance {lum.mean():.1f}"
         )
+
+
+class TestMilkyWayEndToEnd:
+    def test_default_quality_is_close_to_the_processed_array(
+        self, tmp_path: Path, sky_exr_512x256: Path
+    ) -> None:
+        output = tmp_path / "nested" / "milkyway.jxl"
+
+        result = runner.invoke(
+            app,
+            [
+                "milky-way",
+                "--input",
+                str(sky_exr_512x256),
+                "--output",
+                str(output),
+                "--width",
+                "256",
+            ],
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert output.exists()
+
+        expected = process(
+            read_exr_rgb(sky_exr_512x256),
+            source_width=512,
+            target_width=256,
+            params=MilkyWayParams(),
+        ).image
+        with Image.open(output) as decoded:
+            assert decoded.size == (256, 128)
+            assert decoded.mode == "RGB"
+            actual = np.asarray(decoded)
+
+        difference = np.abs(actual.astype(np.int16) - expected.astype(np.int16))
+        assert difference.mean() < 1.0
+        assert difference.max() <= 8
+
+    def test_quality_100_round_trips_exactly(
+        self, tmp_path: Path, sky_exr_512x256: Path
+    ) -> None:
+        output = tmp_path / "milkyway_lossless.jxl"
+
+        result = runner.invoke(
+            app,
+            [
+                "milky-way",
+                "--input",
+                str(sky_exr_512x256),
+                "--output",
+                str(output),
+                "--width",
+                "256",
+                "--quality",
+                "100",
+                "--effort",
+                "1",
+            ],
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+
+        expected = process(
+            read_exr_rgb(sky_exr_512x256),
+            source_width=512,
+            target_width=256,
+            params=MilkyWayParams(),
+        ).image
+        with Image.open(output) as decoded:
+            np.testing.assert_array_equal(np.asarray(decoded), expected)
+
+    def test_a_non_2_to_1_source_is_refused(
+        self, tmp_path: Path, square_exr_64x64: Path
+    ) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "milky-way",
+                "--input",
+                str(square_exr_64x64),
+                "--output",
+                str(tmp_path / "out.jxl"),
+                "--width",
+                "32",
+            ],
+        )
+        assert result.exit_code != 0
+        assert isinstance(result.exception, ValueError)
+        assert "2:1 aspect ratio" in str(result.exception)

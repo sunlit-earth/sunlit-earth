@@ -12,6 +12,7 @@ dependencies = [
     "geopandas>=1.0",
     "numpy>=2.0",
     "scipy>=1.14",
+    "openexr>=3.3",
 ]
 
 [project.scripts]
@@ -47,6 +48,7 @@ convention = "pep257"
 
 [tool.ty.environment]
 python-version = "3.14"
+extra-paths = ["stubs"]
 
 [tool.ty.rules]
 possibly-unresolved-reference = "warn"

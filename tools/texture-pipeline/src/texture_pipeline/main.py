@@ -1,6 +1,7 @@
 """CLI interface for the texture pipeline."""
 
 import signal
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -15,6 +16,8 @@ from rich.progress import (
 )
 
 from texture_pipeline.discovery import compute_output_path, discover_images
+from texture_pipeline.exr import read_exr_rgb
+from texture_pipeline.milky_way import MilkyWayParams, flux_gain, process
 from texture_pipeline.processing import downscale, encode_jxl, sharpen
 
 # Disable Pillow's decompression bomb limit. NASA Blue Marble textures
@@ -24,14 +27,14 @@ Image.MAX_IMAGE_PIXELS = None
 
 app = typer.Typer(
     name="texture-pipeline",
-    help="Convert NASA Blue Marble textures to JPEG XL at multiple resolutions.",
+    help="Convert source astronomy and Earth imagery into JPEG XL textures.",
     invoke_without_command=True,
 )
 
 
 @app.callback()
 def main() -> None:
-    """Convert NASA Blue Marble textures to JPEG XL at multiple resolutions."""
+    """Convert source astronomy and Earth imagery into JPEG XL textures."""
 
 
 def run_pipeline(
@@ -184,6 +187,12 @@ def _validate_width(value: int) -> int:
     return value
 
 
+def _validate_nonnegative(value: float) -> float:
+    if value < 0:
+        raise typer.BadParameter("Value must not be negative.")
+    return value
+
+
 def _validate_ocean_color(value: str) -> str:
     try:
         parts = [int(x) for x in value.split(",")]
@@ -222,8 +231,8 @@ def _validate_ocean_ice_latitude(value: float) -> float:
     return value
 
 
-@app.command()
-def convert(
+@app.command("earth")
+def earth(
     input_dir: Annotated[
         Path,
         typer.Option(
@@ -335,7 +344,11 @@ def convert(
         ),
     ] = 60.0,
 ) -> None:
-    """Convert source textures to JPEG XL at one or more target resolutions."""
+    """Convert the Earth's surface maps to JPEG XL at one or more widths.
+
+    Takes a directory of Blue Marble and Black Marble style equirectangular
+    images and writes one JPEG XL per source and target width.
+    """
     widths = width if width else [8192]
 
     # Validate each width
@@ -362,4 +375,195 @@ def convert(
         ocean_preserve_ice=ocean_preserve_ice,
         ocean_ice_luminance=ocean_ice_luminance,
         ocean_ice_latitude=ocean_ice_latitude,
+    )
+
+
+def run_milky_way(
+    *,
+    input_path: Path,
+    output_path: Path,
+    target_width: int,
+    quality: int,
+    effort: int,
+    params: MilkyWayParams,
+) -> None:
+    """Denoise a NASA SVS star map EXR and write it as a JPEG XL panorama.
+
+    :param input_path: The source ``.exr`` panorama, 2:1 and linear.
+    :param output_path: Path for the output ``.jxl`` file.
+    :param target_width: Output width in pixels. Must divide the source width.
+    :param quality: JPEG XL quality (1--100); 100 means lossless.
+    :param effort: JPEG XL encoding effort (1--9).
+    :param params: The denoise thresholds and lengths.
+    """
+    started = time.monotonic()
+    source = read_exr_rgb(input_path)
+    source_height, source_width = source.shape[:2]
+    typer.echo(f"Source:  {source_width}x{source_height}")
+    typer.echo(f"Gain:    {flux_gain(source_width):g}x onto the 4096 grid")
+
+    result = process(
+        source,
+        source_width=source_width,
+        target_width=target_width,
+        params=params,
+    )
+    del source
+
+    encode_jxl(
+        Image.fromarray(result.image),
+        output_path,
+        quality=quality,
+        effort=effort,
+    )
+
+    encoding = "lossless" if quality >= 100 else f"quality {quality}"
+    size_mb = output_path.stat().st_size / 1024 / 1024
+    typer.echo(f"Target:  {target_width}x{target_width // 2}")
+    typer.echo(
+        f"Trimmed: {result.capped * 100:.2f}% of pixels capped, "
+        f"{result.strong * 100:.2f}% strong-masked"
+    )
+    typer.echo(
+        f"Output:  {output_path} ({size_mb:.2f} MB, {encoding}, effort {effort})"
+    )
+    typer.echo(f"Elapsed: {time.monotonic() - started:.1f}s")
+
+
+@app.command("milky-way")
+def milky_way(
+    input_path: Annotated[
+        Path,
+        typer.Option(
+            "--input",
+            "-i",
+            help="Source EXR panorama (NASA SVS Deep Star Maps).",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output .jxl file. Parent directories are created.",
+            resolve_path=True,
+        ),
+    ],
+    width: Annotated[
+        int,
+        typer.Option(
+            "--width",
+            "-w",
+            help="Target width in pixels. Must divide the source width.",
+            callback=_validate_width,
+        ),
+    ] = 8192,
+    quality: Annotated[
+        int,
+        typer.Option(
+            "--quality",
+            "-q",
+            help="JPEG XL quality (1-100). 100 encodes losslessly.",
+            callback=_validate_quality,
+        ),
+    ] = 90,
+    effort: Annotated[
+        int,
+        typer.Option(
+            "--effort",
+            "-e",
+            help="JPEG XL encoding effort (1-9). Higher = smaller file, slower.",
+            callback=_validate_effort,
+        ),
+    ] = 7,
+    seed: Annotated[
+        int,
+        typer.Option(
+            "--seed",
+            help="Seed of the dither drawn during 8-bit quantization.",
+        ),
+    ] = 7,
+    k: Annotated[
+        float,
+        typer.Option(
+            "--k",
+            help="Cap luminance at this multiple of the local background.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 3.0,
+    strong: Annotated[
+        float,
+        typer.Option(
+            "--strong",
+            help="Replace a star's footprint above this multiple of the background.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 9.0,
+    eps: Annotated[
+        float,
+        typer.Option(
+            "--eps",
+            help="Absolute margin on both thresholds, in linear units.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 0.0005,
+    bg_sigma: Annotated[
+        float,
+        typer.Option(
+            "--bg-sigma",
+            help="Background Gaussian sigma, in arcminutes.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 15.8,
+    dilate: Annotated[
+        float,
+        typer.Option(
+            "--dilate",
+            help="Radius grown around a strong star, in arcminutes.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 7.9,
+    fill_sigma: Annotated[
+        float,
+        typer.Option(
+            "--fill-sigma",
+            help="Sigma of the fill that replaces a strong star, in arcminutes.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 7.9,
+    blur: Annotated[
+        float,
+        typer.Option(
+            "--blur",
+            help="Final Gaussian sigma, in arcminutes.",
+            callback=_validate_nonnegative,
+        ),
+    ] = 7.9,
+) -> None:
+    """Denoise a NASA SVS star map EXR into a JPEG XL panorama.
+
+    The source holds flux per pixel, so its values are first lifted onto the
+    4096 grid's scale, then box-averaged to the target width, despeckled,
+    blurred and written as dithered 8-bit sRGB.
+    """
+    run_milky_way(
+        input_path=input_path,
+        output_path=output_path,
+        target_width=width,
+        quality=quality,
+        effort=effort,
+        params=MilkyWayParams(
+            k=k,
+            strong=strong,
+            eps=eps,
+            bg_sigma=bg_sigma,
+            dilate=dilate,
+            fill_sigma=fill_sigma,
+            blur=blur,
+            seed=seed,
+        ),
     )

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import OpenEXR
 import pytest
 from PIL import Image
 from shapely.geometry import box
@@ -160,3 +161,87 @@ def polar_ice_ocean_mask_200x100() -> np.ndarray:
     mask[:17, :] = 255  # Arctic ocean
     mask[83:, :] = 255  # Antarctic ocean
     return mask
+
+
+def write_exr(path: Path, channels: dict[str, np.ndarray]) -> Path:
+    """Write a scanline EXR from a mapping of channel name to 2D array.
+
+    The bindings read each plane's buffer as if it were contiguous, so a
+    strided view of an interleaved array would be written interleaved.
+
+    :param path: Destination file path.
+    :param channels: Channel name to ``(H, W)`` array, half or float.
+    :returns: The path written.
+    """
+    header = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage}
+    planes = {name: np.ascontiguousarray(a) for name, a in channels.items()}
+    with OpenEXR.File(header, planes) as out:
+        out.write(str(path))
+    return path
+
+
+def synthetic_sky(width: int, height: int) -> np.ndarray:
+    """Build a linear ``(H, W, 3)`` sky with a smooth band and a few stars.
+
+    :param width: Image width in pixels.
+    :param height: Image height in pixels.
+    :returns: A float32 array of small positive values.
+    """
+    rows = np.arange(height, dtype=np.float32)[:, None]
+    cols = np.arange(width, dtype=np.float32)[None, :]
+    band = 40.0 * np.exp(-(((rows - height / 2) / (height / 12)) ** 2))
+    grain = 2.0 + np.sin(cols / 7.0) * np.cos(rows / 5.0)
+    sky = np.repeat((band + grain)[..., None], 3, axis=2).astype(np.float32)
+    sky[..., 1] *= 0.9
+    sky[..., 2] *= 0.75
+    for row, col in ((height // 4, 3), (height // 3, width // 2), (height - 5, 17)):
+        sky[row, col] += 400.0
+    return sky
+
+
+@pytest.fixture
+def rgb_exr_64x32(tmp_path: Path) -> tuple[Path, np.ndarray]:
+    """A 64x32 float EXR with distinct R, G and B ramps, and its pixel array."""
+    height, width = 32, 64
+    values = np.arange(height * width, dtype=np.float32).reshape(height, width) / 1000
+    rgb = np.stack([values, values * 2.0, values * 3.0], axis=-1).astype(np.float32)
+    path = write_exr(
+        tmp_path / "rgb_64x32.exr",
+        {"R": rgb[..., 0], "G": rgb[..., 1], "B": rgb[..., 2]},
+    )
+    return path, rgb
+
+
+@pytest.fixture
+def rgba_exr_64x32(tmp_path: Path) -> Path:
+    """A 64x32 float EXR carrying an alpha channel beside R, G and B."""
+    height, width = 32, 64
+    plane = np.full((height, width), 0.25, dtype=np.float32)
+    return write_exr(
+        tmp_path / "rgba_64x32.exr",
+        {"R": plane, "G": plane * 2, "B": plane * 3, "A": np.ones_like(plane)},
+    )
+
+
+@pytest.fixture
+def sky_exr_512x256(tmp_path: Path) -> Path:
+    """A 512x256 half-float EXR holding a synthetic sky."""
+    sky = synthetic_sky(512, 256)
+    return write_exr(
+        tmp_path / "sky_512x256.exr",
+        {
+            "R": sky[..., 0].astype(np.float16),
+            "G": sky[..., 1].astype(np.float16),
+            "B": sky[..., 2].astype(np.float16),
+        },
+    )
+
+
+@pytest.fixture
+def square_exr_64x64(tmp_path: Path) -> Path:
+    """A 64x64 float EXR, which is not the 2:1 a panorama must be."""
+    plane = np.full((64, 64), 0.5, dtype=np.float32)
+    return write_exr(
+        tmp_path / "square_64x64.exr",
+        {"R": plane, "G": plane, "B": plane},
+    )

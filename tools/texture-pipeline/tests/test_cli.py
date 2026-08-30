@@ -6,16 +6,34 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from texture_pipeline.main import app
+from texture_pipeline.milky_way import MilkyWayParams
 
 runner = CliRunner()
 
 
 class TestHelpOutput:
     def test_help_output(self) -> None:
-        result = runner.invoke(app, ["convert", "--help"])
+        result = runner.invoke(app, ["earth", "--help"])
         assert result.exit_code == 0
         for word in ["input", "output", "quality", "effort", "width"]:
             assert word in result.output.lower()
+
+
+class TestRenamedCommand:
+    def test_convert_is_gone(self, tmp_path: Path) -> None:
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        result = runner.invoke(
+            app,
+            [
+                "convert",
+                "--input",
+                str(input_dir),
+                "--output",
+                str(tmp_path / "out"),
+            ],
+        )
+        assert result.exit_code == 2
 
 
 class TestDefaultValues:
@@ -27,7 +45,7 @@ class TestDefaultValues:
         with patch("texture_pipeline.main.run_pipeline") as mock_pipeline:
             result = runner.invoke(
                 app,
-                ["convert", "--input", str(input_dir), "--output", str(output_dir)],
+                ["earth", "--input", str(input_dir), "--output", str(output_dir)],
             )
             assert result.exit_code == 0
             mock_pipeline.assert_called_once()
@@ -48,7 +66,7 @@ class TestMultipleWidths:
             result = runner.invoke(
                 app,
                 [
-                    "convert",
+                    "earth",
                     "--input",
                     str(input_dir),
                     "--output",
@@ -71,7 +89,7 @@ class TestValidation:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -88,7 +106,7 @@ class TestValidation:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -105,7 +123,7 @@ class TestValidation:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -122,7 +140,7 @@ class TestValidation:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -139,7 +157,7 @@ class TestValidation:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(input_dir),
                 "--output",
@@ -154,7 +172,7 @@ class TestValidation:
         result = runner.invoke(
             app,
             [
-                "convert",
+                "earth",
                 "--input",
                 str(tmp_path / "nonexistent"),
                 "--output",
@@ -172,7 +190,7 @@ class TestSharpenFlag:
         with patch("texture_pipeline.main.run_pipeline") as mock_pipeline:
             result = runner.invoke(
                 app,
-                ["convert", "--input", str(input_dir), "--output", str(output_dir)],
+                ["earth", "--input", str(input_dir), "--output", str(output_dir)],
             )
             assert result.exit_code == 0
             call_kwargs = mock_pipeline.call_args
@@ -186,7 +204,7 @@ class TestSharpenFlag:
             result = runner.invoke(
                 app,
                 [
-                    "convert",
+                    "earth",
                     "--input",
                     str(input_dir),
                     "--output",
@@ -204,7 +222,7 @@ def _base_args(tmp_path: Path) -> tuple[Path, list[str]]:
     input_dir = tmp_path / "in"
     input_dir.mkdir()
     output_dir = tmp_path / "out"
-    args = ["convert", "--input", str(input_dir), "--output", str(output_dir)]
+    args = ["earth", "--input", str(input_dir), "--output", str(output_dir)]
     return input_dir, args
 
 
@@ -310,7 +328,7 @@ class TestOceanMaskValidation:
 
 class TestOceanFlagsInHelp:
     def test_ocean_flags_in_help(self) -> None:
-        result = runner.invoke(app, ["convert", "--help"])
+        result = runner.invoke(app, ["earth", "--help"])
         assert result.exit_code == 0
         for flag in ["ocean-mask", "ocean-color", "ocean-supersam", "ocean-coast"]:
             assert flag in result.output, f"Expected '{flag}' in help output"
@@ -381,7 +399,7 @@ class TestIcePreservationValidation:
 
 class TestIceFlagsInHelp:
     def test_ice_flags_in_help(self) -> None:
-        result = runner.invoke(app, ["convert", "--help"])
+        result = runner.invoke(app, ["earth", "--help"])
         assert result.exit_code == 0
         for flag in [
             "ocean-preserve-i",
@@ -389,3 +407,115 @@ class TestIceFlagsInHelp:
             "ocean-ice-lati",
         ]:
             assert flag in result.output, f"Expected '{flag}' in help output"
+
+
+def _milky_way_args(tmp_path: Path) -> list[str]:
+    """Create a stand-in source file and return the base milky-way CLI args."""
+    source = tmp_path / "source.exr"
+    source.touch()
+    return [
+        "milky-way",
+        "--input",
+        str(source),
+        "--output",
+        str(tmp_path / "out.jxl"),
+    ]
+
+
+class TestMilkyWayHelp:
+    def test_options_in_help(self) -> None:
+        result = runner.invoke(app, ["milky-way", "--help"])
+        assert result.exit_code == 0
+        for flag in [
+            "--input",
+            "--output",
+            "--width",
+            "--quality",
+            "--effort",
+            "--seed",
+            "--strong",
+            "--eps",
+            "--bg-sigma",
+            "--dilate",
+            "--fill-sigma",
+            "--blur",
+        ]:
+            assert flag in result.output, f"Expected '{flag}' in help output"
+
+
+class TestMilkyWayDefaults:
+    def test_defaults_reach_the_runner(self, tmp_path: Path) -> None:
+        with patch("texture_pipeline.main.run_milky_way") as mock:
+            result = runner.invoke(app, _milky_way_args(tmp_path))
+            assert result.exit_code == 0
+            kwargs = mock.call_args.kwargs
+            assert kwargs["target_width"] == 8192
+            assert kwargs["quality"] == 90
+            assert kwargs["effort"] == 7
+            assert kwargs["params"] == MilkyWayParams()
+
+    def test_parameters_reach_the_runner(self, tmp_path: Path) -> None:
+        args = [
+            *_milky_way_args(tmp_path),
+            "--width",
+            "4096",
+            "--quality",
+            "100",
+            "--seed",
+            "11",
+            "--k",
+            "2.5",
+            "--strong",
+            "8",
+            "--eps",
+            "0.001",
+            "--bg-sigma",
+            "30",
+            "--dilate",
+            "16",
+            "--fill-sigma",
+            "16",
+            "--blur",
+            "16",
+        ]
+        with patch("texture_pipeline.main.run_milky_way") as mock:
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0
+            kwargs = mock.call_args.kwargs
+            assert kwargs["target_width"] == 4096
+            assert kwargs["quality"] == 100
+            assert kwargs["params"] == MilkyWayParams(
+                k=2.5,
+                strong=8.0,
+                eps=0.001,
+                bg_sigma=30.0,
+                dilate=16.0,
+                fill_sigma=16.0,
+                blur=16.0,
+                seed=11,
+            )
+
+
+class TestMilkyWayValidation:
+    def test_odd_width_is_refused(self, tmp_path: Path) -> None:
+        args = [*_milky_way_args(tmp_path), "--width", "8191"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+    def test_negative_blur_is_refused(self, tmp_path: Path) -> None:
+        args = [*_milky_way_args(tmp_path), "--blur", "-1"]
+        result = runner.invoke(app, args)
+        assert result.exit_code != 0
+
+    def test_missing_input_is_refused(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "milky-way",
+                "--input",
+                str(tmp_path / "nothing.exr"),
+                "--output",
+                str(tmp_path / "out.jxl"),
+            ],
+        )
+        assert result.exit_code != 0

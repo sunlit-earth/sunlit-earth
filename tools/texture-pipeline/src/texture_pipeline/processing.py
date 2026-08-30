@@ -59,8 +59,9 @@ def encode_jxl(
 ) -> None:
     """Encode a PIL image as JPEG XL.
 
-    Always uses lossy encoding (``lossless_jpeg=False``) so that quality and
-    effort parameters take effect, even when the source is a JPEG.
+    Never reconstructs a JPEG (``lossless_jpeg=False``), so that quality and
+    effort take effect even when the source is one. Quality 100 asks the
+    plugin for a lossless encode rather than for its highest lossy setting.
 
     :param img: Source PIL image.
     :param output_path: Path for the output ``.jxl`` file.
@@ -68,4 +69,10 @@ def encode_jxl(
     :param effort: Encoding effort (1--9). Higher = smaller file, slower encode.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(output_path, quality=quality, effort=effort, lossless_jpeg=False)
+    img.save(
+        output_path,
+        quality=quality,
+        effort=effort,
+        lossless_jpeg=False,
+        lossless=quality >= 100,
+    )

@@ -211,7 +211,7 @@ export component MainWindow inherits Window {
     in-out property <float> day-gamma: 0.5;
     in-out property <float> day-saturation: 1.0;
     in-out property <float> night-gamma: 0.5;
-    in-out property <float> night-saturation: 1.0;
+    in-out property <float> night-saturation: 0.85;
     in-out property <float> cloud-opacity: 0.85;
     in-out property <float> cloud-opacity-night: 0.55;
     in-out property <float> cloud-floor: 0.25;
@@ -225,7 +225,7 @@ export component MainWindow inherits Window {
     in-out property <float> nightglow-balance: 0.37;
     in-out property <float> nightglow-falloff: 15.0;
     in-out property <float> atmo-sunrise-glow: 1.0;
-    in-out property <float> atmo-sunrise-width: 30.0;
+    in-out property <float> atmo-sunrise-width: 20.0;
     in-out property <float> sky-fov: 140.0;
     in-out property <float> star-intensity: 2.0;
     in-out property <float> star-size: 1.0;
@@ -233,8 +233,8 @@ export component MainWindow inherits Window {
     in-out property <float> star-glow-radius: 8.0;
     in-out property <float> star-contrast: 0.3;
     in-out property <float> star-mag-limit: 6.5;
-    in-out property <float> sun-glow: 1.0;
-    in-out property <float> sun-rays: 0.6;
+    in-out property <float> sun-glow: 1.2;
+    in-out property <float> sun-rays: 0.75;
     in-out property <float> sun-flare: 0.15;
     in-out property <float> sun-size: 1.0;
     in-out property <float> sun-halo-radius: 3.0;
@@ -244,8 +244,8 @@ export component MainWindow inherits Window {
     in-out property <float> sun-reddening: 1.0;
     in-out property <float> sun-refraction: 1.0;
     in-out property <float> moon-brightness: 1.0;
-    in-out property <float> moon-size: 1.0;
-    in-out property <float> moon-earthshine: 0.05;
+    in-out property <float> moon-size: 2.5;
+    in-out property <float> moon-earthshine: 0.15;
     in-out property <float> milky-way-intensity: 0.2;
 
     in property <float> zoom-display-distance: 8.0;

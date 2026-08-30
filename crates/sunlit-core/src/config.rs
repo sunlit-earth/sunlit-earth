@@ -371,7 +371,7 @@ impl Default for AppConfig {
             nightglow_falloff: 15.0,
             nightglow_balance: 0.37,
             atmo_sunrise_glow: 1.0,
-            atmo_sunrise_width: 30.0,
+            atmo_sunrise_width: 20.0,
             sky_fov: 140.0,
             star_intensity: 2.0,
             star_size: 1.0,
@@ -379,8 +379,8 @@ impl Default for AppConfig {
             star_glow_radius: 8.0,
             star_contrast: 0.3,
             star_mag_limit: 6.5,
-            sun_glow: 1.0,
-            sun_rays: 0.6,
+            sun_glow: 1.2,
+            sun_rays: 0.75,
             sun_flare: 0.15,
             sun_size: 1.0,
             sun_halo_radius: 3.0,
@@ -390,13 +390,13 @@ impl Default for AppConfig {
             sun_reddening: 1.0,
             sun_refraction: 1.0,
             moon_brightness: 1.0,
-            moon_size: 1.0,
-            moon_earthshine: 0.05,
+            moon_size: 2.5,
+            moon_earthshine: 0.15,
             milky_way_intensity: 0.2,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
-            night_saturation: 1.0,
+            night_saturation: 0.85,
             auto_refresh_enabled: false,
             auto_refresh_interval_minutes: 5,
             use_custom_datetime: false,
@@ -735,8 +735,8 @@ mod tests {
     #[test]
     fn default_sun_shows_the_glare_and_a_trace_of_the_camera() {
         let config = AppConfig::default();
-        assert_relative_eq!(config.sun_glow, 1.0);
-        assert_relative_eq!(config.sun_rays, 0.6);
+        assert_relative_eq!(config.sun_glow, 1.2);
+        assert_relative_eq!(config.sun_rays, 0.75);
         assert_relative_eq!(config.sun_flare, 0.15);
         assert_relative_eq!(config.sun_size, 1.0);
         assert_relative_eq!(config.sun_halo_radius, 3.0);
@@ -755,7 +755,7 @@ mod tests {
         assert_relative_eq!(config.sun_horizon_boost, 3.0);
         assert_relative_eq!(config.sun_horizon_reach, 4.0);
         assert_relative_eq!(config.atmo_sunrise_glow, 1.0);
-        assert_relative_eq!(config.atmo_sunrise_width, 30.0);
+        assert_relative_eq!(config.atmo_sunrise_width, 20.0);
     }
 
     /// A file is a text file, and camera mode above one draws a flare the
@@ -774,11 +774,11 @@ mod tests {
     }
 
     #[test]
-    fn default_moon_is_visible_at_its_true_size() {
+    fn default_moon_is_enlarged_two_and_a_half_times() {
         let config = AppConfig::default();
         assert_relative_eq!(config.moon_brightness, 1.0);
-        assert_relative_eq!(config.moon_size, 1.0);
-        assert_relative_eq!(config.moon_earthshine, 0.05);
+        assert_relative_eq!(config.moon_size, 2.5);
+        assert_relative_eq!(config.moon_earthshine, 0.15);
     }
 
     /// On by default, and at a fifth of full strength: the panorama's own
@@ -799,15 +799,15 @@ mod tests {
     fn deserialize_missing_moon_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.moon_brightness, 1.0);
-        assert_relative_eq!(config.moon_size, 1.0);
-        assert_relative_eq!(config.moon_earthshine, 0.05);
+        assert_relative_eq!(config.moon_size, 2.5);
+        assert_relative_eq!(config.moon_earthshine, 0.15);
     }
 
     #[test]
     fn deserialize_missing_sun_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.sun_glow, 1.0);
-        assert_relative_eq!(config.sun_rays, 0.6);
+        assert_relative_eq!(config.sun_glow, 1.2);
+        assert_relative_eq!(config.sun_rays, 0.75);
         assert_relative_eq!(config.sun_flare, 0.15);
         assert_relative_eq!(config.sun_size, 1.0);
         assert_relative_eq!(config.sun_halo_radius, 3.0);
@@ -822,7 +822,7 @@ mod tests {
     fn deserialize_missing_sunrise_band_fields_fills_defaults() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.atmo_sunrise_glow, 1.0);
-        assert_relative_eq!(config.atmo_sunrise_width, 30.0);
+        assert_relative_eq!(config.atmo_sunrise_width, 20.0);
     }
 
     #[test]

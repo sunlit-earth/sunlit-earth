@@ -240,8 +240,8 @@ fn test_default_star_tuning_uses_balanced_profile() {
 #[test]
 fn test_default_sun_shows_the_glare_and_a_trace_of_the_camera() {
     let window = create_window();
-    approx::assert_relative_eq!(window.get_sun_glow(), 1.0);
-    approx::assert_relative_eq!(window.get_sun_rays(), 0.6);
+    approx::assert_relative_eq!(window.get_sun_glow(), 1.2);
+    approx::assert_relative_eq!(window.get_sun_rays(), 0.75);
     approx::assert_relative_eq!(window.get_sun_flare(), 0.15);
     approx::assert_relative_eq!(window.get_sun_size(), 1.0);
     approx::assert_relative_eq!(window.get_sun_halo_radius(), 3.0);
@@ -264,17 +264,17 @@ fn test_default_horizon_matches_the_config() {
 }
 
 #[test]
-fn test_default_moon_is_visible_at_its_true_size() {
+fn test_default_moon_is_enlarged_two_and_a_half_times() {
     let window = create_window();
     approx::assert_relative_eq!(window.get_moon_brightness(), 1.0);
-    approx::assert_relative_eq!(window.get_moon_size(), 1.0);
-    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.05);
+    approx::assert_relative_eq!(window.get_moon_size(), 2.5);
+    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.15);
 }
 
 #[test]
-fn test_default_milky_way_is_on_at_half_strength() {
+fn test_default_milky_way_is_on_at_a_fifth_of_full_strength() {
     let window = create_window();
-    approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.5);
+    approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.2);
 }
 
 // ---------------------------------------------------------------------------

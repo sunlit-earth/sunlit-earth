@@ -117,7 +117,9 @@ cargo llvm-cov --html              # HTML coverage report under target/llvm-cov/
 
 ## Where files are written
 
-`config.toml`, the cloud cache, the downscaled surface textures in `texture_cache/`, the exported `wallpaper.png`, and the memory metrics CSV all live in the platform local data directory under `SunlitEarth`: `%LOCALAPPDATA%\SunlitEarth` on Windows, `~/.local/share/SunlitEarth` on Linux, `~/Library/Application Support/SunlitEarth` on macOS.
+`config.toml`, the cloud cache, the downscaled surface textures in `texture_cache/`, the exported wallpaper, and the memory metrics CSV all live in the platform local data directory under `SunlitEarth`: `%LOCALAPPDATA%\SunlitEarth` on Windows, `~/.local/share/SunlitEarth` on Linux, `~/Library/Application Support/SunlitEarth` on macOS.
+
+The wallpaper is two files, `wallpaper-1.png` and `wallpaper-2.png`, and each publish writes whichever of them the desktop is not currently showing. A Linux desktop shell keys the wallpaper it has loaded on the path it was handed, so a new image at the path already in that setting is one nothing reloads; alternating means every publish hands over a path the desktop has to read.
 
 ### Environment overrides
 

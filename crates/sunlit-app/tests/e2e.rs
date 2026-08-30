@@ -1784,6 +1784,10 @@ fn test_memory_report() {
 
 /// Ask this desktop what its wallpaper is, and check the answer is ours.
 ///
+/// Answers with the file name the desktop was found to be holding, so that a
+/// caller which publishes twice can require the second answer to differ from the
+/// first. `None` where this desktop's setter has no store to ask.
+///
 /// A setter that exited zero is a weaker claim than a wallpaper that changed,
 /// and the difference is not theoretical: the XFCE backend passed this case
 /// while the desktop went on showing xfdesktop's own default, because it wrote a
@@ -1805,8 +1809,10 @@ fn test_memory_report() {
 /// desktop whose settings are named after its own monitors has to hold the image
 /// in one of those, and nothing else counts.
 #[cfg(target_os = "linux")]
-fn assert_the_desktop_holds_the_wallpaper() {
-    let image = sunlit_core::wallpaper::wallpaper_file().expect("a local data directory");
+fn assert_the_desktop_holds_the_wallpaper() -> Option<String> {
+    let image = sunlit_core::wallpaper::published_wallpaper_file()
+        .expect("a local data directory")
+        .expect("the setter said it set a wallpaper, so one was written");
     // The file name rather than the whole path, because what a write carries is
     // the path in that desktop's own spelling: a `file://` URI for the gsettings
     // rows and a plain path for the rest.
@@ -1845,7 +1851,7 @@ fn assert_the_desktop_holds_the_wallpaper() {
                     backend.desktop, command.program
                 ),
             );
-            return;
+            return None;
         };
         let value = read_setting(&query);
         assert!(
@@ -1890,6 +1896,7 @@ fn assert_the_desktop_holds_the_wallpaper() {
         backend.desktop,
         holders.len()
     );
+    Some(name)
 }
 
 /// The command that reads back what one of the sink's writes set.
@@ -1957,7 +1964,9 @@ fn read_setting(query: &sunlit_core::desktop::Invocation) -> String {
 /// What it exercises is the whole path the "Set as Wallpaper" button uses:
 /// render at the sink's native resolution, read back, encode a PNG, and hand
 /// it to the OS. The engine reports the outcome on its own channel, so the
-/// signal waited for here is the completion rather than the request.
+/// signal waited for here is the completion rather than the request. It presses
+/// the button twice, because a wallpaper that changes once and then stops is the
+/// shape this feature fails in.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -2033,18 +2042,49 @@ fn test_set_wallpaper() {
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
-    // The full-resolution render, readback, and PNG encode take longer than a
-    // preview frame, and on a software adapter in a VM longer again.
-    send_ipc_command(&socket_name, "set-wallpaper");
-    let line = stdout_watcher.wait_for_signal_line_from(
-        "wallpaper_",
-        stdout_watcher.line_count().saturating_sub(1),
-        Duration::from_mins(2),
+    // Twice, because the second publish is its own case: a desktop keys the
+    // wallpaper it is showing on the path it was handed, so a frame written to
+    // the path already in that setting is one nothing reloads. A setter that
+    // succeeded on a first publish and changed nothing on a second is exactly
+    // what a single pass here cannot tell apart from working.
+    let mut published: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(target_os = "linux")]
+    let mut held: Vec<Option<String>> = Vec::new();
+    for pass in 1..=2 {
+        // The full-resolution render, readback, and PNG encode take longer than
+        // a preview frame, and on a software adapter in a VM longer again.
+        let from = stdout_watcher.line_count();
+        send_ipc_command(&socket_name, "set-wallpaper");
+        let line =
+            stdout_watcher.wait_for_signal_line_from("wallpaper_", from, Duration::from_mins(2));
+        assert!(
+            line.contains("wallpaper_set"),
+            "publish {pass}: the engine reported a failure instead: {line}"
+        );
+        published.push(
+            sunlit_core::wallpaper::published_wallpaper_file()
+                .expect("a local data directory")
+                .expect("the engine reported a wallpaper, so one was written"),
+        );
+
+        // Everything above is the app's own account of what it did. This is the
+        // desktop's.
+        #[cfg(target_os = "linux")]
+        held.push(assert_the_desktop_holds_the_wallpaper());
+    }
+    assert_ne!(
+        published[0], published[1],
+        "the second publish wrote the path the desktop was already showing, \
+         which is a wallpaper that does not visibly change"
     );
-    assert!(
-        line.contains("wallpaper_set"),
-        "the engine reported a failure instead: {line}"
-    );
+    // And the desktop stored the new one, where its setter has a store to ask.
+    #[cfg(target_os = "linux")]
+    if let [Some(first), Some(second)] = held.as_slice() {
+        assert_ne!(
+            first, second,
+            "the desktop reports the same wallpaper after both publishes"
+        );
+    }
 
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
@@ -2062,9 +2102,4 @@ fn test_set_wallpaper() {
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
-
-    // Everything above is the app's own account of what it did. This is the
-    // desktop's.
-    #[cfg(target_os = "linux")]
-    assert_the_desktop_holds_the_wallpaper();
 }

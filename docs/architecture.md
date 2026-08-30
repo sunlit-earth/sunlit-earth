@@ -134,7 +134,9 @@ The rule is "the highest supported count at most the requested one, otherwise th
 
 ## Wallpaper export
 
-The engine renders at the sink's native resolution using temporary GPU textures with `COPY_SRC`, reads them back through a staging buffer with 256-byte row alignment, encodes PNG, saves to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applies it with `SystemParametersInfoW`. PNG rather than TIFF because Windows preserves PNG wallpapers losslessly; TIFF wallpapers are JPEG-transcoded at 85% quality and band visibly in smooth gradients.
+The engine renders at the sink's native resolution using temporary GPU textures with `COPY_SRC`, reads them back through a staging buffer with 256-byte row alignment, encodes PNG, saves it under `SunlitEarth` in the local data directory, and applies it with `SystemParametersInfoW` on Windows or the desktop's own setter on Linux. PNG rather than TIFF because Windows preserves PNG wallpapers losslessly; TIFF wallpapers are JPEG-transcoded at 85% quality and band visibly in smooth gradients.
+
+The output alternates between `wallpaper-1.png` and `wallpaper-2.png` rather than being one name, and `wallpaper.rs` owns that choice: a publish writes whichever file the desktop is not showing, which is what makes the handover a path the desktop has to load rather than one it can recognize and ignore. `docs/platforms.md` has the reasoning, which is entirely a Linux one; Windows shares the behaviour because `SystemParametersInfoW` does not care either way.
 
 ## Memory reporting
 

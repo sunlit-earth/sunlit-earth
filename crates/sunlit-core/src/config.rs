@@ -392,7 +392,7 @@ impl Default for AppConfig {
             moon_brightness: 1.0,
             moon_size: 1.0,
             moon_earthshine: 0.05,
-            milky_way_intensity: 0.5,
+            milky_way_intensity: 0.2,
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -781,18 +781,18 @@ mod tests {
         assert_relative_eq!(config.moon_earthshine, 0.05);
     }
 
-    /// On by default, and at half strength: the panorama's own tone map is a
-    /// neutral one, so the slider is where the band stops competing with the
-    /// globe it sits behind.
+    /// On by default, and at a fifth of full strength: the panorama's own
+    /// tone map is a neutral one, so the slider is where the band stops
+    /// competing with the globe it sits behind.
     #[test]
-    fn the_milky_way_defaults_to_half_strength() {
-        assert_relative_eq!(AppConfig::default().milky_way_intensity, 0.5);
+    fn the_milky_way_defaults_to_a_fifth() {
+        assert_relative_eq!(AppConfig::default().milky_way_intensity, 0.2);
     }
 
     #[test]
     fn deserialize_missing_the_milky_way_fills_the_default() {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.milky_way_intensity, 0.5);
+        assert_relative_eq!(config.milky_way_intensity, 0.2);
     }
 
     #[test]

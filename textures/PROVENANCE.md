@@ -49,20 +49,22 @@ Earth's.
 ## milkyway_2020_4k.jxl
 
 The diffuse Milky Way, 4096x2048, as a full-sky equirectangular panorama in
-equatorial J2000 coordinates.
+equatorial J2000 coordinates, denoised.
 
 - Source: NASA Scientific Visualization Studio, [Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851)
   (SVS ID 4851, released 2020-09-09). Visualizer Ernie Wright (USRA).
-- File taken: `milkyway_2020_4k.exr`, the celestial-coordinate variant at
-  4096x2048, sha256
-  `2eb802d6e68d170b410f766c7fec07f7518619f6b6708fdc81e9302d93e74fdb`,
-  downloaded 2026-08-27 from
-  `https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/milkyway_2020_4k.exr`.
-- Underlying data: Gaia DR2 star fluxes, with the Hipparcos and Tycho bright
-  stars deliberately excluded, so this layer is the unresolved starlight and
-  nothing that phase A already draws as a sprite. The companion `hiptyc_2020`
-  layer holds those bright stars and is not used. Linear half-float, values in
-  0 to 1 with the maximum reached by about sixteen pixels.
+- File taken: `milkyway_2020_8k.exr`, the celestial-coordinate variant at
+  8192x4096, 137,307,727 bytes, sha256
+  `361d1961647af073b3b3e4aea4fca85f15b3c9d915e0c8c4befb02520dadd10a`,
+  downloaded 2026-08-30 from
+  `https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/milkyway_2020_8k.exr`.
+- Underlying data: Gaia DR2 star fluxes for every star fainter than magnitude
+  11.5, with the Hipparcos and Tycho-2 stars deliberately excluded, so this
+  layer is the unresolved starlight and nothing that is drawn as a sprite. The
+  companion `hiptyc_2020` layer holds those bright stars and is not used.
+  Linear half-float. The pixels hold flux per pixel, so each published
+  resolution has its own scale: the 4k file's values are four times the 8k
+  file's and sixteen times the 16k file's.
 - The celestial variant rather than the galactic one: it needs no galactic
   rotation at runtime, since the renderer already has the J2000 equatorial to
   world rotation that everything else in the sky goes through.
@@ -70,32 +72,31 @@ equatorial J2000 coordinates.
   "NASA/GSFC/SVS", and Gaia DR2 for "ESA/Gaia/DPAC"; the About window carries
   both.
 
-Preparation, on a Windows host with ImageMagick 7 and libjxl 0.11.1:
+Preparation, with the texture pipeline in `tools/texture-pipeline`:
 
 ```
-magick milkyway_2020_4k.exr -set colorspace RGB -colorspace sRGB -depth 8 milkyway_srgb.png
-magick milkyway_srgb.png -quality 100 milkyway_2020_4k.jxl
+uv run texture-pipeline milky-way -i milkyway_2020_8k.exr -o milkyway_2020_4k.jxl -w 4096
 ```
 
-`-set colorspace RGB` declares the EXR's data linear without converting it, and
-`-colorspace sRGB` then applies the sRGB transfer curve. That is the whole tone
-map: no exposure gain and no artistic curve, because the renderer works in
-display values throughout (the surface textures, the clear color and the
-additive sky draws are all in that space) and `milky_way_intensity` covers taste
-at runtime. Nothing clips, since the source's own maximum is 1.0. The sRGB
-curve's linear toe rather than a plain gamma is what keeps the faint sky off
-zero: the darkest sky in the source lands a few code values above black instead
-of on it.
+What that does, in linear light: a gain of 4 lifts the 8k file onto the 4k
+grid's flux scale, which is the scale `milky_way_intensity` was tuned against;
+a box average takes it to 4096 wide; a despeckle caps each pixel's luminance at
+three times a clipped local background and replaces the footprints of the stars
+above nine times it, which on this run trimmed 2.04% of the pixels and replaced
+0.03%; a Gaussian of 7.9 arcminutes blurs what is left; and the sRGB transfer
+curve with one code value of triangular dither takes it to 8 bits, the dither
+because the smoothed dark sky posterizes without it. The output is a lossy JPEG
+XL at the command's default quality 90 and effort 7, 501,115 bytes. The
+reasoning behind every parameter and the measurements that set them are in
+`docs/plans/2026-08-30-milky-way-denoise-pipeline-plan.md`.
 
-Quality 100 is lossless, and measured through the app's own `jxl-oxide` path
-against `milkyway_srgb.png` it decodes to a mean channel difference of 0.0000
-with no pixel off at all, at 9.9 MB. Quality 99 is 0.92 of 255 with a worst
-pixel off by 27, at 4.6 MB; 97 is 1.43 and 36 at 3.3 MB; 95 is 1.69 and 36 at
-2.7 MB; 90 is 2.91 and 42 at 1.6 MB. Lossless was taken because this asset is
-Gaia photon noise over a smooth gradient, which is the content a lossy codec
-handles worst, and because it is the one texture that covers the whole frame:
-an artifact in it is a property of every pixel of the sky rather than of a
-thirty-pixel disc.
+The published map's grain is the sky itself at a scale no eye resolves, a
+different handful of magnitude 12 to 16 stars in every pixel and isolated stars
+just past the Tycho limit peaking at five to twenty times their surroundings,
+which is why the earlier lossless encode of the plain 4k file was noisy and why a
+plain blur could not fix it: the radius that removes the grain leaves every
+isolated star as a soft blob. Lossless is no longer needed either, since the
+noise that a lossy codec handles worst is gone.
 
 No orientation work is done offline, as with the Moon. What the source's own
 layout is, measured against known sky positions rather than assumed, is that a

@@ -15,4 +15,4 @@ cargo test -p sunlit-core --test soak     # mock clock, 14 simulated days
 cargo test -p sunlit-core --test golden   # golden images, per-adapter references
 ```
 
-The GPU tests run on the software adapter (WARP, lavapipe, or Metal) and assert invariants rather than exact pixels. See the workspace [CLAUDE.md](../../CLAUDE.md) and [docs/](../../docs/README.md) for the full testing conventions and the architecture rationale.
+The GPU tests run on the software adapter (WARP, lavapipe, or Metal) and assert invariants rather than exact pixels. See [docs/testing.md](../../docs/testing.md) for the full testing conventions and [docs/architecture.md](../../docs/architecture.md) for the architecture.

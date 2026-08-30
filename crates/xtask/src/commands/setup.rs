@@ -76,7 +76,7 @@ pub fn winget_install_script(id: &str) -> String {
 }
 
 /// Build dependencies for the Linux guest's binaries, matching the list in
-/// CLAUDE.md. `mesa-vulkan-drivers` supplies lavapipe, which is the adapter the
+/// README.md. `mesa-vulkan-drivers` supplies lavapipe, which is the adapter the
 /// GPU tests use.
 pub const LINUX_BUILD_DEPS: &str = "build-essential pkg-config clang libclang-dev \
      libfontconfig-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
@@ -326,7 +326,7 @@ fn windows_access_steps(inputs: &SetupInputs) -> Vec<Step> {
         if inputs.wsl_ready {
             "the toolchain and build dependencies are present".to_owned()
         } else {
-            "the Rust toolchain and the build dependencies from CLAUDE.md".to_owned()
+            "the Rust toolchain and the build dependencies from README.md".to_owned()
         },
     ));
 

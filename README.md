@@ -8,20 +8,21 @@ Written in Rust, rendered with wgpu, with a Slint settings window and a system t
 
 ## Status
 
-Early development, version 0.1.0. Frequent breaking changes. Windows is the platform that ships; Linux and macOS build, test, and render headlessly, but cannot set a wallpaper yet.
+Early development, version 0.1.0. Frequent breaking changes. Windows is the platform that ships. Linux builds, tests, renders headlessly, sets a wallpaper on the desktops listed below, and exits cleanly when its session ends. macOS builds, tests, and renders headlessly, and cannot set a wallpaper yet.
 
 | | Windows | Linux | macOS |
 |---|---|---|---|
 | Build and full test suite | yes | yes (lavapipe) | yes (Metal) |
 | `render` subcommand (headless PNG) | yes | yes | yes |
-| Settings window | yes | untested | untested |
-| Set the desktop wallpaper | yes | no | no |
+| Settings window | yes | yes, in the test VM | untested |
+| Set the desktop wallpaper | yes | yes, per desktop | no |
+| Clean exit when the session ends | yes | yes (SIGTERM) | no |
 
-Off Windows, asking for a wallpaper returns "not supported on this platform yet" in the status line instead of rendering something it cannot apply. The headless `render` subcommand is the cross-platform mode today. See [docs/roadmap.md](docs/roadmap.md) for what is planned.
+On Linux the wallpaper setter is chosen by `XDG_CURRENT_DESKTOP`: GNOME, KDE Plasma, XFCE and Cinnamon have been run; MATE, LXQt and Budgie have a setter written from their documentation and never run. On macOS asking for a wallpaper returns "not supported on this platform yet" in the status line instead of rendering something it cannot apply; the headless `render` subcommand is the mode there. [docs/platforms.md](docs/platforms.md) has the per-OS detail and [docs/roadmap.md](docs/roadmap.md) what is planned.
 
 ## Prerequisites
 
-A recent stable Rust toolchain. The workspace is on edition 2024 with resolver 3, so nothing older than Rust 1.85 will work at all, and individual dependencies may want newer. CI and local development both use current stable.
+Rust, through rustup: `rust-toolchain.toml` pins the channel (currently `1.94.0`, with rustfmt and clippy), and rustup selects it inside the checkout whatever the host's default is. A release build has to be able to say which compiler made it, and the VM builder images install the same channel from that file.
 
 Git LFS, for the texture assets. See [Textures](#textures) below.
 
@@ -34,6 +35,18 @@ sudo apt-get install build-essential pkg-config clang libclang-dev \
 ```
 
 `clang` and `libclang-dev` are for bindgen, which generates the Astronomy Engine FFI bindings at build time. The `libfontconfig` and `libxcb` packages are Slint's build dependencies. `mesa-vulkan-drivers` supplies lavapipe, the software Vulkan adapter that the GPU tests and `--software-rendering` use. `xvfb` is only needed if you want to run the suite exactly the way CI does; nothing in it opens a window today.
+
+That list is a superset of what `ci.yml` installs, on purpose: the GitHub runner image already carries `build-essential`, `pkg-config` and `clang`, so the workflow installs only the rest. A bare install carries none of them.
+
+### Linux from Windows (WSL)
+
+The Linux port is developed through WSL. Build into a Linux-native target directory, or the Windows and Linux artifacts fight over `target/`:
+
+```bash
+wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/path/to/sunlit-earth && CARGO_TARGET_DIR=$HOME/sunlit-target cargo test --workspace'
+```
+
+Install the Ubuntu package list above inside the distribution first. WSL's default adapter is a GL passthrough to the host GPU rather than lavapipe; `--software-rendering` and the headless tests select lavapipe, which is what CI uses.
 
 ### Windows
 
@@ -56,7 +69,7 @@ git lfs install
 git lfs pull
 ```
 
-The app looks for `world.topo.200405.jxl` (day side) and `BlackMarble_2016.jxl` (night lights) in the textures directory, resolved in this order: the `--textures-dir` flag, `SUNLIT_EARTH_TEXTURES`, `textures/` relative to the current working directory, then `textures/` in a parent of the executable.
+The app looks for four files in the textures directory: `world.topo.200405.jxl` (day side), `BlackMarble_2016.jxl` (night lights), `lroc_color_poles_1k.jxl` (the Moon's surface) and `milkyway_2020_4k.jxl` (the Milky Way panorama); `textures/PROVENANCE.md` records where each came from. The directory is resolved in this order: the `--textures-dir` flag, `SUNLIT_EARTH_TEXTURES`, `textures/` relative to the current working directory, then `textures/` in a parent of the executable. The Moon and the Milky Way are overlays: without their files the sky simply has no Moon or no band, and nothing waits for them.
 
 With no textures at all, the renderer falls back to a procedural grid, which is enough to check that the pipeline works. Leaving unfetched LFS pointer files in place is worse than having no textures: they look like assets and then fail to decode as JPEG XL. If you do not want the assets, point at an empty directory rather than at the pointer files.
 
@@ -83,6 +96,25 @@ cargo run -- render --output earth.png --width 1920 --height 1080
 
 The main flags are `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, and `--ipc-socket`. `cargo run -- --help` has the full list.
 
+### Developer tooling
+
+`cargo xtask` is the workspace's own tool crate. It bakes the committed assets, runs the desktop e2e suite in local VMs, and builds the release binaries in a pristine guest:
+
+```bash
+cargo xtask bake-icon              # rasterize the icon SVGs into assets/icon/baked/
+cargo xtask bake-icon --review DIR # the small-size contact sheet, for judging 16 and 24 px by eye
+cargo xtask bake-stars --input hyg_v44.csv --output crates/sunlit-core/src/assets/stars/hyg_v4_4_mag7.bin
+cargo xtask vm doctor              # can this host run the VM suite? Read-only.
+cargo xtask vm setup               # the one command that changes the host; elevated on Windows
+cargo xtask vm build-image <image> # windows | linux | windows-builder | linux-builder
+cargo xtask vm up|ssh|view|smoke|status|down|purge ...
+cargo xtask e2e --target <host|windows|linux> [--keep] [--desktop <kde|gnome|xfce|cinnamon>]
+cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cache] [--allow-expired-image] [--allow-dirty]
+cargo llvm-cov --html              # HTML coverage report under target/llvm-cov/html/
+```
+
+[docs/vm-setup.md](docs/vm-setup.md) is the guide to the VM commands, from host setup to release builds and cleanup; [docs/vm-internals.md](docs/vm-internals.md) is how they are built.
+
 ## Where files are written
 
 `config.toml`, the cloud cache, the downscaled surface textures in `texture_cache/`, the exported `wallpaper.png`, and the memory metrics CSV all live in the platform local data directory under `SunlitEarth`: `%LOCALAPPDATA%\SunlitEarth` on Windows, `~/.local/share/SunlitEarth` on Linux, `~/Library/Application Support/SunlitEarth` on macOS.
@@ -101,7 +133,19 @@ Every one of those locations can be moved, which is also how the tests stay out 
 | `SUNLIT_EARTH_CLOUD_POLL_SECS` | Cloud poll interval in seconds |
 | `SUNLIT_EARTH_NO_CLOUDS` | Presence only: disable cloud fetching entirely |
 
-Three more exist for the test suite rather than for running the app: `SUNLIT_EARTH_SYNC_LOG` (synchronous stderr logging, used by the e2e tests), `SUNLIT_EARTH_UPDATE_GOLDEN` (regenerate golden references), and `SUNLIT_EARTH_CONTACT_SHEET` (where the contact sheet is written).
+Three more exist for the test suite rather than for running the app: `SUNLIT_EARTH_SYNC_LOG` (presence only: synchronous stderr logging, used by the e2e tests), `SUNLIT_EARTH_UPDATE_GOLDEN` (presence only: regenerate golden references), and `SUNLIT_EARTH_CONTACT_SHEET` (where the contact sheet is written).
+
+The e2e harness and `cargo xtask` read a further set. They follow the same blank-is-unset rule.
+
+| Variable | Effect |
+|---|---|
+| `SUNLIT_EARTH_BIN` | The app binary the e2e suite spawns. Falls back to the compile-time `CARGO_BIN_EXE` path, which is wrong inside a guest |
+| `SUNLIT_EARTH_E2E_FIXTURES` | The e2e fixtures directory, for the same reason |
+| `SUNLIT_EARTH_E2E_WALLPAPER` | Presence only: lets `test_set_wallpaper` run. Only the generated guest jobs set it, because the case replaces the desktop wallpaper of whatever machine runs it |
+| `SUNLIT_EARTH_VM_DIR` | The VM image store. Defaults to `%LOCALAPPDATA%\SunlitEarth\vm` or `~/.local/share/SunlitEarth/vm` |
+| `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. Refused for a layer image |
+| `SUNLIT_EARTH_VM_RESOLUTION` | Either guest console's resolution as `WxH`. Unset means the largest Hyper-V console mode that fits the host's screen, and 1920x1080 for a QEMU guest |
+| `SUNLIT_EARTH_REPO` | The repository root, for running the xtask binary from outside its checkout. Defaults to the compile-time location of the crate |
 
 ## Tests
 
@@ -112,21 +156,25 @@ cargo clippy --all-targets # lint; pedantic is on
 cargo fmt --check          # format gate, also run in CI
 ```
 
-The suite includes real-GPU integration tests, a mock-clock soak test that simulates 14 days in about 13 seconds, and golden image comparisons against per-adapter references. Golden references are keyed by adapter (`warp` on Windows, `lavapipe` on Linux, `metal` on macOS), so the software adapter has to be available for those to run. The desktop end-to-end suite is `#[ignore]`d and run by hand on Windows with `cargo e2e`, since it needs a real interactive desktop.
+The suite includes real-GPU integration tests, a mock-clock soak test that simulates 14 days in about 13 seconds, and golden image comparisons against per-adapter references. Golden references are keyed by adapter (`warp` on Windows, `lavapipe` on Linux, `metal` on macOS), so the software adapter has to be available for those to run. The desktop end-to-end suite is `#[ignore]`d because it needs a real interactive desktop: `cargo e2e` runs it on this desktop, and `cargo xtask e2e --target <windows|linux>` runs it in a local VM, which is where all of its cases pass. [docs/testing.md](docs/testing.md) has the layers and the conventions.
 
-CI runs the same suite on Ubuntu, Windows, and macOS with `RUSTFLAGS: "-D warnings"`, so a warning fails the build there.
+Hosted CI (`ci.yml`) is dispatched by hand rather than run on every push, since the repository's Actions minutes are billed and the local VM suite covers what the runners were for. A dispatch runs the suite on Ubuntu, Windows, and macOS with `RUSTFLAGS: "-D warnings"`, so a warning fails the build there.
 
 ## Repository layout
 
 ```
 crates/sunlit-core/   headless engine: wgpu renderer, shaders, astronomy, assets, config
 crates/sunlit-app/    Slint shell: window, tray, IPC, CLI (package name: sunlit-earth)
-docs/                 vision, technical decisions, roadmap, retrospective, plans
-textures/             8K JPEG XL assets, Git LFS
+crates/xtask/         developer tooling: VM orchestration, release builds, the asset bakes
+assets/icon/          the app icon: SVG master, size variants, and the committed bake
+assets/linux/         the desktop entry and the user-local install script
+docs/                 architecture, rendering, testing, platforms, roadmap, plans
+textures/             JPEG XL assets (Earth day and night, Moon, Milky Way), Git LFS
 tools/                offline Python tools for preparing assets
+vm/                   VM templates and guest scripts, one directory per image
 ```
 
-The organizing principle is headless first: the engine runs to completion with no window at all, and the settings window is one optional client. [docs/README.md](docs/README.md) indexes the design documents; [docs/tech.md](docs/tech.md) covers the technology decisions and [docs/retrospective-2026-08.md](docs/retrospective-2026-08.md) explains why the architecture looks the way it does.
+The organizing principle is headless first: the engine runs to completion with no window at all, and the settings window is one optional client. [docs/README.md](docs/README.md) indexes the documentation. [docs/architecture.md](docs/architecture.md) is the engine, the parameters and the app; [docs/rendering.md](docs/rendering.md) is the shaders and every layer of the sky; [docs/retrospective-2026-08.md](docs/retrospective-2026-08.md) explains why the architecture looks the way it does.
 
 ### Asset tools
 
@@ -145,4 +193,4 @@ The globe renders as a grid of lines. The textures were not found. Check that `g
 
 ## License
 
-GPL-3.0-or-later, as declared in `Cargo.toml`. The full license text is not in the repository yet. Slint is used under its GPLv3 option, and Astronomy Engine is MIT.
+GPL-3.0-or-later, as declared in `Cargo.toml`; the full text is in [LICENSE](LICENSE). Slint is used under its GPLv3 option, and Astronomy Engine is MIT. The star catalog's attribution is in `crates/sunlit-core/src/assets/stars/ATTRIBUTION.md` and the imagery's in `textures/PROVENANCE.md`.

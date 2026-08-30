@@ -1,17 +1,26 @@
 # Documentation
 
-## Overview
+## How the code works
 
-- [project.md](project.md) — project vision, goals, motivation, and technology stack
-- [tech.md](tech.md) — technical decisions, constraints, rendering approach, wallpaper APIs, astronomy
-- [related.md](related.md) — competitive analysis of existing satellite imagery and rendered globe apps
-- [roadmap.md](roadmap.md) — planned features and improvements, roughly ordered by priority
-- [notes.md](notes.md) — open issues and research topics
-- [vm-setup.md](vm-setup.md) — running the desktop e2e suite in a local VM: setup, images, interactive access, cleanup
-- [retrospective-2026-08.md](retrospective-2026-08.md) — prototype retrospective: what worked, what failed (including the tray-mode memory leak analysis), and the plan for the next iteration
+- [architecture.md](architecture.md): the crate split, the headless-first engine and its clients, `SceneParams`, the renderer's resources, the app and the settings window, quality tiers, texture resolution, memory reporting, environment knobs, dependencies, constraints
+- [rendering.md](rendering.md): the shaders and the draw order, then each layer of the sky (stars and planets, the Sun, the Moon, the Milky Way) and the clouds on the night side, with the measurements behind each
+- [testing.md](testing.md): the test layers, the conventions every layer follows, golden images, and the hosted CI workflows
+- [platforms.md](platforms.md): what each OS does today, the per-OS implementations, setting a wallpaper on Linux, and how the desktop e2e cases gate themselves
+- [app-icon.md](app-icon.md): the mark, the bake, and which surface consumes which raster
+- [vm-setup.md](vm-setup.md): running the desktop e2e suite and the release builds in a local VM: setup, images, interactive access, cleanup, troubleshooting
+- [vm-internals.md](vm-internals.md): how `cargo xtask` is built, module by module, and why each decision came out the way it did
+
+## Vision and history
+
+- [project.md](project.md): project vision, goals, motivation, and technology stack
+- [tech.md](tech.md): the technology survey the stack was chosen from: constraints, wallpaper APIs, astronomy libraries, the framework options
+- [related.md](related.md): competitive analysis of existing satellite imagery and rendered globe apps
+- [roadmap.md](roadmap.md): planned features and improvements, roughly ordered by priority, and the known defects
+- [notes.md](notes.md): open issues and research topics
+- [retrospective-2026-08.md](retrospective-2026-08.md): prototype retrospective: what worked, what failed (including the tray-mode memory leak analysis), and the plan for the next iteration
 
 ## Plans
 
 The `plans/` folder contains research documents, implementation plans, and investigation notes produced during development. Files are prefixed with the date they were created (e.g. `2026-03-15-day-night-plan.md`).
 
-These documents follow the **Research-Plan-Implement (RPI)** framework and were created with [rpikit](https://github.com/bostonaholic/rpikit), a structured methodology for Claude Code that separates work into distinct research, planning, and implementation phases.
+These documents follow the Research-Plan-Implement (RPI) framework and were created with [rpikit](https://github.com/bostonaholic/rpikit), a structured methodology for Claude Code that separates work into distinct research, planning, and implementation phases.

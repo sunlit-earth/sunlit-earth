@@ -1,0 +1,218 @@
+# Architecture
+
+How the code is organized and why: the crate split, the engine thread and its clients, the parameter flow, the renderer's resources, the settings window, and the settings that are not shader parameters. The rendering itself (shaders, draw order, the celestial bodies, the clouds) is in [rendering.md](rendering.md), the tests in [testing.md](testing.md), and the per-OS behavior in [platforms.md](platforms.md). [retrospective-2026-08.md](retrospective-2026-08.md) section 7 is the reasoning behind the headless-first design; read it before changing the engine or the crate split.
+
+## Workspace layout
+
+```
+sunlit-earth/
+  crates/
+    sunlit-core/     # headless: no Slint, no window, no event loop
+      shaders/       # WGSL, included at compile time by renderer/gpu_setup.rs
+      src/assets/    # texture loading + downscale cache, cloud source + updater, texture mailbox
+      src/assets/stars/  # the baked HYG blob and its ATTRIBUTION.md (committed data)
+      src/engine/    # the engine thread, injectable clock, wallpaper sink
+      src/geometry/  # sphere mesh, procedural grid texture
+      src/renderer/  # wgpu pipeline, offscreen render, readback
+      src/scene/     # camera, sky state (astronomy FFI), sun reference path, sun occlusion, moon placement, datetime
+      src/config.rs  # AppConfig, QualityTier, persistence
+      src/memory.rs  # per-OS process counters, the metrics CSV, the budget
+      src/memory_report.rs  # the four-section report of where the memory is
+      src/params.rs  # SceneParams, ParamsDigest, gamma slider mapping
+      tests/         # engine, soak, golden, shading, render_pipeline
+    sunlit-app/      # Slint shell: window, tray, IPC, config bridge
+      ui/main.slint  # MainWindow and TrayIcon
+      tests/         # e2e (desktop-gated), slint_ui
+    xtask/           # developer tooling: VM orchestration, the icon bake
+  assets/
+    icon/            # the mark: SVG master plus 32/24/16 variants, and baked/ (committed)
+    linux/           # sunlit-earth.desktop and the user-local install script
+  textures/          # local JXL assets, not part of the build: the two 8K Earth maps,
+                     # the Moon's 1024x512 surface and the 4096x2048 Milky Way
+                     # panorama, with PROVENANCE.md beside them
+  vm/                # Templates and guest assets, one directory per image slug
+    linux/           # Debian 13, four desktops on Xorg, cloud-init seed
+    windows/         # Windows 11 Enterprise eval, autounattend, bootstrap
+    linux-builder/   # Ubuntu 22.04, a Rust toolchain, no graphics stack
+    windows-builder/ # the two scripts that turn a child of the Windows image into a builder
+```
+
+The package inside `crates/sunlit-app` is still named `sunlit-earth`, so the binary, `CARGO_BIN_EXE_sunlit-earth`, and `target/release/sunlit-earth.exe` in the release workflow are unchanged by the directory name.
+
+## Headless first
+
+The organizing principle is **headless first**. The engine runs to completion with no window at all; the settings window is one optional client. Hiding the window removes a client, it does not half-suspend the machinery. This is what removed the tray-mode memory leak class, made soak tests possible, and retired the teardown hacks.
+
+## The engine (`sunlit_core::engine`)
+
+One thread owns the wgpu device, the `Renderer`, the texture mailbox, and the schedule. Clients send `EngineCommand`s and receive `EngineEvent`s.
+
+- **Commands**: `UpdateParams`, `SetPreviewSize`, `SetPreviewEnabled`, `RenderWallpaperNow`, `RenderToFile`, `ExportPixels`, `SetTextureResolution`, `ReportMemory`, `SetAutoRefresh`, `Poke`, `Shutdown`.
+- **Events**: `PreviewFrame { rgba, width, height }`, `TexturesReady`, `WallpaperSet(Result)`, `Status(String)`.
+- **The loop never sleeps on wall time to decide what is due.** It blocks on the command channel with a 50 ms timeout and, on each wake, asks `clock.elapsed()` what is due: the texture drain (5 s), the sky state refresh (120 s), the cloud poll, the memory metrics sample (600 s), and the auto-refresh export. `Schedule::due` recomputes its deadline from `now` rather than accumulating, so a long stall produces one run and not a burst of catch-up runs.
+- **Injected `Clock`.** `SystemClock` in production, `MockClock` in tests. `MockClock` advances UTC too, so simulated days really do rotate the Earth. This is what makes 14 simulated days run in 13 seconds.
+- **Injected `CloudSource`.** `HttpCloudSource` in production, fixtures in tests. A dedicated cloud worker thread does network I/O and JPEG decoding and never touches the GPU; it parks frames in the mailbox and pokes the engine, which uploads on its own schedule. A poll skipped because the worker is busy retries on the next tick. Which variant it fetches follows the texture resolution rather than the quality tier; see the Texture resolution section.
+- **Injected `WallpaperSink`.** `SystemWallpaper` writes a PNG and calls the Win32 API; `CountingSink` lets the soak test run for simulated weeks without touching the desktop.
+- **The preview follows window visibility.** The app sends `SetPreviewEnabled(false)` on every hide and `(true)` on every show, so a hidden window costs no readback. The engine keeps rendering regardless (the wallpaper export depends on it); only delivery stops. Re-showing pays back an "owed" frame from the existing texture, since the dirty check would otherwise suppress a re-render and leave the window blank.
+- **Preview frames are pixel buffers**, not shared GPU textures. The engine reads its offscreen target back and hands over RGBA bytes; the app wraps them in `slint::Image::from_rgba8`. Slint therefore needs no wgpu feature and shares no device, which is why teardown is ordinary drop order.
+
+## Parameters (`sunlit_core::params`)
+
+`SceneParams` is the single description of what to draw: camera, texture selection, sample count, lighting, clouds, atmosphere, celestial controls, color correction, and the datetime input. There are exactly two translation points:
+
+1. `ui_callbacks::read_params_from_window` / `apply_params_to_window` in the app.
+2. `renderer::render_pass::write_uniforms` in core.
+
+The Earth lens lives in `CameraParams::fov_deg` rather than beside `sky_fov` in `SceneParams`, because that is where `OrbitalCamera` already read it from and where `scene::sun_occlusion` already asks for it: wiring it through cost one assignment in `write_uniforms` and no digest entry, since camera floats compare exactly. The consequence is that it belongs to a preset too, and every entry of `PRESETS` carries `DEFAULT_CAMERA_FOV`, so a preset reproduces the framing its zoom was hand-tuned for instead of inheriting whatever lens was on. `CAMERA_FOV_MIN` and `CAMERA_FOV_MAX` (10 and 170 degrees) are the slider's ends and `AppConfig::sanitize` clamps to them, which is the one clamp there beside the texture resolution: `Mat4::perspective_rh` scales by `1 / tan(fov / 2)`, so 0 and 180 are not an ugly picture but no picture at all, and a config file is a text file.
+
+## The renderer (`sunlit_core::renderer`)
+
+`Renderer` owns every GPU object and renders offscreen into its own texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`). It knows nothing about windows. Key methods: `render(&SceneParams, &SkyState) -> RenderOutcome`, `resize`, `drain_texture_updates`, `export_image`, `read_preview_pixels`, `textures_ready`, `loading_text`.
+
+Submodules: `gpu_setup` (construction, pipelines, render targets), `render_pass` (uniform encoding, pass encoding, `Overlays::select`, `Stars::select`, `Sun::select`, `Moon::select`, `read_texture_rgba8`), `textures` (slots, mailbox draining, mipmapped upload, `downsample_2x`), `texture_routing` (which mode draws the globe from which slot), `frame` (`FrameState` dirty check), `uniforms` (the 544-byte `#[repr(C)]` struct).
+
+The texture slots are the grid at 0, then one slot per file-backed path in the order the paths arrive (day 1, night 2, moon 3), then the cloud overlay last, because it comes from the fetcher rather than from a file. `SlotLayout` is the one place that says so: it derives the cloud slot and the mailbox's slot count from the number of paths, and maps the four combo box modes onto slots explicitly. Before phase C the blend mode's combo box index and the cloud slot were both three and one integer stood for both, which was harmless only because the blend branch never used it as a slot.
+
+## The app (`sunlit-app`)
+
+- `main.rs`: CLI (clap), logging, config load, then one of two paths. `run_render` is fully headless: no window, no Slint backend, no event loop; it starts the engine with the preview disabled, waits for `TexturesReady`, calls `render_to_file`, and returns an `ExitCode`. `run_app` creates the window, starts the engine, wires the UI, and runs the event loop. CLI flags: `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--ipc-socket <name>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, plus the `render` subcommand. `resolve_texture_paths` names the four file-backed textures in slot order, and it asks how large each file is rather than whether it exists: `textures/**` is Git LFS, a checkout without the objects holds pointer files under the same names, and naming one costs a decode failure and an error line where the same run with no file at all is quiet and draws the same picture. The threshold is the 64 KiB the xtask's guest staging and the engine tests already use.
+- `engine_client.rs`: `EngineLink` (send commands, push window state as `SceneParams`) and `event_forwarder` (engine events to the window). Preview frames cross the thread boundary through a latest-value mailbox with a single pending wake-up: the newest frame replaces the parked one and only one `invoke_from_event_loop` closure is ever in flight.
+- `ui_callbacks.rs`: callback registration grouped into mouse, change, and action callbacks; every one of them ends in `link.push_params(&window)`. Also the config bridge (`apply_config_to_window`, `read_config_from_window`) and `defer_combobox_indices`.
+- `ipc.rs`: opt-in control channel over `interprocess` local sockets. Commands: `quit`, `show-window`, `hide-window`, `export-test`, `query-memory`, `memory-report`, `set-wallpaper`. Fire-and-forget, with `SIGNAL:` lines on stdout as the reply channel. `export-test`, `query-memory` and `memory-report` are answered on the listener thread, so they work while the event loop is idle. `query-memory`'s single `SIGNAL:memory rss_bytes=... peak_rss_bytes=... private_bytes=...` line is a parsing contract the e2e suite depends on and must stay byte-identical; `memory-report` is a separate command for that reason, and brackets its many lines with `SIGNAL:memory_report_begin` and `SIGNAL:memory_report_end` rather than promising a line format.
+- `tray.rs`: the baked 32x32 icon bytes, the tray callback wiring, and single-instance enforcement. The tray icon itself is a `SystemTrayIcon` component in `ui/main.slint`, so Slint owns the platform integration.
+- `session_end.rs`: Windows only. An invisible top-level window on its own thread that answers `WM_QUERYENDSESSION` and quits the event loop on `WM_ENDSESSION`, so a reboot does not have to wait for Windows to kill the process. winit handles neither message, so without this nothing in the app ever learned the session was ending. The decision is a pure function (`classify`), unit-tested everywhere; the Win32 window is tested by sending it both messages.
+- `mouse_math.rs`: pure functions for mouse interaction (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; unit-tested with `proptest` invariants. The globe drag alone keeps two gains and blends between them by how fast the cursor is moving, because the painted surface and the sky lens do not scale together: `coarse_drag_gain` is the distance-proportional 0.3 degrees per pixel per eight Earth radii the drag has always had, `fine_drag_gain` is half the angle a pixel spans at the center of the sky lens, so a slow hand moves the Sun's image half a pixel per mouse pixel at every zoom, and `drag_gain` is a smoothstep between them in the logarithm of the speed from `FINE_DRAG_SPEED` to `COARSE_DRAG_SPEED`. The fine gain is capped at the coarse one, which is the only thing that could invert them, at the nearest zoom and the widest sky, and the sweeping end of the blend returns the coarse gain itself rather than the interpolation evaluated at 1, so a sweep turns the globe by exactly what it always did at every zoom rather than at most of them. `DragSpeed` is the estimator, an exponential moving average over the delta each `moved` callback brings and the time since the previous one, with the interval capped so a pause reads as a slow start; `ui_callbacks::register_globe_drag` holds it, and clears it on the left press, which is the one line `ui/main.slint` gained (`mouse-drag-globe-begin`): a press begins a gesture, and without the clear a deliberate drag started a few tens of milliseconds after a sweep inherits the sweep's speed and takes its first steps at the coarse gain. What it costs is path independence: a drag out and back at different speeds does not land where it started, which is the trade every pointer acceleration makes and the one the user chose over a modifier key.
+
+## UI (`ui/main.slint`)
+
+`MainWindow`: resizable split layout, controls panel in a `ScrollView`. Top-level controls are "Set as Wallpaper", "Load Defaults" and "Reset", and a 3x3 grid of camera presets. Below is a collapsible "Advanced" section with `GroupBox`es for Camera Position, Camera Orientation, Framing, Date / Time, Clouds, Celestial, Atmosphere, Lighting, Color Correction, and Rendering. Camera properties are `in-out` with `<=>` slider bindings. A `TouchArea` over the image handles drag and scroll.
+
+Every row in that section is one of three components rather than a hand-written layout: `SettingRow` (label, slider, value), `SettingCheck` and `SettingCombo`. Each carries a `hint`, the one-sentence hover text, and each has a `Tooltip` covering the whole row. That is why their roots are `Rectangle`s with the layout inside: the compiler lowers a `Tooltip` to a full-size sibling area, and inside a layout that area would claim a cell of its own. A row nested under a `SettingHeading` sets `indent`, which shifts the label right and takes the same width off it, so the sliders of a group stay in one column however deep the nesting is. Each instance keeps the element id the row's slider used to carry (`longitude-slider`, `rayleigh-intensity-slider`), since those are what `tests/slint_ui.rs` looks the advanced section up by.
+
+The tooltip's content is the custom-content form and not `Tooltip { text: ... }`, because the built-in content does not wrap and a sentence is wider than any screen. `Hint` is that content: the compiler still wraps it in the built-in `ToolTipImpl`, which is where the background and the border come from, and which sizes the popup from its children's preferred width. A `Text` reports the width it would take unwrapped however narrow the element around it is, so `Hint` declares `min-width`, `max-width` and `preferred-width` rather than a `width`, which the language refuses to have alongside them; the height then follows from the wrap at that width. Measured in the Linux guest under KDE, one boot per revision.
+
+Celestial is subdivided: Sky (the sky lens and the Milky Way), Sun, Moon, Stars. The subsections are what let the labels drop the noun they repeated (`Star brightness` is `Brightness` under Stars), which is what makes one label column wide enough for every group.
+
+`AboutWindow` is an ordinary exported window component. `about::AboutController` creates it on first use, supplies the package version and one attribution list owned by Rust, then reuses the handle. The settings control and tray callback clone the same controller.
+
+`TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, About, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
+
+## Quality tiers
+
+`QualityTier` (low, medium, high) is persisted in the config and overridable per run with `--quality` (the override is not written back). It has no widget in the settings window, which is why `read_config_from_window` is a read-modify-write against the stored config rather than a fresh `AppConfig::default()`: any persisted setting the UI does not manage has to survive a save untouched. It caps the MSAA sample count (1, 4, unlimited) and the preview width (1280, 1920, unlimited, aspect preserved). Default: low in debug builds, high in release; `EngineConfig::headless` pins low so tests do not depend on the build profile.
+
+The tier does not select the cloud image variant; the texture resolution does. The tier says how much work a frame is allowed to be, and the cloud overlay is texture memory, which is what the other setting is for.
+
+## Texture resolution
+
+The two local surface textures are 8192 wide, and the Moon's is 1024, which is at or below every cap the setting offers, so the halving cache never touches it and it is loaded at its own width whatever the setting says. The Milky Way panorama's 4096 is the one width between two caps: the two upper settings load it as it is and the lowest halves it through the cache, which is what `the_panorama_follows_the_texture_resolution_cap` measures. `AppConfig::texture_resolution` decides what width the two Earth maps are loaded at, from the three in `config::TEXTURE_RESOLUTIONS` (8192, 4096, 2048), and the Rendering group offers them as a combo box. It also selects the cloud image variant, which is the third thing that scales with it; the three offered widths map one to one onto the three variants the upstream service publishes. The default is 4096, so an install whose config predates the setting moves to 4096 and anyone who wants the full width picks it once. `--texture-resolution <8192|4096|2048>` overrides it for one run; clap validates the three values, and a config file holding anything else is repaired to the default by `AppConfig::sanitize` on load, which is where the check belongs since a config file is a text file.
+
+The halving is the same box filter that builds the mip chain, so a 4096 texture is the 8192 texture's first mip level exactly. That is why the default costs so little: on the software adapter the 800x800 render the e2e case checks is byte-identical at 8192 and 4096, and at 2048 the sampled land and ocean pixels move by at most 1/255. On a real adapter it is not quite identical, because anisotropic sampling can ask for a level of detail finer than the narrower texture's level 0 near the limb: measured on this machine's GPU, 8 pixels of 640,000 differ by one channel step. Anything that renders the globe larger than a few hundred pixels across will show the difference properly; the settings window is where to change it back.
+
+Below 8192 the width is reached by halving, and the result is cached on disk: `assets::texture_cache::load_at_resolution` looks for `texture_cache/<stem>.<width>.png` under the same directory the cloud cache uses (so `SUNLIT_EARTH_CACHE_DIR` covers both) and validates it against a sidecar TOML recording the source's size and modification time. On a miss it decodes the source, halves it with the same box filter the mip chain uses, and writes the PNG temp-then-rename, under a temporary name carrying the process id so two writers of one entry cannot truncate each other. The source is stamped before the decode and the stamp re-read after it, because a source replaced during the seconds an 8K decode takes would otherwise be recorded as where the old pixels came from, and that entry would validate forever. Measured on the real assets in a debug build: 3.2 to 3.7 s cold against 0.2 to 0.8 s warm per texture, with the render byte-identical either way. A cached file is a plain downscale in the source's own orientation, which is why the orientation fixes are a separate `texture_loader::orient` rather than part of the decode: reading a cached file back is the same `load` a source goes through. The width is a cap, so a source narrower than the chosen width is loaded as it is.
+
+Changing the setting at runtime is `EngineCommand::SetTextureResolution`, not a params push: it decides which pixels to load rather than what to draw. The renderer clears the bind groups and views of the file-backed slots, calls `Texture::destroy` on the textures they held, and only then lets the reload allocate, in the same nil-before-recreate order as `gpu_setup::replace_render_textures`. `TextureSlot` keeps its `wgpu::Texture` so there is something to destroy, and `last_rendered_index` goes back to the grid, which is the one slot `render` may assume is loaded. `tests/engine.rs` measures the point of all this on the real assets: 1259.7 MiB of private bytes at 8192 against 616.5 MiB at 2048, the Moon's 2.7 MiB resident in both, and it skips with a printed reason where `textures/**` is still Git LFS pointers.
+
+The cloud overlay follows the same command but by a different route, because it comes from the network rather than from disk. `SetTextureResolution` deliberately does not purge the cloud slot: the switch must not depend on the network, and a cloudless globe while a download runs is a worse picture than one at the previous variant. What it does instead is point the fetcher at the new variant and ask for a poll now, and the existing update path replaces texture, view, and bind group together when that poll lands, which the soak test already proves frees the old one. Offline, the old variant stays for as long as the outage lasts, which is intended and logged. The worker reads its target before every poll, inside the retry loop rather than outside it, so a switch made during an outage changes what the next attempt asks for rather than queueing behind an attempt that may be minutes from finishing. The disk cache is keyed by variant (`clouds_cache_<w>x<h>.jpg` and its meta sidecar), so a switch can never be answered with the previous variant's bytes and a switch back finds what it left behind; an entry a run at another resolution wrote is dead weight the current one never reads, which is also what makes the change safe to roll back. The switch posts that entry as it adopts it, which is the step that makes a switch back visible at all: the poll it asks for sends the entry's own `ETag` to the entry's own URL, and inside the upstream refresh window that is a 304, which posts nothing. Nothing in production calls `post_cached` after startup, so without the switch doing it the overlay would sit at the previous variant until upstream published again. A variant with nothing on disk posts nothing, which is the same clause that keeps the old clouds up while a download runs.
+
+`SUNLIT_EARTH_CLOUD_URL` still wins over all of it, and `SUNLIT_EARTH_NO_CLOUDS` is untouched. What the override serves has no variant, so it caches under `clouds_cache_override` rather than under a name claiming a size nobody checked; otherwise a run against a stub would leave that image in `clouds_cache_4096x2048.jpg` and the next ordinary run would put it on screen. With the override in force every resolution resolves to the same URL, and `set_resolution` compares URLs rather than variants, so a switch then moves nothing and keeps the `ETag` it has. `CloudUpdater::new` points the source at the URL its cache entry is named after, so the name and the bytes behind it cannot disagree whatever the caller built the source with.
+
+The frames between the purge and the reload show the procedural grid, which is fine for a preview and not fine for a desktop, so `publish_wallpaper` holds one request back while `Renderer::textures_pending` says a texture the current mode needs is on its way, and makes it at the end of the tick that texture arrives on. That covers every caller that publishes, since they all reach that one function: the button, the tray's "Refresh Now", the IPC `set-wallpaper`, and the auto-refresh schedule. What comes before the wait is the sink's own `check_supported`, so a platform with no wallpaper setter refuses at once rather than after seconds of waiting for textures that were never going to change the answer. `textures_pending` is deliberately not the negation of `textures_ready`: a slot with no file behind it, and one whose decode failed and had its path cleared, are terminal, and waiting on either would be waiting for something that is never going to arrive.
+
+A decode of the old width can still be running when the width changes, so every load carries the `texture_generation` it was spawned in, and two places use it. `process_decoded_textures` discards a post from a superseded generation and touches nothing else: `loading` names the decode that is on its way to a slot, a discarded post is never that decode (the generation moves only in `set_texture_resolution`, which purges every file-backed slot in the same call and clears the flag there), and clearing it again would claim a live load had stopped, which puts a second decode of the same 8K source in flight beside the first. `TextureMailbox::post` refuses to let a stale arrival overwrite a parked message from a newer generation, which is the half that matters: the consumer discards a stale post on sight, so overwriting a fresh one there would destroy the only copy of the texture anyone wants and leave the slot empty for the rest of the session. The cloud fetcher posts no generation at all, and an unstamped message is neither held back nor held onto. Its slot is never purged, so there is nothing for a stamp to protect: a fetch of the old variant that lands after a switch is a cloud layer at the previous width for one poll, which is exactly what the switch deliberately leaves on screen while the new one downloads, and the next poll replaces it. The grid stays procedural at every width. `EngineConfig::mailbox` exists so a test can post that arrival directly, the same way the clock and the cloud source are injected, because the ordering needs a decode still running when the resolution changes and no amount of waiting makes that reliable; its slot count is asserted against the engine's own before the device is opened, since a seam that disagrees either drops posts or hands the consumer an index it does not have. Each of the three properties has a test that fails when the line carrying it is reverted: the mailbox guard, the discard, and the purge's own clear, which is what lets a reload start while the superseded decode is still running.
+
+The setting has a widget, which makes the CLI override awkward in a way `--quality` is not: the window has to show what the engine actually loaded, but a one-run flag must not reach the config file. `EngineLink` therefore carries a flag, set at startup when the argument was given, that makes a save keep the stored width instead of reading the combo box; the combo box's own callback, Reset, and Load Defaults each clear it. That rests on a Slint property set from Rust not counting as a selection, which `test_setting_a_combo_index_is_not_a_selection` pins.
+
+## Sample counts
+
+An MSAA sample count the adapter does not support is not a warning inside wgpu, it is a validation error that kills whichever thread builds the render target. Two layers guard it, and they are not redundant:
+
+1. **The combo box** is built by `renderer::build_aa_options(adapter_supported, tier_cap)`, so the UI only ever offers counts that are both supported and within the tier.
+2. **The engine resolves every requested count** through `renderer::resolve_sample_count` in `Engine::new` and again on every `UpdateParams`, and logs a `warn!` when it has to fall back. This is the single source of truth, and it is the one that matters: a config file, a hand-edited value, or a combo box index saved on a machine with a different GPU all arrive as a bare number in `SceneParams` and never go through the combo box.
+
+The rule is "the highest supported count at most the requested one, otherwise the lowest on offer". `tests/engine.rs` starts an engine at the High tier (which does not cap) with `sample_count = 64` and asserts a frame still arrives.
+
+## Wallpaper export
+
+The engine renders at the sink's native resolution using temporary GPU textures with `COPY_SRC`, reads them back through a staging buffer with 256-byte row alignment, encodes PNG, saves to `%LOCALAPPDATA%\SunlitEarth\wallpaper.png`, and applies it with `SystemParametersInfoW`. PNG rather than TIFF because Windows preserves PNG wallpapers losslessly; TIFF wallpapers are JPEG-transcoded at 85% quality and band visibly in smooth gradients.
+
+## Memory reporting
+
+Two things measure memory, and they answer different questions. `memory.rs` is the process-wide one: three counters per platform, a CSV the watchdog appends to, and a soft budget that emits a `warn!` when private bytes cross it. `memory_report.rs` is the where-is-it one: `MemoryReport` in four short sections, assembled on the engine thread because that is where the device is, reachable from a test through `EngineHandle::memory_report`, from a running app through the `memory-report` IPC command, and once per launch as a `debug!` dump the first time the textures are ready.
+
+The four sections are the process counters, wgpu's internal counters (`Device::get_internal_counters`), the backend allocator's live allocations (`Device::generate_allocator_report`), and the renderer's own table of what it believes it owns. The last two next to each other are the point: the day the columns disagree is the day there is a leak. Discipline keeps it readable rather than complete: the allocation section aggregates by GPU label, lists the ten largest groups of at least 1 MiB, and rolls everything else into one line; the expected table lists every texture over the same floor and totals all of them. Only the section names are a contract, and nothing parses the report, unlike `query-memory`'s single line.
+
+Both wgpu queries degrade rather than vanish. `generate_allocator_report` is implemented for D3D12 and Vulkan and returns `None` elsewhere, so on Metal the section says so and names the adapter; the counters need the `counters` cargo feature, which is on workspace-wide, and a backend that does not maintain one reports zero, which D3D12 does for the allocation count. The adapter slug is printed because it is what says whether the GPU bytes overlap the process's private bytes: on WARP and lavapipe they do, on a real GPU they mostly do not.
+
+The budget is a function of the texture resolution rather than one constant (`memory::private_bytes_budget`): a cold start, plus headroom, plus the three textures that width keeps resident, plus the Moon's 6 MiB, which is a constant because its file is narrower than the narrowest cap and is therefore loaded at the same width whatever the setting is. The cold-start half does not shrink with the setting, because a cold downscale cache reads the full-width JXL source whatever width it was asked for. At 8192 it comes to the same 3 GiB the original measurement was taken against. Tests pin both directions: the budget clears a cold-cache first run at every resolution, and stays under twice one, so it is neither a warning nobody reads nor a warning nobody gets. Every resolution is held to the one peak that was actually measured (2.43 GiB, at 8192, in a release build) rather than to a smaller figure derived from the budget's own decomposition, which would move with it and assert nothing. That makes 2048 the binding case, since it gets the smallest resident allowance and has the same 8K decode to pay for.
+
+## Environment knobs
+
+All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_override`, which treats unset and blank the same.
+
+| Variable | Effect |
+|---|---|
+| `SUNLIT_EARTH_CLOUD_URL` | Overrides the cloud image URL. Wins over the variant the texture resolution selects. |
+| `SUNLIT_EARTH_CLOUD_POLL_SECS` | Overrides the poll interval. |
+| `SUNLIT_EARTH_CACHE_DIR` | Overrides the cache directory, holding both the cloud image and the downscaled surface textures. |
+| `SUNLIT_EARTH_CONFIG` | Overrides the config file path. |
+| `SUNLIT_EARTH_METRICS_DIR` | Overrides the memory metrics directory. |
+| `SUNLIT_EARTH_TEXTURES` | Overrides the textures directory. |
+| `SUNLIT_EARTH_NO_CLOUDS` | Presence-only: disables cloud fetching entirely. |
+| `SUNLIT_EARTH_SYNC_LOG` | Presence-only: synchronous stderr logging (for e2e). |
+| `SUNLIT_EARTH_UPDATE_GOLDEN` | Presence-only: regenerate golden references. |
+| `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
+
+The e2e harness and the xtask read six more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
+
+| Variable | Effect |
+|---|---|
+| `SUNLIT_EARTH_BIN` | The app binary the e2e suite spawns. Falls back to the compile-time `CARGO_BIN_EXE` path, which is wrong inside a guest. |
+| `SUNLIT_EARTH_E2E_FIXTURES` | The e2e fixtures directory, for the same reason. |
+| `SUNLIT_EARTH_E2E_WALLPAPER` | Presence-only: lets `test_set_wallpaper` run. Only the generated Windows guest job sets it, because the case replaces the desktop wallpaper of whatever machine runs it. |
+| `SUNLIT_EARTH_VM_DIR` | The image store. Defaults to `%LOCALAPPDATA%\SunlitEarth\vm` or `~/.local/share/SunlitEarth/vm`. |
+| `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. |
+| `SUNLIT_EARTH_VM_RESOLUTION` | Either guest console's resolution as `WxH`, read through `provider::console`. Unset means the largest of `hyperv::CONSOLE_MODES` that fits the host's screen for a Hyper-V guest, and `qemu::DEFAULT_CONSOLE` for a QEMU one. |
+| `SUNLIT_EARTH_REPO` | The repository root, for running the xtask binary from outside its checkout. Defaults to the compile-time location of the crate. |
+
+## Notable dependencies
+
+- `wgpu`: the `counters` feature is on workspace-wide, which turns its internal byte and object counters from compiled-out no-ops into relaxed atomic adds on resource create and destroy. That is what gives the memory report two totals measured by wgpu rather than only the ones we compute; the cost is expected to be unmeasurable next to a texture upload, and the feature is one line to revert if profiling ever disagrees
+- `astronomy-engine-bindings`: C FFI bindings to the Astronomy Engine library (requires `clang` at build time for bindgen)
+- `image`: PNG/JPEG encode and decode. `jxl-oxide`: the JPEG XL decoding hook
+- `time`: UTC decomposition for astronomy
+- `tracing` / `tracing-subscriber` / `tracing-appender`: `max_level_trace` with `release_max_level_warn`; `EnvFilter` respects `RUST_LOG`; non-blocking stderr writer with `FmtSpan::CLOSE`
+- `ureq` (rustls): cloud fetching. `crossbeam-channel`: engine command and reply channels
+- `interprocess`: local socket IPC. `single-instance`: the OS mutex (app only)
+- `windows-sys`: Win32 FFI, `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo` in core; `AttachConsole` in the app
+- `mach2`: Mach FFI on macOS, for `task_info(TASK_VM_INFO)` in `memory.rs` and nothing else. Declarations only; the `unsafe` call site is ours
+- `signal-hook`: Linux only, and only for `session_end`. A signal handler may call almost nothing and quitting a Slint event loop is not on the list, so the delivery has to reach an ordinary thread first; this crate does that with a self-pipe, which is why it is a dependency rather than a scoped `unsafe` around `libc::signal`
+
+## Resource-flow rules (from the retrospective, section 8.2)
+
+- Every queue crossing a thread boundary is bounded, latest-value, or unbounded with the reasoning written down at the declaration site. There are three crossings today:
+  1. **Decoded textures** (`assets::mailbox`, core): latest-value, one slot per texture. This is the Phase 0 fix.
+  2. **Preview frames** (`engine_client`, app): latest-value, one slot, with a single pending wake-up so the UI thread cannot accumulate frame buffers either.
+  3. **Engine commands** (`engine::start`, both directions): unbounded, deliberately. The consumer is unconditional and runs at most 50 ms apart, the producers are human-rate, and the payloads carry no pixels (`command_payload_is_small` pins that). A bounded channel would either block the UI thread against a mid-export engine or drop an `UpdateParams` that might be the last one. The full argument is a comment on the channel itself; keep it honest if any of those premises change.
+- Decoded pixel buffers are never parked in queues, caches, or long-lived structs.
+- Every background producer names its consumer and the condition under which the consumer runs. If that condition is not "always", the design is wrong.
+
+## Key constraints
+
+- `rust-toolchain.toml` pins the channel (`1.94.0`, profile minimal, rustfmt and clippy).
+  rustup honors it in this checkout whatever the host's default is, which is intended:
+  a release build has to be able to say which compiler made it, and the builder images
+  install the channel `guest::toolchain::pinned` reads out of that file. A developer whose
+  default is newer sees `rustc -V` differ inside and outside the checkout.
+- `.cargo/config.toml` links the C runtime statically on `x86_64-pc-windows-msvc`
+  (`-C target-feature=+crt-static`). Every Windows build of this tree agrees, the e2e
+  binaries and a local `cargo build --release` included, and the `cc` crate follows it
+  with `/MT` for the Astronomy Engine's C. A clean Windows 10 then needs no Visual C++
+  redistributable, which is what `dist --target windows` proves on the artifact.
+- `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `scene/sky.rs`, `wallpaper.rs`, `config.rs`, `memory.rs`, and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments. New FFI, on any platform, follows that pattern; the macOS `task_info` call in `memory.rs` is the most recent example.
+- Slint is pinned to `~1.17` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
+- Render texture size is quantized to 64px boundaries to reduce GPU texture churn during resize, and then capped by the quality tier.
+- Zoom is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
+- The grid texture uses 16x anisotropic filtering with trilinear mipmaps.
+- WGSL `vec3<f32>` has 16-byte alignment, so `#[repr(C)]` structs need an explicit `_pad: f32` after every `[f32; 3]` field. `uniforms.rs` has a compile-time size assertion.
+- LF line endings globally.

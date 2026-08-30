@@ -128,7 +128,7 @@ pub fn build_args() -> Vec<String> {
 /// The command line that builds the Linux binaries inside WSL.
 ///
 /// `CARGO_TARGET_DIR` points into the distribution's own filesystem, which is
-/// the arrangement CLAUDE.md documents: sharing `target/` between the Windows
+/// the arrangement README.md documents: sharing `target/` between the Windows
 /// and Linux builds makes them fight over the same directory.
 pub fn wsl_build_command(distro: &str, repo_wsl_path: &str) -> Cmd {
     let script = format!(

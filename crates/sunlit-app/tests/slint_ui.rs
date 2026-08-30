@@ -131,6 +131,15 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     window.set_sun_glow(2.4);
     window.set_sun_rays(1.3);
     window.set_sun_flare(0.7);
+    window.set_sun_size(4.5);
+    window.set_sun_halo_radius(5.25);
+    window.set_sun_horizon_boost(6.5);
+    window.set_sun_horizon_reach(8.5);
+    window.set_sun_horizon_depth(3.25);
+    window.set_sun_reddening(1.6);
+    window.set_sun_refraction(0.35);
+    window.set_atmo_sunrise_glow(2.4);
+    window.set_atmo_sunrise_width(72.0);
     window.set_moon_brightness(1.7);
     window.set_moon_size(5.5);
     window.set_moon_earthshine(0.21);
@@ -146,6 +155,15 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     approx::assert_relative_eq!(params.sun_glow, 2.4);
     approx::assert_relative_eq!(params.sun_rays, 1.3);
     approx::assert_relative_eq!(params.sun_flare, 0.7);
+    approx::assert_relative_eq!(params.sun_size, 4.5);
+    approx::assert_relative_eq!(params.sun_halo_radius, 5.25);
+    approx::assert_relative_eq!(params.sun_horizon_boost, 6.5);
+    approx::assert_relative_eq!(params.sun_horizon_reach, 8.5);
+    approx::assert_relative_eq!(params.sun_horizon_depth, 3.25);
+    approx::assert_relative_eq!(params.sun_reddening, 1.6);
+    approx::assert_relative_eq!(params.sun_refraction, 0.35);
+    approx::assert_relative_eq!(params.atmo_sunrise_glow, 2.4);
+    approx::assert_relative_eq!(params.atmo_sunrise_width, 72.0);
     approx::assert_relative_eq!(params.moon_brightness, 1.7);
     approx::assert_relative_eq!(params.moon_size, 5.5);
     approx::assert_relative_eq!(params.moon_earthshine, 0.21);
@@ -165,7 +183,16 @@ fn test_celestial_properties_apply_from_scene_params() {
         star_mag_limit: 5.9,
         sun_glow: 0.4,
         sun_rays: 1.8,
-        sun_flare: 1.1,
+        sun_flare: 0.9,
+        sun_size: 2.25,
+        sun_halo_radius: 7.5,
+        sun_horizon_boost: 4.5,
+        sun_horizon_reach: 1.25,
+        sun_horizon_depth: 0.75,
+        sun_reddening: 0.4,
+        sun_refraction: 1.85,
+        atmo_sunrise_glow: 0.6,
+        atmo_sunrise_width: 18.0,
         moon_brightness: 0.8,
         moon_size: 3.5,
         moon_earthshine: 0.17,
@@ -182,7 +209,16 @@ fn test_celestial_properties_apply_from_scene_params() {
     approx::assert_relative_eq!(window.get_star_mag_limit(), 5.9);
     approx::assert_relative_eq!(window.get_sun_glow(), 0.4);
     approx::assert_relative_eq!(window.get_sun_rays(), 1.8);
-    approx::assert_relative_eq!(window.get_sun_flare(), 1.1);
+    approx::assert_relative_eq!(window.get_sun_flare(), 0.9);
+    approx::assert_relative_eq!(window.get_sun_size(), 2.25);
+    approx::assert_relative_eq!(window.get_sun_halo_radius(), 7.5);
+    approx::assert_relative_eq!(window.get_sun_horizon_boost(), 4.5);
+    approx::assert_relative_eq!(window.get_sun_horizon_reach(), 1.25);
+    approx::assert_relative_eq!(window.get_sun_horizon_depth(), 0.75);
+    approx::assert_relative_eq!(window.get_sun_reddening(), 0.4);
+    approx::assert_relative_eq!(window.get_sun_refraction(), 1.85);
+    approx::assert_relative_eq!(window.get_atmo_sunrise_glow(), 0.6);
+    approx::assert_relative_eq!(window.get_atmo_sunrise_width(), 18.0);
     approx::assert_relative_eq!(window.get_moon_brightness(), 0.8);
     approx::assert_relative_eq!(window.get_moon_size(), 3.5);
     approx::assert_relative_eq!(window.get_moon_earthshine(), 0.17);
@@ -202,11 +238,29 @@ fn test_default_star_tuning_uses_balanced_profile() {
 }
 
 #[test]
-fn test_default_sun_shows_the_glare_and_not_the_camera() {
+fn test_default_sun_shows_the_glare_and_a_trace_of_the_camera() {
     let window = create_window();
     approx::assert_relative_eq!(window.get_sun_glow(), 1.0);
     approx::assert_relative_eq!(window.get_sun_rays(), 0.6);
-    approx::assert_relative_eq!(window.get_sun_flare(), 0.0);
+    approx::assert_relative_eq!(window.get_sun_flare(), 0.15);
+    approx::assert_relative_eq!(window.get_sun_size(), 1.0);
+    approx::assert_relative_eq!(window.get_sun_halo_radius(), 3.0);
+}
+
+/// The window and the config have to start from the same horizon, or the first
+/// slider a user touches pushes the other seven of them at whatever the
+/// `.slint` file happened to say.
+#[test]
+fn test_default_horizon_matches_the_config() {
+    let window = create_window();
+    let config = sunlit_core::config::AppConfig::default();
+    approx::assert_relative_eq!(window.get_sun_horizon_boost(), config.sun_horizon_boost);
+    approx::assert_relative_eq!(window.get_sun_horizon_reach(), config.sun_horizon_reach);
+    approx::assert_relative_eq!(window.get_sun_horizon_depth(), config.sun_horizon_depth);
+    approx::assert_relative_eq!(window.get_sun_reddening(), config.sun_reddening);
+    approx::assert_relative_eq!(window.get_sun_refraction(), config.sun_refraction);
+    approx::assert_relative_eq!(window.get_atmo_sunrise_glow(), config.atmo_sunrise_glow);
+    approx::assert_relative_eq!(window.get_atmo_sunrise_width(), config.atmo_sunrise_width);
 }
 
 #[test]

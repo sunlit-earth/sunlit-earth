@@ -159,6 +159,11 @@ fn base_params() -> SceneParams {
         // hemispheres, because either one alone still draws the layer.
         cloud_opacity: 0.0,
         cloud_opacity_night: 0.0,
+        // Camera mode is pinned off rather than left at its default for the
+        // same reason: the aperture spikes and the ghosts reach outside the
+        // glare's cone and would put streaks and blobs in every reference with
+        // a Sun anywhere near the frame.
+        sun_flare: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;
@@ -170,16 +175,16 @@ fn base_params() -> SceneParams {
 
 /// The part of a rendered frame a case is compared over.
 ///
-/// Every case but one compares the whole frame. The Moon is the exception, and
-/// the reason is arithmetic rather than taste: at 60 degrees of sky and eight
-/// times its size, the largest the disk can be in any coherent framing, it is 31
-/// pixels across in a 512 by 256 frame. Removing it entirely then comes to a
-/// mean channel difference of 0.22 against a tolerance of 2.00, so a full-frame
+/// Most cases compare the whole frame, and three do not. Each of the three is
+/// arithmetic rather than taste, and all three are the same arithmetic: a thing
+/// a few dozen pixels across cannot move a 512 by 256 frame past a tolerance
+/// meant for a whole picture. Removing the Moon entirely comes to a mean
+/// channel difference of 0.22 against a tolerance of 2.00, so a full-frame
 /// reference would go on passing with the feature deleted, which is precisely
-/// the failure phase B's goldens taught. Comparing the window the Moon is in
-/// puts the same loss at a mean of 3.12 with 1.71 percent of pixels outliers,
-/// which fails on both counts, and what the window leaves out is the globe,
-/// which nine other cases pin.
+/// the failure phase B's goldens taught; over the window it is 3.12 with 1.71
+/// percent of pixels outliers. `sunrise_band` and `sun_rising_through_the_band`
+/// carry their own measurements above their windows. What each window leaves
+/// out is the globe, which nine other cases pin.
 #[derive(Clone, Copy)]
 struct Window {
     x: u32,
@@ -556,6 +561,146 @@ fn golden_sun_grazing_the_limb() {
     check_golden("sun_grazing_the_limb", &params);
 }
 
+/// The camera the two horizon cases share, at the zoom where the painted
+/// annulus and the disk are the same few pixels.
+///
+/// The eye sits at the anti-subsolar latitude and swings round in longitude,
+/// which is the one family of framings where the Sun climbs the painted limb
+/// sideways rather than off the top: the vertical half of a 512 by 256 frame
+/// carries twice the angle the horizontal one does, so a Sun placed above the
+/// globe is off screen before it has cleared anything. At zoom 0.26 the
+/// silhouette's radius is 177 pixels, the annulus 2.7 and the disk 4.6, so the
+/// horizon zone is the disk's own diameter and the whole gradient is inside it.
+fn horizon_camera(longitude: f32) -> CameraParams {
+    CameraParams {
+        longitude,
+        latitude: -23.44,
+        zoom: 0.26,
+        ..CameraParams::default()
+    }
+}
+
+/// The window the disk and the near half of its glare land in at the framing
+/// below.
+///
+/// The refraction is what decides the window. Deleting the tint moves the whole
+/// frame by a mean of 10.04 with 16.80 percent of pixels outliers and deleting
+/// the exposure gain by 7.27 with 11.00, both well past the tolerance, but
+/// deleting the lift and the squash moves it by 0.91 with 0.22 percent, which
+/// is a reference that passes with the effect gone. The disk is what refraction
+/// moves and the glare is most of the frame, so comparing where the disk is
+/// puts the three at 55.33 with 83.09 percent, 56.03 with 98.58, and 6.19 with
+/// 4.58.
+const RISING_SUN_WINDOW: Window = Window {
+    x: 40,
+    y: 76,
+    width: 80,
+    height: 80,
+};
+
+#[test]
+fn golden_sun_rising_through_the_band() {
+    // The disk crossing the painted limb inside the zone, with the atmosphere
+    // off so that what the reference holds is the disk's own gradient and the
+    // glare the flux model gives it, and nothing the shell draws.
+    //
+    // Four times the size for the reason `moon_crescent` is eight times its
+    // own: at its true half degree the disk is 4.6 pixels across in a 512 by
+    // 256 frame, the horizon zone is the same 4.6 pixels, and the part of the
+    // band that colors anything is the lowest thirty kilometers of it, which
+    // comes to a pixel and a half. `sun_size` scales the disk and the zone
+    // together, so the whole of the geometry is the shipped one at four times
+    // the pixels, and the gradient the case is named for exists to be compared.
+    let base = base_params();
+    let params = SceneParams {
+        camera: horizon_camera(157.3),
+        sky_fov: SUN_CASE_SKY_FOV,
+        atmo_enabled: false,
+        sun_size: 4.0,
+        ..base
+    };
+    check_golden_in("sun_rising_through_the_band", &params, RISING_SUN_WINDOW);
+}
+
+/// The strip of frame the band runs down, with the limb in the middle of it.
+///
+/// The band is a thread along the limb and the frame is mostly the globe's
+/// bright grid, so a full-frame reference has the same weakness the Moon's had:
+/// deleting the lobe entirely comes to a mean of 0.21 over the whole frame with
+/// 0.40 percent of pixels outliers, which passes on both counts. Over this
+/// strip it is 1.52 and 2.83 percent, which fails on the second. What the strip
+/// leaves out is the glare, and the case beside this one is about that.
+const SUNRISE_BAND_WINDOW: Window = Window {
+    x: 72,
+    y: 0,
+    width: 72,
+    height: HEIGHT,
+};
+
+#[test]
+fn golden_sunrise_band() {
+    // The same framing a little further round, with the Sun behind the limb so
+    // that what is left in the frame is the band the atmosphere takes around
+    // it. The band is turned up for the reason `sun_grazing_the_limb` turns the
+    // glare up: at the default it is a thread a few levels deep along a limb
+    // the grid texture already paints bright, and a reference that lost it
+    // entirely would still pass.
+    let base = base_params();
+    let params = SceneParams {
+        camera: horizon_camera(157.7),
+        sky_fov: SUN_CASE_SKY_FOV,
+        atmo_sunrise_glow: 3.0,
+        ..base
+    };
+    check_golden_in("sunrise_band", &params, SUNRISE_BAND_WINDOW);
+}
+
+/// The user's own camera: 3.7 Earth radii, and the sky at the width it ships
+/// at rather than the 60 degrees the four cases above are framed in.
+///
+/// This is where the two lenses disagree most. The globe subtends 15.68
+/// degrees from here, so the painted limb is 204 pixels out, while the sky lens
+/// puts a direction there only when it is 57 degrees off the view axis. A lobe
+/// in the true scattering angle therefore peaks with the Sun's image still 152
+/// pixels inside the painted disc, and is a quarter of its peak by the time the
+/// image reaches the limb.
+fn close_camera(longitude: f32) -> CameraParams {
+    CameraParams {
+        longitude,
+        latitude: -23.44,
+        zoom: 0.227_047_34,
+        ..CameraParams::default()
+    }
+}
+
+/// The strip the band runs down at the framing below, with the limb inside it.
+///
+/// The left limb crosses the frame's top and bottom edges at x 97 and reaches
+/// x 52 at half height, so 72 pixels from x 24 hold all of it but the two rows
+/// at each edge, where it passes outside the window's own right edge at x 96,
+/// and the annulus outside it. The band's own light is what has to be inside
+/// the window; the globe is nine other cases' business.
+const SUNRISE_BAND_CLOSE_WINDOW: Window = Window {
+    x: 24,
+    y: 0,
+    width: 72,
+    height: HEIGHT,
+};
+
+#[test]
+fn golden_sunrise_band_close() {
+    // The Sun's image one horizon zone inside the painted limb: near enough
+    // that the lobe is at its peak under it, far enough that no disk is drawn
+    // and what the reference holds is the band alone.
+    let base = base_params();
+    let params = SceneParams {
+        camera: close_camera(117.658_22),
+        sky_fov: 140.0,
+        ..base
+    };
+    check_golden_in("sunrise_band_close", &params, SUNRISE_BAND_CLOSE_WINDOW);
+}
+
 /// The window the Moon lands in at the framing below, with room around it for
 /// a Moon that moved to be visible rather than merely absent.
 const MOON_WINDOW: Window = Window {
@@ -793,6 +938,9 @@ fn every_golden_case_is_distinguishable() {
         "bright_star_halos",
         "sun_over_the_night_side",
         "sun_grazing_the_limb",
+        "sun_rising_through_the_band",
+        "sunrise_band",
+        "sunrise_band_close",
         "moon_crescent",
         "panorama_behind_the_stars",
         "panorama_at_a_narrow_sky",
@@ -832,8 +980,9 @@ fn every_golden_case_is_distinguishable() {
     for (i, a) in images.iter().enumerate() {
         for (j, b) in images.iter().enumerate().skip(i + 1) {
             // Two references of different sizes are distinguishable by their
-            // sizes, and `compare` has no meaning across them. Only the Moon's
-            // window is a different size from the rest; see `Window`.
+            // sizes, and `compare` has no meaning across them. The three
+            // windowed cases are each a size of their own, so what this leaves
+            // them with is the presence check above; see `Window`.
             if a.dimensions() != b.dimensions() {
                 continue;
             }

@@ -78,6 +78,8 @@ pub struct SceneParams {
     pub nightglow_intensity: f32,
     pub nightglow_falloff: f32,
     pub nightglow_balance: f32,
+    pub atmo_sunrise_glow: f32,
+    pub atmo_sunrise_width: f32,
 
     // Celestial background
     pub sky_fov: f32,
@@ -92,6 +94,13 @@ pub struct SceneParams {
     pub sun_glow: f32,
     pub sun_rays: f32,
     pub sun_flare: f32,
+    pub sun_size: f32,
+    pub sun_halo_radius: f32,
+    pub sun_horizon_boost: f32,
+    pub sun_horizon_reach: f32,
+    pub sun_horizon_depth: f32,
+    pub sun_reddening: f32,
+    pub sun_refraction: f32,
 
     // The Moon
     pub moon_brightness: f32,
@@ -154,6 +163,8 @@ impl SceneParams {
             nightglow_intensity: config.nightglow_intensity,
             nightglow_falloff: config.nightglow_falloff,
             nightglow_balance: config.nightglow_balance,
+            atmo_sunrise_glow: config.atmo_sunrise_glow,
+            atmo_sunrise_width: config.atmo_sunrise_width,
             sky_fov: config.sky_fov,
             star_intensity: config.star_intensity,
             star_size: config.star_size,
@@ -164,6 +175,13 @@ impl SceneParams {
             sun_glow: config.sun_glow,
             sun_rays: config.sun_rays,
             sun_flare: config.sun_flare,
+            sun_size: config.sun_size,
+            sun_halo_radius: config.sun_halo_radius,
+            sun_horizon_boost: config.sun_horizon_boost,
+            sun_horizon_reach: config.sun_horizon_reach,
+            sun_horizon_depth: config.sun_horizon_depth,
+            sun_reddening: config.sun_reddening,
+            sun_refraction: config.sun_refraction,
             moon_brightness: config.moon_brightness,
             moon_size: config.moon_size,
             moon_earthshine: config.moon_earthshine,
@@ -217,6 +235,8 @@ impl SceneParams {
         config.nightglow_intensity = self.nightglow_intensity;
         config.nightglow_falloff = self.nightglow_falloff;
         config.nightglow_balance = self.nightglow_balance;
+        config.atmo_sunrise_glow = self.atmo_sunrise_glow;
+        config.atmo_sunrise_width = self.atmo_sunrise_width;
         config.sky_fov = self.sky_fov;
         config.star_intensity = self.star_intensity;
         config.star_size = self.star_size;
@@ -227,6 +247,13 @@ impl SceneParams {
         config.sun_glow = self.sun_glow;
         config.sun_rays = self.sun_rays;
         config.sun_flare = self.sun_flare;
+        config.sun_size = self.sun_size;
+        config.sun_halo_radius = self.sun_halo_radius;
+        config.sun_horizon_boost = self.sun_horizon_boost;
+        config.sun_horizon_reach = self.sun_horizon_reach;
+        config.sun_horizon_depth = self.sun_horizon_depth;
+        config.sun_reddening = self.sun_reddening;
+        config.sun_refraction = self.sun_refraction;
         config.moon_brightness = self.moon_brightness;
         config.moon_size = self.moon_size;
         config.moon_earthshine = self.moon_earthshine;
@@ -295,6 +322,8 @@ impl SceneParams {
             nightglow_intensity: q(self.effective_nightglow_intensity()),
             nightglow_falloff: q(self.nightglow_falloff),
             nightglow_balance: q(self.nightglow_balance),
+            atmo_sunrise_glow: q(self.atmo_sunrise_glow),
+            atmo_sunrise_width: q(self.atmo_sunrise_width),
             sky_fov: q(self.sky_fov),
             star_intensity: q(self.star_intensity),
             star_size: q(self.star_size),
@@ -305,6 +334,13 @@ impl SceneParams {
             sun_glow: q(self.sun_glow),
             sun_rays: q(self.sun_rays),
             sun_flare: q(self.sun_flare),
+            sun_size: q(self.sun_size),
+            sun_halo_radius: q(self.sun_halo_radius),
+            sun_horizon_boost: q(self.sun_horizon_boost),
+            sun_horizon_reach: q(self.sun_horizon_reach),
+            sun_horizon_depth: q(self.sun_horizon_depth),
+            sun_reddening: q(self.sun_reddening),
+            sun_refraction: q(self.sun_refraction),
             moon_brightness: q(self.moon_brightness),
             moon_size: q(self.moon_size),
             moon_earthshine: q(self.moon_earthshine),
@@ -357,6 +393,8 @@ pub struct ParamsDigest {
     pub nightglow_intensity: i32,
     pub nightglow_falloff: i32,
     pub nightglow_balance: i32,
+    pub atmo_sunrise_glow: i32,
+    pub atmo_sunrise_width: i32,
     pub sky_fov: i32,
     pub star_intensity: i32,
     pub star_size: i32,
@@ -367,6 +405,13 @@ pub struct ParamsDigest {
     pub sun_glow: i32,
     pub sun_rays: i32,
     pub sun_flare: i32,
+    pub sun_size: i32,
+    pub sun_halo_radius: i32,
+    pub sun_horizon_boost: i32,
+    pub sun_horizon_reach: i32,
+    pub sun_horizon_depth: i32,
+    pub sun_reddening: i32,
+    pub sun_refraction: i32,
     pub moon_brightness: i32,
     pub moon_size: i32,
     pub moon_earthshine: i32,
@@ -843,6 +888,69 @@ mod tests {
                 "sun_flare",
                 SceneParams {
                     sun_flare: 0.85,
+                    ..base
+                },
+            ),
+            (
+                "sun_size",
+                SceneParams {
+                    sun_size: 3.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_halo_radius",
+                SceneParams {
+                    sun_halo_radius: 6.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_horizon_boost",
+                SceneParams {
+                    sun_horizon_boost: 5.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_horizon_reach",
+                SceneParams {
+                    sun_horizon_reach: 7.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_horizon_depth",
+                SceneParams {
+                    sun_horizon_depth: 2.5,
+                    ..base
+                },
+            ),
+            (
+                "sun_reddening",
+                SceneParams {
+                    sun_reddening: 1.7,
+                    ..base
+                },
+            ),
+            (
+                "sun_refraction",
+                SceneParams {
+                    sun_refraction: 0.4,
+                    ..base
+                },
+            ),
+            (
+                "atmo_sunrise_glow",
+                SceneParams {
+                    atmo_sunrise_glow: 2.3,
+                    ..base
+                },
+            ),
+            (
+                "atmo_sunrise_width",
+                SceneParams {
+                    atmo_sunrise_width: 65.0,
                     ..base
                 },
             ),

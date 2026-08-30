@@ -64,6 +64,14 @@ impl Default for QualityTier {
     }
 }
 
+/// The strongest camera mode the settings window offers.
+///
+/// The spikes and the ghosts both reach their whole effect here, so the slider
+/// stops at one and [`AppConfig::sanitize`] clamps a file to it, the way the
+/// camera's own lens is clamped: a value nothing on screen can bring back is
+/// not a setting.
+pub const SUN_FLARE_MAX: f32 = 1.0;
+
 /// The surface texture widths the user can choose between, widest first.
 ///
 /// The two local assets are 8192 wide; the other two entries are exact halvings
@@ -200,6 +208,12 @@ pub struct AppConfig {
     pub nightglow_intensity: f32,
     pub nightglow_falloff: f32,
     pub nightglow_balance: f32,
+    /// Brightness of the warm forward-scattering lobe the Rayleigh shell takes
+    /// around a rising or setting Sun, over the blue it already scatters.
+    pub atmo_sunrise_glow: f32,
+    /// How far along the horizon that lobe reaches from the Sun: the scattering
+    /// angle, in degrees, at which it falls to half.
+    pub atmo_sunrise_width: f32,
 
     // Celestial background
     /// Horizontal field of view for the stereographic sky lens, in degrees.
@@ -227,8 +241,36 @@ pub struct AppConfig {
     /// around a bright source.
     pub sun_rays: f32,
     /// Strength of camera mode: aperture spikes and lens ghosts, which belong
-    /// to an imaging device rather than to an eye. Zero by default.
+    /// to an imaging device rather than to an eye.
     pub sun_flare: f32,
+    /// Multiplier on the Sun's radius, from its true angular size upward, the
+    /// way `moon_size` works. The bloom's inner lobe keeps its thickness around
+    /// the enlarged disk; everything else in the glare is a property of the eye
+    /// and stays in absolute degrees.
+    pub sun_size: f32,
+    /// Angular radius of the lenticular halo ring around the glare, in degrees.
+    /// The ring's width scales with it.
+    pub sun_halo_radius: f32,
+    /// How much brighter the glare peaks as the disk clears the horizon zone,
+    /// before an eye exposed for the night side has adjusted. One is the
+    /// physical answer and has no peak at all.
+    pub sun_horizon_boost: f32,
+    /// How far above the horizon zone, in zone widths, that peak decays back to
+    /// the ordinary glare. Altitude stands in for the seconds an eye or a
+    /// camera takes to settle, which at orbital rates is the same thing.
+    pub sun_horizon_reach: f32,
+    /// Thickness of the horizon zone in Sun diameters. Zero uses the painted
+    /// annulus between the globe and the atmosphere shell alone, which is one
+    /// or two pixels on a preview; the unit every other horizon effect is
+    /// measured in.
+    pub sun_horizon_depth: f32,
+    /// How much the low atmosphere reddens the disk and the glare, as a scale
+    /// on the air mass. One is the measured atmosphere and zero is the white
+    /// Sun that knows nothing about the limb.
+    pub sun_reddening: f32,
+    /// How far the atmosphere lifts and flattens the disk near the horizon.
+    /// Zero is the geometric Sun, one the coefficients derived from orbit.
+    pub sun_refraction: f32,
     /// Brightness of the Moon's sunlit face, and the switch that puts the Moon
     /// in the scene at all: zero draws nothing.
     pub moon_brightness: f32,
@@ -284,6 +326,10 @@ impl AppConfig {
         // no picture at all: the perspective projection divides by
         // `tan(fov / 2)`, which is zero at 0 degrees and infinite at 180.
         self.camera_fov = self.camera_fov.clamp(CAMERA_FOV_MIN, CAMERA_FOV_MAX);
+        // Camera mode reaches its whole effect at one and the slider stops
+        // there, so a file holding more would draw a flare nothing on screen
+        // can bring back.
+        self.sun_flare = self.sun_flare.clamp(0.0, SUN_FLARE_MAX);
     }
 }
 
@@ -324,6 +370,8 @@ impl Default for AppConfig {
             nightglow_intensity: 0.25,
             nightglow_falloff: 15.0,
             nightglow_balance: 0.37,
+            atmo_sunrise_glow: 1.0,
+            atmo_sunrise_width: 30.0,
             sky_fov: 140.0,
             star_intensity: 2.0,
             star_size: 1.0,
@@ -333,7 +381,14 @@ impl Default for AppConfig {
             star_mag_limit: 6.5,
             sun_glow: 1.0,
             sun_rays: 0.6,
-            sun_flare: 0.0,
+            sun_flare: 0.15,
+            sun_size: 1.0,
+            sun_halo_radius: 3.0,
+            sun_horizon_boost: 3.0,
+            sun_horizon_reach: 4.0,
+            sun_horizon_depth: 1.0,
+            sun_reddening: 1.0,
+            sun_refraction: 1.0,
             moon_brightness: 1.0,
             moon_size: 1.0,
             moon_earthshine: 0.05,
@@ -678,11 +733,44 @@ mod tests {
     }
 
     #[test]
-    fn default_sun_shows_the_glare_and_not_the_camera() {
+    fn default_sun_shows_the_glare_and_a_trace_of_the_camera() {
         let config = AppConfig::default();
         assert_relative_eq!(config.sun_glow, 1.0);
         assert_relative_eq!(config.sun_rays, 0.6);
-        assert_relative_eq!(config.sun_flare, 0.0);
+        assert_relative_eq!(config.sun_flare, 0.15);
+        assert_relative_eq!(config.sun_size, 1.0);
+        assert_relative_eq!(config.sun_halo_radius, 3.0);
+    }
+
+    /// The horizon controls default to the review's taste with the physics
+    /// under it: the measured atmosphere for the two that have a physical
+    /// setting, a zone a Sun diameter thick so the gradient exists on a
+    /// preview, and a peak that is a choice rather than a measurement.
+    #[test]
+    fn default_horizon_is_the_measured_atmosphere_with_a_peak_on_top() {
+        let config = AppConfig::default();
+        assert_relative_eq!(config.sun_reddening, 1.0);
+        assert_relative_eq!(config.sun_refraction, 1.0);
+        assert_relative_eq!(config.sun_horizon_depth, 1.0);
+        assert_relative_eq!(config.sun_horizon_boost, 3.0);
+        assert_relative_eq!(config.sun_horizon_reach, 4.0);
+        assert_relative_eq!(config.atmo_sunrise_glow, 1.0);
+        assert_relative_eq!(config.atmo_sunrise_width, 30.0);
+    }
+
+    /// A file is a text file, and camera mode above one draws a flare the
+    /// slider cannot bring back.
+    #[test]
+    fn a_lens_flare_past_the_sliders_end_loads_clamped() {
+        let dir = std::env::temp_dir().join("sunlit_earth_test_clamp_sun_flare");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        fs::write(&path, "[sunlit.earth]\nsun_flare = 1.8\n").unwrap();
+        assert_relative_eq!(load_config_from(&path).sun_flare, SUN_FLARE_MAX);
+        fs::write(&path, "[sunlit.earth]\nsun_flare = -0.5\n").unwrap();
+        assert_relative_eq!(load_config_from(&path).sun_flare, 0.0);
     }
 
     #[test]
@@ -720,7 +808,21 @@ mod tests {
         let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
         assert_relative_eq!(config.sun_glow, 1.0);
         assert_relative_eq!(config.sun_rays, 0.6);
-        assert_relative_eq!(config.sun_flare, 0.0);
+        assert_relative_eq!(config.sun_flare, 0.15);
+        assert_relative_eq!(config.sun_size, 1.0);
+        assert_relative_eq!(config.sun_halo_radius, 3.0);
+        assert_relative_eq!(config.sun_horizon_boost, 3.0);
+        assert_relative_eq!(config.sun_horizon_reach, 4.0);
+        assert_relative_eq!(config.sun_horizon_depth, 1.0);
+        assert_relative_eq!(config.sun_reddening, 1.0);
+        assert_relative_eq!(config.sun_refraction, 1.0);
+    }
+
+    #[test]
+    fn deserialize_missing_sunrise_band_fields_fills_defaults() {
+        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
+        assert_relative_eq!(config.atmo_sunrise_glow, 1.0);
+        assert_relative_eq!(config.atmo_sunrise_width, 30.0);
     }
 
     #[test]
@@ -855,6 +957,8 @@ mod tests {
             nightglow_intensity: 0.5,
             nightglow_falloff: 6.0,
             nightglow_balance: 0.3,
+            atmo_sunrise_glow: 1.6,
+            atmo_sunrise_width: 55.0,
             sky_fov: 110.0,
             star_intensity: 0.7,
             star_size: 1.4,
@@ -865,6 +969,13 @@ mod tests {
             sun_glow: 1.4,
             sun_rays: 0.3,
             sun_flare: 0.9,
+            sun_size: 2.5,
+            sun_halo_radius: 4.5,
+            sun_horizon_boost: 2.0,
+            sun_horizon_reach: 6.0,
+            sun_horizon_depth: 2.0,
+            sun_reddening: 0.7,
+            sun_refraction: 1.5,
             moon_brightness: 1.3,
             moon_size: 2.5,
             moon_earthshine: 0.12,
@@ -996,6 +1107,8 @@ mod tests {
             nightglow_intensity: 0.4,
             nightglow_falloff: 5.0,
             nightglow_balance: 0.6,
+            atmo_sunrise_glow: 0.4,
+            atmo_sunrise_width: 20.0,
             sky_fov: 155.0,
             star_intensity: 0.8,
             star_size: 1.6,
@@ -1006,6 +1119,13 @@ mod tests {
             sun_glow: 0.8,
             sun_rays: 0.9,
             sun_flare: 0.4,
+            sun_size: 5.0,
+            sun_halo_radius: 7.0,
+            sun_horizon_boost: 6.0,
+            sun_horizon_reach: 1.5,
+            sun_horizon_depth: 0.5,
+            sun_reddening: 1.4,
+            sun_refraction: 0.25,
             moon_brightness: 0.6,
             moon_size: 6.0,
             moon_earthshine: 0.3,

@@ -38,6 +38,9 @@ signal-hook.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+# Test-only: the fine drag gain is checked against the sky lens's own
+# projection rather than against a second spelling of it.
+glam.workspace = true
 proptest.workspace = true
 serial_test.workspace = true
 i-slint-backend-testing.workspace = true

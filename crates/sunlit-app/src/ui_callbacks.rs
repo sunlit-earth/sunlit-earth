@@ -15,28 +15,64 @@ use sunlit_core::scene::camera::{CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
 use sunlit_core::scene::sun::DateTimeInput;
 
-/// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
-/// tilt drag, scroll zoom, and preset application.
-pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
-    // Left-drag callback: rotate the globe (tilt-corrected)
+/// Register the left-drag: rotate the globe, tilt-corrected, at a gain that
+/// follows the hand.
+///
+/// The estimator and the moment of the previous move are this callback's
+/// alone: no other drag reads the cursor's speed, and the interval between two
+/// moves is the only thing the toolkit does not hand over. They are shared with
+/// the press, which clears both, because they describe one gesture: without
+/// that, a deliberate drag begun a few tens of milliseconds after a sweep
+/// inherits the sweep's speed and takes its first steps at the coarse gain.
+fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
     let window_weak = window.as_weak();
     let engine = link.clone();
+    let speed = std::rc::Rc::new(std::cell::Cell::new(mouse_math::DragSpeed::default()));
+    let previous_move = std::rc::Rc::new(std::cell::Cell::new(None::<std::time::Instant>));
+
+    let pressed_speed = std::rc::Rc::clone(&speed);
+    let pressed_move = std::rc::Rc::clone(&previous_move);
+    window.on_mouse_drag_globe_begin(move || {
+        pressed_speed.set(mouse_math::DragSpeed::default());
+        pressed_move.set(None);
+    });
+
     window.on_mouse_drag_globe(move |dx, dy| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let (lon, lat) = mouse_math::apply_globe_drag(
+        let now = std::time::Instant::now();
+        let seconds = previous_move
+            .replace(Some(now))
+            .map_or(mouse_math::DRAG_SPEED_MAX_INTERVAL, |previous| {
+                now.duration_since(previous).as_secs_f32()
+            });
+        let mut estimator = speed.get();
+        let cursor_speed = estimator.observe(dx.hypot(dy), seconds);
+        speed.set(estimator);
+        let gain = mouse_math::drag_gain(
+            cursor_speed,
+            mouse_math::coarse_drag_gain(win.get_camera_zoom()),
+            mouse_math::fine_drag_gain(win.get_sky_fov(), win.get_viewport_width()),
+        );
+        let (lon, lat) = mouse_math::apply_globe_drag_at(
             win.get_camera_longitude(),
             win.get_camera_latitude(),
             win.get_camera_tilt(),
-            win.get_camera_zoom(),
             dx,
             dy,
+            gain,
         );
         win.set_camera_longitude(lon);
         win.set_camera_latitude(lat);
         engine.push_params(&win);
     });
+}
+
+/// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
+/// tilt drag, scroll zoom, and preset application.
+pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
+    register_globe_drag(window, link);
 
     // Right-drag callback: adjust framing (offset X/Y)
     let window_weak = window.as_weak();
@@ -319,6 +355,8 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_nightglow_intensity(params.nightglow_intensity);
     window.set_nightglow_falloff(params.nightglow_falloff);
     window.set_nightglow_balance(params.nightglow_balance);
+    window.set_atmo_sunrise_glow(params.atmo_sunrise_glow);
+    window.set_atmo_sunrise_width(params.atmo_sunrise_width);
     window.set_sky_fov(params.sky_fov);
     window.set_star_intensity(params.star_intensity);
     window.set_star_size(params.star_size);
@@ -329,6 +367,13 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_sun_glow(params.sun_glow);
     window.set_sun_rays(params.sun_rays);
     window.set_sun_flare(params.sun_flare);
+    window.set_sun_size(params.sun_size);
+    window.set_sun_halo_radius(params.sun_halo_radius);
+    window.set_sun_horizon_boost(params.sun_horizon_boost);
+    window.set_sun_horizon_reach(params.sun_horizon_reach);
+    window.set_sun_horizon_depth(params.sun_horizon_depth);
+    window.set_sun_reddening(params.sun_reddening);
+    window.set_sun_refraction(params.sun_refraction);
     window.set_moon_brightness(params.moon_brightness);
     window.set_moon_size(params.moon_size);
     window.set_moon_earthshine(params.moon_earthshine);
@@ -387,6 +432,8 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         nightglow_intensity: window.get_nightglow_intensity(),
         nightglow_falloff: window.get_nightglow_falloff(),
         nightglow_balance: window.get_nightglow_balance(),
+        atmo_sunrise_glow: window.get_atmo_sunrise_glow(),
+        atmo_sunrise_width: window.get_atmo_sunrise_width(),
         sky_fov: window.get_sky_fov(),
         star_intensity: window.get_star_intensity(),
         star_size: window.get_star_size(),
@@ -397,6 +444,13 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         sun_glow: window.get_sun_glow(),
         sun_rays: window.get_sun_rays(),
         sun_flare: window.get_sun_flare(),
+        sun_size: window.get_sun_size(),
+        sun_halo_radius: window.get_sun_halo_radius(),
+        sun_horizon_boost: window.get_sun_horizon_boost(),
+        sun_horizon_reach: window.get_sun_horizon_reach(),
+        sun_horizon_depth: window.get_sun_horizon_depth(),
+        sun_reddening: window.get_sun_reddening(),
+        sun_refraction: window.get_sun_refraction(),
         moon_brightness: window.get_moon_brightness(),
         moon_size: window.get_moon_size(),
         moon_earthshine: window.get_moon_earthshine(),

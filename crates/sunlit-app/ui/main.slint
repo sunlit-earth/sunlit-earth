@@ -224,6 +224,8 @@ export component MainWindow inherits Window {
     in-out property <float> nightglow-intensity: 0.25;
     in-out property <float> nightglow-balance: 0.37;
     in-out property <float> nightglow-falloff: 15.0;
+    in-out property <float> atmo-sunrise-glow: 1.0;
+    in-out property <float> atmo-sunrise-width: 30.0;
     in-out property <float> sky-fov: 140.0;
     in-out property <float> star-intensity: 2.0;
     in-out property <float> star-size: 1.0;
@@ -233,7 +235,14 @@ export component MainWindow inherits Window {
     in-out property <float> star-mag-limit: 6.5;
     in-out property <float> sun-glow: 1.0;
     in-out property <float> sun-rays: 0.6;
-    in-out property <float> sun-flare: 0.0;
+    in-out property <float> sun-flare: 0.15;
+    in-out property <float> sun-size: 1.0;
+    in-out property <float> sun-halo-radius: 3.0;
+    in-out property <float> sun-horizon-boost: 3.0;
+    in-out property <float> sun-horizon-reach: 4.0;
+    in-out property <float> sun-horizon-depth: 1.0;
+    in-out property <float> sun-reddening: 1.0;
+    in-out property <float> sun-refraction: 1.0;
     in-out property <float> moon-brightness: 1.0;
     in-out property <float> moon-size: 1.0;
     in-out property <float> moon-earthshine: 0.05;
@@ -255,6 +264,7 @@ export component MainWindow inherits Window {
     in property <int> max-day-of-year: 365;
 
     callback mouse-drag-globe(float, float);
+    callback mouse-drag-globe-begin();
     callback mouse-drag-frame(float, float);
     callback mouse-drag-orient(float, float);
     callback mouse-drag-tilt(float, float);
@@ -762,14 +772,91 @@ export component MainWindow inherits Window {
                                 changed => { root.sliders-changed(); }
                             }
 
+                            sun-size-slider := SettingRow {
+                                label: "Size";
+                                hint: "Multiplies the Sun's radius above its true half degree, the way the Moon's does. The glare's inner lobe grows with it and the rest of it does not.";
+                                indent: 8px;
+                                minimum: 1.0;
+                                maximum: 8.0;
+                                value <=> root.sun-size;
+                                value-text: round(root.sun-size * 10) / 10 + "×";
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            sun-halo-radius-slider := SettingRow {
+                                label: "Halo radius";
+                                hint: "Angular radius of the faint colored ring around the glare.";
+                                indent: 8px;
+                                minimum: 1.5;
+                                maximum: 8.0;
+                                value <=> root.sun-halo-radius;
+                                value-text: round(root.sun-halo-radius * 10) / 10 + "°";
+                                changed => { root.sliders-changed(); }
+                            }
+
                             sun-flare-slider := SettingRow {
                                 label: "Lens flare";
-                                hint: "Aperture spikes and lens ghosts, which belong to a camera rather than to an eye. Off by default.";
+                                hint: "Aperture spikes and lens ghosts, which belong to a camera rather than to an eye.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 1.0;
+                                value <=> root.sun-flare;
+                                value-text: round(root.sun-flare * 100) + "%";
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            sun-horizon-boost-slider := SettingRow {
+                                label: "Sunrise glare";
+                                hint: "How much brighter the glare peaks as the disk clears the horizon, before the eye adjusts. One is the physical answer.";
+                                indent: 8px;
+                                minimum: 1.0;
+                                maximum: 8.0;
+                                value <=> root.sun-horizon-boost;
+                                value-text: round(root.sun-horizon-boost * 10) / 10 + "×";
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            sun-horizon-reach-slider := SettingRow {
+                                label: "Adaptation";
+                                hint: "How far above the horizon, in horizon depths, the eye takes to settle back to normal.";
+                                indent: 8px;
+                                minimum: 0.5;
+                                maximum: 10.0;
+                                value <=> root.sun-horizon-reach;
+                                value-text: round(root.sun-horizon-reach * 10) / 10;
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            sun-horizon-depth-slider := SettingRow {
+                                label: "Horizon depth";
+                                hint: "Thickness of the horizon zone in Sun diameters. Zero uses the painted atmosphere alone.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 4.0;
+                                value <=> root.sun-horizon-depth;
+                                value-text: round(root.sun-horizon-depth * 10) / 10;
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            sun-reddening-slider := SettingRow {
+                                label: "Reddening";
+                                hint: "How much the low atmosphere colors the disk and the glare. One is the measured atmosphere. The warm band it spreads along the limb is the Atmosphere group's Sunrise band.";
                                 indent: 8px;
                                 minimum: 0.0;
                                 maximum: 2.0;
-                                value <=> root.sun-flare;
-                                value-text: round(root.sun-flare * 100) + "%";
+                                value <=> root.sun-reddening;
+                                value-text: round(root.sun-reddening * 100) + "%";
+                                changed => { root.sliders-changed(); }
+                            }
+
+                            sun-refraction-slider := SettingRow {
+                                label: "Refraction";
+                                hint: "Lifts and flattens the disk at the horizon the way the atmosphere bends its light.";
+                                indent: 8px;
+                                minimum: 0.0;
+                                maximum: 2.0;
+                                value <=> root.sun-refraction;
+                                value-text: round(root.sun-refraction * 100) + "%";
                                 changed => { root.sliders-changed(); }
                             }
 
@@ -928,6 +1015,32 @@ export component MainWindow inherits Window {
                                     maximum: 1.0;
                                     value <=> root.rayleigh-haze;
                                     value-text: round(root.rayleigh-haze * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                SettingHeading { text: "Sunrise band"; }
+
+                                atmo-sunrise-glow-slider := SettingRow {
+                                    label: "Brightness";
+                                    hint: "Brightness of the warm band the atmosphere takes around a rising or setting Sun.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 3.0;
+                                    value <=> root.atmo-sunrise-glow;
+                                    value-text: round(root.atmo-sunrise-glow * 100) / 100 + "×";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                atmo-sunrise-width-slider := SettingRow {
+                                    label: "Band width";
+                                    hint: "How far along the horizon that band reaches from the Sun.";
+                                    indent: 8px;
+                                    minimum: 10.0;
+                                    maximum: 90.0;
+                                    value <=> root.atmo-sunrise-width;
+                                    value-text: round(root.atmo-sunrise-width) + "°";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1213,6 +1326,9 @@ export component MainWindow inherits Window {
             pointer-event(event) => {
                 if event.button == PointerEventButton.left {
                     image-container.left-held = event.kind == PointerEventKind.down;
+                    if event.kind == PointerEventKind.down {
+                        root.mouse-drag-globe-begin();
+                    }
                 }
                 if event.button == PointerEventButton.right {
                     image-container.right-held = event.kind == PointerEventKind.down;

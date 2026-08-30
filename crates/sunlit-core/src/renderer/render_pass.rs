@@ -120,6 +120,14 @@ pub(super) fn write_uniforms<'a>(
         // behind something invisible is the same incoherence as one burning
         // around a Moon that covers the disk.
         moon_disc: moon_drawn.and(moon.disc),
+        horizon: sun_occlusion::SunHorizonParams {
+            size: params.sun_size,
+            depth: params.sun_horizon_depth,
+            reddening: params.sun_reddening,
+            refraction: params.sun_refraction,
+            boost: params.sun_horizon_boost,
+            reach: params.sun_horizon_reach,
+        },
     });
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
@@ -179,13 +187,26 @@ pub(super) fn write_uniforms<'a>(
         sun_rays: params.sun_rays,
         sun_flare: params.sun_flare,
         sun_visible: sun.visibility.visible_fraction,
-        sun_transit: sun.visibility.transit_fraction,
+        sun_size: params.sun_size,
         sun_view_dir: sun.view_direction.into(),
         sun_disk_radius: sun.disk_radius_pixels,
         moon_model: moon.model.to_cols_array(),
         moon_brightness: params.moon_brightness,
         moon_earthshine: params.moon_earthshine,
         milky_way_intensity: params.milky_way_intensity,
+        sun_glare_tint: sun.glare_tint.into(),
+        sun_horizon_gain: sun.horizon_gain,
+        sun_globe_center: sun.globe.center.into(),
+        sun_globe_radius: sun.globe.radius,
+        sun_zone_width: sun.zone_width_pixels,
+        sun_squash: sun.squash,
+        sun_halo_radius: params.sun_halo_radius,
+        sun_reddening: params.sun_reddening,
+        atmo_sunrise_glow: params.atmo_sunrise_glow,
+        atmo_sunrise_g: sun_occlusion::henyey_greenstein_asymmetry(params.atmo_sunrise_width),
+        sun_flux: sun.flux,
+        _pad7: 0.0,
+        _pad8: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

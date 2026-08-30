@@ -65,7 +65,7 @@ struct Uniforms {
     sun_rays: f32,
     sun_flare: f32,
     sun_visible: f32,
-    sun_transit: f32,
+    sun_size: f32,
     sun_view_dir: [f32; 3],
     sun_disk_radius: f32,
     moon_model: [f32; 16],
@@ -73,9 +73,22 @@ struct Uniforms {
     moon_earthshine: f32,
     milky_way_intensity: f32,
     cloud_opacity_night: f32,
+    sun_glare_tint: [f32; 3],
+    sun_horizon_gain: f32,
+    sun_globe_center: [f32; 2],
+    sun_globe_radius: f32,
+    sun_zone_width: f32,
+    sun_squash: f32,
+    sun_halo_radius: f32,
+    sun_reddening: f32,
+    atmo_sunrise_glow: f32,
+    atmo_sunrise_g: f32,
+    sun_flux: f32,
+    _pad7: f32,
+    _pad8: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 480);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);
 
 /// Matches the production `Vertex` struct in `sphere.rs`.
 #[repr(C)]
@@ -591,7 +604,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         sun_rays: 0.0,
         sun_flare: 0.0,
         sun_visible: 1.0,
-        sun_transit: 0.0,
+        sun_size: 1.0,
         sun_view_dir: [0.0, 0.0, -1.0],
         sun_disk_radius: 2.0,
         moon_model: MOON_MODEL_IDENTITY,
@@ -601,6 +614,22 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         // the layer's draw is not among the ones they encode.
         milky_way_intensity: 0.0,
         cloud_opacity_night: 0.55,
+        sun_glare_tint: [1.0, 1.0, 1.0],
+        sun_horizon_gain: 1.0,
+        // A globe of a hundred pixels with a ten pixel band around it, so the
+        // shell's own forward lobe has a height to read even where these cases
+        // draw no Sun.
+        sun_globe_center: [size as f32 * 0.5, size as f32 * 0.5],
+        sun_globe_radius: 100.0,
+        sun_zone_width: 10.0,
+        sun_squash: 1.0,
+        sun_halo_radius: 3.0,
+        sun_reddening: 1.0,
+        atmo_sunrise_glow: 0.0,
+        atmo_sunrise_g: 0.5,
+        sun_flux: 1.0,
+        _pad7: 0.0,
+        _pad8: 0.0,
     }
 }
 
@@ -752,7 +781,7 @@ struct Uniforms {
     sun_rays: f32,
     sun_flare: f32,
     sun_visible: f32,
-    sun_transit: f32,
+    sun_size: f32,
     sun_view_dir: vec3<f32>,
     sun_disk_radius: f32,
     moon_model: mat4x4<f32>,
@@ -760,6 +789,19 @@ struct Uniforms {
     moon_earthshine: f32,
     milky_way_intensity: f32,
     cloud_opacity_night: f32,
+    sun_glare_tint: vec3<f32>,
+    sun_horizon_gain: f32,
+    sun_globe_center: vec2<f32>,
+    sun_globe_radius: f32,
+    sun_zone_width: f32,
+    sun_squash: f32,
+    sun_halo_radius: f32,
+    sun_reddening: f32,
+    atmo_sunrise_glow: f32,
+    atmo_sunrise_g: f32,
+    sun_flux: f32,
+    _pad7: f32,
+    _pad8: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -827,7 +869,7 @@ fn main() {
     output[43] = uniforms.sun_rays;
     output[44] = uniforms.sun_flare;
     output[45] = uniforms.sun_visible;
-    output[46] = uniforms.sun_transit;
+    output[46] = uniforms.sun_size;
     output[47] = uniforms.sun_view_dir.x;
     output[48] = uniforms.sun_view_dir.y;
     output[49] = uniforms.sun_view_dir.z;
@@ -845,6 +887,21 @@ fn main() {
     output[58] = uniforms.cloud_night;
     output[59] = uniforms.cloud_terminator;
     output[60] = uniforms.cloud_opacity_night;
+    // the horizon block
+    output[61] = uniforms.sun_glare_tint.r;
+    output[62] = uniforms.sun_glare_tint.g;
+    output[63] = uniforms.sun_glare_tint.b;
+    output[64] = uniforms.sun_horizon_gain;
+    output[65] = uniforms.sun_globe_center.x;
+    output[66] = uniforms.sun_globe_center.y;
+    output[67] = uniforms.sun_globe_radius;
+    output[68] = uniforms.sun_zone_width;
+    output[69] = uniforms.sun_squash;
+    output[70] = uniforms.sun_halo_radius;
+    output[71] = uniforms.sun_reddening;
+    output[72] = uniforms.atmo_sunrise_glow;
+    output[73] = uniforms.atmo_sunrise_g;
+    output[74] = uniforms.sun_flux;
 }
 ";
 
@@ -933,7 +990,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         sun_rays: 0.45,
         sun_flare: 0.8,
         sun_visible: 0.6,
-        sun_transit: 0.3,
+        sun_size: 2.75,
         sun_view_dir: [0.0, 0.6, -0.8],
         sun_disk_radius: 7.5,
         // Column major, so the last column's first component is the Moon's x
@@ -945,6 +1002,19 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         moon_earthshine: 0.35,
         milky_way_intensity: 0.65,
         cloud_opacity_night: 0.61,
+        sun_glare_tint: [0.95, 0.55, 0.15],
+        sun_horizon_gain: 2.25,
+        sun_globe_center: [64.5, 33.25],
+        sun_globe_radius: 41.5,
+        sun_zone_width: 6.25,
+        sun_squash: 0.45,
+        sun_halo_radius: 4.25,
+        sun_reddening: 1.35,
+        atmo_sunrise_glow: 1.85,
+        atmo_sunrise_g: 0.62,
+        sun_flux: 0.72,
+        _pad7: 0.0,
+        _pad8: 0.0,
     };
 
     let uniform_buf = ctx
@@ -955,8 +1025,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 58 floats
-    let output_size = (61 * std::mem::size_of::<f32>()) as u64;
+    // Output buffer: 75 floats
+    let output_size = (75 * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -1228,8 +1298,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         values[45]
     );
     assert!(
-        (values[46] - 0.3).abs() < eps,
-        "sun_transit: got {}, expected 0.3",
+        (values[46] - 2.75).abs() < eps,
+        "sun_size: got {}, expected 2.75",
         values[46]
     );
     assert!(
@@ -1280,6 +1350,28 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         "cloud_opacity_night: got {}, expected 0.61",
         values[60]
     );
+    for (index, expected, name) in [
+        (61, 0.95, "sun_glare_tint.r"),
+        (62, 0.55, "sun_glare_tint.g"),
+        (63, 0.15, "sun_glare_tint.b"),
+        (64, 2.25, "sun_horizon_gain"),
+        (65, 64.5, "sun_globe_center.x"),
+        (66, 33.25, "sun_globe_center.y"),
+        (67, 41.5, "sun_globe_radius"),
+        (68, 6.25, "sun_zone_width"),
+        (69, 0.45, "sun_squash"),
+        (70, 4.25, "sun_halo_radius"),
+        (71, 1.35, "sun_reddening"),
+        (72, 1.85, "atmo_sunrise_glow"),
+        (73, 0.62, "atmo_sunrise_g"),
+        (74, 0.72, "sun_flux"),
+    ] {
+        assert!(
+            (values[index] - expected).abs() < eps,
+            "{name}: got {}, expected {expected}",
+            values[index]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,25 +1382,41 @@ fn uniform_buffer_field_offsets_match_wgsl() {
 /// evaluates is the source the renderer compiles rather than a copy of it.
 const SHARED_RULE_PROBE: &str = "
 @group(1) @binding(0) var<storage, read_write> rule_out: array<f32>;
+@group(1) @binding(1) var<storage, read> rule_heights: array<f32>;
 
 @compute @workgroup_size(1)
 fn shared_rule_probe() {
     rule_out[0] = output_pixel_scale();
     rule_out[1] = sky_lens_edge_radius();
+    for (var i = 0u; i < arrayLength(&rule_heights); i = i + 1u) {
+        let transmitted = limb_transmission_km(rule_heights[i]);
+        rule_out[2u + i * 4u] = transmitted.r;
+        rule_out[3u + i * 4u] = transmitted.g;
+        rule_out[4u + i * 4u] = transmitted.b;
+        rule_out[5u + i * 4u] = limb_disk_amplitude(transmitted.g);
+    }
 }
 ";
 
-/// The output-density ramp and the sky lens's edge radius exist once in WGSL
-/// and once in `scene::sun_occlusion`, and both pairings matter at the pixel:
-/// the CPU sizes the Sun's disk with the ramp and the shader draws that disk's
-/// antialiased edge with it, and the CPU measures occlusion at a screen
-/// position the shader has to draw the Sun at.
+/// Heights through the band the third rule is compared at: the surface, the
+/// few kilometers where the disk fades out, the rows the research table names,
+/// and the top of the band where the path takes nothing.
+const RULE_HEIGHTS_KM: [f32; 9] = [0.0, 2.0, 5.0, 8.0, 13.0, 20.0, 27.0, 50.0, 95.565];
+
+/// Three rules exist once in WGSL and once in `scene::sun_occlusion`, and every
+/// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
+/// ramp and the shader draws that disk's antialiased edge with it; the CPU
+/// measures occlusion at a screen position the shader has to draw the Sun at;
+/// and the CPU integrates the light path over the visible disk to decide what
+/// color and how bright the glare is while the shader draws the disk that glare
+/// is supposed to have come from.
 ///
-/// The heights avoid 1080 and below, where the ramp clamps to 1.0 and any two
-/// knees agree: every golden and every engine frame renders there, so nothing
-/// else in the suite can see a divergence at all.
+/// The viewport heights avoid 1080 and below, where the ramp clamps to 1.0 and
+/// any two knees agree: every golden and every engine frame renders there, so
+/// nothing else in the suite can see a divergence at all.
 #[test]
-fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
+#[allow(clippy::too_many_lines)]
+fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
     let ctx = RENDER_CTX.lock().unwrap();
 
     let wgsl_source = format!(
@@ -1334,13 +1442,20 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
             cache: None,
         });
 
-    let output_size = 2 * std::mem::size_of::<f32>() as u64;
+    let output_size = ((2 + RULE_HEIGHTS_KM.len() * 4) * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("shared_rule_probe_output"),
         size: output_size,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
+    let heights_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shared_rule_probe_heights"),
+            contents: bytemuck::cast_slice(&RULE_HEIGHTS_KM),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
     let uniform_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("shared_rule_probe_uniforms"),
         size: std::mem::size_of::<Uniforms>() as u64,
@@ -1358,16 +1473,23 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
     let output_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &pipeline.get_bind_group_layout(1),
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: output_buf.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: output_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: heights_buf.as_entire_binding(),
+            },
+        ],
     });
 
-    let probe = |height: f32, sky_fov: f32| {
+    let probe = |height: f32, sky_fov: f32, reddening: f32| {
         let uniforms = Uniforms {
             viewport_size: [height * 16.0 / 9.0, height],
             sky_fov,
+            sun_reddening: reddening,
             ..default_test_uniforms(64)
         };
         ctx.queue
@@ -1387,8 +1509,7 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
         }
         ctx.queue.submit(std::iter::once(encoder.finish()));
         let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
-        let values: &[f32] = bytemuck::cast_slice(&data);
-        (values[0], values[1])
+        bytemuck::cast_slice::<u8, f32>(&data).to_vec()
     };
 
     // Below the knee, on it, three points up the ramp, and past the ceiling.
@@ -1396,19 +1517,48 @@ fn the_shader_and_the_cpu_agree_on_the_two_shared_rules() {
         // Under the lower clamp, both ends of the slider's range, and over the
         // upper one.
         for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0] {
-            let (shader_scale, shader_edge) = probe(height, sky_fov);
-            let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
-            let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
-            assert!(
-                (shader_scale - cpu_scale).abs() < 1e-6,
-                "the density ramp at {height} pixels: the shader says {shader_scale}, \
-                 scene::sun_occlusion::pixel_scale says {cpu_scale}"
-            );
-            assert!(
-                (shader_edge - cpu_edge).abs() < 2e-5 * cpu_edge,
-                "the sky lens edge radius at {sky_fov} degrees: the shader says {shader_edge}, \
-                 scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}"
-            );
+            // Both ends of the reddening slider and the measured atmosphere in
+            // between; zero is the white Sun and has to stay exactly white.
+            for &reddening in &[0.0_f32, 1.0, 2.0] {
+                let values = probe(height, sky_fov, reddening);
+                let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
+                let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
+                assert!(
+                    (values[0] - cpu_scale).abs() < 1e-6,
+                    "the density ramp at {height} pixels: the shader says {}, \
+                     scene::sun_occlusion::pixel_scale says {cpu_scale}",
+                    values[0]
+                );
+                assert!(
+                    (values[1] - cpu_edge).abs() < 2e-5 * cpu_edge,
+                    "the sky lens edge radius at {sky_fov} degrees: the shader says {}, \
+                     scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}",
+                    values[1]
+                );
+                for (index, km) in RULE_HEIGHTS_KM.iter().enumerate() {
+                    let cpu = sunlit_core::scene::sun_occlusion::limb_transmission(*km, reddening);
+                    let shader = glam::Vec3::new(
+                        values[2 + index * 4],
+                        values[3 + index * 4],
+                        values[4 + index * 4],
+                    );
+                    // Relative, because the band runs over ten decades and an
+                    // absolute bound would say nothing at the bottom of it.
+                    let apart = (shader - cpu).abs() / cpu.abs().max(glam::Vec3::splat(1e-30));
+                    assert!(
+                        apart.max_element() < 2e-3,
+                        "the light path at {km} km and reddening {reddening}: the shader says \
+                         {shader}, scene::sun_occlusion::limb_transmission says {cpu}"
+                    );
+                    let cpu_fade = sunlit_core::scene::sun_occlusion::limb_disk_amplitude(cpu.y);
+                    assert!(
+                        (values[5 + index * 4] - cpu_fade).abs() < 1e-3,
+                        "the disk's fade at {km} km: the shader says {}, \
+                         scene::sun_occlusion::limb_disk_amplitude says {cpu_fade}",
+                        values[5 + index * 4]
+                    );
+                }
+            }
         }
     }
 }

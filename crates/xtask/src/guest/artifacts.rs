@@ -490,6 +490,7 @@ fn builder_session<'a>(
             crate::store::state::StartReason::Suite,
             false,
             None,
+            1,
         )?,
     };
     Ok((session, found))

@@ -308,15 +308,19 @@ fn running_vm(image: Image, state: &RunState) -> String {
             state.ssh_host, state.ssh_port
         );
     }
+    // Every console, not the first: a guest booted with two screens has two of
+    // them, `vm view` opens both, and a reader who is told about one would go
+    // looking for the other.
+    let consoles = state.consoles();
     let _ = writeln!(
         out,
         "    {}: `cargo xtask vm view {image}`{}",
         image.console_label(),
-        state
-            .vnc
-            .as_ref()
-            .map(|vnc| format!("  (vnc {vnc})"))
-            .unwrap_or_default()
+        if consoles.is_empty() {
+            String::new()
+        } else {
+            format!("  (vnc {})", consoles.join(", "))
+        }
     );
     // A build's disk is the image being installed, not a throwaway child of an
     // image, and calling it an overlay would say the opposite of what ending

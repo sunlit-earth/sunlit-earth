@@ -51,7 +51,7 @@ cargo xtask vm doctor                       # read-only: is this host set up? Ru
 cargo xtask vm status                       # images and their age, running guests, disk footprint
 cargo xtask e2e --target linux              # the suite in a fresh Linux guest; --desktop gnome for another session
 cargo xtask e2e --target windows --keep     # leave the guest up afterwards to look at the aftermath
-cargo xtask vm up linux [--desktop xfce]    # boot a guest with the current binaries in it, run nothing
+cargo xtask vm up linux [--desktop xfce] [--screens 2]   # boot a guest with the current binaries in it, run nothing
 cargo xtask vm ssh linux ["command"]        # a shell or one command in the running guest
 cargo xtask vm view linux                   # its desktop (vmconnect for Hyper-V, VNC for QEMU)
 cargo xtask vm stop windows-builder         # end a builder and keep its build directory; vm start resumes it
@@ -65,6 +65,7 @@ Things that follow from how it is built:
 - A builder is the exception, and `vm stop` and `vm start` exist for that reason: a stopped builder keeps its overlay, so the cargo build directory in it makes the next build a link rather than a compile. It holds no memory while stopped, `vm status` counts its overlay, and `vm down <builder>` is what frees it.
 - Every guest's binaries are compiled on the operating system they are for, never cross-compiled: natively on a matching host, in WSL for the Linux guest on a Windows host, and in the `windows-builder` guest for the Windows guest on a Linux host. The last two are why the first `vm up` after a change takes minutes, and the builder-guest one needs that image built first; a build leaves the builder stopped, so the next one is warm.
 - `vm setup` (elevated, once per machine) and `vm build-image <image>` (tens of minutes to an hour per image) are the rare commands; do not run them without asking. The Windows image is a 90-day evaluation and `vm status` shows its age.
+- `--screens <n>` gives the Linux guest that many screens, up to four, placed left to right at the console resolution; `vm view` then opens one VNC window per screen. QEMU only, so the Windows guest refuses it: its adapter has one head whichever hypervisor holds it.
 - The guests have no OpenGL and no real GPU: the Windows job sets `SLINT_BACKEND=winit-software` and both render on a software adapter, so timings and pixels there are not those of a real desktop.
 
 `docs/vm-setup.md` has the full guide and the troubleshooting list; `docs/vm-internals.md` has the design.

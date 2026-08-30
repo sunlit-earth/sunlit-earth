@@ -1626,6 +1626,7 @@ fn build_in_builder(
         StartReason::Dist,
         options.allow_expired,
         None,
+        1,
     )?;
 
     // From here the guest exists, so nothing may return without saying what
@@ -1824,6 +1825,7 @@ fn verify_in_desktop(
         StartReason::Dist,
         options.allow_expired,
         None,
+        1,
     )?;
 
     let outcome = (|| -> Result<Verified, String> {

@@ -4,6 +4,7 @@
 //! `vm up` and `e2e --target <t>` share the whole boot path, which is what
 //! makes an interactive guest and a test guest the same guest.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use crate::commands::status;
@@ -95,6 +96,16 @@ impl Session<'_> {
             SESSION_TIMEOUT,
         )?;
         println!("{}", readiness_ready_line(self.image, elapsed));
+        // Only a Linux guest can have a second screen, and only a Linux guest
+        // has the xrandr the placement is written in, so the target is asked
+        // rather than inferred from the count.
+        let screens = self.state.screen_count();
+        if screens > 1 && self.target() == Target::Linux {
+            println!(
+                "{}",
+                place_screens(self.provider.as_ref(), &self.state, screens)
+            );
+        }
         Ok(())
     }
 
@@ -451,6 +462,55 @@ pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<De
     }
 }
 
+/// The most screens a guest may be asked for.
+///
+/// Not virtio-gpu's limit, which is sixteen scanouts: four is more than any
+/// layout worth testing, and every screen past the first costs a VNC server, a
+/// loopback port, and a share of a software renderer that is already the
+/// slowest thing in the guest.
+pub const MAX_SCREENS: u16 = 4;
+
+/// How many screens a guest may be asked for, and whether it may be asked at
+/// all.
+///
+/// One is never refused, because one is what every guest already has and a flag
+/// that changes nothing is not worth a refusal. More than one is the Debian 13
+/// guest's alone. The Windows guest cannot have it: its adapter has a single
+/// head under either hypervisor, `Set-VMVideo` has no monitor count, and
+/// `Hyper-V`'s multi-monitor path is an enhanced session that takes its monitors
+/// from the host's own, so a second screen there is a display driver inside the
+/// guest rather than a flag out here. The builders have no session to put a
+/// second screen in front of.
+pub fn screens_for(image: Image, requested: u16) -> Result<u16, String> {
+    if requested == 0 {
+        return Err("--screens 0 asks for a guest with no console at all; the \
+                    fewest screens a guest can have is 1"
+            .to_owned());
+    }
+    if requested == 1 {
+        return Ok(1);
+    }
+    match image {
+        Image::Linux if requested <= MAX_SCREENS => Ok(requested),
+        Image::Linux => Err(format!(
+            "--screens {requested} is more than the {MAX_SCREENS} a guest may be \
+             asked for; every screen past the first is another VNC server and \
+             another share of a software renderer"
+        )),
+        Image::Windows | Image::WindowsBuilder => Err(format!(
+            "--screens {requested} asks the {image} image for something its video \
+             adapter does not have: one head, whichever hypervisor is holding it. \
+             A second screen in a Windows guest is an indirect display driver \
+             installed inside it, not a flag out here"
+        )),
+        Image::LinuxBuilder => Err(format!(
+            "--screens {requested} asks for screens the {image} image has no \
+             session to put in front of: it carries no desktop at all, which is \
+             what keeps it small"
+        )),
+    }
+}
+
 /// Boot a pristine overlay and wait for it to be usable.
 pub fn boot<'a>(
     runner: &'a dyn Runner,
@@ -459,8 +519,10 @@ pub fn boot<'a>(
     reason: StartReason,
     allow_expired: bool,
     desktop: Option<Desktop>,
+    screens: u16,
 ) -> Result<Session<'a>, String> {
     let desktop = desktop_for(image, desktop)?;
+    let screens = screens_for(image, screens)?;
     check_image(store, image, allow_expired)?;
     check_no_other_vm(runner, store, image)?;
     clear_stale_state(runner, store, image)?;
@@ -475,8 +537,11 @@ pub fn boot<'a>(
     println!("creating a throwaway overlay of the {image} golden image");
     let mut state = provider.create_from_golden(image, reason)?;
     // Recorded before the VM is started, because the provider builds the guest's
-    // fw_cfg argument out of the record rather than out of a parameter.
+    // fw_cfg argument, and its consoles, out of the record rather than out of a
+    // parameter. One screen is recorded as no answer, which is what every record
+    // written before a guest could have two already carries.
     state.desktop = desktop.map(|d| d.flag().to_owned());
+    state.screens = (screens > 1).then_some(screens);
 
     // From here the VM exists: for Hyper-V it is registered, for QEMU its
     // overlay is on disk. Everything after this point goes through
@@ -739,6 +804,214 @@ fn not_running_hint(image: Image, state: &RunState) -> String {
             state.vm_name
         )
     }
+}
+
+/// One connected output of a Linux guest, as `xrandr --query` prints it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screen {
+    pub name: String,
+    /// `1920x1080+1920+0`, or empty for a connected output with no mode
+    /// assigned, which is a screen the session has not put anything on.
+    pub geometry: String,
+}
+
+impl Screen {
+    /// Where this screen's top left corner is, as xrandr wrote it.
+    fn origin(&self) -> Option<&str> {
+        let (_, offsets) = self.geometry.split_once('+')?;
+        Some(offsets)
+    }
+}
+
+/// The command that lays a session's outputs out in a row and prints the result.
+///
+/// X's own configuration leaves every connected output at the origin, which is
+/// one screen shown twice rather than two screens side by side, so the session
+/// has to be told. Told from here rather than from the image, because a line in
+/// the image costs a rebuild and because a guest with one screen must not be
+/// touched at all.
+///
+/// The session's environment comes from the file the guest contract writes at
+/// login, which is the same file every job sources: an SSH command starts with
+/// no `DISPLAY` and no X credentials of its own, and `xrandr` without those is
+/// a command that fails for a reason that has nothing to do with the screens.
+///
+/// No `set -e`: an output that refuses its mode must not stop the ones after it,
+/// and the answer to what happened is the `xrandr --query` at the end rather
+/// than any exit code. `/ connected/` matches the connected outputs and not the
+/// disconnected ones, whose word has no space in front of `connected`.
+pub fn place_screens_command() -> String {
+    format!(
+        "set -a; . {root}/session.env 2>/dev/null; set +a; \
+         export DISPLAY=\"${{DISPLAY:-:0}}\"; \
+         prev=; \
+         for out in $(xrandr --query | awk '/ connected/ {{print $1}}'); do \
+         if [ -z \"$prev\" ]; then xrandr --output \"$out\" --auto --primary; \
+         else xrandr --output \"$out\" --auto --right-of \"$prev\"; fi; \
+         prev=\"$out\"; \
+         done; \
+         xrandr --query",
+        root = crate::provider::GUEST_ROOT_LINUX,
+    )
+}
+
+/// The marker the pointer mapping prints, followed by the output it mapped to
+/// or `none`.
+pub const POINTER_MARK: &str = "SUNLIT_POINTER=";
+
+/// The command that confines the guest's tablet to one screen, and says which.
+///
+/// A guest with two screens has one absolute pointer for a desktop twice its
+/// width, so a click lands at twice the x it was aimed at. X gives an absolute
+/// device the whole screen until something maps it to one output, and this is
+/// that something: the first screen becomes exact, and the others become
+/// something to look at. Both halves of a per-screen pointer are missing from
+/// QEMU rather than from here, which `qemu::pointer_args` records.
+///
+/// The device is found by name out of `xinput list` rather than by
+/// `xinput list --id-only`, which prints nothing at all when two devices share a
+/// name, and the mapping goes to the output xrandr calls primary.
+///
+/// `xinput` is not in every image: a guest without it prints `none` and the boot
+/// says what that costs rather than failing, so an older image still boots and
+/// still shows two screens.
+pub fn map_pointer_command() -> String {
+    format!(
+        "set -a; . {root}/session.env 2>/dev/null; set +a; \
+         export DISPLAY=\"${{DISPLAY:-:0}}\"; \
+         out=$(xrandr --query | awk '/ connected primary/ {{print $1; exit}}'); \
+         [ -n \"$out\" ] || out=$(xrandr --query | awk '/ connected/ {{print $1; exit}}'); \
+         id=$(xinput list 2>/dev/null | \
+         sed -n 's/.*QEMU Virtio Tablet.*id=\\([0-9][0-9]*\\).*/\\1/p' | head -1); \
+         if [ -n \"$id\" ] && [ -n \"$out\" ] && xinput --map-to-output \"$id\" \"$out\"; then \
+         echo \"{POINTER_MARK}$out\"; else echo \"{POINTER_MARK}none\"; fi",
+        root = crate::provider::GUEST_ROOT_LINUX,
+    )
+}
+
+/// What the mapping did, as a line to print.
+pub fn pointer_report(stdout: &str) -> String {
+    let mapped = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(POINTER_MARK))
+        .unwrap_or("none");
+    if mapped == "none" {
+        return "warning: the pointer covers the whole desktop, so a click lands \
+                at twice the x it was aimed at. Mapping it to one screen needs \
+                `xinput`, which this image does not carry."
+            .to_owned();
+    }
+    format!(
+        "pointer: mapped to {mapped}, so that screen's window clicks where it \
+         points. The other screens are for looking at: QEMU sends every screen's \
+         pointer to the same device, so their windows drive {mapped} too."
+    )
+}
+
+/// The connected outputs in `xrandr --query` output, in the order it listed
+/// them.
+///
+/// `connected` as its own word, so `disconnected` is not one of them, and the
+/// geometry is the first token shaped like one, so the word `primary` between
+/// the two changes nothing and the free text after it is not mistaken for more
+/// of it.
+pub fn parse_screens(text: &str) -> Vec<Screen> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            if parts.next()? != "connected" {
+                return None;
+            }
+            let geometry = parts.find(|token| is_geometry(token)).unwrap_or_default();
+            Some(Screen {
+                name: name.to_owned(),
+                geometry: geometry.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// `1920x1080+0+0`, and not the mode list's `1920x1080` or anything with words
+/// in it.
+fn is_geometry(token: &str) -> bool {
+    let Some((size, offsets)) = token.split_once('+') else {
+        return false;
+    };
+    let sized = size.split_once('x').is_some_and(|(w, h)| {
+        !w.is_empty()
+            && w.chars().all(|c| c.is_ascii_digit())
+            && !h.is_empty()
+            && h.chars().all(|c| c.is_ascii_digit())
+    });
+    sized && offsets.contains('+')
+}
+
+/// What the session has, and what is wrong with it if anything is.
+///
+/// A count is not evidence: two screens stacked on one origin are what X does
+/// on its own, and they read as two everywhere except on the console, so the
+/// origins are checked as well as the number. Neither failure ends the boot. The
+/// guest is up either way and looking at it is how the reason gets found.
+pub fn screen_report(screens: &[Screen], asked: u16) -> String {
+    let mut report = if screens.is_empty() {
+        "screens: the session reports no connected output".to_owned()
+    } else {
+        let listed: Vec<String> = screens
+            .iter()
+            .map(|screen| {
+                let geometry = if screen.geometry.is_empty() {
+                    "no mode"
+                } else {
+                    &screen.geometry
+                };
+                format!("{} {geometry}", screen.name)
+            })
+            .collect();
+        format!("screens: {}", listed.join(", "))
+    };
+    if screens.len() < usize::from(asked) {
+        let _ = write!(
+            report,
+            "\nwarning: {asked} screens were asked for and the session has {}. \
+             The guest is up; `cargo xtask vm ssh linux \"xrandr --query\"` is \
+             what it sees.",
+            screens.len()
+        );
+        return report;
+    }
+    let origins: Vec<&str> = screens.iter().filter_map(Screen::origin).collect();
+    let stacked = origins
+        .iter()
+        .enumerate()
+        .any(|(index, origin)| origins[index + 1..].contains(origin));
+    if stacked {
+        report.push_str(
+            "\nwarning: two screens share an origin, so they are one picture \
+             shown twice rather than a desktop across both. Placing them again \
+             by hand is `cargo xtask vm ssh linux \"xrandr --output <b> \
+             --right-of <a>\"`.",
+        );
+    }
+    report
+}
+
+/// Place the guest's screens and report what came of it.
+fn place_screens(provider: &dyn Provider, state: &RunState, asked: u16) -> String {
+    let mut report = match provider.exec(state, &place_screens_command()) {
+        Ok(output) => screen_report(&parse_screens(&output.stdout), asked),
+        Err(e) => return format!("warning: the guest's screens could not be placed: {e}"),
+    };
+    // After the placement and not before: the mapping is computed from where the
+    // outputs are, so a pointer mapped to a screen that then moves is mapped to
+    // where that screen used to be.
+    let pointer = match provider.exec(state, &map_pointer_command()) {
+        Ok(output) => pointer_report(&output.stdout),
+        Err(e) => format!("warning: the guest's pointer could not be mapped: {e}"),
+    };
+    report.push('\n');
+    report.push_str(&pointer);
+    report
 }
 
 /// Whether a recorded VM may be taken down to make room for a new one.
@@ -1104,6 +1377,7 @@ pub fn up(
     image: Image,
     allow_expired: bool,
     desktop: Option<Desktop>,
+    screens: u16,
 ) -> Result<u8, String> {
     let store = store::store()?;
     // Built before anything is created, because it decides what this boot is: a
@@ -1138,6 +1412,7 @@ pub fn up(
         StartReason::Up,
         allow_expired,
         desktop,
+        screens,
     )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
@@ -1371,7 +1646,9 @@ pub fn smoke(
 ) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
-    let mut session = boot(runner, &store, image, StartReason::Run, false, desktop)?;
+    // One screen: the smoke job asks whether the guest contract works, and a
+    // second screen is not part of that question.
+    let mut session = boot(runner, &store, image, StartReason::Run, false, desktop, 1)?;
 
     let script = smoke_script(image);
 
@@ -1975,6 +2252,145 @@ mod tests {
         for image in Image::ALL {
             assert_eq!(desktop_for(image, None), Ok(None), "{image}");
         }
+    }
+
+    #[test]
+    fn only_the_linux_guest_can_be_asked_for_more_than_one_screen() {
+        assert_eq!(screens_for(Image::Linux, 2), Ok(2));
+        assert_eq!(screens_for(Image::Linux, MAX_SCREENS), Ok(MAX_SCREENS));
+
+        // Windows is the refusal that has to explain itself, because the flag
+        // exists, the guest is a real desktop, and the thing that cannot do it
+        // is the video adapter rather than the xtask.
+        let refusal = screens_for(Image::Windows, 2).expect_err("one head, one screen");
+        assert!(refusal.contains("--screens 2"), "{refusal}");
+        assert!(refusal.contains("display driver"), "{refusal}");
+        let refusal =
+            screens_for(Image::LinuxBuilder, 2).expect_err("no session to put a screen in");
+        assert!(refusal.contains("no desktop at all"), "{refusal}");
+
+        let refusal = screens_for(Image::Linux, MAX_SCREENS + 1).expect_err("past the cap");
+        assert!(refusal.contains(&MAX_SCREENS.to_string()), "{refusal}");
+        let refusal = screens_for(Image::Linux, 0).expect_err("a guest has at least one screen");
+        assert!(refusal.contains("--screens 0"), "{refusal}");
+
+        // One is what every guest already has, so no image refuses it: a flag
+        // that changes nothing is not worth a refusal, and every boot that does
+        // not mention screens passes exactly this.
+        for image in Image::ALL {
+            assert_eq!(screens_for(image, 1), Ok(1), "{image}");
+        }
+    }
+
+    /// Real `xrandr --query` output from the Linux guest's shape: the connected
+    /// output with its mode, the mode list indented under it, and the head with
+    /// nothing on it.
+    const XRANDR: &str = "\
+Screen 0: minimum 320 x 200, current 3840 x 1080, maximum 16384 x 16384
+Virtual-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 0mm x 0mm
+   1920x1080     59.96*+
+   1280x800      59.81
+Virtual-2 connected 1920x1080+1920+0 (normal left inverted right x axis y axis) 0mm x 0mm
+   1920x1080     59.96*+
+Virtual-3 disconnected (normal left inverted right x axis y axis)
+";
+
+    #[test]
+    fn the_screens_are_the_connected_outputs_with_their_places() {
+        let screens = parse_screens(XRANDR);
+        assert_eq!(
+            screens,
+            vec![
+                Screen {
+                    name: "Virtual-1".to_owned(),
+                    geometry: "1920x1080+0+0".to_owned(),
+                },
+                Screen {
+                    name: "Virtual-2".to_owned(),
+                    geometry: "1920x1080+1920+0".to_owned(),
+                },
+            ],
+            "the disconnected head or the mode list got in"
+        );
+    }
+
+    #[test]
+    fn a_connected_output_with_no_mode_is_a_screen_with_nowhere_to_draw() {
+        let screens = parse_screens(
+            "Virtual-2 connected (normal left inverted right x axis y axis)\n   1920x1080 59.96\n",
+        );
+        assert_eq!(screens.len(), 1);
+        assert!(screens[0].geometry.is_empty(), "{:?}", screens[0]);
+        assert!(
+            screen_report(&screens, 1).contains("no mode"),
+            "a screen with nothing on it reads as one that has something"
+        );
+    }
+
+    #[test]
+    fn a_session_that_came_up_with_fewer_screens_than_were_asked_for_says_so() {
+        let report = screen_report(&parse_screens(XRANDR), 3);
+        assert!(report.contains("warning:"), "{report}");
+        assert!(report.contains("3 screens were asked for"), "{report}");
+        assert!(report.contains("has 2"), "{report}");
+    }
+
+    /// Two screens at one origin is what X does on its own, and it counts as
+    /// two everywhere except on the console, where it is one picture twice.
+    #[test]
+    fn two_screens_stacked_on_one_origin_are_not_a_desktop_across_both() {
+        let stacked = "\
+Virtual-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 0mm x 0mm
+Virtual-2 connected 1920x1080+0+0 (normal left inverted right x axis y axis) 0mm x 0mm
+";
+        let report = screen_report(&parse_screens(stacked), 2);
+        assert!(report.contains("share an origin"), "{report}");
+
+        // And the layout that is right says nothing beyond what it is.
+        let placed = screen_report(&parse_screens(XRANDR), 2);
+        assert!(!placed.contains("warning:"), "{placed}");
+        assert!(placed.contains("Virtual-1 1920x1080+0+0"), "{placed}");
+        assert!(placed.contains("Virtual-2 1920x1080+1920+0"), "{placed}");
+    }
+
+    /// A pointer that covers a desktop wider than the window it is driven from
+    /// clicks somewhere else, so a guest that could not be mapped has to say so
+    /// rather than look like one that was.
+    #[test]
+    fn the_pointer_says_which_screen_it_clicks_on_and_which_it_does_not() {
+        let mapped = pointer_report(&format!("something first\n{POINTER_MARK}Virtual-1\n"));
+        assert!(mapped.contains("Virtual-1"), "{mapped}");
+        assert!(!mapped.contains("warning"), "{mapped}");
+        // The other screens are not the same as the mapped one, and a reader who
+        // is not told that will click on them and wonder.
+        assert!(mapped.contains("looking at"), "{mapped}");
+
+        for answer in [format!("{POINTER_MARK}none"), String::new()] {
+            let missing = pointer_report(&answer);
+            assert!(missing.contains("warning"), "{missing}");
+            assert!(missing.contains("xinput"), "{missing}");
+        }
+    }
+
+    /// The command runs in a session it did not start, and everything it needs
+    /// to reach that session is in the file the guest contract writes at login.
+    #[test]
+    fn the_screen_placement_takes_the_sessions_own_environment() {
+        let command = place_screens_command();
+        assert!(
+            command.contains(&format!(
+                ". {}/session.env",
+                crate::provider::GUEST_ROOT_LINUX
+            )),
+            "{command}"
+        );
+        assert!(command.contains("DISPLAY"), "{command}");
+        // The placement is the point: without --right-of the second output
+        // lands on the first and the guest has one screen shown twice.
+        assert!(command.contains("--right-of"), "{command}");
+        // And it ends by asking what happened rather than by trusting that it
+        // worked, which is what the report reads.
+        assert!(command.trim_end().ends_with("xrandr --query"), "{command}");
     }
 
     /// The same two facts for a guest that was staged but whose hand-over did

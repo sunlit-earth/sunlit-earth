@@ -107,6 +107,39 @@ The case count differs by desktop because the tray does. `tests/e2e.rs` asks `gd
 
 Cinnamon's session has a defect worth knowing before looking at one: the shell starts, is signalled a second later, and `cinnamon-launcher` falls back to `metacity`, which this image does not install, so what is left on screen is a modal "Cinnamon just crashed" dialog over a black desktop. The suite is unaffected, since it runs over SSH through `DISPLAY`, and `cinnamon --replace` over `vm ssh` brings the shell and the wallpaper back. `docs/roadmap.md` carries it.
 
+## Giving the Linux guest more than one screen
+
+```
+cargo xtask vm up linux --screens 2
+cargo xtask e2e --target linux --screens 2
+```
+
+Up to four, Linux guest only, each one the console resolution and placed left to right, so `--screens 2` at the default size is a 3840x1080 desktop in two halves. `cargo xtask vm view linux` then opens one VNC window per screen, which is what makes both of them something to look at on a host with one monitor.
+
+The boot says what the session ended up with rather than what it asked for:
+
+```
+console: 1920x1080, 2 screens, into the image's own default desktop
+...
+screens: Virtual-1 1920x1080+0+0, Virtual-2 1920x1080+1920+0
+```
+
+A session that came up with fewer screens than were asked for, or with two of them stacked on one origin, gets a warning naming what it has. Neither ends the boot: the guest is up and usable either way, and looking at it is how the reason gets found.
+
+Three things on QEMU's command line make a screen, and two of them are traps.
+
+`max_outputs` gives the device that many scanouts, which is how many connectors the guest's DRM driver creates. An `outputs` list giving each scanout its own size is what makes the guest see anything plugged into them: without it `card0-Virtual-2` reads `disconnected` and the session has one screen however many VNC servers are listening, because virtio-gpu enables only output 0 when it is realized and nothing enables the rest until a UI tells QEMU how big it is. A VNC client is not that; a client can connect to the second head and the guest still sees nothing there. The list is why the device is written as JSON, which is the only form `-device` takes a list property in.
+
+And a `-vnc` server per screen, each carrying **both** `display=<device id>` and `head=<n>`. `head=` on its own is accepted, starts, and serves the first screen, because QEMU looks a console up only when a device is named. That is what two windows showing the same picture in front of an extended desktop looks like, and it is why the device carries an id. A device id that does not exist is refused at startup, so the spelling is checked for us; a missing one is not.
+
+The pointer is the part that stays imperfect. A guest with two screens has one absolute pointer for a desktop twice the width of either window, so a click lands at twice the x it was aimed at; the boot maps that pointer to the primary screen with `xinput --map-to-output`, which makes the first screen's window click exactly where it points and leaves the others to look at. Their windows drive the first screen too, because QEMU sends every screen's pointer to the same device. A tablet per head, bound with `display=`/`head=`, is what this asks for and is not what those properties do on an input device: both are accepted and neither is resolved, and with a tablet bound to each head, events from both VNC servers were measured arriving at the same one. The mapping needs the `xinput` package; a guest without it boots, shows both screens, and says in one line that its pointer is wrong.
+
+With both screens live, the session lays them out itself: a Plasma guest came up 3840x1080 with the second screen already to the right of the first. The boot still places them explicitly over SSH, with `xrandr --output <b> --auto --right-of <a>` per screen in the order xrandr lists them, because X's own default is every output at the origin and only one desktop was watched doing better than that. It is idempotent, so a session that had already placed them is left as it is.
+
+`--screens` is refused for the Windows guest rather than ignored. Its adapter has one head whichever hypervisor is holding it, `Set-VMVideo` has no monitor count, and Hyper-V's multi-monitor path is an enhanced session that takes its monitors from the host's own, so a second screen in a Windows guest is an indirect display driver installed inside it and not a flag out here.
+
+Only the first screen is the console that `screendump` takes with no arguments. The display device of a multi-screen guest carries an id (`gpu`), which is what lets QMP address the others: `screendump` takes that device id and the screen's position on it.
+
 ## Interactive access
 
 `cargo xtask vm up <target>` boots a guest and copies the current binaries in without running anything. `cargo xtask vm view <target>` opens its desktop, and `cargo xtask vm ssh <target>` opens a shell in it. To look at the aftermath of a test run instead, use `cargo xtask e2e --target <target> --keep` and then the same two commands.

@@ -119,8 +119,31 @@ pub struct RunState {
     #[serde(default)]
     pub ssh_user: String,
     /// The always-on localhost VNC address of a QEMU guest, if any.
+    ///
+    /// The first screen's, for a guest that has more than one: every reader that
+    /// wants one console wants that one, and they all keep the field they always
+    /// read. [`RunState::consoles`] is what a reader of all of them uses.
     #[serde(default)]
     pub vnc: Option<String>,
+    /// Every screen's VNC address, first screen first.
+    ///
+    /// Empty for a single-screen guest, for a `Hyper-V` guest, and for a record
+    /// written before a guest could have two, in all of which `vnc` alone is the
+    /// whole answer. Filled by the provider as the machine is started, because
+    /// the extra ports are picked then; the record is written again immediately
+    /// afterwards, so a crashed orchestrator's guest is still reachable on all of
+    /// them.
+    #[serde(default)]
+    pub vnc_heads: Vec<String>,
+    /// How many screens this guest was asked for.
+    ///
+    /// `None` reads as one, which is every `Hyper-V` guest, every guest booted by
+    /// something that does not know about this, and every record written before
+    /// it existed. Recorded rather than passed, for the same reason `desktop` is:
+    /// the choice is made by the command that boots the guest and read later by
+    /// the provider, which builds the command line out of the record.
+    #[serde(default)]
+    pub screens: Option<u16>,
     #[serde(default)]
     pub qmp_port: Option<u16>,
     /// The QEMU process id. `Hyper-V` guests have none: the VM is owned by the
@@ -185,6 +208,8 @@ impl RunState {
             ssh_port: 0,
             ssh_user: String::new(),
             vnc: None,
+            vnc_heads: Vec::new(),
+            screens: None,
             qmp_port: None,
             pid: None,
             started_unix,
@@ -205,6 +230,25 @@ impl RunState {
 
     pub fn provider_kind(&self) -> Option<ProviderKind> {
         ProviderKind::parse(&self.provider)
+    }
+
+    /// Every console this guest has, first screen first.
+    ///
+    /// One list from two fields, so nothing has to decide for itself which of
+    /// them to believe: the full list where a guest has one, and otherwise
+    /// whatever single address the record carries. Empty for a guest with no VNC
+    /// console at all, which is every `Hyper-V` guest.
+    pub fn consoles(&self) -> Vec<&str> {
+        if !self.vnc_heads.is_empty() {
+            return self.vnc_heads.iter().map(String::as_str).collect();
+        }
+        self.vnc.as_deref().into_iter().collect()
+    }
+
+    /// How many screens this guest was asked for, which is one unless something
+    /// asked for more.
+    pub fn screen_count(&self) -> u16 {
+        self.screens.unwrap_or(1).max(1)
     }
 
     /// The operating system this record is about, if it names one this xtask

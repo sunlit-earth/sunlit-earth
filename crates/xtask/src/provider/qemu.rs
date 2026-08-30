@@ -88,12 +88,33 @@ fn pick_port(label: &str, preferred: u16) -> Result<u16, String> {
 /// or an unreadable one, is display 0, which is what the address said before
 /// it could vary.
 pub fn vnc_display_of(state: &RunState) -> u16 {
-    state
-        .vnc
-        .as_deref()
-        .and_then(|address| address.rsplit(':').next())
+    state.vnc.as_deref().map_or(VNC_DISPLAY, display_of_address)
+}
+
+/// The display number behind one recorded address.
+fn display_of_address(address: &str) -> u16 {
+    address
+        .rsplit(':')
+        .next()
         .and_then(|port| port.parse::<u16>().ok())
         .map_or(VNC_DISPLAY, |port| port.saturating_sub(VNC_BASE_PORT))
+}
+
+/// The display number of every screen a record names, first screen first.
+///
+/// Never empty: a record with no console at all still describes a machine with
+/// one screen, and the display it gets is the one [`vnc_display_of`] answers
+/// with, which is what a record written before this existed already meant.
+pub fn vnc_displays_of(state: &RunState) -> Vec<u16> {
+    let displays: Vec<u16> = state
+        .consoles()
+        .into_iter()
+        .map(display_of_address)
+        .collect();
+    if displays.is_empty() {
+        return vec![vnc_display_of(state)];
+    }
+    displays
 }
 
 /// How much of a dead QEMU's log its post-mortem quotes.
@@ -177,6 +198,13 @@ pub fn vga_for(target: Target) -> &'static str {
     }
 }
 
+/// The id the display device of a multi-screen guest carries.
+///
+/// What `screendump` needs to be told to capture a screen other than the first:
+/// its `device` argument is a device id, and its `head` argument is the screen's
+/// position on that device.
+pub const DISPLAY_DEVICE_ID: &str = "gpu";
+
 /// How the guest's display is attached, and at what size.
 ///
 /// `-device virtio-vga` rather than `-vga virtio` for the Linux guest: the same
@@ -187,10 +215,60 @@ pub fn vga_for(target: Target) -> &'static str {
 /// whose emulated VGA has no such property; its console size is a `Hyper-V`
 /// matter, and this cell of the matrix exists to reproduce a Linux host rather
 /// than to be looked at.
-pub fn display_args(target: Target, console: (u32, u32)) -> Vec<String> {
+///
+/// A guest with more than one screen is given the whole device as JSON, which is
+/// the only form `-device` takes a list property in: `outputs.0.name=` is not a
+/// property name QEMU resolves, and the `key=value` form has no other way to
+/// write a list. Three things are set there, and all three are needed:
+///
+/// - `max_outputs` is how many scanouts the device offers, which is how many
+///   connectors the guest's DRM driver creates. On its own it produces a second
+///   connector that reports itself disconnected, because the device enables only
+///   output 0 when it is realized and nothing enables the rest until a UI tells
+///   QEMU what size it is. A VNC server is not that: a client can connect to the
+///   second head and the guest still sees nothing plugged into it, which is
+///   exactly what the first version of this did.
+/// - `outputs`, one entry per screen with its own `xres`/`yres`, is what gives
+///   each output a size up front, and an output with a size is one the guest
+///   sees connected. Verified in the Debian guest on 2026-08-30: with
+///   `max_outputs` alone, `card0-Virtual-2` reads `disconnected` and the session
+///   has one screen; with the `outputs` list, both connectors read `connected`
+///   and the Plasma session comes up 3840x1080 with the second screen already to
+///   the right of the first.
+/// - The device-level `xres`/`yres` stay, so the first screen is the size it
+///   would have been either way.
+///
+/// The names are for QEMU's own display plumbing and nothing here reads them
+/// back; they exist because the property requires one. The device itself gets an
+/// id, [`DISPLAY_DEVICE_ID`], which is what makes a screen other than the first
+/// addressable at all: QMP's `screendump` takes a device id and a head, and with
+/// no id there is no way to name the second screen. A single-screen guest needs
+/// none, because its console is the default one `screendump` takes without
+/// being told anything.
+pub fn display_args(target: Target, console: (u32, u32), screens: u16) -> Vec<String> {
     let device = vga_for(target);
     match target {
         Target::Windows => vec!["-vga".to_owned(), device.to_owned()],
+        Target::Linux if screens > 1 => {
+            let outputs: Vec<serde_json::Value> = (0..screens)
+                .map(|screen| {
+                    serde_json::json!({
+                        "name": format!("screen-{screen}"),
+                        "xres": console.0,
+                        "yres": console.1,
+                    })
+                })
+                .collect();
+            let spec = serde_json::json!({
+                "driver": device,
+                "id": DISPLAY_DEVICE_ID,
+                "xres": console.0,
+                "yres": console.1,
+                "max_outputs": screens,
+                "outputs": outputs,
+            });
+            vec!["-device".to_owned(), spec.to_string()]
+        }
         Target::Linux => vec![
             "-device".to_owned(),
             format!("{device},xres={},yres={}", console.0, console.1),
@@ -216,6 +294,30 @@ pub fn display_args(target: Target, console: (u32, u32)) -> Vec<String> {
 /// a q35 machine starts with no USB at all. Both have to be on the command line
 /// from the start: `pcie.0` does not support hot-plug, so neither can be added
 /// to a guest that is already running.
+///
+/// One tablet whatever the screen count, and one screen it is exact on.
+///
+/// An absolute position means nothing without the screen it is on, and QEMU
+/// hands over neither half of that: it scales a head's coordinates onto the
+/// whole absolute range using that head's own width and adds no offset for where
+/// the head sits in the guest's desktop. So on a two-screen guest one tablet
+/// speaks for a desktop twice its width and every x comes out doubled, measured
+/// in the Debian guest on 2026-08-30: the middle of the first screen's window
+/// put the cursor at the right edge of that screen, and the second screen's
+/// window had no offset at all.
+///
+/// A tablet per head, bound with `display=`/`head=`, is what that asks for and is
+/// not what those properties do. Both are accepted on an input device and
+/// neither is resolved: `-device virtio-tablet-pci,display=nosuch` starts a guest
+/// where `-vnc <addr>,display=nosuch` is refused outright, and with a tablet
+/// bound to each head, pointer events from *both* VNC servers arrived at the same
+/// tablet, measured by reading the guest's `/dev/input/event*` while each server
+/// was sent a move. So the extra tablets bought a second device that nothing
+/// spoke to, and there is one again.
+///
+/// What makes the remaining one exact is in the guest: `vm::map_pointer_command`
+/// maps it to the primary output, so the first screen's window clicks where it
+/// points and the others are for looking at.
 pub fn pointer_args(target: Target) -> Vec<String> {
     match target {
         Target::Windows => vec![
@@ -288,7 +390,12 @@ pub struct Launch {
     pub accelerator: String,
     pub ssh_port: u16,
     pub qmp_port: u16,
-    pub vnc_display: u16,
+    /// One VNC display number per screen, first screen first, never empty.
+    ///
+    /// A list rather than a count and a base: the numbers are the ports that
+    /// were free when they were picked, and a second screen whose port had to
+    /// move is not one past the first.
+    pub vnc_displays: Vec<u16>,
     /// UEFI firmware, which the Windows guest requires and the Linux cloud
     /// image does not need.
     ///
@@ -316,6 +423,13 @@ pub struct Launch {
 }
 
 impl Launch {
+    /// How many screens this machine has, which is how many consoles it has.
+    fn screens(&self) -> u16 {
+        u16::try_from(self.vnc_displays.len())
+            .unwrap_or(u16::MAX)
+            .max(1)
+    }
+
     /// The command line.
     pub fn args(&self) -> Vec<String> {
         let mut args: Vec<String> = vec![
@@ -351,14 +465,40 @@ impl Launch {
             // console available at any moment without a decision up front.
             "-display".into(),
             "none".into(),
-            "-vnc".into(),
-            format!("127.0.0.1:{}", self.vnc_display),
             "-qmp".into(),
             format!("tcp:127.0.0.1:{},server=on,wait=off", self.qmp_port),
             "-rtc".into(),
             "base=utc".into(),
         ];
-        args.extend(display_args(self.image.target(), self.console));
+        // One VNC server per screen, each bound to the head it shows, and QEMU
+        // takes as many `-vnc` servers as it is given.
+        //
+        // `display=` is not optional next to `head=`, and leaving it out is the
+        // trap this walked into: QEMU looks a console up only when a device is
+        // named, so `-vnc <addr>,head=1` parses, starts, and serves the first
+        // screen. Two servers, two windows, the same picture in both, and an
+        // extended desktop behind them that neither window was showing. A device
+        // id that is not there is refused outright, which is what makes this
+        // worth writing rather than hoping: the wrong spelling fails at startup
+        // instead of quietly showing the wrong screen.
+        //
+        // A single-screen guest names neither, because its display device has no
+        // id and its console is the only one there is.
+        for (head, display) in self.vnc_displays.iter().enumerate() {
+            args.push("-vnc".into());
+            if self.screens() > 1 {
+                args.push(format!(
+                    "127.0.0.1:{display},display={DISPLAY_DEVICE_ID},head={head}"
+                ));
+            } else {
+                args.push(format!("127.0.0.1:{display}"));
+            }
+        }
+        args.extend(display_args(
+            self.image.target(),
+            self.console,
+            self.screens(),
+        ));
         args.extend(pointer_args(self.image.target()));
         if let Some(desktop) = self.desktop {
             args.extend(crate::provider::desktop::fw_cfg_args(desktop));
@@ -579,7 +719,7 @@ impl<'a> QemuProvider<'a> {
                 state.ssh_port
             },
             qmp_port: state.qmp_port.unwrap_or(QMP_PORT),
-            vnc_display: vnc_display_of(state),
+            vnc_displays: vnc_displays_of(state),
             firmware,
             console: console::requested_resolution(true).unwrap_or(DEFAULT_CONSOLE),
             desktop: state.desktop.as_deref().and_then(Desktop::parse),
@@ -639,6 +779,37 @@ pub fn fill_in_address(state: &mut RunState) -> Result<(), String> {
     Ok(())
 }
 
+/// Give a guest one console per screen, on top of the first one
+/// [`fill_in_address`] already picked.
+///
+/// Nothing at all for a single-screen guest, which is every guest but the one
+/// that asked for more, so the common boot picks the ports it always picked.
+///
+/// Each further port is walked from one past the last rather than from the base,
+/// which is what keeps two screens off the same port; they come out consecutive
+/// on a host with nothing in the way and do not have to be. No message when one
+/// moves, unlike the three fixed ports: there is no remembered port for a second
+/// screen to have moved off, and the boot prints every console address anyway.
+pub fn fill_in_consoles(state: &mut RunState) -> Result<(), String> {
+    let screens = usize::from(state.screen_count());
+    if screens < 2 {
+        return Ok(());
+    }
+    let first = state
+        .vnc
+        .clone()
+        .unwrap_or_else(|| format!("127.0.0.1:{}", vnc_port(VNC_DISPLAY)));
+    let mut last = display_of_address(&first);
+    let mut heads = vec![first];
+    while heads.len() < screens {
+        let port = free_port_from(vnc_port(last).saturating_add(1))?;
+        last = port.saturating_sub(VNC_BASE_PORT);
+        heads.push(format!("127.0.0.1:{port}"));
+    }
+    state.vnc_heads = heads;
+    Ok(())
+}
+
 /// `qemu-img create` for a differencing child of another disk: a throwaway
 /// overlay of a golden image, or the layer a builder image is.
 pub fn overlay_args(golden: &Path, overlay: &Path) -> Vec<String> {
@@ -694,6 +865,10 @@ impl crate::provider::Provider for QemuProvider<'_> {
             .image()
             .ok_or_else(|| format!("unknown image '{}'", state.image))?;
         let binary = self.qemu_binary()?;
+        // The one thing that cannot be picked when the record is created: how
+        // many screens the guest has is decided by the command that boots it,
+        // and that command writes it to the record after the provider made one.
+        fill_in_consoles(state)?;
         // Everything about how to reach the guest, the desktop and the ports,
         // comes off the record rather than out of parameters: the command that
         // chose them is finished by the time anything starts a process, and
@@ -710,7 +885,11 @@ impl crate::provider::Provider for QemuProvider<'_> {
             } else {
                 "a text console, since this image has no desktop".to_owned()
             };
-            println!("console: {width}x{height}, into {session}");
+            let screens = match launch.screens() {
+                1 => String::new(),
+                n => format!(", {n} screens"),
+            };
+            println!("console: {width}x{height}{screens}, into {session}");
         }
         let log = self.store.vm_log(image);
         let pid = self
@@ -756,28 +935,42 @@ impl crate::provider::Provider for QemuProvider<'_> {
         }
     }
 
+    /// One viewer per screen, because a guest's second screen is as much its
+    /// console as its first and there is no order in which to show one of them.
     fn view(&self, state: &RunState) -> Result<String, String> {
-        let address = state
-            .vnc
-            .clone()
-            .unwrap_or_else(|| format!("127.0.0.1:{}", vnc_port(VNC_DISPLAY)));
+        let addresses: Vec<String> = match state.consoles().as_slice() {
+            [] => vec![format!("127.0.0.1:{}", vnc_port(VNC_DISPLAY))],
+            found => found.iter().map(|&a| a.to_owned()).collect(),
+        };
         // `resolve_tool` rather than a bare `PATH` lookup, so that the answer
         // is the same one `vm doctor` reports. A viewer installed by a package
         // manager that appends to the user `PATH`, which is both winget and
         // scoop, is invisible to every shell that started before it did.
         for viewer in crate::host::facts::VNC_VIEWERS {
             if let Some(path) = crate::host::facts::resolve_tool(self.runner, viewer, self.host) {
-                let argument = crate::host::facts::vnc_viewer_argument(viewer, &address);
-                self.runner
-                    .spawn(&Cmd::new(path.to_string_lossy()).arg(argument), None)
-                    .map_err(|e| format!("cannot start {viewer}: {e}"))?;
-                return Ok(format!("{viewer} is connecting to {address}"));
+                for address in &addresses {
+                    let argument = crate::host::facts::vnc_viewer_argument(viewer, address);
+                    self.runner
+                        .spawn(&Cmd::new(path.to_string_lossy()).arg(argument), None)
+                        .map_err(|e| format!("cannot start {viewer}: {e}"))?;
+                }
+                return Ok(format!(
+                    "{viewer} is connecting to {}",
+                    addresses.join(" and ")
+                ));
             }
         }
         Ok(format!(
-            "no VNC viewer found. The console is at {address}, with no password; \
-             point any VNC client at it. `cargo xtask vm doctor` lists the names \
-             looked for."
+            "no VNC viewer found. The {console} at {}, with no password; \
+             point any VNC client at {them}. `cargo xtask vm doctor` lists the \
+             names looked for.",
+            addresses.join(" and "),
+            console = if addresses.len() == 1 {
+                "console is"
+            } else {
+                "consoles are"
+            },
+            them = if addresses.len() == 1 { "it" } else { "them" },
         ))
     }
 
@@ -807,7 +1000,7 @@ mod tests {
             accelerator: "kvm".to_owned(),
             ssh_port: SSH_PORT,
             qmp_port: QMP_PORT,
-            vnc_display: VNC_DISPLAY,
+            vnc_displays: vec![VNC_DISPLAY],
             firmware: None,
             console: DEFAULT_CONSOLE,
             desktop: None,
@@ -1265,6 +1458,144 @@ mod tests {
         assert!(text.contains("-vnc 127.0.0.1:0"), "{text}");
     }
 
+    /// A screen is a VNC server bound to a head, a scanout on the device to bind
+    /// it to, and a size on that scanout, and none of the three is any use
+    /// without the others: without `max_outputs` the guest has one connector
+    /// however many servers are listening, without `head=` every server shows the
+    /// first screen, and without a size in `outputs` the guest reports the second
+    /// connector as disconnected and the session has one screen.
+    #[test]
+    fn a_second_screen_is_a_second_console_and_a_scanout_with_a_size() {
+        let mut launch = launch(Image::Linux);
+        launch.vnc_displays = vec![0, 1];
+        let text = launch.args().join(" ");
+        assert!(
+            text.contains(&format!(
+                "-vnc 127.0.0.1:0,display={DISPLAY_DEVICE_ID},head=0"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "-vnc 127.0.0.1:1,display={DISPLAY_DEVICE_ID},head=1"
+            )),
+            "{text}"
+        );
+
+        let device = display_args(Target::Linux, (1920, 1080), 2);
+        let spec: serde_json::Value =
+            serde_json::from_str(&device[1]).expect("the device is written as JSON");
+        assert_eq!(spec["driver"], "virtio-vga");
+        assert_eq!(spec["max_outputs"], 2);
+        assert_eq!(
+            spec["id"], DISPLAY_DEVICE_ID,
+            "without an id there is no way to name a screen but the first: {spec}"
+        );
+        let outputs = spec["outputs"].as_array().expect("one entry per screen");
+        assert_eq!(outputs.len(), 2, "{spec}");
+        for output in outputs {
+            assert_eq!(output["xres"], 1920, "{spec}");
+            assert_eq!(output["yres"], 1080, "{spec}");
+            assert!(
+                output["name"].as_str().is_some_and(|n| !n.is_empty()),
+                "the property requires a name: {spec}"
+            );
+        }
+    }
+
+    /// The ports are whatever was free when they were picked, so the second
+    /// screen's is not necessarily one past the first's, and the head numbers
+    /// are positions rather than ports.
+    #[test]
+    fn a_screen_that_had_to_move_keeps_its_place_in_the_order() {
+        let mut launch = launch(Image::Linux);
+        launch.vnc_displays = vec![3, 9];
+        let text = launch.args().join(" ");
+        assert!(
+            text.contains(&format!(
+                "-vnc 127.0.0.1:3,display={DISPLAY_DEVICE_ID},head=0"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "-vnc 127.0.0.1:9,display={DISPLAY_DEVICE_ID},head=1"
+            )),
+            "{text}"
+        );
+    }
+
+    /// The guest everything else boots is told what it has always been told: one
+    /// `-vnc`, and a display device with no `max_outputs` on it.
+    #[test]
+    fn a_one_screen_guest_gets_the_command_line_it_always_got() {
+        let text = joined(Image::Linux);
+        assert_eq!(text.matches("-vnc ").count(), 1, "{text}");
+        assert!(!text.contains("max_outputs"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "-device virtio-vga,xres={},yres={}",
+                DEFAULT_CONSOLE.0, DEFAULT_CONSOLE.1
+            )),
+            "{text}"
+        );
+    }
+
+    /// The Windows guest's display has no such property, and the flag that would
+    /// ask for one is refused a long way before this.
+    #[test]
+    fn the_windows_display_takes_no_outputs_whatever_it_is_asked() {
+        let args = display_args(Target::Windows, (1920, 1080), 2).join(" ");
+        assert_eq!(args, "-vga std");
+    }
+
+    #[test]
+    fn a_record_with_one_console_describes_one_screen() {
+        let mut state = recorded_state();
+        state.vnc = Some("127.0.0.1:5903".to_owned());
+        assert_eq!(vnc_displays_of(&state), vec![3]);
+        // And a record with no console at all is still a machine with a screen.
+        state.vnc = None;
+        assert_eq!(vnc_displays_of(&state), vec![VNC_DISPLAY]);
+    }
+
+    #[test]
+    fn a_record_with_two_consoles_describes_them_in_order() {
+        let mut state = recorded_state();
+        state.vnc = Some("127.0.0.1:5903".to_owned());
+        state.vnc_heads = vec!["127.0.0.1:5903".to_owned(), "127.0.0.1:5907".to_owned()];
+        assert_eq!(vnc_displays_of(&state), vec![3, 7]);
+        // The single-console field stays the first screen's, so everything that
+        // wants one console gets the one a person would look at first.
+        assert_eq!(vnc_display_of(&state), 3);
+    }
+
+    /// The ports are real: the picker binds them to find out, so this asserts
+    /// what came back rather than what was hoped for.
+    #[test]
+    fn the_extra_consoles_are_picked_past_the_one_that_came_first() {
+        let mut state = recorded_state();
+        state.vnc = Some("127.0.0.1:5900".to_owned());
+        state.screens = Some(3);
+        fill_in_consoles(&mut state).expect("three loopback ports");
+        assert_eq!(state.vnc_heads.len(), 3, "{:?}", state.vnc_heads);
+        assert_eq!(state.vnc_heads[0], "127.0.0.1:5900");
+        let displays = vnc_displays_of(&state);
+        assert!(
+            displays.windows(2).all(|pair| pair[0] < pair[1]),
+            "the screens share a port or went backwards: {displays:?}"
+        );
+    }
+
+    #[test]
+    fn a_one_screen_guest_is_left_with_the_console_it_was_given() {
+        let mut state = recorded_state();
+        state.vnc = Some("127.0.0.1:5900".to_owned());
+        fill_in_consoles(&mut state).expect("nothing to pick");
+        assert!(state.vnc_heads.is_empty(), "{:?}", state.vnc_heads);
+        assert_eq!(state.consoles(), vec!["127.0.0.1:5900"]);
+    }
+
     #[test]
     fn the_guest_cpu_is_asked_for_rather_than_left_to_qemu() {
         // With QEMU's default `qemu64`, WHPX kills the vCPU as soon as the
@@ -1410,6 +1741,49 @@ mod tests {
             );
             assert!(!text.contains("virtio-tablet"), "{text}");
         }
+    }
+
+    /// One tablet per head is what a two-screen guest wants and not what QEMU's
+    /// `display=` gives on an input device: it is accepted, never resolved, and
+    /// both screens' pointer events were measured arriving at the same tablet.
+    /// A second device nothing speaks to is worse than none, so there is one.
+    #[test]
+    fn a_guest_with_two_screens_still_has_one_pointer() {
+        let mut launch = launch(Image::Linux);
+        launch.vnc_displays = vec![0, 1];
+        let text = launch.args().join(" ");
+        assert_eq!(
+            text.matches("virtio-tablet-pci").count(),
+            1,
+            "a tablet per head is what this wants and not what QEMU's \
+             display= does on an input device: {text}"
+        );
+        assert!(!text.contains("virtio-tablet-pci,display"), "{text}");
+    }
+
+    /// `head=` on a VNC server is silently ignored unless `display=` names the
+    /// device the head is on: QEMU looks a console up only when it has a device,
+    /// so without one both servers serve the first screen and the second window
+    /// is a copy of the first. A device id that does not exist is refused at
+    /// startup, which is why naming it is safe and leaving it out is not.
+    #[test]
+    fn a_screens_vnc_server_names_the_device_its_head_is_on() {
+        let mut launch = launch(Image::Linux);
+        launch.vnc_displays = vec![0, 1];
+        let text = launch.args().join(" ");
+        for head in 0..2 {
+            assert!(
+                text.contains(&format!(
+                    "-vnc 127.0.0.1:{head},display={DISPLAY_DEVICE_ID},head={head}"
+                )),
+                "{text}"
+            );
+        }
+        // And a one-screen guest names neither, because its display device has
+        // no id and its console is the only one there is.
+        let single = joined(Image::Linux);
+        assert!(single.contains("-vnc 127.0.0.1:0 "), "{single}");
+        assert!(!single.contains("display=gpu"), "{single}");
     }
 
     #[test]
@@ -1624,7 +1998,7 @@ mod template_agreement {
 
             // The display is runtime-only: Packer never sees it, so this only
             // checks the device is one QEMU knows, in the form it takes it.
-            let display = display_args(image.target(), (1920, 1080)).join(" ");
+            let display = display_args(image.target(), (1920, 1080), 1).join(" ");
             assert!(
                 ["-vga std", "-device virtio-vga,"]
                     .iter()

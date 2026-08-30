@@ -139,6 +139,7 @@ pub fn run(
     keep: bool,
     allow_expired: bool,
     desktop: Option<Desktop>,
+    screens: u16,
 ) -> Result<u8, String> {
     match location.guest() {
         None if desktop.is_some() => Err(
@@ -146,8 +147,13 @@ pub fn run(
              uses the desktop you are sitting in front of"
                 .to_owned(),
         ),
+        None if screens > 1 => Err(
+            "--screens gives the Linux guest more than one screen; a run on this \
+             host uses the monitors you are sitting in front of"
+                .to_owned(),
+        ),
         None => run_on_host(runner),
-        Some(target) => run_in_guest(runner, target, keep, allow_expired, desktop),
+        Some(target) => run_in_guest(runner, target, keep, allow_expired, desktop, screens),
     }
 }
 
@@ -184,6 +190,7 @@ fn run_in_guest(
     keep: bool,
     allow_expired: bool,
     desktop: Option<Desktop>,
+    screens: u16,
 ) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
@@ -206,6 +213,7 @@ fn run_in_guest(
         StartReason::Run,
         allow_expired,
         desktop,
+        screens,
     )?;
 
     // From here on the VM exists, so no failure may return without saying what
@@ -334,11 +342,27 @@ mod tests {
     fn a_host_run_refuses_a_desktop_rather_than_ignoring_it() {
         let runner = crate::runner::fake::FakeRunner::new();
         for desktop in Desktop::ALL {
-            let refusal = run(&runner, Where::Host, false, false, Some(desktop))
+            let refusal = run(&runner, Where::Host, false, false, Some(desktop), 1)
                 .expect_err("a host run cannot choose a desktop");
             assert!(refusal.contains("--desktop"), "{refusal}");
             assert!(refusal.contains("Linux guest"), "{refusal}");
         }
+        assert!(
+            runner.calls().is_empty(),
+            "the refusal ran something first: {:?}",
+            runner.calls()
+        );
+    }
+
+    /// And the same for the screens, for the same reason: a host run cannot
+    /// give the developer's desk another monitor, so taking the flag and
+    /// ignoring it would be a run whose results are about a layout nobody has.
+    #[test]
+    fn a_host_run_refuses_extra_screens_rather_than_ignoring_them() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        let refusal = run(&runner, Where::Host, false, false, None, 2)
+            .expect_err("a host run cannot be given screens");
+        assert!(refusal.contains("--screens"), "{refusal}");
         assert!(
             runner.calls().is_empty(),
             "the refusal ran something first: {:?}",

@@ -241,8 +241,18 @@ pub struct Framing {
 /// `sphere.wgsl` clamps `sky_fov` to this range before taking the lens radius,
 /// so a derived value outside it is a value the shader silently will not honour
 /// and the derivation has to say so instead.
+///
+/// The upper end is not the slider's. The slider stops at 180 and means the
+/// anchor screen's own field of view; this bounds the wider value a span
+/// derives from it, and what bounds that is the stereographic lens going
+/// singular at 360 rather than anything happening at 180. What is linear in
+/// canvas pixels is `tan(sky_fov / 4)`, so the derived angle self-limits as
+/// screens are added: eight equal screens at the widest slider position come to
+/// 331 degrees and a thousand to 359.7. 330 clears a seven-wide span at that
+/// position and about eleven at the default, and leaves the frame corner 13
+/// degrees clear of the antipode.
 pub const SKY_FOV_MIN: f32 = 60.0;
-pub const SKY_FOV_MAX: f32 = 180.0;
+pub const SKY_FOV_MAX: f32 = 330.0;
 
 /// The Earth lens for one screen's own aspect ratio.
 ///
@@ -281,10 +291,9 @@ pub struct CanvasFraming {
     /// The derived sky lens was wider than the shader accepts.
     ///
     /// The globe still continues exactly across the seam; the sky is drawn at a
-    /// smaller scale than the anchor alone would have drawn it. Reachable on any
-    /// ordinary two-monitor span, since a canvas twice the anchor's width needs
-    /// twice the lens radius and the default 140 degree sky is already past half
-    /// of the 180 the shader allows.
+    /// smaller scale than the anchor alone would have drawn it. No layout built
+    /// out of screens that fit on a desk reaches it: at the default sky the
+    /// canvas has to be about eleven times the anchor's width first.
     pub sky_clamped: bool,
 }
 
@@ -691,36 +700,68 @@ mod tests {
         assert_relative_eq!(derived.framing.offset_y, 0.0, epsilon = 1e-6);
     }
 
-    #[test]
-    fn a_span_the_sky_can_reach_keeps_the_sky_scale_too() {
-        // A narrow second screen: the canvas is 1.2 times the anchor's width,
-        // which the 180 degree cap still covers at the default sky.
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1600, 900, true),
-            monitor("DP-2", 1600, 0, 320, 900, false),
-        ];
-        let canvas = bounds_of(&monitors).unwrap();
-        let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
-        assert!(!derived.sky_clamped, "{derived:?}");
+    /// The pixels the anchor's own render puts in one unit of lens radius.
+    fn sky_scale(fov: f32, width: u32) -> f32 {
+        width as f32 / (fov.to_radians() * 0.25).tan()
+    }
 
-        let sky_scale = |fov: f32, width: u32| width as f32 / (fov.to_radians() * 0.25).tan();
-        assert_relative_eq!(
-            sky_scale(derived.framing.sky_fov, canvas.width),
-            sky_scale(settings().sky_fov, monitors[0].width),
-            max_relative = 1e-5
-        );
+    /// How many times the anchor's width a canvas has to be before the sky
+    /// saturates, at the framing these cases use.
+    fn widths_the_sky_reaches() -> f32 {
+        (SKY_FOV_MAX.to_radians() * 0.25).tan() / (settings().sky_fov.to_radians() * 0.25).tan()
     }
 
     #[test]
+    fn a_span_of_ordinary_screens_keeps_the_sky_scale_too() {
+        // Every width a desk holds, two screens to six. The canvas's pixels per
+        // unit of lens radius equal the anchor's, which is the half of the span
+        // identity the sky lens owns.
+        for screens in 2..=6_i32 {
+            let monitors: Vec<Monitor> = (0..screens)
+                .map(|i| monitor(&format!("DP-{i}"), i * 1920, 0, 1920, 1080, i == 0))
+                .collect();
+            let canvas = bounds_of(&monitors).unwrap();
+            let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
+            assert!(!derived.sky_clamped, "{screens} screens: {derived:?}");
+            assert_relative_eq!(
+                sky_scale(derived.framing.sky_fov, canvas.width),
+                sky_scale(settings().sky_fov, monitors[0].width),
+                max_relative = 1e-5
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn a_canvas_wider_than_the_sky_reaches_says_the_sky_was_clamped() {
+        // One screen beyond the reach, which at the default sky is a wall of
+        // twelve. Nobody has this layout; what the case is for is that the
+        // derivation reports the one number it could not honour instead of
+        // handing back a crop that no longer matches.
+        let screens = widths_the_sky_reaches().ceil() as i32 + 1;
+        let monitors: Vec<Monitor> = (0..screens)
+            .map(|i| monitor(&format!("DP-{i}"), i * 1920, 0, 1920, 1080, i == 0))
+            .collect();
+        let canvas = bounds_of(&monitors).unwrap();
+        let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
+        assert!(derived.sky_clamped, "{screens} screens: {derived:?}");
+        assert_relative_eq!(derived.framing.sky_fov, SKY_FOV_MAX);
+    }
+
+    #[test]
+    fn the_two_screen_span_the_old_cap_refused_is_inside_the_new_one() {
+        // The case the widening was for: two equal screens side by side at the
+        // default sky derive 218 degrees, which the shader's old 180 turned
+        // into a sky drawn at the wrong scale on both of them.
         let monitors = side_by_side();
         let canvas = bounds_of(&monitors).unwrap();
         let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
+        assert!(!derived.sky_clamped, "{derived:?}");
         assert!(
-            derived.sky_clamped,
-            "twice the width needs twice the lens radius, which 180 degrees does not reach"
+            derived.framing.sky_fov > 180.0,
+            "a canvas twice the anchor's width needs a sky past the slider's own              maximum, and this one derived {}",
+            derived.framing.sky_fov
         );
-        assert_relative_eq!(derived.framing.sky_fov, SKY_FOV_MAX);
     }
 
     #[test]

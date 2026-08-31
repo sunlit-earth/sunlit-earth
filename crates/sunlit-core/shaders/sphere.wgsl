@@ -127,8 +127,13 @@ fn output_pixel_scale() -> f32 {
 /// direction `theta` from the view axis lands at `tan(theta / 2)`, and this is
 /// what puts the frame's horizontal edge at NDC 1. Mirrored by
 /// `sky_lens_edge_radius` in `scene::sun_occlusion`.
+///
+/// The upper end of the clamp is not the slider's 180. A spanned canvas derives
+/// a sky wider than the anchor screen's own, and the lens only goes singular at
+/// 360; `display::layout::SKY_FOV_MAX` is the same number and says where it
+/// comes from.
 fn sky_lens_edge_radius() -> f32 {
-    return tan(clamp(uniforms.sky_fov, 60.0, 180.0) * PI / 720.0);
+    return tan(clamp(uniforms.sky_fov, 60.0, 330.0) * PI / 720.0);
 }
 
 struct SkyLensPoint {

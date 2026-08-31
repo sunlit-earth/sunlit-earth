@@ -797,6 +797,37 @@ fn golden_panorama_at_a_narrow_sky() {
     check_golden("panorama_at_a_narrow_sky", &params);
 }
 
+/// The same sky at a width only a spanned canvas derives.
+///
+/// The slider stops at 180; `display::layout::SKY_FOV_MAX` is 330, and a canvas
+/// six screens wide asks for about 300. Nothing above 180 had a reference before
+/// this case, and three things behave differently out there: star sprites carry
+/// the conformal `(1 + r * r)` factor and magnify hard toward the corners, the
+/// Milky Way is sampled through the lens inverse and is stretched severely at a
+/// corner 165 degrees off the view axis, and the Sun's glare composition is
+/// angular and was only ever exercised to 180. This is what turns those from
+/// claims into something a change has to preserve.
+#[test]
+fn golden_panorama_at_a_wide_sky() {
+    let base = base_params();
+    let params = SceneParams {
+        camera: CameraParams {
+            longitude: 160.0,
+            latitude: 0.0,
+            zoom: 0.45,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 1.0,
+        star_mag_limit: 6.0,
+        sun_glow: 0.0,
+        sky_fov: 300.0,
+        milky_way_intensity: 1.0,
+        ..base
+    };
+    check_golden("panorama_at_a_wide_sky", &params);
+}
+
 /// The framing the two cloud cases share: the terminator down the middle of the
 /// frame, at the instant every case here renders.
 ///
@@ -944,6 +975,7 @@ fn every_golden_case_is_distinguishable() {
         "moon_crescent",
         "panorama_behind_the_stars",
         "panorama_at_a_narrow_sky",
+        "panorama_at_a_wide_sky",
         "clouds_across_the_terminator",
         "cloud_terminator_close_up",
     ];

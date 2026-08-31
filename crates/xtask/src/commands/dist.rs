@@ -1765,7 +1765,11 @@ fn build_in_builder(
                 vm::lifecycle_explainer(
                     builder,
                     vm::Prepared {
-                        staged: false,
+                        staged: vm::Staging::skipped_for(
+                            provider::target::HostOs::current(),
+                            target
+                        ),
+                        console: session.provider.kind(),
                         enhanced_session: enhanced,
                     }
                 )
@@ -1944,7 +1948,11 @@ fn verify_in_desktop(
                 vm::lifecycle_explainer(
                     desktop,
                     vm::Prepared {
-                        staged: false,
+                        staged: vm::Staging::skipped_for(
+                            provider::target::HostOs::current(),
+                            target
+                        ),
+                        console: session.provider.kind(),
                         enhanced_session: enhanced,
                     }
                 )

@@ -24,7 +24,7 @@
 use crate::commands::e2e::WINDOWS_SLINT_BACKEND;
 use crate::guest::artifacts::{GuestPaths, shell_quote};
 use crate::provider::Provider;
-use crate::provider::target::{Image, Target};
+use crate::provider::target::{Image, ProviderKind, Target};
 use crate::runner::{encode_command, encode_text};
 use crate::store::Store;
 use crate::store::state::RunState;
@@ -459,12 +459,24 @@ pub fn enhanced_session_script(user: &str) -> String {
 /// A failure is the caller's to report and not to fail on: what is lost is a
 /// resizable window, and the basic session still shows a desktop that is
 /// already signed in.
+/// Whether a guest has an enhanced session to offer at all.
+///
+/// Two conditions, and both are about what the console is rather than about
+/// this guest: it is `vmconnect`'s feature, so the hypervisor has to be
+/// Hyper-V, and only a Windows guest has one. The same Windows image under QEMU
+/// is looked at over VNC, which asks for nothing and cannot be resized, so
+/// enabling RDP in it would change the guest for a console nobody on that host
+/// can open.
+pub fn offers_enhanced_session(kind: ProviderKind, target: Target) -> bool {
+    target == Target::Windows && kind == ProviderKind::HyperV
+}
+
 pub fn enable_enhanced_session(
     provider: &dyn Provider,
     state: &RunState,
     target: Target,
 ) -> Result<bool, String> {
-    if target != Target::Windows {
+    if !offers_enhanced_session(provider.kind(), target) {
         return Ok(false);
     }
     let script = enhanced_session_script(crate::provider::hyperv::GUEST_USER);
@@ -490,6 +502,26 @@ mod tests {
             "e2e-1a2b.exe",
             textures,
         )
+    }
+
+    /// A Windows guest on a Linux host is reached over VNC, and running the
+    /// enhanced-session script in it would blank an account's password and
+    /// start Remote Desktop Services for a console that host cannot open.
+    #[test]
+    fn only_a_hyper_v_windows_guest_offers_an_enhanced_session() {
+        assert!(offers_enhanced_session(
+            ProviderKind::HyperV,
+            Target::Windows
+        ));
+        assert!(!offers_enhanced_session(
+            ProviderKind::Qemu,
+            Target::Windows
+        ));
+        assert!(!offers_enhanced_session(
+            ProviderKind::HyperV,
+            Target::Linux
+        ));
+        assert!(!offers_enhanced_session(ProviderKind::Qemu, Target::Linux));
     }
 
     /// The launcher exists for this one line, and it has to be the same line the

@@ -10,7 +10,7 @@ use crate::commands::status;
 use crate::commands::teardown::{self, Selection};
 use crate::guest::job;
 use crate::provider::desktop::Desktop;
-use crate::provider::target::{Image, Target};
+use crate::provider::target::{HostOs, Image, ProviderKind, Target};
 use crate::provider::{self, Provider};
 use crate::runner::Runner;
 use crate::store::inventory::{self, ImageCondition};
@@ -424,6 +424,12 @@ pub fn boot<'a>(
     check_image(store, image, allow_expired)?;
     check_no_other_vm(runner, store, image)?;
     clear_stale_state(runner, store, image)?;
+    // Whatever the last guest at this address was, its host key is not this
+    // guest's: the Linux image generates a fresh set on every boot, and under
+    // QEMU both guests answer on the same loopback port. An entry left behind is
+    // a remote-host-identification-changed banner on every connection of this
+    // run, which is noise that reads like a break-in.
+    crate::guest::ssh::forget_host_keys(store);
 
     let provider = provider::for_image(runner, store, image)?;
     println!("creating a throwaway overlay of the {image} golden image");
@@ -509,32 +515,71 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, image: Image) -> Re
     })
 }
 
-/// What was done to the guest this text is about.
-///
-/// Two of the paragraphs below describe what happens at the end of a command
-/// rather than at the boot: the binaries with their launcher and desktop
-/// shortcuts, and the enhanced session. `vm up` and `e2e --keep` do both,
-/// `vm smoke --keep` does neither, and a hand-over that failed did only the
-/// first. So the text is printed from what happened rather than from the image,
-/// which is what it was doing when it told the owner of an empty desktop which
-/// shortcut to double-click.
+/// Whether the current binaries went into the guest, and if not, whose answer
+/// that is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Prepared {
+pub enum Staging {
     /// Staging ran, so the binaries, the launcher and the desktop shortcuts
     /// went into the guest. Not that every part of it arrived: the shortcuts are
     /// convenience, so `artifacts::stage` warns about them and carries on, and
     /// that warning is on the line above this text rather than a command away.
-    pub staged: bool,
+    Done,
+    /// Nothing was staged, and nothing about this host stopped it: the command
+    /// that booted this guest had no binaries to put in it.
+    Skipped,
+    /// Nothing was staged and nothing could be, because this host has no
+    /// toolchain for that guest's binaries. Only the Windows guest on a Linux
+    /// host reaches this. The boot is still worth having: what is being looked
+    /// at is the image.
+    Impossible,
+}
+
+/// What was done to the guest this text is about.
+///
+/// Two of the three describe what happens at the end of a command rather than
+/// at the boot: the binaries with their launcher and desktop shortcuts, and the
+/// enhanced session. `vm up` and `e2e --keep` do both, `vm smoke --keep` does
+/// neither, and a hand-over that failed did only the first. So the text is
+/// printed from what happened rather than from the image, which is what it was
+/// doing when it told the owner of an empty desktop which shortcut to
+/// double-click. The third is the console, which is the hypervisor's and not
+/// the guest's: it was reading that off the image too, and telling a Linux host
+/// looking at a VNC framebuffer to cancel a `vmconnect` credential dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prepared {
+    pub staged: Staging,
+    /// Which hypervisor is showing this guest's console. It decides what the
+    /// console is: `vmconnect` under Hyper-V, a VNC framebuffer under QEMU, and
+    /// the same Windows image can be either.
+    pub console: ProviderKind,
     /// The guest confirmed it can offer an enhanced `vmconnect` session.
     pub enhanced_session: bool,
 }
 
+impl Staging {
+    /// What a boot that staged nothing should say about it.
+    ///
+    /// "Nothing was staged" reads as a property of the command on a host that
+    /// could have staged something, and as a property of the host on one that
+    /// could not: pointing a Linux host at `vm up windows` for the binaries is
+    /// pointing it at a command that will not produce them either.
+    pub fn skipped_for(host: HostOs, target: Target) -> Self {
+        match crate::guest::artifacts::check_can_build(host, target) {
+            Ok(_) => Self::Skipped,
+            Err(_) => Self::Impossible,
+        }
+    }
+}
+
 impl Prepared {
     /// A guest left as it stood: nothing staged in it and nothing handed over.
-    pub const BARE: Self = Self {
-        staged: false,
-        enhanced_session: false,
-    };
+    pub fn bare(console: ProviderKind, target: Target) -> Self {
+        Self {
+            staged: Staging::skipped_for(HostOs::current(), target),
+            console,
+            enhanced_session: false,
+        }
+    }
 }
 
 /// What `vm up` prints when it is done (plan decision 14).
@@ -562,7 +607,7 @@ pub fn lifecycle_explainer(image: Image, prepared: Prepared) -> String {
         vm = image.vm_name(),
         console = image.console_label(),
         memory = guest_memory(image),
-        session = view_note(image, prepared.enhanced_session),
+        session = view_note(prepared.console, image, prepared.enhanced_session),
         extra = guest_environment_note(image, prepared.staged)
     )
 }
@@ -594,9 +639,14 @@ fn guest_memory(image: Image) -> String {
 /// `vm view` prints, from the same constant: the two texts describe the same
 /// console for the same guests, so "nothing to type" needs its exception in both
 /// places or in neither.
-fn view_note(image: Image, enhanced_session: bool) -> String {
-    match (image.target(), enhanced_session) {
-        (Target::Windows, true) => "\n\nIts desktop opens in an enhanced session, which is the \
+fn view_note(console: ProviderKind, image: Image, enhanced_session: bool) -> String {
+    // Keyed on the hypervisor before the guest, because which console this is
+    // belongs to the hypervisor: the Windows image under QEMU, which is how a
+    // Linux host boots it, is a VNC framebuffer with no session to choose, no
+    // clipboard either way, and no credential dialog to warn about.
+    match (console, image.target(), enhanced_session) {
+        (ProviderKind::HyperV, Target::Windows, true) => {
+            "\n\nIts desktop opens in an enhanced session, which is the \
              one that can be resized: drag the window and the guest's desktop \
              follows. The dialog asks for the guest's account, `tester`, with no \
              password at all, so leave that field empty and connect. A guest \
@@ -605,8 +655,9 @@ fn view_note(image: Image, enhanced_session: bool) -> String {
              from under the run.\n\n\
              An enhanced session is RDP, so it carries the clipboard: text can \
              be pasted straight in. Files go in over `vm ssh` and scp."
-            .to_owned(),
-        (Target::Windows, false) => format!(
+                .to_owned()
+        }
+        (ProviderKind::HyperV, Target::Windows, false) => format!(
             "\n\nIts desktop opens in a basic session: nothing to type, and fixed \
              at the console resolution, because only an enhanced session can be \
              resized and this guest is not offering one. `vm up` and `e2e --keep` \
@@ -615,7 +666,7 @@ fn view_note(image: Image, enhanced_session: bool) -> String {
              `vm ssh` and scp.\n\n{}",
             crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT
         ),
-        (Target::Linux, _) => "\n\nThe console carries no clipboard integration, so text and \
+        _ => "\n\nThe console carries no clipboard integration, so text and \
              files go in over `vm ssh` and scp."
             .to_owned(),
     }
@@ -646,9 +697,9 @@ fn view_note(image: Image, enhanced_session: bool) -> String {
 /// Windows arms need no such split, because the Windows builder is a layer over
 /// the desktop image and logs on the session its parent was built with, so that
 /// question answers the same for both and the shortcuts land on a real desktop.
-fn guest_environment_note(image: Image, staged: bool) -> String {
+fn guest_environment_note(image: Image, staged: Staging) -> String {
     match (image.target(), staged) {
-        (Target::Windows, true) => format!(
+        (Target::Windows, Staging::Done) => format!(
             "\n\nTwo shortcuts are on its desktop. `{app}` starts the app through \
              a launcher that sets `SLINT_BACKEND={backend}` for it: this guest has \
              no OpenGL, and without that the app exits before a window appears. \
@@ -658,14 +709,24 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             folder = crate::guest::handover::FOLDER_SHORTCUT.trim_end_matches(".lnk"),
             backend = crate::commands::e2e::WINDOWS_SLINT_BACKEND
         ),
-        (Target::Windows, false) => format!(
+        // Naming `vm up` here would be naming the command that just ran, on a
+        // host that cannot do what it asks for.
+        (Target::Windows, Staging::Impossible) => format!(
+            "\n\nNothing of ours is in it and nothing can be: this host has no \
+             toolchain for Windows binaries, so its desktop is empty and there \
+             is no app in it to start. What this boot is good for is the image \
+             itself. `cargo xtask vm view {image}` shows its console and \
+             `cargo xtask vm ssh {image}` is a shell in it; the suite needs a \
+             Windows host."
+        ),
+        (Target::Windows, Staging::Skipped) => format!(
             "\n\nNothing of ours was staged in it, so its desktop is empty and \
              there is no app in it to start. `cargo xtask vm up {image}` boots a \
              guest with the binaries, the launcher and the shortcuts, and \
              `{keep}` leaves one behind after a run.",
             keep = keep_command(image),
         ),
-        (Target::Linux, true) if image.has_desktop() => format!(
+        (Target::Linux, Staging::Done) if image.has_desktop() => format!(
             "\n\nWhat this boot staged is in `{root}`, which is outside any home \
              directory: the app and the test harness in `bin/`, the fixtures, and \
              a run's results. `{launcher}` starts the app from there, naming the \
@@ -677,7 +738,7 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             launcher = crate::guest::handover::linux_launcher_path(),
             app = crate::guest::handover::ENTRY_NAME,
         ),
-        (Target::Linux, true) => format!(
+        (Target::Linux, Staging::Done) => format!(
             "\n\nWhat this boot staged is in `{root}`, which is outside any home \
              directory: the app and the test harness in `bin/`, the fixtures, and \
              a run's results. `{launcher}` starts the app from there. There is no \
@@ -687,7 +748,7 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             root = crate::provider::GUEST_ROOT_LINUX,
             launcher = crate::guest::handover::linux_launcher_path(),
         ),
-        (Target::Linux, false) if image.has_desktop() => format!(
+        (Target::Linux, _) if image.has_desktop() => format!(
             "\n\nNothing of ours was staged in it, so there is no app in \
              `{root}` to start and no entry for one. `cargo xtask vm up {image}` \
              boots a guest with the binaries, the launcher and the desktop \
@@ -695,7 +756,7 @@ fn guest_environment_note(image: Image, staged: bool) -> String {
             root = crate::provider::GUEST_ROOT_LINUX,
             keep = keep_command(image),
         ),
-        (Target::Linux, false) => format!(
+        (Target::Linux, _) => format!(
             "\n\nNothing of ours was staged in it, so there is no app in \
              `{root}` to start, and this image has no desktop session for an \
              entry to appear in either: it is where `dist` builds a release \
@@ -716,12 +777,20 @@ pub fn up(
     desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
-    // Asked before anything is created: a guest with no binaries to put in it
-    // is worse than a refusal.
-    crate::guest::artifacts::check_can_build(
-        crate::provider::target::HostOs::current(),
-        image.target(),
-    )?;
+    // Asked before anything is created, because it decides what this boot is:
+    // a guest carrying the current binaries, or the golden image itself to look
+    // at. `e2e` refuses the same case rather than booting into it, because a
+    // suite with nothing to run is not a run; `vm up` is for looking at a
+    // guest, and a Linux host that has just spent an hour building the Windows
+    // image has every reason to boot it.
+    let buildable = crate::guest::artifacts::check_can_build(HostOs::current(), image.target());
+    if buildable.is_err() {
+        println!(
+            "this host cannot build the {target} guest's binaries, so nothing of \
+             ours goes into this guest: it boots as the image built it",
+            target = image.target()
+        );
+    }
 
     let mut session = boot(
         runner,
@@ -733,19 +802,25 @@ pub fn up(
     )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
-    if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
-        // Keep the guest: `vm up` is for looking at one, and a guest that
-        // booted is still worth having even if the binaries did not arrive.
-        println!("{}", after_failure(&mut session, &store, true));
-        return Err(e);
-    }
+    let staged = if buildable.is_ok() {
+        if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
+            // Keep the guest: `vm up` is for looking at one, and a guest that
+            // booted is still worth having even if the binaries did not arrive.
+            println!("{}", after_failure(&mut session, &store, true));
+            return Err(e);
+        }
+        Staging::Done
+    } else {
+        Staging::Impossible
+    };
     let enhanced_session = hand_over(&mut session, &store);
     println!(
         "{}",
         lifecycle_explainer(
             session.image,
             Prepared {
-                staged: true,
+                staged,
+                console: session.provider.kind(),
                 enhanced_session
             }
         )
@@ -1008,7 +1083,13 @@ pub fn smoke(
         // smoke test proves the guest contract and leaves the guest as it found
         // it, so the text says what is actually in there.
         record_kept(&mut session, &store);
-        println!("{}", lifecycle_explainer(image, Prepared::BARE));
+        println!(
+            "{}",
+            lifecycle_explainer(
+                image,
+                Prepared::bare(session.provider.kind(), image.target())
+            )
+        );
     } else if let Err(e) = session.tear_down(&store) {
         // The same shape as the other three teardown sites: name the VM and
         // say how to reach it, because it is still there.
@@ -1091,6 +1172,24 @@ mod tests {
         // Every other ssh invocation stays non-interactive on purpose.
         let probe = crate::guest::ssh::ssh_command(&reachable, Some("echo hi"));
         assert!(!probe.interactive);
+    }
+
+    /// A guest's closing-text facts, every one of them stated.
+    ///
+    /// `Prepared::bare` asks this host what it can build, and a session asks its
+    /// provider which console it opened; a test that left either to the machine
+    /// it runs on would assert something different on each one.
+    fn prepared(console: ProviderKind, staged: Staging, enhanced_session: bool) -> Prepared {
+        Prepared {
+            staged,
+            console,
+            enhanced_session,
+        }
+    }
+
+    /// The same, for a guest with nothing of ours in it.
+    fn bare(console: ProviderKind, staged: Staging) -> Prepared {
+        prepared(console, staged, false)
     }
 
     use super::*;
@@ -1196,10 +1295,7 @@ mod tests {
     fn the_lifecycle_explainer_names_the_stop_and_what_it_frees() {
         let text = lifecycle_explainer(
             Image::Linux,
-            Prepared {
-                staged: true,
-                enhanced_session: false,
-            },
+            prepared(ProviderKind::Qemu, Staging::Done, false),
         );
         assert!(text.contains("`vm down` is the stop"), "{text}");
         assert!(!text.contains("no stop or pause"), "{text}");
@@ -1224,17 +1320,22 @@ mod tests {
             let (mib, _) = crate::provider::resources_for(image);
             let expected = util::format_bytes(u64::from(mib) * 1024 * 1024);
             assert!(
-                lifecycle_explainer(image, Prepared::BARE)
+                lifecycle_explainer(image, bare(ProviderKind::Qemu, Staging::Skipped))
                     .contains(&format!("{expected} of this host's memory")),
                 "{image} is described as holding something other than {expected}"
             );
         }
         assert!(
-            lifecycle_explainer(Image::Windows, Prepared::BARE).contains("6.0 GiB"),
+            lifecycle_explainer(Image::Windows, bare(ProviderKind::Qemu, Staging::Skipped))
+                .contains("6.0 GiB"),
             "the Windows desktop guest's own figure"
         );
         assert!(
-            lifecycle_explainer(Image::WindowsBuilder, Prepared::BARE).contains("8.0 GiB"),
+            lifecycle_explainer(
+                Image::WindowsBuilder,
+                bare(ProviderKind::Qemu, Staging::Skipped)
+            )
+            .contains("8.0 GiB"),
             "a builder gets more of the host, and the text has to say so"
         );
     }
@@ -1247,10 +1348,7 @@ mod tests {
     fn handing_over_a_linux_guest_says_where_the_app_is_and_how_to_start_it() {
         let text = lifecycle_explainer(
             Image::Linux,
-            Prepared {
-                staged: true,
-                enhanced_session: false,
-            },
+            prepared(ProviderKind::Qemu, Staging::Done, false),
         );
         assert!(text.contains(crate::provider::GUEST_ROOT_LINUX), "{text}");
         assert!(
@@ -1264,12 +1362,72 @@ mod tests {
         assert!(text.contains("GNOME does not"), "{text}");
     }
 
+    /// A Linux host can build the Windows image and cannot build a single
+    /// binary to put in the guest, so the one thing its text must not do is
+    /// send somebody back to `vm up` for them.
+    #[test]
+    fn a_windows_guest_on_a_host_that_cannot_build_for_it_is_not_sent_back_to_vm_up() {
+        let text = lifecycle_explainer(
+            Image::Windows,
+            bare(ProviderKind::Qemu, Staging::Impossible),
+        );
+        assert!(!text.contains("cargo xtask vm up windows"), "{text}");
+        assert!(text.contains("cargo xtask vm view windows"), "{text}");
+        assert!(text.contains("cargo xtask vm ssh windows"), "{text}");
+        assert!(text.contains("no toolchain for Windows binaries"), "{text}");
+        // The other two texts about the same guest do point at `vm up`, and
+        // that stays true on the host where it is the answer.
+        for staged in [Staging::Skipped, Staging::Done] {
+            let text = lifecycle_explainer(Image::Windows, bare(ProviderKind::HyperV, staged));
+            assert!(!text.contains("no toolchain"), "{text}");
+        }
+    }
+
+    /// The same guest, and the console is the hypervisor's rather than the
+    /// guest's: a Windows guest under QEMU is a VNC framebuffer, so none of
+    /// what `vmconnect` offers, asks for, or warns about applies to it.
+    #[test]
+    fn a_windows_guest_under_qemu_is_described_as_the_vnc_console_it_has() {
+        let text = lifecycle_explainer(
+            Image::Windows,
+            bare(ProviderKind::Qemu, Staging::Impossible),
+        );
+        assert!(!text.contains("basic session"), "{text}");
+        assert!(!text.contains("enhanced session"), "{text}");
+        assert!(
+            !text.contains(crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT),
+            "{text}"
+        );
+        assert!(text.contains("no clipboard integration"), "{text}");
+    }
+
+    /// The Windows guest on a Linux host is the one cell of the matrix where
+    /// nothing staged is the host's answer rather than the command's.
+    #[test]
+    fn staging_is_impossible_only_for_a_windows_guest_on_a_linux_host() {
+        assert_eq!(
+            Staging::skipped_for(HostOs::Linux, Target::Windows),
+            Staging::Impossible
+        );
+        for (host, target) in [
+            (HostOs::Linux, Target::Linux),
+            (HostOs::Windows, Target::Windows),
+            (HostOs::Windows, Target::Linux),
+        ] {
+            assert_eq!(
+                Staging::skipped_for(host, target),
+                Staging::Skipped,
+                "{host:?} {target}"
+            );
+        }
+    }
+
     /// `vm smoke --keep` leaves a Linux guest with nothing of ours in it either,
     /// and being told which entry to click is worse than being told there is
     /// none. The Windows arm has said so since it existed; this is the same rule.
     #[test]
     fn a_bare_linux_guest_promises_no_launcher_and_names_what_would_stage_one() {
-        let text = lifecycle_explainer(Image::Linux, Prepared::BARE);
+        let text = lifecycle_explainer(Image::Linux, bare(ProviderKind::Qemu, Staging::Skipped));
         assert!(text.contains("Nothing of ours was staged"), "{text}");
         assert!(!text.contains(crate::guest::handover::ENTRY_NAME), "{text}");
         assert!(
@@ -1286,11 +1444,8 @@ mod tests {
     #[test]
     fn a_linux_builder_is_never_promised_a_menu_or_a_desktop_entry() {
         for prepared in [
-            Prepared::BARE,
-            Prepared {
-                staged: true,
-                enhanced_session: false,
-            },
+            bare(ProviderKind::Qemu, Staging::Skipped),
+            prepared(ProviderKind::Qemu, Staging::Done, false),
         ] {
             let text = lifecycle_explainer(Image::LinuxBuilder, prepared);
             assert!(!text.contains("desktop entries"), "{text}");
@@ -1302,10 +1457,7 @@ mod tests {
         // makes the builder's silence about them a difference and not a loss.
         let desktop = lifecycle_explainer(
             Image::Linux,
-            Prepared {
-                staged: true,
-                enhanced_session: false,
-            },
+            prepared(ProviderKind::Qemu, Staging::Done, false),
         );
         assert!(desktop.contains("applications menu"), "{desktop}");
     }
@@ -1361,10 +1513,7 @@ mod tests {
         // the desktop launcher, so both shortcuts are named as well.
         let text = lifecycle_explainer(
             Image::Windows,
-            Prepared {
-                staged: true,
-                enhanced_session: true,
-            },
+            prepared(ProviderKind::HyperV, Staging::Done, true),
         );
         assert!(
             text.contains(&format!(
@@ -1387,7 +1536,8 @@ mod tests {
     /// desktop in a session that asks them for nothing.
     #[test]
     fn a_guest_that_was_left_as_it_stood_promises_neither_shortcuts_nor_a_session() {
-        let text = lifecycle_explainer(Image::Windows, Prepared::BARE);
+        let text =
+            lifecycle_explainer(Image::Windows, bare(ProviderKind::HyperV, Staging::Skipped));
         assert!(text.contains("`vm down` is the stop"), "{text}");
         // Neither shortcut, and no launcher behind one.
         assert!(!text.contains("Sunlit Earth"), "{text}");
@@ -1408,11 +1558,8 @@ mod tests {
     fn every_text_about_a_guest_that_offers_no_enhanced_session_carries_the_same_caveat() {
         let caveat = crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT;
         for prepared in [
-            Prepared::BARE,
-            Prepared {
-                staged: true,
-                enhanced_session: false,
-            },
+            bare(ProviderKind::HyperV, Staging::Skipped),
+            prepared(ProviderKind::HyperV, Staging::Done, false),
         ] {
             let text = lifecycle_explainer(Image::Windows, prepared);
             assert!(text.contains(caveat), "{text}");
@@ -1423,10 +1570,7 @@ mod tests {
         // the caveat would contradict the advice it is printed beside.
         let handed_over = lifecycle_explainer(
             Image::Windows,
-            Prepared {
-                staged: true,
-                enhanced_session: true,
-            },
+            prepared(ProviderKind::HyperV, Staging::Done, true),
         );
         assert!(!handed_over.contains(caveat), "{handed_over}");
         assert!(!crate::provider::hyperv::view_note(Target::Windows, true).contains(caveat));
@@ -1434,10 +1578,7 @@ mod tests {
         assert!(
             !lifecycle_explainer(
                 Image::Linux,
-                Prepared {
-                    staged: true,
-                    enhanced_session: false,
-                }
+                prepared(ProviderKind::Qemu, Staging::Done, false)
             )
             .contains(caveat)
         );
@@ -1491,10 +1632,7 @@ mod tests {
     fn a_failed_hand_over_still_describes_the_console_the_guest_has() {
         let text = lifecycle_explainer(
             Image::Windows,
-            Prepared {
-                staged: true,
-                enhanced_session: false,
-            },
+            prepared(ProviderKind::HyperV, Staging::Done, false),
         );
         assert!(text.contains("Sunlit Earth"), "{text}");
         assert!(text.contains("basic session"), "{text}");
@@ -1569,7 +1707,7 @@ mod tests {
             } else {
                 "console: cargo xtask vm view"
             };
-            let text = lifecycle_explainer(image, Prepared::BARE);
+            let text = lifecycle_explainer(image, bare(ProviderKind::Qemu, Staging::Skipped));
             assert!(text.contains(expected), "{text}");
             assert_eq!(
                 text.contains("no desktop session"),
@@ -1585,7 +1723,10 @@ mod tests {
             .reach_hint();
             assert!(hint.contains(expected), "{hint}");
         }
-        let windows_builder = lifecycle_explainer(Image::WindowsBuilder, Prepared::BARE);
+        let windows_builder = lifecycle_explainer(
+            Image::WindowsBuilder,
+            bare(ProviderKind::HyperV, Staging::Skipped),
+        );
         assert!(
             windows_builder.contains("desktop: cargo xtask vm view windows-builder"),
             "{windows_builder}"

@@ -247,3 +247,11 @@ The floor is **the parallel dependency compile**, about eighty seconds of sixtee
 So decision 8's escape hatch stays unused. `--jobs` is the lever if the floor ever becomes a cliff, and nothing here needed it.
 
 `docs/vm-setup.md`'s OOM note gained a sentence saying the Windows builder's 6 GiB is this measurement rather than an assumption, since that note is where someone whose build died for want of memory will look.
+
+### What is not measured here
+
+Criterion 7 and criterion 8 are code rather than a run. The builder's closing text is pinned by a test that reads it and fails on the desktop guest's shortcuts, console, clipboard and pristine-overlay sentences, and the exemption, the two refusals, the reuse decision and the memory and vCPU figures each have their own unit test over supplied data rather than over this host. The gates at the end of the work: `cargo test -p xtask` 560 passed, `cargo clippy --all-targets` silent, `cargo fmt --check` clean, and `cargo test --no-fail-fast` green but for `golden_sun_rising_through_the_band`, a stale lavapipe golden this branch did not touch.
+
+**The Hyper-V half of decision 2 is still unrun**, as the risk section said it would be. `shutdown_script`, `turn_off_script` and `wait_for_off` have never executed; nothing in this record covers them.
+
+Two other things nothing here measures, both of them deliberate. **Decision 2's kill has never fired**: every stop of a healthy Windows guest in this session complied in 7 to 17 seconds, well inside the 60 second grace, so what the record proves is the asking and not the insisting. And **the Linux builder's memory is untouched at 8192**, which the non-goals reserve; the measurement above is about a Windows guest's file cache and says nothing about a fat-LTO link on Ubuntu.

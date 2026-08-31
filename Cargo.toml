@@ -63,6 +63,12 @@ single-instance = "0.3"
 interprocess = "2"
 crossbeam-channel = "0.5"
 windows-sys = "0.59"
+# The COM half of the Windows wallpaper setter. `windows-sys` generates no COM
+# interfaces at all, so `IDesktopWallpaper`, which is the only way to address one
+# monitor, is not in it. This crate is already in the lockfile at this version as
+# a transitive dependency, so naming it directly adds two features to a crate
+# that is already compiled rather than a new tree.
+windows = "0.62"
 winreg = "0.56"
 mach2 = "0.6"
 # The Linux half of `session_end`. A signal handler may call almost nothing, and

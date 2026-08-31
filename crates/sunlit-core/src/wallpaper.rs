@@ -280,10 +280,11 @@ pub fn ensure_dpi_awareness() {
 /// coordinates, which are physical pixels for a per-monitor DPI aware process;
 /// see `docs/platforms.md` for what makes this one aware.
 ///
-/// The `id` is `szDevice` (`\\.\DISPLAY1`), which names the monitor for as long
-/// as this session lasts. Off Windows the same question is answered by
-/// [`crate::display`], which parses `xrandr --query`: there is no API in this
-/// crate to ask, so it asks a program.
+/// The `id` is `szDevice` (`\\.\DISPLAY1`) until [`desktop_wallpaper`] can
+/// improve on it: `IDesktopWallpaper` addresses a monitor by a device path that
+/// survives a reboot, and `szDevice` does not. Off Windows the same question is
+/// answered by [`crate::display`], which parses `xrandr --query`: there is no
+/// API in this crate to ask, so it asks a program.
 #[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
@@ -364,8 +365,55 @@ pub fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
             primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
         });
     }
+    adopt_device_paths(&mut monitors);
     debug!(count = monitors.len(), "enumerated the monitors");
     Ok(monitors)
+}
+
+/// Replace each monitor's id with the device path the shell addresses it by.
+///
+/// The two enumerations have no key in common, so the rectangle is the join:
+/// `GetMonitorRECT` and `rcMonitor` describe the same screen in the same
+/// coordinates. Mirrored monitors are two entries with one rectangle, and each
+/// path takes the first monitor not already claimed, which keeps the mapping a
+/// bijection where a rectangle alone would be ambiguous.
+///
+/// A failure anywhere leaves `szDevice` in place. That is a name the shell will
+/// not take, so a publish that needs to address a monitor says so rather than
+/// setting the wrong screen's wallpaper.
+#[cfg(windows)]
+fn adopt_device_paths(monitors: &mut [crate::display::Monitor]) {
+    let api = match shell::DesktopWallpaperApi::open() {
+        Ok(api) => api,
+        Err(e) => {
+            debug!(error = %e, "no shell wallpaper interface; keeping the display device names");
+            return;
+        }
+    };
+    let paths = match api.monitor_paths() {
+        Ok(paths) => paths,
+        Err(e) => {
+            debug!(error = %e, "the shell listed no monitor device paths");
+            return;
+        }
+    };
+    let mut claimed = vec![false; monitors.len()];
+    for path in paths {
+        let Ok((left, top, right, bottom)) = api.monitor_rect(&path) else {
+            continue;
+        };
+        let matched = monitors.iter().enumerate().position(|(index, monitor)| {
+            !claimed[index]
+                && monitor.x == left
+                && monitor.y == top
+                && i64::from(monitor.width) == i64::from(right) - i64::from(left)
+                && i64::from(monitor.height) == i64::from(bottom) - i64::from(top)
+        });
+        if let Some(index) = matched {
+            claimed[index] = true;
+            monitors[index].id = path;
+        }
+    }
 }
 
 /// A null-terminated fixed-width UTF-16 field as a `String`.
@@ -409,6 +457,301 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
         "detected primary monitor resolution"
     );
     Ok((monitor.width, monitor.height))
+}
+
+/// `IDesktopWallpaper` behind a small safe wrapper.
+///
+/// The COM interface is the only way to address one monitor:
+/// `SystemParametersInfoW` sets the wallpaper of a whole session and has no
+/// parameter for which screen. It is Windows 8 and later, which is everything
+/// this ships to.
+///
+/// Every call is `unsafe` in the generated bindings and every one of them is
+/// wrapped here, so the rest of the module never writes `unsafe` and the
+/// invariants are argued once each rather than at every call site.
+#[cfg(windows)]
+mod shell {
+    use std::path::Path;
+
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    };
+    use windows::Win32::UI::Shell::{
+        DESKTOP_WALLPAPER_POSITION, DWPOS_FILL, DWPOS_SPAN, DesktopWallpaper, IDesktopWallpaper,
+    };
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+
+    /// A string the shell allocated with the COM task allocator.
+    ///
+    /// `GetMonitorDevicePathAt` and `GetWallpaper` both hand back memory the
+    /// caller owns, and the wrapper exists so that every early return frees it.
+    struct TaskMem(PWSTR);
+
+    impl TaskMem {
+        /// Its contents as a `String`, empty where the shell answered with
+        /// nothing. Not `Display`, because a wrapper around a raw pointer that
+        /// prints itself invites being printed.
+        fn read(&self) -> String {
+            if self.0.is_null() {
+                return String::new();
+            }
+            // SAFETY: a non-null PWSTR from a COM out-parameter is a
+            // null-terminated UTF-16 string the shell allocated and this owns.
+            #[allow(unsafe_code)]
+            unsafe {
+                String::from_utf16_lossy(self.0.as_wide())
+            }
+        }
+    }
+
+    impl Drop for TaskMem {
+        fn drop(&mut self) {
+            if self.0.is_null() {
+                return;
+            }
+            // SAFETY: the pointer came from a COM method that transfers
+            // ownership to the caller, and this is the only release of it.
+            #[allow(unsafe_code)]
+            unsafe {
+                CoTaskMemFree(Some(self.0.as_ptr().cast()));
+            }
+        }
+    }
+
+    /// Initialize COM on this thread, once, and never tear it down.
+    ///
+    /// A single-threaded apartment, which is what a desktop shell object wants
+    /// and what the UI thread is already in. A thread that is already in the
+    /// multi-threaded apartment answers `RPC_E_CHANGED_MODE`, and that is not an
+    /// error to report: COM is initialized there, the apartment is simply
+    /// somebody else's, and an in-process shell object works either way. What
+    /// must not happen is calling `CoUninitialize` on a thread this did not
+    /// initialize, which is why nothing here ever does.
+    fn initialize() {
+        thread_local! {
+            static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        DONE.with(|done| {
+            if done.replace(true) {
+                return;
+            }
+            // SAFETY: CoInitializeEx takes no pointers of ours and is safe to
+            // call on any thread. Its result is inspected rather than asserted,
+            // because both "already initialized" answers are fine here.
+            #[allow(unsafe_code)]
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            tracing::debug!(hresult = hr.0, "initialized COM on this thread");
+        });
+    }
+
+    /// Where an image is fitted on the screens it is set on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Position {
+        /// One screen's own picture, filled to it. What `WallpaperStyle=10` does.
+        Fill,
+        /// One image stretched over the whole virtual desktop.
+        Span,
+    }
+
+    impl From<Position> for DESKTOP_WALLPAPER_POSITION {
+        fn from(position: Position) -> Self {
+            match position {
+                Position::Fill => DWPOS_FILL,
+                Position::Span => DWPOS_SPAN,
+            }
+        }
+    }
+
+    /// The shell's own wallpaper object.
+    pub struct DesktopWallpaperApi(IDesktopWallpaper);
+
+    impl DesktopWallpaperApi {
+        /// Create the shell object, initializing COM on this thread first.
+        pub fn open() -> Result<Self, String> {
+            initialize();
+            // SAFETY: DesktopWallpaper is an in-process shell class and the
+            // requested interface is the one the type parameter names, so the
+            // generated wrapper checks the QueryInterface itself.
+            #[allow(unsafe_code)]
+            let api: IDesktopWallpaper =
+                unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL) }
+                    .map_err(|e| format!("cannot reach the desktop wallpaper interface: {e}"))?;
+            Ok(Self(api))
+        }
+
+        /// Every monitor the shell will address, by the device path it takes.
+        ///
+        /// The path is what survives a reboot, which `\\.\DISPLAY1` does not, so
+        /// it is what the anchor setting stores.
+        pub fn monitor_paths(&self) -> Result<Vec<String>, String> {
+            // SAFETY: no arguments, and the count is a plain out-parameter.
+            #[allow(unsafe_code)]
+            let count = unsafe { self.0.GetMonitorDevicePathCount() }
+                .map_err(|e| format!("cannot count the monitors the shell addresses: {e}"))?;
+            let mut paths = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                // SAFETY: the index is below the count the shell just gave, and
+                // the returned string is owned by TaskMem from here on.
+                #[allow(unsafe_code)]
+                let path = unsafe { self.0.GetMonitorDevicePathAt(index) }
+                    .map_err(|e| format!("cannot read monitor {index}'s device path: {e}"))?;
+                paths.push(TaskMem(path).read());
+            }
+            Ok(paths)
+        }
+
+        /// The rectangle the shell says one device path occupies.
+        ///
+        /// This is what maps a device path onto an `HMONITOR`: the two
+        /// enumerations have no key in common and this rectangle is the only
+        /// thing both of them report.
+        pub fn monitor_rect(&self, id: &str) -> Result<(i32, i32, i32, i32), String> {
+            let id = HSTRING::from(id);
+            // SAFETY: the HSTRING outlives the call, and PCWSTR borrows it.
+            #[allow(unsafe_code)]
+            let rect = unsafe { self.0.GetMonitorRECT(PCWSTR(id.as_ptr())) }
+                .map_err(|e| format!("cannot read that monitor's rectangle: {e}"))?;
+            Ok((rect.left, rect.top, rect.right, rect.bottom))
+        }
+
+        /// How the images this object sets are fitted.
+        pub fn set_position(&self, position: Position) -> Result<(), String> {
+            // SAFETY: the position is one of the enumeration's own values.
+            #[allow(unsafe_code)]
+            unsafe { self.0.SetPosition(position.into()) }
+                .map_err(|e| format!("cannot set the wallpaper position: {e}"))
+        }
+
+        /// Put one image on one monitor, or on every monitor where `monitor` is
+        /// `None`.
+        pub fn set(&self, monitor: Option<&str>, image: &Path) -> Result<(), String> {
+            let id = monitor.map(HSTRING::from);
+            let image = HSTRING::from(image.as_os_str());
+            let id = id.as_ref().map_or(PCWSTR::null(), |id| PCWSTR(id.as_ptr()));
+            // SAFETY: both HSTRINGs outlive the call, and a null monitor id is
+            // the interface's own way of naming every monitor.
+            #[allow(unsafe_code)]
+            unsafe { self.0.SetWallpaper(id, PCWSTR(image.as_ptr())) }.map_err(|e| {
+                format!(
+                    "cannot set the wallpaper of {}: {e}",
+                    monitor.unwrap_or("every monitor")
+                )
+            })
+        }
+
+        /// What the shell holds for one monitor, which is the read-back.
+        ///
+        /// Worth more than it looks: it is the first time the Windows setter can
+        /// be asserted the way the Linux one already is, by asking the shell
+        /// what it has rather than trusting an exit code.
+        pub fn get(&self, monitor: &str) -> Result<String, String> {
+            let id = HSTRING::from(monitor);
+            // SAFETY: the HSTRING outlives the call, and the returned string is
+            // owned by TaskMem from here on.
+            #[allow(unsafe_code)]
+            let path = unsafe { self.0.GetWallpaper(PCWSTR(id.as_ptr())) }
+                .map_err(|e| format!("cannot read {monitor}'s wallpaper: {e}"))?;
+            Ok(TaskMem(path).read())
+        }
+    }
+}
+
+/// What the shell holds for one monitor, by its device path.
+///
+/// The Windows counterpart of reading a `gsettings` key back: an exit code is
+/// not evidence that a wallpaper was set, and this is.
+#[cfg(windows)]
+pub fn wallpaper_on_monitor(id: &str) -> Result<String, String> {
+    shell::DesktopWallpaperApi::open()?.get(id)
+}
+
+/// Make a finished job the Windows desktop's wallpaper.
+///
+/// A session with one monitor keeps `SystemParametersInfoW` and the registry
+/// style write exactly as they were, so the one configuration that is
+/// regression-tested on every desktop and in the Hyper-V guest does not move.
+/// Everything beyond one screen goes through `IDesktopWallpaper`, which is the
+/// only interface that can address a monitor.
+#[cfg(windows)]
+pub fn set_wallpaper_job(
+    job: &crate::engine::wallpaper_sink::WallpaperJob,
+) -> Result<String, String> {
+    use std::sync::Arc;
+
+    use crate::display::layout::DisplayMode;
+    use crate::engine::wallpaper_sink::Frame;
+
+    let spanning = job.mode == DisplayMode::AcrossScreens;
+    let mut publication = begin_publication()?;
+
+    if job.monitors.len() <= 1 {
+        let frame = job.anchor_image()?;
+        let path = publication.write("0", &frame.pixels, frame.width, frame.height)?;
+        publication.commit();
+        set_wallpaper(&path)?;
+        return Ok(String::new());
+    }
+
+    if spanning {
+        let canvas = job
+            .canvas()
+            .ok_or_else(|| "a view across the screens was asked for without a canvas".to_owned())?;
+        let path = publication.write("canvas", &canvas.pixels, canvas.width, canvas.height)?;
+        publication.commit();
+        let api = shell::DesktopWallpaperApi::open()?;
+        // Windows does the cutting: one file instead of one per screen, and the
+        // path it keeps consistent by itself when a monitor is unplugged.
+        api.set_position(shell::Position::Span)?;
+        api.set(None, &path)?;
+        info!(path = %path.display(), "spanned the wallpaper across every monitor");
+        return Ok(String::new());
+    }
+
+    let mut written: Vec<(Arc<Frame>, PathBuf)> = Vec::new();
+    let mut images: Vec<(&crate::display::Monitor, PathBuf)> = Vec::new();
+    for (index, monitor) in job.monitors.iter().enumerate() {
+        // A screen with no picture is one this mode does not paint, and it is
+        // left holding whatever it already had.
+        let Some(frame) = job.image_for(index)? else {
+            continue;
+        };
+        // Two screens showing the same picture cost one render, and this is
+        // what carries that as far as the file: one encode and one path.
+        let seen = written
+            .iter()
+            .find(|(seen, _)| Arc::ptr_eq(seen, &frame))
+            .map(|(_, path)| path.clone());
+        let path = if let Some(path) = seen {
+            path
+        } else {
+            let path =
+                publication.write(&index.to_string(), &frame.pixels, frame.width, frame.height)?;
+            written.push((Arc::clone(&frame), path.clone()));
+            path
+        };
+        images.push((monitor, path));
+    }
+    publication.commit();
+
+    let api = shell::DesktopWallpaperApi::open()?;
+    api.set_position(shell::Position::Fill)?;
+    let mut unaddressed = Vec::new();
+    for (monitor, path) in &images {
+        if monitor.id.is_empty() {
+            unaddressed.push(monitor.label.clone());
+            continue;
+        }
+        api.set(Some(&monitor.id), path)?;
+    }
+    info!(screens = images.len(), "set a wallpaper per monitor");
+    if unaddressed.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!(
+            "Windows named no device for {}, so those screens kept the wallpaper they had",
+            unaddressed.join(", ")
+        ))
+    }
 }
 
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the

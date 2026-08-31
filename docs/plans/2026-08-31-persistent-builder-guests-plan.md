@@ -142,6 +142,22 @@ Two things worth writing down. **A stop of a freshly booted Windows guest takes 
 
 Against the plan's context table, which measured 12m 09s for the whole command and 9m 01s for the same cold compile, this run was **three minutes faster end to end and a minute faster on the compile**. Most of the three minutes is the boot the builder no longer needs (a resume at 6s where a cold boot is 21s) and the overlay it no longer creates; the minute on the compile is the vCPU count decision 8 raised from 8 to this host's 16, measured at the same 469 crates. Neither number is a like-for-like against a warm build, which is what criterion 2 still owes.
 
-### Still owed
+### Criterion 2: the warm compile, and open question 2 with it
 
-Criteria 2, 3, 5 and 6 are unmeasured; the session ended before them. The commands and the state they need are in the handover beside this document.
+The same `cargo xtask vm up windows` again, against the builder the run above left stopped with 469 crates in it. Nothing in the tree had changed between the two runs.
+
+| | |
+|---|---|
+| whole command | **60.9s** (17:49:17 to 17:50:18) against **9m 07s** cold |
+| `cargo test --no-run`, by cargo's own count | **6.80s** against **8m 10s** cold |
+| the builder's resume | SSH at **7s** |
+| everything the builder did, resume to binaries back on the host | **23s** (17:49:17 to 17:49:40) |
+| the builder's stop after it | **7s** (17:49:40 to 17:49:47) |
+| the desktop guest | SSH at 11s, the session at 14s, binaries and textures staged |
+| what the run left | the builder **stopped**, the desktop guest up |
+
+**A warm compile is seven seconds where a cold one is eight minutes**, which is goal 1 with two orders of magnitude on it and comfortably inside the two minutes criterion 2 asks for. Cargo printed no `Compiling` line at all: every one of the 469 crates came back fresh, which is the answer to open question 1. A Windows build directory survives an ACPI shutdown and a boot intact, and the `tar.exe -xf` that preserves the archive's modification times is what makes cargo believe it.
+
+Open question 2 asked whether re-extracting 9.6 MiB of source dominates a warm build, and the answer is **yes and it does not matter**. The compile is 6.8s of a 23 second in-guest phase, so the archive, the wipe, the extraction, rustup's channel check and copying 45.6 MiB of binaries back over scp together cost more than twice what the compile does. All of it is seconds. Extracting over the tree rather than wiping it would buy a fraction of sixteen seconds at the cost of decision 10's guarantee, so it stays unbought.
+
+What is left of the minute is the desktop guest: a pristine overlay of an 18.2 GiB image, an 11 second boot, a 14 second wait for the session, and the textures. That is the floor for this command now, and the builder is no longer any part of it.

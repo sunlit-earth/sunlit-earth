@@ -161,3 +161,29 @@ The same `cargo xtask vm up windows` again, against the builder the run above le
 Open question 2 asked whether re-extracting 9.6 MiB of source dominates a warm build, and the answer is **yes and it does not matter**. The compile is 6.8s of a 23 second in-guest phase, so the archive, the wipe, the extraction, rustup's channel check and copying 45.6 MiB of binaries back over scp together cost more than twice what the compile does. All of it is seconds. Extracting over the tree rather than wiping it would buy a fraction of sixteen seconds at the cost of decision 10's guarantee, so it stays unbought.
 
 What is left of the minute is the desktop guest: a pristine overlay of an 18.2 GiB image, an 11 second boot, a 14 second wait for the session, and the textures. That is the floor for this command now, and the builder is no longer any part of it.
+
+### Criterion 3: a builder running beside a desktop guest
+
+`vm start windows-builder` by hand, then `vm up windows` into a host that already had a builder on it. The desktop guest from the run above was taken down first, so this is one builder and one desktop guest, which is the concurrency the non-goals cap it at.
+
+| | |
+|---|---|
+| `vm start windows-builder` | **7.5s**, SSH at 7s, "is up again, with what it was holding" |
+| what the build said about it | "the windows-builder guest is already up; building in it as it stands" |
+| `cargo test --no-run`, warm again | **3.07s**, half of the 6.80s above, in a guest that was already awake |
+| the whole `vm up windows` | **48.5s** (17:51:40 to 17:52:28), no resume and no stop in it |
+| the desktop guest | SSH at **21s** against 11s alone, the session at 9s |
+| the builder afterwards | still **running**, because it was running when the build found it |
+| `vm status` with both up | `sunlit-e2e-windows is running` and `sunlit-e2e-windows-builder is running`, both as `an interactive guest (vm up)` |
+
+The line criterion 3 asks for, verbatim:
+
+```
+sunlit-e2e-windows-builder is up as well, which a builder may be: the two hold 12.0 GiB of this host's memory between them
+```
+
+**Decision 4's port walk earned itself here, in the direction the decision did not name.** The builder holds 2222 while it is up, so it is the desktop guest that walks, and the boot said so in three lines: `the usual ssh port 2222 is in use or reserved; using 2223`, and the same for 4444 to 4445 and 5900 to 5901. The decision was written for a resume finding its own port taken; what actually happens more often is the other guest finding it taken, and `pick_port` covered both without being asked to.
+
+Host memory, which is the number decision 1 says to print rather than assume. This host had 20.6 GiB available with nothing of ours up, beside the user's own 40 GiB guest. The builder alone took it to 14.6, and both guests together to **11.9 GiB, falling to a low of 8.8 GiB over the two minutes they were both up** as the Windows file caches filled toward their ceilings, which is exactly the trend the plan's context section predicts of a guest with no balloon. Swap was already full at 7.8 GiB before any of this and did not move, so nothing here forced a page out. `vm down windows` then took 0.27s and left the builder alone, and `vm stop windows-builder` took 11.8s and returned the host to 21.2 GiB available.
+
+Two guests on this host is comfortable and would not be on a smaller one: 12.0 GiB is the figure the boot prints, and the ceiling the two would reach if left up all day is that same 12.0.

@@ -93,14 +93,15 @@ beam has gone. That constant is also the sentinel fix: `write_uniforms` puts -1.
 `fs_cloud` used to read the same uniform, which reversed its `smoothstep` edges in the three
 single-texture modes.
 
-The night value is `cloud_night`, 0.35 by default, and it is an appearance parameter rather
+The night value is `cloud_night`, 0.20 by default, and it is an appearance parameter rather
 than an irradiance. The plan's own finding is why: the day side is about 18.6 stops brighter
 than the night side, by the sun-to-full-moon ratio and independently by the exposure settings
 of "Hello, World" against those of "The Blue Marble", which is more than any sensor or eye
 holds at once, so the frame is a tone map and the number is a decision about how much of that
 gap to compress. It is chosen against the texture it draws over: Black Marble's unlit land
 reads 0.137, its Antarctica and a typical city cluster 0.20, the Nile delta 0.36 and its cores
-1.0, so 0.35 puts a night cloud above every unlit surface and well below the lights.
+1.0, so 0.20 puts a night cloud above unlit land, level with Antarctica and the faintest
+clusters, and well below the lights.
 
 Each hemisphere carries its own opacity, and only the day one is a multiplier on coverage.
 `cloud_opacity` is that multiplier and is unchanged. `cloud_opacity_night`, 0.55 by default, is

@@ -362,7 +362,7 @@ impl Default for AppConfig {
             cloud_opacity_night: 0.55,
             cloud_floor: 0.25,
             cloud_gamma: 0.65,
-            cloud_night: 0.35,
+            cloud_night: 0.20,
             atmo_enabled: true,
             rayleigh_intensity: 0.5,
             rayleigh_sharpness: 50.0,

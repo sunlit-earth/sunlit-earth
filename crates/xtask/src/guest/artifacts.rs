@@ -342,6 +342,15 @@ pub fn worktree_archive_script(output: &Path) -> String {
 /// hash in its name that only cargo knows. Everything else is what `dist`'s
 /// build job does for the same guest, minus the release profile, the caches and
 /// the linkage checks.
+///
+/// One difference from that job is load-bearing rather than incidental: the
+/// extraction keeps the archive's modification times, where `dist` extracts with
+/// `-m` and discards them. Cargo's freshness check for the crates in this
+/// workspace is mtime-based, so files stamped with the extraction time are files
+/// cargo rebuilds, and that is the expensive tail: `sunlit-core`, the Slint macro
+/// expansion, the app and the final link. It costs nothing in a guest that is
+/// destroyed afterwards, which is `dist`'s case, and it costs the whole benefit
+/// of a build directory that outlives one run, which is this one's.
 pub fn guest_build_job(channel: &str) -> String {
     let root = crate::provider::GUEST_ROOT_WINDOWS;
     let target_dir = crate::commands::dist::GUEST_TARGET_DIR;
@@ -358,7 +367,7 @@ pub fn guest_build_job(channel: &str) -> String {
          set RUSTUP=%USERPROFILE%\\.cargo\\bin\\rustup.exe\r\n\
          \"%RUSTUP%\" toolchain install {channel} --profile minimal || exit /b 1\r\n\
          if exist \"%ROOT%\\src\" rmdir /s /q \"%ROOT%\\src\"\r\n\
-         tar.exe -xmf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
+         tar.exe -xf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
          cd /d \"%ROOT%\\src\" || exit /b 1\r\n\
          \"%CARGO%\" +{channel} {args} > \"%SUNLIT_E2E_ARTIFACTS%\\{CARGO_JSON}\" || exit /b 1\r\n\
          exit /b 0\r\n"
@@ -839,6 +848,11 @@ mod tests {
         // cmd.exe wants CRLF, and the job runner writes the script verbatim.
         assert!(job.contains("\r\n"), "{job}");
         assert!(!job.contains("--release"), "{job}");
+        // The archive's modification times are kept: `-m` would stamp every
+        // source file with the extraction time, and cargo rebuilds this
+        // workspace's crates from mtimes.
+        assert!(job.contains("tar.exe -xf "), "{job}");
+        assert!(!job.contains("-xmf"), "{job}");
     }
 
     #[test]

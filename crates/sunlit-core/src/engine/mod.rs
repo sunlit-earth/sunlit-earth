@@ -976,7 +976,7 @@ impl Engine {
         match &result {
             Err(e) => error!(error = %e, "wallpaper update failed"),
             Ok(note) if !note.is_empty() => {
-                info!(note, "the wallpaper is not quite what was asked")
+                info!(note, "the wallpaper is not quite what was asked");
             }
             Ok(_) => {}
         }

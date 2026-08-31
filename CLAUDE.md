@@ -37,6 +37,7 @@ cargo clippy --all-targets         # pedantic on; not run in CI, so it is on you
 cargo fmt --check                  # CI gate
 cargo run                          # the app; --software-rendering, --quality <tier>, --texture-resolution <w>
 cargo run -- render --output x.png --width 640 --height 360   # headless render, all three OSes
+cargo run -- displays              # the monitors this session has and the plan they come to; --out <dir> renders it
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden   # regenerate goldens for this adapter
 ```
 
@@ -101,7 +102,7 @@ docs/                 see the table above
 - One engine thread (`sunlit_core::engine`) owns the wgpu device, the `Renderer`, the texture mailbox and the schedule. Clients send `EngineCommand`s and receive `EngineEvent`s. The loop blocks on the command channel with a 50 ms timeout and asks the injected `Clock` what is due; it never sleeps on wall time. `Clock`, `CloudSource` and `WallpaperSink` are injected, which is what makes the soak test and the fixture-driven engine tests possible.
 - `SceneParams` is the single description of what to draw. Exactly two translation points: `ui_callbacks::read_params_from_window` / `apply_params_to_window` in the app, and `renderer::render_pass::write_uniforms` in core. `ParamsDigest` is the quantized dirty check; `datetime` is not in it, the derived sun direction is compared separately.
 - Adding a shader parameter means: the `.slint` property and row, the `AppConfig` field, `SceneParams` and its `ParamsDigest`, `Uniforms`, and the WGSL. `params.rs` has a table-driven test that fails when a parameter does not change the digest.
-- A setting that is not a shader parameter (`texture_resolution` is the example) gets its own `EngineCommand` and callback and stays out of `SceneParams`.
+- A setting that is not a shader parameter gets its own `EngineCommand` and callback and stays out of `SceneParams`: `texture_resolution` through `SetTextureResolution`, and the display mode and anchor screen through `SetDisplayPlan`.
 - Texture slots: grid 0, then one per file-backed path in order (day 1, night 2, moon 3, Milky Way 4), clouds last. `SlotLayout` is the one place that says so.
 - Preview frames cross to the UI as RGBA pixel buffers through a latest-value mailbox, never as shared GPU textures. Slint has no wgpu feature and shares no device.
 - Every queue that crosses a thread is bounded, latest-value, or unbounded with the reasoning at the declaration. Decoded pixel buffers are never parked in queues, caches or long-lived structs. Every background producer names its consumer and the condition under which it runs, and that condition is "always".

@@ -154,6 +154,16 @@ pub struct RunState {
     /// Linux one booted before this existed.
     #[serde(default)]
     pub desktop: Option<String>,
+    /// Whether this guest was stopped on purpose and is waiting to be resumed.
+    ///
+    /// A stopped guest and a crashed one both answer no to
+    /// [`Provider::is_running`](crate::provider::Provider::is_running), and they
+    /// want opposite treatment: this one is resumed, because its build directory
+    /// is the reason it exists, and the other is cleared away. Defaulted, so a
+    /// record written before builders could be stopped reads as a guest nobody
+    /// stopped, which is what it is.
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 impl RunState {
@@ -181,6 +191,7 @@ impl RunState {
             reason,
             handed_over: false,
             desktop: None,
+            stopped: false,
         }
     }
 
@@ -230,6 +241,23 @@ impl RunState {
     /// VM on the host.
     pub fn is_ours(&self) -> bool {
         self.vm_name.starts_with(VM_NAME_PREFIX) && self.image().is_some()
+    }
+
+    /// What ending this guest costs beyond its own overlay, as a clause, or
+    /// `None` when ending it costs nothing worth saying.
+    ///
+    /// [`StartReason::cost_of_ending`] answers this for a guest with work in it.
+    /// A stopped guest has none running, whatever it was booted for, and what it
+    /// holds instead is the build directory it was kept for, so it gets that
+    /// clause rather than one about a build that stopped when it did.
+    pub fn cost_of_ending(&self) -> Option<&'static str> {
+        if self.stopped {
+            return Some(
+                "throws away the build directory and crate registry it is \
+                 holding, so the next build in it starts from nothing",
+            );
+        }
+        self.reason.cost_of_ending()
     }
 }
 
@@ -287,6 +315,9 @@ mod tests {
         // And one written before the desktop was recorded reads as a guest on
         // the image's own default, which is what it is.
         assert_eq!(parsed.desktop, None);
+        // A record from before a builder could be stopped reads as a guest
+        // nobody stopped, so a crashed one is not mistaken for one to resume.
+        assert!(!parsed.stopped);
         // A record from before there was more than one image per target can
         // only be about that target's desktop image, and reads as one.
         assert_eq!(parsed.image(), Some(Image::Windows));
@@ -392,6 +423,39 @@ mod tests {
             RunState::from_json(&state.to_json()).expect("round trip"),
             state
         );
+    }
+
+    /// The two guests `is_running` cannot tell apart. One is resumed and the
+    /// other is cleared away, so the record has to say which is which, and what
+    /// ending each costs is not the same sentence either: a stopped builder
+    /// holds a build directory and a crashed one holds nothing.
+    #[test]
+    fn a_stopped_guest_is_told_from_a_crashed_one_by_its_record() {
+        let mut crashed = sample();
+        crashed.reason = StartReason::Suite;
+        assert!(!crashed.stopped);
+        assert!(
+            crashed
+                .cost_of_ending()
+                .is_some_and(|cost| cost.contains("empty target directory"))
+        );
+
+        let mut stopped = crashed.clone();
+        stopped.stopped = true;
+        let json = stopped.to_json();
+        assert!(json.contains(r#""stopped": true"#), "{json}");
+        assert_eq!(RunState::from_json(&json).expect("round trip"), stopped);
+        let cost = stopped.cost_of_ending().expect("a stopped guest holds one");
+        assert!(cost.contains("build directory"), "{cost}");
+        assert!(!cost.contains("running in it"), "{cost}");
+
+        // And a stopped guest of a kind that costs nothing to end still says
+        // what it is holding, because that is the property of being stopped
+        // rather than of what it was booted for.
+        let mut kept = sample();
+        kept.stopped = true;
+        assert_eq!(kept.reason.cost_of_ending(), None);
+        assert!(kept.cost_of_ending().is_some());
     }
 
     #[test]

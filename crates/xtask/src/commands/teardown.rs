@@ -240,7 +240,7 @@ impl TeardownPlan {
             // This is printed whether or not there is a question afterwards,
             // which is what makes `--force` a way to skip the question rather
             // than a way to end an hour-long install in silence.
-            if let Some(cost) = vm.reason.cost_of_ending() {
+            if let Some(cost) = vm.cost_of_ending() {
                 let _ = write!(out, ", which {cost}");
             }
             let _ = writeln!(out);
@@ -440,7 +440,7 @@ pub fn plan(
 pub fn confirmation_prompt(plan: &TeardownPlan) -> String {
     let mut costs = String::new();
     for vm in &plan.vms {
-        if let Some(cost) = vm.reason.cost_of_ending() {
+        if let Some(cost) = vm.cost_of_ending() {
             let _ = write!(costs, " That also stops {}, which {cost}.", vm.vm_name);
         }
     }

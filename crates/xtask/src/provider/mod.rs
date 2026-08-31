@@ -38,6 +38,16 @@ use crate::util;
 pub const GUEST_ROOT_LINUX: &str = "/var/lib/sunlit-e2e";
 pub const GUEST_ROOT_WINDOWS: &str = r"C:\sunlit-e2e";
 
+/// How long a guest asked to shut itself down has to comply before the stop
+/// insists (plan decision 2).
+///
+/// Longer than a wait for a process told to exit, because this one waits for an
+/// operating system flushing its own filesystem, which is why a stop asks at
+/// all. A minute is where insisting costs less than waiting: a Windows shutdown
+/// that has not finished by then is not slow, it is waiting for something that
+/// will not arrive, and a `vm stop` that hangs is worse than a cold build.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
+
 /// What a destroy actually had to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stopped {
@@ -64,6 +74,30 @@ pub trait Provider {
     /// Returning `Ok` is the caller's licence to delete the overlay, so an
     /// error here has to mean "the VM may still be running" and nothing else.
     fn destroy(&self, state: &RunState) -> Result<Stopped, String>;
+
+    /// End the guest and keep everything it has, so a later [`Provider::start`]
+    /// resumes the same disk.
+    ///
+    /// Asks the guest to shut itself down and then insists (plan decision 2).
+    /// Asking is worth doing because what is being kept is a cargo build
+    /// directory inside the guest's own filesystem, and a guest cut off
+    /// mid-write costs the next boot a repair pass. Insisting afterwards is
+    /// worth more: a shutdown that has not finished inside a minute is waiting
+    /// for something that will not arrive, and everything a builder keeps is a
+    /// cache, so the worst the kill costs is the build starting from nothing.
+    fn stop(&self, state: &RunState) -> Result<Stopped, String>;
+
+    /// Re-derive whatever a resumed guest cannot inherit from its old record.
+    ///
+    /// A builder may be stopped for hours while other guests come and go, and
+    /// under QEMU the loopback ports in its record may belong to one of them by
+    /// the time it comes back: a resume that trusted them would fail at
+    /// `-netdev` bind time with a message about a socket. `Hyper-V` needs
+    /// nothing, because its guests are reached at an address the guest itself
+    /// reports and [`Provider::start`] already waits for it.
+    fn readdress(&self, _state: &mut RunState) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Whether the VM is alive right now.
     fn is_running(&self, state: &RunState) -> bool;
@@ -216,18 +250,40 @@ pub fn layer_provider_refusal(image: Image, requested: ProviderKind) -> String {
 /// command line cannot come apart: `the_memory_a_guest_is_said_to_hold_is_the_memory_it_gets`
 /// reads it and the create script's own test pins the script against it.
 ///
-/// A builder gets more of the host than a desktop guest, because a release
-/// profile with fat LTO and one codegen unit runs several `rustc` processes that
-/// each hold a whole crate graph, and an out-of-memory kill part way through a
-/// forty-minute build is the failure that costs the most to diagnose.
+/// A builder gets at least as much of the host as the desktop guest of its
+/// target, because a release profile with fat LTO and one codegen unit runs
+/// several `rustc` processes that each hold a whole crate graph, and an
+/// out-of-memory kill part way through a long build is the failure that costs
+/// the most to diagnose. How much more differs per builder now, because a
+/// builder may be up for hours beside a desktop guest and the two figures were
+/// measured rather than assumed: the Windows one at the memory its own release
+/// build needs, and the Linux one left where it was, since nothing has measured
+/// its fat-LTO link and that link is where the docs already name an OOM.
 pub fn resources_for(image: Image) -> (u32, u32) {
+    let builder_cpus = builder_cpus(std::thread::available_parallelism().ok().map(Into::into));
     match image {
         // Windows needs the headroom, and the e2e suite renders an 8K-capable
         // pipeline on a CPU rasterizer inside it.
         Image::Windows => (6144, 4),
         Image::Linux => (4096, 4),
-        Image::WindowsBuilder | Image::LinuxBuilder => (8192, 8),
+        Image::WindowsBuilder => (6144, builder_cpus),
+        Image::LinuxBuilder => (8192, builder_cpus),
     }
+}
+
+/// The vCPU count a builder gets when the host reports `available` cores to a
+/// thread, or when it cannot be asked at all.
+///
+/// A vCPU is a host thread, nothing is pinned and nothing is reserved, so a
+/// builder given fewer than the host has is half a machine left idle for the
+/// dependency compile that is most of a build's wall time.
+/// `available_parallelism` is the figure to take because it respects affinity
+/// masks and cgroup quotas, which a core count does not. `None` is a host that
+/// could not answer, where 8 is the figure both builders carried before this was
+/// asked; a host claiming more cores than a `u32` holds has not answered either.
+pub fn builder_cpus(available: Option<usize>) -> u32 {
+    const FALLBACK: u32 = 8;
+    available.map_or(FALLBACK, |cores| u32::try_from(cores).unwrap_or(FALLBACK))
 }
 
 /// Override for the provider matrix, mostly so a Windows host can be pushed
@@ -294,21 +350,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_builder_gets_more_of_the_host_than_a_desktop_guest() {
+    fn a_builder_never_gets_less_of_the_host_than_the_guest_under_test() {
         // Not a check on the figures, which are a judgement about this host, but
         // on the ordering: a release build with fat LTO is the heaviest thing
         // any guest does, and it runs in the image with the least in it.
         for target in Target::ALL {
-            let (desktop_mib, desktop_cpus) = resources_for(Image::desktop(target));
-            let (builder_mib, builder_cpus) = resources_for(Image::builder(target));
-            assert!(builder_mib > desktop_mib, "{target}");
-            assert!(builder_cpus >= desktop_cpus, "{target}");
+            let (desktop_mib, _) = resources_for(Image::desktop(target));
+            let (builder_mib, _) = resources_for(Image::builder(target));
+            assert!(builder_mib >= desktop_mib, "{target}");
         }
-        // And the two builders are the same machine, because the work is.
+        // The two builders run the same work, so what differs between them is
+        // memory alone, and only because one of the two has been measured.
         assert_eq!(
-            resources_for(Image::WindowsBuilder),
-            resources_for(Image::LinuxBuilder)
+            resources_for(Image::WindowsBuilder).1,
+            resources_for(Image::LinuxBuilder).1
         );
+    }
+
+    /// A builder's cores come from the host rather than from a constant, so a
+    /// sixteen-core machine stops giving half of itself to nothing.
+    #[test]
+    fn a_builder_gets_one_vcpu_per_core_this_host_will_give_a_thread() {
+        assert_eq!(builder_cpus(Some(16)), 16);
+        assert_eq!(builder_cpus(Some(4)), 4);
+        assert_eq!(builder_cpus(Some(1)), 1);
+        // A host that cannot be asked at all keeps the figure both builders had
+        // before anybody asked.
+        assert_eq!(builder_cpus(None), 8);
+        // And what the builders actually get is that answer for this host.
+        let here = builder_cpus(std::thread::available_parallelism().ok().map(Into::into));
+        for image in Image::ALL.into_iter().filter(|image| image.is_builder()) {
+            assert_eq!(resources_for(image).1, here, "{image}");
+        }
     }
 
     /// A layer is a differencing child in one disk format, and the override

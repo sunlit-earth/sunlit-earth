@@ -468,6 +468,56 @@ impl<'a> QemuProvider<'a> {
         }
     }
 
+    /// Ask QEMU over QMP, and if the process is still there afterwards, insist.
+    ///
+    /// The two callers differ only in what they ask and how long they allow:
+    /// `destroy` tells QEMU to quit, `stop` presses the guest's power button.
+    /// Both end in the same terminate, because a QMP command that was accepted
+    /// and changed nothing is indistinguishable from one that was never read,
+    /// and a teardown or a stop that hangs is worse than either.
+    fn end(&self, state: &RunState, command: &str, grace: Duration) -> Result<Stopped, String> {
+        let Some(pid) = state.pid else {
+            return Ok(Stopped::WasNotRunning);
+        };
+        match self.ownership(state) {
+            Ownership::Gone => return Ok(Stopped::WasNotRunning),
+            // Refusing here is the point of asking. The caller deletes the
+            // overlay after a successful stop, and killing a stranger's
+            // process tree because a pid was reused is the one failure this
+            // command must not have.
+            Ownership::Foreign(found) => {
+                return Err(format!(
+                    "pid {pid} is now {found}, not this VM's QEMU; the process id \
+                     was reused, so nothing was stopped and nothing was deleted. \
+                     Remove {} by hand once you are sure it is idle.",
+                    self.store.state_file(Self::image_of(state)).display()
+                ));
+            }
+            Ownership::Ours => {}
+        }
+
+        // QMP first, so QEMU closes the overlay itself. Killing the process
+        // works too, at the cost of a qcow2 that needs a repair pass on the
+        // next boot, which is a cost a teardown does not care about and a stop
+        // does.
+        if let Some(port) = state.qmp_port
+            && qmp::execute(port, command).is_ok()
+            && self.wait_for_exit(state, grace)
+        {
+            return Ok(Stopped::Stopped);
+        }
+        self.runner
+            .terminate(pid)
+            .map_err(|e| format!("cannot terminate pid {pid}: {e}"))?;
+        if self.wait_for_exit(state, QUIT_GRACE) {
+            Ok(Stopped::Stopped)
+        } else {
+            Err(format!(
+                "pid {pid} is still running after being asked and then told to stop"
+            ))
+        }
+    }
+
     /// Poll until the process is gone, up to `grace`.
     fn wait_for_exit(&self, state: &RunState, grace: Duration) -> bool {
         let start = std::time::Instant::now();
@@ -654,45 +704,21 @@ impl crate::provider::Provider for QemuProvider<'_> {
     }
 
     fn destroy(&self, state: &RunState) -> Result<Stopped, String> {
-        let Some(pid) = state.pid else {
-            return Ok(Stopped::WasNotRunning);
-        };
-        match self.ownership(state) {
-            Ownership::Gone => return Ok(Stopped::WasNotRunning),
-            // Refusing here is the point of asking. The caller deletes the
-            // overlay after a successful stop, and killing a stranger's
-            // process tree because a pid was reused is the one failure this
-            // command must not have.
-            Ownership::Foreign(found) => {
-                return Err(format!(
-                    "pid {pid} is now {found}, not this VM's QEMU; the process id \
-                     was reused, so nothing was stopped and nothing was deleted. \
-                     Remove {} by hand once you are sure it is idle.",
-                    self.store.state_file(Self::image_of(state)).display()
-                ));
-            }
-            Ownership::Ours => {}
-        }
+        // `quit` rather than a shutdown request: the guest holds nothing worth
+        // flushing, its overlay is about to be deleted, and waiting for Windows
+        // to shut down politely costs a minute per run.
+        self.end(state, "quit", QUIT_GRACE)
+    }
 
-        // QMP first, so QEMU closes the overlay before it is deleted. Killing
-        // the process works too, but leaves the qcow2 needing a repair pass
-        // that nobody will ever run on a file about to be removed.
-        if let Some(port) = state.qmp_port
-            && qmp::execute(port, "quit").is_ok()
-            && self.wait_for_exit(state, QUIT_GRACE)
-        {
-            return Ok(Stopped::Stopped);
-        }
-        self.runner
-            .terminate(pid)
-            .map_err(|e| format!("cannot terminate pid {pid}: {e}"))?;
-        if self.wait_for_exit(state, QUIT_GRACE) {
-            Ok(Stopped::Stopped)
-        } else {
-            Err(format!(
-                "pid {pid} is still running after being asked and then told to stop"
-            ))
-        }
+    fn stop(&self, state: &RunState) -> Result<Stopped, String> {
+        // The ACPI power button, which is a request the guest carries out
+        // itself: what this keeps is a build directory in the guest's own
+        // filesystem, so the guest is the only thing that can close it cleanly.
+        self.end(state, "system_powerdown", crate::provider::SHUTDOWN_GRACE)
+    }
+
+    fn readdress(&self, state: &mut RunState) -> Result<(), String> {
+        fill_in_address(state)
     }
 
     fn is_running(&self, state: &RunState) -> bool {
@@ -889,6 +915,72 @@ mod tests {
         // Gone afterwards, which is what `wait_for_exit` had to observe for
         // the destroy to report success at all.
         assert!(!provider.is_running(&state));
+    }
+
+    /// A stop that could not ask still insists, because everything a builder
+    /// keeps is a cache and a stop that hangs is worse than a cold build. What
+    /// separates it from a destroy is only the grace and the request; the
+    /// process going away is the same observation.
+    #[test]
+    fn a_stop_that_cannot_ask_the_guest_still_ends_it() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new().with_process(
+            4242,
+            "qemu-system-x86_64",
+            Some("qemu-system-x86_64 -name sunlit-e2e-windows-builder"),
+        );
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = RunState::new(
+            Image::WindowsBuilder,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/windows-builder/overlay.qcow2"),
+            StartReason::Suite,
+            0,
+        );
+        state.pid = Some(4242);
+        // No QMP port, so nothing here opens a socket to whatever is on 4444.
+        state.qmp_port = None;
+
+        assert_eq!(provider.stop(&state), Ok(Stopped::Stopped));
+        assert_eq!(*runner.terminated.borrow(), vec![4242]);
+        assert!(!provider.is_running(&state));
+        // And a guest that is already gone is nothing to stop, which is what
+        // tells `vm stop` to say so rather than to report a stop it did not do.
+        assert_eq!(provider.stop(&state), Ok(Stopped::WasNotRunning));
+    }
+
+    /// A resumed guest cannot trust the ports in its own record: while it was
+    /// stopped, 2222 may have gone to a desktop guest, and QEMU exits over a
+    /// port it cannot bind before it has built the machine.
+    #[test]
+    fn a_resumed_guest_picks_its_ports_again() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let mut state = RunState::new(
+            Image::WindowsBuilder,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/windows-builder/overlay.qcow2"),
+            StartReason::Suite,
+            0,
+        );
+        state.ssh_port = 0;
+        state.qmp_port = None;
+        state.vnc = None;
+
+        provider.readdress(&mut state).expect("free ports");
+        assert!(state.ssh_port >= SSH_PORT, "{}", state.ssh_port);
+        assert_eq!(state.ssh_host, "127.0.0.1");
+        assert_eq!(state.ssh_user, GUEST_USER);
+        assert!(state.qmp_port.is_some_and(|port| port >= QMP_PORT));
+        assert!(
+            state
+                .vnc
+                .as_deref()
+                .is_some_and(|vnc| vnc.starts_with("127.0.0.1:")),
+            "{:?}",
+            state.vnc
+        );
     }
 
     #[test]

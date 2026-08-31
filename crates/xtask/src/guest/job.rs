@@ -498,6 +498,9 @@ mod tests {
         fn destroy(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
             unreachable!("the waits destroy nothing")
         }
+        fn stop(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+            unreachable!("the waits stop nothing")
+        }
         fn is_running(&self, _: &RunState) -> bool {
             self.defunct.is_none()
         }

@@ -545,10 +545,72 @@ pub fn resume<'a>(
     match session.bring_up(store) {
         Ok(()) => Ok(session),
         Err(e) => {
-            println!("{}", after_failure(&mut session, store, false));
+            println!("{}", after_failed_resume(&mut session, store));
             Err(e)
         }
     }
+}
+
+/// What a failed resume does, which is nothing destructive.
+///
+/// [`boot`] tears its guest down on the way out, which is right for an overlay
+/// it created three lines earlier and wrong for one it was called to preserve.
+/// The failure this exists for is the one the risk section names: decision 2's
+/// kill left the guest's filesystem unclean, the resumed guest is running a
+/// repair pass, and it has not answered inside [`BOOT_TIMEOUT`]. Powering that
+/// off and unlinking the disk throws away the build directory the guest was kept
+/// for and starts the repair over, so the guest is left as the failure found it
+/// and the message says how to look at it, put it back, or give it up. Deleting
+/// a builder's overlay takes the person asking for it.
+///
+/// The record is the one thing this writes, and only for a guest that is not
+/// running: a resume can also fail before the guest exists, at a port the
+/// provider could not bind, and a record left saying `stopped: false` would
+/// have `vm status` call a resumable builder a crashed one and point at
+/// `vm down`, which is the deletion this whole path is avoiding.
+fn after_failed_resume(session: &mut Session, store: &Store) -> String {
+    let image = session.image;
+    let vm_name = session.state.vm_name.clone();
+    if session.provider.is_running(&session.state) {
+        return resume_left_running(image, &vm_name);
+    }
+    session.state.stopped = true;
+    match write_state(store, image, &session.state) {
+        Ok(()) => resume_left_stopped(image, &vm_name),
+        Err(e) => format!(
+            "{vm_name} did not come back and is not running. Its overlay is \
+             untouched, but the record could not be put back to stopped ({e}), so \
+             `cargo xtask vm status` will call it crashed. Mind that before \
+             running `cargo xtask vm down {image}`, which is what deletes the \
+             build directory."
+        ),
+    }
+}
+
+/// A resume whose guest is up and did not answer.
+fn resume_left_running(image: Image, vm_name: &str) -> String {
+    format!(
+        "{vm_name} did not answer, and nothing in it was deleted: it is still \
+         running and its overlay is untouched, build directory and all. A resume \
+         that takes longer than a cold boot is usually a guest still doing \
+         something to itself.\n  \
+         ssh:     cargo xtask vm ssh {image}\n  \
+         {console}: cargo xtask vm view {image}\n  \
+         stop:    cargo xtask vm stop {image} puts it back, and `cargo xtask vm \
+         start {image}` tries again\n  \
+         down:    cargo xtask vm down {image} gives it up, and the build directory with it",
+        console = image.console_label()
+    )
+}
+
+/// A resume whose guest never came up, put back the way it was found.
+fn resume_left_stopped(image: Image, vm_name: &str) -> String {
+    format!(
+        "{vm_name} did not come up, and it is recorded as stopped again with its \
+         overlay untouched. `cargo xtask vm start {image}` tries again, \
+         `cargo xtask vm down {image}` gives it up and frees the build directory \
+         with it."
+    )
 }
 
 /// Why `vm start` and `vm stop` are for the builder images only (decision 5).
@@ -2013,6 +2075,104 @@ mod tests {
         );
     }
 
+    /// The whole difference between a boot and a resume, on the path where it
+    /// matters most. A boot's failure tears its guest down because it made the
+    /// overlay; a resume was called to keep one, and the failure it is most
+    /// likely to hit is a guest running a repair pass after decision 2's kill,
+    /// which is the moment the build directory is worth the most and the moment
+    /// this used to delete it.
+    #[test]
+    fn a_resume_that_fails_keeps_the_overlay_and_the_record() {
+        let store = fake::store("failed_resume_keeps_the_overlay");
+        let image = Image::WindowsBuilder;
+        let mut state = fake::state(&store, image, StartReason::Up);
+        // What a resume starts from: a record that said stopped, cleared on the
+        // way in by `resume` itself, and an overlay with a build directory in it.
+        state.stopped = false;
+        std::fs::write(&state.overlay, b"a cargo build directory").expect("the overlay");
+        write_state(&store, image, &state).expect("the record");
+
+        let mut session = Session {
+            // Not running: the resume failed before the guest existed.
+            provider: Box::new(fake::Undestroyable(false)),
+            state,
+            image,
+        };
+        let text = after_failed_resume(&mut session, &store);
+
+        assert!(session.state.overlay.is_file(), "{text}");
+        let recorded = load_state(&store, image).expect("the record is still there");
+        assert!(recorded.stopped, "{recorded:?}");
+        assert!(
+            text.contains("cargo xtask vm start windows-builder"),
+            "{text}"
+        );
+        assert!(
+            text.contains("cargo xtask vm down windows-builder"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// The other half: a guest that is up and not answering is left up. Powering
+    /// it off would start whatever it is doing over, and the record already says
+    /// what is true, so the only thing this owes is a way to look at it and two
+    /// ways out that differ in what they cost.
+    #[test]
+    fn a_resume_that_fails_with_the_guest_up_leaves_it_up_and_says_so() {
+        let store = fake::store("failed_resume_leaves_it_up");
+        let image = Image::WindowsBuilder;
+        let mut state = fake::state(&store, image, StartReason::Up);
+        state.stopped = false;
+        std::fs::write(&state.overlay, b"a cargo build directory").expect("the overlay");
+        write_state(&store, image, &state).expect("the record");
+
+        let mut session = Session {
+            provider: Box::new(fake::Undestroyable(true)),
+            state,
+            image,
+        };
+        let text = after_failed_resume(&mut session, &store);
+
+        assert!(session.state.overlay.is_file(), "{text}");
+        assert!(text.contains("it is still running"), "{text}");
+        // The record is left alone, because a running guest is what it says.
+        let recorded = load_state(&store, image).expect("the record is still there");
+        assert!(!recorded.stopped, "{recorded:?}");
+        assert!(
+            text.contains("cargo xtask vm ssh windows-builder"),
+            "{text}"
+        );
+        assert!(
+            text.contains("cargo xtask vm stop windows-builder"),
+            "{text}"
+        );
+        assert!(
+            text.contains("cargo xtask vm down windows-builder"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// Neither message may read like a teardown: what a person does after a
+    /// failed resume depends entirely on believing the overlay is still there.
+    #[test]
+    fn neither_failed_resume_message_says_anything_was_destroyed() {
+        for image in Image::ALL.into_iter().filter(|image| image.is_builder()) {
+            for text in [
+                resume_left_running(image, "sunlit-e2e-x"),
+                resume_left_stopped(image, "sunlit-e2e-x"),
+            ] {
+                assert!(!text.contains("was destroyed"), "{text}");
+                assert!(text.contains("untouched"), "{text}");
+                assert!(
+                    text.contains(&format!("cargo xtask vm down {image}")),
+                    "{text}"
+                );
+            }
+        }
+    }
+
     /// A run kept after its work failed is as finished as one kept after its
     /// work passed, so its record has to say so: `StartReason::Dist` carries a
     /// cost of ending, and the `vm down` this very message recommends would
@@ -2160,6 +2320,45 @@ mod tests {
             }
             fn ssh_target(&self, state: &RunState) -> crate::guest::ssh::SshTarget {
                 crate::guest::ssh::SshTarget::from_state(state, std::path::Path::new("id_ed25519"))
+            }
+            fn runner(&self) -> &dyn crate::runner::Runner {
+                unreachable!("these cases run nothing")
+            }
+        }
+
+        /// A guest that says whether it is up and refuses to be destroyed, for
+        /// the cases whose whole point is that a failure kept the overlay: if
+        /// the path under test ever tears one down, the case dies here rather
+        /// than passing on a message that says otherwise.
+        pub struct Undestroyable(pub bool);
+
+        impl crate::provider::Provider for Undestroyable {
+            fn kind(&self) -> ProviderKind {
+                Fake.kind()
+            }
+            fn create_from_golden(&self, _: Image, _: StartReason) -> Result<RunState, String> {
+                unreachable!("these cases create nothing")
+            }
+            fn start(&self, _: &mut RunState) -> Result<(), String> {
+                unreachable!("these cases start nothing")
+            }
+            fn destroy(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+                unreachable!("a failed resume destroys nothing")
+            }
+            fn stop(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+                unreachable!("these cases stop nothing")
+            }
+            fn is_running(&self, _: &RunState) -> bool {
+                self.0
+            }
+            fn defunct(&self, _: &RunState) -> Option<String> {
+                None
+            }
+            fn view(&self, _: &RunState) -> Result<String, String> {
+                unreachable!("these cases open no console")
+            }
+            fn ssh_target(&self, state: &RunState) -> crate::guest::ssh::SshTarget {
+                Fake.ssh_target(state)
             }
             fn runner(&self) -> &dyn crate::runner::Runner {
                 unreachable!("these cases run nothing")

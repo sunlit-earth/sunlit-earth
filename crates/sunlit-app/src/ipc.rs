@@ -18,6 +18,7 @@
 //! - `memory-report` — prints the full memory report between two signal lines
 //! - `set-wallpaper` — renders and publishes the wallpaper, signalling the
 //!   outcome once the engine reports it
+//! - `displays` — reports the session's monitors and the plan they come to
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -136,6 +137,10 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             // outcome rather than for this command to return.
             engine.send(sunlit_core::engine::EngineCommand::RenderWallpaperNow);
         }
+        "displays" => {
+            debug!("ipc: received displays command");
+            report_displays();
+        }
         "query-memory" => {
             debug!("ipc: received query-memory command");
             // Answered on this thread: GetProcessMemoryInfo is process-wide,
@@ -174,6 +179,33 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
         "" => {}
         _ => {
             warn!("unknown ipc command: {cmd}");
+        }
+    }
+}
+
+/// Answer the `displays` command with the session's layout on one line.
+///
+/// Answered on the listener thread, like `query-memory`: the monitor list is a
+/// platform query rather than window state, and the mode and the anchor are
+/// written to the config the moment either changes, so the file is the same plan
+/// the engine is holding. One line in the shape `query-memory` established,
+/// because the e2e suite parses it.
+fn report_displays() {
+    use sunlit_core::engine::wallpaper_sink::{SystemWallpaper, WallpaperSink};
+
+    let config = sunlit_core::config::load_config();
+    match SystemWallpaper.monitors() {
+        Ok(monitors) => signal(&format!(
+            "displays {}",
+            crate::displays::signal_line(
+                &monitors,
+                config.display_mode,
+                config.anchor().as_deref()
+            )
+        )),
+        Err(e) => {
+            debug!("ipc: the monitors could not be listed: {e}");
+            signal("displays_unavailable");
         }
     }
 }

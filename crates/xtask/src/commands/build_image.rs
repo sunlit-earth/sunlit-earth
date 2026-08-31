@@ -432,13 +432,9 @@ fn run_packer_build(
     // a tool nothing here has ever mentioned.
     let (iso_tool, iso_tool_dir) = resolve_iso_tool(runner, host)?;
 
-    let public_key = ensure_ssh_key(runner, store)?;
-    if image == Image::Windows {
-        crate::store::windows_media::ensure_iso(runner, store)?;
-    }
-
-    let accelerator = accelerator_for(host);
     // Windows 11 needs UEFI, and Packer's own defaults for it are Linux paths.
+    // Resolved before anything is downloaded: the Windows ISO is 6.6 GiB and a
+    // quarter of an hour, and a host without the firmware cannot use it.
     let firmware = if image == Image::Windows {
         let binary = crate::host::facts::resolve_tool(runner, "qemu-system-x86_64", host);
         Some(
@@ -448,6 +444,13 @@ fn run_packer_build(
     } else {
         None
     };
+
+    let public_key = ensure_ssh_key(runner, store)?;
+    if image == Image::Windows {
+        crate::store::windows_media::ensure_iso(runner, store)?;
+    }
+
+    let accelerator = accelerator_for(host);
     let plan = plan(store, image, accelerator, firmware.as_ref());
     if !plan.template_dir.is_dir() {
         return Err(format!(

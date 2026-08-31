@@ -965,12 +965,24 @@ fn test_render_and_exit() {
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
     let config_path = fixture("e2e_config.toml");
+    // A cache directory of its own, and empty, because the memory profile this
+    // case asserts on is the profile of a run that decodes the surface
+    // textures. Out of a warm downscale cache there is no decode: measured in
+    // the Linux guest on 2026-09-01, the same render peaked at 2088 MB and
+    // settled to 444 MB with a cold cache and sat flat at 381 MB with a warm
+    // one, where the peak is the last sample and "settled" means nothing. What
+    // used to guarantee the cold cache was the order the suite happens to run
+    // in: the only case that warmed it sorted after this one, until a new case
+    // sorted before it and the assertion started failing on an app that had not
+    // changed.
+    let cache_dir = temp_dir.path().join("cache");
 
     // 2. Spawn the binary with the render subcommand.
     let child = Command::new(binary())
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+        .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
         .args([
             "--log-level",
             "debug",
@@ -1093,12 +1105,27 @@ fn test_render_and_exit() {
             "exit memory too high: {:.0} MB (expected < 1000 MB)",
             entry.rss_mb
         );
-        assert!(
-            entry.rss_mb < peak,
-            "memory did not settle: exit RSS {:.0} MB >= peak {:.0} MB",
-            entry.rss_mb,
-            peak
-        );
+        // Only where there was something to settle. `peak_rss_mb` is this
+        // process's own high-water mark, so `rss <= peak` holds by
+        // construction and the comparison asks whether the decode's memory came
+        // back before the last sample. A checkout without the Git LFS objects
+        // has no texture to decode and would be asserting on the flat profile
+        // above, so it says so and skips, which is the same rule every other
+        // case that needs the real assets follows.
+        if mem.iter().any(|e| e.context == "after texture decode") {
+            assert!(
+                entry.rss_mb < peak,
+                "memory did not settle: exit RSS {:.0} MB >= peak {:.0} MB",
+                entry.rss_mb,
+                peak
+            );
+        } else {
+            println!(
+                "no surface texture was decoded, so there was nothing to settle: \
+                 {:.0} MB at exit against a {peak:.0} MB peak",
+                entry.rss_mb
+            );
+        }
     }
 }
 

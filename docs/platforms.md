@@ -38,8 +38,8 @@ Linux differs per desktop, so `desktop.rs` says how far each row reaches rather 
 | Reach | Desktops | What a publish does |
 |---|---|---|
 | `PerMonitor` | XFCE | One image per screen, into the backdrop property named after that monitor |
-| `Spanned` | GNOME, Cinnamon, MATE | One image; `picture-options` is `spanned` for a view across the screens and `zoom` otherwise |
-| `OneImage` | KDE Plasma, LXQt, Budgie | One image for every screen: the anchor's own picture, even in the span mode |
+| `Spanned` | GNOME, Cinnamon, MATE, Budgie | One image; `picture-options` is `spanned` for a view across the screens and `zoom` otherwise |
+| `OneImage` | KDE Plasma, LXQt | One image for every screen: the anchor's own picture, even in the span mode |
 
 A mode a desktop cannot reach is not a failure. The sink does the nearest thing and the publish says which, in the same voice as the existing refusals, and that sentence rides the success string back to the status line. KDE is `OneImage` in this first pass on purpose: per-screen wallpapers there need a plasmashell script over D-Bus walking `desktops()` and writing `Image` per containment, which means a new program on `PATH` and an assumption about how containment indices line up with monitors, and neither is a thing to write blind. It is handed the anchor's picture rather than the canvas, because a canvas zoomed onto every screen separately is not the view it was cut to be.
 

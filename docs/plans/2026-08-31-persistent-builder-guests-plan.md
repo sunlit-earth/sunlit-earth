@@ -187,3 +187,32 @@ sunlit-e2e-windows-builder is up as well, which a builder may be: the two hold 1
 Host memory, which is the number decision 1 says to print rather than assume. This host had 20.6 GiB available with nothing of ours up, beside the user's own 40 GiB guest. The builder alone took it to 14.6, and both guests together to **11.9 GiB, falling to a low of 8.8 GiB over the two minutes they were both up** as the Windows file caches filled toward their ceilings, which is exactly the trend the plan's context section predicts of a guest with no balloon. Swap was already full at 7.8 GiB before any of this and did not move, so nothing here forced a page out. `vm down windows` then took 0.27s and left the builder alone, and `vm stop windows-builder` took 11.8s and returned the host to 21.2 GiB available.
 
 Two guests on this host is comfortable and would not be on a smaller one: 12.0 GiB is the figure the boot prints, and the ceiling the two would reach if left up all day is that same 12.0.
+
+### Criterion 6: `vm down` on a stopped builder
+
+`vm status` first, then the teardown, on the builder the two runs above left stopped with three warm builds in it.
+
+The listing named the overlay and the two ways out of it:
+
+```
+  run state: 5 files (8.1 GiB)
+    overlay.qcow2  8.1 GiB
+  sunlit-e2e-windows-builder is stopped, holding its overlay and no memory
+    start:   `cargo xtask vm start windows-builder` resumes it with what is in it
+    down:    `cargo xtask vm down windows-builder` frees the overlay instead
+  footprint: 9.3 GiB image, 8.1 GiB run state, 738.0 MiB build cache
+```
+
+The teardown took **0.22 seconds**, listed the same five files, and opened with the clause the `stopped` field exists for:
+
+```
+stop sunlit-e2e-windows-builder (qemu), which throws away the build directory and crate registry it is
+holding, so the next build in it starts from nothing
+...
+that frees 8.1 GiB across 5 files
+stopped 0 VMs, deleted 5 files, freed 8.1 GiB
+```
+
+**`stopped 0 VMs` is the sentence being honest**: there was no process to stop, and the cost clause still had to be said, which is `RunState::cost_of_ending` reading the record rather than the start reason. A teardown that took the reason at its word would have offered to end an interactive guest that was not there and said nothing about the eight gigabytes it was about to delete.
+
+Afterwards `windows-builder` reads `no overlays or run state` and the store is back from 72.8 GiB to **64.8 GiB**. Two things fall out of the numbers. The overlay grew from 8.0 GiB to 8.1 across two more warm builds, so what a kept builder costs on disk is set by the first cold compile and creeps afterwards. And `dist`'s 738.0 MiB build cache is untouched by any of this, as the non-goals intend: it is the cold-start path for a builder that does not exist, and this is the command that makes one not exist.

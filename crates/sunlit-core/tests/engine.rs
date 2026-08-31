@@ -21,7 +21,9 @@ use sunlit_core::assets::texture_loader::DecodedImage;
 use sunlit_core::config::QualityTier;
 use sunlit_core::display::Monitor;
 use sunlit_core::display::layout::DisplayMode;
-use sunlit_core::engine::wallpaper_sink::{CountingSink, JobImages, WallpaperJob, WallpaperSink};
+use sunlit_core::engine::wallpaper_sink::{
+    CountingSink, Frame, JobImages, WallpaperJob, WallpaperSink,
+};
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent, EngineHandle};
 use sunlit_core::params::SceneParams;
 
@@ -1052,6 +1054,8 @@ struct Publication {
     images: Vec<Option<(u32, u32)>>,
     /// The canvas, where the publish spanned.
     canvas: Option<(u32, u32)>,
+    /// Each screen's finished picture, cut where the publish spanned.
+    frames: Vec<Option<Arc<Frame>>>,
     /// How many distinct pixel buffers the publish actually rendered.
     renders: usize,
 }
@@ -1076,6 +1080,7 @@ impl WallpaperSink for RecordingSink {
 
     fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
         let mut images = Vec::new();
+        let mut frames = Vec::new();
         let mut distinct: Vec<*const u8> = Vec::new();
         for index in 0..job.monitors.len() {
             let image = job.image_for(index)?;
@@ -1083,6 +1088,7 @@ impl WallpaperSink for RecordingSink {
                 assert!(frame.is_well_formed(), "a malformed frame reached the sink");
                 (frame.width, frame.height)
             }));
+            frames.push(image);
         }
         // Identity rather than equality: two screens of one size are meant to
         // share the buffer, and two equal buffers would not prove they did.
@@ -1101,6 +1107,7 @@ impl WallpaperSink for RecordingSink {
             anchor: job.anchor,
             images,
             canvas: job.canvas().map(|frame| (frame.width, frame.height)),
+            frames,
             renders: distinct.len(),
         });
         Ok(String::new())
@@ -1110,6 +1117,16 @@ impl WallpaperSink for RecordingSink {
 /// Publish once with a fabricated layout and a mode, and answer with what the
 /// sink was handed.
 fn publish_plan(monitors: Vec<Monitor>, mode: DisplayMode, anchor: Option<&str>) -> Publication {
+    publish_plan_with(monitors, mode, anchor, test_params())
+}
+
+/// The same, with the scene said out loud, for the cases that compare pixels.
+fn publish_plan_with(
+    monitors: Vec<Monitor>,
+    mode: DisplayMode,
+    anchor: Option<&str>,
+    params: SceneParams,
+) -> Publication {
     let sink = Arc::new(RecordingSink::new(monitors));
     let sink_for_config = Arc::clone(&sink);
     let anchor = anchor.map(ToOwned::to_owned);
@@ -1117,6 +1134,7 @@ fn publish_plan(monitors: Vec<Monitor>, mode: DisplayMode, anchor: Option<&str>)
         config.wallpaper = sink_for_config;
         config.display_mode = mode;
         config.anchor_monitor = anchor;
+        config.params = params;
     });
     harness.next_frame();
     harness.engine.send(EngineCommand::RenderWallpaperNow);
@@ -1202,6 +1220,147 @@ fn across_screens_renders_one_canvas_and_cuts_it() {
         published.images,
         vec![Some((320, 192)), Some((320, 192))],
         "each screen's own piece, at its own size"
+    );
+}
+
+/// The picture one screen of a publish was given.
+fn picture(published: &Publication, index: usize) -> &Frame {
+    published.frames[index]
+        .as_deref()
+        .unwrap_or_else(|| panic!("screen {index} was left alone by this publish"))
+}
+
+/// Mean absolute per-channel difference in 0-255 units, and the fraction of
+/// pixels differing by more than 24.
+///
+/// The golden suite's comparator and the golden suite's numbers: two renders of
+/// the same scene through the same shaders on the same adapter, which is exactly
+/// what that tolerance was measured for.
+fn compare(a: &Frame, b: &Frame) -> (f64, f64) {
+    assert_eq!(
+        (a.width, a.height),
+        (b.width, b.height),
+        "two frames of different sizes are not the same framing to begin with"
+    );
+    let mut total = 0u64;
+    let mut outliers = 0usize;
+    for (x, y) in a.pixels.iter().zip(&b.pixels) {
+        let diff = u64::from(x.abs_diff(*y));
+        total += diff;
+        if diff > 24 {
+            outliers += 1;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    (
+        total as f64 / a.pixels.len() as f64,
+        outliers as f64 / a.pixels.len() as f64,
+    )
+}
+
+/// Where the globe sits in a frame and how large it is, in pixels.
+///
+/// Measured from the pixels it lights up, so the scene it is measured in has to
+/// be one where nothing else does: no stars, no Milky Way, no glare, no
+/// atmosphere. The radius is the one a disc of that many pixels would have.
+#[allow(clippy::cast_precision_loss)]
+fn globe(frame: &Frame) -> (f64, f64, f64) {
+    let (mut sum_x, mut sum_y, mut count) = (0.0, 0.0, 0.0);
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            let at = ((y * frame.width + x) * 4) as usize;
+            let luminance = u32::from(frame.pixels[at])
+                + u32::from(frame.pixels[at + 1])
+                + u32::from(frame.pixels[at + 2]);
+            if luminance > 24 {
+                sum_x += f64::from(x);
+                sum_y += f64::from(y);
+                count += 1.0;
+            }
+        }
+    }
+    assert!(count > 100.0, "no globe in this frame to measure");
+    (
+        sum_x / count,
+        sum_y / count,
+        (count / std::f64::consts::PI).sqrt(),
+    )
+}
+
+/// The span identity, all the way through the shaders: the anchor's crop out of
+/// a canvas is the picture that screen would have got alone.
+///
+/// Two equal 16:9 screens side by side, which is the layout this mode is for and
+/// the one the old 180 degree sky clamp could not hold: the canvas derives 218
+/// degrees, and under the clamp the sky came out at a different scale on both
+/// screens while the globe continued exactly. Nothing is contrived here, and
+/// nothing about the scene is excluded: the sky, the stars, the Milky Way and
+/// the Sun are all in the frame and all have to land in the same place.
+#[test]
+fn the_anchors_crop_of_a_span_is_the_picture_it_would_have_had_alone() {
+    let monitors = vec![
+        screen("A", 0, 640, 360, true),
+        screen("B", 640, 640, 360, false),
+    ];
+    let spanned = publish_plan(monitors.clone(), DisplayMode::AcrossScreens, None);
+    assert_eq!(spanned.canvas, Some((1280, 360)));
+    let alone = publish_plan(monitors, DisplayMode::EveryScreen, None);
+
+    let (mean, outliers) = compare(picture(&spanned, 0), picture(&alone, 0));
+    assert!(
+        mean < 2.0 && outliers < 0.01,
+        "the anchor's crop and its standalone render are {mean:.2} apart on average, with \
+         {:.2}% of pixels past the outlier threshold",
+        outliers * 100.0
+    );
+
+    // And the other screen is the view continuing outward rather than a second
+    // copy of it, which is the whole difference between this mode and the one
+    // above it. Without this the case would still pass on a publish that put
+    // the anchor's picture on every screen.
+    let (mean, _) = compare(picture(&spanned, 1), picture(&alone, 1));
+    assert!(
+        mean > 2.0,
+        "the second screen's crop is the picture it would have got alone ({mean:.2} apart), so \
+         the canvas is not continuing the view across the seam"
+    );
+}
+
+/// A canvas taller than the anchor still puts the globe where the anchor had it.
+///
+/// The weaker half of the identity, and the honest one: `sphere.wgsl` sizes star
+/// sprites against the viewport, so a taller canvas does not draw the same stars
+/// the anchor alone would have. The globe follows the tan-space scaling and does,
+/// which is what this measures: the same disc, the same size, in the same place.
+#[test]
+fn a_taller_canvas_still_puts_the_globe_where_the_anchor_had_it() {
+    let monitors = vec![
+        screen("A", 0, 640, 360, true),
+        screen("B", 640, 640, 480, false),
+    ];
+    // Nothing in the frame but the globe, so that what is being measured is the
+    // globe rather than whatever else happens to be bright.
+    let params = SceneParams {
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        milky_way_intensity: 0.0,
+        sun_glow: 0.0,
+        moon_brightness: 0.0,
+        ..test_params()
+    };
+    let spanned = publish_plan_with(monitors.clone(), DisplayMode::AcrossScreens, None, params);
+    assert_eq!(spanned.canvas, Some((1280, 480)));
+    let alone = publish_plan_with(monitors, DisplayMode::EveryScreen, None, params);
+
+    let (cx, cy, radius) = globe(picture(&spanned, 0));
+    let (alone_x, alone_y, alone_radius) = globe(picture(&alone, 0));
+    assert!(
+        (cx - alone_x).abs() < 1.5 && (cy - alone_y).abs() < 1.5,
+        "the globe is at ({cx:.1}, {cy:.1}) in the crop and ({alone_x:.1}, {alone_y:.1}) alone"
+    );
+    assert!(
+        (radius - alone_radius).abs() < 1.5,
+        "the globe's radius is {radius:.1} pixels in the crop and {alone_radius:.1} alone"
     );
 }
 

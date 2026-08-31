@@ -48,7 +48,32 @@ pub const PACKER_ISO_TOOLS: [&str; 4] = ["xorriso", "mkisofs", "hdiutil", "oscdi
 /// identifier, and the program `TightVNC` installs is `tvnviewer`. It takes the
 /// same `host:port` argument the others do, verified against a listening socket
 /// rather than assumed, and accepts the `host::port` spelling too.
-pub const VNC_VIEWERS: [&str; 5] = ["vncviewer", "tigervnc", "tvnviewer", "remmina", "vinagre"];
+///
+/// KRDC comes after the three that open straight onto the framebuffer, because
+/// it puts a Host Configuration dialog in front of a host it has not seen
+/// before. One click, and it remembers.
+pub const VNC_VIEWERS: [&str; 6] = [
+    "vncviewer",
+    "tigervnc",
+    "tvnviewer",
+    "krdc",
+    "remmina",
+    "vinagre",
+];
+
+/// The argument a viewer takes for a console at `host:port`.
+///
+/// KRDC is a multi-protocol client and takes a URL, `krdc [options] url`: a
+/// bare `127.0.0.1:5919` is refused with a "Malformed URL" dialog, and
+/// `vnc://127.0.0.1:5919` connects. Measured against a QEMU VNC server on
+/// 2026-08-31, which also confirmed the port is a port to it and not a display
+/// number. Everything else in the list takes the address as it stands.
+pub fn vnc_viewer_argument(viewer: &str, address: &str) -> String {
+    match viewer {
+        "krdc" => format!("vnc://{address}"),
+        _ => address.to_owned(),
+    }
+}
 
 /// Where `TightVNC`'s own installer puts the viewer.
 ///
@@ -994,6 +1019,23 @@ mod tests {
             );
         }
         assert!(VNC_VIEWERS.contains(&"tvnviewer"), "TightVNC's viewer");
+    }
+
+    /// A viewer handed an address it cannot parse is a viewer that opens an
+    /// error dialog instead of the guest's console.
+    #[test]
+    fn krdc_is_handed_a_url_and_the_others_the_bare_address() {
+        assert_eq!(
+            vnc_viewer_argument("krdc", "127.0.0.1:5919"),
+            "vnc://127.0.0.1:5919"
+        );
+        for viewer in VNC_VIEWERS.iter().filter(|name| **name != "krdc") {
+            assert_eq!(
+                vnc_viewer_argument(viewer, "127.0.0.1:5919"),
+                "127.0.0.1:5919",
+                "{viewer}"
+            );
+        }
     }
 
     #[cfg(windows)]

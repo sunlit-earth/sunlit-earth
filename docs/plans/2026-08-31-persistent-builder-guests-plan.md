@@ -190,7 +190,7 @@ Two guests on this host is comfortable and would not be on a smaller one: 12.0 G
 
 ### Criterion 6: `vm down` on a stopped builder
 
-`vm status` first, then the teardown, on the builder the two runs above left stopped with three warm builds in it.
+`vm status` first, then the teardown, on the builder the runs above left stopped with one cold compile and two warm ones in it.
 
 The listing named the overlay and the two ways out of it:
 

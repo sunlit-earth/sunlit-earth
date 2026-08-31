@@ -122,6 +122,8 @@ cargo xtask vm start windows-builder   # resume it, with what it was holding
 
 `vm stop` asks the guest to shut itself down and cuts the power if it has not complied in a minute, which is bounded on purpose: everything a builder keeps is a cache, so the worst a kill costs is a repair pass and a build that starts from nothing. A stopped builder holds no memory and keeps its overlay, `vm status` reports it as stopped and counts that overlay, and `vm down <builder>` is what frees it. The two commands refuse a desktop image and say why: every guest the suite runs in is a pristine overlay, and a resumed one is not.
 
+`vm up <builder>` and `vm start <builder>` are not the same command. `vm up` boots something pristine whatever the image, so it throws a stopped builder's overlay away and says so as it does; `vm start` is the one that resumes what is in there. A resume that fails keeps everything: the guest is left as it was found, with a message naming the way back and the way out, because deleting a build directory takes asking for it.
+
 Both commands are also why one guest at a time is now one *desktop* guest at a time. A builder may run beside the guest it compiles for, in either order, and a boot that finds another guest up names it and says what the two hold together; two desktop guests are still refused.
 
 A Windows guest's desktop has two shortcuts on it, written per boot by whatever staged the binaries:

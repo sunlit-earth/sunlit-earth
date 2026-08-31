@@ -905,6 +905,45 @@ fn wait_for_downloads(stub: &StubState, target: u64, timeout: Duration) {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Every image a publish wrote is one this session has somewhere to put.
+///
+/// The count is the desktop's business and differs per backend, but the sizes
+/// are not: a wallpaper is either one screen's own resolution or the bounding
+/// box of all of them, and anything else is an image the desktop is going to
+/// scale for itself. This is the assertion that a two-screen session got two
+/// screens' worth of pixels rather than the primary's twice.
+fn assert_the_files_match_the_layout(files: &[std::path::PathBuf]) {
+    let monitors = sunlit_core::display::monitors().unwrap_or_default();
+    let canvas = sunlit_core::display::layout::bounds_of(&monitors);
+    let mut sizes: Vec<(u32, u32)> = monitors.iter().map(|m| (m.width, m.height)).collect();
+    if let Some(canvas) = canvas {
+        sizes.push((canvas.width, canvas.height));
+    }
+    for file in files {
+        let image =
+            image::open(file).unwrap_or_else(|e| panic!("{} is not a PNG: {e}", file.display()));
+        let size = (image.width(), image.height());
+        if sizes.is_empty() {
+            // A session with no display to ask renders at the documented
+            // default size, which is what this run cannot check against a
+            // layout it does not have.
+            println!("no monitors to check {} ({size:?}) against", file.display());
+            continue;
+        }
+        assert!(
+            sizes.contains(&size),
+            "{} is {size:?}, which is neither a screen of this session nor the \
+             box around them ({sizes:?})",
+            file.display()
+        );
+    }
+    println!(
+        "the publish wrote {} image(s) for {} screen(s)",
+        files.len(),
+        monitors.len()
+    );
+}
+
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -1809,18 +1848,25 @@ fn test_memory_report() {
 /// desktop whose settings are named after its own monitors has to hold the image
 /// in one of those, and nothing else counts.
 #[cfg(target_os = "linux")]
-fn assert_the_desktop_holds_the_wallpaper() -> Option<String> {
-    let image = sunlit_core::wallpaper::published_wallpaper_file()
-        .expect("a local data directory")
-        .expect("the setter said it set a wallpaper, so one was written");
-    // The file name rather than the whole path, because what a write carries is
-    // the path in that desktop's own spelling: a `file://` URI for the gsettings
-    // rows and a plain path for the rest.
-    let name = image
-        .file_name()
-        .expect("the wallpaper is a file")
-        .to_string_lossy()
-        .into_owned();
+fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> Option<String> {
+    assert!(
+        !published.is_empty(),
+        "the setter said it set a wallpaper, so one was written"
+    );
+    // The file names rather than the whole paths, because what a write carries
+    // is the path in that desktop's own spelling: a `file://` URI for the
+    // gsettings rows and a plain path for the rest.
+    let names: Vec<String> = published
+        .iter()
+        .map(|image| {
+            image
+                .file_name()
+                .expect("the wallpaper is a file")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let name = names.join(", ");
     let backend = sunlit_core::desktop::detect_current()
         .expect("a session with no backend could not have got this far");
 
@@ -1828,17 +1874,21 @@ fn assert_the_desktop_holds_the_wallpaper() -> Option<String> {
         Some(query) => read_setting(&query),
         None => String::new(),
     };
-    let monitors: Vec<String> = sunlit_core::display::outputs()
+    let monitors: Vec<String> = sunlit_core::display::monitors()
         .unwrap_or_default()
         .into_iter()
-        .map(|output| output.name)
+        .map(|monitor| monitor.id)
         .collect();
 
     let mut holders: Vec<String> = Vec::new();
-    for command in backend.commands(&image, &discovered, &monitors) {
+    for command in backend.commands(&published[0], &discovered, &monitors) {
         // The fill-mode writes carry a mode rather than a path, and the mode is
         // not what this is about.
-        let Some(written) = command.args.iter().find(|arg| arg.contains(&name)) else {
+        let Some(written) = command
+            .args
+            .iter()
+            .find(|arg| names.iter().any(|name| arg.contains(name)))
+        else {
             continue;
         };
         let written = written.clone();
@@ -2047,7 +2097,7 @@ fn test_set_wallpaper() {
     // the path already in that setting is one nothing reloads. A setter that
     // succeeded on a first publish and changed nothing on a second is exactly
     // what a single pass here cannot tell apart from working.
-    let mut published: Vec<std::path::PathBuf> = Vec::new();
+    let mut published: Vec<Vec<std::path::PathBuf>> = Vec::new();
     #[cfg(target_os = "linux")]
     let mut held: Vec<Option<String>> = Vec::new();
     for pass in 1..=2 {
@@ -2061,22 +2111,35 @@ fn test_set_wallpaper() {
             line.contains("wallpaper_set"),
             "publish {pass}: the engine reported a failure instead: {line}"
         );
-        published.push(
-            sunlit_core::wallpaper::published_wallpaper_file()
-                .expect("a local data directory")
-                .expect("the engine reported a wallpaper, so one was written"),
+        let files =
+            sunlit_core::wallpaper::published_wallpaper_files().expect("a local data directory");
+        assert!(
+            !files.is_empty(),
+            "publish {pass}: the engine reported a wallpaper and wrote no file"
         );
+        // One image per screen this session has, each at that screen's own size.
+        assert_the_files_match_the_layout(&files);
 
         // Everything above is the app's own account of what it did. This is the
         // desktop's.
         #[cfg(target_os = "linux")]
-        held.push(assert_the_desktop_holds_the_wallpaper());
+        held.push(assert_the_desktop_holds_the_wallpaper(&files));
+        published.push(files);
     }
-    assert_ne!(
-        published[0], published[1],
-        "the second publish wrote the path the desktop was already showing, \
-         which is a wallpaper that does not visibly change"
+    // Every path, not only one of them: the alternation has to hold per screen,
+    // or a second monitor sits on a picture the desktop has no reason to reload.
+    assert_eq!(
+        published[0].len(),
+        published[1].len(),
+        "the two publishes wrote a different number of images: {published:?}"
     );
+    for (first, second) in published[0].iter().zip(&published[1]) {
+        assert_ne!(
+            first, second,
+            "the second publish wrote a path the desktop was already showing, \
+             which is a wallpaper that does not visibly change"
+        );
+    }
     // And the desktop stored the new one, where its setter has a store to ask.
     #[cfg(target_os = "linux")]
     if let [Some(first), Some(second)] = held.as_slice() {

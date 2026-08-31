@@ -19,7 +19,9 @@ use sunlit_core::assets::mailbox::{DecodedTextureMessage, TextureMailbox};
 use sunlit_core::assets::stars;
 use sunlit_core::assets::texture_loader::DecodedImage;
 use sunlit_core::config::QualityTier;
-use sunlit_core::engine::wallpaper_sink::CountingSink;
+use sunlit_core::display::Monitor;
+use sunlit_core::display::layout::DisplayMode;
+use sunlit_core::engine::wallpaper_sink::{CountingSink, JobImages, WallpaperJob, WallpaperSink};
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent, EngineHandle};
 use sunlit_core::params::SceneParams;
 
@@ -974,11 +976,11 @@ fn wallpaper_now_publishes_one_frame_at_the_sink_size() {
 /// This is the shape of `SystemWallpaper` off Windows, which cannot be
 /// exercised directly on the machine this suite usually runs on. What matters
 /// is not only that the export fails but that it fails before the expensive
-/// part: `target_size` is the engine's first step towards a native-resolution
+/// part: the monitor list is the engine's first step towards a native-resolution
 /// render and a readback of the whole image, so a count of zero there is the
 /// assertion that nothing was rendered.
 struct RefusingSink {
-    size_queries: std::sync::atomic::AtomicUsize,
+    layout_queries: std::sync::atomic::AtomicUsize,
     publishes: std::sync::atomic::AtomicUsize,
 }
 
@@ -987,13 +989,14 @@ impl RefusingSink {
 
     fn new() -> Self {
         Self {
-            size_queries: std::sync::atomic::AtomicUsize::new(0),
+            layout_queries: std::sync::atomic::AtomicUsize::new(0),
             publishes: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
-    fn size_queries(&self) -> usize {
-        self.size_queries.load(std::sync::atomic::Ordering::SeqCst)
+    fn layout_queries(&self) -> usize {
+        self.layout_queries
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn publishes(&self) -> usize {
@@ -1001,22 +1004,272 @@ impl RefusingSink {
     }
 }
 
-impl sunlit_core::engine::wallpaper_sink::WallpaperSink for RefusingSink {
+impl WallpaperSink for RefusingSink {
     fn check_supported(&self) -> Result<(), String> {
         Err(Self::REASON.to_owned())
     }
 
-    fn target_size(&self) -> Result<(u32, u32), String> {
-        self.size_queries
+    fn monitors(&self) -> Result<Vec<Monitor>, String> {
+        self.layout_queries
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok((320, 192))
+        Ok(vec![screen("only", 0, 320, 192, true)])
     }
 
-    fn publish(&self, _pixels: &[u8], _width: u32, _height: u32) -> Result<(), String> {
+    fn publish(&self, _job: &WallpaperJob) -> Result<String, String> {
         self.publishes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
+        Ok(String::new())
     }
+}
+
+/// One fabricated monitor.
+fn screen(id: &str, x: i32, width: u32, height: u32, primary: bool) -> Monitor {
+    Monitor {
+        id: id.to_owned(),
+        label: id.to_owned(),
+        x,
+        y: 0,
+        width,
+        height,
+        primary,
+    }
+}
+
+/// A sink that reports a fabricated layout and keeps what it was handed.
+///
+/// This is what proves the engine asks for the right images in each mode with
+/// no display anywhere, so it runs on Windows and macOS as well as Linux.
+struct RecordingSink {
+    monitors: Vec<Monitor>,
+    published: Mutex<Vec<Publication>>,
+}
+
+/// What one publish came out as, in the terms the assertions are written in.
+struct Publication {
+    mode: DisplayMode,
+    anchor: usize,
+    /// One entry per monitor: its size, or `None` where the mode left it alone.
+    images: Vec<Option<(u32, u32)>>,
+    /// The canvas, where the publish spanned.
+    canvas: Option<(u32, u32)>,
+    /// How many distinct pixel buffers the publish actually rendered.
+    renders: usize,
+}
+
+impl RecordingSink {
+    fn new(monitors: Vec<Monitor>) -> Self {
+        Self {
+            monitors,
+            published: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn publications(&self) -> std::sync::MutexGuard<'_, Vec<Publication>> {
+        self.published.lock().expect("the recording is poisoned")
+    }
+}
+
+impl WallpaperSink for RecordingSink {
+    fn monitors(&self) -> Result<Vec<Monitor>, String> {
+        Ok(self.monitors.clone())
+    }
+
+    fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
+        let mut images = Vec::new();
+        let mut distinct: Vec<*const u8> = Vec::new();
+        for index in 0..job.monitors.len() {
+            let image = job.image_for(index)?;
+            images.push(image.as_ref().map(|frame| {
+                assert!(frame.is_well_formed(), "a malformed frame reached the sink");
+                (frame.width, frame.height)
+            }));
+        }
+        // Identity rather than equality: two screens of one size are meant to
+        // share the buffer, and two equal buffers would not prove they did.
+        if let Some(canvas) = job.canvas() {
+            distinct.push(canvas.pixels.as_ptr());
+        } else if let JobImages::PerMonitor(frames) = &job.images {
+            for frame in frames.iter().flatten() {
+                let ptr = frame.pixels.as_ptr();
+                if !distinct.contains(&ptr) {
+                    distinct.push(ptr);
+                }
+            }
+        }
+        self.publications().push(Publication {
+            mode: job.mode,
+            anchor: job.anchor,
+            images,
+            canvas: job.canvas().map(|frame| (frame.width, frame.height)),
+            renders: distinct.len(),
+        });
+        Ok(String::new())
+    }
+}
+
+/// Publish once with a fabricated layout and a mode, and answer with what the
+/// sink was handed.
+fn publish_plan(monitors: Vec<Monitor>, mode: DisplayMode, anchor: Option<&str>) -> Publication {
+    let sink = Arc::new(RecordingSink::new(monitors));
+    let sink_for_config = Arc::clone(&sink);
+    let anchor = anchor.map(ToOwned::to_owned);
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.display_mode = mode;
+        config.anchor_monitor = anchor;
+    });
+    harness.next_frame();
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        if let EngineEvent::WallpaperSet(result) = event {
+            result.expect("publishing to a recording sink cannot fail");
+            break;
+        }
+    }
+    let mut published = sink.publications();
+    assert_eq!(published.len(), 1, "exactly one publish was asked for");
+    published.pop().expect("the one publish")
+}
+
+/// Two screens side by side, the left one primary.
+fn two_screens() -> Vec<Monitor> {
+    vec![
+        screen("A", 0, 320, 192, true),
+        screen("B", 320, 320, 192, false),
+    ]
+}
+
+/// The single-monitor identity: what every existing config describes, and what
+/// must come out of this feature unchanged.
+#[test]
+fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
+    for mode in DisplayMode::ALL {
+        let published = publish_plan(vec![screen("only", 0, 320, 192, true)], mode, None);
+        assert_eq!(published.mode, mode);
+        assert_eq!(published.anchor, 0);
+        assert_eq!(published.images, vec![Some((320, 192))], "{mode:?}");
+        assert_eq!(published.renders, 1, "{mode:?}");
+    }
+}
+
+#[test]
+fn every_screen_renders_one_image_per_distinct_size() {
+    let published = publish_plan(two_screens(), DisplayMode::EveryScreen, None);
+    assert_eq!(published.images, vec![Some((320, 192)), Some((320, 192))]);
+    assert_eq!(
+        published.renders, 1,
+        "two screens of one size are one render shared by both"
+    );
+    assert!(published.canvas.is_none());
+
+    // Different sizes are one render each, at each screen's own size.
+    let published = publish_plan(
+        vec![
+            screen("A", 0, 320, 192, true),
+            screen("B", 320, 256, 128, false),
+        ],
+        DisplayMode::EveryScreen,
+        None,
+    );
+    assert_eq!(published.images, vec![Some((320, 192)), Some((256, 128))]);
+    assert_eq!(published.renders, 2);
+}
+
+#[test]
+fn one_screen_paints_the_anchor_and_leaves_the_others_alone() {
+    let published = publish_plan(two_screens(), DisplayMode::OneScreen, None);
+    assert_eq!(published.images, vec![Some((320, 192)), None]);
+    assert_eq!(published.renders, 1);
+
+    // And the anchor is the stored one where the session still has it.
+    let published = publish_plan(two_screens(), DisplayMode::OneScreen, Some("B"));
+    assert_eq!(published.anchor, 1);
+    assert_eq!(published.images, vec![None, Some((320, 192))]);
+}
+
+#[test]
+fn across_screens_renders_one_canvas_and_cuts_it() {
+    let published = publish_plan(two_screens(), DisplayMode::AcrossScreens, None);
+    assert_eq!(
+        published.canvas,
+        Some((640, 192)),
+        "the canvas is the bounding box of the layout"
+    );
+    assert_eq!(published.renders, 1, "one render for the whole desktop");
+    assert_eq!(
+        published.images,
+        vec![Some((320, 192)), Some((320, 192))],
+        "each screen's own piece, at its own size"
+    );
+}
+
+/// A stored anchor that is no longer connected must not silently draw somewhere
+/// else: the plan falls back to the primary and the publish says it did.
+#[test]
+fn a_stored_anchor_that_is_gone_falls_back_and_reports_it() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.display_mode = DisplayMode::OneScreen;
+        config.anchor_monitor = Some("a-screen-that-went-away".to_owned());
+    });
+    harness.next_frame();
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut note = None;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        if let EngineEvent::WallpaperSet(result) = event {
+            note = Some(result.expect("falling back is not a failure"));
+            break;
+        }
+    }
+    let note = note.expect("no WallpaperSet event");
+    assert!(note.contains('A'), "{note}");
+    assert_eq!(sink.publications()[0].anchor, 0);
+}
+
+/// The plan is re-read on every publish rather than cached at startup.
+#[test]
+fn a_new_display_plan_changes_the_next_publish() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.display_mode = DisplayMode::EveryScreen;
+    });
+    harness.next_frame();
+
+    let wait_for_publish = || {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while let Ok(event) = harness.events.recv_deadline(deadline) {
+            if let EngineEvent::WallpaperSet(result) = event {
+                result.expect("a recording sink cannot fail");
+                return;
+            }
+        }
+        panic!("no WallpaperSet event within {TIMEOUT:?}");
+    };
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    wait_for_publish();
+    harness.engine.send(EngineCommand::SetDisplayPlan {
+        mode: DisplayMode::AcrossScreens,
+        anchor: Some("B".to_owned()),
+    });
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    wait_for_publish();
+
+    let published = sink.publications();
+    assert_eq!(published.len(), 2);
+    assert_eq!(published[0].mode, DisplayMode::EveryScreen);
+    assert!(published[0].canvas.is_none());
+    assert_eq!(published[1].mode, DisplayMode::AcrossScreens);
+    assert_eq!(published[1].canvas, Some((640, 192)));
+    assert_eq!(published[1].anchor, 1);
 }
 
 #[test]
@@ -1042,9 +1295,9 @@ fn a_sink_that_cannot_publish_is_never_asked_to_render() {
         "the sink's own reason should reach the client unchanged"
     );
     assert_eq!(
-        sink.size_queries(),
+        sink.layout_queries(),
         0,
-        "the engine asked for a render size from a sink that had already refused"
+        "the engine asked a sink that had already refused for its monitors"
     );
     assert_eq!(sink.publishes(), 0);
 }

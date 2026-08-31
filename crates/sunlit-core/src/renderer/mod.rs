@@ -696,9 +696,38 @@ impl Renderer {
     ///
     /// Returns `Err` when no frame has been rendered yet, since there is then
     /// no resolved texture binding to replay.
-    #[allow(clippy::cast_precision_loss)]
     pub fn export_image(&self, target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
-        let params = self.last_params.as_ref().ok_or("No frame rendered yet")?;
+        let params = self.last_params.ok_or("No frame rendered yet")?;
+        self.export_image_with(&params, target_width, target_height)
+    }
+
+    /// The largest export this device will take, and the largest readback.
+    ///
+    /// `max_texture_dimension_2d` caps the canvas a spanned wallpaper renders
+    /// into, and `max_buffer_size` caps the readback that comes out of it.
+    /// `Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())`
+    /// copies the resolution limits from the adapter and leaves the buffer size
+    /// at the downlevel default, so the two are not the same number and neither
+    /// is worth guessing.
+    pub fn export_limits(&self) -> (u32, u64) {
+        let limits = self.device.limits();
+        (limits.max_texture_dimension_2d, limits.max_buffer_size)
+    }
+
+    /// Replay the last frame's scene with a different framing, at a different
+    /// size.
+    ///
+    /// The texture routing and the sky are the ones the last render resolved,
+    /// so `params` may differ from it only in what `write_uniforms` reads. That
+    /// is what the wallpaper path changes: the fields of view and the pan, all
+    /// of which are derived per screen.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn export_image_with(
+        &self,
+        params: &SceneParams,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<Vec<u8>, String> {
         let inputs = self.last_inputs.as_ref().ok_or("No frame rendered yet")?;
 
         // Look up the bind group that was used for the last rendered frame

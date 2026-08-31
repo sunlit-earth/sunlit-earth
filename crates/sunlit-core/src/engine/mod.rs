@@ -31,7 +31,7 @@ use crate::renderer::{
 use crate::scene::sky::{self, SkyState};
 
 use clock::{Clock, SystemClock};
-use wallpaper_sink::WallpaperSink;
+use wallpaper_sink::{Frame, JobImages, WallpaperJob, WallpaperSink};
 
 /// How long the loop blocks on the command channel before re-checking the
 /// schedule. Short enough that a real-clock deadline is never missed by more
@@ -89,6 +89,16 @@ pub enum EngineCommand {
     ReportMemory { reply: Sender<Box<MemoryReport>> },
     /// Turn the unattended wallpaper refresh on or off.
     SetAutoRefresh { enabled: bool, interval: Duration },
+    /// Replace the mode and the anchor a wallpaper is planned with.
+    ///
+    /// Not part of `UpdateParams` for the same reason `SetTextureResolution` is
+    /// not: neither field describes what to draw, so neither belongs in
+    /// `SceneParams` or in the digest that decides whether a frame is worth
+    /// rendering. Both are read only when a wallpaper is published.
+    SetDisplayPlan {
+        mode: crate::display::layout::DisplayMode,
+        anchor: Option<String>,
+    },
     /// Re-evaluate the schedule now. Tests send this after advancing a mock
     /// clock; production uses it as a "something happened" nudge.
     Poke,
@@ -109,7 +119,12 @@ pub enum EngineEvent {
     /// them.
     TexturesReady,
     /// A wallpaper publish attempt finished.
-    WallpaperSet(Result<(), String>),
+    ///
+    /// `Ok` carries what the desktop could not do, and is empty where it did
+    /// exactly what the mode asked. A desktop with one wallpaper for every
+    /// screen has not failed by giving them all the same image, but somebody
+    /// looking at three identical screens deserves the sentence that says why.
+    WallpaperSet(Result<String, String>),
     /// Loading-indicator text; empty when nothing is loading.
     Status(String),
 }
@@ -144,6 +159,10 @@ pub struct EngineConfig {
     /// Unattended wallpaper refresh interval; `None` disables it.
     pub auto_refresh: Option<Duration>,
     pub wallpaper: Arc<dyn WallpaperSink>,
+    /// How this session's monitors relate to each other.
+    pub display_mode: crate::display::layout::DisplayMode,
+    /// The monitor the plan is anchored to; `None` follows the system primary.
+    pub anchor_monitor: Option<String>,
     /// Called on the engine thread for every event. Clients that need to be on
     /// another thread (the UI) forward from here.
     pub on_event: Arc<dyn Fn(EngineEvent) + Send + Sync>,
@@ -186,6 +205,8 @@ impl EngineConfig {
             cache_dir: None,
             auto_refresh: None,
             wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
+            display_mode: crate::display::layout::DisplayMode::default(),
+            anchor_monitor: None,
             on_event: Arc::new(|_| {}),
             record_metrics: false,
             mailbox: None,
@@ -429,6 +450,10 @@ struct Engine {
     /// A wallpaper update was asked for while a texture was still on its way,
     /// and happens as soon as it arrives.
     wallpaper_owed: bool,
+    /// How this session's monitors relate to each other, and which one the plan
+    /// is built around. Read only when a wallpaper is published.
+    display_mode: crate::display::layout::DisplayMode,
+    anchor_monitor: Option<String>,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -495,6 +520,8 @@ impl Engine {
             cache_dir,
             auto_refresh,
             wallpaper,
+            display_mode,
+            anchor_monitor,
             on_event,
             record_metrics,
             mailbox,
@@ -601,6 +628,8 @@ impl Engine {
                 owed: false,
             },
             wallpaper_owed: false,
+            display_mode,
+            anchor_monitor,
             dirty: true,
             textures_ready: false,
             memory_dumped: false,
@@ -679,6 +708,10 @@ impl Engine {
                 self.preview.enabled = enabled;
             }
             EngineCommand::RenderWallpaperNow => self.publish_wallpaper(),
+            EngineCommand::SetDisplayPlan { mode, anchor } => {
+                self.display_mode = mode;
+                self.anchor_monitor = anchor;
+            }
             EngineCommand::RenderToFile {
                 path,
                 width,
@@ -932,25 +965,144 @@ impl Engine {
         }
 
         let result = self
-            .render_wallpaper_pixels()
-            .and_then(|(pixels, w, h)| self.wallpaper.publish(&pixels, w, h));
+            .build_wallpaper_job()
+            .and_then(|(job, note)| Ok(join_notes(note, self.wallpaper.publish(&job)?)));
         self.report_wallpaper(result);
     }
 
     /// Report a finished publish attempt and settle the debt for it.
-    fn report_wallpaper(&mut self, result: Result<(), String>) {
+    fn report_wallpaper(&mut self, result: Result<String, String>) {
         self.wallpaper_owed = false;
-        if let Err(e) = &result {
-            error!(error = %e, "wallpaper update failed");
+        match &result {
+            Err(e) => error!(error = %e, "wallpaper update failed"),
+            Ok(note) if !note.is_empty() => {
+                info!(note, "the wallpaper is not quite what was asked")
+            }
+            Ok(_) => {}
         }
         self.emit(EngineEvent::WallpaperSet(result));
     }
 
-    fn render_wallpaper_pixels(&mut self) -> Result<(Vec<u8>, u32, u32), String> {
-        let (width, height) = self.wallpaper.target_size()?;
+    /// Render everything this session's monitors need, and say what was odd.
+    ///
+    /// The monitor list is asked for on every publish rather than cached: the
+    /// layout changes without telling anybody, and the auto-refresh means a
+    /// stale one would be on the screen for as long as the interval.
+    fn build_wallpaper_job(&mut self) -> Result<(WallpaperJob, String), String> {
+        use crate::display::layout;
+
+        let monitors = self.wallpaper.monitors()?;
+        let anchor = layout::resolve_anchor(&monitors, self.anchor_monitor.as_deref())
+            .ok_or_else(|| "this session has no monitor to put a wallpaper on".to_owned())?;
+        let mut note = String::new();
+        if anchor.fell_back {
+            note = format!(
+                "the screen this was set to draw on is not connected, so {} is standing in for it",
+                monitors[anchor.index].label
+            );
+            warn!(note, "the stored anchor monitor is gone");
+        }
+
+        let settings = layout::Framing {
+            camera_fov: self.params.camera.fov_deg,
+            sky_fov: self.params.sky_fov,
+            offset_x: self.params.camera.offset_x,
+            offset_y: self.params.camera.offset_y,
+        };
+        let groups = layout::render_groups(&monitors, self.display_mode, anchor.index);
+        if groups.is_empty() {
+            return Err("this session has no screen with any pixels on it".to_owned());
+        }
+        for group in &groups {
+            self.check_export_fits(group.width, group.height)?;
+        }
         self.prepare_export();
-        let pixels = self.renderer.export_image(width, height)?;
-        Ok((pixels, width, height))
+
+        if self.display_mode == layout::DisplayMode::AcrossScreens {
+            let bounds = layout::bounds_of(&monitors)
+                .ok_or_else(|| "this session has no screen with any pixels on it".to_owned())?;
+            let derived = layout::canvas_framing(settings, monitors[anchor.index].rect(), bounds);
+            if derived.sky_clamped {
+                let clamped = "the sky is as wide as it goes, so it does not continue \
+                               across the screens as exactly as the globe does";
+                info!(clamped, "the derived sky lens hit the shader's limit");
+                note = join_notes(note, clamped.to_owned());
+            }
+            let pixels = self.export_framed(&derived.framing, bounds.width, bounds.height)?;
+            return Ok((
+                WallpaperJob {
+                    mode: self.display_mode,
+                    monitors,
+                    anchor: anchor.index,
+                    images: JobImages::Spanned {
+                        canvas: Arc::new(Frame::new(pixels, bounds.width, bounds.height)),
+                        bounds,
+                    },
+                },
+                note,
+            ));
+        }
+
+        // One render per distinct size, shared by every screen of that size.
+        // A screen with no group is one this mode does not paint, and the sink
+        // leaves it alone where the desktop lets it.
+        let mut images: Vec<Option<Arc<Frame>>> = vec![None; monitors.len()];
+        for group in &groups {
+            let framing = layout::screen_framing(settings, group.width, group.height);
+            let pixels = self.export_framed(&framing, group.width, group.height)?;
+            let frame = Arc::new(Frame::new(pixels, group.width, group.height));
+            for index in &group.monitors {
+                images[*index] = Some(Arc::clone(&frame));
+            }
+        }
+        Ok((
+            WallpaperJob {
+                mode: self.display_mode,
+                monitors,
+                anchor: anchor.index,
+                images: JobImages::PerMonitor(images),
+            },
+            note,
+        ))
+    }
+
+    /// Refuse a render this device cannot make, before it is attempted.
+    ///
+    /// Both limits are reachable in the span mode and neither fails in a way
+    /// anybody could read: past the texture dimension wgpu refuses the texture,
+    /// and past the buffer size it panics in the readback.
+    fn check_export_fits(&self, width: u32, height: u32) -> Result<(), String> {
+        let (max_dimension, max_buffer) = self.renderer.export_limits();
+        if width > max_dimension || height > max_dimension {
+            return Err(format!(
+                "a {width}x{height} wallpaper is larger than this GPU renders \
+                 ({max_dimension} pixels on a side); one screen at a time will still work"
+            ));
+        }
+        let bytes = u64::from(width) * u64::from(height) * 4;
+        if bytes > max_buffer {
+            return Err(format!(
+                "a {width}x{height} wallpaper reads back {bytes} bytes, and this GPU \
+                 takes {max_buffer} at once"
+            ));
+        }
+        debug!(width, height, bytes, "wallpaper export budget");
+        Ok(())
+    }
+
+    /// Replay the current scene with one screen's framing.
+    fn export_framed(
+        &mut self,
+        framing: &crate::display::layout::Framing,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, String> {
+        let mut params = self.params;
+        params.camera.fov_deg = framing.camera_fov;
+        params.sky_fov = framing.sky_fov;
+        params.camera.offset_x = framing.offset_x;
+        params.camera.offset_y = framing.offset_y;
+        self.renderer.export_image_with(&params, width, height)
     }
 
     /// Make sure a frame exists to replay, with a current sun direction.
@@ -1105,6 +1257,15 @@ fn spawn_cloud_worker(
 
 /// Clamp a requested preview size to the tier's cap, preserving the aspect
 /// ratio, then quantize it to the renderer's texture granularity.
+/// Two sentences for the status line, where either may be empty.
+fn join_notes(first: String, second: String) -> String {
+    match (first.is_empty(), second.is_empty()) {
+        (true, _) => second,
+        (_, true) => first,
+        _ => format!("{first}; {second}"),
+    }
+}
+
 fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32) {
     let (mut w, mut h) = requested;
     let max_w = quality.max_preview_width();

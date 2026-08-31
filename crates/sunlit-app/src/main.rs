@@ -329,6 +329,8 @@ fn engine_config(
             .auto_refresh_enabled
             .then(|| Duration::from_mins(u64::from(config.auto_refresh_interval_minutes.max(1)))),
         wallpaper: Arc::new(SystemWallpaper),
+        display_mode: sunlit_core::display::layout::DisplayMode::default(),
+        anchor_monitor: None,
         on_event: Arc::new(|_| {}),
         record_metrics: true,
         mailbox: None,

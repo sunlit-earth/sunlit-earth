@@ -1,14 +1,16 @@
-//! What the settings window says about the screens a session has.
+//! What the app says about the screens a session has.
 //!
-//! Every function here is a pure function of a monitor list, so the combo
-//! models, the anchor's round trip and the layout diagram are all decided where
-//! a test can fabricate a layout no developer machine has. The `.slint` side
-//! multiplies a tile by the board's size and does no arithmetic of its own.
+//! Two readers, one model. The settings window's Displays group takes its combo
+//! rows, its anchor and its layout diagram from here, and so do the `displays`
+//! subcommand and the IPC command of the same name. Everything is a pure
+//! function of a monitor list, so all of it is decided where a test can
+//! fabricate a layout no developer machine has, and the `.slint` side multiplies
+//! a tile by the board's size and does no arithmetic of its own.
 
 use slint::Model;
 
 use sunlit_core::display::Monitor;
-use sunlit_core::display::layout::{self, DisplayMode, bounds_of};
+use sunlit_core::display::layout::{self, DisplayMode, Framing, bounds_of};
 
 use crate::{MainWindow, MonitorTile};
 
@@ -198,6 +200,182 @@ fn shared(values: Vec<String>) -> slint::ModelRc<slint::SharedString> {
     slint::ModelRc::new(slint::VecModel::from(values))
 }
 
+/// The plan a mode and an anchor come to, as `sunlit-earth displays` prints it.
+///
+/// Every number a bug report needs and nothing that changes between two runs.
+/// The renders are the exports the engine would make, in its own order, which is
+/// what says at a glance that two identical screens cost one of them.
+pub fn report(
+    monitors: &[Monitor],
+    mode: DisplayMode,
+    stored: Option<&str>,
+    settings: Framing,
+) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let plural = if monitors.len() == 1 { "" } else { "s" };
+    let _ = writeln!(
+        out,
+        "{} monitor{plural}, mode \"{}\"",
+        monitors.len(),
+        mode.label()
+    );
+    for (index, monitor) in monitors.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "  {}  {}  {}x{} at ({}, {}){}",
+            index + 1,
+            monitor.label,
+            monitor.width,
+            monitor.height,
+            monitor.x,
+            monitor.y,
+            if monitor.primary { "  primary" } else { "" }
+        );
+    }
+
+    let Some(anchor) = layout::resolve_anchor(monitors, stored) else {
+        let _ = writeln!(
+            out,
+            "no screen to draw on: this session enumerated no monitors"
+        );
+        return out;
+    };
+    let anchor_label = &monitors[anchor.index].label;
+    if anchor.fell_back && stored.is_some_and(|id| !id.is_empty()) {
+        let _ = writeln!(
+            out,
+            "anchor: {anchor_label} (the config asks for \"{}\", which this session does not have)",
+            stored.unwrap_or_default()
+        );
+    } else {
+        let _ = writeln!(out, "anchor: {anchor_label}");
+    }
+
+    if mode == DisplayMode::AcrossScreens
+        && let Some(bounds) = bounds_of(monitors)
+    {
+        let derived = layout::canvas_framing(settings, monitors[anchor.index].rect(), bounds);
+        let _ = writeln!(
+            out,
+            "canvas: {}x{} at ({}, {})",
+            bounds.width, bounds.height, bounds.x, bounds.y
+        );
+        let _ = writeln!(
+            out,
+            "lens: camera {:.1} deg, sky {:.1} deg, pan ({:.3}, {:.3}){}",
+            derived.framing.camera_fov,
+            derived.framing.sky_fov,
+            derived.framing.offset_x,
+            derived.framing.offset_y,
+            if derived.sky_clamped {
+                "  the sky is as wide as it goes and does not continue exactly"
+            } else {
+                ""
+            }
+        );
+    }
+
+    let _ = writeln!(out, "renders:");
+    for group in layout::render_groups(monitors, mode, anchor.index) {
+        let screens: Vec<String> = group
+            .monitors
+            .iter()
+            .map(|index| (index + 1).to_string())
+            .collect();
+        let _ = writeln!(
+            out,
+            "  {}x{}  screen{} {}",
+            group.width,
+            group.height,
+            if group.monitors.len() == 1 { "" } else { "s" },
+            screens.join(", ")
+        );
+    }
+    out
+}
+
+/// The same plan on one line, for the IPC command the e2e suite parses.
+///
+/// Key=value pairs with no spaces in any value, in the shape `query-memory`
+/// established. `rects` and `images` are the two lists a case wants to check:
+/// the session's own geometry, and the exports the mode turns it into.
+pub fn signal_line(monitors: &[Monitor], mode: DisplayMode, stored: Option<&str>) -> String {
+    let rects: Vec<String> = monitors
+        .iter()
+        .map(|m| format!("{},{},{},{}", m.x, m.y, m.width, m.height))
+        .collect();
+    let anchor = layout::resolve_anchor(monitors, stored);
+    let images: Vec<String> = anchor
+        .map(|anchor| {
+            layout::render_groups(monitors, mode, anchor.index)
+                .iter()
+                .map(|group| format!("{}x{}", group.width, group.height))
+                .collect()
+        })
+        .unwrap_or_default();
+    format!(
+        "monitors={} mode={} anchor={} fell_back={} rects={} images={}",
+        monitors.len(),
+        mode.name(),
+        anchor.map_or(-1, |anchor| i32::try_from(anchor.index).unwrap_or(-1)),
+        i32::from(anchor.is_some_and(|anchor| anchor.fell_back)),
+        rects.join(";"),
+        images.join(";")
+    )
+}
+
+/// A destination for `sunlit-earth displays --out`: files in a directory, and
+/// nothing on the desktop.
+///
+/// It reports the session's real monitors, so the plan it is handed is the plan
+/// the desktop would have got. What it does with that plan is write it down: the
+/// canvas of a span first, then one file per screen, each already cut and sized
+/// for the screen it is named after.
+pub struct DirectorySink {
+    dir: std::path::PathBuf,
+    monitors: Vec<Monitor>,
+}
+
+impl DirectorySink {
+    pub fn new(dir: std::path::PathBuf, monitors: Vec<Monitor>) -> Self {
+        Self { dir, monitors }
+    }
+}
+
+impl sunlit_core::engine::wallpaper_sink::WallpaperSink for DirectorySink {
+    fn monitors(&self) -> Result<Vec<Monitor>, String> {
+        Ok(self.monitors.clone())
+    }
+
+    fn publish(
+        &self,
+        job: &sunlit_core::engine::wallpaper_sink::WallpaperJob,
+    ) -> Result<String, String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| format!("{} could not be created: {e}", self.dir.display()))?;
+        let mut written = Vec::new();
+        if let Some(canvas) = job.canvas() {
+            let path = self.dir.join("canvas.png");
+            sunlit_core::engine::save_png(&path, canvas.width, canvas.height, &canvas.pixels)?;
+            written.push(path);
+        }
+        for index in 0..job.monitors.len() {
+            let Some(frame) = job.image_for(index)? else {
+                continue;
+            };
+            let path = self.dir.join(format!("screen-{}.png", index + 1));
+            sunlit_core::engine::save_png(&path, frame.width, frame.height, &frame.pixels)?;
+            written.push(path);
+        }
+        for path in &written {
+            println!("wrote {}", path.display());
+        }
+        Ok(String::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +498,90 @@ mod tests {
         let ids = screen_ids(&side_by_side());
         assert_eq!(anchor_index(&ids, "DP-2"), 2);
         assert_eq!(anchor_index(&ids, "  DP-2  "), 2);
+    }
+
+    fn settings() -> Framing {
+        Framing {
+            camera_fov: 20.0,
+            sky_fov: 140.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_report_names_every_screen_and_the_renders_it_asks_for() {
+        let report = report(&side_by_side(), DisplayMode::EveryScreen, None, settings());
+        assert!(report.contains("2 monitors"), "{report}");
+        assert!(
+            report.contains("DP-1  1920x1080 at (0, 0)  primary"),
+            "{report}"
+        );
+        assert!(report.contains("DP-2  1920x1080 at (1920, 0)"), "{report}");
+        assert!(report.contains("anchor: DP-1"), "{report}");
+        // Two screens of one size are one render, which is the whole point of
+        // the grouping and the thing a person checks this output for.
+        assert!(report.contains("1920x1080  screens 1, 2"), "{report}");
+    }
+
+    #[test]
+    fn the_report_describes_the_canvas_a_span_would_render() {
+        let report = report(
+            &side_by_side(),
+            DisplayMode::AcrossScreens,
+            None,
+            settings(),
+        );
+        assert!(report.contains("canvas: 3840x1080 at (0, 0)"), "{report}");
+        assert!(report.contains("lens: camera 20.0 deg, sky 21"), "{report}");
+        assert!(
+            !report.contains("as wide as it goes"),
+            "two screens are inside the sky's range now: {report}"
+        );
+        assert!(report.contains("3840x1080  screens 1, 2"), "{report}");
+    }
+
+    #[test]
+    fn the_report_says_when_the_anchor_is_not_the_one_that_was_asked_for() {
+        let report = report(
+            &side_by_side(),
+            DisplayMode::OneScreen,
+            Some("HDMI-9"),
+            settings(),
+        );
+        assert!(
+            report.contains("anchor: DP-1 (the config asks for \"HDMI-9\""),
+            "{report}"
+        );
+        // One screen is painted and the other is left alone.
+        assert!(
+            report.contains(
+                "1920x1080  screen 1
+"
+            ),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn the_signal_line_carries_the_rectangles_and_the_exports() {
+        let line = signal_line(&side_by_side(), DisplayMode::AcrossScreens, Some("DP-2"));
+        assert_eq!(
+            line,
+            "monitors=2 mode=across-screens anchor=1 fell_back=0 rects=0,0,1920,1080;1920,0,1920,1080 images=3840x1080"
+        );
+        assert!(
+            !line.contains("  "),
+            "every value has to be one space-free token: {line}"
+        );
+    }
+
+    #[test]
+    fn the_signal_line_reports_a_session_with_no_screens_rather_than_inventing_one() {
+        let line = signal_line(&[], DisplayMode::EveryScreen, None);
+        assert!(line.contains("monitors=0"), "{line}");
+        assert!(line.contains("anchor=-1"), "{line}");
+        assert!(line.ends_with("rects= images="), "{line}");
     }
 
     #[test]

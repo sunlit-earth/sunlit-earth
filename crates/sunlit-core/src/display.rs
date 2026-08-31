@@ -18,6 +18,8 @@
 //! The parser is separate from the process, so it is tested on every platform
 //! against real xrandr output rather than only where xrandr exists.
 
+pub mod layout;
+
 /// One output, as xrandr describes a connected one with a mode assigned.
 ///
 /// The geometry is post-rotation: xrandr reports a rotated output as the shape
@@ -138,6 +140,91 @@ pub fn primary_of(outputs: &[Output]) -> Option<&Output> {
         .iter()
         .find(|output| output.primary)
         .or_else(|| outputs.first())
+}
+
+/// One monitor a wallpaper can be put on.
+///
+/// The same shape on every platform, which is the point: everything above this
+/// is a pure function over a list of these, and the only per-OS work left is
+/// filling the list in and handing the finished images back out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Monitor {
+    /// Stable per connector, and the key a setter needs: the xrandr output name
+    /// on Linux, the display device path on Windows.
+    pub id: String,
+    /// What the UI shows. Never used to address anything.
+    pub label: String,
+    /// Virtual-desktop coordinates in physical pixels, post-rotation.
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
+impl Monitor {
+    /// This monitor's rectangle in the virtual desktop.
+    pub fn rect(&self) -> layout::Rect {
+        layout::Rect {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+impl From<Output> for Monitor {
+    /// An xrandr output is already a monitor; the connector name is both the
+    /// key a setter needs and the name a person recognizes.
+    fn from(output: Output) -> Self {
+        Self {
+            label: output.name.clone(),
+            id: output.name,
+            x: output.x,
+            y: output.y,
+            width: output.width,
+            height: output.height,
+            primary: output.primary,
+        }
+    }
+}
+
+/// The monitor a wallpaper is anchored to by default: the primary, or the first.
+///
+/// The same fallback [`primary_of`] makes, and for the same reason: a session
+/// that marks nothing primary is common and is not a session to refuse.
+pub fn primary_monitor_of(monitors: &[Monitor]) -> Option<&Monitor> {
+    monitors
+        .iter()
+        .find(|monitor| monitor.primary)
+        .or_else(|| monitors.first())
+}
+
+/// Every monitor this session has, in the order the platform lists them.
+///
+/// Three-valued the way [`outputs`] is, and load-bearing in the same way:
+/// `None` where there is no way to ask, an empty list where the query answered
+/// with nothing usable, and a list otherwise.
+#[cfg(target_os = "linux")]
+pub fn monitors() -> Option<Vec<Monitor>> {
+    Some(outputs()?.into_iter().map(Monitor::from).collect())
+}
+
+#[cfg(windows)]
+pub fn monitors() -> Option<Vec<Monitor>> {
+    match crate::wallpaper::enumerate_monitors() {
+        Ok(monitors) => Some(monitors),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot enumerate the monitors");
+            None
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn monitors() -> Option<Vec<Monitor>> {
+    None
 }
 
 /// Ask the display server what it has.
@@ -306,6 +393,57 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         assert!(parse_outputs("").is_empty());
         assert!(parse_outputs("xrandr: Can't open display\n").is_empty());
         assert!(primary_of(&[]).is_none());
+    }
+
+    #[test]
+    fn an_output_becomes_a_monitor_with_its_connector_as_both_names() {
+        // The connector name is the key a setter addresses and the name a
+        // person recognizes, and on Linux those are the same string.
+        let monitors: Vec<Monitor> = parse_outputs(DESK).into_iter().map(Monitor::from).collect();
+        assert_eq!(monitors.len(), 2, "{monitors:?}");
+        assert_eq!(monitors[0].id, "DP-1");
+        assert_eq!(monitors[0].label, "DP-1");
+        assert_eq!((monitors[0].width, monitors[0].height), (3440, 1440));
+        assert_eq!((monitors[0].x, monitors[0].y), (1680, 0));
+        assert!(!monitors[0].primary);
+        assert_eq!((monitors[1].x, monitors[1].y), (0, -200));
+        assert!(monitors[1].primary);
+        assert_eq!(
+            primary_monitor_of(&monitors).map(|m| m.id.as_str()),
+            Some("HDMI-1"),
+            "the marked one, not the first listed"
+        );
+    }
+
+    #[test]
+    fn the_monitor_rectangle_is_the_outputs_own_geometry() {
+        let monitors: Vec<Monitor> = parse_outputs(DESK).into_iter().map(Monitor::from).collect();
+        assert_eq!(
+            monitors[0].rect(),
+            layout::Rect {
+                x: 1680,
+                y: 0,
+                width: 3440,
+                height: 1440
+            }
+        );
+    }
+
+    /// Everything above this reads one list, so a platform that cannot ask has
+    /// to be distinguishable from a session with nothing on it.
+    #[test]
+    fn a_platform_with_no_query_answers_that_it_cannot_ask() {
+        #[cfg(not(any(windows, target_os = "linux")))]
+        assert!(monitors().is_none());
+        // Where there is a query, it either answered or said it could not, and
+        // both are answers this run must not confuse for a monitor list.
+        #[cfg(any(windows, target_os = "linux"))]
+        if let Some(list) = monitors() {
+            assert!(
+                list.iter().all(|m| !m.id.is_empty()),
+                "a monitor nothing can address is not one to plan around: {list:?}"
+            );
+        }
     }
 
     #[test]

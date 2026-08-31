@@ -114,16 +114,64 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
         .ok()
 }
 
-/// Detect the primary monitor's physical resolution in pixels.
+/// Declare this process per-monitor DPI aware, once, before anything asks Win32
+/// where a monitor is.
 ///
-/// Uses `EnumDisplayMonitors` + `GetMonitorInfoW` to find the primary
-/// monitor and read its pixel dimensions from `rcMonitor`.
+/// `rcMonitor` is in virtual-screen coordinates, and those are physical pixels
+/// only for a per-monitor aware process; a DPI-unaware one is handed the
+/// virtualized rectangle instead, so under mixed scaling every monitor's size
+/// and position would be wrong. winit does set
+/// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`, but only from `EventLoop::new`,
+/// which is reached when the settings window is built and never at all in a
+/// headless run: `sunlit-earth displays` and `render` create no window, and
+/// `displays` is precisely the command that exists to report these rectangles.
+/// So the declaration is made here rather than left to whoever creates a window
+/// first.
 ///
-/// Off Windows the same question is answered by [`crate::display`], which parses
-/// `xrandr --query`: there is no API in this crate to ask, so it asks a program.
+/// Idempotent by construction. A process whose awareness is already set refuses
+/// the call with `ERROR_ACCESS_DENIED`, which is the case where winit got here
+/// first and is the outcome this wants either way, so the return value is not an
+/// error to report.
+#[cfg(windows)]
+pub fn ensure_dpi_awareness() {
+    use std::sync::Once;
+
+    use windows_sys::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: SetProcessDpiAwarenessContext takes one of the predefined
+        // pseudo-handles by value and touches nothing of ours. It is safe to
+        // call on any thread and at any time; it merely fails where the
+        // awareness is already set.
+        #[allow(unsafe_code)]
+        let set =
+            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        debug!(
+            already_aware = set == 0,
+            "declared this process per-monitor DPI aware"
+        );
+    });
+}
+
+/// Every monitor Windows has, with the rectangle each occupies.
+///
+/// `EnumDisplayMonitors` + `GetMonitorInfoW`, keeping every monitor rather than
+/// only the one flagged primary, because the position of each is what a
+/// multi-monitor plan is built out of. `rcMonitor` is in virtual-screen
+/// coordinates, which are physical pixels for a per-monitor DPI aware process;
+/// see `docs/platforms.md` for what makes this one aware.
+///
+/// The `id` is `szDevice` (`\\.\DISPLAY1`) until [`desktop_wallpaper`] can
+/// improve on it: `IDesktopWallpaper` addresses a monitor by a device path that
+/// survives a reboot, and `szDevice` does not. Off Windows the same question is
+/// answered by [`crate::display`], which parses `xrandr --query`: there is no
+/// API in this crate to ask, so it asks a program.
 #[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
+pub fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
@@ -150,7 +198,8 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
         TRUE
     }
 
-    let mut monitors: Vec<HMONITOR> = Vec::new();
+    ensure_dpi_awareness();
+    let mut handles: Vec<HMONITOR> = Vec::new();
 
     // SAFETY: EnumDisplayMonitors with null HDC/RECT enumerates all monitors.
     // The callback receives a valid lparam pointing to our Vec. The call is
@@ -161,14 +210,15 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
             ptr::null_mut(),
             ptr::null(),
             Some(enum_callback),
-            (&raw mut monitors) as LPARAM,
+            (&raw mut handles) as LPARAM,
         )
     };
     if success == 0 {
         return Err("EnumDisplayMonitors failed".to_owned());
     }
 
-    for &hmon in &monitors {
+    let mut monitors = Vec::with_capacity(handles.len());
+    for &hmon in &handles {
         let mut info: MONITORINFOEXW = {
             // SAFETY: MONITORINFOEXW is a plain-old-data C struct.
             // Zeroing it is safe; we set cbSize immediately after.
@@ -187,16 +237,63 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
             continue;
         }
 
-        if info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0 {
-            let rc = info.monitorInfo.rcMonitor;
-            let width = (rc.right - rc.left) as u32;
-            let height = (rc.bottom - rc.top) as u32;
-            debug!(width, height, "detected primary monitor resolution");
-            return Ok((width, height));
-        }
+        let rc = info.monitorInfo.rcMonitor;
+        let device = wide_to_string(&info.szDevice);
+        monitors.push(crate::display::Monitor {
+            label: display_label(&device, monitors.len()),
+            id: device,
+            x: rc.left,
+            y: rc.top,
+            width: (rc.right - rc.left) as u32,
+            height: (rc.bottom - rc.top) as u32,
+            primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+        });
     }
+    debug!(count = monitors.len(), "enumerated the monitors");
+    Ok(monitors)
+}
 
-    Err("No primary monitor found".to_owned())
+/// A null-terminated fixed-width UTF-16 field as a `String`.
+#[cfg(windows)]
+fn wide_to_string(field: &[u16]) -> String {
+    let end = field.iter().position(|&c| c == 0).unwrap_or(field.len());
+    String::from_utf16_lossy(&field[..end])
+}
+
+/// What to call a Windows monitor in the settings window.
+///
+/// `\\.\DISPLAY2` is what Windows answers with and is not what its own display
+/// settings show anybody, so the digit is lifted out of it and the position in
+/// the enumeration stands in where there is no digit to lift.
+#[cfg(windows)]
+fn display_label(device: &str, index: usize) -> String {
+    let number = device
+        .rsplit('\\')
+        .next()
+        .and_then(|name| name.strip_prefix("DISPLAY"))
+        .and_then(|digits| digits.parse::<u32>().ok());
+    match number {
+        Some(number) => format!("Display {number}"),
+        None => format!("Display {}", index + 1),
+    }
+}
+
+/// Detect the primary monitor's physical resolution in pixels.
+///
+/// One enumeration, not two: this is [`enumerate_monitors`] narrowed to the
+/// monitor a single-screen wallpaper is sized for, with the same fallback to
+/// the first that [`crate::display::primary_of`] makes for xrandr.
+#[cfg(windows)]
+pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
+    let monitors = enumerate_monitors()?;
+    let monitor = crate::display::primary_monitor_of(&monitors)
+        .ok_or_else(|| "No primary monitor found".to_owned())?;
+    debug!(
+        width = monitor.width,
+        height = monitor.height,
+        "detected primary monitor resolution"
+    );
+    Ok((monitor.width, monitor.height))
 }
 
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the
@@ -354,6 +451,57 @@ mod tests {
         let (w, h) = get_primary_monitor_resolution().expect("should detect primary monitor");
         assert!(w > 0, "width should be > 0");
         assert!(h > 0, "height should be > 0");
+    }
+
+    /// The Windows half of the platform seam, asserted against whatever this
+    /// machine has: shape rather than values, because the values are the
+    /// machine's.
+    #[test]
+    #[cfg(windows)]
+    fn every_monitor_is_enumerated_with_a_rectangle_and_one_of_them_is_primary() {
+        let monitors = enumerate_monitors().expect("Windows can enumerate its monitors");
+        assert!(!monitors.is_empty(), "a desktop session has a monitor");
+        for monitor in &monitors {
+            assert!(
+                monitor.width > 0 && monitor.height > 0,
+                "a monitor with no pixels: {monitor:?}"
+            );
+            assert!(!monitor.id.is_empty(), "nothing to address: {monitor:?}");
+            assert!(monitor.label.starts_with("Display "), "{monitor:?}");
+        }
+        assert_eq!(
+            monitors.iter().filter(|m| m.primary).count(),
+            1,
+            "Windows marks exactly one monitor primary: {monitors:?}"
+        );
+        // And the narrowed query answers out of the same list rather than
+        // enumerating a second time with its own rules.
+        let primary = monitors.iter().find(|m| m.primary).unwrap();
+        assert_eq!(
+            get_primary_monitor_resolution().unwrap(),
+            (primary.width, primary.height)
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_display_device_is_labelled_by_its_own_number() {
+        assert_eq!(display_label(r"\\.\DISPLAY2", 0), "Display 2");
+        // A device path with no number to lift falls back to where it came in
+        // the enumeration rather than to a name that addresses nothing.
+        assert_eq!(display_label("", 3), "Display 4");
+        assert_eq!(display_label(r"\\.\WEIRD", 0), "Display 1");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_fixed_width_device_field_stops_at_its_terminator() {
+        let mut field = [0u16; 32];
+        for (slot, c) in field.iter_mut().zip("ok".encode_utf16()) {
+            *slot = c;
+        }
+        assert_eq!(wide_to_string(&field), "ok");
+        assert_eq!(wide_to_string(&[]), "");
     }
 
     #[test]

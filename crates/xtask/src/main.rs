@@ -129,6 +129,12 @@ enum VmCommand {
         #[arg(long)]
         desktop: Option<Desktop>,
     },
+    /// End a builder guest and keep everything in it, so the next build in it
+    /// resumes. Builder images only: a guest the suite runs in is pristine on
+    /// every boot.
+    Stop { image: Image },
+    /// Resume a stopped builder guest, with the build directory it was holding.
+    Start { image: Image },
     /// Open a shell in the running guest, or run one command in it.
     Ssh {
         image: Image,
@@ -245,6 +251,8 @@ fn main() -> ExitCode {
                 allow_expired_image,
                 desktop,
             } => vm::up(&runner, image, allow_expired_image, desktop),
+            VmCommand::Stop { image } => vm::stop(&runner, image),
+            VmCommand::Start { image } => vm::start(&runner, image),
             VmCommand::Ssh { image, command } => vm::ssh(&runner, image, &command),
             VmCommand::View { image } => vm::view(&runner, image),
             VmCommand::Smoke {

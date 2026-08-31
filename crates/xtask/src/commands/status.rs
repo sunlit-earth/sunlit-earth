@@ -231,6 +231,24 @@ fn run_state_section(image: Image, entry: &ImageInventory, root: &std::path::Pat
         (Some(state), Some(true)) => {
             let _ = write!(out, "{}", running_vm(image, state));
         }
+        // A stopped guest and a crashed one are both registered and not
+        // running, and reading as the same thing is what would have somebody
+        // clear away a build directory they meant to keep.
+        (Some(state), Some(false)) if state.stopped => {
+            let _ = writeln!(
+                out,
+                "  {} is stopped, holding its overlay and no memory",
+                state.vm_name
+            );
+            let _ = writeln!(
+                out,
+                "    start:   `cargo xtask vm start {image}` resumes it with what is in it"
+            );
+            let _ = writeln!(
+                out,
+                "    down:    `cargo xtask vm down {image}` frees the overlay instead"
+            );
+        }
         (Some(state), Some(false)) => {
             let _ = writeln!(
                 out,
@@ -468,6 +486,41 @@ mod tests {
         assert!(text.contains("registered but not running"), "{text}");
         assert!(text.contains("left behind by a test run"), "{text}");
         assert!(text.contains("cargo xtask vm down linux"), "{text}");
+    }
+
+    /// A stopped builder and a crashed guest are both registered and not
+    /// running, and reading as the same thing is how somebody clears away a
+    /// build directory they meant to keep.
+    #[test]
+    fn a_stopped_builder_is_reported_as_stopped_rather_than_as_a_leftover() {
+        let mut entry = healthy(Image::WindowsBuilder);
+        let mut state = running_state(Image::WindowsBuilder);
+        state.reason = StartReason::Suite;
+        state.stopped = true;
+        entry.state = Some(state.clone());
+        entry.running = Some(false);
+        entry.run_files = vec![FileInfo::new(
+            "/srv/vm/run/windows-builder/overlay.qcow2",
+            6 * 1024 * 1024 * 1024,
+            BUILT,
+        )];
+        let text = render(&inventory(vec![entry.clone()]), now());
+        assert!(text.contains("is stopped"), "{text}");
+        assert!(text.contains("holding its overlay"), "{text}");
+        assert!(
+            text.contains("cargo xtask vm start windows-builder"),
+            "{text}"
+        );
+        assert!(text.contains("6.0 GiB"), "{text}");
+        assert!(!text.contains("registered but not running"), "{text}");
+
+        // The same record without the stop is the crashed guest, which gets the
+        // teardown and no offer to resume anything.
+        state.stopped = false;
+        entry.state = Some(state);
+        let crashed = render(&inventory(vec![entry]), now());
+        assert!(crashed.contains("registered but not running"), "{crashed}");
+        assert!(!crashed.contains("vm start"), "{crashed}");
     }
 
     #[test]

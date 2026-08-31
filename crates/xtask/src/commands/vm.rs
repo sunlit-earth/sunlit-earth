@@ -637,15 +637,15 @@ fn stopped_line(
 ) -> String {
     let overlay = overlay_bytes.map_or_else(
         || "its overlay stays".to_owned(),
-        |bytes| format!("its overlay stays, {}", util::format_bytes(bytes)),
+        |bytes| format!("its overlay stays, {} of it", util::format_bytes(bytes)),
     );
     let what = if stopped == provider::Stopped::Stopped {
-        "is stopped"
+        "is stopped: the memory is back and"
     } else {
-        "was not running and is recorded as stopped"
+        "was not running; it is recorded as stopped and"
     };
     format!(
-        "{vm_name} {what}: {overlay} and the memory is back. \
+        "{vm_name} {what} {overlay}. \
          `cargo xtask vm start {image}` resumes it, `cargo xtask vm down {image}` \
          frees it."
     )

@@ -300,7 +300,7 @@ Done, on `feat/multi-monitor`, before the app work: `cargo xtask vm up linux --s
 
 ### Step 0b: two packages in the Linux image
 
-- Files: `vm/linux/scripts/desktop.sh`, then `cargo xtask vm build-image linux` (the better part of an hour) and a `vm up linux --screens 2` to confirm.
+- Files: `vm/linux/scripts/desktop.sh`, then `cargo xtask vm build-image linux` and a `vm up linux --screens 2` to confirm. Measured on 2026-08-31: the rebuild took 5 minutes 26 seconds, not the better part of an hour this said and not the tens of minutes to an hour CLAUDE.md quotes. Why it is so much cheaper than the estimate was not investigated; the number is the one this machine measured.
 - `xinput`, which `vm::map_pointer_command` needs and without which a two-screen guest's pointer covers the whole desktop and clicks at twice the x it was aimed at. The boot already says so in one line, so this changes a warning into a working pointer.
 - `arandr`, a display settings UI that works in every session. The default Plasma session has none in this minimal install; GNOME, XFCE and Cinnamon already carry `gnome-control-center`, `xfce4-display-settings` and `cinnamon-settings`. Plasma's own module (`kscreen` plus `systemsettings`) is the alternative and costs tens of megabytes; `arandr` covers every session for about one.
 - Both were installed by hand into a running guest to check they do the job before the image carries them. A guest is pristine on every boot, so that proof does not survive one.

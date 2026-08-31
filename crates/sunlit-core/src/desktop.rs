@@ -16,7 +16,9 @@
 //! sink runs the commands, so the table is tested on every platform against
 //! fabricated sessions rather than only where a desktop exists.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use crate::display::layout::DisplayMode;
 
 /// The variable that says which desktop this is.
 ///
@@ -55,8 +57,7 @@ enum Kind {
         schema: &'static str,
         keys: &'static [&'static str],
         uri: bool,
-        /// The key and value that make the image fill the screen, where the
-        /// schema has one.
+        /// The key that says how the image is fitted, where the schema has one.
         ///
         /// Set for the same reason the Windows sink writes `WallpaperStyle=10`
         /// before applying: the frame was rendered at this display's exact
@@ -64,7 +65,11 @@ enum Kind {
         /// the wrong size on a background of its own. It is set before the image
         /// rather than after, so that the write which makes the shell repaint is
         /// the one carrying the new picture.
-        fill: Option<(&'static str, &'static str)>,
+        ///
+        /// The value is `zoom` for one screen's image and `spanned` for a canvas
+        /// over the whole virtual desktop, which is the only per-monitor reach
+        /// these schemas have.
+        fill: Option<&'static str>,
     },
     /// `plasma-apply-wallpaperimage <path>`, which is Plasma's own tool for
     /// exactly this and does the plasmashell scripting itself.
@@ -79,6 +84,67 @@ enum Kind {
     /// `pcmanfm-qt --set-wallpaper <path>`, `LXQt`'s file manager doubling as its
     /// desktop.
     Lxqt,
+}
+
+/// How far into a multi-monitor session one desktop's setter reaches.
+///
+/// A property of the desktop, not a guess the sink makes: which of the three
+/// this is decides what the publish writes, and a row that claimed more than its
+/// setter can do would produce files nothing reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// A wallpaper per monitor, addressed by the monitor's own name.
+    PerMonitor,
+    /// One image, with a fit mode that stretches it over the whole virtual
+    /// desktop where the mode asks for that.
+    Spanned,
+    /// One image, which every screen shows. No fit mode reaches further.
+    OneImage,
+}
+
+/// What one publish left on disk, in the terms a desktop's setter takes.
+///
+/// The sink cuts and writes; the table only says which path goes where. Keeping
+/// the two apart is what lets the table stay a pure function over fabricated
+/// sessions on a machine with one screen or none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    /// One image per monitor, by the monitor's own name, in layout order.
+    ///
+    /// Empty where the publish did not cut one image per screen, which is every
+    /// reach but [`Reach::PerMonitor`].
+    pub per_monitor: Vec<(String, PathBuf)>,
+    /// Monitors this publish deliberately did not paint, by name.
+    ///
+    /// A desktop that addresses monitors individually leaves these alone, which
+    /// is what one-screen mode means on a session with more than one screen.
+    /// One that cannot address them gives them the single image, because the
+    /// alternative is setting no wallpaper at all.
+    pub untouched: Vec<String>,
+    /// The one image a desktop that holds only one shows.
+    pub single: PathBuf,
+    /// Whether `single` covers the whole virtual desktop rather than one screen.
+    pub spanned: bool,
+}
+
+impl Placement {
+    /// One image for everything, which is what a single-monitor session is.
+    pub fn single(path: PathBuf) -> Self {
+        Self {
+            per_monitor: Vec::new(),
+            untouched: Vec::new(),
+            single: path,
+            spanned: false,
+        }
+    }
+
+    /// The image for one monitor, or the single one where it has none of its own.
+    fn for_monitor(&self, monitor: &str) -> &Path {
+        self.per_monitor
+            .iter()
+            .find(|(name, _)| name == monitor)
+            .map_or(self.single.as_path(), |(_, path)| path.as_path())
+    }
 }
 
 /// A desktop's way of being told, and what it is called.
@@ -151,17 +217,62 @@ impl Backend {
         }
     }
 
-    /// Everything to run, in order, to make `image` this desktop's wallpaper.
+    /// How far this desktop's setter reaches into a multi-monitor session.
+    pub fn reach(&self) -> Reach {
+        match self.kind {
+            // The backdrop properties are named after the monitor, so a session
+            // with two screens has two of them and they can hold two paths.
+            Kind::Xfce => Reach::PerMonitor,
+            // No per-monitor wallpaper in any of these schemas, but
+            // `picture-options` has a `spanned` value that stretches one image
+            // over the whole virtual desktop.
+            Kind::Gsettings { .. } => Reach::Spanned,
+            // `plasma-apply-wallpaperimage` sets every containment, and Plasma
+            // has no span mode at all. Per-screen needs a plasmashell script
+            // over D-Bus, which is a new program on PATH and an ordering
+            // assumption between containment index and monitor; neither is a
+            // thing to write without a two-head session to check it in.
+            Kind::Kde | Kind::Lxqt => Reach::OneImage,
+        }
+    }
+
+    /// What to say when the mode asked for more than this desktop reaches.
+    ///
+    /// Not a failure: the sink does the nearest thing and this is the sentence
+    /// that says which, in the same voice as the refusals. `None` where the
+    /// desktop did exactly what was asked, which includes every single-monitor
+    /// session, since all three modes mean the same thing on one screen.
+    pub fn degradation(&self, mode: DisplayMode, screens: usize) -> Option<String> {
+        if screens < 2 {
+            return None;
+        }
+        let desktop = self.desktop;
+        match (self.reach(), mode) {
+            (Reach::PerMonitor, _) | (Reach::Spanned, DisplayMode::AcrossScreens) => None,
+            (Reach::Spanned, _) => Some(format!(
+                "{desktop} has one wallpaper for all monitors, so every screen got the same image"
+            )),
+            (Reach::OneImage, DisplayMode::AcrossScreens) => Some(format!(
+                "{desktop} sets one wallpaper on every screen and has no view across them, so \
+                 each screen got the chosen screen's own picture instead"
+            )),
+            (Reach::OneImage, _) => Some(format!(
+                "{desktop} sets one wallpaper on every screen, so all {screens} got the same image"
+            )),
+        }
+    }
+
+    /// Everything to run, in order, to make `placement` this desktop's wallpaper.
     ///
     /// Empty means the desktop was asked something and answered with nothing
     /// usable, which is a refusal rather than a success: the caller must not
     /// report a wallpaper it did not set.
     ///
-    /// `monitors` are the connected outputs' own names, which only XFCE uses and
-    /// which it cannot do without: see `xfce_live_property`. An empty slice
-    /// leaves it with whatever its listing offered.
-    pub fn commands(&self, image: &Path, discovered: &str, monitors: &[String]) -> Vec<Invocation> {
-        let path = image.to_string_lossy().into_owned();
+    /// Only XFCE reads `placement.per_monitor`, and it cannot do without the
+    /// monitors' own names: see `xfce_live_property`. An empty list leaves it
+    /// with whatever its listing offered, all of it holding the single image.
+    pub fn commands(&self, placement: &Placement, discovered: &str) -> Vec<Invocation> {
+        let single = placement.single.to_string_lossy().into_owned();
         match self.kind {
             Kind::Gsettings {
                 schema,
@@ -169,7 +280,11 @@ impl Backend {
                 uri,
                 fill,
             } => {
-                let value = if uri { file_uri(image) } else { path.clone() };
+                let value = if uri {
+                    file_uri(&placement.single)
+                } else {
+                    single
+                };
                 let set = |key: &str, value: &str| {
                     Invocation::new(
                         "gsettings",
@@ -181,12 +296,13 @@ impl Backend {
                         ],
                     )
                 };
-                fill.map(|(key, mode)| set(key, mode))
+                let mode = if placement.spanned { "spanned" } else { "zoom" };
+                fill.map(|key| set(key, mode))
                     .into_iter()
                     .chain(keys.iter().map(|key| set(key, &value)))
                     .collect()
             }
-            Kind::Kde => vec![Invocation::new("plasma-apply-wallpaperimage", [path])],
+            Kind::Kde => vec![Invocation::new("plasma-apply-wallpaperimage", [single])],
             Kind::Xfce => {
                 let write = |property: String, create: Option<&str>, value: String| {
                     let mut args = vec![
@@ -206,15 +322,24 @@ impl Backend {
                     args.push(value);
                     Invocation::new("xfconf-query", args)
                 };
-                // Every property of each kind that has to end up carrying the
+                // Every property of each kind that has to end up carrying a
                 // value: the ones the session already has, plus the one
                 // xfdesktop reads for each connected monitor, which a session
                 // that has never had its wallpaper changed does not have yet.
                 let plan = |suffix: &str, create_kind: &'static str| {
-                    let listed: Vec<String> = xfce_properties(discovered, suffix).collect();
-                    let missing: Vec<String> = monitors
+                    // A property naming a screen this publish left alone is not
+                    // written at all, which is the only way to leave it alone.
+                    let listed: Vec<String> = xfce_properties(discovered, suffix)
+                        .filter(|property| {
+                            xfce_monitor_of(property).is_none_or(|monitor| {
+                                !placement.untouched.iter().any(|name| name == monitor)
+                            })
+                        })
+                        .collect();
+                    let missing: Vec<String> = placement
+                        .per_monitor
                         .iter()
-                        .map(|monitor| xfce_live_property(monitor, suffix))
+                        .map(|(monitor, _)| xfce_live_property(monitor, suffix))
                         .filter(|property| !listed.contains(property))
                         .collect();
                     listed
@@ -240,16 +365,24 @@ impl Backend {
                 plan(XFCE_STYLE_PROPERTY, "int")
                     .into_iter()
                     .map(|(property, create)| write(property, create, XFCE_ZOOMED.to_owned()))
-                    .chain(
-                        images
-                            .into_iter()
-                            .map(|(property, create)| write(property, create, path.clone())),
-                    )
+                    .chain(images.into_iter().map(|(property, create)| {
+                        // A property carries the picture of the monitor it is
+                        // named after; one that names no monitor this session
+                        // has takes the single image, which is what it held
+                        // before there was more than one.
+                        let image = xfce_monitor_of(&property)
+                            .map_or(placement.single.as_path(), |monitor| {
+                                placement.for_monitor(monitor)
+                            })
+                            .to_string_lossy()
+                            .into_owned();
+                        write(property, create, image)
+                    }))
                     .collect()
             }
             Kind::Lxqt => vec![Invocation::new(
                 "pcmanfm-qt",
-                ["--set-wallpaper".to_owned(), path],
+                ["--set-wallpaper".to_owned(), single],
             )],
         }
     }
@@ -269,6 +402,19 @@ impl Backend {
             self.desktop
         )
     }
+}
+
+/// The monitor a backdrop property is named after, where it names one.
+///
+/// `/backdrop/screen0/monitorDP-1/workspace0/last-image` is `DP-1`. A property
+/// from a much older xfdesktop names a screen index instead
+/// (`/backdrop/screen0/monitor0/...`), which matches no connected monitor and so
+/// falls back to the single image, which is what it held before this.
+fn xfce_monitor_of(property: &str) -> Option<&str> {
+    property
+        .split('/')
+        .find_map(|segment| segment.strip_prefix("monitor"))
+        .filter(|monitor| !monitor.is_empty())
 }
 
 /// The backdrop properties in `xfconf-query -c xfce4-desktop -l` with one suffix.
@@ -343,7 +489,7 @@ const BACKENDS: &[(&[&str], Backend)] = &[
                 schema: "org.cinnamon.desktop.background",
                 keys: &["picture-uri"],
                 uri: true,
-                fill: Some(("picture-options", "zoom")),
+                fill: Some("picture-options"),
             },
         },
     ),
@@ -357,7 +503,7 @@ const BACKENDS: &[(&[&str], Backend)] = &[
                 // A path, not a URI: the key is named for what it holds.
                 keys: &["picture-filename"],
                 uri: false,
-                fill: Some(("picture-options", "zoom")),
+                fill: Some("picture-options"),
             },
         },
     ),
@@ -397,7 +543,7 @@ const GNOME_BACKGROUND: Kind = Kind::Gsettings {
     schema: "org.gnome.desktop.background",
     keys: &["picture-uri", "picture-uri-dark"],
     uri: true,
-    fill: Some(("picture-options", "zoom")),
+    fill: Some("picture-options"),
 };
 
 /// The backend for a desktop, from the value of [`DESKTOP_ENV`].
@@ -454,16 +600,39 @@ mod tests {
         commands_on(desktop, path, discovered, &[])
     }
 
+    /// One image, shown on every monitor named, which is what a single-screen
+    /// session and every reach short of per-monitor come down to.
     fn commands_on(
         desktop: &str,
         path: &str,
         discovered: &str,
         monitors: &[&str],
     ) -> Vec<Invocation> {
-        let monitors: Vec<String> = monitors.iter().map(|m| (*m).to_owned()).collect();
+        let placement = Placement {
+            per_monitor: monitors
+                .iter()
+                .map(|m| ((*m).to_owned(), PathBuf::from(path)))
+                .collect(),
+            untouched: Vec::new(),
+            single: PathBuf::from(path),
+            spanned: false,
+        };
         detect(desktop)
             .unwrap_or_else(|| panic!("{desktop} has a backend"))
-            .commands(Path::new(path), discovered, &monitors)
+            .commands(&placement, discovered)
+    }
+
+    /// A two-monitor session where each screen has its own picture.
+    fn two_screens() -> Placement {
+        Placement {
+            per_monitor: vec![
+                ("Virtual-1".to_owned(), PathBuf::from("/w-0.png")),
+                ("Virtual-2".to_owned(), PathBuf::from("/w-1.png")),
+            ],
+            untouched: Vec::new(),
+            single: PathBuf::from("/w-0.png"),
+            spanned: false,
+        }
     }
 
     #[test]
@@ -717,7 +886,7 @@ mod tests {
         let listing = "/backdrop/screen0/monitor0/workspace0/image-style\n";
         assert!(
             backend
-                .commands(Path::new("/w.png"), listing, &[])
+                .commands(&Placement::single(PathBuf::from("/w.png")), listing)
                 .is_empty()
         );
     }
@@ -726,16 +895,13 @@ mod tests {
     fn an_xfce_session_with_no_backdrop_property_is_a_refusal_not_a_success() {
         // Nothing to run must never read as a wallpaper that was set.
         let backend = detect("XFCE").expect("a backend");
+        let placement = Placement::single(PathBuf::from("/w.png"));
         assert!(
             backend
-                .commands(
-                    Path::new("/w.png"),
-                    "/backdrop/single-workspace-mode\n",
-                    &[]
-                )
+                .commands(&placement, "/backdrop/single-workspace-mode\n")
                 .is_empty()
         );
-        assert!(backend.commands(Path::new("/w.png"), "", &[]).is_empty());
+        assert!(backend.commands(&placement, "").is_empty());
         let message = backend.nothing_to_run();
         assert!(message.contains("XFCE"), "{message}");
         assert!(message.contains("last-image"), "{message}");
@@ -766,7 +932,7 @@ mod tests {
             let desktop = names[0];
             let discovered = "/backdrop/screen0/monitor0/workspace0/image-style\n\
                               /backdrop/screen0/monitor0/workspace0/last-image";
-            let cmds = backend.commands(Path::new("/w.png"), discovered, &[]);
+            let cmds = backend.commands(&Placement::single(PathBuf::from("/w.png")), discovered);
             assert!(!cmds.is_empty(), "{desktop} produced no command");
             for cmd in &cmds {
                 assert_eq!(cmd.program, backend.program, "{desktop}");
@@ -775,6 +941,155 @@ mod tests {
                 assert_eq!(discovery.program, backend.program, "{desktop}");
             }
         }
+    }
+
+    /// The one row that can address a screen, doing it.
+    #[test]
+    fn xfce_gives_each_monitor_the_picture_that_monitor_is_named_after() {
+        let listing = "\
+/backdrop/screen0/monitorVirtual-1/workspace0/last-image
+/backdrop/screen0/monitorVirtual-2/workspace0/last-image
+";
+        let cmds = detect("XFCE")
+            .expect("a backend")
+            .commands(&two_screens(), listing);
+        let images: Vec<&String> = cmds
+            .iter()
+            .filter(|c| c.args[3].ends_with(XFCE_IMAGE_PROPERTY))
+            .map(|c| &c.args[5])
+            .collect();
+        assert_eq!(images, vec!["/w-0.png", "/w-1.png"], "{cmds:?}");
+    }
+
+    /// A property naming a monitor this session does not have is the legacy
+    /// `monitor0` shape, and it keeps holding the one image it always held.
+    #[test]
+    fn an_xfce_property_naming_no_connected_monitor_takes_the_single_image() {
+        let listing = "/backdrop/screen0/monitor0/workspace0/last-image\n";
+        let cmds = detect("XFCE")
+            .expect("a backend")
+            .commands(&two_screens(), listing);
+        let legacy = cmds
+            .iter()
+            .find(|c| c.args[3] == "/backdrop/screen0/monitor0/workspace0/last-image")
+            .expect("the legacy property is still written");
+        assert_eq!(legacy.args[5], "/w-0.png");
+        assert_eq!(
+            xfce_monitor_of("/backdrop/screen0/monitorDP-1/w0/x"),
+            Some("DP-1")
+        );
+        assert_eq!(xfce_monitor_of("/backdrop/single-workspace-mode"), None);
+    }
+
+    /// A screen the mode does not paint keeps whatever it was showing, which is
+    /// what makes one-screen mode an escape hatch rather than a narrower version
+    /// of the same thing.
+    #[test]
+    fn xfce_does_not_write_the_property_of_a_screen_the_publish_left_alone() {
+        let listing = "\
+/backdrop/screen0/monitorVirtual-1/workspace0/last-image
+/backdrop/screen0/monitorVirtual-2/workspace0/last-image
+";
+        let placement = Placement {
+            per_monitor: vec![("Virtual-1".to_owned(), PathBuf::from("/w-0.png"))],
+            untouched: vec!["Virtual-2".to_owned()],
+            single: PathBuf::from("/w-0.png"),
+            spanned: false,
+        };
+        let cmds = detect("XFCE")
+            .expect("a backend")
+            .commands(&placement, listing);
+        assert!(
+            cmds.iter().all(|c| !c.args[3].contains("Virtual-2")),
+            "{cmds:?}"
+        );
+        assert!(
+            cmds.iter().any(|c| c.args[3].contains("Virtual-1")),
+            "{cmds:?}"
+        );
+    }
+
+    /// The gsettings schemas have one wallpaper and a fit mode, and `spanned` is
+    /// the only thing in either that reaches past one screen.
+    #[test]
+    fn a_canvas_is_spanned_and_one_screens_image_is_zoomed() {
+        for desktop in ["GNOME", "X-Cinnamon", "MATE", "Budgie"] {
+            let backend = detect(desktop).expect(desktop);
+            let spanned = Placement {
+                per_monitor: Vec::new(),
+                untouched: Vec::new(),
+                single: PathBuf::from("/canvas.png"),
+                spanned: true,
+            };
+            let cmds = backend.commands(&spanned, "");
+            assert_eq!(cmds[0].args[2], "picture-options", "{desktop}: {cmds:?}");
+            assert_eq!(cmds[0].args[3], "spanned", "{desktop}: {cmds:?}");
+            assert!(
+                cmds.last().expect("a command").args[3].contains("canvas.png"),
+                "{desktop}: {cmds:?}"
+            );
+        }
+    }
+
+    /// Every row says how far it reaches, and the reach is what decides what a
+    /// publish writes rather than the sink guessing per desktop.
+    #[test]
+    fn every_row_says_how_far_it_reaches() {
+        assert_eq!(detect("XFCE").unwrap().reach(), Reach::PerMonitor);
+        for desktop in ["GNOME", "X-Cinnamon", "MATE", "Budgie"] {
+            assert_eq!(
+                detect(desktop).unwrap().reach(),
+                Reach::Spanned,
+                "{desktop}"
+            );
+        }
+        for desktop in ["KDE", "LXQt"] {
+            assert_eq!(
+                detect(desktop).unwrap().reach(),
+                Reach::OneImage,
+                "{desktop}"
+            );
+        }
+    }
+
+    /// A mode a desktop cannot reach is not a failure, and the sentence that
+    /// says what happened instead names the desktop.
+    #[test]
+    fn a_desktop_that_cannot_reach_the_mode_says_what_it_did_instead() {
+        // One screen has nothing to explain: all three modes mean the same.
+        for (_, backend) in BACKENDS {
+            for mode in DisplayMode::ALL {
+                assert_eq!(backend.degradation(mode, 1), None, "{}", backend.desktop);
+            }
+        }
+        // XFCE reaches every mode on any number of screens.
+        let xfce = detect("XFCE").unwrap();
+        for mode in DisplayMode::ALL {
+            assert_eq!(xfce.degradation(mode, 2), None, "{mode:?}");
+        }
+        // GNOME can span and cannot do anything else per screen.
+        let gnome = detect("GNOME").unwrap();
+        assert_eq!(gnome.degradation(DisplayMode::AcrossScreens, 2), None);
+        let note = gnome
+            .degradation(DisplayMode::EveryScreen, 2)
+            .expect("GNOME cannot give two screens two images");
+        assert!(note.contains("GNOME"), "{note}");
+        // Plasma cannot even span, so the span mode gets its own sentence.
+        let kde = detect("KDE").unwrap();
+        let spanning = kde
+            .degradation(DisplayMode::AcrossScreens, 2)
+            .expect("Plasma has no span mode");
+        assert!(spanning.contains("KDE Plasma"), "{spanning}");
+        assert_ne!(
+            Some(spanning),
+            kde.degradation(DisplayMode::EveryScreen, 3),
+            "the span mode loses something the other modes do not"
+        );
+        assert!(
+            kde.degradation(DisplayMode::OneScreen, 3)
+                .expect("three screens all get the one image")
+                .contains('3')
+        );
     }
 
     #[test]

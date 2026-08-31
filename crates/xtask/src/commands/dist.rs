@@ -1766,6 +1766,7 @@ fn build_in_builder(
                     builder,
                     vm::Prepared {
                         staged: vm::Staging::skipped_for(
+                            store,
                             provider::target::HostOs::current(),
                             target
                         ),
@@ -1949,6 +1950,7 @@ fn verify_in_desktop(
                     desktop,
                     vm::Prepared {
                         staged: vm::Staging::skipped_for(
+                            store,
                             provider::target::HostOs::current(),
                             target
                         ),

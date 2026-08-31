@@ -177,35 +177,84 @@ pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-/// Whether this host can build a guest's binaries at all, and whether it does
-/// so natively.
+/// What compiles a guest's binaries on this host.
+///
+/// Every cell of the matrix has an answer, and two of the four are not this
+/// host's own toolchain. Cross-compiling is what none of them is: it would mean
+/// mingw-w64 or a Windows SDK on one side and a second glibc on the other, a
+/// second target triple, and a second set of link-time problems. Compiling on
+/// the operating system the binaries are for keeps one triple and one linker,
+/// and both sidecars are things `vm setup` and `vm build-image` already make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builder {
+    /// The host's own cargo.
+    Native,
+    /// The WSL distribution `vm setup` registered: a Windows host building the
+    /// Linux guest's binaries, against an older glibc than the guest's, which
+    /// is the direction that works.
+    Wsl,
+    /// A builder guest of the target's own operating system, booted for the
+    /// build and taken down again: a Linux host building the Windows guest's
+    /// binaries. The same image `dist` compiles a release binary in.
+    Guest(Image),
+}
+
+/// Which of the three this host uses for `target`, without asking whether it is
+/// ready to be used.
 ///
 /// Asked before anything is created, because the answer does not depend on the
-/// VM and finding out afterwards means a booted guest with nothing to run in
-/// it. `build` uses the same function, so the check and the attempt cannot
+/// VM and finding out afterwards means a booted guest with nothing to run in it.
+/// `build` goes through the same function, so the check and the attempt cannot
 /// disagree about what is possible.
-///
-/// A Windows guest needs Windows binaries, and a Linux host has no toolchain
-/// for those: cross-compiling them would mean mingw-w64 or a Windows SDK, a
-/// second target triple, and a second set of link-time problems, for the one
-/// cell of the matrix that a Windows host covers natively. Left unsupported
-/// deliberately rather than half-built.
-pub fn check_can_build(host: HostOs, target: Target) -> Result<bool, String> {
+pub fn builder_for(host: HostOs, target: Target) -> Result<Builder, String> {
     match (host, target) {
-        (HostOs::Windows, Target::Windows) | (HostOs::Linux, Target::Linux) => Ok(true),
-        // WSL builds the Linux guest's binaries, against an older glibc than
-        // the guest has, which is the direction that works.
-        (HostOs::Windows, Target::Linux) => Ok(false),
-        (HostOs::Linux, Target::Windows) => Err(
-            "the Windows guest's binaries cannot be built on a Linux host, so \
-             `--target windows` needs a Windows host. The Linux guest works here."
-                .to_owned(),
-        ),
+        (HostOs::Windows, Target::Windows) | (HostOs::Linux, Target::Linux) => Ok(Builder::Native),
+        (HostOs::Windows, Target::Linux) => Ok(Builder::Wsl),
+        (HostOs::Linux, Target::Windows) => Ok(Builder::Guest(Image::builder(target))),
         _ => Err(format!(
             "a {} host cannot build binaries for a {target} guest",
             host.name()
         )),
     }
+}
+
+/// The same, and whether what it names can be used right now.
+///
+/// The one thing that can be missing is a builder image, which is a
+/// `vm build-image` away rather than a fact about the host, so the refusal names
+/// it. What reads this is the caller that has to choose between building and
+/// booting a guest with nothing in it, so the error is a sentence about why
+/// nothing will be staged rather than a failure.
+pub fn usable_builder(store: &Store, host: HostOs, target: Target) -> Result<Builder, String> {
+    let builder = builder_for(host, target)?;
+    if let Builder::Guest(image) = builder {
+        let inventory = crate::store::inventory::scan(store);
+        let condition = inventory
+            .for_image(image)
+            .map(|entry| entry.condition(crate::util::now_unix()));
+        match condition {
+            Some(condition) if !condition.blocks_boot() => {}
+            Some(condition) => {
+                return Err(format!(
+                    "the {target} guest's binaries are built in the {image} guest on a \
+                     {host} host, and that image is {}: {}. \
+                     `cargo xtask vm build-image {image}` makes it",
+                    condition.label(),
+                    condition.detail(),
+                    host = host.name(),
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "the {target} guest's binaries are built in the {image} guest on a \
+                     {host} host, and nothing is known about that image. \
+                     `cargo xtask vm build-image {image}` makes it",
+                    host = host.name(),
+                ));
+            }
+        }
+    }
+    Ok(builder)
 }
 
 /// Pick the two executables out of what Cargo reported.
@@ -229,9 +278,9 @@ pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostA
     let textures = host_textures(&repo);
 
     let host = HostOs::current();
-    let native = check_can_build(host, target)?;
+    let builder = usable_builder(store, host, target)?;
 
-    if native {
+    if builder == Builder::Native {
         println!("building the e2e suite for the {target} guest (a few minutes if cold)");
         // stdout is the JSON this parses; stderr is cargo's progress, and that
         // goes to the terminal, because the alternative is several silent
@@ -256,7 +305,220 @@ pub fn build(runner: &dyn Runner, store: &Store, target: Target) -> Result<HostA
         });
     }
 
-    build_in_wsl(runner, store, &repo, fixtures, textures)
+    match builder {
+        Builder::Native => unreachable!("the native arm returns above"),
+        Builder::Wsl => build_in_wsl(runner, store, &repo, fixtures, textures),
+        Builder::Guest(image) => build_in_guest(runner, store, image, &repo, fixtures, textures),
+    }
+}
+
+/// The archive of the working tree a builder guest compiles.
+///
+/// Not `git archive HEAD`, which is what `dist` sends and rightly: a release
+/// bundle is a commit, and this is whatever is being edited right now.
+/// `git ls-files --cached --others --exclude-standard` is that tree: tracked
+/// files with their working-tree content, plus new files that are not ignored,
+/// which is what makes an edit that has not been committed reach the guest that
+/// compiles it. `.gitignore` keeps `target/` out, and the pathspec keeps the
+/// textures out, which are Git LFS and not needed to build.
+///
+/// `--transform` puts everything under `src/`, the prefix `dist`'s archive uses
+/// and the one the job extracts. GNU tar and a pipeline are safe here because
+/// this path exists for one host: a Linux one.
+pub fn worktree_archive_script(output: &Path) -> String {
+    format!(
+        "set -euo pipefail\n\
+         git ls-files -z --cached --others --exclude-standard -- ':!textures' \
+         | tar --null --files-from - --transform 's,^,src/,' --create --file {output}\n",
+        output = shell_quote(&output.to_string_lossy())
+    )
+}
+
+/// The job that builds the suite inside a Windows builder guest.
+///
+/// The same cargo invocation the host would run, with the JSON on a file in the
+/// results directory rather than on a pipe: the host reads it afterwards to
+/// learn which two executables to bring back, because the harness carries a
+/// hash in its name that only cargo knows. Everything else is what `dist`'s
+/// build job does for the same guest, minus the release profile, the caches and
+/// the linkage checks.
+pub fn guest_build_job(channel: &str) -> String {
+    let root = crate::provider::GUEST_ROOT_WINDOWS;
+    let target_dir = crate::commands::dist::GUEST_TARGET_DIR;
+    let libclang = crate::commands::build_layer::LIBCLANG_DIR;
+    let args = build_args().join(" ");
+    format!(
+        "@echo off\r\n\
+         set ROOT={root}\r\n\
+         set CARGO_NET_RETRY=5\r\n\
+         set CARGO_TERM_COLOR=never\r\n\
+         set LIBCLANG_PATH={libclang}\r\n\
+         set CARGO_TARGET_DIR=%ROOT%\\{target_dir}\r\n\
+         set CARGO=%USERPROFILE%\\.cargo\\bin\\cargo.exe\r\n\
+         set RUSTUP=%USERPROFILE%\\.cargo\\bin\\rustup.exe\r\n\
+         \"%RUSTUP%\" toolchain install {channel} --profile minimal || exit /b 1\r\n\
+         if exist \"%ROOT%\\src\" rmdir /s /q \"%ROOT%\\src\"\r\n\
+         tar.exe -xmf \"%ROOT%\\src.tar\" -C \"%ROOT%\" || exit /b 1\r\n\
+         cd /d \"%ROOT%\\src\" || exit /b 1\r\n\
+         \"%CARGO%\" +{channel} {args} > \"%SUNLIT_E2E_ARTIFACTS%\\{CARGO_JSON}\" || exit /b 1\r\n\
+         exit /b 0\r\n"
+    )
+}
+
+/// Where the job leaves cargo's machine-readable output, inside the results
+/// directory that comes back to the host.
+pub const CARGO_JSON: &str = "cargo.json";
+
+/// Build the guest's binaries in a builder guest of its own operating system,
+/// and bring the two executables back.
+///
+/// The guest is booted for this and taken down again before anything returns,
+/// which is not tidiness: only one guest runs at a time, so the desktop guest
+/// these binaries are staged into cannot boot until this one is gone. That is
+/// also why the build happens before the boot rather than inside `stage`.
+fn write_worktree_archive(
+    runner: &dyn Runner,
+    store: &Store,
+    builder: Image,
+    repo: &Path,
+) -> Result<(PathBuf, u64), String> {
+    let archive = crate::commands::dist::archive_path(store, builder);
+    if let Some(parent) = archive.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let _ = std::fs::remove_file(&archive);
+    let out = runner
+        .capture(
+            &Cmd::new("bash")
+                .args(["-c".to_owned(), worktree_archive_script(&archive)])
+                .cwd(repo),
+        )
+        .map_err(|e| format!("cannot run bash: {e}"))?;
+    if !out.success() {
+        return Err(format!(
+            "archiving the working tree failed: {}",
+            out.stderr.trim()
+        ));
+    }
+    let bytes = std::fs::metadata(&archive)
+        .map(|meta| meta.len())
+        .map_err(|e| format!("no archive at {}: {e}", archive.display()))?;
+    Ok((archive, bytes))
+}
+
+fn build_in_guest(
+    runner: &dyn Runner,
+    store: &Store,
+    builder: Image,
+    repo: &Path,
+    fixtures: PathBuf,
+    textures: Option<PathBuf>,
+) -> Result<HostArtifacts, String> {
+    let target = builder.target();
+    let pinned = crate::guest::toolchain::pinned()?;
+    let (archive, bytes) = write_worktree_archive(runner, store, builder, repo)?;
+
+    println!(
+        "building the e2e suite for the {target} guest in the {builder} guest, \
+         because this host has no {target} toolchain"
+    );
+    println!(
+        "  the working tree is {} of source, not HEAD: what is staged is what is \
+         in the tree now",
+        crate::util::format_bytes(bytes)
+    );
+
+    let session = crate::commands::vm::boot(
+        runner,
+        store,
+        builder,
+        crate::store::state::StartReason::Suite,
+        false,
+        None,
+    )?;
+
+    // From here the guest exists, so nothing may return without taking it down:
+    // the guest that these binaries are for cannot boot while it is up.
+    let outcome = (|| -> Result<HostArtifacts, String> {
+        let probe = session.provider.exec(
+            &session.state,
+            &crate::commands::dist::toolchain_probe(target),
+        )?;
+        if !probe
+            .stdout
+            .contains(crate::commands::dist::TOOLCHAIN_MARKER)
+        {
+            return Err(crate::commands::dist::missing_toolchain(builder));
+        }
+        session.provider.copy_in(
+            &session.state,
+            &archive,
+            &crate::commands::dist::guest_archive(target),
+        )?;
+        let _ = std::fs::remove_file(&archive);
+
+        println!("  building; cargo's own output follows");
+        let mut tail = crate::guest::job::OutputTail::new();
+        let code = crate::guest::job::run_watching(
+            session.provider.as_ref(),
+            &session.state,
+            target,
+            &guest_build_job(&pinned.channel),
+            &store.job_scratch(builder),
+            crate::commands::dist::BUILD_TIMEOUT,
+            Some(&mut tail),
+        )?;
+        let results = store.results_dir(builder);
+        session.provider.collect_results(
+            &session.state,
+            &crate::provider::guest_results(target),
+            &results,
+        )?;
+        if code != 0 {
+            return Err(format!(
+                "building the e2e suite in the {builder} guest exited {code}; its \
+                 output is above and {} has what it wrote",
+                results.display()
+            ));
+        }
+
+        // The JSON names guest paths, which is what `copy_out` wants: the two
+        // executables are the only things worth bringing back, and the harness
+        // is the reason this is read at all, since cargo puts a hash in its
+        // name.
+        let json = std::fs::read_to_string(results.join("artifacts").join(CARGO_JSON))
+            .map_err(|e| format!("the build wrote no {CARGO_JSON}: {e}"))?;
+        let (app, harness) = select(&cargo_json::parse_artifacts(&json))?;
+
+        let staging = store.build_dir(builder).join("artifacts");
+        std::fs::create_dir_all(&staging)
+            .map_err(|e| format!("cannot create {}: {e}", staging.display()))?;
+        let mut local = Vec::new();
+        for remote in [&app, &harness] {
+            let remote = remote.to_string_lossy();
+            let to = staging.join(guest_leaf(&remote));
+            session.provider.copy_out(&session.state, &remote, &to)?;
+            local.push(to);
+        }
+        println!("  the binaries are back in {}", staging.display());
+
+        Ok(HostArtifacts {
+            app: local[0].clone(),
+            harness: local[1].clone(),
+            fixtures,
+            textures,
+        })
+    })();
+
+    if let Err(e) = session.tear_down(store) {
+        println!(
+            "warning: {} could not be destroyed: {e}",
+            session.state.vm_name
+        );
+        println!("{}", session.reach_hint());
+    }
+    outcome
 }
 
 /// Build the Linux binaries in WSL and copy them onto the Windows filesystem.
@@ -330,6 +592,17 @@ fn build_in_wsl(
     })
 }
 
+/// The last component of a path the *guest* spelled.
+///
+/// `Path::file_name` is the host's answer, and on a Linux host asking it about
+/// `C:\\sunlit-e2e\\cargo-target\\debug\\sunlit-earth.exe` returns the whole string:
+/// a backslash is an ordinary character there. Nothing that came out of a
+/// Windows guest's cargo can go through the host's path rules, so this splits on
+/// both separators itself.
+fn guest_leaf(path: &str) -> String {
+    path.rsplit(['\\', '/']).next().unwrap_or(path).to_owned()
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -381,9 +654,12 @@ pub fn guest_paths(target: Target, app: &str, harness: &str, textures: bool) -> 
 }
 
 /// Build for a guest and copy everything in.
-pub fn stage(runner: &dyn Runner, store: &Store, session: &Session) -> Result<GuestPaths, String> {
+pub fn stage(
+    store: &Store,
+    session: &Session,
+    built: &HostArtifacts,
+) -> Result<GuestPaths, String> {
     let target = session.image.target();
-    let built = build(runner, store, target)?;
 
     println!("copying the binaries into the guest");
     let bin_dir = provider::guest_bin(target);
@@ -464,18 +740,105 @@ mod tests {
         );
     }
 
+    /// Each cell of the matrix compiles on the operating system its binaries
+    /// are for, and two of the four reach it through something other than this
+    /// host's own cargo.
     #[test]
-    fn a_linux_host_says_it_cannot_build_the_windows_guest_before_anything_boots() {
-        // The provider matrix has a hypervisor for this cell, which is not the
-        // same as being able to produce the binaries to put in it.
-        let err = check_can_build(HostOs::Linux, Target::Windows).unwrap_err();
-        assert!(err.contains("needs a Windows host"), "{err}");
+    fn every_host_and_target_pair_names_what_compiles_it() {
+        assert_eq!(
+            builder_for(HostOs::Linux, Target::Linux),
+            Ok(Builder::Native)
+        );
+        assert_eq!(
+            builder_for(HostOs::Windows, Target::Windows),
+            Ok(Builder::Native)
+        );
+        assert_eq!(
+            builder_for(HostOs::Windows, Target::Linux),
+            Ok(Builder::Wsl)
+        );
+        assert_eq!(
+            builder_for(HostOs::Linux, Target::Windows),
+            Ok(Builder::Guest(Image::WindowsBuilder))
+        );
+        assert!(builder_for(HostOs::Other, Target::Linux).is_err());
+    }
 
-        assert_eq!(check_can_build(HostOs::Linux, Target::Linux), Ok(true));
-        assert_eq!(check_can_build(HostOs::Windows, Target::Windows), Ok(true));
-        // Not native: built through WSL.
-        assert_eq!(check_can_build(HostOs::Windows, Target::Linux), Ok(false));
-        assert!(check_can_build(HostOs::Other, Target::Linux).is_err());
+    /// The one thing that can be absent is a builder image, and the refusal is
+    /// read by a caller deciding whether to boot a guest with nothing in it, so
+    /// it has to say which image and how to make it.
+    #[test]
+    fn a_builder_guest_that_has_not_been_built_is_named_along_with_the_command() {
+        let store = Store::new(std::env::temp_dir().join("sunlit_xtask_no_builder_image"));
+        let err = usable_builder(&store, HostOs::Linux, Target::Windows).unwrap_err();
+        assert!(err.contains("windows-builder"), "{err}");
+        assert!(
+            err.contains("cargo xtask vm build-image windows-builder"),
+            "{err}"
+        );
+        // The cells that need no image are unaffected by what the store holds.
+        assert_eq!(
+            usable_builder(&store, HostOs::Linux, Target::Linux),
+            Ok(Builder::Native)
+        );
+        assert_eq!(
+            usable_builder(&store, HostOs::Windows, Target::Linux),
+            Ok(Builder::Wsl)
+        );
+    }
+
+    /// What the guest compiles is the tree as it stands, which is the whole
+    /// difference from `dist`: a release bundle is a commit and a staged binary
+    /// is what is being edited.
+    #[test]
+    fn the_builder_guest_is_sent_the_working_tree_and_not_head() {
+        let script = worktree_archive_script(Path::new("/srv/vm/run/windows-builder/src.tar"));
+        assert!(script.contains("git ls-files"), "{script}");
+        assert!(script.contains("--others --exclude-standard"), "{script}");
+        assert!(!script.contains("HEAD"), "{script}");
+        // Under the prefix the job extracts, and without the LFS textures.
+        assert!(script.contains("'s,^,src/,'"), "{script}");
+        assert!(script.contains("':!textures'"), "{script}");
+    }
+
+    /// A Linux host asking `Path::file_name` about a Windows path gets the whole
+    /// path back, and the binaries staged under that name would be garbage.
+    #[test]
+    fn a_guest_path_is_split_on_the_guests_own_separator() {
+        assert_eq!(
+            guest_leaf(r"C:\sunlit-e2e\cargo-target\debug\sunlit-earth.exe"),
+            "sunlit-earth.exe"
+        );
+        assert_eq!(
+            guest_leaf(r"C:\sunlit-e2e\cargo-target\debug\deps\e2e-9f1c2b3a4d5e6f70.exe"),
+            "e2e-9f1c2b3a4d5e6f70.exe"
+        );
+        // A Linux guest's own paths go through the same function.
+        assert_eq!(
+            guest_leaf("/home/tester/sunlit-target/debug/e2e-1a2b"),
+            "e2e-1a2b"
+        );
+        assert_eq!(guest_leaf("bare.exe"), "bare.exe");
+    }
+
+    /// The job is the same cargo invocation the host would run, with the JSON
+    /// kept: the harness carries a hash in its name that only cargo knows, so
+    /// the host reads that file to learn what to bring back.
+    #[test]
+    fn the_guest_build_job_keeps_cargos_json_where_the_results_come_from() {
+        let job = guest_build_job("1.94.0");
+        for arg in build_args() {
+            assert!(job.contains(&arg), "{arg} missing from {job}");
+        }
+        assert!(
+            job.contains(&format!("%SUNLIT_E2E_ARTIFACTS%\\{CARGO_JSON}")),
+            "{job}"
+        );
+        assert!(job.contains("toolchain install 1.94.0"), "{job}");
+        assert!(job.contains("+1.94.0"), "{job}");
+        // cmd.exe wants CRLF, and the job runner writes the script verbatim.
+        assert!(job.contains("\r\n"), "{job}");
+        assert!(!job.contains("--release"), "{job}");
     }
 
     #[test]

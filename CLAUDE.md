@@ -61,7 +61,7 @@ Things that follow from how it is built:
 
 - Only one guest runs at a time; a second boot is refused until `vm down`. Nothing runs in the background unasked: a guest exists during a run, after `--keep`, or after `vm up`.
 - A guest is pristine on every boot. Nothing done inside one survives `vm down`; results come back on their own under the image store, and the run prints the path.
-- The Windows guest needs a Windows host (its binaries have to be built here). The Linux guest's binaries are built in WSL as part of the boot, which is why the first `vm up linux` after a change takes minutes.
+- Every guest's binaries are compiled on the operating system they are for, never cross-compiled: natively on a matching host, in WSL for the Linux guest on a Windows host, and in the `windows-builder` guest for the Windows guest on a Linux host. The last two are why the first `vm up` after a change takes minutes, and the builder-guest one needs that image built first.
 - `vm setup` (elevated, once per machine) and `vm build-image <image>` (tens of minutes to an hour per image) are the rare commands; do not run them without asking. The Windows image is a 90-day evaluation and `vm status` shows its age.
 - The guests have no OpenGL and no real GPU: the Windows job sets `SLINT_BACKEND=winit-software` and both render on a software adapter, so timings and pixels there are not those of a real desktop.
 

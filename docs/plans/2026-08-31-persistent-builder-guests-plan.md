@@ -216,3 +216,34 @@ stopped 0 VMs, deleted 5 files, freed 8.1 GiB
 **`stopped 0 VMs` is the sentence being honest**: there was no process to stop, and the cost clause still had to be said, which is `RunState::cost_of_ending` reading the record rather than the start reason. A teardown that took the reason at its word would have offered to end an interactive guest that was not there and said nothing about the eight gigabytes it was about to delete.
 
 Afterwards `windows-builder` reads `no overlays or run state` and the store is back from 72.8 GiB to **64.8 GiB**. Two things fall out of the numbers. The overlay grew from 8.0 GiB to 8.1 across two more warm builds, so what a kept builder costs on disk is set by the first cold compile and creeps afterwards. And `dist`'s 738.0 MiB build cache is untouched by any of this, as the non-goals intend: it is the cold-start path for a builder that does not exist, and this is the command that makes one not exist.
+
+### Criterion 5: the Windows builder's memory, measured three times
+
+Decision 7 asks for one full `dist --target windows` at 6144 MiB with the vCPU count decision 8 ships, the guest's own free physical memory sampled every 15 seconds, and the wall time read against the 6m 58s cold that `docs/vm-setup.md` records at 8192. **The docs' figure turned out to be the wrong baseline**: it was measured on the Windows host under Hyper-V, and this is a Linux host under QEMU with different cores and a 40 GiB guest of the user's beside it. A number from another machine cannot say whether this one is paging, so the run at 6144 was repeated at 8192 on this host, and then at 6144 again once the first pair disagreed by more than the answer could carry.
+
+All three are `--no-cache`, so each is a cold build with its own crate download, and all three archive the same commit `d60199c`: `dist` archives `HEAD` whatever the working tree holds, so the one-line memory edit the control needed changed the builder and not a byte of what it compiled.
+
+| | guest | cargo's own time | whole target | guest's minimum free physical memory |
+|---|---|---|---|---|
+| run A | 6144 MiB, 16 vCPU | 7m 52s | 9m 06s | **731 MiB** |
+| control | 8192 MiB, 16 vCPU | 7m 10s | 8m 24s | **1,411 MiB** |
+| run B | 6144 MiB, 16 vCPU | 7m 18s | 8m 40s | **692 MiB** |
+
+Every one of the three passed: exit 0, 26 imports with none of them the Visual C++ runtime, and a 640x360 render out of the bundle in the Windows desktop guest afterwards, at 320.8, 320.7 and 321.3 KiB.
+
+**6144 ships.** Run A against the control looks like a 42 second penalty and run B says that is the host talking: two builds at the same 6144 are 34 seconds apart, so the 8 seconds between the control and the better of them is noise on a machine that is also running someone else's 40 GiB guest with its swap full. What is repeatable is the memory, and 692 and 731 MiB is a floor rather than a cliff: **11 to 12 percent of the guest, twice**, with the curve free to move above it the whole time rather than pinned to it.
+
+The shape of the curve is worth as much as the floor, because it says which part of the build is the peak.
+
+```
+        6144 MiB run B, free physical memory in the guest, MiB
+18:16:49 3134   18:17:38 3584   18:18:14 2447   18:18:54 1106
+18:19:14  721   18:19:52  917   18:20:13  692   18:20:33 2811
+18:21:10 3670   18:21:45 2255   18:22:38 2337   18:23:47 2477
+```
+
+The floor is **the parallel dependency compile**, about eighty seconds of sixteen rustc processes at once, and it is over by the time the fat-LTO link starts. The link then runs for three minutes with 2.3 to 2.7 GiB free, which is the opposite of what the plan's risk section expected from the shape the Linux builder's OOM note describes: on this workspace the last few crates holding a lot at once is not the peak, sixteen of them holding a little each is. The control's curve is the same curve shifted up by about 1.7 GiB, which is the 2 GiB of extra ceiling arriving as free memory rather than as speed.
+
+So decision 8's escape hatch stays unused. `--jobs` is the lever if the floor ever becomes a cliff, and nothing here needed it.
+
+`docs/vm-setup.md`'s OOM note gained a sentence saying the Windows builder's 6 GiB is this measurement rather than an assumption, since that note is where someone whose build died for want of memory will look.

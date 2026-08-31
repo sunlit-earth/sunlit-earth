@@ -378,13 +378,54 @@ pub fn guest_build_job(channel: &str) -> String {
 /// directory that comes back to the host.
 pub const CARGO_JSON: &str = "cargo.json";
 
+/// What the build found in the store when it went looking for its builder.
+///
+/// The three cases want three different things done and two different things
+/// done afterwards, which is why this is a value rather than a pair of booleans
+/// at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    /// A guest of this image is up: somebody left it that way, and it stays that
+    /// way.
+    Running,
+    /// A guest of this image is stopped, holding the build directory that makes
+    /// this build a link rather than a compile. It is resumed and stopped again.
+    Stopped,
+    /// Nothing usable is recorded: no guest, or one a crash left behind, which
+    /// `boot` clears away. What this build boots is left stopped rather than
+    /// destroyed, so the next one finds the second case.
+    Absent,
+}
+
+/// Which of the three a record and its liveness describe (plan decision 6).
+///
+/// A crashed guest reads as `Absent` on purpose: it is registered, it is not
+/// running, and nothing in it can be trusted to be a build directory, which is
+/// the opposite treatment from a guest that was stopped deliberately.
+pub fn found_from(state: Option<&crate::store::state::RunState>, running: bool) -> Found {
+    match state {
+        Some(_) if running => Found::Running,
+        Some(state) if state.stopped => Found::Stopped,
+        _ => Found::Absent,
+    }
+}
+
+/// Whether the builder is left stopped once the build in it is over.
+///
+/// Goal 6 in both directions: a guest somebody left running keeps running, and
+/// one this command brought up goes to stopped rather than to destroyed, because
+/// what it holds by then is the reason the next build is a link. So everything
+/// except a guest that was already running ends stopped.
+pub fn stop_after_build(found: Found) -> bool {
+    found != Found::Running
+}
+
 /// Build the guest's binaries in a builder guest of its own operating system,
 /// and bring the two executables back.
 ///
-/// The guest is booted for this and taken down again before anything returns,
-/// which is not tidiness: only one guest runs at a time, so the desktop guest
-/// these binaries are staged into cannot boot until this one is gone. That is
-/// also why the build happens before the boot rather than inside `stage`.
+/// The build happens before the desktop guest boots rather than inside `stage`,
+/// which used to be forced by the one-VM-at-a-time rule and is now a matter of
+/// order: the binaries have to exist before there is a guest to put them in.
 fn write_worktree_archive(
     runner: &dyn Runner,
     store: &Store,
@@ -416,6 +457,44 @@ fn write_worktree_archive(
     Ok((archive, bytes))
 }
 
+/// The guest this build runs in, and what it was before the build found it.
+///
+/// Three ways in, and only one of them creates anything: a guest that is up is
+/// taken over, a stopped one is resumed with everything in it, and anything else
+/// is a boot. What makes the third case worth telling apart is decision 6, since
+/// it is the one whose guest this command has to put somewhere afterwards.
+fn builder_session<'a>(
+    runner: &'a dyn Runner,
+    store: &'a Store,
+    builder: Image,
+) -> Result<(Session<'a>, Found), String> {
+    let existing = crate::commands::vm::load_state(store, builder);
+    let running = existing.as_ref().is_some_and(|state| {
+        crate::provider::for_state(runner, store, state)
+            .is_ok_and(|provider| provider.is_running(state))
+    });
+    let found = found_from(existing.as_ref(), running);
+    let session = match (found, existing) {
+        (Found::Running, Some(state)) => {
+            println!("  the {builder} guest is already up; building in it as it stands");
+            crate::commands::vm::adopt(runner, store, builder, state)?
+        }
+        (Found::Stopped, Some(state)) => {
+            println!("  resuming the stopped {builder} guest, with its build directory");
+            crate::commands::vm::resume(runner, store, builder, state)?
+        }
+        _ => crate::commands::vm::boot(
+            runner,
+            store,
+            builder,
+            crate::store::state::StartReason::Suite,
+            false,
+            None,
+        )?,
+    };
+    Ok((session, found))
+}
+
 fn build_in_guest(
     runner: &dyn Runner,
     store: &Store,
@@ -438,17 +517,10 @@ fn build_in_guest(
         crate::util::format_bytes(bytes)
     );
 
-    let session = crate::commands::vm::boot(
-        runner,
-        store,
-        builder,
-        crate::store::state::StartReason::Suite,
-        false,
-        None,
-    )?;
+    let (session, found) = builder_session(runner, store, builder)?;
 
-    // From here the guest exists, so nothing may return without taking it down:
-    // the guest that these binaries are for cannot boot while it is up.
+    // From here the guest exists, so nothing may return without deciding what
+    // becomes of it.
     let outcome = (|| -> Result<HostArtifacts, String> {
         let probe = session.provider.exec(
             &session.state,
@@ -520,14 +592,58 @@ fn build_in_guest(
         })
     })();
 
-    if let Err(e) = session.tear_down(store) {
-        println!(
-            "warning: {} could not be destroyed: {e}",
-            session.state.vm_name
-        );
-        println!("{}", session.reach_hint());
+    if stop_after_build(found) {
+        leave_stopped(store, session, builder);
     }
     outcome
+}
+
+/// Put the builder back where the build found it, or one better than it found
+/// it: stopped, with everything in it.
+///
+/// A stop that failed is a warning rather than a failure of the build, whose
+/// binaries are already on the host by then. What it costs is a guest still
+/// holding memory, so the message names it and how to reach it, the same way
+/// every other site that leaves a guest up does.
+/// What the build says about the builder it is putting away.
+///
+/// The stop happens where nobody is looking, at the end of a build whose output
+/// the person is reading instead, so the line has to carry the difference on its
+/// own: a builder that shut itself down makes the next build a link, and one
+/// that was killed makes it a repair pass first. Both keep the build directory,
+/// which is why both are worth leaving stopped.
+pub fn left_stopped_line(vm_name: &str, how: crate::provider::Stopped) -> String {
+    if how == crate::provider::Stopped::Killed {
+        return format!(
+            "{vm_name} would not shut down and was killed; its build directory is \
+             there, but the disk was not closed, so the next build in it repairs \
+             the filesystem before it compiles"
+        );
+    }
+    format!(
+        "{vm_name} is stopped with its build directory in it; the next build in \
+         it resumes rather than compiles"
+    )
+}
+
+fn leave_stopped(store: &Store, mut session: crate::commands::vm::Session, builder: Image) {
+    match session.provider.stop(&session.state) {
+        Ok(how) => {
+            session.state.stopped = true;
+            if let Err(e) = crate::commands::vm::write_state(store, builder, &session.state) {
+                println!("warning: the guest is stopped, but its record still says otherwise: {e}");
+                return;
+            }
+            println!("  {}", left_stopped_line(&session.state.vm_name, how));
+        }
+        Err(e) => {
+            println!(
+                "warning: {} could not be stopped: {e}",
+                session.state.vm_name
+            );
+            println!("{}", session.reach_hint());
+        }
+    }
 }
 
 /// Build the Linux binaries in WSL and copy them onto the Windows filesystem.
@@ -729,6 +845,31 @@ pub fn stage(
 mod tests {
     use super::*;
 
+    /// The automatic stop at the end of a build is the one nobody watches, and
+    /// it is where a killed builder used to look exactly like a clean one. Both
+    /// lines promise the build directory is still there, because it is; only one
+    /// of them promises the next build starts by compiling.
+    #[test]
+    fn the_line_that_puts_a_builder_away_says_whether_it_was_killed() {
+        let clean = left_stopped_line(
+            "sunlit-e2e-windows-builder",
+            crate::provider::Stopped::ShutDown,
+        );
+        assert!(
+            clean.contains("is stopped with its build directory"),
+            "{clean}"
+        );
+        assert!(!clean.contains("repair"), "{clean}");
+
+        let killed = left_stopped_line(
+            "sunlit-e2e-windows-builder",
+            crate::provider::Stopped::Killed,
+        );
+        assert!(killed.contains("was killed"), "{killed}");
+        assert!(killed.contains("repairs the filesystem"), "{killed}");
+        assert!(killed.contains("build directory"), "{killed}");
+    }
+
     #[test]
     fn the_guest_build_shows_its_progress_while_its_json_is_captured() {
         // A cold build is minutes long. Capturing both streams made `vm up`
@@ -794,6 +935,42 @@ mod tests {
             usable_builder(&store, HostOs::Windows, Target::Linux),
             Ok(Builder::Wsl)
         );
+    }
+
+    /// Decision 6, as the three cases a build can find and the two things it
+    /// does afterwards. The case that matters most is the middle one: a crashed
+    /// guest is registered and not running exactly like a stopped one, and
+    /// resuming it would compile in a guest whose disk nothing vouches for.
+    #[test]
+    fn a_build_reuses_a_builder_it_finds_and_leaves_it_the_way_it_found_it() {
+        use crate::store::state::{RunState, StartReason};
+
+        let record = |stopped: bool| {
+            let mut state = RunState::new(
+                Image::WindowsBuilder,
+                crate::provider::target::ProviderKind::Qemu,
+                std::path::PathBuf::from("/srv/vm/run/windows-builder/overlay.qcow2"),
+                StartReason::Suite,
+                0,
+            );
+            state.stopped = stopped;
+            state
+        };
+
+        assert_eq!(found_from(Some(&record(false)), true), Found::Running);
+        assert_eq!(found_from(Some(&record(true)), false), Found::Stopped);
+        // A crash, which is the one that must not be resumed.
+        assert_eq!(found_from(Some(&record(false)), false), Found::Absent);
+        assert_eq!(found_from(None, false), Found::Absent);
+        // A record that says stopped and a guest that is up: the guest wins,
+        // because a stop that failed after writing the record leaves this shape.
+        assert_eq!(found_from(Some(&record(true)), true), Found::Running);
+
+        // Nothing starts running behind a person's back, and nothing throws
+        // away ten minutes of compile either.
+        assert!(!stop_after_build(Found::Running));
+        assert!(stop_after_build(Found::Stopped));
+        assert!(stop_after_build(Found::Absent));
     }
 
     /// What the guest compiles is the tree as it stands, which is the whole

@@ -71,9 +71,9 @@ Nothing is ever cross-compiled: a guest's binaries are built on the operating sy
 | Windows | Windows | this host's cargo |
 | Linux | Linux | this host's cargo |
 | Windows | Linux | the WSL distribution `vm setup` registered, whose glibc is older than the guest's |
-| Linux | Windows | the `windows-builder` guest, booted for the build and taken down again |
+| Linux | Windows | the `windows-builder` guest, resumed for the build and left stopped afterwards |
 
-The last row is the one that used to be a refusal. A Linux host has no toolchain for Windows executables and is not going to grow one: cross-compiling would mean mingw-w64 or a Windows SDK, a second target triple and a second set of link-time problems. What it does have is a guest with MSVC, libclang and rustup in it, which is the same image `dist` compiles a release binary in. So the suite is built there: a tar of the working tree goes in, `cargo test --no-run` runs inside, and the two executables come back. That costs a boot and a compile before the run, and it is why the build happens before the desktop guest starts rather than after: only one guest runs at a time, so the builder has to be gone before the guest it built for can start.
+The last row is the one that used to be a refusal. A Linux host has no toolchain for Windows executables and is not going to grow one: cross-compiling would mean mingw-w64 or a Windows SDK, a second target triple and a second set of link-time problems. What it does have is a guest with MSVC, libclang and rustup in it, which is the same image `dist` compiles a release binary in. So the suite is built there: a tar of the working tree goes in, `cargo test --no-run` runs inside, and the two executables come back. The first such build is a cold compile of the whole tree, nine minutes on this host; every one after it is warm, because the guest is left stopped rather than destroyed and the build directory in it survives. A build reuses what it finds and puts it back: a builder somebody left running keeps running, a stopped one is resumed and stopped again, and one this command booted itself is left stopped.
 
 What the builder guest gets is the working tree rather than `HEAD`, which is the one place this differs from `dist` on purpose: a release bundle is a commit, and a staged binary is whatever is being edited. `git ls-files --cached --others --exclude-standard` is that tree, so uncommitted edits and new files that are not ignored both reach the guest, and `.gitignore` keeps `target/` out.
 
@@ -112,6 +112,19 @@ Cinnamon's session has a defect worth knowing before looking at one: the shell s
 `cargo xtask vm up <target>` boots a guest and copies the current binaries in without running anything. `cargo xtask vm view <target>` opens its desktop, and `cargo xtask vm ssh <target>` opens a shell in it. To look at the aftermath of a test run instead, use `cargo xtask e2e --target <target> --keep` and then the same two commands.
 
 `vm down` is the stop, and an idle guest is worth stopping: it holds 4 GiB of this machine's memory while a Linux guest is up and 6 GiB while a Windows one is. What there is no way to do is save or pause a guest, and nothing in one is worth saving, so ending it and discarding it are the same act: the teardown frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
+
+A builder guest is the one exception, because what is in one is worth keeping: a cargo build directory and a crate registry.
+
+```
+cargo xtask vm stop windows-builder    # end it, keep the overlay and everything in it
+cargo xtask vm start windows-builder   # resume it, with what it was holding
+```
+
+`vm stop` asks the guest to shut itself down and cuts the power if it has not complied in a minute, which is bounded on purpose: everything a builder keeps is a cache, so the worst a kill costs is a repair pass and a build that starts from nothing. A kill says so, both as it happens and in the closing line, because the two stops leave different overlays behind: a guest that shut itself down leaves a clean filesystem, and a killed one leaves the next `vm start` or the next build to repair it first. A resume that sits at "waiting for the guest to answer on SSH" for minutes is usually that repair pass. A stopped builder holds no memory and keeps its overlay, `vm status` reports it as stopped and counts that overlay, and `vm down <builder>` is what frees it. The two commands refuse a desktop image and say why: every guest the suite runs in is a pristine overlay, and a resumed one is not.
+
+`vm up <builder>` and `vm start <builder>` are not the same command. `vm up` boots something pristine whatever the image, so it throws a stopped builder's overlay away and says so as it does; `vm start` is the one that resumes what is in there. A resume that fails keeps everything: the guest is left as it was found, with a message naming the way back and the way out, because deleting a build directory takes asking for it.
+
+Both commands are also why one guest at a time is now one *desktop* guest at a time. A builder may run beside the guest it compiles for, in either order, and a boot that finds another guest up names it and says what the two hold together; two desktop guests are still refused.
 
 A Windows guest's desktop has two shortcuts on it, written per boot by whatever staged the binaries:
 
@@ -156,15 +169,15 @@ cargo xtask dist --target windows --no-verify --keep
 ```
 
 `dist` builds the `sunlit-earth` binary in release mode inside a pristine overlay of that
-target's builder image, and then proves the result runs in the *desktop* image of the same
-target. What reaches the build is a `git archive` of `HEAD` without `textures/`, and the
+target's builder image, discarding a stopped builder if one is there and saying so, and
+then proves the result runs in the *desktop* image of the same target. What reaches the build is a `git archive` of `HEAD` without `textures/`, and the
 name of the channel `rust-toolchain.toml` pins. Nothing else: no host `target/`
 directory, no host `~/.cargo`, no host environment. That is the whole point of the command
 existing beside `cargo build --release`, which builds whatever this machine's toolchain,
 LLVM, Visual Studio and `RUSTFLAGS` make of the tree and records none of it.
 
 A run of one target is four to six minutes plus two boots, measured on this host: a cold
-release build with fat LTO takes about five minutes on the eight virtual cores a builder
+release build with fat LTO takes about five minutes on the virtual cores a builder
 gets, and a warm one, which is the ordinary case once the build cache below exists, takes
 three to four. `--target all` does both in sequence, one VM at a time, and prints a line
 per target; a failure in one does not stop the other, and the command exits nonzero if
@@ -337,6 +350,7 @@ The fix is `cargo xtask vm build-image windows`, which is also the only way to g
 `cargo xtask vm status` lists what exists: the golden images with their sizes and build dates, the cached installation media, any overlays including ones a crashed run left behind, any VM that is registered or running and how to reach it, and what all of it costs. It prints the command to reclaim each part next to the numbers.
 
 ```
+cargo xtask vm stop <builder>                 # end a builder, keep everything in it
 cargo xtask vm down <image|all>              # the guest and its run state
 cargo xtask vm purge <image|all>             # that, the image, and the media
 cargo xtask vm purge windows --iso           # only the 6.6 GB download
@@ -345,7 +359,7 @@ cargo xtask vm purge windows-builder --image # only the layer, leaving its paren
 cargo xtask vm purge linux-builder --cache   # only the build cache dist left
 ```
 
-`vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo: the next run boots a fresh overlay of the same image. What it never takes is the build cache, which is the one thing under the store that nothing recreates for free: the next release build would have to compile it all again.
+`vm down` stops the VM, deletes the overlay and the state file, and leaves the golden image alone. It is cheap and costs nothing to undo for a desktop guest: the next run boots a fresh overlay of the same image. For a stopped builder it costs the build directory in that overlay, so the plan says what it is ending, and `vm stop` is the command that ends one without that cost. What `vm down` never takes is the build cache, which is the one thing under the store that nothing recreates for free: the next release build would have to compile it all again.
 
 `vm purge` deletes what took time to get: the golden image, its manifest, the build directory's leftovers, and the cached installation media, which for Windows is the download, the prompt-free copy made from it, and the small record saying which download that copy came from. It lists every file first and then asks, because rebuilding an image is tens of minutes and the Windows media is a 6.6 GB download; `-f` answers in advance, and so does a closed stdin answering no. The four flags are additive, and none of them means all of it.
 
@@ -464,6 +478,8 @@ Then, at the `(qemu)` prompt, which is the human form of the QMP `system_reset` 
 
 **A `dist` run says the builder guest has no cargo in it.** The guest booted and the probe found no `cargo` where the job would name it, so the source archive was never copied in. That is an image built before the toolchain was added, or one whose provisioning did not finish: `cargo xtask vm build-image <image>` rebuilds it. The check exists because the alternative is a build that fails twenty seconds into its job with "cargo is not recognized", forty minutes' worth of expectation earlier.
 
-**A release build in the Linux builder dies with no error, and the log ends mid-compile.** That is the shape an out-of-memory kill takes: the kernel kills `rustc` and cargo reports a signal. A builder gets 8 GiB and eight cores, and the release profile is fat LTO with one codegen unit, so the last few crates hold a lot at once. If it recurs, the fix in reach is fewer parallel jobs: add `--jobs 4` to the `cargo build` line in `commands::dist::build_job`, which costs minutes rather than the build. The measured build on this host does not come close, so this is a note rather than a known failure.
+**A release build in the Linux builder dies with no error, and the log ends mid-compile.** That is the shape an out-of-memory kill takes: the kernel kills `rustc` and cargo reports a signal. The Linux builder gets 8 GiB and one vCPU per core this host will give a thread, and the release profile is fat LTO with one codegen unit, so the last few crates hold a lot at once. If it recurs, the fix in reach is fewer parallel jobs: add `--jobs 4` to the `cargo build` line in `commands::dist::build_job`, which costs minutes rather than the build. The measured build on this host does not come close, so this is a note rather than a known failure.
+
+The Windows builder gets 6 GiB rather than 8, and that is a measured figure: a cold `dist --target windows` on this host's sixteen virtual cores bottoms out at 0.7 GiB free inside the guest, twice over, and takes no longer than the same build with 8 GiB. The floor is the parallel dependency compile rather than the fat-LTO link, which runs with 2.4 GiB free. `--jobs` is the same lever here if a build ever does run out.
 
 **A release build in the Windows builder stops after exactly three hours.** That is the guest's own ceiling rather than the xtask's: the job runs through the `sunlit-e2e-job` scheduled task, whose `ExecutionTimeLimit` the image sets to three hours, and the task is ended without the job writing an exit code. The `dist` timeout is two hours and is a constant in `commands::dist`; the task's limit is in the parent image's `bootstrap.ps1`, so raising that one is a Windows image rebuild and an hour. A build that gets anywhere near either number is a build worth understanding first: the measured one is five minutes.

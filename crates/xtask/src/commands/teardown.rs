@@ -240,7 +240,7 @@ impl TeardownPlan {
             // This is printed whether or not there is a question afterwards,
             // which is what makes `--force` a way to skip the question rather
             // than a way to end an hour-long install in silence.
-            if let Some(cost) = vm.reason.cost_of_ending() {
+            if let Some(cost) = vm.cost_of_ending() {
                 let _ = write!(out, ", which {cost}");
             }
             let _ = writeln!(out);
@@ -440,7 +440,7 @@ pub fn plan(
 pub fn confirmation_prompt(plan: &TeardownPlan) -> String {
     let mut costs = String::new();
     for vm in &plan.vms {
-        if let Some(cost) = vm.reason.cost_of_ending() {
+        if let Some(cost) = vm.cost_of_ending() {
             let _ = write!(costs, " That also stops {}, which {cost}.", vm.vm_name);
         }
     }
@@ -556,7 +556,12 @@ pub fn execute(
 
     for vm in &plan.vms {
         match stop(vm) {
-            Ok(crate::provider::Stopped::Stopped) => outcome.stopped += 1,
+            // A teardown is the one caller that does not care which of the two
+            // it got: the overlay it would have cost a repair pass is deleted
+            // three lines later.
+            Ok(crate::provider::Stopped::ShutDown | crate::provider::Stopped::Killed) => {
+                outcome.stopped += 1;
+            }
             Ok(crate::provider::Stopped::WasNotRunning) => {}
             Err(e) => {
                 outcome
@@ -1283,7 +1288,7 @@ mod tests {
             if state.image == "windows" {
                 Err("stuck".to_owned())
             } else {
-                Ok(crate::provider::Stopped::Stopped)
+                Ok(crate::provider::Stopped::ShutDown)
             }
         });
         assert_eq!(outcome.stopped, 1);

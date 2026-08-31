@@ -341,7 +341,14 @@ pub fn check_image(store: &Store, image: Image, allow_expired: bool) -> Result<(
     }
 }
 
-/// Refuse to start a second VM (plan decision 7: one at a time).
+/// Refuse to start a second VM (plan decision 7: one at a time), unless one of
+/// the two is a builder.
+///
+/// What the rule protects is a host oversubscribed by two guests each sized for
+/// the whole of it, which is a number rather than a principle, so the exemption
+/// comes with the number: a boot that proceeds beside another guest names it and
+/// says what the two hold together. Two desktop guests are still refused,
+/// because that is the pair the rule was written about.
 pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, image: Image) -> Result<(), String> {
     let inventory = inventory::scan(store);
     for entry in &inventory.images {
@@ -352,21 +359,54 @@ pub fn check_no_other_vm(runner: &dyn Runner, store: &Store, image: Image) -> Re
         }
         let running = provider::for_state(runner, store, state)
             .is_ok_and(|provider| provider.is_running(state));
-        if running {
-            let cost = state
-                .reason
-                .cost_of_ending()
-                .map_or_else(String::new, |cost| format!(", which {cost}"));
-            return Err(format!(
-                "{} is already running, and this phase runs one VM at a time \
-                 (plan decision 7: every guest assumes the whole host's memory \
-                 and cores).\n\
-                 `cargo xtask vm down {other}` frees it{cost}.",
-                state.vm_name
-            ));
+        if !running {
+            continue;
         }
+        if may_run_beside(image, other) {
+            println!("{}", beside_line(image, other));
+            continue;
+        }
+        let cost = state
+            .cost_of_ending()
+            .map_or_else(String::new, |cost| format!(", which {cost}"));
+        return Err(format!(
+            "{} is already running, and this phase runs one VM at a time \
+             (plan decision 7: every guest assumes the whole host's memory \
+             and cores).\n\
+             `cargo xtask vm down {other}` frees it{cost}.",
+            state.vm_name
+        ));
     }
     Ok(())
+}
+
+/// Whether these two images may hold guests at the same time.
+///
+/// A builder compiles for a guest under test and is not one, so the pair is a
+/// compiler beside the thing it compiles for: that is the arrangement a Windows
+/// host has had since WSL, where the compiler is a persistent environment beside
+/// a guest that is not. Two desktop guests are the pair that oversubscribes a
+/// host, and neither of them is holding anything the other needs.
+pub fn may_run_beside(booting: Image, other: Image) -> bool {
+    booting.is_builder() || other.is_builder()
+}
+
+/// The one line a boot prints when it is not the only guest on this host.
+///
+/// The figures rather than a reassurance, because the host this was measured on
+/// is not every host: what makes two guests fine here is 60 GiB, and a smaller
+/// machine is the case that breaks. Both come from
+/// [`provider::resources_for`](crate::provider::resources_for), so the line
+/// cannot drift from what the two guests are given.
+pub fn beside_line(booting: Image, other: Image) -> String {
+    let total =
+        u64::from(provider::resources_for(booting).0) + u64::from(provider::resources_for(other).0);
+    format!(
+        "{} is up as well, which a builder may be: the two hold {} of this host's \
+         memory between them",
+        other.vm_name(),
+        util::format_bytes(total * 1024 * 1024)
+    )
 }
 
 /// Save the state file. Called as soon as the VM exists, so that a crash from
@@ -455,6 +495,252 @@ pub fn boot<'a>(
     }
 }
 
+/// Take a session over a guest that is already up, without touching it.
+///
+/// What a build reusing a running builder needs: the record is on disk, the
+/// guest is answering, and the only thing missing is the provider that goes with
+/// it. Nothing here checks that SSH answers, because the first thing every
+/// caller does is ask the guest a question and that answer is the check.
+pub fn adopt<'a>(
+    runner: &'a dyn Runner,
+    store: &'a Store,
+    image: Image,
+    state: RunState,
+) -> Result<Session<'a>, String> {
+    let provider = provider::for_state(runner, store, &state)?;
+    Ok(Session {
+        provider,
+        state,
+        image,
+    })
+}
+
+/// Resume a stopped guest: the same overlay, a fresh address, and the wait a
+/// boot performs.
+///
+/// The overlay is deliberately not recreated, which is the whole difference from
+/// [`boot`]: what a stopped builder holds is a cargo build directory, and it is
+/// the reason the guest was kept rather than destroyed. The address is picked
+/// again because a builder may have been stopped for hours, and decision 1 lets
+/// other guests take its ports while it was down.
+pub fn resume<'a>(
+    runner: &'a dyn Runner,
+    store: &'a Store,
+    image: Image,
+    mut state: RunState,
+) -> Result<Session<'a>, String> {
+    check_no_other_vm(runner, store, image)?;
+    // The host key at the port this guest is about to take belongs to whatever
+    // was there last, which is the same reason `boot` forgets them.
+    crate::guest::ssh::forget_host_keys(store);
+
+    let provider = provider::for_state(runner, store, &state)?;
+    provider.readdress(&mut state)?;
+    state.stopped = false;
+    let mut session = Session {
+        provider,
+        state,
+        image,
+    };
+    match session.bring_up(store) {
+        Ok(()) => Ok(session),
+        Err(e) => {
+            println!("{}", after_failed_resume(&mut session, store));
+            Err(e)
+        }
+    }
+}
+
+/// What a failed resume does, which is nothing destructive.
+///
+/// [`boot`] tears its guest down on the way out, which is right for an overlay
+/// it created three lines earlier and wrong for one it was called to preserve.
+/// The failure this exists for is the one the risk section names: decision 2's
+/// kill left the guest's filesystem unclean, the resumed guest is running a
+/// repair pass, and it has not answered inside [`BOOT_TIMEOUT`]. Powering that
+/// off and unlinking the disk throws away the build directory the guest was kept
+/// for and starts the repair over, so the guest is left as the failure found it
+/// and the message says how to look at it, put it back, or give it up. Deleting
+/// a builder's overlay takes the person asking for it.
+///
+/// The record is the one thing this writes, and only for a guest that is not
+/// running: a resume can also fail before the guest exists, at a port the
+/// provider could not bind, and a record left saying `stopped: false` would
+/// have `vm status` call a resumable builder a crashed one and point at
+/// `vm down`, which is the deletion this whole path is avoiding.
+fn after_failed_resume(session: &mut Session, store: &Store) -> String {
+    let image = session.image;
+    let vm_name = session.state.vm_name.clone();
+    if session.provider.is_running(&session.state) {
+        return resume_left_running(image, &vm_name);
+    }
+    session.state.stopped = true;
+    match write_state(store, image, &session.state) {
+        Ok(()) => resume_left_stopped(image, &vm_name),
+        Err(e) => format!(
+            "{vm_name} did not come back and is not running. Its overlay is \
+             untouched, but the record could not be put back to stopped ({e}), so \
+             `cargo xtask vm status` will call it crashed. Mind that before \
+             running `cargo xtask vm down {image}`, which is what deletes the \
+             build directory."
+        ),
+    }
+}
+
+/// A resume whose guest is up and did not answer.
+fn resume_left_running(image: Image, vm_name: &str) -> String {
+    format!(
+        "{vm_name} did not answer, and nothing in it was deleted: it is still \
+         running and its overlay is untouched, build directory and all. A resume \
+         that takes longer than a cold boot is usually a guest still doing \
+         something to itself.\n  \
+         ssh:     cargo xtask vm ssh {image}\n  \
+         {console}: cargo xtask vm view {image}\n  \
+         stop:    cargo xtask vm stop {image} puts it back, and `cargo xtask vm \
+         start {image}` tries again\n  \
+         down:    cargo xtask vm down {image} gives it up, and the build directory with it",
+        console = image.console_label()
+    )
+}
+
+/// A resume whose guest never came up, put back the way it was found.
+fn resume_left_stopped(image: Image, vm_name: &str) -> String {
+    format!(
+        "{vm_name} did not come up, and it is recorded as stopped again with its \
+         overlay untouched. `cargo xtask vm start {image}` tries again, \
+         `cargo xtask vm down {image}` gives it up and frees the build directory \
+         with it."
+    )
+}
+
+/// Why `vm start` and `vm stop` are for the builder images only (decision 5).
+///
+/// The refusal quotes the reason rather than hiding behind "unsupported": every
+/// boot of a desktop guest is a pristine overlay, and that is what makes a
+/// result from one worth having. A resumed overlay is not pristine.
+pub fn persistence_refusal(image: Image) -> String {
+    format!(
+        "the {image} image is one the e2e suite runs in, and every guest of one is \
+         a pristine overlay: that is what makes a result from it worth having, and \
+         a guest resumed from where it was left is not that. It is the same \
+         argument that keeps a compiler out of this image.\n\
+         `cargo xtask vm down {image}` ends it and the next `cargo xtask vm up \
+         {image}` boots a clean one. The builders are what `vm stop` and \
+         `vm start` are for, because what a builder keeps is a build directory."
+    )
+}
+
+/// `vm stop`: end a builder guest and keep everything in it.
+pub fn stop(runner: &dyn Runner, image: Image) -> Result<u8, String> {
+    if !image.is_builder() {
+        return Err(persistence_refusal(image));
+    }
+    let store = store::store()?;
+    let mut state = load_state(&store, image).ok_or_else(|| no_record(image))?;
+    let provider = provider::for_state(runner, &store, &state)?;
+
+    let stopped = provider.stop(&state)?;
+    state.stopped = true;
+    write_state(&store, image, &state)?;
+    println!(
+        "{}",
+        stopped_line(
+            image,
+            &state.vm_name,
+            stopped,
+            std::fs::metadata(&state.overlay).ok().map(|m| m.len())
+        )
+    );
+    Ok(0)
+}
+
+/// `vm start`: resume a stopped builder guest.
+pub fn start(runner: &dyn Runner, image: Image) -> Result<u8, String> {
+    if !image.is_builder() {
+        return Err(persistence_refusal(image));
+    }
+    let store = store::store()?;
+    let state = load_state(&store, image).ok_or_else(|| no_record(image))?;
+    let provider = provider::for_state(runner, &store, &state)?;
+    if provider.is_running(&state) {
+        println!(
+            "{} is already running; `cargo xtask vm ssh {image}` is a shell in it",
+            state.vm_name
+        );
+        return Ok(0);
+    }
+    let session = resume(runner, &store, image, state)?;
+    println!(
+        "{} is up again, with what it was holding; `cargo xtask vm stop {image}` \
+         puts it back",
+        session.state.vm_name
+    );
+    Ok(0)
+}
+
+/// What `vm stop` and `vm start` say when there is nothing recorded to act on.
+fn no_record(image: Image) -> String {
+    format!(
+        "no {image} VM is recorded, so there is nothing to stop or resume. \
+         `cargo xtask vm up {image}` boots one."
+    )
+}
+
+/// The one line a stop prints.
+///
+/// It says what the stop kept as well as what it freed, because a kept overlay
+/// is gigabytes and the command that reclaims it is the one thing a person who
+/// never runs it will wish they had been told.
+fn stopped_line(
+    image: Image,
+    vm_name: &str,
+    stopped: provider::Stopped,
+    overlay_bytes: Option<u64>,
+) -> String {
+    let overlay = overlay_bytes.map_or_else(
+        || "its overlay stays".to_owned(),
+        |bytes| format!("its overlay stays, {} of it", util::format_bytes(bytes)),
+    );
+    let what = match stopped {
+        provider::Stopped::ShutDown => "is stopped: the memory is back and",
+        // Worth its own sentence rather than a shrug: the overlay this kept is
+        // the reason the command exists, and the next start of it opens with a
+        // repair pass that nobody asked for and nothing else would explain.
+        provider::Stopped::Killed => "would not shut down and was killed: the memory is back and",
+        provider::Stopped::WasNotRunning => "was not running; it is recorded as stopped and",
+    };
+    let repair = if stopped == provider::Stopped::Killed {
+        " Its filesystem was not closed, so the next start begins with a repair pass."
+    } else {
+        ""
+    };
+    format!(
+        "{vm_name} {what} {overlay}.{repair} \
+         `cargo xtask vm start {image}` resumes it, `cargo xtask vm down {image}` \
+         frees it."
+    )
+}
+
+/// What to say about a guest that is recorded and not running.
+///
+/// The two cases want opposite advice, which is why the record says which is
+/// which: a stopped builder is resumed, and a crashed guest is cleared away.
+fn not_running_hint(image: Image, state: &RunState) -> String {
+    if state.stopped {
+        format!(
+            "{} is stopped. `cargo xtask vm start {image}` resumes it with what \
+             it was holding.",
+            state.vm_name
+        )
+    } else {
+        format!(
+            "{} is recorded but not running. `cargo xtask vm down {image}` clears \
+             it and `cargo xtask vm up {image}` starts a fresh one.",
+            state.vm_name
+        )
+    }
+}
+
 /// Whether a recorded VM may be taken down to make room for a new one.
 ///
 /// Everything else the xtask boots holds nothing worth keeping, which is the
@@ -471,6 +757,25 @@ pub fn may_clear(image: Image, reason: StartReason, running: bool) -> Result<(),
         ));
     }
     Ok(())
+}
+
+/// What a boot says about the guest it is clearing away to make room.
+///
+/// A stopped builder is not a leftover: it is a build directory somebody kept,
+/// and a boot that discards one in silence is how ten minutes of compile goes
+/// missing. This boot wants a pristine overlay and takes it, because that is
+/// what `vm up` and `dist` are for, so the line names what is going and the
+/// command that would have kept it instead.
+fn clearing_line(image: Image, state: &RunState) -> String {
+    if state.stopped {
+        format!(
+            "discarding the stopped {image} guest with the build directory in it; \
+             this boot wants a pristine overlay, and `cargo xtask vm start {image}` \
+             is what resumes one instead"
+        )
+    } else {
+        format!("clearing the {image} VM left behind by an earlier run")
+    }
 }
 
 /// Take down whatever an earlier run left recorded for this image.
@@ -498,7 +803,7 @@ pub fn clear_stale_state(runner: &dyn Runner, store: &Store, image: Image) -> Re
     // Said after the decision, not before it: a running build is refused here,
     // and announcing a clearing that is then declined describes something that
     // never happens.
-    println!("clearing the {image} VM left behind by an earlier run");
+    println!("{}", clearing_line(image, &existing));
 
     let session = Session {
         provider,
@@ -591,6 +896,9 @@ impl Prepared {
 /// own, because an idle guest holding gigabytes is the reason to take it down
 /// rather than leave it up.
 pub fn lifecycle_explainer(image: Image, prepared: Prepared) -> String {
+    if image.is_builder() {
+        return builder_explainer(image);
+    }
     format!(
         "\n\
          {vm} is up.\n  \
@@ -609,6 +917,35 @@ pub fn lifecycle_explainer(image: Image, prepared: Prepared) -> String {
         memory = guest_memory(image),
         session = view_note(prepared.console, image, prepared.enhanced_session),
         extra = guest_environment_note(image, prepared.staged)
+    )
+}
+
+/// What a builder guest's boot closes with (plan decision 9).
+///
+/// Shorter than a desktop guest's, because less of it is true here rather than
+/// more. A builder has nothing staged in it, no shortcuts on a desktop, no
+/// choice of console session to explain, nothing to paste into and no run in it
+/// to perturb. What it has instead is a lifetime: it is the one kind of guest
+/// that can be stopped and resumed, so its own two commands are in the list, and
+/// the paragraph is about what a stop keeps rather than about a save that does
+/// not exist.
+fn builder_explainer(image: Image) -> String {
+    format!(
+        "\n\
+         {vm} is up.\n  \
+         ssh:     cargo xtask vm ssh {image}\n  \
+         {console}: cargo xtask vm view {image}\n  \
+         stop:    cargo xtask vm stop {image}\n  \
+         start:   cargo xtask vm start {image}\n  \
+         down:    cargo xtask vm down {image}\n\n\
+         It holds {memory} of this host's memory while it runs, and `vm stop` \
+         gives that back and keeps the overlay: what is in there is a cargo build \
+         directory and a crate registry, which is what makes the next build in it \
+         a link rather than a compile. `vm down` frees the overlay with it, and \
+         the build after that starts from nothing.",
+        vm = image.vm_name(),
+        console = image.console_label(),
+        memory = guest_memory(image),
     )
 }
 
@@ -691,12 +1028,10 @@ fn view_note(console: ProviderKind, image: Image, enhanced_session: bool) -> Str
 /// desktop icon, because GNOME shows none at all, so it names the menu and the
 /// desktop separately.
 ///
-/// The Linux builder cannot promise the menu either, and that is why the Linux
-/// arms ask [`Image::has_desktop`] rather than what operating system it is: it
-/// has no session for an entry to appear in, so what it offers is a shell. The
-/// Windows arms need no such split, because the Windows builder is a layer over
-/// the desktop image and logs on the session its parent was built with, so that
-/// question answers the same for both and the shortcuts land on a real desktop.
+/// Only the two desktop images reach this. A builder has nothing staged in it
+/// and closes with [`builder_explainer`] instead, which is decision 9: what a
+/// builder needs said is what it is holding and how to stop it, and none of
+/// what is here is true of one.
 fn guest_environment_note(image: Image, staged: Staging) -> String {
     match (image.target(), staged) {
         (Target::Windows, Staging::Done) => format!(
@@ -729,7 +1064,7 @@ fn guest_environment_note(image: Image, staged: Staging) -> String {
              `{keep}` leaves one behind after a run.",
             keep = keep_command(image),
         ),
-        (Target::Linux, Staging::Done) if image.has_desktop() => format!(
+        (Target::Linux, Staging::Done) => format!(
             "\n\nWhat this boot staged is in `{root}`, which is outside any home \
              directory: the app and the test harness in `bin/`, the fixtures, and \
              a run's results. `{launcher}` starts the app from there, naming the \
@@ -741,17 +1076,7 @@ fn guest_environment_note(image: Image, staged: Staging) -> String {
             launcher = crate::guest::handover::linux_launcher_path(),
             app = crate::guest::handover::ENTRY_NAME,
         ),
-        (Target::Linux, Staging::Done) => format!(
-            "\n\nWhat this boot staged is in `{root}`, which is outside any home \
-             directory: the app and the test harness in `bin/`, the fixtures, and \
-             a run's results. `{launcher}` starts the app from there. There is no \
-             menu entry and no desktop icon to reach it by, because this image has \
-             no desktop session at all: `cargo xtask vm ssh {image}` is the way \
-             in, and a shell is all there is.",
-            root = crate::provider::GUEST_ROOT_LINUX,
-            launcher = crate::guest::handover::linux_launcher_path(),
-        ),
-        (Target::Linux, _) if image.has_desktop() => format!(
+        (Target::Linux, _) => format!(
             "\n\nNothing of ours was staged in it, so there is no app in \
              `{root}` to start and no entry for one. `cargo xtask vm up {image}` \
              boots a guest with the binaries, the launcher and the desktop \
@@ -759,17 +1084,18 @@ fn guest_environment_note(image: Image, staged: Staging) -> String {
             root = crate::provider::GUEST_ROOT_LINUX,
             keep = keep_command(image),
         ),
-        (Target::Linux, _) => format!(
-            "\n\nNothing of ours was staged in it, so there is no app in \
-             `{root}` to start, and this image has no desktop session for an \
-             entry to appear in either: it is where `dist` builds a release \
-             binary. `{keep}` leaves one behind with the source tree it built and \
-             that tree's `target/release`, and `cargo xtask vm ssh {image}` is \
-             the way in.",
-            root = crate::provider::GUEST_ROOT_LINUX,
-            keep = keep_command(image),
-        ),
     }
+}
+
+/// Whether a boot of this image puts the current binaries in the guest.
+///
+/// Every image the suite runs in, and no builder. A builder is not a guest the
+/// suite runs in, and on a host that compiles the suite in this very image the
+/// build would leave a stopped guest that the boot then discards to make its
+/// pristine overlay: ten minutes spent putting a test harness where nothing
+/// runs it, and the build directory thrown away with the guest.
+pub fn stages_binaries(image: Image) -> bool {
+    !image.is_builder()
 }
 
 /// `vm up`.
@@ -780,17 +1106,15 @@ pub fn up(
     desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
-    // Built before anything is created, for two reasons. It decides what this
-    // boot is: a guest carrying the current binaries, or the golden image itself
-    // to look at. And where the binaries come from a builder guest, that guest
-    // has to be up and gone again before this one starts, because only one runs
-    // at a time.
+    // Built before anything is created, because it decides what this boot is: a
+    // guest carrying the current binaries, or the golden image itself to look
+    // at. A compile error therefore costs no boot at all.
     //
-    // A host that cannot build them at all still boots: `vm up` is for looking
-    // at a guest, and a Linux host that has just spent an hour building the
-    // Windows image has every reason to boot it. `e2e` refuses that case
-    // instead, because a suite with nothing to run is not a run.
-    let built =
+    // A host that cannot build them still boots: `vm up` is for looking at a
+    // guest, and a Linux host that has just spent an hour building the Windows
+    // image has every reason to boot it. `e2e` refuses that case instead,
+    // because a suite with nothing to run is not a run.
+    let built = if stages_binaries(image) {
         match crate::guest::artifacts::usable_builder(&store, HostOs::current(), image.target()) {
             Ok(_) => Some(crate::guest::artifacts::build(
                 runner,
@@ -802,7 +1126,10 @@ pub fn up(
                 println!("it boots as the image built it");
                 None
             }
-        };
+        }
+    } else {
+        None
+    };
 
     let mut session = boot(
         runner,
@@ -814,16 +1141,19 @@ pub fn up(
     )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
-    let staged = if let Some(built) = &built {
-        if let Err(e) = crate::guest::artifacts::stage(&store, &session, built) {
-            // Keep the guest: `vm up` is for looking at one, and a guest that
-            // booted is still worth having even if the binaries did not arrive.
-            println!("{}", after_failure(&mut session, &store, true));
-            return Err(e);
+    let staged = match &built {
+        Some(built) => {
+            if let Err(e) = crate::guest::artifacts::stage(&store, &session, built) {
+                // Keep the guest: `vm up` is for looking at one, and a guest
+                // that booted is still worth having even if the binaries did
+                // not arrive.
+                println!("{}", after_failure(&mut session, &store, true));
+                return Err(e);
+            }
+            Staging::Done
         }
-        Staging::Done
-    } else {
-        Staging::Impossible
+        None if !stages_binaries(image) => Staging::Skipped,
+        None => Staging::Impossible,
     };
     let enhanced_session = hand_over(&mut session, &store);
     println!(
@@ -918,11 +1248,7 @@ pub fn ssh(runner: &dyn Runner, image: Image, extra: &[String]) -> Result<u8, St
     })?;
     let provider = provider::for_state(runner, &store, &state)?;
     if !provider.is_running(&state) {
-        return Err(format!(
-            "{} is recorded but not running. `cargo xtask vm down {image}` \
-             clears it and `cargo xtask vm up {image}` starts a fresh one.",
-            state.vm_name
-        ));
+        return Err(not_running_hint(image, &state));
     }
     let remote = if extra.is_empty() {
         None
@@ -961,9 +1287,8 @@ pub fn view(runner: &dyn Runner, image: Image) -> Result<u8, String> {
     let provider = provider::for_state(runner, &store, &state)?;
     if !provider.is_running(&state) {
         return Err(format!(
-            "{} is recorded but not running; there is no console to attach to. \
-             `cargo xtask vm up {image}` starts a fresh one.",
-            state.vm_name
+            "there is no console to attach to: {}",
+            not_running_hint(image, &state)
         ));
     }
     // The advice about how to use a console belongs to whichever provider
@@ -1337,18 +1662,24 @@ mod tests {
                 "{image} is described as holding something other than {expected}"
             );
         }
+        // And the two images of a target are not described by one number where
+        // they do not hold one: the Linux builder gets twice the desktop
+        // guest's memory, and both texts have to say their own figure.
+        let desktop = lifecycle_explainer(Image::Linux, bare(ProviderKind::Qemu, Staging::Skipped));
+        let builder = lifecycle_explainer(
+            Image::LinuxBuilder,
+            bare(ProviderKind::Qemu, Staging::Skipped),
+        );
+        let (desktop_mib, _) = crate::provider::resources_for(Image::Linux);
+        let (builder_mib, _) = crate::provider::resources_for(Image::LinuxBuilder);
+        assert!(builder_mib > desktop_mib);
         assert!(
-            lifecycle_explainer(Image::Windows, bare(ProviderKind::Qemu, Staging::Skipped))
-                .contains("6.0 GiB"),
-            "the Windows desktop guest's own figure"
+            !desktop.contains(&util::format_bytes(u64::from(builder_mib) * 1024 * 1024)),
+            "{desktop}"
         );
         assert!(
-            lifecycle_explainer(
-                Image::WindowsBuilder,
-                bare(ProviderKind::Qemu, Staging::Skipped)
-            )
-            .contains("8.0 GiB"),
-            "a builder gets more of the host, and the text has to say so"
+            !builder.contains(&util::format_bytes(u64::from(desktop_mib) * 1024 * 1024)),
+            "{builder}"
         );
     }
 
@@ -1729,11 +2060,6 @@ mod tests {
             };
             let text = lifecycle_explainer(image, bare(ProviderKind::Qemu, Staging::Skipped));
             assert!(text.contains(expected), "{text}");
-            assert_eq!(
-                text.contains("no desktop session"),
-                !image.has_desktop(),
-                "{text}"
-            );
             let store = Store::new("/srv/vm");
             let hint = Session {
                 provider: Box::new(fake::Fake),
@@ -1743,18 +2069,116 @@ mod tests {
             .reach_hint();
             assert!(hint.contains(expected), "{hint}");
         }
-        let windows_builder = lifecycle_explainer(
-            Image::WindowsBuilder,
-            bare(ProviderKind::HyperV, Staging::Skipped),
+        // The image with no session is the one that must not be offered a
+        // desktop, and the desktop images are the ones whose text explains what
+        // is missing when nothing was staged into one.
+        let linux = lifecycle_explainer(Image::Linux, bare(ProviderKind::Qemu, Staging::Skipped));
+        assert!(linux.contains("no app in"), "{linux}");
+        assert!(
+            lifecycle_explainer(
+                Image::WindowsBuilder,
+                bare(ProviderKind::HyperV, Staging::Skipped)
+            )
+            .contains("desktop: cargo xtask vm view windows-builder"),
+        );
+    }
+
+    /// The whole difference between a boot and a resume, on the path where it
+    /// matters most. A boot's failure tears its guest down because it made the
+    /// overlay; a resume was called to keep one, and the failure it is most
+    /// likely to hit is a guest running a repair pass after decision 2's kill,
+    /// which is the moment the build directory is worth the most and the moment
+    /// this used to delete it.
+    #[test]
+    fn a_resume_that_fails_keeps_the_overlay_and_the_record() {
+        let store = fake::store("failed_resume_keeps_the_overlay");
+        let image = Image::WindowsBuilder;
+        let mut state = fake::state(&store, image, StartReason::Up);
+        // What a resume starts from: a record that said stopped, cleared on the
+        // way in by `resume` itself, and an overlay with a build directory in it.
+        state.stopped = false;
+        std::fs::write(&state.overlay, b"a cargo build directory").expect("the overlay");
+        write_state(&store, image, &state).expect("the record");
+
+        let mut session = Session {
+            // Not running: the resume failed before the guest existed.
+            provider: Box::new(fake::Undestroyable(false)),
+            state,
+            image,
+        };
+        let text = after_failed_resume(&mut session, &store);
+
+        assert!(session.state.overlay.is_file(), "{text}");
+        let recorded = load_state(&store, image).expect("the record is still there");
+        assert!(recorded.stopped, "{recorded:?}");
+        assert!(
+            text.contains("cargo xtask vm start windows-builder"),
+            "{text}"
         );
         assert!(
-            windows_builder.contains("desktop: cargo xtask vm view windows-builder"),
-            "{windows_builder}"
+            text.contains("cargo xtask vm down windows-builder"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// The other half: a guest that is up and not answering is left up. Powering
+    /// it off would start whatever it is doing over, and the record already says
+    /// what is true, so the only thing this owes is a way to look at it and two
+    /// ways out that differ in what they cost.
+    #[test]
+    fn a_resume_that_fails_with_the_guest_up_leaves_it_up_and_says_so() {
+        let store = fake::store("failed_resume_leaves_it_up");
+        let image = Image::WindowsBuilder;
+        let mut state = fake::state(&store, image, StartReason::Up);
+        state.stopped = false;
+        std::fs::write(&state.overlay, b"a cargo build directory").expect("the overlay");
+        write_state(&store, image, &state).expect("the record");
+
+        let mut session = Session {
+            provider: Box::new(fake::Undestroyable(true)),
+            state,
+            image,
+        };
+        let text = after_failed_resume(&mut session, &store);
+
+        assert!(session.state.overlay.is_file(), "{text}");
+        assert!(text.contains("it is still running"), "{text}");
+        // The record is left alone, because a running guest is what it says.
+        let recorded = load_state(&store, image).expect("the record is still there");
+        assert!(!recorded.stopped, "{recorded:?}");
+        assert!(
+            text.contains("cargo xtask vm ssh windows-builder"),
+            "{text}"
         );
         assert!(
-            windows_builder.contains("Its desktop opens in a basic session"),
-            "{windows_builder}"
+            text.contains("cargo xtask vm stop windows-builder"),
+            "{text}"
         );
+        assert!(
+            text.contains("cargo xtask vm down windows-builder"),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// Neither message may read like a teardown: what a person does after a
+    /// failed resume depends entirely on believing the overlay is still there.
+    #[test]
+    fn neither_failed_resume_message_says_anything_was_destroyed() {
+        for image in Image::ALL.into_iter().filter(|image| image.is_builder()) {
+            for text in [
+                resume_left_running(image, "sunlit-e2e-x"),
+                resume_left_stopped(image, "sunlit-e2e-x"),
+            ] {
+                assert!(!text.contains("was destroyed"), "{text}");
+                assert!(text.contains("untouched"), "{text}");
+                assert!(
+                    text.contains(&format!("cargo xtask vm down {image}")),
+                    "{text}"
+                );
+            }
+        }
     }
 
     /// A run kept after its work failed is as finished as one kept after its
@@ -1890,6 +2314,9 @@ mod tests {
             fn destroy(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
                 Ok(crate::provider::Stopped::WasNotRunning)
             }
+            fn stop(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+                unreachable!("these cases stop nothing")
+            }
             fn is_running(&self, _: &RunState) -> bool {
                 false
             }
@@ -1905,6 +2332,264 @@ mod tests {
             fn runner(&self) -> &dyn crate::runner::Runner {
                 unreachable!("these cases run nothing")
             }
+        }
+
+        /// A guest that says whether it is up and refuses to be destroyed, for
+        /// the cases whose whole point is that a failure kept the overlay: if
+        /// the path under test ever tears one down, the case dies here rather
+        /// than passing on a message that says otherwise.
+        pub struct Undestroyable(pub bool);
+
+        impl crate::provider::Provider for Undestroyable {
+            fn kind(&self) -> ProviderKind {
+                Fake.kind()
+            }
+            fn create_from_golden(&self, _: Image, _: StartReason) -> Result<RunState, String> {
+                unreachable!("these cases create nothing")
+            }
+            fn start(&self, _: &mut RunState) -> Result<(), String> {
+                unreachable!("these cases start nothing")
+            }
+            fn destroy(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+                unreachable!("a failed resume destroys nothing")
+            }
+            fn stop(&self, _: &RunState) -> Result<crate::provider::Stopped, String> {
+                unreachable!("these cases stop nothing")
+            }
+            fn is_running(&self, _: &RunState) -> bool {
+                self.0
+            }
+            fn defunct(&self, _: &RunState) -> Option<String> {
+                None
+            }
+            fn view(&self, _: &RunState) -> Result<String, String> {
+                unreachable!("these cases open no console")
+            }
+            fn ssh_target(&self, state: &RunState) -> crate::guest::ssh::SshTarget {
+                Fake.ssh_target(state)
+            }
+            fn runner(&self) -> &dyn crate::runner::Runner {
+                unreachable!("these cases run nothing")
+            }
+        }
+    }
+
+    /// Decision 1, in both directions. What the one-VM rule protects is a host
+    /// oversubscribed by two guests each sized for the whole of it, and a
+    /// builder beside a guest under test is not that pair: it is the compiler
+    /// beside the thing it compiles for, which is what a Windows host has always
+    /// had in WSL.
+    #[test]
+    fn a_builder_may_run_beside_a_guest_under_test_and_two_desktop_guests_may_not() {
+        for target in Target::ALL {
+            let desktop = Image::desktop(target);
+            let builder = Image::builder(target);
+            assert!(may_run_beside(desktop, builder), "{target}");
+            assert!(may_run_beside(builder, desktop), "{target}");
+        }
+        // Across targets too: what the exemption is about is what the guest is
+        // for, not which operating system is in it.
+        assert!(may_run_beside(Image::Linux, Image::WindowsBuilder));
+        assert!(may_run_beside(Image::WindowsBuilder, Image::LinuxBuilder));
+        // And the pair the rule was written about stays refused.
+        assert!(!may_run_beside(Image::Windows, Image::Linux));
+        assert!(!may_run_beside(Image::Linux, Image::Windows));
+    }
+
+    /// The exemption comes with the number, because what makes two guests fine
+    /// is this host's memory rather than a principle, and a smaller host is the
+    /// case that breaks.
+    #[test]
+    fn a_boot_beside_another_guest_names_it_and_what_the_two_hold() {
+        let line = beside_line(Image::Windows, Image::WindowsBuilder);
+        assert!(line.contains("sunlit-e2e-windows-builder"), "{line}");
+        let total = u64::from(crate::provider::resources_for(Image::Windows).0)
+            + u64::from(crate::provider::resources_for(Image::WindowsBuilder).0);
+        assert!(
+            line.contains(&util::format_bytes(total * 1024 * 1024)),
+            "{line}"
+        );
+        // One line, because that is the whole output budget decision 9 gives it.
+        assert_eq!(line.lines().count(), 1, "{line}");
+    }
+
+    /// Decision 5. The refusal quotes the reason rather than hiding behind
+    /// "unsupported", because the reason is the same one that keeps a compiler
+    /// out of these images and it is worth reading twice.
+    #[test]
+    fn stopping_a_guest_the_suite_runs_in_is_refused_by_naming_the_pristine_overlay() {
+        for image in Image::ALL.into_iter().filter(|image| !image.is_builder()) {
+            let text = persistence_refusal(image);
+            assert!(text.contains("pristine overlay"), "{text}");
+            assert!(
+                text.contains(&format!("cargo xtask vm down {image}")),
+                "{text}"
+            );
+            // And it says where the two commands do apply, so the reader is not
+            // left thinking they do not exist.
+            assert!(text.contains("The builders are what"), "{text}");
+            assert!(text.contains("build directory"), "{text}");
+        }
+    }
+
+    /// A stopped builder is a build directory somebody kept, and `vm up` and
+    /// `dist` both want a pristine overlay: they take it, and the line says what
+    /// went with it rather than calling it a leftover.
+    #[test]
+    fn a_boot_that_discards_a_stopped_builder_says_so_rather_than_calling_it_a_leftover() {
+        let store = Store::new("/srv/vm");
+        let mut state = fake::state(&store, Image::WindowsBuilder, StartReason::Suite);
+        let crashed = clearing_line(Image::WindowsBuilder, &state);
+        assert!(
+            crashed.contains("left behind by an earlier run"),
+            "{crashed}"
+        );
+
+        state.stopped = true;
+        let stopped = clearing_line(Image::WindowsBuilder, &state);
+        assert!(stopped.contains("build directory"), "{stopped}");
+        assert!(
+            stopped.contains("cargo xtask vm start windows-builder"),
+            "{stopped}"
+        );
+        assert_eq!(stopped.lines().count(), 1, "{stopped}");
+    }
+
+    /// What a stop keeps matters as much as what it frees: the overlay is
+    /// gigabytes, and the command that reclaims it is the one thing a person who
+    /// never runs it will wish they had been told.
+    #[test]
+    fn a_stop_says_what_it_kept_what_it_freed_and_what_reclaims_it() {
+        let line = stopped_line(
+            Image::WindowsBuilder,
+            "sunlit-e2e-windows-builder",
+            provider::Stopped::ShutDown,
+            Some(6 * 1024 * 1024 * 1024),
+        );
+        assert!(line.contains("is stopped"), "{line}");
+        assert!(line.contains("6.0 GiB"), "{line}");
+        assert!(
+            line.contains("cargo xtask vm start windows-builder"),
+            "{line}"
+        );
+        assert!(
+            line.contains("cargo xtask vm down windows-builder"),
+            "{line}"
+        );
+        assert_eq!(line.lines().count(), 1, "{line}");
+
+        // A guest that had already gone away is recorded as stopped anyway, so
+        // the next command resumes rather than clears, and the line does not
+        // claim a stop that did not happen.
+        let gone = stopped_line(
+            Image::LinuxBuilder,
+            "sunlit-e2e-linux-builder",
+            provider::Stopped::WasNotRunning,
+            None,
+        );
+        assert!(gone.contains("was not running"), "{gone}");
+
+        // A guest that had to be killed kept its overlay too, and the cost of
+        // that overlay is the sentence a clean stop does not carry: whoever
+        // resumes it meets a repair pass, and this is where they hear about it.
+        let killed = stopped_line(
+            Image::WindowsBuilder,
+            "sunlit-e2e-windows-builder",
+            provider::Stopped::Killed,
+            Some(6 * 1024 * 1024 * 1024),
+        );
+        assert!(killed.contains("was killed"), "{killed}");
+        assert!(killed.contains("repair pass"), "{killed}");
+        assert!(killed.contains("6.0 GiB"), "{killed}");
+        assert!(
+            killed.contains("cargo xtask vm start windows-builder"),
+            "{killed}"
+        );
+        assert_eq!(killed.lines().count(), 1, "{killed}");
+    }
+
+    /// The two guests `is_running` cannot tell apart want opposite advice, and
+    /// the record is the only thing that says which is which.
+    #[test]
+    fn a_stopped_guest_is_offered_a_resume_and_a_crashed_one_a_teardown() {
+        let store = Store::new("/srv/vm");
+        let mut state = fake::state(&store, Image::WindowsBuilder, StartReason::Suite);
+        let crashed = not_running_hint(Image::WindowsBuilder, &state);
+        assert!(
+            crashed.contains("cargo xtask vm down windows-builder"),
+            "{crashed}"
+        );
+        assert!(!crashed.contains("vm start"), "{crashed}");
+
+        state.stopped = true;
+        let stopped = not_running_hint(Image::WindowsBuilder, &state);
+        assert!(
+            stopped.contains("cargo xtask vm start windows-builder"),
+            "{stopped}"
+        );
+        assert!(!stopped.contains("vm down"), "{stopped}");
+    }
+
+    /// A builder is not a guest the suite runs in, and on this host the suite is
+    /// compiled in that very image: staging into it would mean a build whose
+    /// stopped guest the same command then discards.
+    #[test]
+    fn a_boot_stages_binaries_into_the_guests_the_suite_runs_in_and_no_others() {
+        for image in Image::ALL {
+            assert_eq!(stages_binaries(image), !image.is_builder(), "{image}");
+        }
+    }
+
+    /// Criterion 7. A builder needs less said about it than a desktop guest,
+    /// not more: the parts of that text about shortcuts, sessions and clipboards
+    /// are about a guest somebody was handed, and a builder is a compiler.
+    #[test]
+    fn a_builders_closing_text_drops_every_part_of_a_desktop_guests_that_is_not_true_of_it() {
+        for image in Image::ALL.into_iter().filter(|image| image.is_builder()) {
+            let text = lifecycle_explainer(image, bare(ProviderKind::HyperV, Staging::Skipped));
+            // Nothing is staged in a builder, so there is nothing to click.
+            assert!(!text.contains(crate::guest::handover::ENTRY_NAME), "{text}");
+            assert!(
+                !text.contains(crate::guest::handover::APP_SHORTCUT.trim_end_matches(".lnk")),
+                "{text}"
+            );
+            assert!(!text.contains("SLINT_BACKEND"), "{text}");
+            // No choice of console session, and nothing to paste into one.
+            assert!(!text.contains("enhanced session"), "{text}");
+            assert!(!text.contains("basic session"), "{text}");
+            assert!(!text.contains("clipboard"), "{text}");
+            assert!(
+                !text.contains(crate::provider::hyperv::CREDENTIAL_DIALOG_CAVEAT),
+                "{text}"
+            );
+            // And no run in it to be told not to click during.
+            assert!(!text.contains("Watching a run"), "{text}");
+            // What it does have is a lifetime, which is the one thing the
+            // desktop guests' text denies exists.
+            assert!(!text.contains("no way to do is save or pause"), "{text}");
+            assert!(
+                text.contains(&format!("cargo xtask vm stop {image}")),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("cargo xtask vm start {image}")),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("cargo xtask vm down {image}")),
+                "{text}"
+            );
+
+            // Shorter than the desktop guest's of the same target, which is the
+            // direction decision 9 asks for.
+            let desktop = lifecycle_explainer(
+                Image::desktop(image.target()),
+                prepared(ProviderKind::HyperV, Staging::Done, true),
+            );
+            assert!(
+                text.len() < desktop.len(),
+                "the {image} text is longer than the desktop guest's: {text}"
+            );
         }
     }
 

@@ -540,6 +540,50 @@ pub fn destroy_script(name: &str) -> String {
     )
 }
 
+/// The script that asks the guest to shut itself down and keeps the VM.
+///
+/// `Stop-VM` without `-TurnOff` is a shutdown request the integration services
+/// carry into the guest, so the guest closes its own filesystem: that is the
+/// whole point of a stop, since what the VM keeps is a cargo build directory
+/// inside it. The VM stays registered and keeps its differencing disk.
+///
+/// The grace is inside the script because that is the only place it can be.
+/// `Stop-VM` without `-AsJob` blocks until the guest is off or Hyper-V gives up
+/// on it, on a schedule that is the cmdlet's rather than this plan's, and a
+/// caller that polls afterwards has already waited however long that took. So
+/// the request becomes a job and `Wait-Job -Timeout` is the bound: decision 2's
+/// sixty seconds are spent here, once, and what follows the script is a question
+/// rather than a second wait.
+///
+/// Unverified on a Windows host: this half of plan decision 2 is written to the
+/// same shape as the scripts around it and has never run.
+pub fn shutdown_script(name: &str, grace: Duration) -> String {
+    query_script(
+        name,
+        &format!(
+            "if ($vm -and $vm.State -ne 'Off') {{ \
+             Stop-VM -Name {name} -Force -AsJob | Wait-Job -Timeout {secs} | Out-Null }}\n",
+            name = ps_quote(name),
+            secs = grace.as_secs()
+        ),
+    )
+}
+
+/// The script that cuts the power and still keeps the VM.
+///
+/// What a stop falls back to when the guest did not comply, which is `destroy`'s
+/// first half without the `Remove-VM`: the disk survives, and the cost is the
+/// repair pass the next boot performs on it.
+pub fn turn_off_script(name: &str) -> String {
+    query_script(
+        name,
+        &format!(
+            "if ($vm -and $vm.State -ne 'Off') {{ Stop-VM -Name {name} -TurnOff -Force }}\n",
+            name = ps_quote(name)
+        ),
+    )
+}
+
 /// Read `STATE=` out of the state script's output.
 pub fn parse_state(stdout: &str) -> Option<String> {
     stdout
@@ -705,6 +749,31 @@ impl<'a> HypervProvider<'a> {
         console_resolution(requested, area)
     }
 
+    /// Poll until the VM is `Off`, up to `grace`.
+    ///
+    /// A confirmation rather than the wait itself, since both scripts that reach
+    /// it are bounded already: the shutdown request waits out decision 2's grace
+    /// inside `Wait-Job`, and a turn-off is immediate. `Duration::ZERO` asks the
+    /// question once, which is what a caller that has already waited wants; a
+    /// real grace is for the turn-off, whose completion is asynchronous.
+    fn wait_for_off(&self, name: &str, grace: Duration) -> bool {
+        let start = Instant::now();
+        loop {
+            // A VM that is no longer registered is off in every sense a stop
+            // cares about. A query that failed is an unknown rather than a
+            // verdict, so it keeps the wait going and the grace bounds it.
+            match self.query_state(name) {
+                Ok(None) => return true,
+                Ok(Some(found)) if found.eq_ignore_ascii_case("Off") => return true,
+                _ => {}
+            }
+            if start.elapsed() >= grace {
+                return false;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+
     /// Poll until the guest reports a usable address.
     fn wait_for_address(&self, name: &str, timeout: Duration) -> Result<String, String> {
         let start = Instant::now();
@@ -813,8 +882,57 @@ impl crate::provider::Provider for HypervProvider<'_> {
         // another comparison that already allows for that.
         Ok(match before {
             Some(ref state) if state.eq_ignore_ascii_case("Off") => Stopped::WasNotRunning,
-            _ => Stopped::Stopped,
+            _ => Stopped::ShutDown,
         })
+    }
+
+    fn stop(&self, state: &RunState) -> Result<Stopped, String> {
+        // `query_state` rather than `is_running`, for the same reason `destroy`
+        // uses it: "the cmdlets did not work" and "there is no such VM" are
+        // different answers, and only one of them means there is nothing to do.
+        let before = self.query_state(&state.vm_name)?;
+        match before {
+            None => return Ok(Stopped::WasNotRunning),
+            Some(ref found) if found.eq_ignore_ascii_case("Off") => {
+                return Ok(Stopped::WasNotRunning);
+            }
+            Some(_) => {}
+        }
+
+        // A request that the cmdlets refused is not the end of the stop: the
+        // guest is still up, and what follows cuts the power.
+        if let Err(e) = self.run_script(&shutdown_script(
+            &state.vm_name,
+            crate::provider::SHUTDOWN_GRACE,
+        )) {
+            println!("warning: {} was not asked to shut down: {e}", state.vm_name);
+        }
+        // The script spent the grace itself, so this is one question rather than
+        // a second wait: a `Stop-VM` that finished means the guest is Off, and
+        // one that did not is what the turn-off below is for.
+        if self.wait_for_off(&state.vm_name, Duration::ZERO) {
+            return Ok(Stopped::ShutDown);
+        }
+
+        println!(
+            "  {} has not shut down in {:.0}s; turning it off, so its disk will \
+             need a repair pass",
+            state.vm_name,
+            crate::provider::SHUTDOWN_GRACE.as_secs_f64()
+        );
+        self.run_script(&turn_off_script(&state.vm_name))?;
+        // A turn-off is immediate, so the same grace is a confirmation that
+        // costs nothing when it works and bounds the case where it did not.
+        if self.wait_for_off(&state.vm_name, crate::provider::SHUTDOWN_GRACE) {
+            // Cutting the power is this side's kill: the guest never ran its own
+            // shutdown, which is the whole of what `Killed` means.
+            Ok(Stopped::Killed)
+        } else {
+            Err(format!(
+                "{} is still not Off after being asked and then told to stop",
+                state.vm_name
+            ))
+        }
     }
 
     /// Whether the VM is running right now.
@@ -1302,6 +1420,32 @@ mod tests {
         ] {
             assert!(script.contains("sunlit-e2e-windows"), "{script}");
         }
+    }
+
+    /// Decision 2 bounds a stop at sixty seconds, and on this side the bound has
+    /// to be in the script: `Stop-VM` without `-AsJob` blocks for as long as
+    /// Hyper-V feels like, and a grace that only starts after that is not a
+    /// grace. The turn-off keeps the VM, which is the difference from `destroy`.
+    #[test]
+    fn the_shutdown_request_carries_its_own_grace_and_the_turn_off_keeps_the_vm() {
+        let script = shutdown_script(
+            "sunlit-e2e-windows-builder",
+            crate::provider::SHUTDOWN_GRACE,
+        );
+        assert!(script.contains("-AsJob"), "{script}");
+        assert!(
+            script.contains(&format!(
+                "Wait-Job -Timeout {}",
+                crate::provider::SHUTDOWN_GRACE.as_secs()
+            )),
+            "{script}"
+        );
+        assert!(!script.contains("-TurnOff"), "{script}");
+        assert!(!script.contains("Remove-VM"), "{script}");
+
+        let cut = turn_off_script("sunlit-e2e-windows-builder");
+        assert!(cut.contains("-TurnOff"), "{cut}");
+        assert!(!cut.contains("Remove-VM"), "{cut}");
     }
 
     #[test]

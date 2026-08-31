@@ -30,8 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::Monitor;
 
 /// How the monitors of one session relate to each other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DisplayMode {
     /// One screen gets the picture; the rest are left as they are.
     OneScreen,
@@ -72,6 +71,45 @@ impl DisplayMode {
             .ok()
             .and_then(|index| Self::ALL.get(index).copied())
             .unwrap_or_default()
+    }
+
+    /// The name this takes in the config file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::OneScreen => "one-screen",
+            Self::EveryScreen => "every-screen",
+            Self::AcrossScreens => "across-screens",
+        }
+    }
+
+    /// The mode a config file's name refers to, where it names one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim();
+        Self::ALL.into_iter().find(|mode| mode.name() == name)
+    }
+}
+
+impl Serialize for DisplayMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+/// A name nothing answers to is the default rather than a load failure.
+///
+/// The rest of the config is worth keeping: a file written by a newer build, or
+/// one somebody edited by hand, must not cost a person every other setting they
+/// have. The same reasoning `sanitize` applies to a number out of range.
+impl<'de> Deserialize<'de> for DisplayMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(Self::from_name(&name).unwrap_or_else(|| {
+            tracing::warn!(
+                mode = %name,
+                "the config names a display mode this build does not have;                  using the default"
+            );
+            Self::default()
+        }))
     }
 }
 
@@ -951,9 +989,20 @@ mod tests {
                 mode
             );
             let text = toml::to_string(&Wrapper { mode }).unwrap();
+            assert!(text.contains(mode.name()), "{text}");
             assert_eq!(toml::from_str::<Wrapper>(&text).unwrap().mode, mode);
+            assert_eq!(DisplayMode::from_name(mode.name()), Some(mode));
             assert!(!mode.label().is_empty());
         }
+        // A name nothing answers to costs the default rather than the rest of
+        // the config file.
+        assert_eq!(DisplayMode::from_name("every-other-screen"), None);
+        assert_eq!(
+            toml::from_str::<Wrapper>("mode = \"every-other-screen\"")
+                .unwrap()
+                .mode,
+            DisplayMode::default()
+        );
         // Out of range is the default rather than a panic: the combo's index
         // arrives from the UI, and -1 is what an empty combo answers with.
         assert_eq!(DisplayMode::from_index(-1), DisplayMode::default());

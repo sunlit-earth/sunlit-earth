@@ -37,7 +37,7 @@ pub fn wallpaper_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The two names a published wallpaper alternates between.
+/// The two slots a published wallpaper alternates between.
 ///
 /// Two rather than one, because a desktop shell keys the wallpaper it is showing
 /// on the path it was handed: a new image written to the path already in that
@@ -48,63 +48,97 @@ pub fn wallpaper_dir() -> Result<PathBuf, String> {
 /// it load a file.
 ///
 /// Two is also the smallest number that keeps what one name gave: a publish
-/// overwrites the file the desktop is not showing, so a desktop whose setting
+/// overwrites the slot the desktop is not showing, so a desktop whose setting
 /// still names the previous frame is looking at a stale image rather than at one
 /// being rewritten underneath it.
+///
+/// A slot holds a whole layout rather than one file, since a publish is now one
+/// image per monitor: `wallpaper-<slot>-<index>.png` per screen, plus
+/// `wallpaper-<slot>-canvas.png` where the mode spans them.
 ///
 /// Windows needs none of this, since `SystemParametersInfoW` reads whatever it
 /// is handed, and shares it rather than making the output path depend on the
 /// platform.
-const WALLPAPER_NAMES: [&str; 2] = ["wallpaper-1.png", "wallpaper-2.png"];
+const SLOTS: [u32; 2] = [1, 2];
 
-/// The name the last publish in this process wrote.
+/// The single-image names published before a wallpaper was a layout.
+///
+/// Swept on the next publish, because they are full-resolution PNGs that
+/// nothing will ever name again.
+const LEGACY_NAMES: [&str; 2] = ["wallpaper-1.png", "wallpaper-2.png"];
+
+/// The slot and the files the last publish in this process wrote.
 ///
 /// Remembered rather than asked of the filesystem every time, because two
 /// publishes can land inside one tick of the clock that stamps their
-/// modification times, and two publishes to one name are the thing the
+/// modification times, and two publishes to one slot are the thing the
 /// alternation exists to prevent. Empty until this process has published, where
 /// the modification times are all there is to go on.
-static PUBLISHED: Mutex<Option<PathBuf>> = Mutex::new(None);
+static PUBLISHED: Mutex<Option<(u32, Vec<PathBuf>)>> = Mutex::new(None);
 
-/// Both files a published wallpaper can be, in a fixed order.
-pub fn wallpaper_files() -> Result<[PathBuf; 2], String> {
-    let dir = wallpaper_dir()?;
-    Ok(WALLPAPER_NAMES.map(|name| dir.join(name)))
+/// The file name one image of a publish takes.
+fn slot_name(slot: u32, suffix: &str) -> String {
+    format!("wallpaper-{slot}-{suffix}.png")
 }
 
-/// The file the most recent publish wrote, or `None` where nothing has published.
+/// Every file of one slot, in name order.
+fn slot_files(dir: &Path, slot: u32) -> Vec<PathBuf> {
+    let prefix = format!("wallpaper-{slot}-");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The files the most recent publish wrote, empty where nothing has published.
 ///
 /// This is what a desktop's own store holds once the setter has run, which is
 /// what lets a test read the setting back and recognize it.
 ///
 /// What this process wrote, where it has written anything, and otherwise the
-/// more recently modified of the two. That second answer is what carries the
-/// alternation across a restart, since the setting names the newest file and the
-/// next publish is therefore the other one, and it is also how a process that
-/// did not do the publishing gets the same answer.
-pub fn published_wallpaper_file() -> Result<Option<PathBuf>, String> {
-    if let Some(path) = PUBLISHED
+/// slot holding the more recently modified file. That second answer is what
+/// carries the alternation across a restart, since the settings name the newest
+/// files and the next publish is therefore the other slot, and it is also how a
+/// process that did not do the publishing gets the same answer.
+pub fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
+    if let Some((_, files)) = PUBLISHED
         .lock()
         .expect("the published name is poisoned")
         .clone()
     {
-        return Ok(Some(path));
+        return Ok(files);
     }
-    Ok(wallpaper_files()?
-        .into_iter()
-        .filter_map(|path| modified(&path).map(|time| (time, path)))
-        .max_by_key(|(time, _)| *time)
-        .map(|(_, path)| path))
+    let dir = wallpaper_dir()?;
+    Ok(newest_slot(&dir)
+        .map(|slot| slot_files(&dir, slot))
+        .unwrap_or_default())
 }
 
-/// The file the next publish writes: whichever of the two is not on the desktop.
-fn next_wallpaper_file() -> Result<PathBuf, String> {
-    let [first, second] = wallpaper_files()?;
-    if published_wallpaper_file()?.as_ref() == Some(&first) {
-        Ok(second)
-    } else {
-        Ok(first)
-    }
+/// The slot holding the most recently written file, where there is one.
+fn newest_slot(dir: &Path) -> Option<u32> {
+    SLOTS
+        .into_iter()
+        .filter_map(|slot| {
+            slot_files(dir, slot)
+                .iter()
+                .filter_map(|path| modified(path))
+                .max()
+                .map(|time| (time, slot))
+        })
+        .max_by_key(|(time, _)| *time)
+        .map(|(_, slot)| slot)
 }
 
 /// When a file was last written, or `None` where there is no file to ask.
@@ -112,6 +146,88 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .ok()
+}
+
+/// One publish in progress: the slot it took, and what it has written so far.
+///
+/// A slot is emptied when it is taken rather than when it is left, so a layout
+/// that lost a monitor does not leave a full-resolution PNG behind for the one
+/// that went away. Emptying the slot the desktop is *not* showing is what makes
+/// that safe.
+pub struct Publication {
+    slot: u32,
+    dir: PathBuf,
+    files: Vec<PathBuf>,
+}
+
+/// Take the slot the desktop is not showing, and clear it.
+pub fn begin_publication() -> Result<Publication, String> {
+    let dir = wallpaper_dir()?;
+    let last = PUBLISHED
+        .lock()
+        .expect("the published name is poisoned")
+        .as_ref()
+        .map(|(slot, _)| *slot);
+    let slot = if last.or_else(|| newest_slot(&dir)) == Some(SLOTS[0]) {
+        SLOTS[1]
+    } else {
+        SLOTS[0]
+    };
+    for stale in slot_files(&dir, slot) {
+        let _ = std::fs::remove_file(stale);
+    }
+    for legacy in LEGACY_NAMES {
+        let _ = std::fs::remove_file(dir.join(legacy));
+    }
+    Ok(Publication {
+        slot,
+        dir,
+        files: Vec::new(),
+    })
+}
+
+impl Publication {
+    /// Encode one RGBA8 image into this slot and answer with its path.
+    ///
+    /// Fast compression (`CompressionType::Fast`), because the user waits for
+    /// the "Set as Wallpaper" operation to complete and a larger file is the
+    /// cheaper half of that trade. Windows preserves PNG wallpapers losslessly
+    /// (no JPEG transcode), which avoids the banding artifacts TIFF produced.
+    pub fn write(
+        &mut self,
+        suffix: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<PathBuf, String> {
+        use image::ImageEncoder;
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+
+        let path = self.dir.join(slot_name(self.slot, suffix));
+        debug!(path = %path.display(), width, height, "saving wallpaper PNG");
+
+        let file =
+            std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
+        let writer = std::io::BufWriter::new(file);
+        let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
+        encoder
+            .write_image(pixels, width, height, image::ColorType::Rgba8.into())
+            .map_err(|e| format!("Failed to encode PNG: {e}"))?;
+
+        self.files.push(path.clone());
+        Ok(path)
+    }
+
+    /// Record this publication as the one the desktop is being handed.
+    ///
+    /// Called once the images are written and before the setter runs, which is
+    /// the same moment the single-file publish recorded its name: a failed
+    /// encode must not spend the slot the next publish is going to need.
+    pub fn commit(self) -> Vec<PathBuf> {
+        *PUBLISHED.lock().expect("the published name is poisoned") =
+            Some((self.slot, self.files.clone()));
+        self.files
+    }
 }
 
 /// Declare this process per-monitor DPI aware, once, before anything asks Win32
@@ -164,11 +280,10 @@ pub fn ensure_dpi_awareness() {
 /// coordinates, which are physical pixels for a per-monitor DPI aware process;
 /// see `docs/platforms.md` for what makes this one aware.
 ///
-/// The `id` is `szDevice` (`\\.\DISPLAY1`) until [`desktop_wallpaper`] can
-/// improve on it: `IDesktopWallpaper` addresses a monitor by a device path that
-/// survives a reboot, and `szDevice` does not. Off Windows the same question is
-/// answered by [`crate::display`], which parses `xrandr --query`: there is no
-/// API in this crate to ask, so it asks a program.
+/// The `id` is `szDevice` (`\\.\DISPLAY1`), which names the monitor for as long
+/// as this session lasts. Off Windows the same question is answered by
+/// [`crate::display`], which parses `xrandr --query`: there is no API in this
+/// crate to ask, so it asks a program.
 #[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
@@ -381,39 +496,6 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Encode RGBA8 pixel data as PNG and save it to the wallpaper directory.
-///
-/// Uses fast compression (`CompressionType::Fast`) because the user waits
-/// for the "Set as Wallpaper" operation to complete. Larger file size is
-/// acceptable. Windows preserves PNG wallpapers losslessly (no JPEG
-/// transcode), which avoids the banding artifacts that occurred with TIFF.
-///
-/// Writes to whichever of [`wallpaper_files`] the desktop is not showing, so
-/// that the path handed to the setter afterwards is one it has to load. Returns
-/// that path on success.
-pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<PathBuf, String> {
-    use image::ImageEncoder;
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-
-    let path = next_wallpaper_file()?;
-    debug!(path = %path.display(), "saving wallpaper PNG");
-
-    let file =
-        std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
-    let writer = std::io::BufWriter::new(file);
-
-    let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
-    encoder
-        .write_image(pixels, width, height, image::ColorType::Rgba8.into())
-        .map_err(|e| format!("Failed to encode PNG: {e}"))?;
-
-    // Only once the image is written, so a failed encode does not spend the
-    // name the next publish is going to need.
-    *PUBLISHED.lock().expect("the published name is poisoned") = Some(path.clone());
-
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,17 +513,13 @@ mod tests {
     }
 
     #[test]
-    fn both_wallpaper_paths_are_distinct_pngs() {
-        let [first, second] = wallpaper_files().unwrap();
-        for path in [&first, &second] {
-            assert!(
-                path.to_string_lossy().ends_with(".png"),
-                "wallpaper path should end with .png, got: {path:?}"
-            );
-        }
+    fn a_slots_names_carry_the_slot_and_the_image() {
+        assert_eq!(slot_name(1, "0"), "wallpaper-1-0.png");
+        assert_eq!(slot_name(2, "canvas"), "wallpaper-2-canvas.png");
         assert_ne!(
-            first, second,
-            "the two names are what makes a publish a path the desktop has not seen"
+            slot_name(SLOTS[0], "0"),
+            slot_name(SLOTS[1], "0"),
+            "the two slots are what makes a publish a path the desktop has not seen"
         );
     }
 
@@ -532,34 +610,56 @@ mod tests {
         let _ = std::fs::remove_file(&empty_file);
     }
 
-    /// Three saves in one test, because the alternation is one behaviour and the
-    /// saves share the one wallpaper directory: a second publish must not land
-    /// on the file the desktop is showing, and a third has to come back to the
-    /// first name rather than growing a third file.
+    /// The whole publish protocol in one test, because it is one behaviour and
+    /// because these all share the one wallpaper directory: two tests writing
+    /// into it at once would each see the other's slot.
+    ///
+    /// A second publish must not land in the slot the desktop is showing, a
+    /// third has to come back to the first slot rather than growing a third one,
+    /// and taking a slot has to empty it of the layout that was there.
     #[test]
-    fn consecutive_saves_alternate_between_the_two_files() {
+    fn publishing_alternates_slots_and_empties_the_one_it_takes() {
         let red: Vec<u8> = (0..4u32 * 4).flat_map(|_| [255u8, 0, 0, 255]).collect();
         let blue: Vec<u8> = (0..2u32 * 2).flat_map(|_| [0u8, 0, 255, 255]).collect();
 
-        let first = save_wallpaper_image(&red, 4, 4).expect("should save PNG");
+        // The one-file era's names are swept, because nothing will ever name
+        // them again and each is as large as a screen.
+        let dir = wallpaper_dir().unwrap();
+        for legacy in LEGACY_NAMES {
+            std::fs::write(dir.join(legacy), b"not really a png").unwrap();
+        }
+
+        let mut publication = begin_publication().expect("a slot to publish into");
+        let first = publication.write("0", &red, 4, 4).expect("should save PNG");
+        let second_screen = publication.write("1", &red, 4, 4).expect("a second screen");
+        let canvas = publication.write("canvas", &red, 4, 4).expect("a canvas");
         assert!(first.exists(), "PNG file should exist");
         assert!(
             std::fs::metadata(&first).unwrap().len() > 0,
             "PNG file should be non-empty"
         );
+        assert_eq!(
+            publication.commit(),
+            vec![first.clone(), second_screen.clone(), canvas.clone()]
+        );
+        for legacy in LEGACY_NAMES {
+            assert!(!dir.join(legacy).exists(), "{legacy} survived a publish");
+        }
 
-        let second = save_wallpaper_image(&blue, 2, 2).expect("second save");
+        let mut publication = begin_publication().expect("the other slot");
+        let second = publication.write("0", &blue, 2, 2).expect("second publish");
         assert_ne!(
             first, second,
             "a publish the desktop can see is one at a path it is not showing"
         );
+        publication.commit();
         assert_eq!(
-            published_wallpaper_file().unwrap().as_ref(),
-            Some(&second),
-            "the setter is handed the file that was just written"
+            published_wallpaper_files().unwrap(),
+            vec![second.clone()],
+            "the setter is handed the files that were just written"
         );
 
-        // Each file holds its own frame, so the one a desktop is still showing
+        // Each slot holds its own frame, so the one a desktop is still showing
         // is not the one being rewritten.
         let earlier = image::open(&first).expect("the earlier frame is still readable");
         assert_eq!((earlier.width(), earlier.height()), (4, 4));
@@ -569,14 +669,15 @@ mod tests {
         assert_eq!(pixel[0], 0, "red channel should be 0 (blue image)");
         assert_eq!(pixel[2], 255, "blue channel should be 255");
 
-        let third = save_wallpaper_image(&red, 4, 4).expect("third save");
-        assert_eq!(third, first, "two names, taken in turn");
-        // Which of the two the run started on depends on what the directory
-        // already held, so what is asserted is that it stayed within them.
-        let names = wallpaper_files().unwrap();
+        // Back to the first slot with a layout of one screen: the two images the
+        // larger layout left there are gone rather than lingering at full size.
+        let mut publication = begin_publication().expect("back to the first slot");
         assert!(
-            names.contains(&first) && names.contains(&second),
-            "the saves used the names this module publishes: {names:?}"
+            !second_screen.exists() && !canvas.exists(),
+            "the previous layout's extra images are still there"
         );
+        let third = publication.write("0", &red, 4, 4).expect("third publish");
+        assert_eq!(third, first, "two slots, taken in turn");
+        assert_eq!(publication.commit(), vec![first]);
     }
 }

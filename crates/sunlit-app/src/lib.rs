@@ -1,4 +1,5 @@
 pub mod about;
+pub mod displays;
 pub mod engine_client;
 pub mod ipc;
 pub mod mouse_math;

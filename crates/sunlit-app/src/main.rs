@@ -17,6 +17,7 @@ use sunlit_core::assets::cloud_fetcher;
 use sunlit_core::assets::cloud_source::HttpCloudSource;
 use sunlit_core::assets::texture_loader;
 use sunlit_core::config::{self, AppConfig, QualityTier};
+use sunlit_core::display;
 use sunlit_core::engine::clock::SystemClock;
 use sunlit_core::engine::wallpaper_sink::SystemWallpaper;
 use sunlit_core::engine::{self, EngineCommand, EngineConfig, EngineHandle};
@@ -24,6 +25,7 @@ use sunlit_core::params::SceneParams;
 use sunlit_core::renderer;
 use sunlit_core::scene::datetime;
 use sunlit_earth::MainWindow;
+use sunlit_earth::displays;
 use sunlit_earth::engine_client::{self, EngineLink};
 use sunlit_earth::ui_callbacks;
 
@@ -430,18 +432,29 @@ fn init_ui(window: &MainWindow, config: &AppConfig, texture_resolution: u32, lin
         .collect();
     window.set_year_options(slint::ModelRc::new(slint::VecModel::from(year_labels)));
 
+    // The one query the settings window makes. The engine re-queries on every
+    // publish, so what this list decides is only what the group offers to
+    // choose from; `None` is a platform with no way to ask and leaves the
+    // group with nothing to show, which is what hides it.
+    let monitors = display::monitors().unwrap_or_default();
+    displays::apply_models_to_window(window, &monitors);
+    displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
+
     ui_callbacks::apply_config_to_window(window, config);
-    let config_aa_index = config::find_sample_count_index(link.aa_counts(), config.sample_count);
     ui_callbacks::defer_combobox_indices(
         &window.as_weak(),
-        config_aa_index,
-        config.texture_index,
-        config::find_texture_resolution_index(texture_resolution),
+        ui_callbacks::ComboIndices::of(
+            config,
+            link.aa_counts(),
+            texture_resolution,
+            &displays::screen_ids(&monitors),
+        ),
     );
 
     ui_callbacks::register_change_callbacks(window, base_year, link);
     ui_callbacks::register_mouse_callbacks(window, link);
-    ui_callbacks::register_action_callbacks(window, link);
+    ui_callbacks::register_action_callbacks(window, link, &monitors);
+    ui_callbacks::register_display_callbacks(window, link, &monitors);
 }
 
 /// Wire the auto-refresh checkbox to the engine's scheduler and the tray mark.

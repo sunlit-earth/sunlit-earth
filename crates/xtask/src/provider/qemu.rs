@@ -700,8 +700,9 @@ impl crate::provider::Provider for QemuProvider<'_> {
         // scoop, is invisible to every shell that started before it did.
         for viewer in crate::host::facts::VNC_VIEWERS {
             if let Some(path) = crate::host::facts::resolve_tool(self.runner, viewer, self.host) {
+                let argument = crate::host::facts::vnc_viewer_argument(viewer, &address);
                 self.runner
-                    .spawn(&Cmd::new(path.to_string_lossy()).arg(address.clone()), None)
+                    .spawn(&Cmd::new(path.to_string_lossy()).arg(argument), None)
                     .map_err(|e| format!("cannot start {viewer}: {e}"))?;
                 return Ok(format!("{viewer} is connecting to {address}"));
             }
@@ -960,6 +961,34 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("-vnc 127.0.0.1:3"), "{text}");
+    }
+
+    #[test]
+    fn the_viewer_is_handed_the_address_in_the_form_it_accepts() {
+        let store = Store::new("/srv/vm");
+        let mut state = recorded_state();
+        state.vnc = Some("127.0.0.1:5903".to_owned());
+
+        let runner = FakeRunner::new().with_tool("krdc", "/usr/bin/krdc");
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        let note = provider.view(&state).expect("a viewer was found");
+        assert_eq!(runner.spawned.borrow().len(), 1);
+        assert!(
+            runner.spawned.borrow()[0].contains("vnc://127.0.0.1:5903"),
+            "{:?}",
+            runner.spawned.borrow()
+        );
+        // The note is about the console, not about the URL the client wanted.
+        assert!(note.contains("127.0.0.1:5903"), "{note}");
+
+        let runner = FakeRunner::new().with_tool("vncviewer", "/usr/bin/vncviewer");
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+        provider.view(&state).expect("a viewer was found");
+        assert!(
+            !runner.spawned.borrow()[0].contains("vnc://"),
+            "{:?}",
+            runner.spawned.borrow()
+        );
     }
 
     #[test]

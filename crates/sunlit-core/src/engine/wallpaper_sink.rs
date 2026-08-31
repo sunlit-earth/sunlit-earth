@@ -279,11 +279,7 @@ impl WallpaperSink for SystemWallpaper {
         Ok(String::new())
     }
 
-    /// Write the anchor's picture and run the desktop's own setter.
-    ///
-    /// One image for the whole session so far. Which desktops can hold more
-    /// than one, and what to write for each, is the table's business and its
-    /// own step.
+    /// Write the PNGs and run the desktop's own setter.
     ///
     /// The backend is looked up again rather than cached from `check_supported`:
     /// the sink outlives a session change, and running the previous desktop's
@@ -295,30 +291,13 @@ impl WallpaperSink for SystemWallpaper {
                 &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
             )
         })?;
-        let frame = job.anchor_image()?;
-        let mut publication = crate::wallpaper::begin_publication()?;
-        let path = publication.write(
-            &job.anchor.to_string(),
-            &frame.pixels,
-            frame.width,
-            frame.height,
-        )?;
-        publication.commit();
+        let placement = write_placement(job, backend.reach())?;
 
         let discovered = match backend.discovery() {
             Some(query) => run(&query)?,
             None => String::new(),
         };
-        // The monitors' own names, which XFCE needs to build the property
-        // xfdesktop actually reads. A name nothing can address is dropped: that
-        // is the one screen a session with no display to ask reports.
-        let monitors: Vec<String> = job
-            .monitors
-            .iter()
-            .map(|monitor| monitor.id.clone())
-            .filter(|id| !id.is_empty())
-            .collect();
-        let commands = backend.commands(&path, &discovered, &monitors);
+        let commands = backend.commands(&placement, &discovered);
         if commands.is_empty() {
             return Err(backend.nothing_to_run());
         }
@@ -327,18 +306,108 @@ impl WallpaperSink for SystemWallpaper {
         }
 
         tracing::info!(
-            path = %path.display(),
+            path = %placement.single.display(),
             desktop = backend.desktop,
             commands = commands.len(),
+            screens = job.monitors.len(),
             "wallpaper set successfully"
         );
         crate::memory::log_memory_usage("after wallpaper set");
-        Ok(String::new())
+        Ok(backend
+            .degradation(job.mode, job.monitors.len())
+            .unwrap_or_default())
     }
 
     #[cfg(not(any(windows, target_os = "linux")))]
     fn publish(&self, _job: &WallpaperJob) -> Result<String, String> {
         Err(UNSUPPORTED.to_owned())
+    }
+}
+
+/// Write the files one desktop's reach calls for, and say where they went.
+///
+/// Cutting a canvas is only done for a desktop that addresses monitors
+/// individually. A desktop that can span is handed the canvas whole, and one
+/// that holds a single image is handed the anchor's own picture even in the span
+/// mode, because a canvas zoomed onto every screen separately is not the view it
+/// was cut to be.
+#[cfg(target_os = "linux")]
+fn write_placement(
+    job: &WallpaperJob,
+    reach: crate::desktop::Reach,
+) -> Result<crate::desktop::Placement, String> {
+    use crate::desktop::{Placement, Reach};
+
+    let mut publication = crate::wallpaper::begin_publication()?;
+    match reach {
+        Reach::PerMonitor => {
+            let mut written: Vec<(Arc<Frame>, std::path::PathBuf)> = Vec::new();
+            let mut per_monitor = Vec::with_capacity(job.monitors.len());
+            let mut untouched = Vec::new();
+            let mut anchor = None;
+            for (index, monitor) in job.monitors.iter().enumerate() {
+                let Some(frame) = job.image_for(index)? else {
+                    untouched.push(monitor.id.clone());
+                    continue;
+                };
+                // Two screens showing the same picture cost one render, and
+                // this is what carries that as far as the file: one encode and
+                // one path, named after whichever screen came first.
+                let seen = written
+                    .iter()
+                    .find(|(seen, _)| Arc::ptr_eq(seen, &frame))
+                    .map(|(_, path)| path.clone());
+                let path = if let Some(path) = seen {
+                    path
+                } else {
+                    let path = publication.write(
+                        &index.to_string(),
+                        &frame.pixels,
+                        frame.width,
+                        frame.height,
+                    )?;
+                    written.push((Arc::clone(&frame), path.clone()));
+                    path
+                };
+                if index == job.anchor {
+                    anchor = Some(path.clone());
+                }
+                per_monitor.push((monitor.id.clone(), path));
+            }
+            let single =
+                anchor.ok_or_else(|| "this publish has no image for its own anchor".to_owned())?;
+            publication.commit();
+            Ok(Placement {
+                per_monitor,
+                untouched,
+                single,
+                spanned: false,
+            })
+        }
+        Reach::Spanned if job.mode == DisplayMode::AcrossScreens => {
+            let canvas = job.canvas().ok_or_else(|| {
+                "a view across the screens was asked for without a canvas".to_owned()
+            })?;
+            let path = publication.write("canvas", &canvas.pixels, canvas.width, canvas.height)?;
+            publication.commit();
+            Ok(Placement {
+                per_monitor: Vec::new(),
+                untouched: Vec::new(),
+                single: path,
+                spanned: true,
+            })
+        }
+        Reach::Spanned | Reach::OneImage => {
+            let frame = job.anchor_image()?;
+            let path = publication.write(
+                &job.anchor.to_string(),
+                &frame.pixels,
+                frame.width,
+                frame.height,
+            )?;
+            publication.commit();
+            Ok(Placement::single(path))
+        }
     }
 }
 

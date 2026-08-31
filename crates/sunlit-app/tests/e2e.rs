@@ -1880,8 +1880,26 @@ fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> O
         .map(|monitor| monitor.id)
         .collect();
 
+    // The placement the app would have made for this session, rebuilt from what
+    // it actually wrote: the file per monitor where this desktop takes one, and
+    // the first file otherwise.
+    let placement = if backend.reach() == sunlit_core::desktop::Reach::PerMonitor {
+        sunlit_core::desktop::Placement {
+            per_monitor: monitors
+                .iter()
+                .cloned()
+                .zip(published.iter().cloned())
+                .collect(),
+            untouched: Vec::new(),
+            single: published[0].clone(),
+            spanned: false,
+        }
+    } else {
+        sunlit_core::desktop::Placement::single(published[0].clone())
+    };
+
     let mut holders: Vec<String> = Vec::new();
-    for command in backend.commands(&published[0], &discovered, &monitors) {
+    for command in backend.commands(&placement, &discovered) {
         // The fill-mode writes carry a mode rather than a path, and the mode is
         // not what this is about.
         let Some(written) = command

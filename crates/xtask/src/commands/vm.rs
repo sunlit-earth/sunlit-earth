@@ -1017,6 +1017,17 @@ fn guest_environment_note(image: Image, staged: Staging) -> String {
     }
 }
 
+/// Whether a boot of this image puts the current binaries in the guest.
+///
+/// Every image the suite runs in, and no builder. A builder is not a guest the
+/// suite runs in, and on a host that compiles the suite in this very image the
+/// build would leave a stopped guest that the boot then discards to make its
+/// pristine overlay: ten minutes spent putting a test harness where nothing
+/// runs it, and the build directory thrown away with the guest.
+pub fn stages_binaries(image: Image) -> bool {
+    !image.is_builder()
+}
+
 /// `vm up`.
 pub fn up(
     runner: &dyn Runner,
@@ -1025,17 +1036,15 @@ pub fn up(
     desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
-    // Built before anything is created, for two reasons. It decides what this
-    // boot is: a guest carrying the current binaries, or the golden image itself
-    // to look at. And where the binaries come from a builder guest, that guest
-    // has to be up and gone again before this one starts, because only one runs
-    // at a time.
+    // Built before anything is created, because it decides what this boot is: a
+    // guest carrying the current binaries, or the golden image itself to look
+    // at. A compile error therefore costs no boot at all.
     //
-    // A host that cannot build them at all still boots: `vm up` is for looking
-    // at a guest, and a Linux host that has just spent an hour building the
-    // Windows image has every reason to boot it. `e2e` refuses that case
-    // instead, because a suite with nothing to run is not a run.
-    let built =
+    // A host that cannot build them still boots: `vm up` is for looking at a
+    // guest, and a Linux host that has just spent an hour building the Windows
+    // image has every reason to boot it. `e2e` refuses that case instead,
+    // because a suite with nothing to run is not a run.
+    let built = if stages_binaries(image) {
         match crate::guest::artifacts::usable_builder(&store, HostOs::current(), image.target()) {
             Ok(_) => Some(crate::guest::artifacts::build(
                 runner,
@@ -1047,7 +1056,10 @@ pub fn up(
                 println!("it boots as the image built it");
                 None
             }
-        };
+        }
+    } else {
+        None
+    };
 
     let mut session = boot(
         runner,
@@ -1059,16 +1071,19 @@ pub fn up(
     )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
-    let staged = if let Some(built) = &built {
-        if let Err(e) = crate::guest::artifacts::stage(&store, &session, built) {
-            // Keep the guest: `vm up` is for looking at one, and a guest that
-            // booted is still worth having even if the binaries did not arrive.
-            println!("{}", after_failure(&mut session, &store, true));
-            return Err(e);
+    let staged = match &built {
+        Some(built) => {
+            if let Err(e) = crate::guest::artifacts::stage(&store, &session, built) {
+                // Keep the guest: `vm up` is for looking at one, and a guest
+                // that booted is still worth having even if the binaries did
+                // not arrive.
+                println!("{}", after_failure(&mut session, &store, true));
+                return Err(e);
+            }
+            Staging::Done
         }
-        Staging::Done
-    } else {
-        Staging::Impossible
+        None if !stages_binaries(image) => Staging::Skipped,
+        None => Staging::Impossible,
     };
     let enhanced_session = hand_over(&mut session, &store);
     println!(
@@ -2288,6 +2303,16 @@ mod tests {
             "{stopped}"
         );
         assert!(!stopped.contains("vm down"), "{stopped}");
+    }
+
+    /// A builder is not a guest the suite runs in, and on this host the suite is
+    /// compiled in that very image: staging into it would mean a build whose
+    /// stopped guest the same command then discards.
+    #[test]
+    fn a_boot_stages_binaries_into_the_guests_the_suite_runs_in_and_no_others() {
+        for image in Image::ALL {
+            assert_eq!(stages_binaries(image), !image.is_builder(), "{image}");
+        }
     }
 
     /// Criterion 7. A builder needs less said about it than a desktop guest,

@@ -128,3 +128,28 @@ mid value that the opacity case uses instead. They are the suite's first blend-m
 which is why `check_golden_in` waits for `day_texture` and `night_texture`: nothing spawns
 those decodes until a case asks for the mode, and the first one to do so exported the frame
 the fallback draws.
+
+## One view across several screens
+
+`display::layout` turns a list of monitors into the renders a wallpaper publish makes. Everything in it is a pure function of rectangles, so the whole model is exercised on a machine with one screen; what the sections below record is the geometry, and [architecture.md](architecture.md) has the publish path around it.
+
+Two lenses, and they are not anchored to the same axis. That is the one thing to keep straight here, because every rule below follows from it.
+
+- The Earth lens is `Mat4::perspective_rh(fov_y, aspect, ..)`. Its scale in pixels per unit of tan-space is `height / (2 * tan(camera_fov / 2))` and does not depend on the width at all. Widening a render at a fixed `camera_fov` shows more scene to the sides at the same magnification.
+- The sky lens is stereographic and anchored the other way. `sky_lens_project` builds NDC as `radial * r / edge * vec2(1, aspect)`, which puts the frame's *horizontal* edge at `tan(sky_fov / 4)`, so its scale is `width / (2 * tan(sky_fov / 4))` and does not depend on the height. Widening a render at a fixed `sky_fov` magnifies the sky.
+
+**The contain rule.** A screen's own render keeps the settings as they are while `width >= height`. Below square, a fixed vertical field of view runs the globe off the sides, so `contain_camera_fov` scales the Earth lens until its horizontal extent is what the vertical extent would have been. Only the Earth lens: the sky lens fixes its horizontal field of view, so a portrait screen is the case it already fits, and applying the same correction there would move a sky that was never in trouble.
+
+**The span derivation.** Let the anchor be `A` and the canvas `C` be the bounding box of every monitor. The requirement is that the canvas render, cropped to the anchor's rectangle, is the render the anchor would have got alone, and a projection with a constant scale in tan-space reduces that to keeping pixels per unit of tan-space equal and moving the principal point. Each lens is scaled on the axis it is anchored to:
+
+- `camera_fov_canvas = 2 * atan(tan(camera_fov / 2) * C.height / A.height)`
+- `sky_fov_canvas = 4 * atan(tan(sky_fov / 4) * C.width / A.width)`
+- `offset_x_canvas = -nx + offset_x * A.width / C.width`, and the same in y, where `(nx, ny)` is the anchor's centre in canvas NDC. The first term moves the principal point onto the anchor; the second carries the user's own pan, which is in the anchor's NDC, into the canvas's.
+
+For the common case of screens side by side at equal height the Earth lens is untouched, since `C.height / A.height` is 1: the canvas is simply wider and the globe in the anchor's crop is exactly the standalone render. The sky lens is not untouched there, because `C.width / A.width` is 2 or more.
+
+**The sky's ceiling is 330 degrees, and the slider's is 180.** The slider means the anchor screen's own horizontal field of view and every other screen extends outward from it, so a canvas derives a wider sky than any slider position: two equal screens at the default 140 degrees come to 218. The lens is stereographic with edge radius `tan(sky_fov / 4)` and goes singular only at 360, where the antipode maps to infinity; nothing happens at 180, where the edge radius is exactly 1 and the frame corner sits 98 degrees off the view axis on a 16:9 screen. What is linear in canvas pixels is that tangent rather than the angle, so the derived value self-limits as screens are added: three screens at the default are 258 degrees, eight are 320, a thousand are 359.7. `SKY_FOV_MAX` is 330, which clears a seven-wide span at the widest slider position and about eleven at the default, and leaves the frame corner 13.1 degrees clear of the antipode. `sphere.wgsl` and `scene::sun_occlusion` clamp to the same number and `the_shader_and_the_cpu_agree_on_the_three_shared_rules` walks 330 and 400 to keep them from drifting apart. `CanvasFraming::sky_clamped` still reports a canvas past it, and the publish says so in the status line, but no layout built out of screens that fit on a desk reaches it.
+
+Above 180 degrees three things were never exercised before this, and none of them is known to be wrong: the Sun's glare composition, which is angular and was measured to 180; the star sprites, which carry the conformal `(1 + r * r)` factor and magnify hard toward the corners; and the Milky Way, sampled through the lens inverse and stretched severely at a corner 167 degrees off the view axis. `golden_panorama_at_a_wide_sky` renders all three at 300 degrees on the software adapter, which is what turns them from claims into a reference a change has to preserve.
+
+**What does not continue across the seam.** Where the canvas is taller than the anchor, star sprites do not match the standalone render: `sphere.wgsl` sizes them in pixels against `viewport_size` and scales them by `clamp(viewport_size.y / 1080, 1, 2)`, so a taller canvas draws slightly different stars. The globe, the atmosphere, the Sun and the Milky Way all follow the tan-space scaling and do match. That is a departure rather than a bug, and it is what the two GPU cases in `tests/engine.rs` assert: equal heights compare the anchor's crop against its standalone render at the golden suite's tolerance with nothing excluded from the scene, and unequal heights compare only the globe's centroid and radius.

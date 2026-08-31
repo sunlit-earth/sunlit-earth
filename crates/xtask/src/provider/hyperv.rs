@@ -882,7 +882,7 @@ impl crate::provider::Provider for HypervProvider<'_> {
         // another comparison that already allows for that.
         Ok(match before {
             Some(ref state) if state.eq_ignore_ascii_case("Off") => Stopped::WasNotRunning,
-            _ => Stopped::Stopped,
+            _ => Stopped::ShutDown,
         })
     }
 
@@ -911,11 +911,12 @@ impl crate::provider::Provider for HypervProvider<'_> {
         // a second wait: a `Stop-VM` that finished means the guest is Off, and
         // one that did not is what the turn-off below is for.
         if self.wait_for_off(&state.vm_name, Duration::ZERO) {
-            return Ok(Stopped::Stopped);
+            return Ok(Stopped::ShutDown);
         }
 
         println!(
-            "  {} has not shut down in {:.0}s; turning it off",
+            "  {} has not shut down in {:.0}s; turning it off, so its disk will \
+             need a repair pass",
             state.vm_name,
             crate::provider::SHUTDOWN_GRACE.as_secs_f64()
         );
@@ -923,7 +924,9 @@ impl crate::provider::Provider for HypervProvider<'_> {
         // A turn-off is immediate, so the same grace is a confirmation that
         // costs nothing when it works and bounds the case where it did not.
         if self.wait_for_off(&state.vm_name, crate::provider::SHUTDOWN_GRACE) {
-            Ok(Stopped::Stopped)
+            // Cutting the power is this side's kill: the guest never ran its own
+            // shutdown, which is the whole of what `Killed` means.
+            Ok(Stopped::Killed)
         } else {
             Err(format!(
                 "{} is still not Off after being asked and then told to stop",

@@ -701,13 +701,21 @@ fn stopped_line(
         || "its overlay stays".to_owned(),
         |bytes| format!("its overlay stays, {} of it", util::format_bytes(bytes)),
     );
-    let what = if stopped == provider::Stopped::Stopped {
-        "is stopped: the memory is back and"
+    let what = match stopped {
+        provider::Stopped::ShutDown => "is stopped: the memory is back and",
+        // Worth its own sentence rather than a shrug: the overlay this kept is
+        // the reason the command exists, and the next start of it opens with a
+        // repair pass that nobody asked for and nothing else would explain.
+        provider::Stopped::Killed => "would not shut down and was killed: the memory is back and",
+        provider::Stopped::WasNotRunning => "was not running; it is recorded as stopped and",
+    };
+    let repair = if stopped == provider::Stopped::Killed {
+        " Its filesystem was not closed, so the next start begins with a repair pass."
     } else {
-        "was not running; it is recorded as stopped and"
+        ""
     };
     format!(
-        "{vm_name} {what} {overlay}. \
+        "{vm_name} {what} {overlay}.{repair} \
          `cargo xtask vm start {image}` resumes it, `cargo xtask vm down {image}` \
          frees it."
     )
@@ -2455,7 +2463,7 @@ mod tests {
         let line = stopped_line(
             Image::WindowsBuilder,
             "sunlit-e2e-windows-builder",
-            provider::Stopped::Stopped,
+            provider::Stopped::ShutDown,
             Some(6 * 1024 * 1024 * 1024),
         );
         assert!(line.contains("is stopped"), "{line}");
@@ -2480,6 +2488,24 @@ mod tests {
             None,
         );
         assert!(gone.contains("was not running"), "{gone}");
+
+        // A guest that had to be killed kept its overlay too, and the cost of
+        // that overlay is the sentence a clean stop does not carry: whoever
+        // resumes it meets a repair pass, and this is where they hear about it.
+        let killed = stopped_line(
+            Image::WindowsBuilder,
+            "sunlit-e2e-windows-builder",
+            provider::Stopped::Killed,
+            Some(6 * 1024 * 1024 * 1024),
+        );
+        assert!(killed.contains("was killed"), "{killed}");
+        assert!(killed.contains("repair pass"), "{killed}");
+        assert!(killed.contains("6.0 GiB"), "{killed}");
+        assert!(
+            killed.contains("cargo xtask vm start windows-builder"),
+            "{killed}"
+        );
+        assert_eq!(killed.lines().count(), 1, "{killed}");
     }
 
     /// The two guests `is_running` cannot tell apart want opposite advice, and

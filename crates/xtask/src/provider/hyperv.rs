@@ -547,14 +547,24 @@ pub fn destroy_script(name: &str) -> String {
 /// whole point of a stop, since what the VM keeps is a cargo build directory
 /// inside it. The VM stays registered and keeps its differencing disk.
 ///
+/// The grace is inside the script because that is the only place it can be.
+/// `Stop-VM` without `-AsJob` blocks until the guest is off or Hyper-V gives up
+/// on it, on a schedule that is the cmdlet's rather than this plan's, and a
+/// caller that polls afterwards has already waited however long that took. So
+/// the request becomes a job and `Wait-Job -Timeout` is the bound: decision 2's
+/// sixty seconds are spent here, once, and what follows the script is a question
+/// rather than a second wait.
+///
 /// Unverified on a Windows host: this half of plan decision 2 is written to the
 /// same shape as the scripts around it and has never run.
-pub fn shutdown_script(name: &str) -> String {
+pub fn shutdown_script(name: &str, grace: Duration) -> String {
     query_script(
         name,
         &format!(
-            "if ($vm -and $vm.State -ne 'Off') {{ Stop-VM -Name {name} -Force }}\n",
-            name = ps_quote(name)
+            "if ($vm -and $vm.State -ne 'Off') {{ \
+             Stop-VM -Name {name} -Force -AsJob | Wait-Job -Timeout {secs} | Out-Null }}\n",
+            name = ps_quote(name),
+            secs = grace.as_secs()
         ),
     )
 }
@@ -741,10 +751,11 @@ impl<'a> HypervProvider<'a> {
 
     /// Poll until the VM is `Off`, up to `grace`.
     ///
-    /// A confirmation rather than the wait itself in the ordinary case, since
-    /// `Stop-VM` returns once the guest is off. What it is for is the case where
-    /// the cmdlet returned early or failed: an unbounded wait for a guest that
-    /// is not shutting down is exactly what plan decision 2 refuses.
+    /// A confirmation rather than the wait itself, since both scripts that reach
+    /// it are bounded already: the shutdown request waits out decision 2's grace
+    /// inside `Wait-Job`, and a turn-off is immediate. `Duration::ZERO` asks the
+    /// question once, which is what a caller that has already waited wants; a
+    /// real grace is for the turn-off, whose completion is asynchronous.
     fn wait_for_off(&self, name: &str, grace: Duration) -> bool {
         let start = Instant::now();
         loop {
@@ -890,10 +901,16 @@ impl crate::provider::Provider for HypervProvider<'_> {
 
         // A request that the cmdlets refused is not the end of the stop: the
         // guest is still up, and what follows cuts the power.
-        if let Err(e) = self.run_script(&shutdown_script(&state.vm_name)) {
+        if let Err(e) = self.run_script(&shutdown_script(
+            &state.vm_name,
+            crate::provider::SHUTDOWN_GRACE,
+        )) {
             println!("warning: {} was not asked to shut down: {e}", state.vm_name);
         }
-        if self.wait_for_off(&state.vm_name, crate::provider::SHUTDOWN_GRACE) {
+        // The script spent the grace itself, so this is one question rather than
+        // a second wait: a `Stop-VM` that finished means the guest is Off, and
+        // one that did not is what the turn-off below is for.
+        if self.wait_for_off(&state.vm_name, Duration::ZERO) {
             return Ok(Stopped::Stopped);
         }
 
@@ -1400,6 +1417,32 @@ mod tests {
         ] {
             assert!(script.contains("sunlit-e2e-windows"), "{script}");
         }
+    }
+
+    /// Decision 2 bounds a stop at sixty seconds, and on this side the bound has
+    /// to be in the script: `Stop-VM` without `-AsJob` blocks for as long as
+    /// Hyper-V feels like, and a grace that only starts after that is not a
+    /// grace. The turn-off keeps the VM, which is the difference from `destroy`.
+    #[test]
+    fn the_shutdown_request_carries_its_own_grace_and_the_turn_off_keeps_the_vm() {
+        let script = shutdown_script(
+            "sunlit-e2e-windows-builder",
+            crate::provider::SHUTDOWN_GRACE,
+        );
+        assert!(script.contains("-AsJob"), "{script}");
+        assert!(
+            script.contains(&format!(
+                "Wait-Job -Timeout {}",
+                crate::provider::SHUTDOWN_GRACE.as_secs()
+            )),
+            "{script}"
+        );
+        assert!(!script.contains("-TurnOff"), "{script}");
+        assert!(!script.contains("Remove-VM"), "{script}");
+
+        let cut = turn_off_script("sunlit-e2e-windows-builder");
+        assert!(cut.contains("-TurnOff"), "{cut}");
+        assert!(!cut.contains("Remove-VM"), "{cut}");
     }
 
     #[test]

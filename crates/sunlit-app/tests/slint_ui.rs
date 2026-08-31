@@ -684,3 +684,33 @@ fn test_save_preserves_settings_without_a_widget() {
         assert!((saved.cloud_opacity - 0.25).abs() < f32::EPSILON);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The sky slider's range
+// ---------------------------------------------------------------------------
+
+/// The sky slider stops at 180 degrees, and that is not the shader's ceiling.
+///
+/// `display::layout::SKY_FOV_MAX` is 330, which is the widest sky a spanned
+/// canvas may derive. The slider means the anchor screen's own field of view and
+/// every other screen extends outward from it, so widening the slider to the
+/// shader's clamp would offer a setting that means nothing on one screen and
+/// double-counts on several.
+#[test]
+fn test_the_sky_slider_stops_where_one_screen_stops() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/main.slint"),
+    )
+    .expect("read ui/main.slint");
+    let row = source
+        .split_once("sky-fov-slider := SettingRow {")
+        .expect("the sky field-of-view row")
+        .1
+        .split_once('}')
+        .expect("the end of that row")
+        .0;
+    assert!(
+        row.contains("minimum: 60.0;") && row.contains("maximum: 180.0;"),
+        "the sky field-of-view row reads:\n{row}"
+    );
+}

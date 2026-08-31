@@ -260,7 +260,8 @@ fn run_in_guest(
             vm::lifecycle_explainer(
                 image,
                 vm::Prepared {
-                    staged: true,
+                    staged: vm::Staging::Done,
+                    console: session.provider.kind(),
                     enhanced_session
                 }
             )

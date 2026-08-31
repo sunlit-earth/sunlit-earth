@@ -706,12 +706,7 @@ pub fn write_manifest(
 /// deletes it. Clearing every image's entries rather than one is deliberate: it
 /// is one file, and the entries come back on the next boot for free.
 pub fn forget_host_keys(store: &Store) {
-    let path = crate::guest::ssh::known_hosts(&store.ssh_key());
-    if let Err(e) = std::fs::remove_file(&path)
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        println!("warning: cannot clear {} ({e})", path.display());
-    }
+    crate::guest::ssh::forget_host_keys(store);
 }
 
 /// The closing report, the same whichever path built the image.

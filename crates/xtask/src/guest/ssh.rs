@@ -53,18 +53,47 @@ impl SshTarget {
 /// property the option is there for: the developer's own `~/.ssh/known_hosts` is
 /// never written to.
 ///
+/// `UserKnownHostsFile=none`, which reads as the obvious way to want none of
+/// this, is not an option either: OpenSSH needs somewhere to record the key of a
+/// host it has not seen, and with no user file to record it in the connection
+/// fails outright. Measured on OpenSSH 9.6p1 against a running guest, with
+/// `StrictHostKeyChecking=no` set: `Host key verification failed.`, after
+/// loading the two global files and finding neither.
+///
 /// `ssh` does read it, which is worth being clear about.
 /// `StrictHostKeyChecking=no` accepts a key it has never seen without asking,
 /// and says nothing about a key it has seen *change*: that still prints the
 /// remote-host-identification-changed warning, on every connection, while
 /// public-key authentication carries on working. A guest's host keys are
 /// generated during the image build and live on the golden disk, so every
-/// throwaway overlay of one image answers with the same key and the entries here
-/// stay right for the life of that image. A rebuild is what changes them, and
-/// `build_image::forget_host_keys` deletes this file at the end of one for
-/// exactly that reason.
+/// throwaway overlay of one image answers with the same key. What that key is
+/// not is stable: the Linux image ships without host keys and generates a set on
+/// every first boot, a rebuild changes the Windows image's, and under QEMU both
+/// guests answer on the same loopback port, so an entry either one leaves is
+/// wrong for the next guest at that address. So [`forget_host_keys`] empties the
+/// file, and every boot of a guest calls it: the entries come back on the next
+/// connection for free, and a file that starts every boot empty has nothing in
+/// it to warn about.
 pub fn known_hosts(key: &Path) -> PathBuf {
     key.with_file_name("known_hosts")
+}
+
+/// Forget every host key these connections have collected.
+///
+/// The file is the xtask's own and holds nothing but these guests, so clearing
+/// all of it rather than one entry is deliberate: it is one file, the entries
+/// come back on the next connection, and the alternative is parsing a
+/// known-hosts file to find the entries for an address that two images share.
+///
+/// A missing file is the ordinary case and not a problem to report. Anything
+/// else is, because the noise it leaves behind is exactly what this removes.
+pub fn forget_host_keys(store: &crate::store::Store) {
+    let path = known_hosts(&store.ssh_key());
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        println!("warning: cannot clear {} ({e})", path.display());
+    }
 }
 
 /// The known-hosts path as the option value `ssh` parses.
@@ -303,6 +332,29 @@ mod tests {
         // it.
         let store = crate::store::Store::new("/srv/vm");
         assert!(store.contains(&known_hosts(&store.ssh_key())));
+    }
+
+    /// Every boot starts with an empty file, which is what makes the
+    /// changed-key banner unreachable: the keys behind this one address belong
+    /// to whichever guest last booted, and the Linux guest's are new every time.
+    #[test]
+    fn forgetting_the_host_keys_leaves_the_key_pair_alone() {
+        let dir = std::env::temp_dir().join("sunlit_xtask_ssh_forget_host_keys");
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::Store::new(&dir);
+        let known = known_hosts(&store.ssh_key());
+        std::fs::create_dir_all(known.parent().expect("a parent")).expect("temp tree");
+        std::fs::write(&known, b"[127.0.0.1]:2222 ssh-ed25519 AAAA\n").expect("write");
+        // The key pair itself is what the guests trust, and it stays.
+        std::fs::write(store.ssh_key(), b"private").expect("write");
+
+        forget_host_keys(&store);
+        assert!(!known.exists());
+        assert!(store.ssh_key().is_file());
+        // A missing file is the ordinary case, so a second call is a no-op
+        // rather than a warning.
+        forget_host_keys(&store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

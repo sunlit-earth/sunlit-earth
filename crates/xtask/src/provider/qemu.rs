@@ -198,21 +198,43 @@ pub fn display_args(target: Target, console: (u32, u32)) -> Vec<String> {
     }
 }
 
-/// The pointer device, where the guest has a driver for one.
+/// The `-device` arguments that give a guest an absolute pointer.
 ///
-/// An absolute pointer, which is the fix for clicks landing away from the
-/// cursor in a VNC viewer: VNC's `PointerEvent` carries absolute coordinates,
-/// QEMU's implicit PS/2 mouse is a relative device, and the translation between
-/// the two is what puts a click somewhere else on the screen. virtio because the
-/// Linux guest drives it in-kernel and the rest of its devices are virtio
-/// anyway; the Windows guest has no virtio driver at all and keeps the PS/2
-/// mouse it does have one for.
-pub fn pointer_device_for(target: Target) -> Option<&'static str> {
+/// An absolute pointer is the fix for a cursor that sits somewhere other than
+/// the host's in a VNC viewer, and for the clicks that then land where it is:
+/// VNC's `PointerEvent` carries absolute coordinates, QEMU's implicit PS/2 mouse
+/// is a relative device, and the input core bridges the two with deltas that the
+/// guest's own pointer acceleration scales again. Measured on a running guest
+/// rather than reasoned about: `query-mice` over QMP answered one device,
+/// `QEMU PS/2 Mouse` with `"absolute": false`, and an `input-send-event` with an
+/// `abs` axis was refused with "Input handler not found for event type abs".
+///
+/// Which device depends on what the guest can drive. The Linux guest takes
+/// virtio-input in-kernel and the rest of its devices are virtio anyway. The
+/// Windows guest has no virtio driver at all, so it gets a USB tablet, which
+/// Windows binds to its inbox HID driver, and a controller to put it on, because
+/// a q35 machine starts with no USB at all. Both have to be on the command line
+/// from the start: `pcie.0` does not support hot-plug, so neither can be added
+/// to a guest that is already running.
+pub fn pointer_args(target: Target) -> Vec<String> {
     match target {
-        Target::Windows => None,
-        Target::Linux => Some("virtio-tablet-pci"),
+        Target::Windows => vec![
+            "-device".to_owned(),
+            format!("{USB_CONTROLLER},id=xhci"),
+            "-device".to_owned(),
+            "usb-tablet,bus=xhci.0".to_owned(),
+        ],
+        Target::Linux => vec!["-device".to_owned(), "virtio-tablet-pci".to_owned()],
     }
 }
+
+/// The USB controller a Windows guest's tablet hangs off.
+///
+/// `qemu-xhci` rather than what `-usb` would pick, because that depends on the
+/// machine type: q35 gets an ICH9 EHCI, which is USB 2 and one more emulated
+/// device between the tablet and the guest. xHCI is inbox in Windows 10 and
+/// later.
+pub const USB_CONTROLLER: &str = "qemu-xhci";
 
 /// The interfaces `-drive if=` accepts. Anything else is rejected at startup,
 /// and QEMU exits before it has a console to say so on.
@@ -337,10 +359,7 @@ impl Launch {
             "base=utc".into(),
         ];
         args.extend(display_args(self.image.target(), self.console));
-        if let Some(pointer) = pointer_device_for(self.image.target()) {
-            args.push("-device".into());
-            args.push(pointer.to_owned());
-        }
+        args.extend(pointer_args(self.image.target()));
         if let Some(desktop) = self.desktop {
             args.extend(crate::provider::desktop::fw_cfg_args(desktop));
         }
@@ -1233,19 +1252,29 @@ mod tests {
     }
 
     #[test]
-    fn the_linux_guest_gets_an_absolute_pointer_so_clicks_land_where_the_cursor_is() {
+    fn every_guest_gets_an_absolute_pointer_so_the_cursor_is_where_the_host_put_it() {
         // VNC sends absolute coordinates and QEMU's implicit PS/2 mouse is a
-        // relative device, so without this a click in the viewer lands somewhere
-        // else on the guest's screen. The Windows guest has no virtio driver, so
-        // it keeps the mouse it does have one for.
-        assert_eq!(pointer_device_for(Target::Linux), Some("virtio-tablet-pci"));
-        assert_eq!(pointer_device_for(Target::Windows), None);
+        // relative device, so a guest without an absolute pointer of its own
+        // gets deltas and its own acceleration on top of them, and its cursor
+        // drifts away from the host's. Each guest takes the device it has a
+        // driver for.
         assert!(
             joined(Image::Linux).contains("-device virtio-tablet-pci"),
             "{}",
             joined(Image::Linux)
         );
-        assert!(!joined(Image::Windows).contains("tablet"));
+        for image in [Image::Windows, Image::WindowsBuilder] {
+            let text = joined(image);
+            assert!(text.contains("-device usb-tablet,bus=xhci.0"), "{text}");
+            // The tablet needs a controller, and the controller has to be named
+            // before the device that sits on it.
+            let controller = text.find(USB_CONTROLLER).expect("a USB controller");
+            assert!(
+                controller < text.find("usb-tablet").expect("a tablet"),
+                "{text}"
+            );
+            assert!(!text.contains("virtio-tablet"), "{text}");
+        }
     }
 
     #[test]

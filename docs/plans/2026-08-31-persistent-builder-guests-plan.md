@@ -102,3 +102,46 @@ Facts this plan rests on, measured or read off the tree today:
 1. Does a Windows builder's cargo build directory survive an ACPI shutdown and a boot intact enough for cargo to call it fresh? Expected yes, and criterion 2 is the answer either way. If it is not, the fallback is dist's cache, which is a fresh guest every time by construction.
 2. Does deleting and re-extracting 9.5 MiB of source dominate a warm build? Criterion 2 measures it. If it does, the next step is extracting over the tree rather than wiping it, which costs the guarantee in decision 9 and would need its own argument.
 3. Answered while this was being reviewed: `vm up windows-builder`'s closing text was written for a guest to look at, and a builder is now a thing with a lifetime. Decision 9 trims it rather than explaining more.
+
+## Departures
+
+1. **`vm up <builder>` stages nothing into the guest it boots.** Not in the plan, and forced by decision 6 meeting a command that predates it. On a Linux host the Windows suite is compiled in the `windows-builder` guest, and `vm up` built it before every boot whatever image it was booting: `vm up windows-builder` therefore compiled the suite inside the image it was about to boot, which cost nine minutes to put a test harness where nothing runs it, and with the builder now persistent it also meant the build left a stopped guest that the same command discarded to make its pristine overlay. A builder is not a guest the suite runs in, so `vm::stages_binaries` answers no for one, and criterion 1's `vm up windows-builder` is the 22 second boot the plan describes rather than a twelve minute one.
+
+## Validation record
+
+Measured on this host on 2026-08-31, on the branch's own commits. One thing about the host differs from the plan's context section and bears on every memory number below: **an unrelated Windows VM of the user's was running throughout, holding about 40 GiB**, so the 60 GiB the plan counts on was 20 GiB of available memory in practice, with the host's swap already full. Nothing here needed more than that, but a figure that reads as headroom on this host is headroom beside that guest and not beside an idle machine.
+
+### Criterion 1 and 4: the stop, start, status and refusal cycle
+
+`cargo xtask vm up windows-builder`, then the cycle, all against `windows-builder` under QEMU on a Linux host. The Hyper-V half of decision 2 is still unrun, as the plan's risk section says it would be.
+
+| | |
+|---|---|
+| `vm up windows-builder`, cold | **22s** total, SSH at 21s, the desktop marker already in place |
+| `vm stop windows-builder` | **16.7s**, then **15.3s** on the second stop |
+| host memory after the stop | back to the pre-boot figure: 41.4 GiB used against 41.9 before the boot, 20.7 GiB available against 20.1 |
+| the QEMU process | gone; `pgrep -f sunlit-e2e-` finds nothing |
+| `vm start windows-builder` | **12.4s**, SSH at 11s, which is half the cold boot's 21s because the guest's disk is in the host's page cache |
+| `vm ssh windows-builder` on the resumed guest | answers: `hostname` is `SUNLIT-E2E`, and PowerShell reports 3,269,820 KiB free of the guest's 6 GiB while it idles |
+| `vm status` on the stopped guest | "sunlit-e2e-windows-builder is stopped, holding its overlay and no memory", with the `vm start` and `vm down` lines under it and the overlay counted at 1.5 GiB |
+| `vm stop windows` and `vm start linux` | both refused, exit 1, naming the pristine overlay and pointing at `vm down` and at the builders |
+
+Two things worth writing down. **A stop of a freshly booted Windows guest takes fifteen to seventeen seconds**, which is well inside the 60 second grace, so decision 2's kill has not been exercised on a healthy guest. And the memory reading immediately after the process exits is not the reading to trust: at three seconds after the stop the host still showed only 1.1 GiB returned, and at thirty seconds it showed all 6. `free` was sampled twice for that reason.
+
+### The cold path, with a stopped builder resumed for it
+
+`cargo xtask vm up windows` with a stopped `windows-builder` present, holding nothing but a boot (the guest from criterion 1 had never compiled anything), so this is the cold-compile case reached through a resume.
+
+| | |
+|---|---|
+| whole command | **9m 07s** (16:30:07 to 16:39:14), two guests, one of them resumed |
+| the builder's resume | SSH at **6s**, faster again than the 11s resume above |
+| `cargo test --no-run`, 469 crates, cold | **8m 10s** by cargo's own count |
+| the desktop guest | SSH at 11s, the session at 9s, binaries and textures staged |
+| what the run left | the builder **stopped** with its build directory, and the desktop guest up |
+
+Against the plan's context table, which measured 12m 09s for the whole command and 9m 01s for the same cold compile, this run was **three minutes faster end to end and a minute faster on the compile**. Most of the three minutes is the boot the builder no longer needs (a resume at 6s where a cold boot is 21s) and the overlay it no longer creates; the minute on the compile is the vCPU count decision 8 raised from 8 to this host's 16, measured at the same 469 crates. Neither number is a like-for-like against a warm build, which is what criterion 2 still owes.
+
+### Still owed
+
+Criteria 2, 3, 5 and 6 are unmeasured; the session ended before them. The commands and the state they need are in the handover beside this document.

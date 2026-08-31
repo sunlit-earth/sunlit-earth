@@ -364,6 +364,22 @@ pub fn linux_plan(inputs: &SetupInputs, store: &Store) -> Vec<Step> {
         },
     ));
 
+    // Only the Windows guest needs it, and only under QEMU, which is what a
+    // Linux host runs it on. It is a few megabytes, so it is installed with
+    // the rest rather than left for `build-image windows` to discover an hour
+    // in.
+    let firmware_present = facts.uefi_firmware.is_some();
+    steps.push(Step::new(
+        "uefi firmware",
+        "sudo apt-get update && sudo apt-get install -y ovmf".to_owned(),
+        !firmware_present,
+        if firmware_present {
+            "already installed".to_owned()
+        } else {
+            "the Windows guest boots under QEMU only with OVMF".to_owned()
+        },
+    ));
+
     // Packer is not in the Ubuntu archive; this is HashiCorp's documented apt
     // repository, added explicitly rather than silently.
     let packer_present = facts.tool("packer").is_some();
@@ -715,6 +731,10 @@ mod tests {
                 .insert(tool.to_owned(), Some(PathBuf::from("/usr/bin")));
         }
         inputs.facts.iso_tools = vec!["xorriso".to_owned()];
+        inputs.facts.uefi_firmware = Some(crate::provider::firmware::Firmware {
+            code: PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd"),
+            vars: PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd"),
+        });
         let steps = linux_plan(&inputs, &store());
         assert!(steps.iter().all(|s| !s.needed), "{steps:#?}");
     }

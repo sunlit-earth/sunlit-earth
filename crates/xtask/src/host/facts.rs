@@ -298,6 +298,10 @@ pub struct HostFacts {
     /// is the state a fresh `vm setup` leaves behind, and it is a different
     /// answer from "missing": a new shell finds them.
     pub iso_tools_off_path: Vec<String>,
+    /// The UEFI firmware OVMF installed, when this host has it. Only the
+    /// Windows guest under QEMU needs it, so its absence is a warning rather
+    /// than a failure.
+    pub uefi_firmware: Option<crate::provider::firmware::Firmware>,
     /// Free space where the image store lives, or the nearest existing parent.
     pub free_bytes: Option<u64>,
     /// Why the host probe failed, when it did. Every other field is then at its
@@ -424,6 +428,9 @@ pub fn collect(runner: &dyn Runner, host: HostOs, store_root: &Path) -> HostFact
     facts.vnc_viewer = VNC_VIEWERS
         .iter()
         .find_map(|viewer| resolve_tool(runner, viewer, host));
+    // Where it lives on a Windows host depends on where QEMU is, so this comes
+    // after the tools.
+    facts.uefi_firmware = crate::provider::firmware::locate(host, facts.tool("qemu-system-x86_64"));
 
     // Packer resolves these on PATH itself, so a fallback location would not
     // help it: only a real PATH hit counts here.

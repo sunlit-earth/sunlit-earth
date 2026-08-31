@@ -14,7 +14,8 @@ use std::fmt::Write as _;
 use crate::host::facts::{
     FEATURE_HYPERV, FEATURE_WHPX, FeatureState, HostFacts, REQUIRED_TOOLS, WSL_DISTRO,
 };
-use crate::provider::target::{HostOs, Image};
+use crate::provider::firmware;
+use crate::provider::target::{HostOs, Image, ProviderKind, Target, provider_for};
 use crate::runner::Runner;
 use crate::store::inventory::{ImageCondition, Inventory};
 use crate::util::{self, format_bytes};
@@ -184,6 +185,7 @@ pub fn evaluate(facts: &HostFacts, inventory: &Inventory, now_unix: u64) -> Repo
     }
 
     tool_checks(facts, &mut checks);
+    firmware_check(facts, &mut checks);
     disk_check(facts, &mut checks);
     image_checks(inventory, now_unix, &mut checks);
 
@@ -461,6 +463,35 @@ fn hint_for_tool(tool: &str) -> String {
     }
 }
 
+/// The UEFI firmware the Windows guest boots on, where the host has to supply
+/// it.
+///
+/// Asked only on a host that runs that guest under QEMU, which is a Linux one:
+/// a Windows host runs it on Hyper-V, whose generation 2 VM brings its own
+/// firmware. A warning rather than a failure, because it blocks the Windows
+/// image and nothing else.
+///
+/// It exists because its absence used to surface twelve minutes into
+/// `build-image windows`, after the 6.6 GiB ISO download, in a message that
+/// pointed at this command for the list of places it looked. This is that list.
+fn firmware_check(facts: &HostFacts, checks: &mut Vec<Check>) {
+    if provider_for(facts.os(), Target::Windows) != Some(ProviderKind::Qemu) {
+        return;
+    }
+    checks.push(match &facts.uefi_firmware {
+        Some(found) => Check::new(
+            "uefi firmware",
+            Status::Pass,
+            found.code.display().to_string(),
+        ),
+        None => Check::new("uefi firmware", Status::Warn, "none found").hint(format!(
+            "only the Windows image needs it, and only under QEMU; \
+             `cargo xtask vm setup` installs the ovmf package. Looked for: {}.",
+            firmware::searched(facts.os(), facts.tool("qemu-system-x86_64"))
+        )),
+    });
+}
+
 fn disk_check(facts: &HostFacts, checks: &mut Vec<Check>) {
     checks.push(match facts.free_bytes {
         None => Check::new("disk space", Status::Warn, "could not be determined"),
@@ -612,6 +643,10 @@ mod tests {
             }),
             tools,
             vnc_viewer: Some(PathBuf::from("/usr/bin/vncviewer")),
+            uefi_firmware: Some(firmware::Firmware {
+                code: PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd"),
+                vars: PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd"),
+            }),
             iso_tools: vec!["xorriso".to_owned()],
             free_bytes: Some(500 * 1024 * 1024 * 1024),
             ..HostFacts::default()
@@ -886,6 +921,43 @@ mod tests {
             .and_then(|check| check.hint.clone())
             .expect("a warning carries a hint");
         assert!(hint.contains("tigervnc-viewer"), "{hint}");
+    }
+
+    #[test]
+    fn a_missing_uefi_firmware_warns_rather_than_fails() {
+        let mut facts = good_linux();
+        facts.uefi_firmware = None;
+        let report = evaluate(&facts, &built_images(), now());
+        assert_eq!(report.get("uefi firmware").unwrap().status, Status::Warn);
+        assert!(!report.failed());
+    }
+
+    /// The build's own message for this case says the doctor lists where it
+    /// looked, so it has to.
+    #[test]
+    fn a_missing_uefi_firmware_names_every_place_it_was_looked_for() {
+        let mut facts = good_linux();
+        facts.uefi_firmware = None;
+        let hint = evaluate(&facts, &built_images(), now())
+            .get("uefi firmware")
+            .and_then(|check| check.hint.clone())
+            .expect("a warning carries a hint");
+        for dir in firmware::LINUX_DIRS {
+            assert!(hint.contains(dir), "{hint}");
+        }
+        for (code, _) in firmware::NAMES {
+            assert!(hint.contains(code), "{hint}");
+        }
+        assert!(hint.contains("ovmf"), "{hint}");
+    }
+
+    /// A Windows host boots that guest on Hyper-V, which brings its own
+    /// firmware, so asking about OVMF there would be a warning nothing can act
+    /// on.
+    #[test]
+    fn the_windows_host_is_not_asked_about_uefi_firmware() {
+        let report = evaluate(&good_windows(), &built_images(), now());
+        assert!(report.get("uefi firmware").is_none(), "{}", report.render());
     }
 
     #[test]

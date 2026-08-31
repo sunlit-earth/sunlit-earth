@@ -2,8 +2,9 @@
 //!
 //! Windows 11 wants UEFI. The `Hyper-V` provider gets that for free from a
 //! generation 2 VM; QEMU needs to be handed OVMF, which every distribution and
-//! every QEMU build puts somewhere different. There is no API to ask, so this
-//! is a list of the places it is, checked in order.
+//! every QEMU build puts somewhere different, under a name of its own. There is
+//! no API to ask, so this is a list of the places it is and the names it goes
+//! by, checked in order.
 
 use std::path::{Path, PathBuf};
 
@@ -27,37 +28,61 @@ pub struct Firmware {
     pub vars: PathBuf,
 }
 
-/// Candidate `(code, vars)` pairs for this host, most likely first.
+/// The `(code, vars)` file names one installation goes by, most likely first.
 ///
-/// On Windows the QEMU installation carries them in its `share` directory, so
-/// the search starts from the binary's own location rather than from a guess.
-pub fn candidates(host: HostOs, qemu_binary: Option<&Path>) -> Vec<(PathBuf, PathBuf)> {
+/// The halves are paired by name rather than searched for separately because
+/// they have to match: the 4 MB code half wants the 4 MB variables store, not
+/// the 2 MB one lying next to it.
+///
+/// `_4M` leads because it is the build Debian and Ubuntu package today, and
+/// their `ovmf` package carries nothing else: an Ubuntu 24.04 host with the
+/// package installed has no `OVMF_CODE.fd` at all, which is why looking for
+/// the plain names alone reported the firmware missing on a host that had it.
+/// The rest are the other spellings of the same two files, `.4m.fd` and the
+/// plain pair elsewhere, `edk2-` in QEMU's own builds.
+pub const NAMES: [(&str, &str); 4] = [
+    ("OVMF_CODE_4M.fd", "OVMF_VARS_4M.fd"),
+    ("OVMF_CODE.4m.fd", "OVMF_VARS.4m.fd"),
+    ("OVMF_CODE.fd", "OVMF_VARS.fd"),
+    ("edk2-x86_64-code.fd", "edk2-i386-vars.fd"),
+];
+
+/// The directories a distribution installs it into.
+pub const LINUX_DIRS: [&str; 5] = [
+    "/usr/share/OVMF",
+    "/usr/share/edk2/ovmf",
+    "/usr/share/edk2/x64",
+    "/usr/share/edk2-ovmf/x64",
+    "/usr/share/qemu",
+];
+
+/// The directories to search on this host, most likely first.
+///
+/// On Windows the QEMU installation carries the firmware in its `share`
+/// directory, so the search starts from the binary's own location rather than
+/// from a guess. That directory comes first on any host that has one.
+fn dirs(host: HostOs, qemu_binary: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(dir) = qemu_binary.and_then(Path::parent) {
-        for share in [dir.join("share"), dir.to_path_buf()] {
-            out.push((
-                share.join("edk2-x86_64-code.fd"),
-                share.join("edk2-i386-vars.fd"),
-            ));
-            out.push((share.join("OVMF_CODE.fd"), share.join("OVMF_VARS.fd")));
-        }
+        out.push(dir.join("share"));
+        out.push(dir.to_path_buf());
     }
     if host == HostOs::Linux {
-        for dir in [
-            "/usr/share/OVMF",
-            "/usr/share/edk2/ovmf",
-            "/usr/share/edk2-ovmf/x64",
-            "/usr/share/qemu",
-        ] {
-            let dir = Path::new(dir);
-            out.push((dir.join("OVMF_CODE.fd"), dir.join("OVMF_VARS.fd")));
-            out.push((
-                dir.join("edk2-x86_64-code.fd"),
-                dir.join("edk2-i386-vars.fd"),
-            ));
-        }
+        out.extend(LINUX_DIRS.iter().map(PathBuf::from));
     }
     out
+}
+
+/// Candidate `(code, vars)` pairs for this host, most likely first.
+pub fn candidates(host: HostOs, qemu_binary: Option<&Path>) -> Vec<(PathBuf, PathBuf)> {
+    dirs(host, qemu_binary)
+        .iter()
+        .flat_map(|dir| {
+            NAMES
+                .iter()
+                .map(|(code, vars)| (dir.join(code), dir.join(vars)))
+        })
+        .collect()
 }
 
 /// The first candidate whose halves both exist.
@@ -76,13 +101,30 @@ pub fn locate(host: HostOs, qemu_binary: Option<&Path>) -> Option<Firmware> {
     find(&candidates(host, qemu_binary), &|p| p.is_file())
 }
 
+/// Where the search looked, which is the actionable half of "not found": a
+/// host may carry the firmware under a name nothing here knows, and there is
+/// no way to tell that from "none found" alone. [`missing_message`] promises
+/// the doctor prints this, so the two belong together.
+pub fn searched(host: HostOs, qemu_binary: Option<&Path>) -> String {
+    let names: Vec<&str> = NAMES.iter().map(|(code, _)| *code).collect();
+    let dirs: Vec<String> = dirs(host, qemu_binary)
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect();
+    format!(
+        "{}, each beside its matching variables half, in {}",
+        names.join(", "),
+        dirs.join(", ")
+    )
+}
+
 /// What to say when it is not there.
 pub fn missing_message(host: HostOs) -> String {
     let hint = match host {
         HostOs::Windows => {
             "it ships with QEMU, in the `share` directory beside qemu-system-x86_64.exe"
         }
-        _ => "install the ovmf package",
+        _ => "install the ovmf package, which `cargo xtask vm setup` also does",
     };
     format!(
         "no UEFI firmware found, and the Windows guest needs it under QEMU: {hint}. \
@@ -104,11 +146,21 @@ mod tests {
             HostOs::Windows,
             Some(Path::new(r"C:\Program Files\qemu\qemu-system-x86_64.exe")),
         );
-        assert_eq!(
-            candidates[0].0,
-            PathBuf::from(r"C:\Program Files\qemu\share\edk2-x86_64-code.fd")
+        let share = Path::new(r"C:\Program Files\qemu\share");
+        assert!(
+            candidates
+                .iter()
+                .take(NAMES.len())
+                .all(|(code, _)| code.parent() == Some(share)),
+            "{candidates:?}"
         );
-        assert!(candidates[0].1.ends_with("edk2-i386-vars.fd"));
+        assert!(
+            candidates
+                .iter()
+                .any(|(code, vars)| code == share.join("edk2-x86_64-code.fd")
+                    && vars == share.join("edk2-i386-vars.fd")),
+            "{candidates:?}"
+        );
     }
 
     #[test]
@@ -120,6 +172,37 @@ mod tests {
                 .any(|(code, _)| code == Path::new("/usr/share/OVMF/OVMF_CODE.fd")),
             "{candidates:?}"
         );
+    }
+
+    // Debian and Ubuntu have shipped only the 4 MB build for several releases,
+    // so a host with the ovmf package and nothing else installed is found
+    // through this name or not at all.
+    #[test]
+    fn the_debian_four_megabyte_pair_is_a_candidate() {
+        let candidates = candidates(HostOs::Linux, None);
+        assert!(
+            candidates.contains(&(
+                PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd"),
+                PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd"),
+            )),
+            "{candidates:?}"
+        );
+    }
+
+    // Mixing builds does not boot, so no candidate may pair one name's code
+    // half with another's variables store.
+    #[test]
+    fn every_candidate_pairs_the_two_halves_of_one_build() {
+        for (code, vars) in candidates(HostOs::Linux, None) {
+            let file = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                NAMES
+                    .iter()
+                    .any(|(c, v)| *c == file(&code) && *v == file(&vars)),
+                "{code:?} paired with {vars:?}"
+            );
+            assert_eq!(code.parent(), vars.parent());
+        }
     }
 
     #[test]
@@ -152,5 +235,16 @@ mod tests {
     fn the_missing_message_says_where_it_comes_from_on_this_host() {
         assert!(missing_message(HostOs::Windows).contains("ships with QEMU"));
         assert!(missing_message(HostOs::Linux).contains("ovmf"));
+    }
+
+    #[test]
+    fn what_was_searched_names_every_directory_and_every_name() {
+        let searched = searched(HostOs::Linux, None);
+        for dir in LINUX_DIRS {
+            assert!(searched.contains(dir), "{searched}");
+        }
+        for (code, _) in NAMES {
+            assert!(searched.contains(code), "{searched}");
+        }
     }
 }

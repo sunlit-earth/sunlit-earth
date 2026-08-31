@@ -258,25 +258,11 @@ impl WallpaperSink for SystemWallpaper {
         Ok(monitors)
     }
 
-    /// Write the anchor's picture and hand it to `SystemParametersInfoW`.
-    ///
-    /// One image for the whole session, which is as far as that call reaches:
-    /// addressing a monitor needs `IDesktopWallpaper`, and that is its own step.
     #[cfg(windows)]
     fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
-        let frame = job.anchor_image()?;
-        let mut publication = crate::wallpaper::begin_publication()?;
-        let path = publication.write(
-            &job.anchor.to_string(),
-            &frame.pixels,
-            frame.width,
-            frame.height,
-        )?;
-        publication.commit();
-        crate::wallpaper::set_wallpaper(&path)?;
-        tracing::info!(path = %path.display(), "wallpaper set successfully");
+        let note = crate::wallpaper::set_wallpaper_job(job)?;
         crate::memory::log_memory_usage("after wallpaper set");
-        Ok(String::new())
+        Ok(note)
     }
 
     /// Write the PNGs and run the desktop's own setter.

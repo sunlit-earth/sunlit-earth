@@ -51,8 +51,16 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 /// What a destroy actually had to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stopped {
-    /// A running VM was stopped.
-    Stopped,
+    /// A running VM shut itself down when it was asked to, so its filesystem is
+    /// closed and the disk it leaves is clean.
+    ShutDown,
+    /// A running VM was killed, either because it could not be asked or because
+    /// it did not comply inside the grace. The guest never ran its own shutdown,
+    /// so the disk is whatever it was at the instant the process died and the
+    /// next boot of that overlay begins with a repair pass. A teardown does not
+    /// care, because it deletes the overlay; a stop keeps it, which is the whole
+    /// reason the two cases are told apart.
+    Killed,
     /// There was nothing running, though there may have been something
     /// registered to remove.
     WasNotRunning,

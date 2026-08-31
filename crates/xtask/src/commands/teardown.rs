@@ -556,7 +556,12 @@ pub fn execute(
 
     for vm in &plan.vms {
         match stop(vm) {
-            Ok(crate::provider::Stopped::Stopped) => outcome.stopped += 1,
+            // A teardown is the one caller that does not care which of the two
+            // it got: the overlay it would have cost a repair pass is deleted
+            // three lines later.
+            Ok(crate::provider::Stopped::ShutDown | crate::provider::Stopped::Killed) => {
+                outcome.stopped += 1;
+            }
             Ok(crate::provider::Stopped::WasNotRunning) => {}
             Err(e) => {
                 outcome
@@ -1283,7 +1288,7 @@ mod tests {
             if state.image == "windows" {
                 Err("stuck".to_owned())
             } else {
-                Ok(crate::provider::Stopped::Stopped)
+                Ok(crate::provider::Stopped::ShutDown)
             }
         });
         assert_eq!(outcome.stopped, 1);

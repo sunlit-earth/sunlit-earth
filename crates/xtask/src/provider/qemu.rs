@@ -500,17 +500,23 @@ impl<'a> QemuProvider<'a> {
         // works too, at the cost of a qcow2 that needs a repair pass on the
         // next boot, which is a cost a teardown does not care about and a stop
         // does.
-        if let Some(port) = state.qmp_port
-            && qmp::execute(port, command).is_ok()
-            && self.wait_for_exit(state, grace)
-        {
-            return Ok(Stopped::Stopped);
+        let asked = state
+            .qmp_port
+            .is_some_and(|port| qmp::execute(port, command).is_ok());
+        if asked && self.wait_for_exit(state, grace) {
+            return Ok(Stopped::ShutDown);
         }
+
+        // Said rather than done quietly: the caller keeping this overlay is
+        // about to be told the guest is stopped, and the difference between a
+        // guest that shut itself down and one that was killed is a repair pass
+        // it would otherwise meet for the first time on the next boot.
+        println!("{}", insist_line(&state.vm_name, asked, grace));
         self.runner
             .terminate(pid)
             .map_err(|e| format!("cannot terminate pid {pid}: {e}"))?;
         if self.wait_for_exit(state, QUIT_GRACE) {
-            Ok(Stopped::Stopped)
+            Ok(Stopped::Killed)
         } else {
             Err(format!(
                 "pid {pid} is still running after being asked and then told to stop"
@@ -605,6 +611,22 @@ impl<'a> QemuProvider<'a> {
 /// from the record and everything later reads it too, and on a Windows host
 /// `WinNAT` reserves hundred-port blocks at moments of its own choosing, so a
 /// fixed port is a QEMU that exits before it has built the machine.
+/// What a stop or a destroy says at the moment it stops asking.
+///
+/// Two ways to arrive here and they are not the same fault: a guest that was
+/// asked and spent the whole grace is one that will not comply, and a guest that
+/// could not be asked at all is a QMP socket that is not answering. The line
+/// names which, because the first is the guest's doing and the second is this
+/// host's.
+pub fn insist_line(vm_name: &str, asked: bool, grace: Duration) -> String {
+    let why = if asked {
+        format!("has not shut down in {:.0}s", grace.as_secs_f64())
+    } else {
+        "could not be asked to shut down over QMP".to_owned()
+    };
+    format!("  {vm_name} {why}; killing it, so its disk will need a repair pass")
+}
+
 pub fn fill_in_address(state: &mut RunState) -> Result<(), String> {
     "127.0.0.1".clone_into(&mut state.ssh_host);
     GUEST_USER.clone_into(&mut state.ssh_user);
@@ -910,7 +932,10 @@ mod tests {
         state.qmp_port = None;
 
         assert!(provider.is_running(&state));
-        assert_eq!(provider.destroy(&state), Ok(Stopped::Stopped));
+        // `Killed` rather than `Stopped`, because nothing asked the guest
+        // anything: a teardown counts the two alike, since the overlay whose
+        // repair pass they differ over is deleted moments later.
+        assert_eq!(provider.destroy(&state), Ok(Stopped::Killed));
         assert_eq!(*runner.terminated.borrow(), vec![4242]);
         // Gone afterwards, which is what `wait_for_exit` had to observe for
         // the destroy to report success at all.
@@ -941,7 +966,9 @@ mod tests {
         // No QMP port, so nothing here opens a socket to whatever is on 4444.
         state.qmp_port = None;
 
-        assert_eq!(provider.stop(&state), Ok(Stopped::Stopped));
+        // And it says which it was: a stop keeps the overlay, so the caller has
+        // to know it is keeping one that was never closed.
+        assert_eq!(provider.stop(&state), Ok(Stopped::Killed));
         assert_eq!(*runner.terminated.borrow(), vec![4242]);
         assert!(!provider.is_running(&state));
         // And a guest that is already gone is nothing to stop, which is what
@@ -981,6 +1008,22 @@ mod tests {
             "{:?}",
             state.vnc
         );
+    }
+
+    /// The two ways to reach a kill are not the same fault, and the line has to
+    /// say which: one is a guest that will not comply, the other is a QMP socket
+    /// on this host that is not answering. Both warn about the repair pass,
+    /// because that is what the next boot of a kept overlay will do.
+    #[test]
+    fn the_line_before_a_kill_names_which_of_the_two_it_is() {
+        let asked = insist_line("sunlit-e2e-windows-builder", true, Duration::from_secs(60));
+        assert!(asked.contains("has not shut down in 60s"), "{asked}");
+        assert!(asked.contains("repair pass"), "{asked}");
+
+        let unasked = insist_line("sunlit-e2e-windows-builder", false, Duration::from_secs(60));
+        assert!(unasked.contains("could not be asked"), "{unasked}");
+        assert!(!unasked.contains("60s"), "{unasked}");
+        assert!(unasked.contains("repair pass"), "{unasked}");
     }
 
     #[test]

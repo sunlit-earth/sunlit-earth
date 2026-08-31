@@ -605,19 +605,36 @@ fn build_in_guest(
 /// binaries are already on the host by then. What it costs is a guest still
 /// holding memory, so the message names it and how to reach it, the same way
 /// every other site that leaves a guest up does.
+/// What the build says about the builder it is putting away.
+///
+/// The stop happens where nobody is looking, at the end of a build whose output
+/// the person is reading instead, so the line has to carry the difference on its
+/// own: a builder that shut itself down makes the next build a link, and one
+/// that was killed makes it a repair pass first. Both keep the build directory,
+/// which is why both are worth leaving stopped.
+pub fn left_stopped_line(vm_name: &str, how: crate::provider::Stopped) -> String {
+    if how == crate::provider::Stopped::Killed {
+        return format!(
+            "{vm_name} would not shut down and was killed; its build directory is \
+             there, but the disk was not closed, so the next build in it repairs \
+             the filesystem before it compiles"
+        );
+    }
+    format!(
+        "{vm_name} is stopped with its build directory in it; the next build in \
+         it resumes rather than compiles"
+    )
+}
+
 fn leave_stopped(store: &Store, mut session: crate::commands::vm::Session, builder: Image) {
     match session.provider.stop(&session.state) {
-        Ok(_) => {
+        Ok(how) => {
             session.state.stopped = true;
             if let Err(e) = crate::commands::vm::write_state(store, builder, &session.state) {
                 println!("warning: the guest is stopped, but its record still says otherwise: {e}");
                 return;
             }
-            println!(
-                "  {} is stopped with its build directory in it; the next build in \
-                 it resumes rather than compiles",
-                session.state.vm_name
-            );
+            println!("  {}", left_stopped_line(&session.state.vm_name, how));
         }
         Err(e) => {
             println!(
@@ -827,6 +844,31 @@ pub fn stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The automatic stop at the end of a build is the one nobody watches, and
+    /// it is where a killed builder used to look exactly like a clean one. Both
+    /// lines promise the build directory is still there, because it is; only one
+    /// of them promises the next build starts by compiling.
+    #[test]
+    fn the_line_that_puts_a_builder_away_says_whether_it_was_killed() {
+        let clean = left_stopped_line(
+            "sunlit-e2e-windows-builder",
+            crate::provider::Stopped::ShutDown,
+        );
+        assert!(
+            clean.contains("is stopped with its build directory"),
+            "{clean}"
+        );
+        assert!(!clean.contains("repair"), "{clean}");
+
+        let killed = left_stopped_line(
+            "sunlit-e2e-windows-builder",
+            crate::provider::Stopped::Killed,
+        );
+        assert!(killed.contains("was killed"), "{killed}");
+        assert!(killed.contains("repairs the filesystem"), "{killed}");
+        assert!(killed.contains("build directory"), "{killed}");
+    }
 
     #[test]
     fn the_guest_build_shows_its_progress_while_its_json_is_captured() {

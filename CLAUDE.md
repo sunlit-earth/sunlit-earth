@@ -54,14 +54,16 @@ cargo xtask e2e --target windows --keep     # leave the guest up afterwards to l
 cargo xtask vm up linux [--desktop xfce]    # boot a guest with the current binaries in it, run nothing
 cargo xtask vm ssh linux ["command"]        # a shell or one command in the running guest
 cargo xtask vm view linux                   # its desktop (vmconnect for Hyper-V, VNC for QEMU)
+cargo xtask vm stop windows-builder         # end a builder and keep its build directory; vm start resumes it
 cargo xtask vm down <image|all>             # end the guest; the image stays. Always do this when finished
 ```
 
 Things that follow from how it is built:
 
-- Only one guest runs at a time; a second boot is refused until `vm down`. Nothing runs in the background unasked: a guest exists during a run, after `--keep`, or after `vm up`.
-- A guest is pristine on every boot. Nothing done inside one survives `vm down`; results come back on their own under the image store, and the run prints the path.
-- Every guest's binaries are compiled on the operating system they are for, never cross-compiled: natively on a matching host, in WSL for the Linux guest on a Windows host, and in the `windows-builder` guest for the Windows guest on a Linux host. The last two are why the first `vm up` after a change takes minutes, and the builder-guest one needs that image built first.
+- One desktop guest runs at a time; a second boot is refused until `vm down`. A builder is exempt in both directions, so a compiler may run beside the guest it compiles for, and the boot prints what the two hold together. Nothing runs in the background unasked: a guest exists during a run, after `--keep`, after `vm up`, or stopped.
+- A desktop guest is pristine on every boot. Nothing done inside one survives `vm down`; results come back on their own under the image store, and the run prints the path.
+- A builder is the exception, and `vm stop` and `vm start` exist for that reason: a stopped builder keeps its overlay, so the cargo build directory in it makes the next build a link rather than a compile. It holds no memory while stopped, `vm status` counts its overlay, and `vm down <builder>` is what frees it.
+- Every guest's binaries are compiled on the operating system they are for, never cross-compiled: natively on a matching host, in WSL for the Linux guest on a Windows host, and in the `windows-builder` guest for the Windows guest on a Linux host. The last two are why the first `vm up` after a change takes minutes, and the builder-guest one needs that image built first; a build leaves the builder stopped, so the next one is warm.
 - `vm setup` (elevated, once per machine) and `vm build-image <image>` (tens of minutes to an hour per image) are the rare commands; do not run them without asking. The Windows image is a 90-day evaluation and `vm status` shows its age.
 - The guests have no OpenGL and no real GPU: the Windows job sets `SLINT_BACKEND=winit-software` and both render on a software adapter, so timings and pixels there are not those of a real desktop.
 

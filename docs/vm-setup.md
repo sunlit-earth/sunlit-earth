@@ -60,13 +60,24 @@ What goes into a guest is the app, the test harness, the fixtures, and the `text
 |---|---|---|---|
 | Hypervisor | Hyper-V | QEMU | none |
 | Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops | whatever you are on |
-| Host it runs from | Windows for the suite, either one to boot the guest | Windows or Linux | any |
+| Host it runs from | Windows, or Linux with the `windows-builder` image | Windows or Linux | any |
 | Cases | all 11 | 10 of 10 under KDE and XFCE, 8 of 10 under GNOME and Cinnamon | 10 of 11 |
 | GPU | WARP | lavapipe | the real one |
 
-The suite in the Windows guest needs a Windows host, because its binaries have to be built somewhere and a Linux host has no toolchain for Windows executables. `e2e --target windows` says so and stops before creating anything.
+Nothing is ever cross-compiled: a guest's binaries are built on the operating system they are for. Three arrangements cover the matrix, and `artifacts::builder_for` is the one place that says which is which.
 
-The guest itself is another matter. A Linux host builds that image with Packer and QEMU and boots it on the same QEMU, so `cargo xtask vm up windows` there brings the image up with nothing of ours inside, says so before it starts, and points at `vm view` and `vm ssh` rather than at a desktop shortcut. Its console is VNC and not `vmconnect`, so none of the enhanced-session machinery applies: nothing asks for credentials, nothing resizes, and the closing text says that instead. That is the difference between looking at the image and running the suite in it, and it is worth having because the host that spent an hour building the image is often the host that wants to see it boot.
+| Host | Guest | Built by |
+|---|---|---|
+| Windows | Windows | this host's cargo |
+| Linux | Linux | this host's cargo |
+| Windows | Linux | the WSL distribution `vm setup` registered, whose glibc is older than the guest's |
+| Linux | Windows | the `windows-builder` guest, booted for the build and taken down again |
+
+The last row is the one that used to be a refusal. A Linux host has no toolchain for Windows executables and is not going to grow one: cross-compiling would mean mingw-w64 or a Windows SDK, a second target triple and a second set of link-time problems. What it does have is a guest with MSVC, libclang and rustup in it, which is the same image `dist` compiles a release binary in. So the suite is built there: a tar of the working tree goes in, `cargo test --no-run` runs inside, and the two executables come back. That costs a boot and a compile before the run, and it is why the build happens before the desktop guest starts rather than after: only one guest runs at a time, so the builder has to be gone before the guest it built for can start.
+
+What the builder guest gets is the working tree rather than `HEAD`, which is the one place this differs from `dist` on purpose: a release bundle is a commit, and a staged binary is whatever is being edited. `git ls-files --cached --others --exclude-standard` is that tree, so uncommitted edits and new files that are not ignored both reach the guest, and `.gitignore` keeps `target/` out.
+
+Without that image, `vm up windows` on a Linux host still boots: it says nothing of ours is going in, names `vm build-image windows-builder` as what would change that, and points at `vm view` and `vm ssh`. Its console is VNC and not `vmconnect` either way, so none of the enhanced-session machinery applies: nothing asks for credentials, nothing resizes, and the closing text says so.
 
 Both guests run the case that sets a real desktop wallpaper. It is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the guest jobs set, so running the suite on your own desktop leaves your wallpaper alone and says so. In the Linux guest that case is the one that proves a desktop's wallpaper backend, which is why the guest carries four desktops: `--desktop <kde|gnome|xfce|cinnamon>` runs the suite under each of them in turn, from one image, and each run exercises a different setter.
 

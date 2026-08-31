@@ -527,10 +527,10 @@ pub enum Staging {
     /// Nothing was staged, and nothing about this host stopped it: the command
     /// that booted this guest had no binaries to put in it.
     Skipped,
-    /// Nothing was staged and nothing could be, because this host has no
-    /// toolchain for that guest's binaries. Only the Windows guest on a Linux
-    /// host reaches this. The boot is still worth having: what is being looked
-    /// at is the image.
+    /// Nothing was staged and nothing could be, because what would compile the
+    /// binaries is not there: a Linux host builds the Windows guest's in a
+    /// builder guest, and that image may not have been built. The boot is still
+    /// worth having: what is being looked at is the image.
     Impossible,
 }
 
@@ -563,8 +563,8 @@ impl Staging {
     /// could have staged something, and as a property of the host on one that
     /// could not: pointing a Linux host at `vm up windows` for the binaries is
     /// pointing it at a command that will not produce them either.
-    pub fn skipped_for(host: HostOs, target: Target) -> Self {
-        match crate::guest::artifacts::check_can_build(host, target) {
+    pub fn skipped_for(store: &Store, host: HostOs, target: Target) -> Self {
+        match crate::guest::artifacts::usable_builder(store, host, target) {
             Ok(_) => Self::Skipped,
             Err(_) => Self::Impossible,
         }
@@ -573,9 +573,9 @@ impl Staging {
 
 impl Prepared {
     /// A guest left as it stood: nothing staged in it and nothing handed over.
-    pub fn bare(console: ProviderKind, target: Target) -> Self {
+    pub fn bare(store: &Store, console: ProviderKind, target: Target) -> Self {
         Self {
-            staged: Staging::skipped_for(HostOs::current(), target),
+            staged: Staging::skipped_for(store, HostOs::current(), target),
             console,
             enhanced_session: false,
         }
@@ -709,15 +709,18 @@ fn guest_environment_note(image: Image, staged: Staging) -> String {
             folder = crate::guest::handover::FOLDER_SHORTCUT.trim_end_matches(".lnk"),
             backend = crate::commands::e2e::WINDOWS_SLINT_BACKEND
         ),
-        // Naming `vm up` here would be naming the command that just ran, on a
-        // host that cannot do what it asks for.
+        // What must not be here is `vm up` on its own, which would be the
+        // command that just ran: nothing changes until the thing that would
+        // compile the binaries exists, so that is what this names.
         (Target::Windows, Staging::Impossible) => format!(
-            "\n\nNothing of ours is in it and nothing can be: this host has no \
-             toolchain for Windows binaries, so its desktop is empty and there \
-             is no app in it to start. What this boot is good for is the image \
-             itself. `cargo xtask vm view {image}` shows its console and \
-             `cargo xtask vm ssh {image}` is a shell in it; the suite needs a \
-             Windows host."
+            "\n\nNothing of ours is in it: nothing on this host can compile \
+             Windows binaries as it stands, so its desktop is empty and there is \
+             no app in it to start. `cargo xtask vm build-image {builder}` gives \
+             this host a guest that can, and the boot after that stages them. \
+             Meanwhile what this one is good for is the image itself: \
+             `cargo xtask vm view {image}` shows its console and \
+             `cargo xtask vm ssh {image}` is a shell in it.",
+            builder = Image::builder(Target::Windows),
         ),
         (Target::Windows, Staging::Skipped) => format!(
             "\n\nNothing of ours was staged in it, so its desktop is empty and \
@@ -777,20 +780,29 @@ pub fn up(
     desktop: Option<Desktop>,
 ) -> Result<u8, String> {
     let store = store::store()?;
-    // Asked before anything is created, because it decides what this boot is:
-    // a guest carrying the current binaries, or the golden image itself to look
-    // at. `e2e` refuses the same case rather than booting into it, because a
-    // suite with nothing to run is not a run; `vm up` is for looking at a
-    // guest, and a Linux host that has just spent an hour building the Windows
-    // image has every reason to boot it.
-    let buildable = crate::guest::artifacts::check_can_build(HostOs::current(), image.target());
-    if buildable.is_err() {
-        println!(
-            "this host cannot build the {target} guest's binaries, so nothing of \
-             ours goes into this guest: it boots as the image built it",
-            target = image.target()
-        );
-    }
+    // Built before anything is created, for two reasons. It decides what this
+    // boot is: a guest carrying the current binaries, or the golden image itself
+    // to look at. And where the binaries come from a builder guest, that guest
+    // has to be up and gone again before this one starts, because only one runs
+    // at a time.
+    //
+    // A host that cannot build them at all still boots: `vm up` is for looking
+    // at a guest, and a Linux host that has just spent an hour building the
+    // Windows image has every reason to boot it. `e2e` refuses that case
+    // instead, because a suite with nothing to run is not a run.
+    let built =
+        match crate::guest::artifacts::usable_builder(&store, HostOs::current(), image.target()) {
+            Ok(_) => Some(crate::guest::artifacts::build(
+                runner,
+                &store,
+                image.target(),
+            )?),
+            Err(reason) => {
+                println!("nothing of ours goes into this guest: {reason}");
+                println!("it boots as the image built it");
+                None
+            }
+        };
 
     let mut session = boot(
         runner,
@@ -802,8 +814,8 @@ pub fn up(
     )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
-    let staged = if buildable.is_ok() {
-        if let Err(e) = crate::guest::artifacts::stage(runner, &store, &session) {
+    let staged = if let Some(built) = &built {
+        if let Err(e) = crate::guest::artifacts::stage(&store, &session, built) {
             // Keep the guest: `vm up` is for looking at one, and a guest that
             // booted is still worth having even if the binaries did not arrive.
             println!("{}", after_failure(&mut session, &store, true));
@@ -1087,7 +1099,7 @@ pub fn smoke(
             "{}",
             lifecycle_explainer(
                 image,
-                Prepared::bare(session.provider.kind(), image.target())
+                Prepared::bare(&store, session.provider.kind(), image.target())
             )
         );
     } else if let Err(e) = session.tear_down(&store) {
@@ -1362,24 +1374,27 @@ mod tests {
         assert!(text.contains("GNOME does not"), "{text}");
     }
 
-    /// A Linux host can build the Windows image and cannot build a single
-    /// binary to put in the guest, so the one thing its text must not do is
-    /// send somebody back to `vm up` for them.
+    /// A guest with nothing in it because the builder image is missing has one
+    /// actionable command, and `vm up` is not it: that is the command that just
+    /// ran, and it will do the same thing again until the image exists.
     #[test]
-    fn a_windows_guest_on_a_host_that_cannot_build_for_it_is_not_sent_back_to_vm_up() {
+    fn a_windows_guest_with_no_builder_image_names_the_image_and_not_vm_up() {
         let text = lifecycle_explainer(
             Image::Windows,
             bare(ProviderKind::Qemu, Staging::Impossible),
         );
         assert!(!text.contains("cargo xtask vm up windows"), "{text}");
+        assert!(
+            text.contains("cargo xtask vm build-image windows-builder"),
+            "{text}"
+        );
         assert!(text.contains("cargo xtask vm view windows"), "{text}");
         assert!(text.contains("cargo xtask vm ssh windows"), "{text}");
-        assert!(text.contains("no toolchain for Windows binaries"), "{text}");
-        // The other two texts about the same guest do point at `vm up`, and
-        // that stays true on the host where it is the answer.
+        // The other two texts about the same guest are about a guest that could
+        // have been staged, and neither may claim this one's excuse.
         for staged in [Staging::Skipped, Staging::Done] {
             let text = lifecycle_explainer(Image::Windows, bare(ProviderKind::HyperV, staged));
-            assert!(!text.contains("no toolchain"), "{text}");
+            assert!(!text.contains("can compile"), "{text}");
         }
     }
 
@@ -1401,21 +1416,26 @@ mod tests {
         assert!(text.contains("no clipboard integration"), "{text}");
     }
 
-    /// The Windows guest on a Linux host is the one cell of the matrix where
-    /// nothing staged is the host's answer rather than the command's.
+    /// Nothing staged is the host's answer rather than the command's when what
+    /// would compile the binaries is a builder guest that has not been built:
+    /// a Linux host with the image gets Windows binaries, and without it gets
+    /// none.
     #[test]
-    fn staging_is_impossible_only_for_a_windows_guest_on_a_linux_host() {
+    fn staging_is_impossible_when_the_builder_it_would_use_is_not_there() {
+        let empty = Store::new(std::env::temp_dir().join("sunlit_xtask_staging_no_images"));
         assert_eq!(
-            Staging::skipped_for(HostOs::Linux, Target::Windows),
+            Staging::skipped_for(&empty, HostOs::Linux, Target::Windows),
             Staging::Impossible
         );
+        // The cells that compile on the host itself, or in WSL, need no image
+        // and are the command's answer whatever the store holds.
         for (host, target) in [
             (HostOs::Linux, Target::Linux),
             (HostOs::Windows, Target::Windows),
             (HostOs::Windows, Target::Linux),
         ] {
             assert_eq!(
-                Staging::skipped_for(host, target),
+                Staging::skipped_for(&empty, host, target),
                 Staging::Skipped,
                 "{host:?} {target}"
             );

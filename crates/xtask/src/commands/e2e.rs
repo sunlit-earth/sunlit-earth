@@ -191,11 +191,13 @@ fn run_in_guest(
     // the only one of its two images with a session to run windowed tests in.
     let image = Image::desktop(target);
 
-    // Asked before anything is created. The provider matrix has a hypervisor
-    // for every cell, which is not the same as this host being able to produce
-    // the binaries to put in one, and finding that out after a boot means a
-    // guest running with nothing to run in it.
-    artifacts::check_can_build(crate::provider::target::HostOs::current(), target)?;
+    // Built before anything is created. The provider matrix has a hypervisor for
+    // every cell, which is not the same as this host being able to produce the
+    // binaries to put in one, and finding that out after a boot means a guest
+    // running with nothing to run in it. On a host whose builder is a guest of
+    // its own this is also the only order that works, because only one guest
+    // runs at a time.
+    let built = artifacts::build(runner, &store, target)?;
 
     let mut session = vm::boot(
         runner,
@@ -208,7 +210,7 @@ fn run_in_guest(
 
     // From here on the VM exists, so no failure may return without saying what
     // happened to it.
-    let paths = match artifacts::stage(runner, &store, &session) {
+    let paths = match artifacts::stage(&store, &session, &built) {
         Ok(paths) => paths,
         Err(e) => {
             println!("{}", vm::after_failure(&mut session, &store, keep));

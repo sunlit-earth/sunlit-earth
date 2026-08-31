@@ -37,6 +37,9 @@ pub enum StartReason {
     /// The guest a `cargo xtask dist` is building a release binary in, or
     /// verifying one in.
     Dist,
+    /// The builder guest the e2e suite's own binaries are being compiled in,
+    /// which is how a Linux host gets Windows binaries to stage.
+    Suite,
 }
 
 impl StartReason {
@@ -50,6 +53,7 @@ impl StartReason {
             Self::Up => "an interactive guest (vm up)",
             Self::Build => "an image build (vm build-image)",
             Self::Dist => "a release build (xtask dist)",
+            Self::Suite => "a build of the e2e suite",
         }
     }
 
@@ -78,6 +82,10 @@ impl StartReason {
             ),
             Self::Dist => Some(
                 "ends the release build running in it and starts that compile over \
+                 from an empty target directory",
+            ),
+            Self::Suite => Some(
+                "ends the suite build running in it and starts that compile over \
                  from an empty target directory",
             ),
             Self::Run | Self::Keep | Self::Up => None,

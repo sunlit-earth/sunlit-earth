@@ -157,8 +157,8 @@ mod tests {
         assert!(
             candidates
                 .iter()
-                .any(|(code, vars)| code == share.join("edk2-x86_64-code.fd")
-                    && vars == share.join("edk2-i386-vars.fd")),
+                .any(|(code, vars)| *code == share.join("edk2-x86_64-code.fd")
+                    && *vars == share.join("edk2-i386-vars.fd")),
             "{candidates:?}"
         );
     }

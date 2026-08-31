@@ -12,8 +12,16 @@ The test layers, the conventions every layer follows, and the hosted CI that run
 | Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance | all three, per-adapter references |
 | GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU | all three |
 | UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` | all three |
-| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux>` in a VM |
+| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux> [--screens <n>]` in a VM |
 | VM orchestration | `crates/xtask/src/**` | pure decision logic against fabricated hosts, no VM | all three |
+
+## What a display-less machine can prove about several displays
+
+Almost all of the multi-monitor work is decided on a machine with one screen, and that is a property of how the code is split rather than a happy accident. `display::layout` is a pure function from a list of rectangles to a canvas size, a modified framing and a set of crops, so every layout question is answered against fabricated monitor lists: side by side, stacked, unequal heights, a portrait secondary, negative origins, a gap, two identical rectangles, one monitor, no monitors, a monitor with a zero dimension. `tests/engine.rs`'s `RecordingSink` reports a fabricated layout to a real engine and keeps what it was handed, which is what proves the engine asks for the right images in each mode with no display anywhere; `desktop.rs`'s table is asserted per row against fabricated two-monitor sessions; and the two GPU cases render a real canvas and compare the anchor's crop against its standalone render. All of that runs in CI on all three operating systems.
+
+What is left is exactly two things, and each has one place it can be checked. That a real session's monitors come back with the rectangles it actually has is answered by `test_displays_reports_the_session_layout` in the guest, which compares what the running app reports over IPC against what the test process gets from the same platform query. That a real desktop holds what the mode said it should is answered by `test_set_wallpaper` and `test_across_screens_writes_what_this_desktop_can_hold`, which read the setting back out of the desktop rather than trusting an exit code.
+
+The two-head guest is `cargo xtask e2e --target linux --screens 2`, and what it costs the image is two packages: `xinput`, without which QEMU's single absolute pointer covers the whole desktop and clicks at twice the x it was aimed at, and `arandr`, a display settings UI that works in every session where the minimal Plasma install has none. Measured in the Debian guest on 2026-08-31: both connectors come up connected at the rectangles the boot placed them at, `display::monitors()` reports exactly those, and the pointer maps to the primary output. What the guest cannot show is Windows' own behaviour with more than one monitor: the Hyper-V synthetic adapter has no multi-monitor mode, so the Windows guest exercises the whole new path, COM plumbing and id mapping and read-back included, at one monitor only. Mixed DPI is a Windows question that no guest of either kind answers today; see [platforms.md](platforms.md).
 
 ## Conventions
 

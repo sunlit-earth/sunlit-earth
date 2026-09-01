@@ -1079,7 +1079,12 @@ impl Engine {
                  ({max_dimension} pixels on a side); one screen at a time will still work"
             ));
         }
-        let bytes = u64::from(width) * u64::from(height) * 4;
+        // The readback buffer, not the image: `read_texture_rgba8` pads every
+        // row out to 256 bytes, so a width that is not a multiple of 64 pixels
+        // costs more than four bytes each. The guard exists to turn an
+        // oversized readback into a sentence instead of a panic, which it can
+        // only do if it counts the same bytes the allocation does.
+        let bytes = (u64::from(width) * 4).next_multiple_of(256) * u64::from(height);
         if bytes > max_buffer {
             return Err(format!(
                 "a {width}x{height} wallpaper reads back {bytes} bytes, and this GPU \
@@ -1255,8 +1260,6 @@ fn spawn_cloud_worker(
     }
 }
 
-/// Clamp a requested preview size to the tier's cap, preserving the aspect
-/// ratio, then quantize it to the renderer's texture granularity.
 /// Two sentences for the status line, where either may be empty.
 fn join_notes(first: String, second: String) -> String {
     match (first.is_empty(), second.is_empty()) {
@@ -1266,6 +1269,8 @@ fn join_notes(first: String, second: String) -> String {
     }
 }
 
+/// Clamp a requested preview size to the tier's cap, preserving the aspect
+/// ratio, then quantize it to the renderer's texture granularity.
 fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32) {
     let (mut w, mut h) = requested;
     let max_w = quality.max_preview_width();

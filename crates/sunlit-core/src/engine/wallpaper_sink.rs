@@ -69,7 +69,7 @@ pub struct WallpaperJob {
     /// Which of them the plan is anchored to.
     ///
     /// The screen [`DisplayMode::OneScreen`] paints, the screen the span is
-    /// centred on, and the one image a desktop that holds only one is given.
+    /// centered on, and the one image a desktop that holds only one is given.
     pub anchor: usize,
     pub images: JobImages,
 }
@@ -95,6 +95,13 @@ impl WallpaperJob {
                 .ok_or_else(|| format!("no image slot for {}", monitor.label))?
                 .clone()),
             JobImages::Spanned { canvas, bounds } => {
+                // A screen with no pixels is one there is nothing to cut for,
+                // and every other walk over a layout passes over it rather than
+                // failing: `bounds_of`, `render_groups`, the diagram, and the
+                // per-monitor branch above, which was never given a slot for it.
+                if monitor.rect().is_empty() {
+                    return Ok(None);
+                }
                 let rect = monitor.rect().relative_to(bounds);
                 let pixels =
                     crop(&canvas.pixels, canvas.width, canvas.height, rect).ok_or_else(|| {

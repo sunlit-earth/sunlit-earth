@@ -978,7 +978,7 @@ fn wallpaper_now_publishes_one_frame_at_the_sink_size() {
 /// This is the shape of `SystemWallpaper` off Windows, which cannot be
 /// exercised directly on the machine this suite usually runs on. What matters
 /// is not only that the export fails but that it fails before the expensive
-/// part: the monitor list is the engine's first step towards a native-resolution
+/// part: the monitor list is the engine's first step toward a native-resolution
 /// render and a readback of the whole image, so a count of zero there is the
 /// assertion that nothing was rendered.
 struct RefusingSink {
@@ -1137,6 +1137,29 @@ fn publish_plan_with(
         config.params = params;
     });
     harness.next_frame();
+    publish_once(&harness, &sink)
+}
+
+/// Publish for one fabricated screen and hand the engine back still running.
+///
+/// The identity cases need a second export out of the same engine, at the same
+/// size, through the path this feature replaced, and two engines cannot be
+/// compared byte for byte: they are two devices, and the one-at-a-time rule in
+/// CLAUDE.md means they are not even alive at once.
+fn publish_one_screen(monitor: Monitor, mode: DisplayMode) -> (Harness, Publication) {
+    let sink = Arc::new(RecordingSink::new(vec![monitor]));
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.display_mode = mode;
+    });
+    harness.next_frame();
+    let published = publish_once(&harness, &sink);
+    (harness, published)
+}
+
+/// Ask for a wallpaper, wait for it, and take the one publish it made.
+fn publish_once(harness: &Harness, sink: &RecordingSink) -> Publication {
     harness.engine.send(EngineCommand::RenderWallpaperNow);
 
     let deadline = std::time::Instant::now() + TIMEOUT;
@@ -1161,15 +1184,75 @@ fn two_screens() -> Vec<Monitor> {
 
 /// The single-monitor identity: what every existing config describes, and what
 /// must come out of this feature unchanged.
+///
+/// Byte for byte rather than by size, because a size is the one thing the
+/// framing this feature derives cannot move. `ExportPixels` is the path this
+/// feature replaced, unaltered: `prepare_export` and then `export_image` with
+/// the scene's own parameters, which is what `render_wallpaper_pixels` was. So
+/// what the comparison holds the publish against is the wallpaper the build
+/// before this one would have written for the same screen.
 #[test]
 fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
     for mode in DisplayMode::ALL {
-        let published = publish_plan(vec![screen("only", 0, 320, 192, true)], mode, None);
+        let (harness, published) = publish_one_screen(screen("only", 0, 320, 192, true), mode);
         assert_eq!(published.mode, mode);
         assert_eq!(published.anchor, 0);
         assert_eq!(published.images, vec![Some((320, 192))], "{mode:?}");
         assert_eq!(published.renders, 1, "{mode:?}");
+
+        let before = harness
+            .engine
+            .export_pixels(320, 192)
+            .expect("the pre-feature export path");
+        assert_eq!(
+            picture(&published, 0).pixels,
+            before,
+            "{mode:?} moved a landscape screen's wallpaper"
+        );
     }
+}
+
+/// The one thing a single monitor does *not* come out of this unchanged, and it
+/// is on purpose: departure 9 in the plan.
+///
+/// A portrait screen is what the contain rule exists for, and containing is
+/// exactly what byte-identity forbids. The rule wins, so the exception is pinned
+/// here rather than left latent: the publish is not the pre-feature render, and
+/// it is precisely the render at the contained lens.
+#[test]
+fn a_portrait_screen_takes_the_contained_lens_instead_of_the_old_one() {
+    let (harness, published) =
+        publish_one_screen(screen("tall", 0, 192, 320, true), DisplayMode::EveryScreen);
+    assert_eq!(published.images, vec![Some((192, 320))]);
+
+    let before = harness
+        .engine
+        .export_pixels(192, 320)
+        .expect("the pre-feature export path");
+    assert_ne!(
+        picture(&published, 0).pixels,
+        before,
+        "a portrait screen still renders what it did before the contain rule"
+    );
+
+    // And what it renders instead is the setting run through the rule, not
+    // something that merely differs from it.
+    let mut contained = test_params();
+    contained.camera.fov_deg =
+        sunlit_core::display::layout::contain_camera_fov(contained.camera.fov_deg, 192, 320);
+    assert!(contained.camera.fov_deg > test_params().camera.fov_deg);
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(contained)));
+    let widened = harness
+        .engine
+        .export_pixels(192, 320)
+        .expect("the contained lens at the same size");
+    assert_eq!(
+        picture(&published, 0).pixels,
+        widened,
+        "the portrait screen's wallpaper is not the contain rule's own framing"
+    );
 }
 
 #[test]

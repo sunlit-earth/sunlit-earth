@@ -647,6 +647,27 @@ fn leave_stopped(store: &Store, mut session: crate::commands::vm::Session, build
     }
 }
 
+/// Print what the compiler said, and say what failed.
+///
+/// The diagnostics are on stdout as JSON rather than on the terminal, because
+/// the build is asked for `--message-format=json` so that the executables can be
+/// found afterwards. Without this a failed build says only that it could not
+/// compile, over an error count nothing accounts for.
+fn build_failure(stdout: &str, what: &str) -> String {
+    let diagnostics = cargo_json::rendered_diagnostics(stdout);
+    if diagnostics.is_empty() {
+        return format!("{what}; the output above says why");
+    }
+    println!();
+    for diagnostic in &diagnostics {
+        println!("{}", diagnostic.trim_end());
+    }
+    format!(
+        "{what}: {count} the compiler reported, printed above",
+        count = crate::util::count(diagnostics.len(), "diagnostic"),
+    )
+}
+
 /// Build the Linux binaries in WSL and copy them onto the Windows filesystem.
 ///
 /// Copying inside the distribution rather than reaching into it from Windows
@@ -673,9 +694,9 @@ fn build_in_wsl(
         .capture(&wsl_build_command(distro, &repo_wsl).show_stderr())
         .map_err(|e| format!("cannot run wsl.exe: {e}"))?;
     if !out.success() {
-        return Err(format!(
-            "building the Linux e2e suite in {distro} failed; \
-             the output above says why"
+        return Err(build_failure(
+            &out.stdout,
+            &format!("building the Linux e2e suite in {distro} failed"),
         ));
     }
     let (app, harness) = select(&cargo_json::parse_artifacts(&out.stdout))?;

@@ -36,6 +36,17 @@ struct RawMessage {
     profile: RawProfile,
     #[serde(default)]
     executable: Option<String>,
+    #[serde(default)]
+    message: Option<RawDiagnostic>,
+}
+
+#[derive(Deserialize)]
+struct RawDiagnostic {
+    #[serde(default)]
+    level: String,
+    /// What `cargo build` would have printed, arrows and colours and all.
+    #[serde(default)]
+    rendered: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -74,6 +85,27 @@ pub fn parse_artifacts(stdout: &str) -> Vec<Artifact> {
         .collect()
 }
 
+/// What the compiler said, for a build that has just failed.
+///
+/// `--message-format=json` is what tells this crate where Cargo put the
+/// binaries, and it moves the diagnostics with it: rustc's errors arrive as
+/// `compiler-message` records on stdout, which is captured, while stderr keeps
+/// only the summary. So a failed build printed "could not compile ... due to 1
+/// previous error" over a stream that never said what the error was. This is the
+/// half that has to be printed by hand, and `rendered` is the same text a plain
+/// `cargo build` would have shown.
+pub fn rendered_diagnostics(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RawMessage>(line.trim()).ok())
+        .filter(|message| message.reason == "compiler-message")
+        .filter_map(|message| message.message)
+        .filter(|diagnostic| matches!(diagnostic.level.as_str(), "error" | "warning"))
+        .filter_map(|diagnostic| diagnostic.rendered)
+        .filter(|rendered| !rendered.trim().is_empty())
+        .collect()
+}
+
 /// The compiled test harness for one integration test target.
 pub fn test_binary<'a>(artifacts: &'a [Artifact], name: &str) -> Option<&'a Artifact> {
     artifacts
@@ -90,6 +122,51 @@ pub fn bin<'a>(artifacts: &'a [Artifact], name: &str) -> Option<&'a Artifact> {
     artifacts
         .iter()
         .find(|a| a.name == name && a.has_kind("bin"))
+}
+
+/// A failed build has to say what the compiler said, and the compiler says it
+/// on the stream this module is reading rather than on the terminal.
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    const FAILED: &str = concat!(
+        r#"{"reason":"compiler-artifact","target":{"kind":["lib"],"name":"serde"},"executable":null}"#,
+        "\n",
+        r#"{"reason":"compiler-message","message":{"level":"warning","rendered":"warning: unused import"}}"#,
+        "\n",
+        r#"{"reason":"compiler-message","message":{"level":"error","rendered":"error[E0063]: missing field `by_position`\n  --> src/lib.rs:5:9"}}"#,
+        "\n",
+        r#"{"reason":"compiler-message","message":{"level":"failure-note","rendered":"note: a note nobody needs"}}"#,
+        "\n",
+        r#"{"reason":"build-finished","success":false}"#,
+    );
+
+    #[test]
+    fn the_compilers_own_words_are_recovered_from_the_json() {
+        let rendered = rendered_diagnostics(FAILED);
+        assert_eq!(rendered.len(), 2, "{rendered:?}");
+        assert!(rendered[0].contains("unused import"), "{rendered:?}");
+        assert!(rendered[1].contains("E0063"), "{rendered:?}");
+        // The whole rendering, arrows and all, rather than the message alone.
+        assert!(rendered[1].contains("--> src/lib.rs:5:9"), "{rendered:?}");
+    }
+
+    #[test]
+    fn a_build_that_said_nothing_yields_nothing_rather_than_an_empty_line() {
+        assert!(rendered_diagnostics("").is_empty());
+        assert!(rendered_diagnostics(r#"{"reason":"build-finished","success":true}"#).is_empty());
+        let blank = r#"{"reason":"compiler-message","message":{"level":"error","rendered":"  "}}"#;
+        assert!(rendered_diagnostics(blank).is_empty());
+    }
+
+    /// The artifact walk and the diagnostic walk read the same stream, and
+    /// neither may be confused by the other's records.
+    #[test]
+    fn artifacts_and_diagnostics_do_not_see_each_other() {
+        assert_eq!(parse_artifacts(FAILED), Vec::new());
+        assert!(!rendered_diagnostics(FAILED).is_empty());
+    }
 }
 
 #[cfg(test)]

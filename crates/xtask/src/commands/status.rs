@@ -474,6 +474,24 @@ mod tests {
         assert!(text.contains("2.0 GiB in run state"), "{text}");
     }
 
+    /// A guest booted with two screens has two consoles, `vm view` opens both,
+    /// and a reader told about one would go looking for the other.
+    #[test]
+    fn a_two_screen_guest_lists_both_of_its_consoles() {
+        let mut state = running_state(Image::Linux);
+        state.vnc_heads = vec!["127.0.0.1:5919".to_owned(), "127.0.0.1:5920".to_owned()];
+        state.screens = Some(2);
+        let text = running_vm(Image::Linux, &state);
+        assert!(
+            text.contains("(vnc 127.0.0.1:5919, 127.0.0.1:5920)"),
+            "{text}"
+        );
+        // And not the single address the record still carries from before the
+        // heads were written, which `consoles()` is there to stop being
+        // believed over the list.
+        assert!(!text.contains("vnc 127.0.0.1:5900"), "{text}");
+    }
+
     #[test]
     fn an_orphan_from_a_crashed_run_is_reported_as_leftovers() {
         let mut entry = healthy(Image::Linux);

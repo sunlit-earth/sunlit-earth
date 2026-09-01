@@ -948,11 +948,24 @@ impl crate::provider::Provider for QemuProvider<'_> {
         // scoop, is invisible to every shell that started before it did.
         for viewer in crate::host::facts::VNC_VIEWERS {
             if let Some(path) = crate::host::facts::resolve_tool(self.runner, viewer, self.host) {
-                for address in &addresses {
+                for (opened, address) in addresses.iter().enumerate() {
                     let argument = crate::host::facts::vnc_viewer_argument(viewer, address);
                     self.runner
                         .spawn(&Cmd::new(path.to_string_lossy()).arg(argument), None)
-                        .map_err(|e| format!("cannot start {viewer}: {e}"))?;
+                        // One viewer per screen means a failure partway through
+                        // leaves windows open, and a message naming only what
+                        // failed reads as though nothing started.
+                        .map_err(|e| match opened {
+                            0 => format!("cannot start {viewer}: {e}"),
+                            1 => format!(
+                                "cannot start {viewer} for the screen at {address}: {e}. \
+                                 The viewer already open on the first screen stays open."
+                            ),
+                            open => format!(
+                                "cannot start {viewer} for the screen at {address}: {e}. \
+                                 The {open} viewers already open stay open."
+                            ),
+                        })?;
                 }
                 return Ok(format!(
                     "{viewer} is connecting to {}",
@@ -1009,6 +1022,73 @@ mod tests {
 
     fn joined(image: Image) -> String {
         launch(image).args().join(" ")
+    }
+
+    /// A guest with two heads, which is what `--screens 2` records.
+    fn two_screen_state() -> RunState {
+        let mut state = RunState::new(
+            Image::Linux,
+            ProviderKind::Qemu,
+            PathBuf::from("/srv/vm/run/linux/overlay.qcow2"),
+            StartReason::Run,
+            0,
+        );
+        state.vnc_heads = vec!["127.0.0.1:5919".to_owned(), "127.0.0.1:5920".to_owned()];
+        state.screens = Some(2);
+        state
+    }
+
+    /// Every screen gets its own window. A guest's second screen is as much its
+    /// console as the first, and opening one of them would be a choice nothing
+    /// here is entitled to make.
+    #[test]
+    fn a_two_screen_guest_opens_a_viewer_on_each_of_them() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new().with_tool("vncviewer", "/usr/bin/vncviewer");
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+
+        let said = provider.view(&two_screen_state()).expect("both viewers");
+        assert!(said.contains("127.0.0.1:5919 and 127.0.0.1:5920"), "{said}");
+        let spawned = runner.spawned.borrow().clone();
+        assert_eq!(spawned.len(), 2, "{spawned:?}");
+        assert!(spawned[0].contains("127.0.0.1:5919"), "{spawned:?}");
+        assert!(spawned[1].contains("127.0.0.1:5920"), "{spawned:?}");
+    }
+
+    /// A viewer that fails on the second screen has already put a window on the
+    /// first, and a message naming only the failure reads as though nothing
+    /// started at all.
+    #[test]
+    fn a_viewer_that_fails_on_a_later_screen_says_what_is_already_open() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new()
+            .with_tool("vncviewer", "/usr/bin/vncviewer")
+            .failing_to_spawn("5920");
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+
+        let refusal = provider
+            .view(&two_screen_state())
+            .expect_err("the second viewer was refused");
+        assert!(refusal.contains("127.0.0.1:5920"), "{refusal}");
+        assert!(refusal.contains("already open"), "{refusal}");
+        assert_eq!(runner.spawned.borrow().len(), 1, "the first one did start");
+    }
+
+    /// With no viewer on the host the addresses are all the answer there is, so
+    /// both of them have to be in it, in the plural.
+    #[test]
+    fn two_consoles_with_no_viewer_are_both_named() {
+        let store = Store::new("/srv/vm");
+        let runner = FakeRunner::new();
+        let provider = QemuProvider::new(&runner, &store, HostOs::Linux);
+
+        let said = provider
+            .view(&two_screen_state())
+            .expect("advice, not a viewer");
+        assert!(said.contains("127.0.0.1:5919 and 127.0.0.1:5920"), "{said}");
+        assert!(said.contains("consoles are"), "{said}");
+        assert!(said.contains("point any VNC client at them"), "{said}");
+        assert!(runner.spawned.borrow().is_empty(), "nothing to start");
     }
 
     #[test]

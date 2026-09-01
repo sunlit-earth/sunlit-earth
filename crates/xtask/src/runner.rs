@@ -541,6 +541,8 @@ pub mod fake {
         /// Answers that change under a wait, consulted before `responses`.
         sequences: RefCell<Vec<(String, VecDeque<CommandOutput>)>>,
         tools: HashMap<String, PathBuf>,
+        /// Spawns to refuse, by a substring of the rendered command.
+        spawn_failures: Vec<String>,
         /// Behind a `RefCell` because `terminate` removes from it: a process
         /// that was killed and is still reported as running would make the
         /// teardown path untestable, which is the path that deletes disks.
@@ -577,6 +579,17 @@ pub mod fake {
             self.sequences
                 .get_mut()
                 .push((key.to_owned(), outputs.into_iter().collect()));
+            self
+        }
+
+        /// Refuse to spawn any command whose rendering contains `key`.
+        ///
+        /// A spawn that fails halfway through a list is the case worth having:
+        /// one viewer per screen means the first window is already up when the
+        /// second one cannot be started.
+        #[must_use]
+        pub fn failing_to_spawn(mut self, key: &str) -> Self {
+            self.spawn_failures.push(key.to_owned());
             self
         }
 
@@ -641,7 +654,15 @@ pub mod fake {
         }
 
         fn spawn(&self, cmd: &Cmd, _log: Option<&Path>) -> io::Result<u32> {
-            self.spawned.borrow_mut().push(cmd.display());
+            let rendered = cmd.display();
+            if let Some(key) = self
+                .spawn_failures
+                .iter()
+                .find(|key| rendered.contains(key.as_str()))
+            {
+                return Err(io::Error::other(format!("refused to spawn {key}")));
+            }
+            self.spawned.borrow_mut().push(rendered);
             Ok(4242)
         }
 

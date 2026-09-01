@@ -27,7 +27,7 @@ pub fn mode_options() -> Vec<String> {
 
 /// One screen as the combo spells it.
 ///
-/// `Monitor::label` is what a person recognises the screen by and is never used
+/// `Monitor::label` is what a person recognizes the screen by and is never used
 /// to address it: the connector name on Linux, `Display 2` on Windows.
 pub fn screen_label(monitor: &Monitor) -> String {
     let mut label = format!("{}  {}x{}", monitor.label, monitor.width, monitor.height);
@@ -83,14 +83,14 @@ pub fn anchor_at(ids: &[String], index: i32) -> String {
 
 /// The layout as the diagram draws it.
 pub struct Diagram {
-    /// One tile per monitor with pixels, normalised to the bounding box.
+    /// One tile per monitor with pixels, normalized to the bounding box.
     pub tiles: Vec<MonitorTile>,
     /// Width over height of that bounding box, so the board keeps its shape
     /// instead of stretching a stacked layout into a wide one.
     pub aspect: f32,
 }
 
-/// The monitor rectangles, normalised to the bounding box of all of them.
+/// The monitor rectangles, normalized to the bounding box of all of them.
 ///
 /// `anchor` is a position in `monitors`, which is what `layout::resolve_anchor`
 /// answers, and the tile it names is drawn highlighted. A label is the monitor's

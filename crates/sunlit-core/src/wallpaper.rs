@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use tracing::debug;
 #[cfg(windows)]
-use tracing::info;
+use tracing::{info, warn};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::GetLastError;
 #[cfg(windows)]
@@ -672,6 +672,20 @@ pub fn wallpaper_on_monitor(id: &str) -> Result<String, String> {
 /// regression-tested on every desktop and in the Hyper-V guest does not move.
 /// Everything beyond one screen goes through `IDesktopWallpaper`, which is the
 /// only interface that can address a monitor.
+///
+/// Addressing one needs the device path [`adopt_device_paths`] maps onto it, and
+/// that mapping is a rectangle comparison nothing guarantees: `GetMonitorRECT`
+/// and `rcMonitor` disagreeing under mixed DPI would leave every screen holding
+/// the `szDevice` name it came in with, which the shell does not take. Three
+/// answers follow, and none of them is failing the publish. A screen with no
+/// device path keeps the wallpaper it has and the note says which. A screen the
+/// shell refuses costs that screen alone, because an unplug between the
+/// enumeration and the call looks exactly like that from here and the screens
+/// still there should not pay for it. And where *no* screen could be addressed,
+/// this falls back to the single-monitor path with the anchor's picture: that is
+/// what every session did before this feature, and losing the primary's
+/// wallpaper on a configuration nobody has verified is the worst outcome
+/// available.
 #[cfg(windows)]
 pub fn set_wallpaper_job(
     job: &crate::engine::wallpaper_sink::WallpaperJob,
@@ -709,6 +723,7 @@ pub fn set_wallpaper_job(
 
     let mut written: Vec<(Arc<Frame>, PathBuf)> = Vec::new();
     let mut images: Vec<(&crate::display::Monitor, PathBuf)> = Vec::new();
+    let mut anchor_path: Option<PathBuf> = None;
     for (index, monitor) in job.monitors.iter().enumerate() {
         // A screen with no picture is one this mode does not paint, and it is
         // left holding whatever it already had.
@@ -729,6 +744,9 @@ pub fn set_wallpaper_job(
             written.push((Arc::clone(&frame), path.clone()));
             path
         };
+        if index == job.anchor {
+            anchor_path = Some(path.clone());
+        }
         images.push((monitor, path));
     }
     publication.commit();
@@ -736,22 +754,68 @@ pub fn set_wallpaper_job(
     let api = shell::DesktopWallpaperApi::open()?;
     api.set_position(shell::Position::Fill)?;
     let mut unaddressed = Vec::new();
+    let mut refused = Vec::new();
+    let mut painted = 0usize;
     for (monitor, path) in &images {
-        if monitor.id.is_empty() {
+        if !is_device_path(&monitor.id) {
             unaddressed.push(monitor.label.clone());
             continue;
         }
-        api.set(Some(&monitor.id), path)?;
+        match api.set(Some(&monitor.id), path) {
+            Ok(()) => painted += 1,
+            Err(e) => {
+                warn!(
+                    monitor = %monitor.label,
+                    error = %e,
+                    "the shell would not take this screen's wallpaper"
+                );
+                refused.push(monitor.label.clone());
+            }
+        }
     }
-    info!(screens = images.len(), "set a wallpaper per monitor");
-    if unaddressed.is_empty() {
-        Ok(String::new())
-    } else {
-        Ok(format!(
+
+    if painted == 0 {
+        let path =
+            anchor_path.ok_or_else(|| "this publish has no image for its own anchor".to_owned())?;
+        set_wallpaper(&path)?;
+        let anchor = job
+            .anchor_monitor()
+            .map_or("the anchor", |m| m.label.as_str());
+        return Ok(format!(
+            "Windows would not take a wallpaper for any screen by name, so every \
+             screen got {anchor}'s picture the way they all did before"
+        ));
+    }
+
+    info!(screens = painted, "set a wallpaper per monitor");
+    let mut notes = Vec::new();
+    if !unaddressed.is_empty() {
+        notes.push(format!(
             "Windows named no device for {}, so those screens kept the wallpaper they had",
             unaddressed.join(", ")
-        ))
+        ));
     }
+    if !refused.is_empty() {
+        notes.push(format!(
+            "Windows would not take a wallpaper for {}, which is what a screen \
+             unplugged since the layout was read looks like from here",
+            refused.join(", ")
+        ));
+    }
+    Ok(notes.join("; "))
+}
+
+/// Whether a monitor id is one `IDesktopWallpaper` will take.
+///
+/// Every id starts life as `szDevice` (`\\.\DISPLAY1`) and
+/// [`adopt_device_paths`] replaces the ones the shell could be matched to with
+/// the device path it addresses that screen by. So an id still in the
+/// `\\.\` shape is one the mapping did not reach, and giving it to
+/// `SetWallpaper` addresses nothing at all: the interface takes the path, and a
+/// display device name is not one.
+#[cfg(windows)]
+fn is_device_path(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with(r"\\.\")
 }
 
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the
@@ -906,12 +970,27 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn a_display_device_is_labelled_by_its_own_number() {
+    fn a_display_device_is_labeled_by_its_own_number() {
         assert_eq!(display_label(r"\\.\DISPLAY2", 0), "Display 2");
         // A device path with no number to lift falls back to where it came in
         // the enumeration rather than to a name that addresses nothing.
         assert_eq!(display_label("", 3), "Display 4");
         assert_eq!(display_label(r"\\.\WEIRD", 0), "Display 1");
+    }
+
+    /// The mapping that gives a screen an addressable id can miss, and what a
+    /// miss leaves behind is the display device name it came in with. That name
+    /// is not empty, which is what this used to be checked for, so nothing was
+    /// ever recognized as unaddressable and a screen with no device path was
+    /// handed to `SetWallpaper` anyway.
+    #[test]
+    #[cfg(windows)]
+    fn a_display_device_name_is_not_something_the_shell_can_be_given() {
+        assert!(!is_device_path(r"\\.\DISPLAY1"));
+        assert!(!is_device_path(""));
+        assert!(is_device_path(
+            r"\\?\DISPLAY#GSM5B09#5&d0e4e51&0&UID4353#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
+        ));
     }
 
     #[test]
@@ -953,7 +1032,7 @@ mod tests {
         let _ = std::fs::remove_file(&empty_file);
     }
 
-    /// The whole publish protocol in one test, because it is one behaviour and
+    /// The whole publish protocol in one test, because it is one behavior and
     /// because these all share the one wallpaper directory: two tests writing
     /// into it at once would each see the other's slot.
     ///

@@ -147,9 +147,9 @@ pub fn run(
              uses the desktop you are sitting in front of"
                 .to_owned(),
         ),
-        None if screens > 1 => Err(
-            "--screens gives the Linux guest more than one screen; a run on this \
-             host uses the monitors you are sitting in front of"
+        None if screens != 1 => Err(
+            "--screens chooses how many screens the Linux guest gets; a run on \
+             this host uses the monitors you are sitting in front of"
                 .to_owned(),
         ),
         None => run_on_host(runner),
@@ -192,12 +192,20 @@ fn run_in_guest(
     desktop: Option<Desktop>,
     screens: u16,
 ) -> Result<u8, String> {
-    let store = store::store()?;
-    let started = std::time::Instant::now();
     // The suite runs in the desktop image of that operating system, which is
     // the only one of its two images with a session to run windowed tests in.
     let image = Image::desktop(target);
 
+    // Both are usage errors, and both are answered before anything is built,
+    // created or even looked up. `boot` checks them again, which is where they
+    // belong for every other caller, but that is on the far side of the build
+    // below: `--target windows --screens 2` used to compile the workspace for
+    // minutes before saying that guest has one head.
+    vm::desktop_for(image, desktop)?;
+    vm::screens_for(image, screens)?;
+
+    let store = store::store()?;
+    let started = std::time::Instant::now();
     // Built before anything is created. The provider matrix has a hypervisor for
     // every cell, which is not the same as this host being able to produce the
     // binaries to put in one, and finding that out after a boot means a guest
@@ -366,6 +374,35 @@ mod tests {
         assert!(
             runner.calls().is_empty(),
             "the refusal ran something first: {:?}",
+            runner.calls()
+        );
+    }
+
+    /// Zero is not "no flag", it is a guest with nothing to look at, and every
+    /// guest refuses it. A host run took it silently, because the branch asked
+    /// whether more than one screen had been requested rather than whether the
+    /// number was one this run can give.
+    #[test]
+    fn a_host_run_refuses_no_screens_as_readily_as_two() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        let refusal = run(&runner, Where::Host, false, false, None, 0)
+            .expect_err("a run cannot be given no screen at all");
+        assert!(refusal.contains("--screens"), "{refusal}");
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
+    }
+
+    /// A usage error is worth little if it arrives after the build it was going
+    /// to waste. This asks the Windows guest for a second screen, which its
+    /// adapter cannot have, and the answer comes before the store is opened.
+    #[test]
+    fn a_guest_run_refuses_an_impossible_screen_count_before_it_builds_anything() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        let refusal = run(&runner, Where::Windows, false, false, None, 2)
+            .expect_err("the Windows guest has one head");
+        assert!(refusal.contains("--screens 2"), "{refusal}");
+        assert!(
+            runner.calls().is_empty(),
+            "the refusal built something first: {:?}",
             runner.calls()
         );
     }

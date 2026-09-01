@@ -48,12 +48,17 @@ impl DisplayMode {
     /// Every mode, in the order the settings window offers them.
     pub const ALL: [Self; 3] = [Self::OneScreen, Self::EveryScreen, Self::AcrossScreens];
 
-    /// What the settings window calls this, spelled as a sentence.
+    /// What the settings window calls this.
+    ///
+    /// One or two words, because the combo is narrow enough to cut a sentence
+    /// off: the row's hint is where the sentence lives. `Mirror` and `Extend`
+    /// are what a display settings panel already calls these two arrangements,
+    /// so they read as the terms they are rather than as abbreviations.
     pub fn label(self) -> &'static str {
         match self {
             Self::OneScreen => "One screen",
-            Self::EveryScreen => "Same view on every screen",
-            Self::AcrossScreens => "One view across all screens",
+            Self::EveryScreen => "Mirror",
+            Self::AcrossScreens => "Extend",
         }
     }
 

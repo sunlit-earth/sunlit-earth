@@ -591,6 +591,18 @@ mod tests {
         assert!(refusal.contains('B'), "{refusal}");
     }
 
+    /// A monitor with a zero dimension is skipped everywhere else a layout is
+    /// walked, so it is skipped here too. Refusing it made one screen with no
+    /// pixels the end of the whole publish, and only in the spanned mode.
+    #[test]
+    fn a_screen_with_no_pixels_is_passed_over_rather_than_refused() {
+        let mut job = canvas_job(DisplayMode::AcrossScreens);
+        job.monitors[1] = monitor("B", 4, 0, 2);
+        assert!(job.image_for(1).expect("not a failure").is_none());
+        // The screen that does have pixels is still cut as it was.
+        assert!(job.image_for(0).unwrap().is_some());
+    }
+
     #[test]
     fn counting_sink_starts_empty_and_counts_publishes() {
         let sink = CountingSink::new(4, 2);

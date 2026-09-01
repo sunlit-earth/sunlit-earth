@@ -317,6 +317,22 @@ impl WallpaperSink for SystemWallpaper {
     }
 }
 
+/// The images of one publish in the order a person sees the screens, left to
+/// right and then top to bottom.
+///
+/// Not the order the monitors arrived in: `xrandr` lists connectors, and where a
+/// connector sits in that list says nothing about where its screen sits. KDE is
+/// the row that depends on this, because Plasma addresses a screen by position
+/// and never by name, so a session whose connectors are listed right to left
+/// would otherwise have its two pictures swapped.
+#[cfg(any(target_os = "linux", test))]
+fn in_layout_order(
+    mut placed: Vec<(i32, i32, Option<std::path::PathBuf>)>,
+) -> Vec<Option<std::path::PathBuf>> {
+    placed.sort_by_key(|&(x, y, _)| (x, y));
+    placed.into_iter().map(|(_, _, path)| path).collect()
+}
+
 /// Write the files one desktop's reach calls for, and say where they went.
 ///
 /// Cutting a canvas is only done for a desktop that addresses monitors
@@ -337,10 +353,13 @@ fn write_placement(
             let mut written: Vec<(Arc<Frame>, std::path::PathBuf)> = Vec::new();
             let mut per_monitor = Vec::with_capacity(job.monitors.len());
             let mut untouched = Vec::new();
+            let mut placed: Vec<(i32, i32, Option<std::path::PathBuf>)> =
+                Vec::with_capacity(job.monitors.len());
             let mut anchor = None;
             for (index, monitor) in job.monitors.iter().enumerate() {
                 let Some(frame) = job.image_for(index)? else {
                     untouched.push(monitor.id.clone());
+                    placed.push((monitor.x, monitor.y, None));
                     continue;
                 };
                 // Two screens showing the same picture cost one render, and
@@ -365,14 +384,17 @@ fn write_placement(
                 if index == job.anchor {
                     anchor = Some(path.clone());
                 }
+                placed.push((monitor.x, monitor.y, Some(path.clone())));
                 per_monitor.push((monitor.id.clone(), path));
             }
             let single =
                 anchor.ok_or_else(|| "this publish has no image for its own anchor".to_owned())?;
+            let by_position = in_layout_order(placed);
             publication.commit();
             Ok(Placement {
                 per_monitor,
                 untouched,
+                by_position,
                 single,
                 spanned: false,
             })
@@ -386,6 +408,7 @@ fn write_placement(
             Ok(Placement {
                 per_monitor: Vec::new(),
                 untouched: Vec::new(),
+                by_position: vec![Some(path.clone())],
                 single: path,
                 spanned: true,
             })
@@ -543,6 +566,33 @@ mod tests {
         assert_eq!(job.anchor_image().unwrap(), left);
         assert!(job.canvas().is_some());
         assert_eq!(job.anchor_monitor().map(|m| m.id.as_str()), Some("A"));
+    }
+
+    /// KDE addresses a screen by where it sits, so the order the connectors
+    /// were listed in must not decide which screen gets which picture.
+    #[test]
+    fn the_images_come_out_in_the_order_the_screens_are_seen_in() {
+        let path = |name: &str| Some(std::path::PathBuf::from(name));
+        // Listed right to left, and above before below, which is a layout
+        // xrandr will happily report and Plasma will not.
+        let placed = vec![
+            (1920, 0, path("/right.png")),
+            (0, 1080, path("/below.png")),
+            (0, 0, path("/left.png")),
+        ];
+        assert_eq!(
+            in_layout_order(placed),
+            vec![path("/left.png"), path("/below.png"), path("/right.png")]
+        );
+    }
+
+    /// A screen the mode does not paint keeps its place, because dropping it
+    /// would address every screen after it one position too early.
+    #[test]
+    fn a_screen_with_no_picture_still_holds_its_place() {
+        let path = |name: &str| Some(std::path::PathBuf::from(name));
+        let placed = vec![(1920, 0, path("/right.png")), (0, 0, None)];
+        assert_eq!(in_layout_order(placed), vec![None, path("/right.png")]);
     }
 
     #[test]

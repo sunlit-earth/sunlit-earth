@@ -71,8 +71,17 @@ enum Kind {
         /// these schemas have.
         fill: Option<&'static str>,
     },
-    /// `plasma-apply-wallpaperimage <path>`, which is Plasma's own tool for
-    /// exactly this and does the plasmashell scripting itself.
+    /// A plasmashell script over `dbus-send`, which is the only way to reach one
+    /// screen at a time.
+    ///
+    /// `plasma-apply-wallpaperimage` is Plasma's own tool for this and writes
+    /// every containment, so it can neither give two screens two pictures nor
+    /// leave one alone. The scripting API behind it can do both:
+    /// `org.kde.PlasmaShell.evaluateScript` runs JavaScript in the shell, where
+    /// `desktops()` lists the containments, each carries the `screen` it is on,
+    /// and `screenGeometry` says where that screen sits. Plasma has no span
+    /// mode, which costs nothing here, because a view across the screens is
+    /// already cut into one image per screen before it arrives.
     Kde,
     /// `xfconf-query`, once per backdrop property that holds an image.
     ///
@@ -121,6 +130,16 @@ pub struct Placement {
     /// One that cannot address them gives them the single image, because the
     /// alternative is setting no wallpaper at all.
     pub untouched: Vec<String>,
+    /// One entry per monitor, left to right and then top to bottom: the image
+    /// that screen is to hold, or `None` for one this publish left alone.
+    ///
+    /// The same facts `per_monitor` and `untouched` carry, in the shape a setter
+    /// that addresses screens by where they sit rather than by name needs. KDE
+    /// is the only such setter, because Plasma's scripting API offers a
+    /// containment's screen index and that index's geometry and no output name
+    /// at all. The holes are what keep it usable: drop them and every screen
+    /// after an unpainted one is addressed one place too early.
+    pub by_position: Vec<Option<PathBuf>>,
     /// The one image a desktop that holds only one shows.
     pub single: PathBuf,
     /// Whether `single` covers the whole virtual desktop rather than one screen.
@@ -133,6 +152,7 @@ impl Placement {
         Self {
             per_monitor: Vec::new(),
             untouched: Vec::new(),
+            by_position: vec![Some(path.clone())],
             single: path,
             spanned: false,
         }
@@ -220,19 +240,15 @@ impl Backend {
     /// How far this desktop's setter reaches into a multi-monitor session.
     pub fn reach(&self) -> Reach {
         match self.kind {
-            // The backdrop properties are named after the monitor, so a session
-            // with two screens has two of them and they can hold two paths.
-            Kind::Xfce => Reach::PerMonitor,
+            // XFCE names a backdrop property after each monitor and Plasma gives
+            // each screen its own containment, so both hold one path per screen
+            // and both can be told to leave a screen alone.
+            Kind::Xfce | Kind::Kde => Reach::PerMonitor,
             // No per-monitor wallpaper in any of these schemas, but
             // `picture-options` has a `spanned` value that stretches one image
             // over the whole virtual desktop.
             Kind::Gsettings { .. } => Reach::Spanned,
-            // `plasma-apply-wallpaperimage` sets every containment, and Plasma
-            // has no span mode at all. Per-screen needs a plasmashell script
-            // over D-Bus, which is a new program on PATH and an ordering
-            // assumption between containment index and monitor; neither is a
-            // thing to write without a two-head session to check it in.
-            Kind::Kde | Kind::Lxqt => Reach::OneImage,
+            Kind::Lxqt => Reach::OneImage,
         }
     }
 
@@ -302,7 +318,7 @@ impl Backend {
                     .chain(keys.iter().map(|key| set(key, &value)))
                     .collect()
             }
-            Kind::Kde => vec![Invocation::new("plasma-apply-wallpaperimage", [single])],
+            Kind::Kde => vec![plasma_command(placement)],
             Kind::Xfce => {
                 let write = |property: String, create: Option<&str>, value: String| {
                     let mut args = vec![
@@ -435,6 +451,66 @@ fn xfce_properties<'a>(
 /// what the URI means. The path this is called with is one the app wrote itself,
 /// under a directory named by the OS, so the general case is not the case here;
 /// a space in a home directory is, and that is the one that has to work.
+/// The one call that puts this publish on Plasma's screens.
+fn plasma_command(placement: &Placement) -> Invocation {
+    Invocation::new(
+        "dbus-send",
+        [
+            "--session".to_owned(),
+            "--dest=org.kde.plasmashell".to_owned(),
+            "--type=method_call".to_owned(),
+            "/PlasmaShell".to_owned(),
+            "org.kde.PlasmaShell.evaluateScript".to_owned(),
+            format!("string:{}", plasma_script(placement)),
+        ],
+    )
+}
+
+/// The JavaScript `evaluateScript` runs to put one image on each screen.
+///
+/// Plasma orders its containments however it likes and renumbers them when the
+/// layout changes, so the script sorts them by where their screens sit and
+/// matches that against `by_position`, which is sorted the same way. A
+/// containment on no screen (`screen` is -1) is not a desktop anyone can see and
+/// is dropped before the sort; a screen whose entry is null is one this publish
+/// left alone and is stepped over, which is what keeps the rest aligned.
+///
+/// `wallpaperPlugin` is written every time rather than only when it differs,
+/// because a screen left on a colour or a slideshow would otherwise take the
+/// image into a plugin that does not read it and show nothing.
+fn plasma_script(placement: &Placement) -> String {
+    let images = placement
+        .by_position
+        .iter()
+        .map(|slot| slot.as_deref().map_or_else(|| "null".to_owned(), js_string))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "var images=[{images}];\
+         var screens=desktops().filter(function(d){{return d.screen!=-1;}});\
+         screens.sort(function(a,b){{\
+         var x=screenGeometry(a.screen),y=screenGeometry(b.screen);\
+         return x.left-y.left||x.top-y.top;}});\
+         for(var i=0;i<screens.length&&i<images.length;i++){{\
+         if(images[i]===null){{continue;}}\
+         var d=screens[i];\
+         d.wallpaperPlugin=\"org.kde.image\";\
+         d.currentConfigGroup=[\"Wallpaper\",\"org.kde.image\",\"General\"];\
+         d.writeConfig(\"Image\",images[i]);}}"
+    )
+}
+
+/// One path as a JavaScript string literal, as a `file:` URI.
+///
+/// Plasma stores the key as a URL and hands back what it was given, so a bare
+/// path round-trips through the config and then fails to load. The escaping is
+/// belt and braces over `file_uri`, which already percent-encodes everything
+/// outside an unreserved set and so can produce neither a quote nor a backslash.
+fn js_string(path: &Path) -> String {
+    let escaped = file_uri(path).replace('\\', r"\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 fn file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().bytes() {
@@ -468,7 +544,7 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["kde", "plasma"],
         Backend {
             desktop: "KDE Plasma",
-            program: "plasma-apply-wallpaperimage",
+            program: "dbus-send",
             kind: Kind::Kde,
         },
     ),
@@ -614,6 +690,8 @@ mod tests {
                 .map(|m| ((*m).to_owned(), PathBuf::from(path)))
                 .collect(),
             untouched: Vec::new(),
+            by_position: std::iter::repeat_n(Some(PathBuf::from(path)), monitors.len().max(1))
+                .collect(),
             single: PathBuf::from(path),
             spanned: false,
         };
@@ -630,6 +708,10 @@ mod tests {
                 ("Virtual-2".to_owned(), PathBuf::from("/w-1.png")),
             ],
             untouched: Vec::new(),
+            by_position: vec![
+                Some(PathBuf::from("/w-0.png")),
+                Some(PathBuf::from("/w-1.png")),
+            ],
             single: PathBuf::from("/w-0.png"),
             spanned: false,
         }
@@ -738,16 +820,84 @@ mod tests {
         assert!(!unset.contains("not supported on"), "{unset}");
     }
 
+    /// The script is one `dbus-send` call whatever the screen count, and the
+    /// path reaches Plasma as a URI because that is what it stores.
     #[test]
-    fn kde_hands_the_path_to_plasmas_own_tool() {
+    fn kde_runs_one_plasmashell_script() {
         let cmds = commands("KDE", "/home/tester/w.png", "");
-        assert_eq!(
-            cmds,
-            vec![Invocation {
-                program: "plasma-apply-wallpaperimage",
-                args: vec!["/home/tester/w.png".to_owned()],
-            }]
+        let [only] = cmds.as_slice() else {
+            panic!("one command, not {cmds:?}")
+        };
+        assert_eq!(only.program, "dbus-send");
+        assert_eq!(only.args[3], "/PlasmaShell");
+        assert_eq!(only.args[4], "org.kde.PlasmaShell.evaluateScript");
+        let script = &only.args[5];
+        assert!(script.starts_with("string:"), "{script}");
+        assert!(
+            script.contains(r#"["file:///home/tester/w.png"]"#),
+            "{script}"
         );
+        assert!(
+            script.contains(r#"d.writeConfig("Image",images[i])"#),
+            "{script}"
+        );
+    }
+
+    /// Two screens, two pictures, in the order a person sees them rather than
+    /// the order the query answered in.
+    #[test]
+    fn kde_gives_each_screen_its_own_picture() {
+        let cmds = detect("KDE")
+            .expect("a backend")
+            .commands(&two_screens(), "");
+        let script = &cmds[0].args[5];
+        assert!(
+            script.contains(r#"["file:///w-0.png","file:///w-1.png"]"#),
+            "{script}"
+        );
+        // Plasma renumbers its containments when the layout changes, so the
+        // script has to put them in order itself rather than trust the index.
+        assert!(script.contains("screens.sort("), "{script}");
+        assert!(script.contains("d.screen!=-1"), "{script}");
+    }
+
+    /// One-screen mode on a two-screen session: the other screen keeps what it
+    /// had, and the hole is what keeps the painted one addressed correctly.
+    #[test]
+    fn kde_steps_over_a_screen_the_publish_left_alone() {
+        let placement = Placement {
+            per_monitor: vec![("Virtual-2".to_owned(), PathBuf::from("/w-1.png"))],
+            untouched: vec!["Virtual-1".to_owned()],
+            by_position: vec![None, Some(PathBuf::from("/w-1.png"))],
+            single: PathBuf::from("/w-1.png"),
+            spanned: false,
+        };
+        let cmds = detect("KDE").expect("a backend").commands(&placement, "");
+        let script = &cmds[0].args[5];
+        assert!(script.contains(r#"[null,"file:///w-1.png"]"#), "{script}");
+        assert!(
+            script.contains("if(images[i]===null){continue;}"),
+            "{script}"
+        );
+    }
+
+    /// Plasma has no span mode, so a view across the screens arrives already cut
+    /// and goes out the same way every other per-monitor publish does.
+    #[test]
+    fn kde_reaches_every_monitor_and_lxqt_does_not() {
+        assert_eq!(detect("KDE").expect("a backend").reach(), Reach::PerMonitor);
+        assert_eq!(detect("LXQt").expect("a backend").reach(), Reach::OneImage);
+        for mode in [
+            DisplayMode::OneScreen,
+            DisplayMode::EveryScreen,
+            DisplayMode::AcrossScreens,
+        ] {
+            assert_eq!(
+                detect("KDE").expect("a backend").degradation(mode, 2),
+                None,
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]
@@ -993,6 +1143,7 @@ mod tests {
         let placement = Placement {
             per_monitor: vec![("Virtual-1".to_owned(), PathBuf::from("/w-0.png"))],
             untouched: vec!["Virtual-2".to_owned()],
+            by_position: vec![Some(PathBuf::from("/w-0.png")), None],
             single: PathBuf::from("/w-0.png"),
             spanned: false,
         };
@@ -1018,6 +1169,7 @@ mod tests {
             let spanned = Placement {
                 per_monitor: Vec::new(),
                 untouched: Vec::new(),
+                by_position: vec![Some(PathBuf::from("/canvas.png"))],
                 single: PathBuf::from("/canvas.png"),
                 spanned: true,
             };
@@ -1043,13 +1195,8 @@ mod tests {
                 "{desktop}"
             );
         }
-        for desktop in ["KDE", "LXQt"] {
-            assert_eq!(
-                detect(desktop).unwrap().reach(),
-                Reach::OneImage,
-                "{desktop}"
-            );
-        }
+        assert_eq!(detect("KDE").unwrap().reach(), Reach::PerMonitor);
+        assert_eq!(detect("LXQt").unwrap().reach(), Reach::OneImage);
     }
 
     /// A mode a desktop cannot reach is not a failure, and the sentence that
@@ -1074,19 +1221,20 @@ mod tests {
             .degradation(DisplayMode::EveryScreen, 2)
             .expect("GNOME cannot give two screens two images");
         assert!(note.contains("GNOME"), "{note}");
-        // Plasma cannot even span, so the span mode gets its own sentence.
-        let kde = detect("KDE").unwrap();
-        let spanning = kde
+        // LXQt sets one wallpaper and cannot span, so the span mode loses
+        // something the other two do not and gets its own sentence.
+        let lxqt = detect("LXQt").unwrap();
+        let spanning = lxqt
             .degradation(DisplayMode::AcrossScreens, 2)
-            .expect("Plasma has no span mode");
-        assert!(spanning.contains("KDE Plasma"), "{spanning}");
+            .expect("LXQt has no span mode");
+        assert!(spanning.contains("LXQt"), "{spanning}");
         assert_ne!(
             Some(spanning),
-            kde.degradation(DisplayMode::EveryScreen, 3),
+            lxqt.degradation(DisplayMode::EveryScreen, 3),
             "the span mode loses something the other modes do not"
         );
         assert!(
-            kde.degradation(DisplayMode::OneScreen, 3)
+            lxqt.degradation(DisplayMode::OneScreen, 3)
                 .expect("three screens all get the one image")
                 .contains('3')
         );

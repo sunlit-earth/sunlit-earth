@@ -1931,6 +1931,7 @@ fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> O
                 .zip(published.iter().cloned())
                 .collect(),
             untouched: Vec::new(),
+            by_position: published.iter().cloned().map(Some).collect(),
             single: published[0].clone(),
             spanned: false,
         }

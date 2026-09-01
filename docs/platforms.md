@@ -37,11 +37,15 @@ Linux differs per desktop, so `desktop.rs` says how far each row reaches rather 
 
 | Reach | Desktops | What a publish does |
 |---|---|---|
-| `PerMonitor` | XFCE | One image per screen, into the backdrop property named after that monitor |
+| `PerMonitor` | XFCE, KDE Plasma | One image per screen: into the backdrop property named after that monitor on XFCE, into that screen's containment on KDE |
 | `Spanned` | GNOME, Cinnamon, MATE, Budgie | One image; `picture-options` is `spanned` for a view across the screens and `zoom` otherwise |
-| `OneImage` | KDE Plasma, LXQt | One image for every screen: the anchor's own picture, even in the span mode |
+| `OneImage` | LXQt | One image for every screen: the anchor's own picture, even in the span mode |
 
-A mode a desktop cannot reach is not a failure. The sink does the nearest thing and the publish says which, in the same voice as the existing refusals, and that sentence rides the success string back to the status line. KDE is `OneImage` in this first pass on purpose: per-screen wallpapers there need a plasmashell script over D-Bus walking `desktops()` and writing `Image` per containment, which means a new program on `PATH` and an assumption about how containment indices line up with monitors, and neither is a thing to write blind. It is handed the anchor's picture rather than the canvas, because a canvas zoomed onto every screen separately is not the view it was cut to be.
+A mode a desktop cannot reach is not a failure. The sink does the nearest thing and the publish says which, in the same voice as the existing refusals, and that sentence rides the success string back to the status line. `OneImage` is handed the anchor's picture rather than the canvas, because a canvas zoomed onto every screen separately is not the view it was cut to be.
+
+KDE reaches every screen, and not through `plasma-apply-wallpaperimage`, which is Plasma's own tool for this and writes every containment: it can neither give two screens two pictures nor leave one alone, which is why one-screen mode used to paint all of them. The scripting API behind that tool does both. `dbus-send` calls `org.kde.PlasmaShell.evaluateScript` with a script where `desktops()` lists the containments, each carries the `screen` it sits on, and `screenGeometry` says where that screen is. Plasma has no span mode of its own, and does not need one here: a view across the screens is already cut into one image per screen before the row sees it, so the span is per-screen crops like any other per-monitor publish.
+
+Two things about that script are worth knowing. It sorts the containments by where their screens sit rather than trusting the order `desktops()` returns, because Plasma numbers them by index and renumbers when the layout changes; `Placement::by_position` is sorted the same way, which is the whole reason that field exists. And a screen this publish left alone is a hole in that list rather than a missing entry, since dropping it would address every screen after it one place too early. `wallpaperPlugin` is written on every screen the publish paints, because a screen left on a colour or a slideshow would otherwise take the image into a plugin that does not read it.
 
 ## Setting a wallpaper on Linux
 

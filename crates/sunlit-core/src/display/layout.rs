@@ -106,7 +106,8 @@ impl<'de> Deserialize<'de> for DisplayMode {
         Ok(Self::from_name(&name).unwrap_or_else(|| {
             tracing::warn!(
                 mode = %name,
-                "the config names a display mode this build does not have;                  using the default"
+                "the config names a display mode this build does not have; \
+                 using the default"
             );
             Self::default()
         }))
@@ -155,7 +156,7 @@ impl Rect {
 /// `None` for a list with nothing usable in it, which is a list with no
 /// monitors or one where every monitor has a zero dimension. A monitor with a
 /// zero dimension is dropped rather than allowed to pull the bounding box
-/// towards its own origin, because a screen with no pixels is not somewhere a
+/// toward its own origin, because a screen with no pixels is not somewhere a
 /// wallpaper goes.
 pub fn bounds_of(monitors: &[Monitor]) -> Option<Rect> {
     let mut rects = monitors
@@ -239,7 +240,7 @@ pub struct Framing {
 /// The widest sky the shader will accept, and the narrowest.
 ///
 /// `sphere.wgsl` clamps `sky_fov` to this range before taking the lens radius,
-/// so a derived value outside it is a value the shader silently will not honour
+/// so a derived value outside it is a value the shader silently will not honor
 /// and the derivation has to say so instead.
 ///
 /// The upper end is not the slider's. The slider stops at 180 and means the
@@ -332,13 +333,13 @@ pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFr
         .to_degrees()
         * 4.0;
 
-    // The anchor's centre in canvas pixels, then in canvas NDC, which is where
+    // The anchor's center in canvas pixels, then in canvas NDC, which is where
     // the principal point has to move to.
     let local = anchor.relative_to(&canvas);
-    let centre_x = local.x as f32 + anchor_width * 0.5;
-    let centre_y = local.y as f32 + anchor_height * 0.5;
-    let ndc_x = 2.0 * centre_x / canvas_width - 1.0;
-    let ndc_y = 1.0 - 2.0 * centre_y / canvas_height;
+    let center_x = local.x as f32 + anchor_width * 0.5;
+    let center_y = local.y as f32 + anchor_height * 0.5;
+    let ndc_x = 2.0 * center_x / canvas_width - 1.0;
+    let ndc_y = 1.0 - 2.0 * center_y / canvas_height;
 
     CanvasFraming {
         framing: Framing {
@@ -684,8 +685,9 @@ mod tests {
         let monitors = side_by_side();
         let canvas = bounds_of(&monitors).unwrap();
         let anchor = monitors[0].rect();
-        // A canvas this much wider than the anchor needs more sky than the
-        // shader has, so the narrow second screen below is what tests the sky.
+        // The Earth lens and the principal point. The sky lens has its own
+        // case below, because the two are anchored to different axes and a
+        // canvas that is wider rather than taller moves only one of them.
         let derived = canvas_framing(settings(), anchor, canvas);
 
         let camera_scale = |fov: f32, height: u32| height as f32 / (fov.to_radians() * 0.5).tan();
@@ -695,7 +697,7 @@ mod tests {
             max_relative = 1e-5
         );
 
-        // The anchor's centre lands where its crop's centre is.
+        // The anchor's center lands where its crop's center is.
         assert_relative_eq!(derived.framing.offset_x, 0.5, epsilon = 1e-6);
         assert_relative_eq!(derived.framing.offset_y, 0.0, epsilon = 1e-6);
     }
@@ -736,7 +738,7 @@ mod tests {
     fn a_canvas_wider_than_the_sky_reaches_says_the_sky_was_clamped() {
         // One screen beyond the reach, which at the default sky is a wall of
         // twelve. Nobody has this layout; what the case is for is that the
-        // derivation reports the one number it could not honour instead of
+        // derivation reports the one number it could not honor instead of
         // handing back a crop that no longer matches.
         let screens = widths_the_sky_reaches().ceil() as i32 + 1;
         let monitors: Vec<Monitor> = (0..screens)
@@ -759,7 +761,8 @@ mod tests {
         assert!(!derived.sky_clamped, "{derived:?}");
         assert!(
             derived.framing.sky_fov > 180.0,
-            "a canvas twice the anchor's width needs a sky past the slider's own              maximum, and this one derived {}",
+            "a canvas twice the anchor's width needs a sky past the slider's own \
+             maximum, and this one derived {}",
             derived.framing.sky_fov
         );
     }
@@ -798,7 +801,7 @@ mod tests {
             ..settings()
         };
         let derived = canvas_framing(panned, monitors[1].rect(), canvas);
-        // The anchor here is the right-hand screen, whose centre sits at NDC
+        // The anchor here is the right-hand screen, whose center sits at NDC
         // +0.5, and the pan is carried in at the ratio of the two widths.
         assert_relative_eq!(derived.framing.offset_x, -0.5 + 0.4 * 0.5, epsilon = 1e-6);
         assert_relative_eq!(derived.framing.offset_y, -0.2, epsilon = 1e-6);

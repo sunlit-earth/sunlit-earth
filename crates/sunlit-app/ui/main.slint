@@ -407,7 +407,7 @@ export component MainWindow inherits Window {
 
                     display-mode-combo := SettingCombo {
                         label: "Mode";
-                        hint: "How the screens relate: one of them gets the picture, they each get the same view at their own size, or one view is spread across all of them.";
+                        hint: "How the screens relate. One screen: only the screen below gets a wallpaper and the rest keep theirs. Mirror: every screen gets the same view, rendered at its own size and shape. Extend: one continuous view is spread across all of them.";
                         label-width: 52px;
                         model: root.display-mode-options;
                         current-index <=> root.display-mode-index;

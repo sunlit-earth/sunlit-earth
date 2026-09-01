@@ -1001,8 +1001,16 @@ fn test_render_and_exit() {
         .spawn()
         .expect("failed to spawn sunlit-earth binary");
 
-    // 3. Wait for the process to exit (30s timeout).
-    let output = wait_with_timeout(child, Duration::from_secs(30));
+    // 3. Wait for the process to exit. A minute rather than the 30 seconds
+    //    this had: the cache directory above makes every run of this case pay
+    //    the decode that used to be paid by whichever run of the suite happened
+    //    to go first. Timed on this host on 2026-09-01, debug build, empty
+    //    cache, the same 800x800 render: 5.9 s on the GPU and 8.0 s on the
+    //    software adapter, against 2.5 s warm. The guest is a software
+    //    rasterizer on a slower CPU and has never been timed at all, and the
+    //    only thing a generous timeout costs is how long a genuinely hung
+    //    process takes to be reported.
+    let output = wait_with_timeout(child, Duration::from_mins(1));
 
     // 4. Assert exit code is 0.
     assert!(
@@ -1108,10 +1116,15 @@ fn test_render_and_exit() {
         // Only where there was something to settle. `peak_rss_mb` is this
         // process's own high-water mark, so `rss <= peak` holds by
         // construction and the comparison asks whether the decode's memory came
-        // back before the last sample. A checkout without the Git LFS objects
-        // has no texture to decode and would be asserting on the flat profile
-        // above, so it says so and skips, which is the same rule every other
-        // case that needs the real assets follows.
+        // back before the last sample. With nothing decoded the profile is flat
+        // and the last sample is the high-water mark itself, so the comparison
+        // is a number against itself and the numbers are printed instead. The
+        // cache directory above is what makes a decode happen; this reads the
+        // log to confirm one did rather than assuming it, which is what the
+        // case was doing when it started failing. It is not a skip for a
+        // checkout without the Git LFS objects: those runs fail at the surface
+        // colors above, which need the real 8K maps, long before they reach
+        // here.
         if mem.iter().any(|e| e.context == "after texture decode") {
             assert!(
                 entry.rss_mb < peak,

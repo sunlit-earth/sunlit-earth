@@ -2,7 +2,7 @@ import { Slider, ComboBox, CheckBox, Button, GroupBox, Palette, ScrollView } fro
 
 // One monitor's place in the layout diagram.
 //
-// The rectangle is already normalised to the bounding box of every monitor, so
+// The rectangle is already normalized to the bounding box of every monitor, so
 // the diagram multiplies by the board's size and does nothing else; the
 // arithmetic that decides it is in `displays.rs`, where it is tested.
 export struct MonitorTile {
@@ -416,7 +416,7 @@ export component MainWindow inherits Window {
 
                     display-screen-combo := SettingCombo {
                         label: "Screen";
-                        hint: "Which screen gets the picture in one-screen mode, and which screen the view is centred on in the other two.";
+                        hint: "Which screen gets the picture in one-screen mode, and which screen the view is centered on in the other two.";
                         label-width: 52px;
                         model: root.display-screen-options;
                         current-index <=> root.display-anchor-index;

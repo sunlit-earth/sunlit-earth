@@ -114,7 +114,7 @@ cargo xtask vm up linux --screens 2
 cargo xtask e2e --target linux --screens 2
 ```
 
-Up to four, Linux guest only, each one the console resolution and placed left to right, so `--screens 2` at the default size is a 3840x1080 desktop in two halves. `cargo xtask vm view linux` then opens one VNC window per screen, which is what makes both of them something to look at on a host with one monitor.
+Up to four, Linux guest only, each one the console resolution and placed left to right, so `--screens 2` at the default size is a 3840x1080 desktop in two halves. `cargo xtask vm view linux` then opens one VNC window per screen, which is what makes both of them something to look at on a host with one monitor. Zero is refused, since it asks for a guest with no console at all, and so is any count on a run of this host, which uses the monitors you are sitting in front of. Both refusals come before anything is built.
 
 The boot says what the session ended up with rather than what it asked for:
 

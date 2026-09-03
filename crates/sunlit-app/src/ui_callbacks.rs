@@ -10,7 +10,6 @@ use crate::displays;
 use crate::engine_client::EngineLink;
 use crate::mouse_math;
 use sunlit_core::config::{self, AppConfig};
-use sunlit_core::display::Monitor;
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
@@ -218,10 +217,16 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
 
 /// Register action callbacks: set wallpaper, load defaults, reset.
 ///
-/// `monitors` is the list the Displays group was built from. Load-defaults and
-/// reset both move the display plan, and the engine has to be told: it holds the
-/// mode and the anchor of its own, exactly as it holds the texture resolution.
-pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitors: &[Monitor]) {
+/// `screens` is the shared monitor list the Displays group is built from, read
+/// rather than copied so a layout change reaches these callbacks too.
+/// Load-defaults and reset both move the display plan, and the engine has to be
+/// told: it holds the mode and the anchor of its own, exactly as it holds the
+/// texture resolution.
+pub fn register_action_callbacks(
+    window: &MainWindow,
+    link: &EngineLink,
+    screens: &displays::SharedMonitors,
+) {
     // "Set as Wallpaper" button: save config, then ask the engine to export.
     {
         let window_weak = window.as_weak();
@@ -239,7 +244,7 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitor
     // Load-defaults callback: restore all settings to AppConfig::default() without saving
     let window_weak = window.as_weak();
     let engine = link.clone();
-    let screens = monitors.to_vec();
+    let for_defaults = std::sync::Arc::clone(screens);
     window.on_load_defaults(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -256,7 +261,11 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitor
                 &displays::screen_ids_of_window(&win),
             ),
         );
-        displays::apply_diagram_to_window(&win, &screens, defaults.anchor().as_deref());
+        displays::apply_diagram_to_window(
+            &win,
+            &displays::monitors_of(&for_defaults),
+            defaults.anchor().as_deref(),
+        );
         engine.set_resolution_is_one_run_only(false);
         engine.send(EngineCommand::SetTextureResolution(
             defaults.texture_resolution,
@@ -271,7 +280,7 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitor
     // Reset callback: reload config from disk and restore UI to last-saved state
     let window_weak = window.as_weak();
     let engine = link.clone();
-    let screens = monitors.to_vec();
+    let for_reset = std::sync::Arc::clone(screens);
     window.on_reset(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -288,7 +297,11 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitor
                 &displays::screen_ids_of_window(&win),
             ),
         );
-        displays::apply_diagram_to_window(&win, &screens, loaded.anchor().as_deref());
+        displays::apply_diagram_to_window(
+            &win,
+            &displays::monitors_of(&for_reset),
+            loaded.anchor().as_deref(),
+        );
         engine.set_resolution_is_one_run_only(false);
         engine.send(EngineCommand::SetTextureResolution(
             loaded.texture_resolution,
@@ -307,16 +320,24 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitor
 /// fresh query, so a row and a rectangle never name different screens. A change
 /// is persisted at once, the way the auto-refresh controls are: it is a setting
 /// somebody chose rather than a slider they are still moving.
-pub fn register_display_callbacks(window: &MainWindow, link: &EngineLink, monitors: &[Monitor]) {
+pub fn register_display_callbacks(
+    window: &MainWindow,
+    link: &EngineLink,
+    screens: &displays::SharedMonitors,
+) {
     let window_weak = window.as_weak();
     let engine = link.clone();
-    let screens = monitors.to_vec();
+    let screens = std::sync::Arc::clone(screens);
     window.on_display_plan_changed(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
         let anchor = displays::anchor_from_window(&win).filter(|id| !id.is_empty());
-        displays::apply_diagram_to_window(&win, &screens, anchor.as_deref());
+        displays::apply_diagram_to_window(
+            &win,
+            &displays::monitors_of(&screens),
+            anchor.as_deref(),
+        );
         engine.send(EngineCommand::SetDisplayPlan {
             mode: displays::mode_from_window(&win),
             anchor,
@@ -355,6 +376,21 @@ impl ComboIndices {
             texture_resolution: config::find_texture_resolution_index(texture_resolution),
             display_mode: i32::try_from(config.display_mode.index()).unwrap_or_default(),
             display_anchor: displays::anchor_index(screen_ids, &config.anchor_monitor),
+        }
+    }
+
+    /// The rows the window is on right now.
+    ///
+    /// What a caller that is changing one combo needs, so the deferred write
+    /// puts every other combo back where it already was instead of reading a
+    /// config the window may be ahead of.
+    pub fn of_window(window: &MainWindow) -> Self {
+        Self {
+            aa: window.get_aa_index(),
+            texture: window.get_texture_index(),
+            texture_resolution: window.get_texture_resolution_index(),
+            display_mode: window.get_display_mode_index(),
+            display_anchor: window.get_display_anchor_index(),
         }
     }
 }

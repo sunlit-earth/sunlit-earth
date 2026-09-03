@@ -141,13 +141,16 @@ impl EngineLink {
 /// Build the engine event callback that feeds a Slint window.
 ///
 /// The returned closure runs on the engine thread; everything it does to the
-/// window goes through `invoke_from_event_loop`.
+/// window goes through `invoke_from_event_loop`. `screens` is the window's own
+/// monitor list, which a layout change replaces.
 pub fn event_forwarder(
     window: &MainWindow,
+    screens: &crate::displays::SharedMonitors,
     on_textures_ready: impl Fn() + Send + Sync + 'static,
 ) -> Arc<dyn Fn(EngineEvent) + Send + Sync> {
     let mailbox = Arc::new(PreviewMailbox::default());
     let weak = window.as_weak();
+    let screens = Arc::clone(screens);
     let first_frame = AtomicBool::new(true);
 
     Arc::new(move |event| match event {
@@ -193,6 +196,22 @@ pub fn event_forwarder(
             });
         }
         EngineEvent::TexturesReady => on_textures_ready(),
+        EngineEvent::MonitorsChanged(monitors) => {
+            // The count first, so the suite can wait for the reaction instead
+            // of sleeping and hoping. In the voice of `wallpaper_set`.
+            crate::ipc::signal(&format!("displays_changed monitors={}", monitors.len()));
+            let weak = weak.clone();
+            let screens = Arc::clone(&screens);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    // The stored anchor rather than the row the combo is on: a
+                    // screen that was unplugged shows as automatic, and this is
+                    // what puts its own row back when it returns.
+                    let stored = sunlit_core::config::load_config().anchor_monitor;
+                    crate::displays::replace_monitors(&win, &screens, monitors, &stored);
+                }
+            });
+        }
         EngineEvent::WallpaperSet(Ok(note)) => {
             info!("wallpaper updated");
             // What the desktop could not do is not a failure and does not go to

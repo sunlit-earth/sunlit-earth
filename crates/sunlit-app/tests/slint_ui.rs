@@ -908,3 +908,258 @@ fn test_the_displays_group_is_there_on_two_screens() {
         assert!(!found.is_empty(), "{id} should be in the tree");
     }
 }
+
+/// A layout that moved while the window was open.
+///
+/// The whole reaction, in the order a person sees it: the combo rows become the
+/// screens that are there, the group disappears when one is left and comes back
+/// when the second returns, and the anchor lands on its own row again rather
+/// than on the automatic one, because the stored id was kept while its screen
+/// was gone.
+///
+/// The anchor row is the return value rather than a property read, because
+/// setting it goes through `defer_combobox_indices`, which needs an event loop
+/// this backend deliberately does not have.
+#[test]
+fn test_a_layout_that_changed_rebuilds_the_displays_group() {
+    use slint::Model;
+
+    let window = create_window();
+    let screens = sunlit_earth::displays::shared_monitors();
+    let both = fabricated_monitors();
+
+    let row = sunlit_earth::displays::replace_monitors(&window, &screens, both.clone(), "DP-2");
+    assert_eq!(
+        row, 2,
+        "the stored screen is the second row after automatic"
+    );
+    let rows: Vec<String> = window
+        .get_display_screen_options()
+        .iter()
+        .map(|row| row.to_string())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(window.get_display_tiles().iter().count(), 2);
+    assert_eq!(sunlit_earth::displays::monitors_of(&screens), both);
+
+    // Unplugged: one screen, and the group has nothing left to say.
+    let alone = vec![both[0].clone()];
+    let row = sunlit_earth::displays::replace_monitors(&window, &screens, alone.clone(), "DP-2");
+    assert_eq!(
+        row, 0,
+        "a screen this session no longer has shows as the automatic row"
+    );
+    assert_eq!(window.get_display_tiles().iter().count(), 1);
+    let combos: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
+    assert!(combos.is_empty(), "one screen hides the group");
+    assert_eq!(sunlit_earth::displays::monitors_of(&screens), alone);
+
+    // Plugged back in: the setting that named it was never overwritten, so the
+    // anchor follows its screen back.
+    let row = sunlit_earth::displays::replace_monitors(&window, &screens, both.clone(), "DP-2");
+    assert_eq!(row, 2, "the anchor follows its screen back");
+    assert_eq!(window.get_display_tiles().iter().count(), 2);
+    let combos: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
+    assert!(!combos.is_empty(), "a second screen brings the group back");
+}
+
+/// The diagram highlights the screen the plan will use, which for a stored id
+/// the session still has is that screen and not the primary.
+#[test]
+fn test_a_replaced_layout_highlights_the_stored_anchor() {
+    use slint::Model;
+
+    let window = create_window();
+    let screens = sunlit_earth::displays::shared_monitors();
+    sunlit_earth::displays::replace_monitors(&window, &screens, fabricated_monitors(), "DP-1");
+
+    let tiles: Vec<_> = window.get_display_tiles().iter().collect();
+    assert!(
+        tiles[0].anchor && !tiles[1].anchor,
+        "the stored screen is the anchor, even though the other one is primary"
+    );
+}
+// ---------------------------------------------------------------------------
+// Sidebar layout
+// ---------------------------------------------------------------------------
+
+/// The widest the settings panel is allowed to insist on being, set by a
+/// `SettingCombo` row: an 88px label, 4px of spacing, the 140px combo, and the
+/// panel's 8px + 22px of padding.
+const PANEL_FLOOR: f32 = 262.0;
+
+/// `MainWindow`'s own `min-width` in `main.slint`.
+const WINDOW_MIN_WIDTH: u32 = 520;
+
+/// A layout counts an `if`-gated subtree towards its minimum width only once
+/// that repeater has been walked. A running app's layout pass does it; a test
+/// has to ask for the elements, or `panel-min-width` reads back the minimum of
+/// a panel that is missing half its rows and the assertion passes for the
+/// wrong reason.
+fn materialize(window: &MainWindow) {
+    for id in [
+        "MainWindow::longitude-slider",
+        "MainWindow::display-mode-combo",
+        "MainWindow::about-button",
+    ] {
+        let _ = ElementHandle::find_by_element_id(window, id).count();
+    }
+}
+
+/// Everything that can widen the panel, at once: both display combos, the
+/// Advanced section, and an adapter name as long as the Mesa one that started
+/// this.
+fn widest_panel_state(window: &MainWindow) {
+    sunlit_earth::displays::apply_models_to_window(window, &fabricated_monitors());
+    sunlit_earth::displays::apply_diagram_to_window(window, &fabricated_monitors(), None);
+    window.set_advanced_open(true);
+    window.set_renderer_info(
+        "AMD Radeon 780M Graphics (RADV PHOENIX) (Vulkan, IntegratedGpu)".into(),
+    );
+    materialize(window);
+}
+
+/// The sidebar's width is derived from this number, so a widget that reports an
+/// unbounded minimum widens the panel for everybody rather than being clipped.
+/// This is what fails when somebody adds one.
+#[test]
+fn test_nothing_in_the_panel_asks_for_more_than_the_sidebar_floor() {
+    let window = create_window();
+    widest_panel_state(&window);
+
+    assert!(
+        window.get_panel_min_width() <= PANEL_FLOOR,
+        "the panel asks for {}px, past the {PANEL_FLOOR}px floor the sidebar is built on",
+        window.get_panel_min_width()
+    );
+}
+
+/// The panel is laid out at the left edge of its scroll area, not centred in a
+/// viewport that grew past it. A derived floor keeps this true on its own, so
+/// what this catches is a hardcoded sidebar width coming back.
+#[test]
+fn test_the_panel_starts_at_the_left_edge_in_both_advanced_states() {
+    let window = create_window();
+    widest_panel_state(&window);
+    approx::assert_relative_eq!(window.get_panel_x(), 0.0);
+
+    window.set_advanced_open(false);
+    materialize(&window);
+    approx::assert_relative_eq!(window.get_panel_x(), 0.0);
+}
+
+/// The window's minimum has to hold the panel's floor and still leave a globe
+/// worth looking at. Both halves are read off the real layout, so raising the
+/// floor without raising `min-width` fails here.
+#[test]
+fn test_the_narrowest_window_holds_the_panel_and_the_globe() {
+    let window = create_window();
+    widest_panel_state(&window);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(WINDOW_MIN_WIDTH, 900));
+    materialize(&window);
+
+    approx::assert_relative_eq!(window.get_panel_x(), 0.0);
+    assert!(
+        window.get_viewport_width() >= 230.0,
+        "only {}px left for the image at the window's minimum width",
+        window.get_viewport_width()
+    );
+}
+
+#[test]
+fn test_about_is_reachable_without_opening_advanced() {
+    let window = create_window();
+    assert!(!window.get_advanced_open(), "precondition: advanced closed");
+
+    let asked = Rc::new(RefCell::new(false));
+    let captured = Rc::clone(&asked);
+    window.on_show_about(move || *captured.borrow_mut() = true);
+
+    let buttons: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::about-button").collect();
+    assert_eq!(buttons.len(), 1, "expected one About button");
+    buttons[0].invoke_accessible_default_action();
+
+    assert!(
+        *asked.borrow(),
+        "the About button did not ask for the window"
+    );
+}
+
+/// The grid's order and `PRESETS`' order are deliberately different, so every
+/// cell's index is checked by hand.
+#[test]
+fn test_every_preset_button_fires_the_index_it_is_named_for() {
+    let window = create_window();
+
+    let received: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+    let captured = Rc::clone(&received);
+    window.on_apply_preset(move |index| {
+        *captured.borrow_mut() = Some(index);
+    });
+
+    for (label, index) in [
+        ("Africa", 3),
+        ("N. America", 1),
+        ("S. America", 2),
+        ("Asia", 4),
+        ("Europe", 0),
+        ("Oceania", 5),
+        ("Pacific", 6),
+        ("Blue Marble", 7),
+        ("Earthrise", 8),
+    ] {
+        let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
+        assert_eq!(buttons.len(), 1, "expected exactly one '{label}' button");
+        buttons[0].invoke_accessible_default_action();
+        assert_eq!(
+            *received.borrow(),
+            Some(index),
+            "'{label}' fired the wrong preset"
+        );
+    }
+}
+
+/// The About window's scroll area has the same shape as the sidebar's, and its
+/// version line does not wrap, so a long enough one takes the viewport past the
+/// window and would centre the content the same way.
+#[test]
+fn test_the_about_window_content_starts_at_its_left_edge() {
+    init();
+    let window = sunlit_earth::AboutWindow::new().unwrap();
+    window.window().set_size(slint::PhysicalSize::new(520, 420));
+    window.set_version("0.0.0-".repeat(60).into());
+
+    approx::assert_relative_eq!(window.get_content_x(), 0.0);
+}
+
+/// The adapter name stays on one line however long it is. A word-wrapped
+/// `Text` inside the Advanced section reports the height of a single line
+/// whatever it wraps to, so a scroll area sized from that cuts the rest off
+/// with no way to scroll to it.
+#[test]
+fn test_the_adapter_line_never_wraps() {
+    let window = create_window();
+    widest_panel_state(&window);
+
+    let short = adapter_line_height(&window, "Dx12");
+    let long = adapter_line_height(
+        &window,
+        "AMD Radeon 780M Graphics (RADV PHOENIX) (Vulkan, IntegratedGpu)",
+    );
+
+    approx::assert_relative_eq!(short, long);
+}
+
+fn adapter_line_height(window: &MainWindow, renderer_info: &str) -> f32 {
+    window.set_renderer_info(renderer_info.into());
+    materialize(window);
+    let found: Vec<_> =
+        ElementHandle::find_by_element_id(window, "MainWindow::adapter-line").collect();
+    assert_eq!(found.len(), 1, "expected exactly one adapter line");
+    found[0].size().height
+}

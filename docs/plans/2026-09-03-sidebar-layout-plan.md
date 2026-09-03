@@ -220,6 +220,12 @@ Note in the test file that `min-width` is only meaningful after the repeaters ha
 
 6. **The scrollbar reserve is a named property.** Part 4 asked for the 14px to be named where it is used and the first implementation left it a literal with a comment. It is `MainWindow`'s `scrollbar-width` now.
 
+7. **The adapter line is elided on one line inside the Rendering group, not wrapped at the foot of the Advanced section.** Reported from use: with a long adapter name the line wrapped to two and the second was half visible and unreachable, because a word-wrapped `Text` inside an `if`-gated subtree reports the height of a single line however many it wraps to, and the scroll area is sized from that. Measured on this UI: the panel's minimum height is 2455px for an empty string, a one-line string and a four-line one alike, and an isolated probe puts the difference squarely on the `if`, where a wrapped `Text` reports 15px at one, two and four lines while the same `Text` as a direct child of a layout reports 15, 30 and 45.
+
+   So part 2's rule needed a second clause: inside the panel, no element may have a *height* that depends on wrapping either. `overflow: elide` with an explicit `min-width: 0` gives a correct one-line height and still keeps the string off the floor, and a `Tooltip` carries the full name, which is the convention every other row here already follows. `test_the_adapter_line_never_wraps` holds it: the line's rendered height must be the same for a short adapter name and a long one, which fails the moment `wrap` comes back.
+
+   The move into the Rendering group, under Anti-aliasing, was asked for separately and does not on its own fix any of this; the wrap did.
+
 ## Validation
 
 One round, `88ae6a7..7f1bcb1`, reviewed by an agent with no shared context.

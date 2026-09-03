@@ -2466,7 +2466,7 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
 }
 
 /// Run one xrandr command and say whether it worked.
-fn xrandr(args: &[&str]) -> bool {
+fn xrandr(args: &[String]) -> bool {
     match Command::new("xrandr").args(args).output() {
         Ok(out) if out.status.success() => true,
         Ok(out) => {
@@ -2484,26 +2484,23 @@ fn xrandr(args: &[&str]) -> bool {
     }
 }
 
-/// Puts the second output back where the boot placed it, whatever the case did.
+fn words(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+/// Puts the layout back the way the boot left it, whatever the case did.
 ///
 /// A guard rather than a line at the end, so a failing assertion cannot leave
-/// the guest one-screened for every case that runs after it.
+/// the guest one-screened, or at the wrong mode, for the cases after it.
 struct LayoutGuard {
-    first: String,
-    second: String,
+    restore: Vec<String>,
     restored: bool,
 }
 
 impl LayoutGuard {
     fn restore(&mut self) -> bool {
         self.restored = true;
-        xrandr(&[
-            "--output",
-            &self.second,
-            "--auto",
-            "--right-of",
-            &self.first,
-        ])
+        xrandr(&self.restore)
     }
 }
 
@@ -2515,6 +2512,91 @@ impl Drop for LayoutGuard {
     }
 }
 
+/// A change this session can make to its own layout, and how to undo it.
+struct LayoutChange {
+    what: String,
+    apply: Vec<String>,
+    guard: LayoutGuard,
+    monitors_after: usize,
+}
+
+/// A mode this output has that is not the one it is using.
+///
+/// The mode list is the indented block under the output's own line in
+/// `xrandr --query`, which is the half `display::parse_outputs` skips because a
+/// mode nothing is displaying at is not somewhere to put a window.
+fn a_different_mode(output: &str, current: (u32, u32)) -> Option<String> {
+    let text = Command::new("xrandr")
+        .arg("--query")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())?;
+    let mut under_output = false;
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            under_output = line.split_whitespace().next() == Some(output);
+            continue;
+        }
+        if !under_output {
+            continue;
+        }
+        let Some(mode) = line.split_whitespace().next() else {
+            continue;
+        };
+        let Some((width, height)) = mode.split_once('x') else {
+            continue;
+        };
+        let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) else {
+            continue;
+        };
+        if (width, height) != current && width >= 640 && height >= 480 {
+            return Some(mode.to_owned());
+        }
+    }
+    None
+}
+
+/// How this session's layout can be made to move.
+///
+/// Two screens is the case the feature was written for: switch the one that is
+/// not primary off, and the app should be told and should render for what is
+/// left. One screen can still change its own rectangle by changing its mode,
+/// which is the same `RandR` event and the same comparison in the engine, minus
+/// the screen count moving. Either is a real layout change made by a real
+/// display server, which is what no unit test can produce.
+fn a_layout_change_this_session_can_make() -> Option<LayoutChange> {
+    let outputs = sunlit_core::display::outputs().unwrap_or_default();
+    let primary = sunlit_core::display::primary_of(&outputs)?.name.clone();
+    if outputs.len() >= 2 {
+        let second = outputs
+            .iter()
+            .find(|output| output.name != primary)?
+            .name
+            .clone();
+        return Some(LayoutChange {
+            what: format!("{second} switched off"),
+            apply: words(&["--output", &second, "--off"]),
+            guard: LayoutGuard {
+                restore: words(&["--output", &second, "--auto", "--right-of", &primary]),
+                restored: false,
+            },
+            monitors_after: outputs.len() - 1,
+        });
+    }
+    let only = outputs.first()?;
+    let mode = a_different_mode(&only.name, (only.width, only.height))?;
+    Some(LayoutChange {
+        what: format!("{} at {mode}", only.name),
+        apply: words(&["--output", &only.name, "--mode", &mode]),
+        guard: LayoutGuard {
+            restore: words(&["--output", &only.name, "--auto"]),
+            restored: false,
+        },
+        monitors_after: 1,
+    })
+}
+
 /// A layout that changed, against a real X server, end to end.
 ///
 /// What it proves is the whole path: that a `RandR` change wakes the watcher,
@@ -2524,9 +2606,9 @@ impl Drop for LayoutGuard {
 /// `display::layout` and `tests/engine.rs`; this is the one place a real
 /// session's own screens move.
 ///
-/// Gated like the other wallpaper cases, and additionally on there being a
-/// second output to switch off: `cargo xtask e2e --target linux --screens 2` is
-/// the run this is written for.
+/// Gated like the other wallpaper cases, and additionally on this session
+/// having a layout it can move at all: two outputs to switch one off, or a
+/// second mode to switch to.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -2549,32 +2631,20 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         );
         return;
     }
-    let outputs = sunlit_core::display::outputs().unwrap_or_default();
-    if outputs.len() < 2 {
+    let Some(mut change) = a_layout_change_this_session_can_make() else {
         skip_case(
             CASE,
-            "a layout can only change here by switching an output off, and this \
-             session has fewer than two; --screens 2 is the run for it",
+            "this session has one screen with one mode, so there is no layout \
+             change to make; --screens 2 is the run this case was written for",
         );
         return;
-    }
-    // The primary stays on: what is switched off is one of the others, so the
-    // session always has somewhere to put a window.
-    let first = sunlit_core::display::primary_of(&outputs)
-        .expect("a session with outputs has a primary")
-        .name
-        .clone();
-    let second = outputs
-        .iter()
-        .find(|output| output.name != first)
-        .expect("two outputs are two names")
-        .name
-        .clone();
+    };
+    println!("{CASE}: the change is {}", change.what);
 
     let socket_name = unique_socket_name();
     let (mut guard, watcher) = spawn_for_ipc(&socket_name, &isolated_config_path());
 
-    // A wallpaper on the desk first: the engine only re-renders for a layout
+    // A wallpaper on the desk first: the engine only renders again for a layout
     // change where it is already holding one.
     let from = watcher.line_count();
     send_ipc_command(&socket_name, "set-wallpaper");
@@ -2585,21 +2655,25 @@ fn test_a_layout_change_republishes_the_wallpaper() {
     );
     let before = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
     assert!(!before.is_empty(), "the first publish wrote no file");
-
-    let mut layout = LayoutGuard {
-        first: first.clone(),
-        second: second.clone(),
-        restored: false,
-    };
+    let was = sunlit_core::display::outputs().unwrap_or_default();
 
     let from = watcher.line_count();
     assert!(
-        xrandr(&["--output", &second, "--off"]),
-        "the case cannot change a layout it cannot switch an output off in"
+        xrandr(&change.apply),
+        "the case cannot change a layout xrandr will not move"
     );
+    if sunlit_core::display::outputs().unwrap_or_default() == was {
+        skip_case(
+            CASE,
+            "this session put its own layout straight back, so there is nothing \
+             here for the app to have noticed",
+        );
+        return;
+    }
+
     let line = watcher.wait_for_signal_line_from("displays_changed ", from, publish_budget);
     assert!(
-        line.contains("monitors=1"),
+        line.contains(&format!("monitors={}", change.monitors_after)),
         "the app was told about a layout that is not the one this case made: {line}"
     );
     let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
@@ -2621,19 +2695,17 @@ fn test_a_layout_change_republishes_the_wallpaper() {
     }
 
     let from = watcher.line_count();
-    assert!(layout.restore(), "the second output could not be put back");
+    assert!(change.guard.restore(), "the layout could not be put back");
     let line = watcher.wait_for_signal_line_from("displays_changed ", from, publish_budget);
-    assert!(
-        line.contains("monitors=2"),
-        "the screen came back and the app did not hear about it: {line}"
-    );
+    println!("{CASE}: the layout came back as {line}");
     let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
     assert!(
         line.contains("wallpaper_set"),
-        "the republish after the screen returned failed: {line}"
+        "the republish after the layout came back failed: {line}"
     );
-    let restored = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
-    assert_the_files_match_the_layout(&restored);
+    assert_the_files_match_the_layout(
+        &sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory"),
+    );
 
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(15));

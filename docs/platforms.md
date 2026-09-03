@@ -12,7 +12,7 @@ Windows is the platform that ships. Linux builds, tests, renders headlessly, and
 | Address one monitor of several | yes (`IDesktopWallpaper`) | XFCE only; the rest span or take one image | no |
 | Native display query | yes (Win32) | yes (`xrandr`) | no |
 | Clean exit when the session ends | yes (`WM_ENDSESSION`) | yes (SIGTERM) | no |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 14 cases) or in a local VM (13 of 14; the layout-change case needs a second output the Hyper-V adapter has not got) | yes, in a local VM (all 13 under KDE with two screens, 12 with one; the other three desktops were last run at ten cases) | compiles, unrun |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 14 cases) or in a local VM (13 of 14; the layout-change case moves a layout through `xrandr`, which Windows has no counterpart of here) | yes, in a local VM (all 13 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiles, unrun |
 
 Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:
 

@@ -69,108 +69,158 @@ fn scratch_override() -> Option<PathBuf> {
     tests::SCRATCH_DIR.with(|dir| dir.borrow().clone())
 }
 
-/// The two slots a published wallpaper alternates between.
+/// One publish's own directory, and the files it wrote.
 ///
-/// Two rather than one, because a desktop shell keys the wallpaper it is showing
-/// on the path it was handed: a new image written to the path already in that
-/// setting is a file the desktop has no reason to read again. plasmashell
-/// ignores a second `plasma-apply-wallpaperimage` of the same file, and a
-/// `gsettings` or `xfconf-query` write of the value already stored is a change
-/// with nothing to notify. Only a path the desktop is not already showing makes
-/// it load a file.
+/// Every publish gets a directory of its own, `gen-<id>` under the wallpaper
+/// directory, and writes its images into it: `gen-<id>/<index>.png` per screen,
+/// plus `gen-<id>/canvas.png` where the mode spans them. No two publishes ever
+/// share a directory, so no path a desktop was handed is ever written or deleted
+/// again while that desktop still holds it. That is what keeps a shell that
+/// watches its wallpaper file, which Plasma does, from decoding a half-written
+/// image or asserting on a file that changed under a watch it had moved on from.
 ///
-/// Two is also the smallest number that keeps what one name gave: a publish
-/// overwrites the slot the desktop is not showing, so a desktop whose setting
-/// still names the previous frame is looking at a stale image rather than at one
-/// being rewritten underneath it.
+/// The unique directory also satisfies, by construction and for every publish
+/// rather than every other one, the requirement a desktop keys on: a new image
+/// arrives on a path the desktop is not already showing, so the setter has a file
+/// to load. plasmashell ignores a second `plasma-apply-wallpaperimage` of a file
+/// it already shows, and a `gsettings` or `xfconf-query` write of the value
+/// already stored notifies nothing; a fresh path per publish sidesteps both.
 ///
-/// A slot holds a whole layout rather than one file, since a publish is now one
-/// image per monitor: `wallpaper-<slot>-<index>.png` per screen, plus
-/// `wallpaper-<slot>-canvas.png` where the mode spans them.
-///
-/// Windows needs none of this, since `SystemParametersInfoW` reads whatever it
-/// is handed, and shares it rather than making the output path depend on the
-/// platform.
-const SLOTS: [u32; 2] = [1, 2];
+/// Windows needs none of this in principle, since `SystemParametersInfoW` reads
+/// whatever path it is handed, but it writes through the same directories so
+/// there is one lifecycle rather than two.
+#[derive(Clone)]
+struct Generation {
+    dir: PathBuf,
+    files: Vec<PathBuf>,
+}
 
-/// The single-image names published before a wallpaper was a layout.
-///
-/// Swept on the next publish, because they are full-resolution PNGs that
-/// nothing will ever name again.
-const LEGACY_NAMES: [&str; 2] = ["wallpaper-1.png", "wallpaper-2.png"];
-
-/// The slot and the files the last publish in this process wrote.
+/// The generation the last publish in this process wrote.
 ///
 /// Remembered rather than asked of the filesystem every time, because two
 /// publishes can land inside one tick of the clock that stamps their
-/// modification times, and two publishes to one slot are the thing the
-/// alternation exists to prevent. Empty until this process has published, where
-/// the modification times are all there is to go on.
-static PUBLISHED: Mutex<Option<(u32, Vec<PathBuf>)>> = Mutex::new(None);
+/// modification times, and the read-back has to name the newer of them. Empty
+/// until this process has published, where the modification times are all there
+/// is to go on. It also names the immediately previous generation the sweep must
+/// keep.
+static PUBLISHED: Mutex<Option<Generation>> = Mutex::new(None);
 
-/// The file name one image of a publish takes.
-fn slot_name(slot: u32, suffix: &str) -> String {
-    format!("wallpaper-{slot}-{suffix}.png")
+/// The number of publishes so far in this process, which makes a generation id
+/// unique even for two publishes inside one clock tick.
+static GENERATION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A directory name unique to this publish.
+///
+/// The wall-clock millisecond orders generations across a restart the way the
+/// slot scheme's modification times did; the process id and a counter make it
+/// unique when two publishes share a millisecond or two processes publish at
+/// once, so no path is ever reused.
+fn generation_name() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let counter = GENERATION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("gen-{millis}-{}-{counter}", std::process::id())
 }
 
-/// Every file of one slot, in name order.
-fn slot_files(dir: &Path, slot: u32) -> Vec<PathBuf> {
-    let prefix = format!("wallpaper-{slot}-");
+/// Whether a directory entry is a generation directory.
+fn is_generation_dir(path: &Path) -> bool {
+    path.is_dir()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("gen-"))
+}
+
+/// The publish counter a generation directory carries, for ordering two that a
+/// coarse-grained filesystem clock stamped with the same modification time.
+///
+/// The trailing field of `gen-<millis>-<pid>-<counter>`. Zero where it cannot be
+/// read, which only matters as a tie-break under an equal modification time and
+/// never decides the answer between two publishes a clock tick apart.
+fn generation_ordinal(dir: &Path) -> u64 {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.rsplit('-').next())
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0)
+}
+
+/// A generation's recency: its newest file's modification time, then its publish
+/// counter. `None` where it holds no file to date.
+fn generation_recency(dir: &Path) -> Option<(std::time::SystemTime, u64)> {
+    generation_modified(dir).map(|time| (time, generation_ordinal(dir)))
+}
+
+/// Every generation directory under the wallpaper directory.
+fn generation_dirs(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_generation_dir(path))
+        .collect()
+}
+
+/// The PNG files of one generation, in name order.
+fn generation_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&prefix))
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
         })
         .collect();
     files.sort();
     files
 }
 
+/// When the most recently written file of a generation was written, where there
+/// is one to ask.
+fn generation_modified(dir: &Path) -> Option<std::time::SystemTime> {
+    generation_files(dir)
+        .iter()
+        .filter_map(|path| modified(path))
+        .max()
+}
+
+/// The most recently written generation directory, where there is one.
+///
+/// By the modification time of its newest file, which is what carries the
+/// alternation across a restart: a process that did not do the publishing reads
+/// the newest generation and its next publish is a newer one still.
+fn newest_generation(dir: &Path) -> Option<PathBuf> {
+    generation_dirs(dir)
+        .into_iter()
+        .filter_map(|dir| generation_recency(&dir).map(|key| (key, dir)))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, dir)| dir)
+}
+
 /// The files the most recent publish wrote, empty where nothing has published.
 ///
 /// This is what a desktop's own store holds once the setter has run, which is
-/// what lets a test read the setting back and recognize it.
-///
-/// What this process wrote, where it has written anything, and otherwise the
-/// slot holding the more recently modified file. That second answer is what
-/// carries the alternation across a restart, since the settings name the newest
-/// files and the next publish is therefore the other slot, and it is also how a
-/// process that did not do the publishing gets the same answer.
+/// what lets a test read the setting back and recognize it. What this process
+/// wrote, where it has written anything, and otherwise the newest generation on
+/// disk, which is how a process that did not do the publishing gets the same
+/// answer.
 pub fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
-    if let Some((_, files)) = PUBLISHED
+    if let Some(generation) = PUBLISHED
         .lock()
-        .expect("the published name is poisoned")
+        .expect("the published generation is poisoned")
         .clone()
     {
-        return Ok(files);
+        return Ok(generation.files);
     }
     let dir = wallpaper_dir()?;
-    Ok(newest_slot(&dir)
-        .map(|slot| slot_files(&dir, slot))
+    Ok(newest_generation(&dir)
+        .map(|dir| generation_files(&dir))
         .unwrap_or_default())
-}
-
-/// The slot holding the most recently written file, where there is one.
-fn newest_slot(dir: &Path) -> Option<u32> {
-    SLOTS
-        .into_iter()
-        .filter_map(|slot| {
-            slot_files(dir, slot)
-                .iter()
-                .filter_map(|path| modified(path))
-                .max()
-                .map(|time| (time, slot))
-        })
-        .max_by_key(|(time, _)| *time)
-        .map(|(_, slot)| slot)
 }
 
 /// When a file was last written, or `None` where there is no file to ask.
@@ -180,46 +230,46 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
         .ok()
 }
 
-/// One publish in progress: the slot it took, and what it has written so far.
+/// One publish in progress: its own directory, and what it has written so far.
 ///
-/// A slot is emptied when it is taken rather than when it is left, so a layout
-/// that lost a monitor does not leave a full-resolution PNG behind for the one
-/// that went away. Emptying the slot the desktop is *not* showing is what makes
-/// that safe.
+/// Nothing existing is touched while a publish is in flight. The directory is new
+/// and empty, each image is written into it atomically, and only [`commit`]
+/// sweeps what earlier publishes left, so a failed encode leaves the desktop
+/// exactly as it was.
+///
+/// [`commit`]: Publication::commit
 pub struct Publication {
-    slot: u32,
     dir: PathBuf,
     files: Vec<PathBuf>,
 }
 
-/// Take the slot the desktop is not showing, and clear it.
+/// Start a fresh generation to publish into.
+///
+/// The directory is created empty and no earlier generation is touched. Sweeping
+/// waits for [`Publication::commit`], so a publish that fails part way through
+/// removes nothing the desktop is still showing.
 pub fn begin_publication() -> Result<Publication, String> {
-    let dir = wallpaper_dir()?;
-    let last = PUBLISHED
-        .lock()
-        .expect("the published name is poisoned")
-        .as_ref()
-        .map(|(slot, _)| *slot);
-    let slot = if last.or_else(|| newest_slot(&dir)) == Some(SLOTS[0]) {
-        SLOTS[1]
-    } else {
-        SLOTS[0]
-    };
-    for stale in slot_files(&dir, slot) {
-        let _ = std::fs::remove_file(stale);
-    }
-    for legacy in LEGACY_NAMES {
-        let _ = std::fs::remove_file(dir.join(legacy));
-    }
+    let root = wallpaper_dir()?;
+    let dir = root.join(generation_name());
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create the wallpaper generation directory: {e}"))?;
     Ok(Publication {
-        slot,
         dir,
         files: Vec::new(),
     })
 }
 
 impl Publication {
-    /// Encode one RGBA8 image into this slot and answer with its path.
+    /// Encode one RGBA8 image into this generation and answer with its path.
+    ///
+    /// Written atomically: the PNG is encoded into a temporary file in the same
+    /// directory and then renamed onto its final name, so a reader watching the
+    /// destination sees the whole file or no file, never a truncated one. The
+    /// temporary name carries the process id and a counter, the discipline
+    /// [`crate::assets::texture_cache`] uses for the same reason, and it is
+    /// removed if the encode fails. The destination is a name no publish has used
+    /// before, so the rename creates it rather than replacing a file some shell
+    /// may hold open.
     ///
     /// Fast compression (`CompressionType::Fast`), because the user waits for
     /// the "Set as Wallpaper" operation to complete and a larger file is the
@@ -232,34 +282,136 @@ impl Publication {
         width: u32,
         height: u32,
     ) -> Result<PathBuf, String> {
-        use image::ImageEncoder;
-        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-
-        let path = self.dir.join(slot_name(self.slot, suffix));
+        let path = self.dir.join(format!("{suffix}.png"));
         debug!(path = %path.display(), width, height, "saving wallpaper PNG");
 
-        let file =
-            std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
-        let writer = std::io::BufWriter::new(file);
-        let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
-        encoder
-            .write_image(pixels, width, height, image::ColorType::Rgba8.into())
-            .map_err(|e| format!("Failed to encode PNG: {e}"))?;
+        let temp = unfinished(&path);
+        if let Err(e) = encode_png(&temp, pixels, width, height) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        if let Err(e) = std::fs::rename(&temp, &path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("Failed to put the wallpaper PNG in place: {e}"));
+        }
 
         self.files.push(path.clone());
         Ok(path)
     }
 
-    /// Record this publication as the one the desktop is being handed.
+    /// Record this publication as the one the desktop is being handed, and sweep
+    /// the generations no screen holds any more.
     ///
     /// Called once the images are written and before the setter runs, which is
     /// the same moment the single-file publish recorded its name: a failed
-    /// encode must not spend the slot the next publish is going to need.
+    /// encode must not spend a generation the next publish is going to need.
+    ///
+    /// The sweep runs here rather than after the setter because keeping the
+    /// previous generation makes it safe either way: the desktop is showing that
+    /// previous generation until the setter points it at this one, and everything
+    /// this removes is older than it and referenced by nothing the desktop
+    /// currently holds. A setter that then fails leaves the desktop on the
+    /// previous generation, which is still on disk.
     pub fn commit(self) -> Vec<PathBuf> {
-        *PUBLISHED.lock().expect("the published name is poisoned") =
-            Some((self.slot, self.files.clone()));
+        let mut published = PUBLISHED.lock().expect("the published generation is poisoned");
+        if let Some(root) = self.dir.parent() {
+            let previous = published
+                .as_ref()
+                .map(|generation| generation.dir.clone())
+                .or_else(|| newest_generation_other_than(root, &self.dir));
+            sweep_generations(root, &self.dir, previous.as_deref());
+            sweep_legacy_files(root);
+        }
+        *published = Some(Generation {
+            dir: self.dir.clone(),
+            files: self.files.clone(),
+        });
         self.files
     }
+}
+
+/// The newest generation on disk that is not `current`.
+///
+/// The one a previous process left, which the desktop is still showing, so the
+/// first publish of a fresh process keeps it rather than sweeping the layout
+/// under the live wallpaper.
+fn newest_generation_other_than(root: &Path, current: &Path) -> Option<PathBuf> {
+    generation_dirs(root)
+        .into_iter()
+        .filter(|dir| dir != current)
+        .filter_map(|dir| generation_recency(&dir).map(|key| (key, dir)))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, dir)| dir)
+}
+
+/// Remove every generation except the one just published and the one before it.
+///
+/// `keep` names the two survivors. A directory that is neither is one no screen
+/// holds any more, so its whole layout of full-resolution PNGs is removed at
+/// once.
+fn sweep_generations(root: &Path, current: &Path, previous: Option<&Path>) {
+    for generation in generation_dirs(root) {
+        if generation == current || Some(generation.as_path()) == previous {
+            continue;
+        }
+        match std::fs::remove_dir_all(&generation) {
+            Ok(()) => debug!(path = %generation.display(), "swept an old wallpaper generation"),
+            Err(e) => {
+                debug!(path = %generation.display(), error = %e, "could not sweep an old wallpaper generation");
+            }
+        }
+    }
+}
+
+/// Remove the flat wallpaper files earlier versions wrote straight into the
+/// wallpaper directory.
+///
+/// The two-slot scheme's `wallpaper-<slot>-*.png` and the single-image era's
+/// `wallpaper-1.png` and `wallpaper-2.png`, each a full-resolution PNG nothing
+/// will ever name again now that a publish writes into a generation directory.
+fn sweep_legacy_files(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let named_like_a_slot = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("wallpaper-"));
+        let is_png = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("png"));
+        if path.is_file() && named_like_a_slot && is_png {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// A name for the not-yet-finished version of `path`, unique to this writer.
+///
+/// The process id and a counter keep two writers from sharing a temporary name,
+/// so neither truncates the other's file mid-encode, following
+/// [`crate::assets::texture_cache`].
+fn unfinished(path: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{}.{nonce}.tmp", std::process::id()));
+    PathBuf::from(name)
+}
+
+/// Encode one RGBA8 image as a PNG at `path`.
+fn encode_png(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
+    use image::ImageEncoder;
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
+    let writer = std::io::BufWriter::new(file);
+    let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
+    encoder
+        .write_image(pixels, width, height, image::ColorType::Rgba8.into())
+        .map_err(|e| format!("Failed to encode PNG: {e}"))
 }
 
 /// Declare this process per-monitor DPI aware, once, before anything asks Win32
@@ -1038,15 +1190,25 @@ mod tests {
         );
     }
 
+    /// A tiny RGBA image whose one pixel carries `channels`, so a decode reads
+    /// back something recognizable.
+    fn pixels(width: u32, height: u32, channels: [u8; 4]) -> Vec<u8> {
+        (0..width * height).flat_map(|_| channels).collect()
+    }
+
+    /// Each publish gets its own directory, `gen-*` under the wallpaper
+    /// directory, and no two are the same. This is what a path the desktop has
+    /// not seen is built out of.
     #[test]
-    fn a_slots_names_carry_the_slot_and_the_image() {
-        assert_eq!(slot_name(1, "0"), "wallpaper-1-0.png");
-        assert_eq!(slot_name(2, "canvas"), "wallpaper-2-canvas.png");
-        assert_ne!(
-            slot_name(SLOTS[0], "0"),
-            slot_name(SLOTS[1], "0"),
-            "the two slots are what makes a publish a path the desktop has not seen"
-        );
+    fn each_publish_gets_its_own_generation_directory() {
+        let scratch = Scratch::new("generation_names");
+        let first = begin_publication().expect("a generation");
+        let second = begin_publication().expect("another generation");
+        assert_ne!(first.dir, second.dir, "two publishes shared a directory");
+        for dir in [&first.dir, &second.dir] {
+            assert!(dir.starts_with(scratch.dir()), "{dir:?} escaped the scratch");
+            assert!(is_generation_dir(dir), "{dir:?} is not a generation directory");
+        }
     }
 
     #[test]
@@ -1151,75 +1313,196 @@ mod tests {
         let _ = std::fs::remove_file(&empty_file);
     }
 
-    /// The whole publish protocol in one test, because it is one behavior and
-    /// because these all share the one wallpaper directory: two tests writing
-    /// into it at once would each see the other's slot.
-    ///
-    /// A second publish must not land in the slot the desktop is showing, a
-    /// third has to come back to the first slot rather than growing a third one,
-    /// and taking a slot has to empty it of the layout that was there.
+    /// The destination of a write is whole or absent, never a truncated file a
+    /// reader could catch mid-encode, and a successful write leaves no temporary
+    /// behind.
     #[test]
-    fn publishing_alternates_slots_and_empties_the_one_it_takes() {
-        let _scratch = Scratch::new("alternation");
-        let red: Vec<u8> = (0..4u32 * 4).flat_map(|_| [255u8, 0, 0, 255]).collect();
-        let blue: Vec<u8> = (0..2u32 * 2).flat_map(|_| [0u8, 0, 255, 255]).collect();
+    fn a_written_wallpaper_is_whole_and_leaves_no_temporary() {
+        let _scratch = Scratch::new("atomic_write");
+        let mut publication = begin_publication().expect("a generation");
+        let path = publication
+            .write("0", &pixels(4, 4, [255, 0, 0, 255]), 4, 4)
+            .expect("write the image");
 
-        // The one-file era's names are swept, because nothing will ever name
-        // them again and each is as large as a screen.
-        let dir = wallpaper_dir().unwrap();
-        for legacy in LEGACY_NAMES {
-            std::fs::write(dir.join(legacy), b"not really a png").unwrap();
+        let decoded = image::open(&path).expect("the destination decodes as a whole PNG");
+        assert_eq!((decoded.width(), decoded.height()), (4, 4));
+
+        let leftovers: Vec<_> = generation_temporaries(&publication.dir);
+        assert!(
+            leftovers.is_empty(),
+            "a finished write left a temporary behind: {leftovers:?}"
+        );
+    }
+
+    /// A write that cannot be put in place removes its temporary and does not
+    /// clobber the destination with a partial file, so a failed publish cannot
+    /// hand a reader a broken image. The failure is forced by making the
+    /// destination path something the rename cannot replace.
+    #[test]
+    fn a_write_that_cannot_be_placed_leaves_no_temporary_or_partial_file() {
+        let _scratch = Scratch::new("failed_write");
+        let mut publication = begin_publication().expect("a generation");
+        // A directory where the finished PNG would go: the encode into the
+        // temporary succeeds, and the rename onto this fails.
+        let destination = publication.dir.join("0.png");
+        std::fs::create_dir(&destination).expect("stand a directory in the way");
+
+        let error = publication
+            .write("0", &pixels(4, 4, [255, 0, 0, 255]), 4, 4)
+            .expect_err("the rename onto a directory fails");
+        assert!(!error.is_empty());
+
+        assert!(
+            destination.is_dir(),
+            "the destination was clobbered instead of left as it was"
+        );
+        let leftovers = generation_temporaries(&publication.dir);
+        assert!(
+            leftovers.is_empty(),
+            "a failed write left a temporary behind: {leftovers:?}"
+        );
+    }
+
+    /// No path any publish wrote is ever written or handed out again. Three
+    /// publishes in a row write three disjoint sets of paths; this is the
+    /// assertion the in-place rewrite that crashed plasmashell would have failed.
+    #[test]
+    fn no_path_is_ever_reused_across_publishes() {
+        let _scratch = Scratch::new("no_reuse");
+        let publish = |suffixes: &[&str]| -> Vec<PathBuf> {
+            let mut publication = begin_publication().expect("a generation");
+            for suffix in suffixes {
+                publication
+                    .write(suffix, &pixels(2, 2, [0, 0, 255, 255]), 2, 2)
+                    .expect("write an image");
+            }
+            publication.commit()
+        };
+
+        let first = publish(&["0", "1", "canvas"]);
+        let second = publish(&["0"]);
+        let third = publish(&["0", "1"]);
+
+        for (earlier, later) in [(&first, &second), (&second, &third), (&first, &third)] {
+            for path in later {
+                assert!(
+                    !earlier.contains(path),
+                    "{} was handed out by an earlier publish too",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// The sweep keeps the generation just published and the one before it, and
+    /// removes everything older, along with the flat files earlier versions
+    /// wrote into the wallpaper directory.
+    #[test]
+    fn the_sweep_keeps_the_last_two_generations_and_clears_the_legacy_files() {
+        let scratch = Scratch::new("sweep");
+        let root = scratch.dir().to_path_buf();
+
+        // A slot-era layout and a single-image name, which nothing names any more.
+        for legacy in ["wallpaper-1-0.png", "wallpaper-2-canvas.png", "wallpaper-1.png"] {
+            std::fs::write(root.join(legacy), b"not really a png").unwrap();
         }
 
-        let mut publication = begin_publication().expect("a slot to publish into");
-        let first = publication.write("0", &red, 4, 4).expect("should save PNG");
-        let second_screen = publication.write("1", &red, 4, 4).expect("a second screen");
-        let canvas = publication.write("canvas", &red, 4, 4).expect("a canvas");
-        assert!(first.exists(), "PNG file should exist");
-        assert!(
-            std::fs::metadata(&first).unwrap().len() > 0,
-            "PNG file should be non-empty"
-        );
-        assert_eq!(
-            publication.commit(),
-            vec![first.clone(), second_screen.clone(), canvas.clone()]
-        );
-        for legacy in LEGACY_NAMES {
-            assert!(!dir.join(legacy).exists(), "{legacy} survived a publish");
+        let publish = || -> PathBuf {
+            let mut publication = begin_publication().expect("a generation");
+            publication
+                .write("0", &pixels(2, 2, [0, 255, 0, 255]), 2, 2)
+                .expect("write an image");
+            let dir = publication.dir.clone();
+            publication.commit();
+            dir
+        };
+
+        let first = publish();
+        let second = publish();
+        let third = publish();
+
+        assert!(!first.exists(), "the oldest generation was not swept");
+        assert!(second.exists(), "the previous generation must be kept");
+        assert!(third.exists(), "the newest generation must be kept");
+
+        for legacy in ["wallpaper-1-0.png", "wallpaper-2-canvas.png", "wallpaper-1.png"] {
+            assert!(
+                !root.join(legacy).exists(),
+                "{legacy} survived a publish, and each is as large as a screen"
+            );
         }
+    }
 
-        let mut publication = begin_publication().expect("the other slot");
-        let second = publication.write("0", &blue, 2, 2).expect("second publish");
-        assert_ne!(
-            first, second,
-            "a publish the desktop can see is one at a path it is not showing"
-        );
-        publication.commit();
-        assert_eq!(
-            published_wallpaper_files().unwrap(),
-            vec![second.clone()],
-            "the setter is handed the files that were just written"
-        );
+    /// A screen the current publish left alone in one-screen mode still holds its
+    /// file, because the sweep keeps the immediately previous generation. So a
+    /// publish that paints only the anchor does not delete the file another
+    /// screen is showing and watching.
+    #[test]
+    fn a_screen_left_alone_keeps_the_generation_it_still_references() {
+        let _scratch = Scratch::new("one_screen_kept");
 
-        // Each slot holds its own frame, so the one a desktop is still showing
-        // is not the one being rewritten.
-        let earlier = image::open(&first).expect("the earlier frame is still readable");
-        assert_eq!((earlier.width(), earlier.height()), (4, 4));
-        let later = image::open(&second).expect("should be readable by image crate");
-        assert_eq!((later.width(), later.height()), (2, 2));
-        let pixel = later.as_rgba8().expect("should be RGBA8").get_pixel(0, 0);
-        assert_eq!(pixel[0], 0, "red channel should be 0 (blue image)");
-        assert_eq!(pixel[2], 255, "blue channel should be 255");
+        // An every-screen layout the two screens both take a file from.
+        let mut every = begin_publication().expect("a generation");
+        let screen_two = every
+            .write("1", &pixels(2, 2, [0, 0, 255, 255]), 2, 2)
+            .expect("the second screen's file");
+        every.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2).unwrap();
+        every.commit();
 
-        // Back to the first slot with a layout of one screen: the two images the
-        // larger layout left there are gone rather than lingering at full size.
-        let mut publication = begin_publication().expect("back to the first slot");
+        // A one-screen publish that paints only the anchor.
+        let mut one = begin_publication().expect("a generation");
+        one.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2).unwrap();
+        one.commit();
+
         assert!(
-            !second_screen.exists() && !canvas.exists(),
-            "the previous layout's extra images are still there"
+            screen_two.exists(),
+            "the file the second screen still shows was swept from under its watch"
         );
-        let third = publication.write("0", &red, 4, 4).expect("third publish");
-        assert_eq!(third, first, "two slots, taken in turn");
-        assert_eq!(publication.commit(), vec![first]);
+    }
+
+    /// With no in-process record, which is a fresh process, the read-back names
+    /// the newest generation on disk, so the next publish is one the desktop is
+    /// not already showing.
+    #[test]
+    fn the_read_back_names_the_newest_generation_across_a_restart() {
+        let _scratch = Scratch::new("read_back");
+
+        let mut first = begin_publication().expect("a generation");
+        first.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2).unwrap();
+        first.commit();
+
+        let mut second = begin_publication().expect("a generation");
+        let newest = second
+            .write("0", &pixels(2, 2, [0, 0, 255, 255]), 2, 2)
+            .expect("the newest file");
+        let newest_dir = second.dir.clone();
+        second.commit();
+
+        // The in-process record still names what was just written.
+        assert_eq!(published_wallpaper_files().unwrap(), vec![newest.clone()]);
+
+        // As a fresh process would, with the record gone.
+        reset_published();
+        let read_back = published_wallpaper_files().unwrap();
+        assert_eq!(read_back, vec![newest], "the read-back is not the newest generation");
+        assert!(read_back.iter().all(|path| path.starts_with(&newest_dir)));
+
+        // And the next publish is a directory the read-back did not name.
+        let next = begin_publication().expect("a generation");
+        assert_ne!(next.dir, newest_dir, "a fresh publish reused the newest path");
+    }
+
+    /// The temporary files left in a generation directory, `<name>.tmp`-suffixed.
+    fn generation_temporaries(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+            })
+            .collect()
     }
 }

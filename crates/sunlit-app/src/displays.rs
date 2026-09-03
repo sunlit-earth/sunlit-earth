@@ -192,9 +192,11 @@ pub fn replace_monitors(
     monitors: Vec<Monitor>,
     stored_anchor: &str,
 ) -> i32 {
+    // The rows first: replacing a combo's model is what can move its index, and
+    // this one is putting four of them back where they already were.
+    let mut indices = crate::ui_callbacks::ComboIndices::of_window(window);
     apply_models_to_window(window, &monitors);
     let row = anchor_index(&screen_ids(&monitors), stored_anchor);
-    let mut indices = crate::ui_callbacks::ComboIndices::of_window(window);
     indices.display_anchor = row;
     crate::ui_callbacks::defer_combobox_indices(&window.as_weak(), indices);
     let stored = (!stored_anchor.trim().is_empty()).then_some(stored_anchor);

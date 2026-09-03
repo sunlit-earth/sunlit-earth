@@ -115,6 +115,9 @@ component SettingRow inherits Rectangle {
 
 // A checkbox row. The checkbox carries its own wording, so there is no label
 // column to align it against.
+//
+// A CheckBox reports the width of that wording as its minimum, which would
+// make one long label the floor of the whole sidebar, so it is pinned here.
 component SettingCheck inherits Rectangle {
     in property <string> text;
     in property <string> hint;
@@ -132,6 +135,7 @@ component SettingCheck inherits Rectangle {
 
         CheckBox {
             text: root.text;
+            min-width: 0;
             checked <=> root.checked;
             toggled => { root.toggled(); }
         }
@@ -167,6 +171,11 @@ component SettingCombo inherits Rectangle {
             min-width: root.label-width - root.indent;
         }
         ComboBox {
+            // The fluent ComboBox asks for 160px flat, which would set the
+            // sidebar's floor. 140 is what the longest value the app's own
+            // models carry needs: 93px of text inside 44px of border, padding,
+            // spacing and chevron, rounded up.
+            min-width: 140px;
             model: root.model;
             current-index <=> root.current-index;
             max-height: 24px;
@@ -192,6 +201,11 @@ export component MainWindow inherits Window {
     icon: @image-url("../../../assets/icon/sunlit-earth.svg");
     preferred-width: 1000px;
     preferred-height: 600px;
+    // The panel's floor of 262px, the splitter, and `min-image-width` below it,
+    // rounded up. A binding from `panel.min-width` would keep itself honest but
+    // runs through the window's own layout; the test guards the arithmetic
+    // instead.
+    min-width: 520px;
 
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
@@ -316,22 +330,32 @@ export component MainWindow inherits Window {
     out property <length> panel-min-width: panel.min-width;
     out property <length> panel-x: panel.x;
 
+    // What the splitter drag stores. The sidebar's real width is this held
+    // between the panel's own floor and whatever leaves the image its minimum,
+    // so no drag and no window size can cut the panel's content off.
+    in-out property <length> panel-width: 300px;
+    property <length> min-image-width: 240px;
+
     // Controls panel on the left
     sidebar := Rectangle {
         x: 0;
         y: 0;
-        width: splitter.x;
+        width: max(panel.min-width, min(root.panel-width, root.width - root.min-image-width));
         height: root.height;
         background: Palette.background.darker(0.2);
 
         ScrollView {
-            horizontal-scrollbar-policy: always-off;
+            horizontal-scrollbar-policy: as-needed;
             width: parent.width;
             height: parent.height;
 
             panel := VerticalLayout {
                 width: 100%;
+                // The fluent ScrollView draws its 14px vertical bar on top of
+                // the flickable rather than beside it, so the right edge pays
+                // for the bar whether or not it is showing.
                 padding: 8px;
+                padding-right: 8px + 14px;
                 spacing: 4px;
                 alignment: start;
 
@@ -339,6 +363,7 @@ export component MainWindow inherits Window {
 
                 Button {
                     text: "Set as Wallpaper";
+                    min-width: 0;
                     clicked => { root.set-wallpaper(); }
                     Tooltip {
                         Hint { text: "Render one frame at the desktop's own resolution and put it on the desktop."; }
@@ -1383,6 +1408,7 @@ export component MainWindow inherits Window {
 
                     Button {
                         text: "About";
+                        min-width: 0;
                         clicked => { root.show-about(); }
                         Tooltip {
                             Hint { text: "The version this is, and who the maps, the star catalog and the astronomy come from."; }
@@ -1394,11 +1420,11 @@ export component MainWindow inherits Window {
     }
 
     splitter := Splitter {
-        x: 300px;
+        x: sidebar.width;
         height: 100%;
 
         moved(delta) => {
-            self.x = clamp(self.x + delta, 230px, root.width - 240px);
+            root.panel-width = clamp(root.panel-width + delta, panel.min-width, root.width - root.min-image-width);
         }
     }
 
@@ -1505,10 +1531,12 @@ export component AboutWindow inherits Window {
     in property <string> version;
     in property <[string]> attributions;
 
+    out property <length> content-x: content.x;
+
     ScrollView {
         width: parent.width;
         height: parent.height;
-        VerticalLayout {
+        content := VerticalLayout {
             width: 100%;
             padding: 20px;
             spacing: 12px;

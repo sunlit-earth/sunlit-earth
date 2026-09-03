@@ -1210,6 +1210,23 @@ mod tests {
         );
     }
 
+    /// The panic-guard itself, pinned: resolving the wallpaper directory with no
+    /// scratch set panics rather than reaching the live data directory. A future
+    /// change that let it fall back to `data_dir_wallpaper_path` under test would
+    /// re-expose the developer's desktop, and this is what fails first if it does.
+    #[test]
+    #[should_panic(expected = "scratch override")]
+    fn resolving_the_wallpaper_directory_without_a_scratch_refuses() {
+        // No `Scratch` on this thread, so the thread-local override is unset.
+        SCRATCH_DIR.with(|slot| {
+            assert!(
+                slot.borrow().is_none(),
+                "a scratch leaked onto this thread, so the guard was not exercised"
+            );
+        });
+        let _ = wallpaper_dir();
+    }
+
     /// A tiny RGBA image whose one pixel carries `channels`, so a decode reads
     /// back something recognizable.
     fn pixels(width: u32, height: u32, channels: [u8; 4]) -> Vec<u8> {

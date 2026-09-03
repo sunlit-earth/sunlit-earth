@@ -651,6 +651,10 @@ mod tests {
             archive_name("0.1.0", Target::Linux),
             "sunlit-earth-0.1.0-linux.tar.gz"
         );
+        assert_eq!(
+            archive_name("0.1.0-beta.1", Target::Windows),
+            "sunlit-earth-0.1.0-beta.1-windows.zip"
+        );
         assert_eq!(Format::of(Target::Windows), Format::Zip);
         assert_eq!(Format::of(Target::Linux), Format::TarGz);
         // The archive unpacks to one directory of the bundle's own name.
@@ -674,8 +678,12 @@ mod tests {
 
         // And the real one, which is what a live run reads.
         let real = version(&crate::store::repo_root()).expect("the workspace version");
+        let core = real.split(['-', '+']).next().unwrap_or_default();
         assert!(
-            real.split('.').count() == 3 && real.chars().next().is_some_and(|c| c.is_ascii_digit()),
+            core.split('.').count() == 3
+                && core
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())),
             "{real}"
         );
     }

@@ -630,6 +630,7 @@ fn run_app(
     let ipc_socket = cli.ipc_socket.clone();
 
     let window = MainWindow::new().expect("Failed to create window");
+    window.set_version(env!("CARGO_PKG_VERSION").into());
     sunlit_core::memory::log_memory_usage("after window creation");
 
     // The engine event callback needs the window; the UI callbacks need the

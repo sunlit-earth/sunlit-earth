@@ -49,6 +49,18 @@ const SKY_INTERVAL: Duration = Duration::from_mins(2);
 /// How often a memory sample is appended to the metrics CSV.
 const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 
+/// How long a burst of display-change hints is allowed to settle before the
+/// monitors are asked for.
+///
+/// A layout change is a burst on both platforms: `RandR` sends one event per CRTC
+/// and one per output, and Windows sends one `WM_DISPLAYCHANGE` per applied
+/// step, with a docking station bringing its screens up one at a time. Waiting
+/// costs nothing anybody can see, and settling too early costs a second full
+/// render and a second visible swap when the late step lands. It is read off
+/// the injected clock and checked on the tick the loop already makes, so it
+/// adds no timer and no wakeup.
+const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
+
 /// Things a client asks the engine to do.
 pub enum EngineCommand {
     /// Replace the scene parameters. Coalesced: only the newest survives a
@@ -99,6 +111,10 @@ pub enum EngineCommand {
         mode: crate::display::layout::DisplayMode,
         anchor: Option<String>,
     },
+    /// The display layout may have moved. A hint and nothing more: it carries
+    /// no list, because the watcher that sends it has no opinion about what
+    /// changed and the engine asks the sink itself once the burst has settled.
+    DisplaysChanged,
     /// Re-evaluate the schedule now. Tests send this after advancing a mock
     /// clock; production uses it as a "something happened" nudge.
     Poke,
@@ -125,6 +141,10 @@ pub enum EngineEvent {
     /// screen has not failed by giving them all the same image, but somebody
     /// looking at three identical screens deserves the sentence that says why.
     WallpaperSet(Result<String, String>),
+    /// The monitors this session has, after a hint turned out to be a real
+    /// change. Carries the list the engine will plan its next wallpaper with,
+    /// so a client showing the layout does not have to query for itself.
+    MonitorsChanged(Vec<crate::display::Monitor>),
     /// Loading-indicator text; empty when nothing is loading.
     Status(String),
 }
@@ -454,6 +474,17 @@ struct Engine {
     /// is built around. Read only when a wallpaper is published.
     display_mode: crate::display::layout::DisplayMode,
     anchor_monitor: Option<String>,
+    /// When the monitors are next worth asking for, set by a display-change
+    /// hint and pushed out again by every hint that follows it.
+    display_recheck: Option<Duration>,
+    /// The last monitor list the engine saw, from a publish or from a recheck.
+    /// `None` until one of the two has happened, which is what makes the first
+    /// hint an announcement rather than a comparison against nothing.
+    known_monitors: Option<Vec<crate::display::Monitor>>,
+    /// Whether the desk is holding a picture this process made. Set when a sink
+    /// accepted one and never on a refusal, so a layout change cannot produce a
+    /// wallpaper nobody asked for or an error out of nowhere.
+    published: bool,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -630,6 +661,9 @@ impl Engine {
             wallpaper_owed: false,
             display_mode,
             anchor_monitor,
+            display_recheck: None,
+            known_monitors: None,
+            published: false,
             dirty: true,
             textures_ready: false,
             memory_dumped: false,
@@ -770,6 +804,16 @@ impl Engine {
                     "auto-refresh changed"
                 );
             }
+            EngineCommand::DisplaysChanged => {
+                // Trailing rather than leading: every hint pushes the deadline
+                // out, so a burst is one query at the end of it.
+                let due = self.clock.elapsed() + DISPLAY_SETTLE;
+                self.display_recheck = Some(due);
+                debug!(
+                    settle_secs = DISPLAY_SETTLE.as_secs(),
+                    "the display layout may have moved"
+                );
+            }
             EngineCommand::Poke => {
                 // A poke means a producer has something waiting, so bring the
                 // next drain forward instead of sitting out the interval.
@@ -817,6 +861,14 @@ impl Engine {
         {
             info!("auto-refresh: updating wallpaper");
             self.publish_wallpaper();
+        }
+
+        // After the auto-refresh, so a recheck that lands on the same tick
+        // compares against the list that refresh planned with rather than
+        // publishing twice for one layout.
+        if self.display_recheck.is_some_and(|due| now >= due) {
+            self.display_recheck = None;
+            self.recheck_displays();
         }
 
         let emitted = self.render_if_dirty();
@@ -973,6 +1025,7 @@ impl Engine {
     /// Report a finished publish attempt and settle the debt for it.
     fn report_wallpaper(&mut self, result: Result<String, String>) {
         self.wallpaper_owed = false;
+        self.published |= result.is_ok();
         match &result {
             Err(e) => error!(error = %e, "wallpaper update failed"),
             Ok(note) if !note.is_empty() => {
@@ -981,6 +1034,43 @@ impl Engine {
             Ok(_) => {}
         }
         self.emit(EngineEvent::WallpaperSet(result));
+    }
+
+    /// Ask what the monitors are now, and act if they are not what they were.
+    ///
+    /// One query per settled burst, whatever the burst was made of: the hints
+    /// this design pays for and discards on purpose are a resume from sleep, a
+    /// scaling change and a color depth change, each of which costs one
+    /// enumeration and an equal comparison.
+    ///
+    /// The rule for the wallpaper is one sentence. The desk holds a picture
+    /// this process made for a layout that is gone, so make one for the layout
+    /// that is here. Its two edges are deliberate: somebody who opened the
+    /// settings window to look and never asked for a wallpaper does not get one
+    /// because they moved a screen, and a sink that refuses is never asked
+    /// unprompted, so a layout change cannot put an error in the status line
+    /// out of nowhere.
+    fn recheck_displays(&mut self) {
+        let monitors = match self.wallpaper.monitors() {
+            Ok(monitors) => monitors,
+            Err(e) => {
+                warn!(error = %e, "the monitors could not be listed after a display change");
+                return;
+            }
+        };
+        if self.known_monitors.as_ref() == Some(&monitors) {
+            debug!(
+                screens = monitors.len(),
+                "the display layout is the one already known"
+            );
+            return;
+        }
+        info!(screens = monitors.len(), "the display layout changed");
+        self.known_monitors = Some(monitors.clone());
+        self.emit(EngineEvent::MonitorsChanged(monitors));
+        if self.published {
+            self.publish_wallpaper();
+        }
     }
 
     /// Render everything this session's monitors need, and say what was odd.
@@ -992,6 +1082,10 @@ impl Engine {
         use crate::display::layout;
 
         let monitors = self.wallpaper.monitors()?;
+        // The list a publish planned with is the one a later hint is compared
+        // against, so a layout that kept moving is published again only if it
+        // is different again.
+        self.known_monitors = Some(monitors.clone());
         let anchor = layout::resolve_anchor(&monitors, self.anchor_monitor.as_deref())
             .ok_or_else(|| "this session has no monitor to put a wallpaper on".to_owned())?;
         let mut note = String::new();

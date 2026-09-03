@@ -7,12 +7,35 @@
 //! fabricate a layout no developer machine has, and the `.slint` side multiplies
 //! a tile by the board's size and does no arithmetic of its own.
 
-use slint::Model;
+use std::sync::{Arc, Mutex};
+
+use slint::{ComponentHandle, Model};
 
 use sunlit_core::display::Monitor;
 use sunlit_core::display::layout::{self, DisplayMode, Framing, bounds_of};
 
 use crate::{MainWindow, MonitorTile};
+
+/// The one monitor list the window works from.
+///
+/// Shared by the callbacks that redraw the Displays group and by the engine
+/// event that replaces it when the layout moves. A lock rather than a
+/// `RefCell` because the event arrives on the engine thread and hands the list
+/// across; every read is on the UI thread and none of them contend.
+pub type SharedMonitors = Arc<Mutex<Vec<Monitor>>>;
+
+/// An empty shared list, for a window that has not asked yet.
+pub fn shared_monitors() -> SharedMonitors {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
+/// The list as it stands, copied out from under the lock.
+pub fn monitors_of(screens: &SharedMonitors) -> Vec<Monitor> {
+    screens
+        .lock()
+        .expect("the monitor list lock is poisoned")
+        .clone()
+}
 
 /// The first row of the screen combo: follow whatever the system calls primary.
 pub const AUTOMATIC_SCREEN: &str = "Primary (automatic)";
@@ -126,10 +149,8 @@ pub fn diagram(monitors: &[Monitor], anchor: Option<usize>) -> Diagram {
 
 /// Fill in the models the Displays group is built from.
 ///
-/// Called once, at startup: the monitor list is re-queried on every publish but
-/// the window is not a wallpaper, and a layout that changed while the settings
-/// window is open is answered by the next publish rather than by a subscription
-/// this feature deliberately does not take out.
+/// Called at startup and again from [`replace_monitors`] whenever the engine
+/// reports that the layout moved.
 pub fn apply_models_to_window(window: &MainWindow, monitors: &[Monitor]) {
     window.set_display_mode_options(shared(mode_options()));
     window.set_display_screen_options(shared(screen_options(monitors)));
@@ -147,6 +168,41 @@ pub fn apply_diagram_to_window(window: &MainWindow, monitors: &[Monitor], anchor
     let diagram = diagram(monitors, resolved);
     window.set_display_aspect(diagram.aspect);
     window.set_display_tiles(slint::ModelRc::new(slint::VecModel::from(diagram.tiles)));
+}
+
+/// Rebuild the Displays group around a layout that changed, and say which row
+/// the screen combo was put back on.
+///
+/// The row is returned rather than only set, because setting it goes through
+/// [`crate::ui_callbacks::defer_combobox_indices`], which lands after Slint has
+/// processed the model change and therefore after this function returns. A test
+/// with no event loop has nothing else to assert against.
+///
+/// `stored_anchor` is the id in the config file, which is written the moment the
+/// plan changes and is therefore the anchor the engine is planning with. A
+/// screen that comes back gets its row back; one that is gone shows as the
+/// automatic row and the stored id is left alone.
+///
+/// Redrawing the diagram is also what hides the group when one screen is left
+/// and shows it again when a second returns, since the group is bound to the
+/// tile count.
+pub fn replace_monitors(
+    window: &MainWindow,
+    screens: &SharedMonitors,
+    monitors: Vec<Monitor>,
+    stored_anchor: &str,
+) -> i32 {
+    // The rows first: replacing a combo's model is what can move its index, and
+    // this one is putting four of them back where they already were.
+    let mut indices = crate::ui_callbacks::ComboIndices::of_window(window);
+    apply_models_to_window(window, &monitors);
+    let row = anchor_index(&screen_ids(&monitors), stored_anchor);
+    indices.display_anchor = row;
+    crate::ui_callbacks::defer_combobox_indices(&window.as_weak(), indices);
+    let stored = (!stored_anchor.trim().is_empty()).then_some(stored_anchor);
+    apply_diagram_to_window(window, &monitors, stored);
+    *screens.lock().expect("the monitor list lock is poisoned") = monitors;
+    row
 }
 
 /// The ids the screen combo's rows address, as the window holds them.

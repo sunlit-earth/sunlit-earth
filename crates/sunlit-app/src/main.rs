@@ -479,7 +479,13 @@ fn run_render(
 ///
 /// `texture_resolution` is what the engine started with, which is the config
 /// value unless `--texture-resolution` overrode it.
-fn init_ui(window: &MainWindow, config: &AppConfig, texture_resolution: u32, link: &EngineLink) {
+fn init_ui(
+    window: &MainWindow,
+    config: &AppConfig,
+    texture_resolution: u32,
+    link: &EngineLink,
+    screens: &displays::SharedMonitors,
+) {
     let aa_labels: Vec<slint::SharedString> = link
         .aa_labels()
         .iter()
@@ -507,10 +513,10 @@ fn init_ui(window: &MainWindow, config: &AppConfig, texture_resolution: u32, lin
         .collect();
     window.set_year_options(slint::ModelRc::new(slint::VecModel::from(year_labels)));
 
-    // The one query the settings window makes. The engine re-queries on every
-    // publish, so what this list decides is only what the group offers to
-    // choose from; `None` is a platform with no way to ask and leaves the
-    // group with nothing to show, which is what hides it.
+    // The query the settings window starts from. The engine re-queries on every
+    // publish and announces a layout that moved, which is what replaces this
+    // list; `None` is a platform with no way to ask and leaves the group with
+    // nothing to show, which is what hides it.
     let monitors = display::monitors().unwrap_or_default();
     displays::apply_models_to_window(window, &monitors);
     displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
@@ -526,10 +532,12 @@ fn init_ui(window: &MainWindow, config: &AppConfig, texture_resolution: u32, lin
         ),
     );
 
+    *screens.lock().expect("the monitor list lock is poisoned") = monitors;
+
     ui_callbacks::register_change_callbacks(window, base_year, link);
     ui_callbacks::register_mouse_callbacks(window, link);
-    ui_callbacks::register_action_callbacks(window, link, &monitors);
-    ui_callbacks::register_display_callbacks(window, link, &monitors);
+    ui_callbacks::register_action_callbacks(window, link, screens);
+    ui_callbacks::register_display_callbacks(window, link, screens);
 }
 
 /// Wire the auto-refresh checkbox to the engine's scheduler and the tray mark.
@@ -631,7 +639,10 @@ fn run_app(
     let startup_refresh_done = Arc::new(AtomicBool::new(!auto_refresh_at_startup));
     let refresh_flag = Arc::clone(&startup_refresh_done);
     let (refresh_tx, refresh_rx) = crossbeam_channel::bounded::<()>(1);
-    let on_event = engine_client::event_forwarder(&window, move || {
+    // One monitor list for the whole window: the Displays group's callbacks read
+    // it, and the engine's `MonitorsChanged` event replaces it.
+    let screens = displays::shared_monitors();
+    let on_event = engine_client::event_forwarder(&window, &screens, move || {
         if !refresh_flag.swap(true, Ordering::SeqCst) {
             let _ = refresh_tx.try_send(());
         }
@@ -641,6 +652,16 @@ fn run_app(
     engine_config.on_event = on_event;
     let engine: EngineHandle = engine::start(engine_config);
     window.set_renderer_info(engine.adapter_info().into());
+
+    // The display watcher's one consumer is the engine, and its condition is
+    // "always": it runs from here until the teardown below, whether or not a
+    // window is shown. A hint is a nudge and nothing more, so a platform that
+    // cannot watch (macOS, a session with no `DISPLAY`) leaves the app exactly
+    // as it was, with the monitor list re-queried on every publish.
+    let hint_tx = engine.sender();
+    let display_watch = display::watch::start(Arc::new(move || {
+        let _ = hint_tx.send(EngineCommand::DisplaysChanged);
+    }));
 
     let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
     let (aa_labels, aa_counts, _) =
@@ -654,6 +675,7 @@ fn run_app(
         config,
         effective_texture_resolution(&cli, config),
         &link,
+        &screens,
     );
     let about = sunlit_earth::about::AboutController::default();
     about.register_settings_callback(&window);
@@ -782,6 +804,11 @@ fn run_app(
     // what retired the process::exit(0) that used to dodge a thread-local
     // destruction panic in wgpu's Queue::drop.
     engine.shutdown();
+    // After the engine, so a hint that arrives during the teardown has an
+    // engine to reach; the watcher's thread is woken and joined here.
+    if let Some(watcher) = display_watch {
+        watcher.stop();
+    }
     drop(viewport_timer);
     drop(startup_refresh_timer);
     drop(tray);

@@ -1887,6 +1887,31 @@ fn test_memory_report() {
 /// after the connected monitor, which is the only one xfdesktop reads. So a
 /// desktop whose settings are named after its own monitors has to hold the image
 /// in one of those, and nothing else counts.
+/// The placement the app would have made for this session, rebuilt from what it
+/// actually wrote: the file per monitor where this desktop takes one, and the
+/// first file otherwise.
+#[cfg(target_os = "linux")]
+fn placement_of(
+    backend: &sunlit_core::desktop::Backend,
+    published: &[std::path::PathBuf],
+    monitors: &[String],
+) -> sunlit_core::desktop::Placement {
+    if backend.reach() != sunlit_core::desktop::Reach::PerMonitor {
+        return sunlit_core::desktop::Placement::single(published[0].clone());
+    }
+    sunlit_core::desktop::Placement {
+        per_monitor: monitors
+            .iter()
+            .cloned()
+            .zip(published.iter().cloned())
+            .collect(),
+        untouched: Vec::new(),
+        by_position: published.iter().cloned().map(Some).collect(),
+        single: published[0].clone(),
+        spanned: false,
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> Option<String> {
     assert!(
@@ -1920,24 +1945,7 @@ fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> O
         .map(|monitor| monitor.id)
         .collect();
 
-    // The placement the app would have made for this session, rebuilt from what
-    // it actually wrote: the file per monitor where this desktop takes one, and
-    // the first file otherwise.
-    let placement = if backend.reach() == sunlit_core::desktop::Reach::PerMonitor {
-        sunlit_core::desktop::Placement {
-            per_monitor: monitors
-                .iter()
-                .cloned()
-                .zip(published.iter().cloned())
-                .collect(),
-            untouched: Vec::new(),
-            by_position: published.iter().cloned().map(Some).collect(),
-            single: published[0].clone(),
-            spanned: false,
-        }
-    } else {
-        sunlit_core::desktop::Placement::single(published[0].clone())
-    };
+    let placement = placement_of(&backend, published, &monitors);
 
     let mut holders: Vec<String> = Vec::new();
     for command in backend.commands(&placement, &discovered) {
@@ -2447,6 +2455,402 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
     // image is not the shape any single screen is.
     #[cfg(target_os = "linux")]
     assert_the_desktop_holds_the_wallpaper(&files);
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited: {:?}",
+        output.status
+    );
+}
+
+/// Run one xrandr command and say whether it worked.
+fn xrandr(args: &[String]) -> bool {
+    match Command::new("xrandr").args(args).output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            println!(
+                "xrandr {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            println!("xrandr {} could not be run: {e}", args.join(" "));
+            false
+        }
+    }
+}
+
+fn words(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+/// Puts the layout back the way the boot left it, whatever the case did.
+///
+/// A guard rather than a line at the end, so a failing assertion cannot leave
+/// the guest one-screened, or at the wrong mode, for the cases after it.
+struct LayoutGuard {
+    restore: Vec<String>,
+    restored: bool,
+}
+
+impl LayoutGuard {
+    fn restore(&mut self) -> bool {
+        self.restored = true;
+        xrandr(&self.restore)
+    }
+}
+
+impl Drop for LayoutGuard {
+    fn drop(&mut self) {
+        if !self.restored {
+            self.restore();
+        }
+    }
+}
+
+/// A change this session can make to its own layout, and how to undo it.
+struct LayoutChange {
+    what: String,
+    apply: Vec<String>,
+    guard: LayoutGuard,
+    monitors_after: usize,
+}
+
+/// A mode this output has that is not the one it is using.
+///
+/// The mode list is the indented block under the output's own line in
+/// `xrandr --query`, which is the half `display::parse_outputs` skips because a
+/// mode nothing is displaying at is not somewhere to put a window.
+fn a_different_mode(output: &str, current: (u32, u32)) -> Option<String> {
+    let text = Command::new("xrandr")
+        .arg("--query")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())?;
+    let mut under_output = false;
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            under_output = line.split_whitespace().next() == Some(output);
+            continue;
+        }
+        if !under_output {
+            continue;
+        }
+        let Some(mode) = line.split_whitespace().next() else {
+            continue;
+        };
+        let Some((width, height)) = mode.split_once('x') else {
+            continue;
+        };
+        let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) else {
+            continue;
+        };
+        if (width, height) != current && width >= 640 && height >= 480 {
+            return Some(mode.to_owned());
+        }
+    }
+    None
+}
+
+/// How this session's layout can be made to move.
+///
+/// Two screens is the case the feature was written for: switch the one that is
+/// not primary off, and the app should be told and should render for what is
+/// left. One screen can still change its own rectangle by changing its mode,
+/// which is the same `RandR` event and the same comparison in the engine, minus
+/// the screen count moving. Either is a real layout change made by a real
+/// display server, which is what no unit test can produce.
+fn a_layout_change_this_session_can_make() -> Option<LayoutChange> {
+    let outputs = sunlit_core::display::outputs().unwrap_or_default();
+    let primary = sunlit_core::display::primary_of(&outputs)?.name.clone();
+    if outputs.len() >= 2 {
+        let second = outputs
+            .iter()
+            .find(|output| output.name != primary)?
+            .name
+            .clone();
+        return Some(LayoutChange {
+            what: format!("{second} switched off"),
+            apply: words(&["--output", &second, "--off"]),
+            guard: LayoutGuard {
+                restore: words(&["--output", &second, "--auto", "--right-of", &primary]),
+                restored: false,
+            },
+            monitors_after: outputs.len() - 1,
+        });
+    }
+    let only = outputs.first()?;
+    let mode = a_different_mode(&only.name, (only.width, only.height))?;
+    Some(LayoutChange {
+        what: format!("{} at {mode}", only.name),
+        apply: words(&["--output", &only.name, "--mode", &mode]),
+        guard: LayoutGuard {
+            restore: words(&["--output", &only.name, "--auto"]),
+            restored: false,
+        },
+        monitors_after: 1,
+    })
+}
+
+/// A layout that changed, against a real X server, end to end.
+///
+/// What it proves is the whole path: that a `RandR` change wakes the watcher,
+/// that the settle collapses the burst into one query, that the engine sees the
+/// new list, and that the desktop was handed images for it. Every layout
+/// question below the watcher is decided against fabricated monitor lists in
+/// `display::layout` and `tests/engine.rs`; this is the one place a real
+/// session's own screens move.
+///
+/// Gated like the other wallpaper cases, and additionally on this session
+/// having a layout it can move at all: two outputs to switch one off, or a
+/// second mode to switch to.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_a_layout_change_republishes_the_wallpaper() {
+    const CASE: &str = "test_a_layout_change_republishes_the_wallpaper";
+    let publish_budget = Duration::from_mins(2);
+
+    if !wallpaper_supported() {
+        skip_case(
+            CASE,
+            "the wallpaper sink reports no setter for this session",
+        );
+        return;
+    }
+    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+        skip_case(
+            CASE,
+            "this case replaces the desktop wallpaper, so it runs only where \
+             that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+    let Some(mut change) = a_layout_change_this_session_can_make() else {
+        skip_case(
+            CASE,
+            "this session offers no layout change this case can make: it needs \
+             two outputs to switch one off or a second mode to switch to, and \
+             `display::outputs` is a Linux query, so off Linux it always lands here",
+        );
+        return;
+    };
+    println!("{CASE}: the change is {}", change.what);
+
+    let socket_name = unique_socket_name();
+    let (mut guard, watcher) = spawn_for_ipc(&socket_name, &isolated_config_path());
+
+    // A wallpaper on the desk first: the engine only renders again for a layout
+    // change where it is already holding one.
+    let from = watcher.line_count();
+    send_ipc_command(&socket_name, "set-wallpaper");
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
+    assert!(
+        line.contains("wallpaper_set"),
+        "the first publish failed: {line}"
+    );
+    let before = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    assert!(!before.is_empty(), "the first publish wrote no file");
+    let was = sunlit_core::display::outputs().unwrap_or_default();
+
+    let from = watcher.line_count();
+    assert!(
+        xrandr(&change.apply),
+        "the case cannot change a layout xrandr will not move"
+    );
+    if sunlit_core::display::outputs().unwrap_or_default() == was {
+        skip_case(
+            CASE,
+            "this session put its own layout straight back, so there is nothing \
+             here for the app to have noticed",
+        );
+        return;
+    }
+
+    let line = watcher.wait_for_signal_line_from("displays_changed ", from, publish_budget);
+    assert!(
+        line.contains(&format!("monitors={}", change.monitors_after)),
+        "the app was told about a layout that is not the one this case made: {line}"
+    );
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
+    assert!(
+        line.contains("wallpaper_set"),
+        "the republish after the layout change failed: {line}"
+    );
+
+    let after = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    assert!(!after.is_empty(), "the republish wrote no file");
+    assert_the_files_match_the_layout(&after);
+    for path in &after {
+        assert!(
+            !before.contains(path),
+            "{} is a path the desktop was already showing, which is a wallpaper \
+             that does not visibly change",
+            path.display()
+        );
+    }
+
+    let from = watcher.line_count();
+    assert!(change.guard.restore(), "the layout could not be put back");
+    let line = watcher.wait_for_signal_line_from("displays_changed ", from, publish_budget);
+    println!("{CASE}: the layout came back as {line}");
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
+    assert!(
+        line.contains("wallpaper_set"),
+        "the republish after the layout came back failed: {line}"
+    );
+    assert_the_files_match_the_layout(
+        &sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory"),
+    );
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited: {:?}",
+        output.status
+    );
+}
+
+/// plasmashell's process id over the session bus, or `None` when the shell is
+/// not there to answer.
+///
+/// `GetConnectionUnixProcessID` for `org.kde.plasmashell` on the session bus. The
+/// reply is a line ending in `uint32 <pid>`, and the pid is what tells a shell
+/// that kept running apart from one that crashed and was restarted under the same
+/// name.
+fn plasmashell_pid() -> Option<String> {
+    let out = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--reply-timeout=5000",
+            "--dest=org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.GetConnectionUnixProcessID",
+            "string:org.kde.plasmashell",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .last()
+        .filter(|pid| pid.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_owned)
+}
+
+/// Whether plasmashell answers an `evaluateScript`, the same interface the KDE
+/// wallpaper setter drives.
+fn plasmashell_answers() -> bool {
+    Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--reply-timeout=5000",
+            "--dest=org.kde.plasmashell",
+            "--type=method_call",
+            "/PlasmaShell",
+            "org.kde.PlasmaShell.evaluateScript",
+            "string:print(1);",
+        ])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// A burst of re-publishes does not crash plasmashell.
+///
+/// The file-lifecycle defect this branch fixes is Plasma's alone. Its
+/// `MediaProxy` keeps a `KDirWatch` on the current wallpaper file, and the old
+/// lifecycle rewrote a file into its live path and deleted and recreated the
+/// file of a screen it had moved on from. The first decoded a half-written image
+/// and the second asserted in the plugin, and on a distro that ships the plugin
+/// with assertions live the violated one takes the shell down. The other guest
+/// desktops read the wallpaper once at set time and never watch it, so only a
+/// Plasma session exercises this, and only a rapid re-publish makes the watch and
+/// the rewrite race.
+///
+/// So this publishes several times back to back with no pause and then asks
+/// whether plasmashell is still the same process answering D-Bus. A shell that
+/// crashed would answer under a new pid, or not answer at all. It is the cheap
+/// standing proxy for "it did not crash"; the definitive check stays the hand
+/// check on a two-screen Plasma machine, which `docs/roadmap.md` carries.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_plasmashell_survives_rapid_republishing() {
+    const CASE: &str = "test_plasmashell_survives_rapid_republishing";
+    const BURST: usize = 5;
+
+    if !wallpaper_supported() {
+        skip_case(
+            CASE,
+            "the wallpaper sink reports no setter for this session",
+        );
+        return;
+    }
+    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+        skip_case(
+            CASE,
+            "this case replaces the desktop wallpaper, so it runs only where \
+             that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+    let is_plasma = sunlit_core::desktop::detect_current()
+        .is_some_and(|backend| backend.desktop == "KDE Plasma");
+    if !is_plasma {
+        skip_case(
+            CASE,
+            "the MediaProxy file watch this exercises is Plasma's; this session \
+             is not KDE, so the crash cannot happen here",
+        );
+        return;
+    }
+    let Some(before) = plasmashell_pid() else {
+        skip_case(
+            CASE,
+            "plasmashell is not answering the session bus, so it cannot be the \
+             survival proxy",
+        );
+        return;
+    };
+
+    let socket_name = unique_socket_name();
+    let (mut guard, watcher) = spawn_for_ipc(&socket_name, &isolated_config_path());
+
+    // Several full renders, readbacks, encodes and sets in a row, with nothing
+    // between them, which is what makes the watch and the rewrite race.
+    for pass in 1..=BURST {
+        let from = watcher.line_count();
+        send_ipc_command(&socket_name, "set-wallpaper");
+        let line = watcher.wait_for_signal_line_from("wallpaper_", from, Duration::from_mins(2));
+        assert!(
+            line.contains("wallpaper_set"),
+            "publish {pass} of {BURST} failed: {line}"
+        );
+    }
+
+    // Still the same process, which is what "did not crash" means here.
+    let after = plasmashell_pid();
+    assert_eq!(
+        after.as_deref(),
+        Some(before.as_str()),
+        "plasmashell is no longer answering as pid {before} after {BURST} rapid \
+         publishes, which is the crash this fix removes (now {after:?})"
+    );
+    assert!(
+        plasmashell_answers(),
+        "plasmashell stopped answering evaluateScript after {BURST} rapid publishes"
+    );
+    println!("{CASE}: plasmashell survived {BURST} rapid publishes as pid {before}");
 
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(15));

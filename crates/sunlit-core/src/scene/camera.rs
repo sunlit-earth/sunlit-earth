@@ -46,6 +46,11 @@ pub const CAMERA_FOV_MAX: f32 = 170.0;
 ///
 /// Order: Europe, N. America, S. America, Africa, Asia, Oceania, Pacific,
 /// Blue Marble, Earthrise.
+///
+/// The grid reads Africa, N. America, S. America / Asia, Europe, Oceania /
+/// Pacific, Blue Marble, Earthrise. The two orders are deliberately different:
+/// each button carries the index it fires, so the cells can be rearranged
+/// without moving anything here or in a stored config.
 pub const PRESETS: [CameraParams; 9] = [
     // 0: Europe (distance 3.2)
     CameraParams {

@@ -1514,9 +1514,9 @@ fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
 
     // Below the knee, on it, three points up the ramp, and past the ceiling.
     for &height in &[540.0_f32, 1080.0, 1350.0, 1620.0, 2160.0, 3240.0] {
-        // Under the lower clamp, both ends of the slider's range, and over the
-        // upper one.
-        for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0] {
+        // Under the lower clamp, both ends of the slider's range, two widths
+        // only a spanned canvas derives, and over the upper clamp.
+        for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 400.0] {
             // Both ends of the reddening slider and the measured atmosphere in
             // between; zero is the white Sun and has to stay exactly white.
             for &reddening in &[0.0_f32, 1.0, 2.0] {
@@ -1736,9 +1736,9 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
         bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec()
     };
 
-    // The two ends of the slider and the default, with no pan and a pan of
-    // either sign in both axes.
-    for sky_fov in [60.0_f32, 140.0, 180.0] {
+    // The two ends of the slider, the default, and a width only a spanned
+    // canvas derives, each with no pan and a pan of either sign in both axes.
+    for sky_fov in [60.0_f32, 140.0, 180.0, 300.0] {
         for offset in [
             glam::Vec2::ZERO,
             glam::Vec2::new(0.35, 0.2),

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+use crate::display::layout::DisplayMode;
 use tracing::warn;
 
 use crate::scene::camera::{CAMERA_FOV_MAX, CAMERA_FOV_MIN, CameraParams};
@@ -295,6 +297,21 @@ pub struct AppConfig {
     pub auto_refresh_enabled: bool,
     pub auto_refresh_interval_minutes: u32,
 
+    // Displays
+    /// How this session's monitors relate to each other.
+    ///
+    /// Not a shader parameter, so it is not in `SceneParams` or its digest: it
+    /// decides how many images a publish makes and how each is framed, not what
+    /// a frame draws. `texture_resolution` is the precedent.
+    pub display_mode: DisplayMode,
+    /// The monitor a plan is anchored to, by the id its platform addresses it
+    /// with; empty follows whatever the system calls primary.
+    ///
+    /// A `String` rather than an `Option<String>` in the file, because an empty
+    /// value and a missing one mean the same thing here and one spelling in the
+    /// TOML is one thing to explain.
+    pub anchor_monitor: String,
+
     // Custom date/time override
     pub use_custom_datetime: bool,
     pub custom_hour: f32,
@@ -330,6 +347,11 @@ impl AppConfig {
         // there, so a file holding more would draw a flare nothing on screen
         // can bring back.
         self.sun_flare = self.sun_flare.clamp(0.0, SUN_FLARE_MAX);
+    }
+
+    /// The monitor the wallpaper plan is anchored to, or `None` for the primary.
+    pub fn anchor(&self) -> Option<String> {
+        (!self.anchor_monitor.trim().is_empty()).then(|| self.anchor_monitor.clone())
     }
 }
 
@@ -399,6 +421,8 @@ impl Default for AppConfig {
             night_saturation: 0.85,
             auto_refresh_enabled: false,
             auto_refresh_interval_minutes: 5,
+            display_mode: DisplayMode::default(),
+            anchor_monitor: String::new(),
             use_custom_datetime: false,
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
@@ -984,6 +1008,8 @@ mod tests {
             day_saturation: 0.8,
             night_gamma: 2.0,
             night_saturation: 0.5,
+            display_mode: DisplayMode::AcrossScreens,
+            anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 15,
             use_custom_datetime: true,
@@ -1040,6 +1066,40 @@ mod tests {
     fn deserialize_explicit_zero_year_stays_zero() {
         let config: AppConfig = toml::from_str("custom_year = 0").unwrap();
         assert_eq!(config.custom_year, 0);
+    }
+
+    /// A display mode nothing answers to costs the default, not the file.
+    ///
+    /// Same reasoning `sanitize` applies to a number out of range: a config
+    /// written by a newer build, or edited by hand, must not cost a person every
+    /// other setting they have.
+    #[test]
+    fn a_display_mode_this_build_does_not_have_loads_as_the_default() {
+        let config: AppConfig = toml::from_str(
+            "display_mode = \"every-other-screen\"
+anchor_monitor = \"DP-9\"
+sky_fov = 111.0
+",
+        )
+        .expect("an unknown mode must not fail the whole file");
+        assert_eq!(config.display_mode, DisplayMode::default());
+        assert_relative_eq!(config.sky_fov, 111.0);
+        // The anchor is a name, not an enumeration, so a screen this session
+        // does not have is kept: it is the screen somebody chose, and it comes
+        // back when they plug it in again.
+        assert_eq!(config.anchor(), Some("DP-9".to_owned()));
+    }
+
+    #[test]
+    fn an_empty_anchor_is_the_system_primary() {
+        let config = AppConfig::default();
+        assert_eq!(config.display_mode, DisplayMode::EveryScreen);
+        assert_eq!(config.anchor(), None);
+        let blank = AppConfig {
+            anchor_monitor: "   ".to_owned(),
+            ..AppConfig::default()
+        };
+        assert_eq!(blank.anchor(), None);
     }
 
     #[test]
@@ -1134,6 +1194,8 @@ mod tests {
             day_saturation: 0.6,
             night_gamma: 2.2,
             night_saturation: 1.5,
+            display_mode: DisplayMode::AcrossScreens,
+            anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 10,
             use_custom_datetime: true,

@@ -61,6 +61,9 @@ enum Command {
         /// default is KDE Plasma.
         #[arg(long)]
         desktop: Option<Desktop>,
+        /// How many screens to give the guest. Linux guest only.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        screens: u16,
     },
     /// Build a release binary in a pristine builder guest, from the committed
     /// tree, and prove it runs in the desktop guest of the same target.
@@ -128,6 +131,10 @@ enum VmCommand {
         /// KDE Plasma.
         #[arg(long)]
         desktop: Option<Desktop>,
+        /// How many screens to give the guest, laid out left to right. Linux
+        /// guest only; `vm view` opens one viewer per screen.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        screens: u16,
     },
     /// End a builder guest and keep everything in it, so the next build in it
     /// resumes. Builder images only: a guest the suite runs in is pristine on
@@ -221,7 +228,8 @@ fn main() -> ExitCode {
             keep,
             allow_expired_image,
             desktop,
-        } => e2e::run(&runner, target, keep, allow_expired_image, desktop),
+            screens,
+        } => e2e::run(&runner, target, keep, allow_expired_image, desktop, screens),
         Command::Dist {
             target,
             keep,
@@ -250,7 +258,8 @@ fn main() -> ExitCode {
                 image,
                 allow_expired_image,
                 desktop,
-            } => vm::up(&runner, image, allow_expired_image, desktop),
+                screens,
+            } => vm::up(&runner, image, allow_expired_image, desktop, screens),
             VmCommand::Stop { image } => vm::stop(&runner, image),
             VmCommand::Start { image } => vm::start(&runner, image),
             VmCommand::Ssh { image, command } => vm::ssh(&runner, image, &command),

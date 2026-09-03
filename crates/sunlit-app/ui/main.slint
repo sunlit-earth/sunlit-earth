@@ -1,5 +1,19 @@
 import { Slider, ComboBox, CheckBox, Button, GroupBox, Palette, ScrollView } from "std-widgets.slint";
 
+// One monitor's place in the layout diagram.
+//
+// The rectangle is already normalized to the bounding box of every monitor, so
+// the diagram multiplies by the board's size and does nothing else; the
+// arithmetic that decides it is in `displays.rs`, where it is tested.
+export struct MonitorTile {
+    label: string,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    anchor: bool,
+}
+
 component Splitter inherits Rectangle {
     callback moved(length);
 
@@ -279,6 +293,21 @@ export component MainWindow inherits Window {
     in-out property <float> auto-refresh-interval: 5.0;
     callback auto-refresh-changed();
 
+    // The Displays group. Every model here is filled in from Rust, and an empty
+    // `display-tiles` is a session whose monitors could not be enumerated at
+    // all, which is macOS and any Windows session where the query failed.
+    in property <[string]> display-mode-options;
+    in-out property <int> display-mode-index: 1;
+    in property <[string]> display-screen-options;
+    // Parallel to `display-screen-options`, holding the id each row addresses.
+    // The first row is the automatic anchor and its id is empty.
+    in property <[string]> display-screen-ids;
+    in-out property <int> display-anchor-index: 0;
+    in property <[MonitorTile]> display-tiles;
+    // Width over height of the whole layout, so the diagram can keep its shape.
+    in property <float> display-aspect: 1.0;
+    callback display-plan-changed();
+
     in-out property <bool> advanced-open: false;
 
     // Controls panel on the left
@@ -356,6 +385,74 @@ export component MainWindow inherits Window {
                     Text {
                         text: "every " + round(root.auto-refresh-interval) + " min";
                         vertical-alignment: center;
+                    }
+                }
+
+                // --- Displays ---
+                //
+                // Hidden on a session with one screen, where three modes all
+                // mean the same thing. The setting still persists, so unplugging
+                // a second screen and plugging it back in does not lose it.
+
+                if root.display-tiles.length > 1 : VerticalLayout {
+                    spacing: 4px;
+
+                    Rectangle { height: 8px; }
+
+                    Text {
+                        text: "Displays";
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                    }
+
+                    display-mode-combo := SettingCombo {
+                        label: "Mode";
+                        hint: "How the screens relate. One screen: only the screen below gets a wallpaper and the rest keep theirs. Mirror: every screen gets the same view, rendered at its own size and shape. Extend: one continuous view is spread across all of them.";
+                        label-width: 52px;
+                        model: root.display-mode-options;
+                        current-index <=> root.display-mode-index;
+                        selected => { root.display-plan-changed(); }
+                    }
+
+                    display-screen-combo := SettingCombo {
+                        label: "Screen";
+                        hint: "Which screen gets the picture in one-screen mode, and which screen the view is centered on in the other two.";
+                        label-width: 52px;
+                        model: root.display-screen-options;
+                        current-index <=> root.display-anchor-index;
+                        selected => { root.display-plan-changed(); }
+                    }
+
+                    Rectangle {
+                        height: 88px;
+                        background: Palette.background.darker(0.15);
+                        border-radius: 4px;
+
+                        board := Rectangle {
+                            width: min(parent.width - 12px, (parent.height - 12px) * root.display-aspect);
+                            height: self.width / root.display-aspect;
+
+                            for tile in root.display-tiles : Rectangle {
+                                x: board.width * tile.x;
+                                y: board.height * tile.y;
+                                width: board.width * tile.width;
+                                height: board.height * tile.height;
+                                background: tile.anchor ? Palette.accent-background : Palette.background;
+                                border-width: 1px;
+                                border-color: Palette.background.darker(0.4);
+                                border-radius: 2px;
+
+                                Text {
+                                    text: tile.label;
+                                    font-size: 10px;
+                                    color: tile.anchor ? Palette.accent-foreground : Palette.foreground;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+                            }
+                        }
                     }
                 }
 

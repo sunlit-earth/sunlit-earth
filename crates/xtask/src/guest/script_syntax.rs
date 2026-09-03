@@ -446,14 +446,31 @@ mod tests {
             swallowed.stderr.trim()
         );
 
-        for script in scripts {
-            let text = std::fs::read_to_string(&script)
-                .unwrap_or_else(|e| panic!("cannot read {}: {e}", script.display()));
+        let mut texts: Vec<(String, String)> = scripts
+            .into_iter()
+            .map(|script| {
+                let text = std::fs::read_to_string(&script)
+                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", script.display()));
+                (script.display().to_string(), text)
+            })
+            .collect();
+        // The shell the orchestrator sends over SSH belongs here too: it is
+        // built by string formatting, which is the mistake this parser is for,
+        // and nothing else reads it before a guest does.
+        texts.push((
+            "vm: place the screens".to_owned(),
+            crate::commands::vm::place_screens_command(),
+        ));
+        texts.push((
+            "vm: map the pointer".to_owned(),
+            crate::commands::vm::map_pointer_command(),
+        ));
+
+        for (name, text) in texts {
             let out = parse(text);
             assert!(
                 out.success() && !out.stderr.contains("warning:"),
-                "{} does not parse cleanly: {}",
-                script.display(),
+                "{name} does not parse cleanly: {}",
                 out.stderr.trim()
             );
         }

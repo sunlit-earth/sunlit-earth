@@ -69,9 +69,18 @@ fi
 # compiles the system-wide defaults below. `xdotool` is here to answer questions
 # about the guest rather than to run the suite: it is what can say where a
 # pointer actually is.
+#
+# The last two are what a guest with more than one screen needs. `xinput` is how
+# the boot maps the single absolute pointer onto the primary output; without it
+# QEMU scales that head's coordinates across the whole desktop and a click lands
+# at twice the x it was aimed at. `arandr` is a display settings UI that works in
+# every session: this minimal Plasma install ships none, while GNOME, XFCE and
+# Cinnamon each carry their own, and Plasma's `kscreen` plus `systemsettings`
+# costs tens of megabytes against about one.
 apt-get install -y --no-install-recommends \
   xserver-xorg xserver-xorg-core xinit dbus-x11 xauth \
   x11-xserver-utils x11-utils xdotool libglib2.0-bin dconf-cli \
+  xinput arandr \
   mesa-vulkan-drivers libgl1-mesa-dri vulkan-tools \
   libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libxcb-shape0 libxcb-xfixes0 \
   fonts-dejavu-core openssh-server ca-certificates

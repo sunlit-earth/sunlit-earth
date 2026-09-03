@@ -905,6 +905,45 @@ fn wait_for_downloads(stub: &StubState, target: u64, timeout: Duration) {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Every image a publish wrote is one this session has somewhere to put.
+///
+/// The count is the desktop's business and differs per backend, but the sizes
+/// are not: a wallpaper is either one screen's own resolution or the bounding
+/// box of all of them, and anything else is an image the desktop is going to
+/// scale for itself. This is the assertion that a two-screen session got two
+/// screens' worth of pixels rather than the primary's twice.
+fn assert_the_files_match_the_layout(files: &[std::path::PathBuf]) {
+    let monitors = sunlit_core::display::monitors().unwrap_or_default();
+    let canvas = sunlit_core::display::layout::bounds_of(&monitors);
+    let mut sizes: Vec<(u32, u32)> = monitors.iter().map(|m| (m.width, m.height)).collect();
+    if let Some(canvas) = canvas {
+        sizes.push((canvas.width, canvas.height));
+    }
+    for file in files {
+        let image =
+            image::open(file).unwrap_or_else(|e| panic!("{} is not a PNG: {e}", file.display()));
+        let size = (image.width(), image.height());
+        if sizes.is_empty() {
+            // A session with no display to ask renders at the documented
+            // default size, which is what this run cannot check against a
+            // layout it does not have.
+            println!("no monitors to check {} ({size:?}) against", file.display());
+            continue;
+        }
+        assert!(
+            sizes.contains(&size),
+            "{} is {size:?}, which is neither a screen of this session nor the \
+             box around them ({sizes:?})",
+            file.display()
+        );
+    }
+    println!(
+        "the publish wrote {} image(s) for {} screen(s)",
+        files.len(),
+        monitors.len()
+    );
+}
+
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -926,12 +965,24 @@ fn test_render_and_exit() {
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
     let config_path = fixture("e2e_config.toml");
+    // A cache directory of its own, and empty, because the memory profile this
+    // case asserts on is the profile of a run that decodes the surface
+    // textures. Out of a warm downscale cache there is no decode: measured in
+    // the Linux guest on 2026-09-01, the same render peaked at 2088 MB and
+    // settled to 444 MB with a cold cache and sat flat at 381 MB with a warm
+    // one, where the peak is the last sample and "settled" means nothing. What
+    // used to guarantee the cold cache was the order the suite happens to run
+    // in: the only case that warmed it sorted after this one, until a new case
+    // sorted before it and the assertion started failing on an app that had not
+    // changed.
+    let cache_dir = temp_dir.path().join("cache");
 
     // 2. Spawn the binary with the render subcommand.
     let child = Command::new(binary())
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+        .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
         .args([
             "--log-level",
             "debug",
@@ -950,8 +1001,16 @@ fn test_render_and_exit() {
         .spawn()
         .expect("failed to spawn sunlit-earth binary");
 
-    // 3. Wait for the process to exit (30s timeout).
-    let output = wait_with_timeout(child, Duration::from_secs(30));
+    // 3. Wait for the process to exit. A minute rather than the 30 seconds
+    //    this had: the cache directory above makes every run of this case pay
+    //    the decode that used to be paid by whichever run of the suite happened
+    //    to go first. Timed on this host on 2026-09-01, debug build, empty
+    //    cache, the same 800x800 render: 5.9 s on the GPU and 8.0 s on the
+    //    software adapter, against 2.5 s warm. The guest is a software
+    //    rasterizer on a slower CPU and has never been timed at all, and the
+    //    only thing a generous timeout costs is how long a genuinely hung
+    //    process takes to be reported.
+    let output = wait_with_timeout(child, Duration::from_mins(1));
 
     // 4. Assert exit code is 0.
     assert!(
@@ -1054,12 +1113,32 @@ fn test_render_and_exit() {
             "exit memory too high: {:.0} MB (expected < 1000 MB)",
             entry.rss_mb
         );
-        assert!(
-            entry.rss_mb < peak,
-            "memory did not settle: exit RSS {:.0} MB >= peak {:.0} MB",
-            entry.rss_mb,
-            peak
-        );
+        // Only where there was something to settle. `peak_rss_mb` is this
+        // process's own high-water mark, so `rss <= peak` holds by
+        // construction and the comparison asks whether the decode's memory came
+        // back before the last sample. With nothing decoded the profile is flat
+        // and the last sample is the high-water mark itself, so the comparison
+        // is a number against itself and the numbers are printed instead. The
+        // cache directory above is what makes a decode happen; this reads the
+        // log to confirm one did rather than assuming it, which is what the
+        // case was doing when it started failing. It is not a skip for a
+        // checkout without the Git LFS objects: those runs fail at the surface
+        // colors above, which need the real 8K maps, long before they reach
+        // here.
+        if mem.iter().any(|e| e.context == "after texture decode") {
+            assert!(
+                entry.rss_mb < peak,
+                "memory did not settle: exit RSS {:.0} MB >= peak {:.0} MB",
+                entry.rss_mb,
+                peak
+            );
+        } else {
+            println!(
+                "no surface texture was decoded, so there was nothing to settle: \
+                 {:.0} MB at exit against a {peak:.0} MB peak",
+                entry.rss_mb
+            );
+        }
     }
 }
 
@@ -1809,18 +1888,25 @@ fn test_memory_report() {
 /// desktop whose settings are named after its own monitors has to hold the image
 /// in one of those, and nothing else counts.
 #[cfg(target_os = "linux")]
-fn assert_the_desktop_holds_the_wallpaper() -> Option<String> {
-    let image = sunlit_core::wallpaper::published_wallpaper_file()
-        .expect("a local data directory")
-        .expect("the setter said it set a wallpaper, so one was written");
-    // The file name rather than the whole path, because what a write carries is
-    // the path in that desktop's own spelling: a `file://` URI for the gsettings
-    // rows and a plain path for the rest.
-    let name = image
-        .file_name()
-        .expect("the wallpaper is a file")
-        .to_string_lossy()
-        .into_owned();
+fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> Option<String> {
+    assert!(
+        !published.is_empty(),
+        "the setter said it set a wallpaper, so one was written"
+    );
+    // The file names rather than the whole paths, because what a write carries
+    // is the path in that desktop's own spelling: a `file://` URI for the
+    // gsettings rows and a plain path for the rest.
+    let names: Vec<String> = published
+        .iter()
+        .map(|image| {
+            image
+                .file_name()
+                .expect("the wallpaper is a file")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let name = names.join(", ");
     let backend = sunlit_core::desktop::detect_current()
         .expect("a session with no backend could not have got this far");
 
@@ -1828,17 +1914,40 @@ fn assert_the_desktop_holds_the_wallpaper() -> Option<String> {
         Some(query) => read_setting(&query),
         None => String::new(),
     };
-    let monitors: Vec<String> = sunlit_core::display::outputs()
+    let monitors: Vec<String> = sunlit_core::display::monitors()
         .unwrap_or_default()
         .into_iter()
-        .map(|output| output.name)
+        .map(|monitor| monitor.id)
         .collect();
 
+    // The placement the app would have made for this session, rebuilt from what
+    // it actually wrote: the file per monitor where this desktop takes one, and
+    // the first file otherwise.
+    let placement = if backend.reach() == sunlit_core::desktop::Reach::PerMonitor {
+        sunlit_core::desktop::Placement {
+            per_monitor: monitors
+                .iter()
+                .cloned()
+                .zip(published.iter().cloned())
+                .collect(),
+            untouched: Vec::new(),
+            by_position: published.iter().cloned().map(Some).collect(),
+            single: published[0].clone(),
+            spanned: false,
+        }
+    } else {
+        sunlit_core::desktop::Placement::single(published[0].clone())
+    };
+
     let mut holders: Vec<String> = Vec::new();
-    for command in backend.commands(&image, &discovered, &monitors) {
+    for command in backend.commands(&placement, &discovered) {
         // The fill-mode writes carry a mode rather than a path, and the mode is
         // not what this is about.
-        let Some(written) = command.args.iter().find(|arg| arg.contains(&name)) else {
+        let Some(written) = command
+            .args
+            .iter()
+            .find(|arg| names.iter().any(|name| arg.contains(name)))
+        else {
             continue;
         };
         let written = written.clone();
@@ -2047,7 +2156,7 @@ fn test_set_wallpaper() {
     // the path already in that setting is one nothing reloads. A setter that
     // succeeded on a first publish and changed nothing on a second is exactly
     // what a single pass here cannot tell apart from working.
-    let mut published: Vec<std::path::PathBuf> = Vec::new();
+    let mut published: Vec<Vec<std::path::PathBuf>> = Vec::new();
     #[cfg(target_os = "linux")]
     let mut held: Vec<Option<String>> = Vec::new();
     for pass in 1..=2 {
@@ -2061,22 +2170,35 @@ fn test_set_wallpaper() {
             line.contains("wallpaper_set"),
             "publish {pass}: the engine reported a failure instead: {line}"
         );
-        published.push(
-            sunlit_core::wallpaper::published_wallpaper_file()
-                .expect("a local data directory")
-                .expect("the engine reported a wallpaper, so one was written"),
+        let files =
+            sunlit_core::wallpaper::published_wallpaper_files().expect("a local data directory");
+        assert!(
+            !files.is_empty(),
+            "publish {pass}: the engine reported a wallpaper and wrote no file"
         );
+        // One image per screen this session has, each at that screen's own size.
+        assert_the_files_match_the_layout(&files);
 
         // Everything above is the app's own account of what it did. This is the
         // desktop's.
         #[cfg(target_os = "linux")]
-        held.push(assert_the_desktop_holds_the_wallpaper());
+        held.push(assert_the_desktop_holds_the_wallpaper(&files));
+        published.push(files);
     }
-    assert_ne!(
-        published[0], published[1],
-        "the second publish wrote the path the desktop was already showing, \
-         which is a wallpaper that does not visibly change"
+    // Every path, not only one of them: the alternation has to hold per screen,
+    // or a second monitor sits on a picture the desktop has no reason to reload.
+    assert_eq!(
+        published[0].len(),
+        published[1].len(),
+        "the two publishes wrote a different number of images: {published:?}"
     );
+    for (first, second) in published[0].iter().zip(&published[1]) {
+        assert_ne!(
+            first, second,
+            "the second publish wrote a path the desktop was already showing, \
+             which is a wallpaper that does not visibly change"
+        );
+    }
     // And the desktop stored the new one, where its setter has a store to ask.
     #[cfg(target_os = "linux")]
     if let [Some(first), Some(second)] = held.as_slice() {
@@ -2102,4 +2224,235 @@ fn test_set_wallpaper() {
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
+}
+
+/// The value of one `key=` field of a `SIGNAL:displays` line.
+fn displays_field(line: &str, key: &str) -> String {
+    let prefix = format!("{key}=");
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix(&prefix))
+        .unwrap_or_else(|| panic!("missing '{key}' in the displays line: {line}"))
+        .to_owned()
+}
+
+/// Spawn the app with an IPC socket and wait until it is answering.
+///
+/// Everything the display cases need before they can ask a question, and
+/// nothing else: no wallpaper is published by getting this far.
+fn spawn_for_ipc(socket_name: &str, config: &Path) -> (ChildGuard, StdoutWatcher) {
+    let mut guard = ChildGuard::new(
+        Command::new(binary())
+            .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+            .env("SUNLIT_EARTH_CONFIG", config)
+            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+            .args(["--log-level", "debug"])
+            .args(lifecycle_mode_args())
+            .args(["--ipc-socket", socket_name])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sunlit-earth binary"),
+    );
+    let child = guard.child.as_mut().unwrap();
+    let watcher = StdoutWatcher::new(child);
+    let ready = Duration::from_secs(30);
+    watcher.wait_for_signal("ipc_listener_ready", ready);
+    watcher.wait_for_signal("first_frame_rendered", ready);
+    (guard, watcher)
+}
+
+/// What the running app says this session's screens are.
+///
+/// The Linux half of the platform seam, and the half a unit test cannot reach:
+/// every layout case in `display::layout` runs against a fabricated list, and
+/// this is the one place a real session fills that list in. It publishes
+/// nothing, so unlike the wallpaper cases it needs no opt-in and runs wherever
+/// the suite runs.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_displays_reports_the_session_layout() {
+    let socket_name = unique_socket_name();
+    let (mut guard, watcher) = spawn_for_ipc(&socket_name, &isolated_config_path());
+
+    let from = watcher.line_count();
+    send_ipc_command(&socket_name, "displays");
+    let line = watcher.wait_for_signal_line_from("displays ", from, Duration::from_secs(15));
+    println!("the session reports: {line}");
+
+    let count: usize = displays_field(&line, "monitors")
+        .parse()
+        .expect("the monitor count is a number");
+    let rects = displays_field(&line, "rects");
+    let images = displays_field(&line, "images");
+    let anchor: i64 = displays_field(&line, "anchor")
+        .parse()
+        .expect("the anchor is a number");
+
+    assert!(
+        count >= 1,
+        "a session the app is running in has at least one screen: {line}"
+    );
+    assert!(
+        anchor >= 0 && anchor < i64::try_from(count).unwrap_or(i64::MAX),
+        "the anchor is a position in the list of {count}: {line}"
+    );
+    assert!(
+        !images.is_empty(),
+        "a plan with no export in it is a wallpaper that never appears: {line}"
+    );
+
+    // The test process asks the same platform the same question. Where it gets
+    // an answer, the two have to agree exactly: this is the assertion that the
+    // rectangles the layout math is fed are the rectangles the session has.
+    let monitors = sunlit_core::display::monitors().unwrap_or_default();
+    if monitors.is_empty() {
+        println!("this platform has no monitor query, so {rects:?} stands unchecked");
+    } else {
+        let expected: Vec<String> = monitors
+            .iter()
+            .map(|m| format!("{},{},{},{}", m.x, m.y, m.width, m.height))
+            .collect();
+        assert_eq!(
+            rects,
+            expected.join(";"),
+            "the app and this test disagree about the session's own screens"
+        );
+        assert_eq!(count, monitors.len());
+    }
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited: {:?}",
+        output.status
+    );
+}
+
+/// One view across every screen, and the files that come out of it.
+///
+/// What a publish writes in this mode is not one shape: a desktop that spans
+/// takes the canvas whole, one that addresses monitors takes a cut piece each,
+/// and one that holds a single image takes the anchor's piece and nothing else.
+/// So the case asserts the shape this session's own desktop can hold, which is
+/// the same rule the sink used to decide, read back out of the files.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_across_screens_writes_what_this_desktop_can_hold() {
+    if !wallpaper_supported() {
+        skip_case(
+            "test_across_screens_writes_what_this_desktop_can_hold",
+            "the wallpaper sink reports no setter for this session",
+        );
+        return;
+    }
+    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+        skip_case(
+            "test_across_screens_writes_what_this_desktop_can_hold",
+            "this case replaces the desktop wallpaper, so it runs only where \
+             that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+
+    // The mode is a stored setting and this is the one case that needs it set,
+    // so the config is written rather than driven through the window.
+    let config = isolated_config_path();
+    fs::write(
+        &config,
+        "[sunlit.earth]\ndisplay_mode = \"across-screens\"\n",
+    )
+    .expect("write the throwaway config");
+
+    let socket_name = unique_socket_name();
+    let (mut guard, watcher) = spawn_for_ipc(&socket_name, &config);
+
+    let from = watcher.line_count();
+    send_ipc_command(&socket_name, "set-wallpaper");
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, Duration::from_mins(2));
+    assert!(
+        line.contains("wallpaper_set"),
+        "the engine reported a failure instead: {line}"
+    );
+
+    let files =
+        sunlit_core::wallpaper::published_wallpaper_files().expect("a local data directory");
+    assert!(!files.is_empty(), "a publish that wrote no file");
+    assert_the_files_match_the_layout(&files);
+
+    let monitors = sunlit_core::display::monitors().unwrap_or_default();
+    let bounds = sunlit_core::display::layout::bounds_of(&monitors);
+    let sizes: Vec<(u32, u32)> = files
+        .iter()
+        .map(|file| {
+            let image = image::open(file).expect("a PNG");
+            (image.width(), image.height())
+        })
+        .collect();
+    println!(
+        "across-screens wrote {sizes:?} for {} screen(s)",
+        monitors.len()
+    );
+
+    if let Some(bounds) = bounds {
+        let canvas = (bounds.width, bounds.height);
+        #[cfg(target_os = "linux")]
+        {
+            use sunlit_core::desktop::Reach;
+            let backend = sunlit_core::desktop::detect_current()
+                .expect("a session with no backend could not have published");
+            match backend.reach() {
+                Reach::Spanned => assert_eq!(
+                    sizes,
+                    vec![canvas],
+                    "{} spans one image over the whole desktop, so the canvas is \
+                     what it should have been handed",
+                    backend.desktop
+                ),
+                Reach::PerMonitor => {
+                    let expected: Vec<(u32, u32)> =
+                        monitors.iter().map(|m| (m.width, m.height)).collect();
+                    assert_eq!(
+                        sizes, expected,
+                        "{} addresses its monitors, so each one gets its own piece \
+                         of the canvas at its own size",
+                        backend.desktop
+                    );
+                }
+                Reach::OneImage => {
+                    let anchor = sunlit_core::display::layout::resolve_anchor(&monitors, None)
+                        .expect("a session with a screen");
+                    let screen = &monitors[anchor.index];
+                    assert_eq!(
+                        sizes,
+                        vec![(screen.width, screen.height)],
+                        "{} holds one wallpaper for every screen, so it gets the \
+                         anchor's piece rather than a canvas it would zoom",
+                        backend.desktop
+                    );
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Windows spans through the shell rather than by being cut, so the
+            // one file is the canvas whatever the screen count.
+            assert_eq!(sizes, vec![canvas], "the span writes one canvas");
+        }
+    }
+
+    // The desktop's own account of what it is holding, for the mode where the
+    // image is not the shape any single screen is.
+    #[cfg(target_os = "linux")]
+    assert_the_desktop_holds_the_wallpaper(&files);
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited: {:?}",
+        output.status
+    );
 }

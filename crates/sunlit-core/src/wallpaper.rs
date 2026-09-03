@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use tracing::debug;
 #[cfg(windows)]
-use tracing::info;
+use tracing::{info, warn};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::GetLastError;
 #[cfg(windows)]
@@ -37,7 +37,7 @@ pub fn wallpaper_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The two names a published wallpaper alternates between.
+/// The two slots a published wallpaper alternates between.
 ///
 /// Two rather than one, because a desktop shell keys the wallpaper it is showing
 /// on the path it was handed: a new image written to the path already in that
@@ -48,63 +48,97 @@ pub fn wallpaper_dir() -> Result<PathBuf, String> {
 /// it load a file.
 ///
 /// Two is also the smallest number that keeps what one name gave: a publish
-/// overwrites the file the desktop is not showing, so a desktop whose setting
+/// overwrites the slot the desktop is not showing, so a desktop whose setting
 /// still names the previous frame is looking at a stale image rather than at one
 /// being rewritten underneath it.
+///
+/// A slot holds a whole layout rather than one file, since a publish is now one
+/// image per monitor: `wallpaper-<slot>-<index>.png` per screen, plus
+/// `wallpaper-<slot>-canvas.png` where the mode spans them.
 ///
 /// Windows needs none of this, since `SystemParametersInfoW` reads whatever it
 /// is handed, and shares it rather than making the output path depend on the
 /// platform.
-const WALLPAPER_NAMES: [&str; 2] = ["wallpaper-1.png", "wallpaper-2.png"];
+const SLOTS: [u32; 2] = [1, 2];
 
-/// The name the last publish in this process wrote.
+/// The single-image names published before a wallpaper was a layout.
+///
+/// Swept on the next publish, because they are full-resolution PNGs that
+/// nothing will ever name again.
+const LEGACY_NAMES: [&str; 2] = ["wallpaper-1.png", "wallpaper-2.png"];
+
+/// The slot and the files the last publish in this process wrote.
 ///
 /// Remembered rather than asked of the filesystem every time, because two
 /// publishes can land inside one tick of the clock that stamps their
-/// modification times, and two publishes to one name are the thing the
+/// modification times, and two publishes to one slot are the thing the
 /// alternation exists to prevent. Empty until this process has published, where
 /// the modification times are all there is to go on.
-static PUBLISHED: Mutex<Option<PathBuf>> = Mutex::new(None);
+static PUBLISHED: Mutex<Option<(u32, Vec<PathBuf>)>> = Mutex::new(None);
 
-/// Both files a published wallpaper can be, in a fixed order.
-pub fn wallpaper_files() -> Result<[PathBuf; 2], String> {
-    let dir = wallpaper_dir()?;
-    Ok(WALLPAPER_NAMES.map(|name| dir.join(name)))
+/// The file name one image of a publish takes.
+fn slot_name(slot: u32, suffix: &str) -> String {
+    format!("wallpaper-{slot}-{suffix}.png")
 }
 
-/// The file the most recent publish wrote, or `None` where nothing has published.
+/// Every file of one slot, in name order.
+fn slot_files(dir: &Path, slot: u32) -> Vec<PathBuf> {
+    let prefix = format!("wallpaper-{slot}-");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The files the most recent publish wrote, empty where nothing has published.
 ///
 /// This is what a desktop's own store holds once the setter has run, which is
 /// what lets a test read the setting back and recognize it.
 ///
 /// What this process wrote, where it has written anything, and otherwise the
-/// more recently modified of the two. That second answer is what carries the
-/// alternation across a restart, since the setting names the newest file and the
-/// next publish is therefore the other one, and it is also how a process that
-/// did not do the publishing gets the same answer.
-pub fn published_wallpaper_file() -> Result<Option<PathBuf>, String> {
-    if let Some(path) = PUBLISHED
+/// slot holding the more recently modified file. That second answer is what
+/// carries the alternation across a restart, since the settings name the newest
+/// files and the next publish is therefore the other slot, and it is also how a
+/// process that did not do the publishing gets the same answer.
+pub fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
+    if let Some((_, files)) = PUBLISHED
         .lock()
         .expect("the published name is poisoned")
         .clone()
     {
-        return Ok(Some(path));
+        return Ok(files);
     }
-    Ok(wallpaper_files()?
-        .into_iter()
-        .filter_map(|path| modified(&path).map(|time| (time, path)))
-        .max_by_key(|(time, _)| *time)
-        .map(|(_, path)| path))
+    let dir = wallpaper_dir()?;
+    Ok(newest_slot(&dir)
+        .map(|slot| slot_files(&dir, slot))
+        .unwrap_or_default())
 }
 
-/// The file the next publish writes: whichever of the two is not on the desktop.
-fn next_wallpaper_file() -> Result<PathBuf, String> {
-    let [first, second] = wallpaper_files()?;
-    if published_wallpaper_file()?.as_ref() == Some(&first) {
-        Ok(second)
-    } else {
-        Ok(first)
-    }
+/// The slot holding the most recently written file, where there is one.
+fn newest_slot(dir: &Path) -> Option<u32> {
+    SLOTS
+        .into_iter()
+        .filter_map(|slot| {
+            slot_files(dir, slot)
+                .iter()
+                .filter_map(|path| modified(path))
+                .max()
+                .map(|time| (time, slot))
+        })
+        .max_by_key(|(time, _)| *time)
+        .map(|(_, slot)| slot)
 }
 
 /// When a file was last written, or `None` where there is no file to ask.
@@ -114,16 +148,146 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
         .ok()
 }
 
-/// Detect the primary monitor's physical resolution in pixels.
+/// One publish in progress: the slot it took, and what it has written so far.
 ///
-/// Uses `EnumDisplayMonitors` + `GetMonitorInfoW` to find the primary
-/// monitor and read its pixel dimensions from `rcMonitor`.
+/// A slot is emptied when it is taken rather than when it is left, so a layout
+/// that lost a monitor does not leave a full-resolution PNG behind for the one
+/// that went away. Emptying the slot the desktop is *not* showing is what makes
+/// that safe.
+pub struct Publication {
+    slot: u32,
+    dir: PathBuf,
+    files: Vec<PathBuf>,
+}
+
+/// Take the slot the desktop is not showing, and clear it.
+pub fn begin_publication() -> Result<Publication, String> {
+    let dir = wallpaper_dir()?;
+    let last = PUBLISHED
+        .lock()
+        .expect("the published name is poisoned")
+        .as_ref()
+        .map(|(slot, _)| *slot);
+    let slot = if last.or_else(|| newest_slot(&dir)) == Some(SLOTS[0]) {
+        SLOTS[1]
+    } else {
+        SLOTS[0]
+    };
+    for stale in slot_files(&dir, slot) {
+        let _ = std::fs::remove_file(stale);
+    }
+    for legacy in LEGACY_NAMES {
+        let _ = std::fs::remove_file(dir.join(legacy));
+    }
+    Ok(Publication {
+        slot,
+        dir,
+        files: Vec::new(),
+    })
+}
+
+impl Publication {
+    /// Encode one RGBA8 image into this slot and answer with its path.
+    ///
+    /// Fast compression (`CompressionType::Fast`), because the user waits for
+    /// the "Set as Wallpaper" operation to complete and a larger file is the
+    /// cheaper half of that trade. Windows preserves PNG wallpapers losslessly
+    /// (no JPEG transcode), which avoids the banding artifacts TIFF produced.
+    pub fn write(
+        &mut self,
+        suffix: &str,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<PathBuf, String> {
+        use image::ImageEncoder;
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+
+        let path = self.dir.join(slot_name(self.slot, suffix));
+        debug!(path = %path.display(), width, height, "saving wallpaper PNG");
+
+        let file =
+            std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
+        let writer = std::io::BufWriter::new(file);
+        let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
+        encoder
+            .write_image(pixels, width, height, image::ColorType::Rgba8.into())
+            .map_err(|e| format!("Failed to encode PNG: {e}"))?;
+
+        self.files.push(path.clone());
+        Ok(path)
+    }
+
+    /// Record this publication as the one the desktop is being handed.
+    ///
+    /// Called once the images are written and before the setter runs, which is
+    /// the same moment the single-file publish recorded its name: a failed
+    /// encode must not spend the slot the next publish is going to need.
+    pub fn commit(self) -> Vec<PathBuf> {
+        *PUBLISHED.lock().expect("the published name is poisoned") =
+            Some((self.slot, self.files.clone()));
+        self.files
+    }
+}
+
+/// Declare this process per-monitor DPI aware, once, before anything asks Win32
+/// where a monitor is.
 ///
-/// Off Windows the same question is answered by [`crate::display`], which parses
-/// `xrandr --query`: there is no API in this crate to ask, so it asks a program.
+/// `rcMonitor` is in virtual-screen coordinates, and those are physical pixels
+/// only for a per-monitor aware process; a DPI-unaware one is handed the
+/// virtualized rectangle instead, so under mixed scaling every monitor's size
+/// and position would be wrong. winit does set
+/// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`, but only from `EventLoop::new`,
+/// which is reached when the settings window is built and never at all in a
+/// headless run: `sunlit-earth displays` and `render` create no window, and
+/// `displays` is precisely the command that exists to report these rectangles.
+/// So the declaration is made here rather than left to whoever creates a window
+/// first.
+///
+/// Idempotent by construction. A process whose awareness is already set refuses
+/// the call with `ERROR_ACCESS_DENIED`, which is the case where winit got here
+/// first and is the outcome this wants either way, so the return value is not an
+/// error to report.
+#[cfg(windows)]
+pub fn ensure_dpi_awareness() {
+    use std::sync::Once;
+
+    use windows_sys::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: SetProcessDpiAwarenessContext takes one of the predefined
+        // pseudo-handles by value and touches nothing of ours. It is safe to
+        // call on any thread and at any time; it merely fails where the
+        // awareness is already set.
+        #[allow(unsafe_code)]
+        let set =
+            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        debug!(
+            already_aware = set == 0,
+            "declared this process per-monitor DPI aware"
+        );
+    });
+}
+
+/// Every monitor Windows has, with the rectangle each occupies.
+///
+/// `EnumDisplayMonitors` + `GetMonitorInfoW`, keeping every monitor rather than
+/// only the one flagged primary, because the position of each is what a
+/// multi-monitor plan is built out of. `rcMonitor` is in virtual-screen
+/// coordinates, which are physical pixels for a per-monitor DPI aware process;
+/// see `docs/platforms.md` for what makes this one aware.
+///
+/// The `id` is `szDevice` (`\\.\DISPLAY1`) until [`desktop_wallpaper`] can
+/// improve on it: `IDesktopWallpaper` addresses a monitor by a device path that
+/// survives a reboot, and `szDevice` does not. Off Windows the same question is
+/// answered by [`crate::display`], which parses `xrandr --query`: there is no
+/// API in this crate to ask, so it asks a program.
 #[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
+pub fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
@@ -150,7 +314,8 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
         TRUE
     }
 
-    let mut monitors: Vec<HMONITOR> = Vec::new();
+    ensure_dpi_awareness();
+    let mut handles: Vec<HMONITOR> = Vec::new();
 
     // SAFETY: EnumDisplayMonitors with null HDC/RECT enumerates all monitors.
     // The callback receives a valid lparam pointing to our Vec. The call is
@@ -161,14 +326,15 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
             ptr::null_mut(),
             ptr::null(),
             Some(enum_callback),
-            (&raw mut monitors) as LPARAM,
+            (&raw mut handles) as LPARAM,
         )
     };
     if success == 0 {
         return Err("EnumDisplayMonitors failed".to_owned());
     }
 
-    for &hmon in &monitors {
+    let mut monitors = Vec::with_capacity(handles.len());
+    for &hmon in &handles {
         let mut info: MONITORINFOEXW = {
             // SAFETY: MONITORINFOEXW is a plain-old-data C struct.
             // Zeroing it is safe; we set cbSize immediately after.
@@ -187,16 +353,469 @@ pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
             continue;
         }
 
-        if info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0 {
-            let rc = info.monitorInfo.rcMonitor;
-            let width = (rc.right - rc.left) as u32;
-            let height = (rc.bottom - rc.top) as u32;
-            debug!(width, height, "detected primary monitor resolution");
-            return Ok((width, height));
+        let rc = info.monitorInfo.rcMonitor;
+        let device = wide_to_string(&info.szDevice);
+        monitors.push(crate::display::Monitor {
+            label: display_label(&device, monitors.len()),
+            id: device,
+            x: rc.left,
+            y: rc.top,
+            width: (rc.right - rc.left) as u32,
+            height: (rc.bottom - rc.top) as u32,
+            primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+        });
+    }
+    adopt_device_paths(&mut monitors);
+    debug!(count = monitors.len(), "enumerated the monitors");
+    Ok(monitors)
+}
+
+/// Replace each monitor's id with the device path the shell addresses it by.
+///
+/// The two enumerations have no key in common, so the rectangle is the join:
+/// `GetMonitorRECT` and `rcMonitor` describe the same screen in the same
+/// coordinates. Mirrored monitors are two entries with one rectangle, and each
+/// path takes the first monitor not already claimed, which keeps the mapping a
+/// bijection where a rectangle alone would be ambiguous.
+///
+/// A failure anywhere leaves `szDevice` in place. That is a name the shell will
+/// not take, so a publish that needs to address a monitor says so rather than
+/// setting the wrong screen's wallpaper.
+#[cfg(windows)]
+fn adopt_device_paths(monitors: &mut [crate::display::Monitor]) {
+    let api = match shell::DesktopWallpaperApi::open() {
+        Ok(api) => api,
+        Err(e) => {
+            debug!(error = %e, "no shell wallpaper interface; keeping the display device names");
+            return;
+        }
+    };
+    let paths = match api.monitor_paths() {
+        Ok(paths) => paths,
+        Err(e) => {
+            debug!(error = %e, "the shell listed no monitor device paths");
+            return;
+        }
+    };
+    let mut claimed = vec![false; monitors.len()];
+    for path in paths {
+        let Ok((left, top, right, bottom)) = api.monitor_rect(&path) else {
+            continue;
+        };
+        let matched = monitors.iter().enumerate().position(|(index, monitor)| {
+            !claimed[index]
+                && monitor.x == left
+                && monitor.y == top
+                && i64::from(monitor.width) == i64::from(right) - i64::from(left)
+                && i64::from(monitor.height) == i64::from(bottom) - i64::from(top)
+        });
+        if let Some(index) = matched {
+            claimed[index] = true;
+            monitors[index].id = path;
+        }
+    }
+}
+
+/// A null-terminated fixed-width UTF-16 field as a `String`.
+#[cfg(windows)]
+fn wide_to_string(field: &[u16]) -> String {
+    let end = field.iter().position(|&c| c == 0).unwrap_or(field.len());
+    String::from_utf16_lossy(&field[..end])
+}
+
+/// What to call a Windows monitor in the settings window.
+///
+/// `\\.\DISPLAY2` is what Windows answers with and is not what its own display
+/// settings show anybody, so the digit is lifted out of it and the position in
+/// the enumeration stands in where there is no digit to lift.
+#[cfg(windows)]
+fn display_label(device: &str, index: usize) -> String {
+    let number = device
+        .rsplit('\\')
+        .next()
+        .and_then(|name| name.strip_prefix("DISPLAY"))
+        .and_then(|digits| digits.parse::<u32>().ok());
+    match number {
+        Some(number) => format!("Display {number}"),
+        None => format!("Display {}", index + 1),
+    }
+}
+
+/// Detect the primary monitor's physical resolution in pixels.
+///
+/// One enumeration, not two: this is [`enumerate_monitors`] narrowed to the
+/// monitor a single-screen wallpaper is sized for, with the same fallback to
+/// the first that [`crate::display::primary_of`] makes for xrandr.
+#[cfg(windows)]
+pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
+    let monitors = enumerate_monitors()?;
+    let monitor = crate::display::primary_monitor_of(&monitors)
+        .ok_or_else(|| "No primary monitor found".to_owned())?;
+    debug!(
+        width = monitor.width,
+        height = monitor.height,
+        "detected primary monitor resolution"
+    );
+    Ok((monitor.width, monitor.height))
+}
+
+/// `IDesktopWallpaper` behind a small safe wrapper.
+///
+/// The COM interface is the only way to address one monitor:
+/// `SystemParametersInfoW` sets the wallpaper of a whole session and has no
+/// parameter for which screen. It is Windows 8 and later, which is everything
+/// this ships to.
+///
+/// Every call is `unsafe` in the generated bindings and every one of them is
+/// wrapped here, so the rest of the module never writes `unsafe` and the
+/// invariants are argued once each rather than at every call site.
+#[cfg(windows)]
+mod shell {
+    use std::path::Path;
+
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+    };
+    use windows::Win32::UI::Shell::{
+        DESKTOP_WALLPAPER_POSITION, DWPOS_FILL, DWPOS_SPAN, DesktopWallpaper, IDesktopWallpaper,
+    };
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+
+    /// A string the shell allocated with the COM task allocator.
+    ///
+    /// `GetMonitorDevicePathAt` and `GetWallpaper` both hand back memory the
+    /// caller owns, and the wrapper exists so that every early return frees it.
+    struct TaskMem(PWSTR);
+
+    impl TaskMem {
+        /// Its contents as a `String`, empty where the shell answered with
+        /// nothing. Not `Display`, because a wrapper around a raw pointer that
+        /// prints itself invites being printed.
+        fn read(&self) -> String {
+            if self.0.is_null() {
+                return String::new();
+            }
+            // SAFETY: a non-null PWSTR from a COM out-parameter is a
+            // null-terminated UTF-16 string the shell allocated and this owns.
+            #[allow(unsafe_code)]
+            unsafe {
+                String::from_utf16_lossy(self.0.as_wide())
+            }
         }
     }
 
-    Err("No primary monitor found".to_owned())
+    impl Drop for TaskMem {
+        fn drop(&mut self) {
+            if self.0.is_null() {
+                return;
+            }
+            // SAFETY: the pointer came from a COM method that transfers
+            // ownership to the caller, and this is the only release of it.
+            #[allow(unsafe_code)]
+            unsafe {
+                CoTaskMemFree(Some(self.0.as_ptr().cast()));
+            }
+        }
+    }
+
+    /// Initialize COM on this thread, once, and never tear it down.
+    ///
+    /// A single-threaded apartment, which is what a desktop shell object wants
+    /// and what the UI thread is already in. A thread that is already in the
+    /// multi-threaded apartment answers `RPC_E_CHANGED_MODE`, and that is not an
+    /// error to report: COM is initialized there, the apartment is simply
+    /// somebody else's, and an in-process shell object works either way. What
+    /// must not happen is calling `CoUninitialize` on a thread this did not
+    /// initialize, which is why nothing here ever does.
+    fn initialize() {
+        thread_local! {
+            static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        DONE.with(|done| {
+            if done.replace(true) {
+                return;
+            }
+            // SAFETY: CoInitializeEx takes no pointers of ours and is safe to
+            // call on any thread. Its result is inspected rather than asserted,
+            // because both "already initialized" answers are fine here.
+            #[allow(unsafe_code)]
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            tracing::debug!(hresult = hr.0, "initialized COM on this thread");
+        });
+    }
+
+    /// Where an image is fitted on the screens it is set on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Position {
+        /// One screen's own picture, filled to it. What `WallpaperStyle=10` does.
+        Fill,
+        /// One image stretched over the whole virtual desktop.
+        Span,
+    }
+
+    impl From<Position> for DESKTOP_WALLPAPER_POSITION {
+        fn from(position: Position) -> Self {
+            match position {
+                Position::Fill => DWPOS_FILL,
+                Position::Span => DWPOS_SPAN,
+            }
+        }
+    }
+
+    /// The shell's own wallpaper object.
+    pub struct DesktopWallpaperApi(IDesktopWallpaper);
+
+    impl DesktopWallpaperApi {
+        /// Create the shell object, initializing COM on this thread first.
+        pub fn open() -> Result<Self, String> {
+            initialize();
+            // SAFETY: DesktopWallpaper is an in-process shell class and the
+            // requested interface is the one the type parameter names, so the
+            // generated wrapper checks the QueryInterface itself.
+            #[allow(unsafe_code)]
+            let api: IDesktopWallpaper =
+                unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL) }
+                    .map_err(|e| format!("cannot reach the desktop wallpaper interface: {e}"))?;
+            Ok(Self(api))
+        }
+
+        /// Every monitor the shell will address, by the device path it takes.
+        ///
+        /// The path is what survives a reboot, which `\\.\DISPLAY1` does not, so
+        /// it is what the anchor setting stores.
+        pub fn monitor_paths(&self) -> Result<Vec<String>, String> {
+            // SAFETY: no arguments, and the count is a plain out-parameter.
+            #[allow(unsafe_code)]
+            let count = unsafe { self.0.GetMonitorDevicePathCount() }
+                .map_err(|e| format!("cannot count the monitors the shell addresses: {e}"))?;
+            let mut paths = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                // SAFETY: the index is below the count the shell just gave, and
+                // the returned string is owned by TaskMem from here on.
+                #[allow(unsafe_code)]
+                let path = unsafe { self.0.GetMonitorDevicePathAt(index) }
+                    .map_err(|e| format!("cannot read monitor {index}'s device path: {e}"))?;
+                paths.push(TaskMem(path).read());
+            }
+            Ok(paths)
+        }
+
+        /// The rectangle the shell says one device path occupies.
+        ///
+        /// This is what maps a device path onto an `HMONITOR`: the two
+        /// enumerations have no key in common and this rectangle is the only
+        /// thing both of them report.
+        pub fn monitor_rect(&self, id: &str) -> Result<(i32, i32, i32, i32), String> {
+            let id = HSTRING::from(id);
+            // SAFETY: the HSTRING outlives the call, and PCWSTR borrows it.
+            #[allow(unsafe_code)]
+            let rect = unsafe { self.0.GetMonitorRECT(PCWSTR(id.as_ptr())) }
+                .map_err(|e| format!("cannot read that monitor's rectangle: {e}"))?;
+            Ok((rect.left, rect.top, rect.right, rect.bottom))
+        }
+
+        /// How the images this object sets are fitted.
+        pub fn set_position(&self, position: Position) -> Result<(), String> {
+            // SAFETY: the position is one of the enumeration's own values.
+            #[allow(unsafe_code)]
+            unsafe { self.0.SetPosition(position.into()) }
+                .map_err(|e| format!("cannot set the wallpaper position: {e}"))
+        }
+
+        /// Put one image on one monitor, or on every monitor where `monitor` is
+        /// `None`.
+        pub fn set(&self, monitor: Option<&str>, image: &Path) -> Result<(), String> {
+            let id = monitor.map(HSTRING::from);
+            let image = HSTRING::from(image.as_os_str());
+            let id = id.as_ref().map_or(PCWSTR::null(), |id| PCWSTR(id.as_ptr()));
+            // SAFETY: both HSTRINGs outlive the call, and a null monitor id is
+            // the interface's own way of naming every monitor.
+            #[allow(unsafe_code)]
+            unsafe { self.0.SetWallpaper(id, PCWSTR(image.as_ptr())) }.map_err(|e| {
+                format!(
+                    "cannot set the wallpaper of {}: {e}",
+                    monitor.unwrap_or("every monitor")
+                )
+            })
+        }
+
+        /// What the shell holds for one monitor, which is the read-back.
+        ///
+        /// Worth more than it looks: it is the first time the Windows setter can
+        /// be asserted the way the Linux one already is, by asking the shell
+        /// what it has rather than trusting an exit code.
+        pub fn get(&self, monitor: &str) -> Result<String, String> {
+            let id = HSTRING::from(monitor);
+            // SAFETY: the HSTRING outlives the call, and the returned string is
+            // owned by TaskMem from here on.
+            #[allow(unsafe_code)]
+            let path = unsafe { self.0.GetWallpaper(PCWSTR(id.as_ptr())) }
+                .map_err(|e| format!("cannot read {monitor}'s wallpaper: {e}"))?;
+            Ok(TaskMem(path).read())
+        }
+    }
+}
+
+/// What the shell holds for one monitor, by its device path.
+///
+/// The Windows counterpart of reading a `gsettings` key back: an exit code is
+/// not evidence that a wallpaper was set, and this is.
+#[cfg(windows)]
+pub fn wallpaper_on_monitor(id: &str) -> Result<String, String> {
+    shell::DesktopWallpaperApi::open()?.get(id)
+}
+
+/// Make a finished job the Windows desktop's wallpaper.
+///
+/// A session with one monitor keeps `SystemParametersInfoW` and the registry
+/// style write exactly as they were, so the one configuration that is
+/// regression-tested on every desktop and in the Hyper-V guest does not move.
+/// Everything beyond one screen goes through `IDesktopWallpaper`, which is the
+/// only interface that can address a monitor.
+///
+/// Addressing one needs the device path [`adopt_device_paths`] maps onto it, and
+/// that mapping is a rectangle comparison nothing guarantees: `GetMonitorRECT`
+/// and `rcMonitor` disagreeing under mixed DPI would leave every screen holding
+/// the `szDevice` name it came in with, which the shell does not take. Three
+/// answers follow, and none of them is failing the publish. A screen with no
+/// device path keeps the wallpaper it has and the note says which. A screen the
+/// shell refuses costs that screen alone, because an unplug between the
+/// enumeration and the call looks exactly like that from here and the screens
+/// still there should not pay for it. And where *no* screen could be addressed,
+/// this falls back to the single-monitor path with the anchor's picture: that is
+/// what every session did before this feature, and losing the primary's
+/// wallpaper on a configuration nobody has verified is the worst outcome
+/// available.
+#[cfg(windows)]
+pub fn set_wallpaper_job(
+    job: &crate::engine::wallpaper_sink::WallpaperJob,
+) -> Result<String, String> {
+    use std::sync::Arc;
+
+    use crate::display::layout::DisplayMode;
+    use crate::engine::wallpaper_sink::Frame;
+
+    let spanning = job.mode == DisplayMode::AcrossScreens;
+    let mut publication = begin_publication()?;
+
+    if job.monitors.len() <= 1 {
+        let frame = job.anchor_image()?;
+        let path = publication.write("0", &frame.pixels, frame.width, frame.height)?;
+        publication.commit();
+        set_wallpaper(&path)?;
+        return Ok(String::new());
+    }
+
+    if spanning {
+        let canvas = job
+            .canvas()
+            .ok_or_else(|| "a view across the screens was asked for without a canvas".to_owned())?;
+        let path = publication.write("canvas", &canvas.pixels, canvas.width, canvas.height)?;
+        publication.commit();
+        let api = shell::DesktopWallpaperApi::open()?;
+        // Windows does the cutting: one file instead of one per screen, and the
+        // path it keeps consistent by itself when a monitor is unplugged.
+        api.set_position(shell::Position::Span)?;
+        api.set(None, &path)?;
+        info!(path = %path.display(), "spanned the wallpaper across every monitor");
+        return Ok(String::new());
+    }
+
+    let mut written: Vec<(Arc<Frame>, PathBuf)> = Vec::new();
+    let mut images: Vec<(&crate::display::Monitor, PathBuf)> = Vec::new();
+    let mut anchor_path: Option<PathBuf> = None;
+    for (index, monitor) in job.monitors.iter().enumerate() {
+        // A screen with no picture is one this mode does not paint, and it is
+        // left holding whatever it already had.
+        let Some(frame) = job.image_for(index)? else {
+            continue;
+        };
+        // Two screens showing the same picture cost one render, and this is
+        // what carries that as far as the file: one encode and one path.
+        let seen = written
+            .iter()
+            .find(|(seen, _)| Arc::ptr_eq(seen, &frame))
+            .map(|(_, path)| path.clone());
+        let path = if let Some(path) = seen {
+            path
+        } else {
+            let path =
+                publication.write(&index.to_string(), &frame.pixels, frame.width, frame.height)?;
+            written.push((Arc::clone(&frame), path.clone()));
+            path
+        };
+        if index == job.anchor {
+            anchor_path = Some(path.clone());
+        }
+        images.push((monitor, path));
+    }
+    publication.commit();
+
+    let api = shell::DesktopWallpaperApi::open()?;
+    api.set_position(shell::Position::Fill)?;
+    let mut unaddressed = Vec::new();
+    let mut refused = Vec::new();
+    let mut painted = 0usize;
+    for (monitor, path) in &images {
+        if !is_device_path(&monitor.id) {
+            unaddressed.push(monitor.label.clone());
+            continue;
+        }
+        match api.set(Some(&monitor.id), path) {
+            Ok(()) => painted += 1,
+            Err(e) => {
+                warn!(
+                    monitor = %monitor.label,
+                    error = %e,
+                    "the shell would not take this screen's wallpaper"
+                );
+                refused.push(monitor.label.clone());
+            }
+        }
+    }
+
+    if painted == 0 {
+        let path =
+            anchor_path.ok_or_else(|| "this publish has no image for its own anchor".to_owned())?;
+        set_wallpaper(&path)?;
+        let anchor = job
+            .anchor_monitor()
+            .map_or("the anchor", |m| m.label.as_str());
+        return Ok(format!(
+            "Windows would not take a wallpaper for any screen by name, so every \
+             screen got {anchor}'s picture the way they all did before"
+        ));
+    }
+
+    info!(screens = painted, "set a wallpaper per monitor");
+    let mut notes = Vec::new();
+    if !unaddressed.is_empty() {
+        notes.push(format!(
+            "Windows named no device for {}, so those screens kept the wallpaper they had",
+            unaddressed.join(", ")
+        ));
+    }
+    if !refused.is_empty() {
+        notes.push(format!(
+            "Windows would not take a wallpaper for {}, which is what a screen \
+             unplugged since the layout was read looks like from here",
+            refused.join(", ")
+        ));
+    }
+    Ok(notes.join("; "))
+}
+
+/// Whether a monitor id is one `IDesktopWallpaper` will take.
+///
+/// Every id starts life as `szDevice` (`\\.\DISPLAY1`) and
+/// [`adopt_device_paths`] replaces the ones the shell could be matched to with
+/// the device path it addresses that screen by. So an id still in the
+/// `\\.\` shape is one the mapping did not reach, and giving it to
+/// `SetWallpaper` addresses nothing at all: the interface takes the path, and a
+/// display device name is not one.
+#[cfg(windows)]
+fn is_device_path(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with(r"\\.\")
 }
 
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the
@@ -284,39 +903,6 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Encode RGBA8 pixel data as PNG and save it to the wallpaper directory.
-///
-/// Uses fast compression (`CompressionType::Fast`) because the user waits
-/// for the "Set as Wallpaper" operation to complete. Larger file size is
-/// acceptable. Windows preserves PNG wallpapers losslessly (no JPEG
-/// transcode), which avoids the banding artifacts that occurred with TIFF.
-///
-/// Writes to whichever of [`wallpaper_files`] the desktop is not showing, so
-/// that the path handed to the setter afterwards is one it has to load. Returns
-/// that path on success.
-pub fn save_wallpaper_image(pixels: &[u8], width: u32, height: u32) -> Result<PathBuf, String> {
-    use image::ImageEncoder;
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-
-    let path = next_wallpaper_file()?;
-    debug!(path = %path.display(), "saving wallpaper PNG");
-
-    let file =
-        std::fs::File::create(&path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
-    let writer = std::io::BufWriter::new(file);
-
-    let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
-    encoder
-        .write_image(pixels, width, height, image::ColorType::Rgba8.into())
-        .map_err(|e| format!("Failed to encode PNG: {e}"))?;
-
-    // Only once the image is written, so a failed encode does not spend the
-    // name the next publish is going to need.
-    *PUBLISHED.lock().expect("the published name is poisoned") = Some(path.clone());
-
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,17 +920,13 @@ mod tests {
     }
 
     #[test]
-    fn both_wallpaper_paths_are_distinct_pngs() {
-        let [first, second] = wallpaper_files().unwrap();
-        for path in [&first, &second] {
-            assert!(
-                path.to_string_lossy().ends_with(".png"),
-                "wallpaper path should end with .png, got: {path:?}"
-            );
-        }
+    fn a_slots_names_carry_the_slot_and_the_image() {
+        assert_eq!(slot_name(1, "0"), "wallpaper-1-0.png");
+        assert_eq!(slot_name(2, "canvas"), "wallpaper-2-canvas.png");
         assert_ne!(
-            first, second,
-            "the two names are what makes a publish a path the desktop has not seen"
+            slot_name(SLOTS[0], "0"),
+            slot_name(SLOTS[1], "0"),
+            "the two slots are what makes a publish a path the desktop has not seen"
         );
     }
 
@@ -354,6 +936,72 @@ mod tests {
         let (w, h) = get_primary_monitor_resolution().expect("should detect primary monitor");
         assert!(w > 0, "width should be > 0");
         assert!(h > 0, "height should be > 0");
+    }
+
+    /// The Windows half of the platform seam, asserted against whatever this
+    /// machine has: shape rather than values, because the values are the
+    /// machine's.
+    #[test]
+    #[cfg(windows)]
+    fn every_monitor_is_enumerated_with_a_rectangle_and_one_of_them_is_primary() {
+        let monitors = enumerate_monitors().expect("Windows can enumerate its monitors");
+        assert!(!monitors.is_empty(), "a desktop session has a monitor");
+        for monitor in &monitors {
+            assert!(
+                monitor.width > 0 && monitor.height > 0,
+                "a monitor with no pixels: {monitor:?}"
+            );
+            assert!(!monitor.id.is_empty(), "nothing to address: {monitor:?}");
+            assert!(monitor.label.starts_with("Display "), "{monitor:?}");
+        }
+        assert_eq!(
+            monitors.iter().filter(|m| m.primary).count(),
+            1,
+            "Windows marks exactly one monitor primary: {monitors:?}"
+        );
+        // And the narrowed query answers out of the same list rather than
+        // enumerating a second time with its own rules.
+        let primary = monitors.iter().find(|m| m.primary).unwrap();
+        assert_eq!(
+            get_primary_monitor_resolution().unwrap(),
+            (primary.width, primary.height)
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_display_device_is_labeled_by_its_own_number() {
+        assert_eq!(display_label(r"\\.\DISPLAY2", 0), "Display 2");
+        // A device path with no number to lift falls back to where it came in
+        // the enumeration rather than to a name that addresses nothing.
+        assert_eq!(display_label("", 3), "Display 4");
+        assert_eq!(display_label(r"\\.\WEIRD", 0), "Display 1");
+    }
+
+    /// The mapping that gives a screen an addressable id can miss, and what a
+    /// miss leaves behind is the display device name it came in with. That name
+    /// is not empty, which is what this used to be checked for, so nothing was
+    /// ever recognized as unaddressable and a screen with no device path was
+    /// handed to `SetWallpaper` anyway.
+    #[test]
+    #[cfg(windows)]
+    fn a_display_device_name_is_not_something_the_shell_can_be_given() {
+        assert!(!is_device_path(r"\\.\DISPLAY1"));
+        assert!(!is_device_path(""));
+        assert!(is_device_path(
+            r"\\?\DISPLAY#GSM5B09#5&d0e4e51&0&UID4353#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
+        ));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_fixed_width_device_field_stops_at_its_terminator() {
+        let mut field = [0u16; 32];
+        for (slot, c) in field.iter_mut().zip("ok".encode_utf16()) {
+            *slot = c;
+        }
+        assert_eq!(wide_to_string(&field), "ok");
+        assert_eq!(wide_to_string(&[]), "");
     }
 
     #[test]
@@ -384,34 +1032,56 @@ mod tests {
         let _ = std::fs::remove_file(&empty_file);
     }
 
-    /// Three saves in one test, because the alternation is one behaviour and the
-    /// saves share the one wallpaper directory: a second publish must not land
-    /// on the file the desktop is showing, and a third has to come back to the
-    /// first name rather than growing a third file.
+    /// The whole publish protocol in one test, because it is one behavior and
+    /// because these all share the one wallpaper directory: two tests writing
+    /// into it at once would each see the other's slot.
+    ///
+    /// A second publish must not land in the slot the desktop is showing, a
+    /// third has to come back to the first slot rather than growing a third one,
+    /// and taking a slot has to empty it of the layout that was there.
     #[test]
-    fn consecutive_saves_alternate_between_the_two_files() {
+    fn publishing_alternates_slots_and_empties_the_one_it_takes() {
         let red: Vec<u8> = (0..4u32 * 4).flat_map(|_| [255u8, 0, 0, 255]).collect();
         let blue: Vec<u8> = (0..2u32 * 2).flat_map(|_| [0u8, 0, 255, 255]).collect();
 
-        let first = save_wallpaper_image(&red, 4, 4).expect("should save PNG");
+        // The one-file era's names are swept, because nothing will ever name
+        // them again and each is as large as a screen.
+        let dir = wallpaper_dir().unwrap();
+        for legacy in LEGACY_NAMES {
+            std::fs::write(dir.join(legacy), b"not really a png").unwrap();
+        }
+
+        let mut publication = begin_publication().expect("a slot to publish into");
+        let first = publication.write("0", &red, 4, 4).expect("should save PNG");
+        let second_screen = publication.write("1", &red, 4, 4).expect("a second screen");
+        let canvas = publication.write("canvas", &red, 4, 4).expect("a canvas");
         assert!(first.exists(), "PNG file should exist");
         assert!(
             std::fs::metadata(&first).unwrap().len() > 0,
             "PNG file should be non-empty"
         );
+        assert_eq!(
+            publication.commit(),
+            vec![first.clone(), second_screen.clone(), canvas.clone()]
+        );
+        for legacy in LEGACY_NAMES {
+            assert!(!dir.join(legacy).exists(), "{legacy} survived a publish");
+        }
 
-        let second = save_wallpaper_image(&blue, 2, 2).expect("second save");
+        let mut publication = begin_publication().expect("the other slot");
+        let second = publication.write("0", &blue, 2, 2).expect("second publish");
         assert_ne!(
             first, second,
             "a publish the desktop can see is one at a path it is not showing"
         );
+        publication.commit();
         assert_eq!(
-            published_wallpaper_file().unwrap().as_ref(),
-            Some(&second),
-            "the setter is handed the file that was just written"
+            published_wallpaper_files().unwrap(),
+            vec![second.clone()],
+            "the setter is handed the files that were just written"
         );
 
-        // Each file holds its own frame, so the one a desktop is still showing
+        // Each slot holds its own frame, so the one a desktop is still showing
         // is not the one being rewritten.
         let earlier = image::open(&first).expect("the earlier frame is still readable");
         assert_eq!((earlier.width(), earlier.height()), (4, 4));
@@ -421,14 +1091,15 @@ mod tests {
         assert_eq!(pixel[0], 0, "red channel should be 0 (blue image)");
         assert_eq!(pixel[2], 255, "blue channel should be 255");
 
-        let third = save_wallpaper_image(&red, 4, 4).expect("third save");
-        assert_eq!(third, first, "two names, taken in turn");
-        // Which of the two the run started on depends on what the directory
-        // already held, so what is asserted is that it stayed within them.
-        let names = wallpaper_files().unwrap();
+        // Back to the first slot with a layout of one screen: the two images the
+        // larger layout left there are gone rather than lingering at full size.
+        let mut publication = begin_publication().expect("back to the first slot");
         assert!(
-            names.contains(&first) && names.contains(&second),
-            "the saves used the names this module publishes: {names:?}"
+            !second_screen.exists() && !canvas.exists(),
+            "the previous layout's extra images are still there"
         );
+        let third = publication.write("0", &red, 4, 4).expect("third publish");
+        assert_eq!(third, first, "two slots, taken in turn");
+        assert_eq!(publication.commit(), vec![first]);
     }
 }

@@ -1136,3 +1136,30 @@ fn test_the_about_window_content_starts_at_its_left_edge() {
 
     approx::assert_relative_eq!(window.get_content_x(), 0.0);
 }
+
+/// The adapter name stays on one line however long it is. A word-wrapped
+/// `Text` inside the Advanced section reports the height of a single line
+/// whatever it wraps to, so a scroll area sized from that cuts the rest off
+/// with no way to scroll to it.
+#[test]
+fn test_the_adapter_line_never_wraps() {
+    let window = create_window();
+    widest_panel_state(&window);
+
+    let short = adapter_line_height(&window, "Dx12");
+    let long = adapter_line_height(
+        &window,
+        "AMD Radeon 780M Graphics (RADV PHOENIX) (Vulkan, IntegratedGpu)",
+    );
+
+    approx::assert_relative_eq!(short, long);
+}
+
+fn adapter_line_height(window: &MainWindow, renderer_info: &str) -> f32 {
+    window.set_renderer_info(renderer_info.into());
+    materialize(window);
+    let found: Vec<_> =
+        ElementHandle::find_by_element_id(window, "MainWindow::adapter-line").collect();
+    assert_eq!(found.len(), 1, "expected exactly one adapter line");
+    found[0].size().height
+}

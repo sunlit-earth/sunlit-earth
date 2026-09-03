@@ -626,6 +626,24 @@ export component MainWindow inherits Window {
                                     current-index <=> root.aa-index;
                                     selected => { root.msaa-changed(); }
                                 }
+
+                                // One line, whatever the adapter calls itself,
+                                // with the whole name on hover. Wrapping this
+                                // would read better, but a wrapped Text inside
+                                // an `if` reports the height of one line
+                                // however many it takes, and a scroll area
+                                // sized from that cuts the rest off.
+                                adapter-line := Text {
+                                    text: renderer-info;
+                                    color: #888888;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                    min-width: 0;
+
+                                    Tooltip {
+                                        Hint { text: root.renderer-info; }
+                                    }
+                                }
                             }
                         }
 
@@ -1407,12 +1425,6 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        Text {
-                            text: renderer-info;
-                            color: #888888;
-                            font-size: 11px;
-                            wrap: word-wrap;
-                        }
                     }
                 }
             }

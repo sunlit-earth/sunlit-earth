@@ -28,13 +28,45 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// directory the config file and the texture cache already live in. Asked through
 /// `dirs` rather than through `LOCALAPPDATA` directly so that the three agree
 /// wherever the app runs.
+///
+/// In a unit-test build this refuses to resolve to that live directory: a publish
+/// under test writes real PNGs and sweeps what is there, so a test that reached
+/// the real directory would overwrite the developer's own wallpaper. The tests
+/// point it at a scratch directory through [`tests::Scratch`], and a resolution
+/// with no scratch set panics rather than falling back to the live directory, so
+/// a test that forgets the isolation fails loudly in CI instead of quietly on a
+/// desktop.
 pub fn wallpaper_dir() -> Result<PathBuf, String> {
-    let dir = dirs::data_local_dir()
-        .ok_or_else(|| "no local data directory on this system".to_owned())?
-        .join("SunlitEarth");
+    #[cfg(test)]
+    let dir = scratch_override().expect(
+        "a unit test resolved wallpaper_dir() without a scratch override; wrap the \
+         publish in tests::Scratch so it cannot write to the real desktop directory",
+    );
+    #[cfg(not(test))]
+    let dir = data_dir_wallpaper_path()?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create wallpaper directory: {e}"))?;
     Ok(dir)
+}
+
+/// The live wallpaper directory under this system's local data directory.
+///
+/// The real resolution, kept apart from [`wallpaper_dir`] so the test build can
+/// redirect the latter without losing a way to check this one, and so nothing in
+/// a test ever creates it by accident.
+fn data_dir_wallpaper_path() -> Result<PathBuf, String> {
+    Ok(dirs::data_local_dir()
+        .ok_or_else(|| "no local data directory on this system".to_owned())?
+        .join("SunlitEarth"))
+}
+
+/// The scratch directory the current test thread publishes into, if any.
+///
+/// Thread-local so a serialized test owns its own directory, and consulted by
+/// [`wallpaper_dir`] ahead of the live directory.
+#[cfg(test)]
+fn scratch_override() -> Option<PathBuf> {
+    tests::SCRATCH_DIR.with(|dir| dir.borrow().clone())
 }
 
 /// The two slots a published wallpaper alternates between.
@@ -905,18 +937,105 @@ pub fn set_wallpaper(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
+
+    thread_local! {
+        /// The directory the current test thread publishes into. Set by
+        /// [`Scratch`] and read by [`super::scratch_override`].
+        pub(super) static SCRATCH_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    /// Serializes every test that publishes, because the publish record in
+    /// [`PUBLISHED`] is process-global and two publishes at once would each see
+    /// the other's generation.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// A disposable wallpaper directory that lasts one test.
+    ///
+    /// Holding it redirects [`wallpaper_dir`] at a fresh temporary directory and
+    /// clears the process-global publish record, so a test publishes in isolation
+    /// and never touches the developer's real wallpaper. Dropping it clears the
+    /// redirect and the record and removes the directory. The lock it holds is
+    /// what serializes the publishing tests.
+    struct Scratch {
+        _serial: MutexGuard<'static, ()>,
+        dir: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let dir = std::env::temp_dir()
+                .join(format!("sunlit_earth_wallpaper_{name}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create the scratch wallpaper directory");
+            SCRATCH_DIR.with(|slot| *slot.borrow_mut() = Some(dir.clone()));
+            reset_published();
+            Self {
+                _serial: serial,
+                dir,
+            }
+        }
+
+        fn dir(&self) -> &Path {
+            &self.dir
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            SCRATCH_DIR.with(|slot| *slot.borrow_mut() = None);
+            reset_published();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Forget any in-process publish, so a test starts where a fresh process would.
+    fn reset_published() {
+        *PUBLISHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 
     #[test]
     fn the_wallpaper_lives_under_this_systems_local_data_directory() {
-        let result = wallpaper_dir();
-        assert!(result.is_ok(), "wallpaper_dir should succeed");
-        let dir = result.unwrap();
+        let dir = data_dir_wallpaper_path().expect("a local data directory on the test host");
         assert!(
             dir.ends_with("SunlitEarth"),
             "path should end with SunlitEarth, got: {dir:?}"
         );
-        assert!(dir.exists(), "directory should be created");
+    }
+
+    /// The isolation itself: while a test holds a [`Scratch`], a publish resolves
+    /// to that scratch directory and never to the live data directory. This is
+    /// the guard that keeps a forgetful future test off the developer's desktop.
+    #[test]
+    fn a_publish_under_test_stays_out_of_the_real_data_directory() {
+        let scratch = Scratch::new("isolation_guard");
+        let resolved = wallpaper_dir().expect("the scratch directory resolves");
+        assert!(
+            resolved.starts_with(scratch.dir()),
+            "a publish under test resolved to {resolved:?}, outside the scratch {:?}",
+            scratch.dir()
+        );
+        let live = data_dir_wallpaper_path().expect("a local data directory on the test host");
+        assert_ne!(
+            resolved, live,
+            "a publish under test resolved to the live wallpaper directory"
+        );
+
+        let mut publication = begin_publication().expect("a generation to publish into");
+        let path = publication
+            .write("0", &[255u8, 0, 0, 255], 1, 1)
+            .expect("write a pixel");
+        assert!(
+            path.starts_with(scratch.dir()),
+            "a written wallpaper {path:?} escaped the scratch {:?}",
+            scratch.dir()
+        );
     }
 
     #[test]
@@ -1041,6 +1160,7 @@ mod tests {
     /// and taking a slot has to empty it of the layout that was there.
     #[test]
     fn publishing_alternates_slots_and_empties_the_one_it_takes() {
+        let _scratch = Scratch::new("alternation");
         let red: Vec<u8> = (0..4u32 * 4).flat_map(|_| [255u8, 0, 0, 255]).collect();
         let blue: Vec<u8> = (0..2u32 * 2).flat_map(|_| [0u8, 0, 255, 255]).collect();
 

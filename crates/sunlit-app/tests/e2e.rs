@@ -2790,7 +2790,10 @@ fn test_plasmashell_survives_rapid_republishing() {
     const BURST: usize = 5;
 
     if !wallpaper_supported() {
-        skip_case(CASE, "the wallpaper sink reports no setter for this session");
+        skip_case(
+            CASE,
+            "the wallpaper sink reports no setter for this session",
+        );
         return;
     }
     if std::env::var_os(WALLPAPER_OPT_IN).is_none() {

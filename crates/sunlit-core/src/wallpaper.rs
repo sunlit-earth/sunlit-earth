@@ -313,7 +313,9 @@ impl Publication {
     /// currently holds. A setter that then fails leaves the desktop on the
     /// previous generation, which is still on disk.
     pub fn commit(self) -> Vec<PathBuf> {
-        let mut published = PUBLISHED.lock().expect("the published generation is poisoned");
+        let mut published = PUBLISHED
+            .lock()
+            .expect("the published generation is poisoned");
         if let Some(root) = self.dir.parent() {
             let previous = published
                 .as_ref()
@@ -1119,9 +1121,13 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let dir = std::env::temp_dir()
-                .join(format!("sunlit_earth_wallpaper_{name}_{}", std::process::id()));
+            let serial = SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let dir = std::env::temp_dir().join(format!(
+                "sunlit_earth_wallpaper_{name}_{}",
+                std::process::id()
+            ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("create the scratch wallpaper directory");
             SCRATCH_DIR.with(|slot| *slot.borrow_mut() = Some(dir.clone()));
@@ -1206,8 +1212,14 @@ mod tests {
         let second = begin_publication().expect("another generation");
         assert_ne!(first.dir, second.dir, "two publishes shared a directory");
         for dir in [&first.dir, &second.dir] {
-            assert!(dir.starts_with(scratch.dir()), "{dir:?} escaped the scratch");
-            assert!(is_generation_dir(dir), "{dir:?} is not a generation directory");
+            assert!(
+                dir.starts_with(scratch.dir()),
+                "{dir:?} escaped the scratch"
+            );
+            assert!(
+                is_generation_dir(dir),
+                "{dir:?} is not a generation directory"
+            );
         }
     }
 
@@ -1403,7 +1415,11 @@ mod tests {
         let root = scratch.dir().to_path_buf();
 
         // A slot-era layout and a single-image name, which nothing names any more.
-        for legacy in ["wallpaper-1-0.png", "wallpaper-2-canvas.png", "wallpaper-1.png"] {
+        for legacy in [
+            "wallpaper-1-0.png",
+            "wallpaper-2-canvas.png",
+            "wallpaper-1.png",
+        ] {
             std::fs::write(root.join(legacy), b"not really a png").unwrap();
         }
 
@@ -1425,7 +1441,11 @@ mod tests {
         assert!(second.exists(), "the previous generation must be kept");
         assert!(third.exists(), "the newest generation must be kept");
 
-        for legacy in ["wallpaper-1-0.png", "wallpaper-2-canvas.png", "wallpaper-1.png"] {
+        for legacy in [
+            "wallpaper-1-0.png",
+            "wallpaper-2-canvas.png",
+            "wallpaper-1.png",
+        ] {
             assert!(
                 !root.join(legacy).exists(),
                 "{legacy} survived a publish, and each is as large as a screen"
@@ -1446,12 +1466,15 @@ mod tests {
         let screen_two = every
             .write("1", &pixels(2, 2, [0, 0, 255, 255]), 2, 2)
             .expect("the second screen's file");
-        every.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2).unwrap();
+        every
+            .write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2)
+            .unwrap();
         every.commit();
 
         // A one-screen publish that paints only the anchor.
         let mut one = begin_publication().expect("a generation");
-        one.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2).unwrap();
+        one.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2)
+            .unwrap();
         one.commit();
 
         assert!(
@@ -1468,7 +1491,9 @@ mod tests {
         let _scratch = Scratch::new("read_back");
 
         let mut first = begin_publication().expect("a generation");
-        first.write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2).unwrap();
+        first
+            .write("0", &pixels(2, 2, [255, 0, 0, 255]), 2, 2)
+            .unwrap();
         first.commit();
 
         let mut second = begin_publication().expect("a generation");
@@ -1484,12 +1509,19 @@ mod tests {
         // As a fresh process would, with the record gone.
         reset_published();
         let read_back = published_wallpaper_files().unwrap();
-        assert_eq!(read_back, vec![newest], "the read-back is not the newest generation");
+        assert_eq!(
+            read_back,
+            vec![newest],
+            "the read-back is not the newest generation"
+        );
         assert!(read_back.iter().all(|path| path.starts_with(&newest_dir)));
 
         // And the next publish is a directory the read-back did not name.
         let next = begin_publication().expect("a generation");
-        assert_ne!(next.dir, newest_dir, "a fresh publish reused the newest path");
+        assert_ne!(
+            next.dir, newest_dir,
+            "a fresh publish reused the newest path"
+        );
     }
 
     /// The temporary files left in a generation directory, `<name>.tmp`-suffixed.

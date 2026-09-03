@@ -1040,7 +1040,7 @@ impl Engine {
     ///
     /// One query per settled burst, whatever the burst was made of: the hints
     /// this design pays for and discards on purpose are a resume from sleep, a
-    /// scaling change and a colour depth change, each of which costs one
+    /// scaling change and a color depth change, each of which costs one
     /// enumeration and an equal comparison.
     ///
     /// The rule for the wallpaper is one sentence. The desk holds a picture

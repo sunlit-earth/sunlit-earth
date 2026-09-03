@@ -4591,14 +4591,14 @@ fn establish_baseline(harness: &Harness, clock: &MockClock, sink: &RecordingSink
 
 /// The settle the engine uses, spelled here so the cases read as the plan does.
 /// It is not imported from the engine because it is private there, and a case
-/// that pinned the number would be testing a constant rather than behaviour:
+/// that pinned the number would be testing a constant rather than behavior:
 /// what these use it for is to step over it.
 const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 
 /// A layout that did not change is one query and nothing else.
 ///
 /// The hints this design pays for and discards are exactly this case: a resume
-/// from sleep, a scaling change, a colour depth change. Each costs one
+/// from sleep, a scaling change, a color depth change. Each costs one
 /// enumeration and an equal comparison, and nothing on the desk moves.
 #[test]
 fn a_hint_about_a_layout_that_did_not_change_is_one_query_and_nothing_else() {

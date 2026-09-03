@@ -2634,8 +2634,9 @@ fn test_a_layout_change_republishes_the_wallpaper() {
     let Some(mut change) = a_layout_change_this_session_can_make() else {
         skip_case(
             CASE,
-            "this session has one screen with one mode, so there is no layout \
-             change to make; --screens 2 is the run this case was written for",
+            "this session offers no layout change this case can make: it needs \
+             two outputs to switch one off or a second mode to switch to, and \
+             `display::outputs` is a Linux query, so off Linux it always lands here",
         );
         return;
     };

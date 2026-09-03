@@ -195,7 +195,7 @@ component SettingHeading inherits Text {
 }
 
 export component MainWindow inherits Window {
-    title: "Sunlit Earth — MVP";
+    title: "Sunlit Earth " + root.version;
     // The SVG master rather than a baked raster: Slint asks for the icon at 64
     // logical pixels times the scale factor, so a vector source lands exactly
     // on whatever that comes to, and 64 and up is the master's own range.
@@ -208,6 +208,7 @@ export component MainWindow inherits Window {
     // instead.
     min-width: 520px;
 
+    in property <string> version;
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
     in property <[string]> aa-options: ["None", "MSAA 4\u{d7}"];

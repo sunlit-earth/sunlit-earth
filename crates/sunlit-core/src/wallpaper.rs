@@ -312,6 +312,15 @@ impl Publication {
     /// this removes is older than it and referenced by nothing the desktop
     /// currently holds. A setter that then fails leaves the desktop on the
     /// previous generation, which is still on disk.
+    ///
+    /// The legacy flat files an older version left are the exception, and are
+    /// swept only once a prior generation exists. A desktop upgraded from that
+    /// version is still showing one of them, so deleting it here, before this
+    /// first generation publish's setter has switched the desktop onto a
+    /// generation, would delete the file under a live watch: the very thing this
+    /// lifecycle exists to prevent. They are the previous "generation" for one
+    /// cycle, kept through the first publish and swept on the second, by which
+    /// point a generation has been set.
     pub fn commit(self) -> Vec<PathBuf> {
         let mut published = PUBLISHED
             .lock()
@@ -322,7 +331,9 @@ impl Publication {
                 .map(|generation| generation.dir.clone())
                 .or_else(|| newest_generation_other_than(root, &self.dir));
             sweep_generations(root, &self.dir, previous.as_deref());
-            sweep_legacy_files(root);
+            if previous.is_some() {
+                sweep_legacy_files(root);
+            }
         }
         *published = Some(Generation {
             dir: self.dir.clone(),
@@ -371,6 +382,9 @@ fn sweep_generations(root: &Path, current: &Path, previous: Option<&Path>) {
 /// The two-slot scheme's `wallpaper-<slot>-*.png` and the single-image era's
 /// `wallpaper-1.png` and `wallpaper-2.png`, each a full-resolution PNG nothing
 /// will ever name again now that a publish writes into a generation directory.
+///
+/// Called only once a generation has been set, since one of these may be the
+/// wallpaper the desktop is still showing until then; see [`Publication::commit`].
 fn sweep_legacy_files(root: &Path) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
@@ -1449,6 +1463,44 @@ mod tests {
             assert!(
                 !root.join(legacy).exists(),
                 "{legacy} survived a publish, and each is as large as a screen"
+            );
+        }
+    }
+
+    /// The first generation publish keeps the legacy flat files, because a
+    /// desktop upgraded from the old scheme is still showing one of them until
+    /// this publish's setter switches it onto a generation. The second publish,
+    /// by which point a generation has been set, sweeps them.
+    #[test]
+    fn the_first_publish_keeps_the_legacy_files_the_desktop_may_still_show() {
+        let scratch = Scratch::new("legacy_first_publish");
+        let root = scratch.dir().to_path_buf();
+        let legacy = ["wallpaper-1-0.png", "wallpaper-2-0.png"];
+        for name in legacy {
+            std::fs::write(root.join(name), b"not really a png").unwrap();
+        }
+
+        let mut first = begin_publication().expect("a generation");
+        first
+            .write("0", &pixels(2, 2, [0, 255, 0, 255]), 2, 2)
+            .unwrap();
+        first.commit();
+        for name in legacy {
+            assert!(
+                root.join(name).exists(),
+                "{name} was swept while the desktop may still be showing it"
+            );
+        }
+
+        let mut second = begin_publication().expect("a generation");
+        second
+            .write("0", &pixels(2, 2, [0, 0, 255, 255]), 2, 2)
+            .unwrap();
+        second.commit();
+        for name in legacy {
+            assert!(
+                !root.join(name).exists(),
+                "{name} survived the publish after a generation was set"
             );
         }
     }

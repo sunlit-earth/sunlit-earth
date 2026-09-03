@@ -1887,6 +1887,31 @@ fn test_memory_report() {
 /// after the connected monitor, which is the only one xfdesktop reads. So a
 /// desktop whose settings are named after its own monitors has to hold the image
 /// in one of those, and nothing else counts.
+/// The placement the app would have made for this session, rebuilt from what it
+/// actually wrote: the file per monitor where this desktop takes one, and the
+/// first file otherwise.
+#[cfg(target_os = "linux")]
+fn placement_of(
+    backend: &sunlit_core::desktop::Backend,
+    published: &[std::path::PathBuf],
+    monitors: &[String],
+) -> sunlit_core::desktop::Placement {
+    if backend.reach() != sunlit_core::desktop::Reach::PerMonitor {
+        return sunlit_core::desktop::Placement::single(published[0].clone());
+    }
+    sunlit_core::desktop::Placement {
+        per_monitor: monitors
+            .iter()
+            .cloned()
+            .zip(published.iter().cloned())
+            .collect(),
+        untouched: Vec::new(),
+        by_position: published.iter().cloned().map(Some).collect(),
+        single: published[0].clone(),
+        spanned: false,
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> Option<String> {
     assert!(
@@ -1920,24 +1945,7 @@ fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> O
         .map(|monitor| monitor.id)
         .collect();
 
-    // The placement the app would have made for this session, rebuilt from what
-    // it actually wrote: the file per monitor where this desktop takes one, and
-    // the first file otherwise.
-    let placement = if backend.reach() == sunlit_core::desktop::Reach::PerMonitor {
-        sunlit_core::desktop::Placement {
-            per_monitor: monitors
-                .iter()
-                .cloned()
-                .zip(published.iter().cloned())
-                .collect(),
-            untouched: Vec::new(),
-            by_position: published.iter().cloned().map(Some).collect(),
-            single: published[0].clone(),
-            spanned: false,
-        }
-    } else {
-        sunlit_core::desktop::Placement::single(published[0].clone())
-    };
+    let placement = placement_of(&backend, published, &monitors);
 
     let mut holders: Vec<String> = Vec::new();
     for command in backend.commands(&placement, &discovered) {
@@ -2447,6 +2455,185 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
     // image is not the shape any single screen is.
     #[cfg(target_os = "linux")]
     assert_the_desktop_holds_the_wallpaper(&files);
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited: {:?}",
+        output.status
+    );
+}
+
+/// Run one xrandr command and say whether it worked.
+fn xrandr(args: &[&str]) -> bool {
+    match Command::new("xrandr").args(args).output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            println!(
+                "xrandr {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            println!("xrandr {} could not be run: {e}", args.join(" "));
+            false
+        }
+    }
+}
+
+/// Puts the second output back where the boot placed it, whatever the case did.
+///
+/// A guard rather than a line at the end, so a failing assertion cannot leave
+/// the guest one-screened for every case that runs after it.
+struct LayoutGuard {
+    first: String,
+    second: String,
+    restored: bool,
+}
+
+impl LayoutGuard {
+    fn restore(&mut self) -> bool {
+        self.restored = true;
+        xrandr(&[
+            "--output",
+            &self.second,
+            "--auto",
+            "--right-of",
+            &self.first,
+        ])
+    }
+}
+
+impl Drop for LayoutGuard {
+    fn drop(&mut self) {
+        if !self.restored {
+            self.restore();
+        }
+    }
+}
+
+/// A layout that changed, against a real X server, end to end.
+///
+/// What it proves is the whole path: that a `RandR` change wakes the watcher,
+/// that the settle collapses the burst into one query, that the engine sees the
+/// new list, and that the desktop was handed images for it. Every layout
+/// question below the watcher is decided against fabricated monitor lists in
+/// `display::layout` and `tests/engine.rs`; this is the one place a real
+/// session's own screens move.
+///
+/// Gated like the other wallpaper cases, and additionally on there being a
+/// second output to switch off: `cargo xtask e2e --target linux --screens 2` is
+/// the run this is written for.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_a_layout_change_republishes_the_wallpaper() {
+    const CASE: &str = "test_a_layout_change_republishes_the_wallpaper";
+    let publish_budget = Duration::from_mins(2);
+
+    if !wallpaper_supported() {
+        skip_case(
+            CASE,
+            "the wallpaper sink reports no setter for this session",
+        );
+        return;
+    }
+    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+        skip_case(
+            CASE,
+            "this case replaces the desktop wallpaper, so it runs only where \
+             that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+    let outputs = sunlit_core::display::outputs().unwrap_or_default();
+    if outputs.len() < 2 {
+        skip_case(
+            CASE,
+            "a layout can only change here by switching an output off, and this \
+             session has fewer than two; --screens 2 is the run for it",
+        );
+        return;
+    }
+    // The primary stays on: what is switched off is one of the others, so the
+    // session always has somewhere to put a window.
+    let first = sunlit_core::display::primary_of(&outputs)
+        .expect("a session with outputs has a primary")
+        .name
+        .clone();
+    let second = outputs
+        .iter()
+        .find(|output| output.name != first)
+        .expect("two outputs are two names")
+        .name
+        .clone();
+
+    let socket_name = unique_socket_name();
+    let (mut guard, watcher) = spawn_for_ipc(&socket_name, &isolated_config_path());
+
+    // A wallpaper on the desk first: the engine only re-renders for a layout
+    // change where it is already holding one.
+    let from = watcher.line_count();
+    send_ipc_command(&socket_name, "set-wallpaper");
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
+    assert!(
+        line.contains("wallpaper_set"),
+        "the first publish failed: {line}"
+    );
+    let before = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    assert!(!before.is_empty(), "the first publish wrote no file");
+
+    let mut layout = LayoutGuard {
+        first: first.clone(),
+        second: second.clone(),
+        restored: false,
+    };
+
+    let from = watcher.line_count();
+    assert!(
+        xrandr(&["--output", &second, "--off"]),
+        "the case cannot change a layout it cannot switch an output off in"
+    );
+    let line = watcher.wait_for_signal_line_from("displays_changed ", from, publish_budget);
+    assert!(
+        line.contains("monitors=1"),
+        "the app was told about a layout that is not the one this case made: {line}"
+    );
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
+    assert!(
+        line.contains("wallpaper_set"),
+        "the republish after the layout change failed: {line}"
+    );
+
+    let after = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    assert!(!after.is_empty(), "the republish wrote no file");
+    assert_the_files_match_the_layout(&after);
+    for path in &after {
+        assert!(
+            !before.contains(path),
+            "{} is a path the desktop was already showing, which is a wallpaper \
+             that does not visibly change",
+            path.display()
+        );
+    }
+
+    let from = watcher.line_count();
+    assert!(layout.restore(), "the second output could not be put back");
+    let line = watcher.wait_for_signal_line_from("displays_changed ", from, publish_budget);
+    assert!(
+        line.contains("monitors=2"),
+        "the screen came back and the app did not hear about it: {line}"
+    );
+    let line = watcher.wait_for_signal_line_from("wallpaper_", from, publish_budget);
+    assert!(
+        line.contains("wallpaper_set"),
+        "the republish after the screen returned failed: {line}"
+    );
+    let restored = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    assert_the_files_match_the_layout(&restored);
 
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(15));

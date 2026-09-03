@@ -21,6 +21,7 @@ use sunlit_core::assets::texture_loader::DecodedImage;
 use sunlit_core::config::QualityTier;
 use sunlit_core::display::Monitor;
 use sunlit_core::display::layout::DisplayMode;
+use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::wallpaper_sink::{
     CountingSink, Frame, JobImages, WallpaperJob, WallpaperSink,
 };
@@ -1042,7 +1043,14 @@ fn screen(id: &str, x: i32, width: u32, height: u32, primary: bool) -> Monitor {
 /// This is what proves the engine asks for the right images in each mode with
 /// no display anywhere, so it runs on Windows and macOS as well as Linux.
 struct RecordingSink {
-    monitors: Vec<Monitor>,
+    /// Behind a lock because a display-change case moves the layout under a
+    /// running engine, which is the whole thing those cases are about.
+    monitors: Mutex<Vec<Monitor>>,
+    /// How often the engine has asked. A recheck that changes nothing leaves no
+    /// other trace, so this is what says it happened at all.
+    queries: std::sync::atomic::AtomicUsize,
+    /// What `check_supported` answers; `None` accepts.
+    refusal: Option<String>,
     published: Mutex<Vec<Publication>>,
 }
 
@@ -1061,11 +1069,34 @@ struct Publication {
 }
 
 impl RecordingSink {
+    /// The reason a refusing recording sink gives.
+    const REFUSED: &'static str = "this recording sink refuses on purpose";
+
     fn new(monitors: Vec<Monitor>) -> Self {
         Self {
-            monitors,
+            monitors: Mutex::new(monitors),
+            queries: std::sync::atomic::AtomicUsize::new(0),
+            refusal: None,
             published: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The same sink with no wallpaper setter behind it, which is a Linux
+    /// desktop the table does not know.
+    fn refusing(monitors: Vec<Monitor>) -> Self {
+        Self {
+            refusal: Some(Self::REFUSED.to_owned()),
+            ..Self::new(monitors)
+        }
+    }
+
+    /// Move the layout under the running engine.
+    fn set_monitors(&self, monitors: Vec<Monitor>) {
+        *self.monitors.lock().expect("the recording is poisoned") = monitors;
+    }
+
+    fn queries(&self) -> usize {
+        self.queries.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn publications(&self) -> std::sync::MutexGuard<'_, Vec<Publication>> {
@@ -1074,8 +1105,21 @@ impl RecordingSink {
 }
 
 impl WallpaperSink for RecordingSink {
+    fn check_supported(&self) -> Result<(), String> {
+        match &self.refusal {
+            Some(reason) => Err(reason.clone()),
+            None => Ok(()),
+        }
+    }
+
     fn monitors(&self) -> Result<Vec<Monitor>, String> {
-        Ok(self.monitors.clone())
+        self.queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self
+            .monitors
+            .lock()
+            .expect("the recording is poisoned")
+            .clone())
     }
 
     fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
@@ -4454,4 +4498,268 @@ fn the_night_opacity_reaches_full_cover() {
         "the default night opacity reads {partly:.1}, which is not between the {covered:.1} of          full cover and the {uncovered:.1} of none, so the slider is not doing the covering"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Reacting to a display layout that changed
+// ---------------------------------------------------------------------------
+
+/// How long a case waits for something it expects to happen.
+const CHANGE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a case waits before concluding that nothing is going to happen.
+///
+/// The engine loop wakes every 50 ms whatever else is going on, so this is
+/// several of its ticks and not a guess at how fast the machine is.
+const NOTHING_HAPPENS_IN: Duration = Duration::from_millis(400);
+
+/// An engine on a clock the case moves, over a layout the case can move too.
+fn watching_harness(sink: Arc<RecordingSink>) -> (Harness, Arc<MockClock>) {
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let clock_for_config = Arc::clone(&clock);
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink;
+        config.clock = clock_for_config;
+    });
+    harness.next_frame();
+    (harness, clock)
+}
+
+impl Harness {
+    /// Send a display-change hint and wait until the engine has taken it.
+    ///
+    /// The round trip matters rather than the report: commands are handled in
+    /// the order they were sent, so an answer to a later one is proof that the
+    /// hint was read at the clock reading the case meant it to be read at.
+    fn hint(&self) {
+        self.engine.send(EngineCommand::DisplaysChanged);
+        let _ = self.engine.memory_report();
+    }
+
+    /// Move the clock and ask the engine to look at its schedule now.
+    fn advance(&self, clock: &MockClock, by: Duration) {
+        clock.advance(by);
+        self.engine.send(EngineCommand::Poke);
+    }
+
+    /// The next layout the engine announces, or `None` if it announces none.
+    fn next_layout(&self, within: Duration) -> Option<Vec<Monitor>> {
+        let deadline = std::time::Instant::now() + within;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if let EngineEvent::MonitorsChanged(monitors) = event {
+                return Some(monitors);
+            }
+        }
+        None
+    }
+
+    /// Block until the engine has finished a publish attempt.
+    fn wait_for_publish(&self) -> Result<String, String> {
+        let deadline = std::time::Instant::now() + CHANGE_TIMEOUT;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if let EngineEvent::WallpaperSet(result) = event {
+                return result;
+            }
+        }
+        panic!("no publish finished within {CHANGE_TIMEOUT:?}");
+    }
+}
+
+/// Block until the sink has been asked for its monitors `target` times.
+fn wait_for_queries(sink: &RecordingSink, target: usize) {
+    let deadline = std::time::Instant::now() + CHANGE_TIMEOUT;
+    while sink.queries() < target {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the engine asked for the monitors {} times, not {target}",
+            sink.queries()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Give the engine the settle and a hint's worth of a baseline to compare
+/// against, so the cases below start from a layout the engine has seen.
+fn establish_baseline(harness: &Harness, clock: &MockClock, sink: &RecordingSink) {
+    harness.hint();
+    harness.advance(clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    let announced = harness
+        .next_layout(CHANGE_TIMEOUT)
+        .expect("the first layout the engine sees is one it has nothing to compare against");
+    assert_eq!(announced, sink.monitors().expect("the sink answers"));
+}
+
+/// The settle the engine uses, spelled here so the cases read as the plan does.
+/// It is not imported from the engine because it is private there, and a case
+/// that pinned the number would be testing a constant rather than behaviour:
+/// what these use it for is to step over it.
+const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
+
+/// A layout that did not change is one query and nothing else.
+///
+/// The hints this design pays for and discards are exactly this case: a resume
+/// from sleep, a scaling change, a colour depth change. Each costs one
+/// enumeration and an equal comparison, and nothing on the desk moves.
+#[test]
+fn a_hint_about_a_layout_that_did_not_change_is_one_query_and_nothing_else() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let (harness, clock) = watching_harness(Arc::clone(&sink));
+    establish_baseline(&harness, &clock, &sink);
+
+    let before = sink.queries();
+    harness.hint();
+    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    wait_for_queries(&sink, before + 1);
+
+    assert!(
+        harness.next_layout(NOTHING_HAPPENS_IN).is_none(),
+        "the layout is the one the engine already knows, so there is nothing to announce"
+    );
+    assert_eq!(
+        sink.queries(),
+        before + 1,
+        "one settled burst is one query, whatever it was made of"
+    );
+    assert!(sink.publications().is_empty());
+}
+
+/// A burst is one query, because a change is a burst on both platforms.
+#[test]
+fn every_hint_of_one_burst_collapses_into_a_single_query() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let (harness, clock) = watching_harness(Arc::clone(&sink));
+    establish_baseline(&harness, &clock, &sink);
+
+    let before = sink.queries();
+    for _ in 0..5 {
+        harness.hint();
+    }
+    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    wait_for_queries(&sink, before + 1);
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+
+    assert_eq!(
+        sink.queries(),
+        before + 1,
+        "five hints inside the settle window are one layout change"
+    );
+}
+
+/// A hint that lands while one is pending pushes the deadline out again.
+///
+/// Trailing rather than leading: a docking station brings its screens up one at
+/// a time, and settling on the first of them costs a full render and a visible
+/// swap that the second one immediately invalidates.
+#[test]
+fn a_hint_during_the_settle_moves_the_deadline_it_found() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let (harness, clock) = watching_harness(Arc::clone(&sink));
+    establish_baseline(&harness, &clock, &sink);
+
+    let before = sink.queries();
+    harness.hint();
+    harness.advance(&clock, Duration::from_millis(1500));
+    harness.hint();
+
+    // The first hint's deadline has passed; the second one's has not.
+    harness.advance(&clock, Duration::from_secs(1));
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(
+        sink.queries(),
+        before,
+        "the second hint should have moved the deadline the first one set"
+    );
+
+    harness.advance(&clock, Duration::from_secs(1));
+    wait_for_queries(&sink, before + 1);
+}
+
+/// The rule, in the case it was written for: the desk holds a picture this
+/// process made for a layout that is gone, so it gets one for the layout that
+/// is here, at the sizes that layout has.
+#[test]
+fn a_layout_that_changed_under_a_published_wallpaper_is_published_again() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let (harness, clock) = watching_harness(Arc::clone(&sink));
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    harness
+        .wait_for_publish()
+        .expect("publishing to a recording sink cannot fail");
+    assert_eq!(sink.publications().len(), 1);
+
+    // The notebook was undocked: one screen left, and a different one.
+    let alone = vec![screen("internal", 0, 256, 160, true)];
+    sink.set_monitors(alone.clone());
+    harness.hint();
+    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+
+    let announced = harness
+        .next_layout(CHANGE_TIMEOUT)
+        .expect("a layout that changed is announced");
+    assert_eq!(announced, alone);
+
+    harness
+        .wait_for_publish()
+        .expect("publishing to a recording sink cannot fail");
+    let published = sink.publications();
+    assert_eq!(published.len(), 2, "the change published once more");
+    assert_eq!(
+        published[1].images,
+        vec![Some((256, 160))],
+        "the second publish is for the screen that is there now, at its own size"
+    );
+}
+
+/// Somebody who opened the settings window to look and never asked for a
+/// wallpaper does not get one because they moved a screen.
+#[test]
+fn a_layout_that_changed_with_nothing_on_the_desk_is_announced_and_not_published() {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let (harness, clock) = watching_harness(Arc::clone(&sink));
+    establish_baseline(&harness, &clock, &sink);
+
+    let alone = vec![screen("internal", 0, 256, 160, true)];
+    sink.set_monitors(alone.clone());
+    harness.hint();
+    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+
+    assert_eq!(
+        harness.next_layout(CHANGE_TIMEOUT),
+        Some(alone),
+        "the window still has to be told, so its diagram is not a layout from ten minutes ago"
+    );
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert!(
+        sink.publications().is_empty(),
+        "no wallpaper was ever asked for, so a moved screen does not produce one"
+    );
+}
+
+/// A sink that refused is never asked unprompted, so a layout change cannot put
+/// an error in the status line out of nowhere.
+#[test]
+fn a_layout_that_changed_after_a_refusal_is_announced_and_not_published() {
+    let sink = Arc::new(RecordingSink::refusing(two_screens()));
+    let (harness, clock) = watching_harness(Arc::clone(&sink));
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    let refusal = harness
+        .wait_for_publish()
+        .expect_err("a refusing sink cannot publish");
+    assert_eq!(refusal, RecordingSink::REFUSED);
+
+    establish_baseline(&harness, &clock, &sink);
+    let alone = vec![screen("internal", 0, 256, 160, true)];
+    sink.set_monitors(alone.clone());
+    harness.hint();
+    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+
+    assert_eq!(harness.next_layout(CHANGE_TIMEOUT), Some(alone));
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert!(sink.publications().is_empty());
+    assert!(
+        harness.next_layout(NOTHING_HAPPENS_IN).is_none(),
+        "one layout change is one announcement"
+    );
 }

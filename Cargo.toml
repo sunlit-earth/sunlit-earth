@@ -76,6 +76,13 @@ mach2 = "0.6"
 # ordinary thread first: this crate's iterator does that with a self-pipe, which
 # is why it is here rather than a scoped `unsafe` around `libc::signal`.
 signal-hook = "0.3"
+# The Linux half of the display watcher. winit already puts this in the lockfile
+# at this version, and the features named here are a subset of the ones it
+# turns on, so a workspace build compiles nothing new. `RustConnection` is the
+# pure-Rust connection: no libxcb, no `unsafe` on our side, and safe to use from
+# two threads at once, which is what lets the stop path wake a thread that is
+# blocked waiting for an event.
+x11rb = { version = "0.13", default-features = false, features = ["randr"] }
 
 # dev-dependencies
 approx = "0.5"

@@ -19,6 +19,7 @@
 //! against real xrandr output rather than only where xrandr exists.
 
 pub mod layout;
+pub mod watch;
 
 /// One output, as xrandr describes a connected one with a mode assigned.
 ///

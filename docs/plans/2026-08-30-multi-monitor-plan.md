@@ -78,7 +78,7 @@ The rules, all of them decided in pure code and tested with fabricated monitor l
 - **Rotation.** Both queries report post-rotation rectangles, so a portrait monitor is simply a tall rectangle here and needs no special case.
 - **Mirrored monitors** (two entries with the same rectangle) get the same image twice and cost one render, because of the deduplication below.
 - **Scaling and DPI.** Everything here is in physical pixels. On Linux xrandr reports physical pixels. On Windows `rcMonitor` is in virtual-screen coordinates, which are physical pixels only when the process is per-monitor DPI aware, and that is the single largest unknown in this plan. It is called out again under testing.
-- **A layout that changed.** The monitor list is re-queried on every publish, not cached. There is no display-change subscription: `WM_DISPLAYCHANGE` and RandR events are both real and both a separate piece of work, and the auto-refresh timer means the layout is never stale for long.
+- **A layout that changed.** The monitor list is re-queried on every publish, not cached. There is no display-change subscription: `WM_DISPLAYCHANGE` and RandR events are both real and both a separate piece of work, and the auto-refresh timer means the layout is never stale for long. Superseded on 2026-09-03: a watcher per platform now delivers a hint, and the engine re-queries, compares and republishes on it; see `2026-09-03-multi-monitor-amendment-display-change-events.md`.
 
 ### The geometry of `AcrossScreens`
 
@@ -322,7 +322,7 @@ Done, on `feat/multi-monitor`, before the app work: `cargo xtask vm up linux --s
 - **Per-tile rendering.** Everything above renders the whole bounding box in span mode. Rendering each monitor separately would skip the gaps and lift the texture-size cap, but it needs the sky shaders to distinguish the canvas they reconstruct directions from and the tile they are rasterizing into, which is a new pair of uniforms and a change at every site that converts pixels to NDC. Worth doing when someone has a layout the cap refuses, not before.
 - **A different scene per monitor**, one continent per screen. It is a real feature and it needs per-monitor `SceneParams`, which is a config and UI change several times this one.
 - **Bezel correction**, the gap in the image that makes a continuous view line up across the physical frames. Cheap to add later as a per-monitor inset once the layout math exists, and easy to get wrong without the monitors in front of you.
-- **Display-change events.** Re-querying on publish is enough while the auto-refresh runs.
+- **Display-change events.** Re-querying on publish is enough while the auto-refresh runs. Superseded on 2026-09-03 by `2026-09-03-multi-monitor-amendment-display-change-events.md`.
 - **A wallpaper preview of the whole layout** in the settings window. The diagram is the cheap 80 percent.
 - **macOS**, which has no setter at all yet.
 

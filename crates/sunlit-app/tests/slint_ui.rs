@@ -981,3 +981,158 @@ fn test_a_replaced_layout_highlights_the_stored_anchor() {
         "the stored screen is the anchor, even though the other one is primary"
     );
 }
+// ---------------------------------------------------------------------------
+// Sidebar layout
+// ---------------------------------------------------------------------------
+
+/// The widest the settings panel is allowed to insist on being, set by a
+/// `SettingCombo` row: an 88px label, 4px of spacing, the 140px combo, and the
+/// panel's 8px + 22px of padding.
+const PANEL_FLOOR: f32 = 262.0;
+
+/// `MainWindow`'s own `min-width` in `main.slint`.
+const WINDOW_MIN_WIDTH: u32 = 520;
+
+/// A layout counts an `if`-gated subtree towards its minimum width only once
+/// that repeater has been walked. A running app's layout pass does it; a test
+/// has to ask for the elements, or `panel-min-width` reads back the minimum of
+/// a panel that is missing half its rows and the assertion passes for the
+/// wrong reason.
+fn materialize(window: &MainWindow) {
+    for id in [
+        "MainWindow::longitude-slider",
+        "MainWindow::display-mode-combo",
+        "MainWindow::about-button",
+    ] {
+        let _ = ElementHandle::find_by_element_id(window, id).count();
+    }
+}
+
+/// Everything that can widen the panel, at once: both display combos, the
+/// Advanced section, and an adapter name as long as the Mesa one that started
+/// this.
+fn widest_panel_state(window: &MainWindow) {
+    sunlit_earth::displays::apply_models_to_window(window, &fabricated_monitors());
+    sunlit_earth::displays::apply_diagram_to_window(window, &fabricated_monitors(), None);
+    window.set_advanced_open(true);
+    window.set_renderer_info(
+        "AMD Radeon 780M Graphics (RADV PHOENIX) (Vulkan, IntegratedGpu)".into(),
+    );
+    materialize(window);
+}
+
+/// The sidebar's width is derived from this number, so a widget that reports an
+/// unbounded minimum widens the panel for everybody rather than being clipped.
+/// This is what fails when somebody adds one.
+#[test]
+fn test_nothing_in_the_panel_asks_for_more_than_the_sidebar_floor() {
+    let window = create_window();
+    widest_panel_state(&window);
+
+    assert!(
+        window.get_panel_min_width() <= PANEL_FLOOR,
+        "the panel asks for {}px, past the {PANEL_FLOOR}px floor the sidebar is built on",
+        window.get_panel_min_width()
+    );
+}
+
+/// The panel is laid out at the left edge of its scroll area, not centred in a
+/// viewport that grew past it. A derived floor keeps this true on its own, so
+/// what this catches is a hardcoded sidebar width coming back.
+#[test]
+fn test_the_panel_starts_at_the_left_edge_in_both_advanced_states() {
+    let window = create_window();
+    widest_panel_state(&window);
+    approx::assert_relative_eq!(window.get_panel_x(), 0.0);
+
+    window.set_advanced_open(false);
+    materialize(&window);
+    approx::assert_relative_eq!(window.get_panel_x(), 0.0);
+}
+
+/// The window's minimum has to hold the panel's floor and still leave a globe
+/// worth looking at. Both halves are read off the real layout, so raising the
+/// floor without raising `min-width` fails here.
+#[test]
+fn test_the_narrowest_window_holds_the_panel_and_the_globe() {
+    let window = create_window();
+    widest_panel_state(&window);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(WINDOW_MIN_WIDTH, 900));
+    materialize(&window);
+
+    approx::assert_relative_eq!(window.get_panel_x(), 0.0);
+    assert!(
+        window.get_viewport_width() >= 230.0,
+        "only {}px left for the image at the window's minimum width",
+        window.get_viewport_width()
+    );
+}
+
+#[test]
+fn test_about_is_reachable_without_opening_advanced() {
+    let window = create_window();
+    assert!(!window.get_advanced_open(), "precondition: advanced closed");
+
+    let asked = Rc::new(RefCell::new(false));
+    let captured = Rc::clone(&asked);
+    window.on_show_about(move || *captured.borrow_mut() = true);
+
+    let buttons: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::about-button").collect();
+    assert_eq!(buttons.len(), 1, "expected one About button");
+    buttons[0].invoke_accessible_default_action();
+
+    assert!(
+        *asked.borrow(),
+        "the About button did not ask for the window"
+    );
+}
+
+/// The grid's order and `PRESETS`' order are deliberately different, so every
+/// cell's index is checked by hand.
+#[test]
+fn test_every_preset_button_fires_the_index_it_is_named_for() {
+    let window = create_window();
+
+    let received: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
+    let captured = Rc::clone(&received);
+    window.on_apply_preset(move |index| {
+        *captured.borrow_mut() = Some(index);
+    });
+
+    for (label, index) in [
+        ("Africa", 3),
+        ("N. America", 1),
+        ("S. America", 2),
+        ("Asia", 4),
+        ("Europe", 0),
+        ("Oceania", 5),
+        ("Pacific", 6),
+        ("Blue Marble", 7),
+        ("Earthrise", 8),
+    ] {
+        let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, label).collect();
+        assert_eq!(buttons.len(), 1, "expected exactly one '{label}' button");
+        buttons[0].invoke_accessible_default_action();
+        assert_eq!(
+            *received.borrow(),
+            Some(index),
+            "'{label}' fired the wrong preset"
+        );
+    }
+}
+
+/// The About window's scroll area has the same shape as the sidebar's, and its
+/// version line does not wrap, so a long enough one takes the viewport past the
+/// window and would centre the content the same way.
+#[test]
+fn test_the_about_window_content_starts_at_its_left_edge() {
+    init();
+    let window = sunlit_earth::AboutWindow::new().unwrap();
+    window.window().set_size(slint::PhysicalSize::new(520, 420));
+    window.set_version("0.0.0-".repeat(60).into());
+
+    approx::assert_relative_eq!(window.get_content_x(), 0.0);
+}

@@ -10,7 +10,7 @@ Four rearrangements ride along, since they touch the same block: the About butto
 
 ## Stakes
 
-Low. `ui/main.slint` and one number in `ui_callbacks.rs`, nothing in `sunlit-core`, no shader, no persisted setting, no IPC contract. The risk is that a layout change looks fine on the developer's machine and not on someone else's, which is exactly what happened here, so the deliverable includes one number a test can assert rather than a screenshot somebody looked at.
+Low. `ui/main.slint`, nothing in `sunlit-core`, no shader, no persisted setting, no IPC contract. The risk is that a layout change looks fine on the developer's machine and not on someone else's, which is exactly what happened here, so the deliverable includes one number a test can assert rather than a screenshot somebody looked at.
 
 ## The defect
 
@@ -206,7 +206,7 @@ Note in the test file that `min-width` is only meaningful after the repeaters ha
 
 ## Departures
 
-1. **The `ComboBox` minimum is 140px, and the floor is 262px, not 282.** The plan left the value open and named 130px and 100px as knobs. The fluent `ComboBox` spends 44px on its frame before any text (1px of border and 11px of padding on each side, 8px of spacing, a 12px chevron), and the longest value any of the app's own models carries, "Day/Night Blend", measures 93px in the default face. 137px is the exact fit; 140px is that with enough slack not to depend on the font a given platform resolves. So the floor is 88 + 4 + 140 + 30 = 262px, 32px above the 230px it replaces and 20px below what the untouched fluent minimum would have given. 130px was rejected because it elides the one value the combo most needs to show, and 100px because nothing about the panel is short of 40px.
+1. **The `ComboBox` minimum is 140px, and the floor is 262px, not 282.** The plan left the value open and named 130px and 100px as knobs. The fluent `ComboBox` spends 42px on its frame before any text (11px of padding on each side, 8px of spacing, a 12px chevron; the border does not inset children, so it costs nothing), and the longest value the *fixed* models carry, "Day/Night Blend", measures 93px in the default face. 135px is the exact fit; 140px is that with enough slack not to depend on the font a given platform resolves. The screen labels `displays.rs` builds at runtime are longer than any of this, "DP-2  2560x1440  primary" measuring 145px, and they elide at the floor exactly as they did at the untouched 160px; the combos carry `horizontal-stretch: 1`, so they stop eliding as soon as the sidebar is wider than its floor. So the floor is 88 + 4 + 140 + 30 = 262px, 32px above the 230px it replaces and 20px below what the untouched fluent minimum would have given. 130px was rejected because it elides the one value the combo most needs to show, and 100px because nothing about the panel is short of 40px.
 
    This also means the plan's fourth measured row, "Advanced open, with the fixes below: 176px", does not describe what landed. 176px is the floor with the combo taken all the way to zero. Measured with the pin at 140px, and with the Advanced section, both display combos and the long adapter string present at once, it is 262px; with none of them, 102px.
 
@@ -215,3 +215,17 @@ Note in the test file that `min-width` is only meaningful after the repeaters ha
 3. **The splitter clamps what it stores, not only what it derives.** The plan's snippet was `root.panel-width = root.panel-width + delta`, with the bounds applied in the width binding alone. That lets the stored width run past a bound while the sidebar stops, so dragging back has dead travel of however far the mouse went. The callback applies the same two bounds it is derived under. The binding keeps its own `max`/`min` regardless, since the bounds move when the window resizes or Advanced opens.
 
 4. **The `panel.x` assertion cannot fail on its own, so the falsifiable guard for part 1 moved to `AboutWindow`.** Once the sidebar's width is `max(panel.min-width, ...)`, the flickable is never narrower than its content, so the viewport never grows past it and the centering evaluates to zero whichever spelling the width binding uses. Verified: reverting `width: 100%` to `parent.visible-width` in `MainWindow` alone leaves the assertion green. `AboutWindow` has the same scroll-area shape and no derived floor, and its version line does not wrap, so a long enough version takes its viewport past its window and the offset appears. That test does fail on the revert, and it costs `AboutWindow` one `out property <length> content-x`, which is more than the "one-token `width: 100%`" the plan scoped for it. The `MainWindow` assertion is kept anyway: it fires if a hardcoded sidebar width ever comes back alongside the offset, which is the pair that produced the original bug.
+
+5. **The default sidebar width is 360px, not 300px.** Reported from use: at 300px the preset grid's buttons are 87px wide and the longest label, "Blue Marble", needs 94px at a 12px font or 105px at 14px, so the labels were cut. 360px gives 107px a button and clears both. The floor is untouched at 262px, so a narrow sidebar is still reachable by dragging and the labels still elide there; only what the app opens with changed.
+
+6. **The scrollbar reserve is a named property.** Part 4 asked for the 14px to be named where it is used and the first implementation left it a literal with a comment. It is `MainWindow`'s `scrollbar-width` now.
+
+## Validation
+
+One round, `88ae6a7..7f1bcb1`, reviewed by an agent with no shared context.
+
+**0 major, 4 minor.** The round verified the diagnosis as well as the fix: it restored the base `main.slint`, instrumented it, and reproduced this document's whole before-table on the same host (176px closed, 379px and x 39.5px open with the long adapter string, 268px open with a short one). It re-ran the falsification checks on three of the guards, audited all 1818 changed lines of `main.slint` by sorted whitespace-stripped diff to prove no binding was edited under cover of a block move, and swept the window from 900px to 1px to show the derived floor cannot invert.
+
+All four minors are fixed above: two were wrong arithmetic and a wrong claim in the `ComboBox` justification (departure 1), one was the unnamed scrollbar literal (departure 6), and one was this document's own Stakes line promising a change to `ui_callbacks.rs` that was never needed.
+
+Two things it could not verify, both recorded rather than closed: how this looks on a real desktop, since the VMs and the e2e suite were out of scope for the run, and the splitter's drag behavior, which no headless test can drive.

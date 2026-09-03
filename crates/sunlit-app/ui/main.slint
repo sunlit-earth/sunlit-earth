@@ -172,9 +172,10 @@ component SettingCombo inherits Rectangle {
         }
         ComboBox {
             // The fluent ComboBox asks for 160px flat, which would set the
-            // sidebar's floor. 140 is what the longest value the app's own
-            // models carry needs: 93px of text inside 44px of border, padding,
-            // spacing and chevron, rounded up.
+            // sidebar's floor. 140 fits the longest value the fixed models
+            // carry, at 93px of text inside 42px of padding, spacing and
+            // chevron, with slack for another platform's font. A screen label
+            // is longer than that and elides, as it did at 160.
             min-width: 140px;
             model: root.model;
             current-index <=> root.current-index;
@@ -330,11 +331,18 @@ export component MainWindow inherits Window {
     out property <length> panel-min-width: panel.min-width;
     out property <length> panel-x: panel.x;
 
-    // What the splitter drag stores. The sidebar's real width is this held
-    // between the panel's own floor and whatever leaves the image its minimum,
-    // so no drag and no window size can cut the panel's content off.
-    property <length> panel-width: 300px;
+    // What the splitter drag stores, and what the window opens at. The
+    // sidebar's real width is this held between the panel's own floor and
+    // whatever leaves the image its minimum, so no drag and no window size can
+    // cut the panel's content off. At 360 the preset grid's widest label gets
+    // 107px of button against the 93px it asks for, which leaves room for a
+    // platform whose font is wider. The floor is far below that, so a drag can
+    // still take the sidebar narrow enough to elide.
+    property <length> panel-width: 360px;
     property <length> min-image-width: 240px;
+    // The fluent ScrollView draws this on top of the flickable rather than
+    // beside it, so the panel reserves it whether or not the bar is showing.
+    property <length> scrollbar-width: 14px;
 
     // Controls panel on the left
     sidebar := Rectangle {
@@ -354,11 +362,8 @@ export component MainWindow inherits Window {
 
                 panel := VerticalLayout {
                     width: 100%;
-                    // The fluent ScrollView draws its 14px vertical bar on top of
-                    // the flickable rather than beside it, so the right edge pays
-                    // for the bar whether or not it is showing.
                     padding: 8px;
-                    padding-right: 8px + 14px;
+                    padding-right: 8px + root.scrollbar-width;
                     spacing: 4px;
                     alignment: start;
 

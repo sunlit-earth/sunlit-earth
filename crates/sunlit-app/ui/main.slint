@@ -325,8 +325,8 @@ export component MainWindow inherits Window {
     in-out property <bool> advanced-open: false;
 
     // The widest the panel's content insists on being, and where that content
-    // actually starts. Both exist so a test can assert them; the sidebar's own
-    // floor reads the first one too.
+    // actually starts. The sidebar derives its width from the first of these;
+    // both are exposed so a test can hold them to it.
     out property <length> panel-min-width: panel.min-width;
     out property <length> panel-x: panel.x;
 
@@ -1433,7 +1433,7 @@ export component MainWindow inherits Window {
         height: 100%;
 
         moved(delta) => {
-            root.panel-width = clamp(root.panel-width + delta, panel.min-width, root.width - root.min-image-width);
+            root.panel-width = max(panel.min-width, min(root.panel-width + delta, root.width - root.min-image-width));
         }
     }
 

@@ -310,8 +310,14 @@ export component MainWindow inherits Window {
 
     in-out property <bool> advanced-open: false;
 
+    // The widest the panel's content insists on being, and where that content
+    // actually starts. Both exist so a test can assert them; the sidebar's own
+    // floor reads the first one too.
+    out property <length> panel-min-width: panel.min-width;
+    out property <length> panel-x: panel.x;
+
     // Controls panel on the left
-    Rectangle {
+    sidebar := Rectangle {
         x: 0;
         y: 0;
         width: splitter.x;
@@ -323,8 +329,8 @@ export component MainWindow inherits Window {
             width: parent.width;
             height: parent.height;
 
-            VerticalLayout {
-                width: parent.visible-width;
+            panel := VerticalLayout {
+                width: 100%;
                 padding: 8px;
                 spacing: 4px;
                 alignment: start;
@@ -1372,6 +1378,7 @@ export component MainWindow inherits Window {
                         text: renderer-info;
                         color: #888888;
                         font-size: 11px;
+                        wrap: word-wrap;
                     }
 
                     Button {
@@ -1502,7 +1509,7 @@ export component AboutWindow inherits Window {
         width: parent.width;
         height: parent.height;
         VerticalLayout {
-            width: parent.visible-width;
+            width: 100%;
             padding: 20px;
             spacing: 12px;
             Text {

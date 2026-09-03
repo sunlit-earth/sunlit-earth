@@ -344,1075 +344,1084 @@ export component MainWindow inherits Window {
         height: root.height;
         background: Palette.background.darker(0.2);
 
-        ScrollView {
-            horizontal-scrollbar-policy: as-needed;
-            width: parent.width;
-            height: parent.height;
+        VerticalLayout {
+            width: 100%;
+            height: 100%;
 
-            panel := VerticalLayout {
-                width: 100%;
-                // The fluent ScrollView draws its 14px vertical bar on top of
-                // the flickable rather than beside it, so the right edge pays
-                // for the bar whether or not it is showing.
-                padding: 8px;
-                padding-right: 8px + 14px;
-                spacing: 4px;
-                alignment: start;
+            ScrollView {
+                horizontal-scrollbar-policy: as-needed;
+                vertical-stretch: 1;
 
-                // --- Top-level actions ---
-
-                Button {
-                    text: "Set as Wallpaper";
-                    min-width: 0;
-                    clicked => { root.set-wallpaper(); }
-                    Tooltip {
-                        Hint { text: "Render one frame at the desktop's own resolution and put it on the desktop."; }
-                    }
-                }
-
-                HorizontalLayout {
+                panel := VerticalLayout {
+                    width: 100%;
+                    // The fluent ScrollView draws its 14px vertical bar on top of
+                    // the flickable rather than beside it, so the right edge pays
+                    // for the bar whether or not it is showing.
+                    padding: 8px;
+                    padding-right: 8px + 14px;
                     spacing: 4px;
+                    alignment: start;
+
+                    // --- Top-level actions ---
+
                     Button {
-                        text: "Load Defaults";
+                        text: "Set as Wallpaper";
                         min-width: 0;
-                        preferred-width: 0;
-                        clicked => { root.load-defaults(); }
+                        clicked => { root.set-wallpaper(); }
                         Tooltip {
-                            Hint { text: "Put every setting back to the value the app ships with."; }
+                            Hint { text: "Render one frame at the desktop's own resolution and put it on the desktop."; }
                         }
                     }
-                    Button {
-                        text: "Reset";
-                        min-width: 0;
-                        preferred-width: 0;
-                        clicked => { root.reset(); }
-                        Tooltip {
-                            Hint { text: "Throw away the changes made since the last save and reload the stored settings."; }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Button {
+                            text: "Load Defaults";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.load-defaults(); }
+                            Tooltip {
+                                Hint { text: "Put every setting back to the value the app ships with."; }
+                            }
+                        }
+                        Button {
+                            text: "Reset";
+                            min-width: 0;
+                            preferred-width: 0;
+                            clicked => { root.reset(); }
+                            Tooltip {
+                                Hint { text: "Throw away the changes made since the last save and reload the stored settings."; }
+                            }
                         }
                     }
-                }
 
-                // --- Auto-refresh ---
+                    // --- Auto-refresh ---
 
-                SettingCheck {
-                    text: "Auto-refresh wallpaper";
-                    hint: "Set the wallpaper again on a timer, so the sunlit half of the globe keeps up with the real one.";
-                    checked <=> root.auto-refresh-enabled;
-                    toggled => { root.auto-refresh-changed(); }
-                }
+                    SettingCheck {
+                        text: "Auto-refresh wallpaper";
+                        hint: "Set the wallpaper again on a timer, so the sunlit half of the globe keeps up with the real one.";
+                        checked <=> root.auto-refresh-enabled;
+                        toggled => { root.auto-refresh-changed(); }
+                    }
 
-                if root.auto-refresh-enabled : HorizontalLayout {
-                    spacing: 4px;
-                    padding-left: 24px;
-                    Slider {
-                        minimum: 1;
-                        maximum: 30;
-                        value <=> root.auto-refresh-interval;
-                        changed(value) => { root.auto-refresh-changed(); }
-                        Tooltip {
-                            Hint { text: "How long between one wallpaper render and the next."; }
+                    if root.auto-refresh-enabled : HorizontalLayout {
+                        spacing: 4px;
+                        padding-left: 24px;
+                        Slider {
+                            minimum: 1;
+                            maximum: 30;
+                            value <=> root.auto-refresh-interval;
+                            changed(value) => { root.auto-refresh-changed(); }
+                            Tooltip {
+                                Hint { text: "How long between one wallpaper render and the next."; }
+                            }
+                        }
+                        Text {
+                            text: "every " + round(root.auto-refresh-interval) + " min";
+                            vertical-alignment: center;
                         }
                     }
-                    Text {
-                        text: "every " + round(root.auto-refresh-interval) + " min";
-                        vertical-alignment: center;
-                    }
-                }
 
-                // --- Displays ---
-                //
-                // Hidden on a session with one screen, where three modes all
-                // mean the same thing. The setting still persists, so unplugging
-                // a second screen and plugging it back in does not lose it.
-
-                if root.display-tiles.length > 1 : VerticalLayout {
-                    spacing: 4px;
+                    // --- 3x3 preset grid ---
 
                     Rectangle { height: 8px; }
 
                     Text {
-                        text: "Displays";
+                        text: "Presets";
                         font-weight: 700;
                         horizontal-alignment: center;
                     }
 
-                    display-mode-combo := SettingCombo {
-                        label: "Mode";
-                        hint: "How the screens relate. One screen: only the screen below gets a wallpaper and the rest keep theirs. Mirror: every screen gets the same view, rendered at its own size and shape. Extend: one continuous view is spread across all of them.";
-                        label-width: 52px;
-                        model: root.display-mode-options;
-                        current-index <=> root.display-mode-index;
-                        selected => { root.display-plan-changed(); }
-                    }
-
-                    display-screen-combo := SettingCombo {
-                        label: "Screen";
-                        hint: "Which screen gets the picture in one-screen mode, and which screen the view is centered on in the other two.";
-                        label-width: 52px;
-                        model: root.display-screen-options;
-                        current-index <=> root.display-anchor-index;
-                        selected => { root.display-plan-changed(); }
-                    }
-
-                    Rectangle {
-                        height: 88px;
-                        background: Palette.background.darker(0.15);
-                        border-radius: 4px;
-
-                        board := Rectangle {
-                            width: min(parent.width - 12px, (parent.height - 12px) * root.display-aspect);
-                            height: self.width / root.display-aspect;
-
-                            for tile in root.display-tiles : Rectangle {
-                                x: board.width * tile.x;
-                                y: board.height * tile.y;
-                                width: board.width * tile.width;
-                                height: board.height * tile.height;
-                                background: tile.anchor ? Palette.accent-background : Palette.background;
-                                border-width: 1px;
-                                border-color: Palette.background.darker(0.4);
-                                border-radius: 2px;
-
-                                Text {
-                                    text: tile.label;
-                                    font-size: 10px;
-                                    color: tile.anchor ? Palette.accent-foreground : Palette.foreground;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    width: 100%;
-                                    height: 100%;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // --- 3x3 preset grid ---
-
-                Rectangle { height: 8px; }
-
-                Text {
-                    text: "Presets";
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                }
-
-                GridLayout {
-                    spacing: 4px;
-                    Row {
-                        Button {
-                            text: "Europe";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(0); }
-                        }
-                        Button {
-                            text: "N. America";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(1); }
-                        }
-                        Button {
-                            text: "S. America";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(2); }
-                        }
-                    }
-                    Row {
-                        Button {
-                            text: "Africa";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(3); }
-                        }
-                        Button {
-                            text: "Asia";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(4); }
-                        }
-                        Button {
-                            text: "Oceania";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(5); }
-                        }
-                    }
-                    Row {
-                        Button {
-                            text: "Pacific";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(6); }
-                        }
-                        Button {
-                            text: "Blue Marble";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(7); }
-                        }
-                        Button {
-                            text: "Earthrise";
-                            min-width: 0;
-                            preferred-width: 0;
-                            clicked => { root.apply-preset(8); }
-                        }
-                    }
-                }
-
-                // --- Advanced toggle ---
-
-                Rectangle { height: 8px; }
-
-                TouchArea {
-                    height: 24px;
-                    clicked => { root.advanced-open = !root.advanced-open; }
-
-                    HorizontalLayout {
+                    GridLayout {
                         spacing: 4px;
-                        Text {
-                            text: root.advanced-open ? "\u{25bc}" : "\u{25b6}";
-                            vertical-alignment: center;
-                            font-size: 11px;
+                        Row {
+                            Button {
+                                text: "Africa";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(3); }
+                            }
+                            Button {
+                                text: "N. America";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(1); }
+                            }
+                            Button {
+                                text: "S. America";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(2); }
+                            }
                         }
+                        Row {
+                            Button {
+                                text: "Asia";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(4); }
+                            }
+                            Button {
+                                text: "Europe";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(0); }
+                            }
+                            Button {
+                                text: "Oceania";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(5); }
+                            }
+                        }
+                        Row {
+                            Button {
+                                text: "Pacific";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(6); }
+                            }
+                            Button {
+                                text: "Blue Marble";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(7); }
+                            }
+                            Button {
+                                text: "Earthrise";
+                                min-width: 0;
+                                preferred-width: 0;
+                                clicked => { root.apply-preset(8); }
+                            }
+                        }
+                    }
+
+                    // --- Displays ---
+                    //
+                    // Hidden on a session with one screen, where three modes all
+                    // mean the same thing. The setting still persists, so unplugging
+                    // a second screen and plugging it back in does not lose it.
+
+                    if root.display-tiles.length > 1 : VerticalLayout {
+                        spacing: 4px;
+
+                        Rectangle { height: 8px; }
+
                         Text {
-                            text: "Advanced";
-                            vertical-alignment: center;
+                            text: "Displays";
                             font-weight: 700;
+                            horizontal-alignment: center;
                         }
-                    }
-                }
 
-                // --- Collapsible advanced section ---
-
-                if root.advanced-open :
-                VerticalLayout {
-                    spacing: 4px;
-
-                    GroupBox {
-                        title: "Camera Position";
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            longitude-slider := SettingRow {
-                                label: "Longitude";
-                                hint: "The meridian the camera hangs above, which is what turns the globe left and right.";
-                                minimum: -180;
-                                maximum: 180;
-                                value <=> root.camera-longitude;
-                                value-text: round(root.camera-longitude) + "°";
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            latitude-slider := SettingRow {
-                                label: "Latitude";
-                                hint: "How far north or south of the equator the camera hangs, from one pole to the other.";
-                                minimum: -89;
-                                maximum: 89;
-                                value <=> root.camera-latitude;
-                                value-text: round(root.camera-latitude) + "°";
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            zoom-slider := SettingRow {
-                                label: "Zoom";
-                                hint: "Distance from the Earth's centre in Earth radii, mapped exponentially so both ends of the slider stay useful.";
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.camera-zoom;
-                                value-text: round(root.zoom-display-distance * 10) / 10;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
+                        display-mode-combo := SettingCombo {
+                            label: "Mode";
+                            hint: "How the screens relate. One screen: only the screen below gets a wallpaper and the rest keep theirs. Mirror: every screen gets the same view, rendered at its own size and shape. Extend: one continuous view is spread across all of them.";
+                            label-width: 52px;
+                            model: root.display-mode-options;
+                            current-index <=> root.display-mode-index;
+                            selected => { root.display-plan-changed(); }
                         }
-                    }
 
-                    GroupBox {
-                        title: "Camera Orientation";
-                        VerticalLayout {
-                            spacing: 4px;
+                        display-screen-combo := SettingCombo {
+                            label: "Screen";
+                            hint: "Which screen gets the picture in one-screen mode, and which screen the view is centered on in the other two.";
+                            label-width: 52px;
+                            model: root.display-screen-options;
+                            current-index <=> root.display-anchor-index;
+                            selected => { root.display-plan-changed(); }
+                        }
 
-                            tilt-slider := SettingRow {
-                                label: "Tilt";
-                                hint: "Rolls the whole frame around the view axis, tipping the poles away from vertical.";
-                                minimum: -180;
-                                maximum: 180;
-                                value <=> root.camera-tilt;
-                                value-text: round(root.camera-tilt) + "°";
-                                value-width: 35px;
-                                changed => {
-                                    if root.camera-tilt > -5 && root.camera-tilt < 5 {
-                                        root.camera-tilt = 0;
+                        Rectangle {
+                            height: 88px;
+                            background: Palette.background.darker(0.15);
+                            border-radius: 4px;
+
+                            board := Rectangle {
+                                width: min(parent.width - 12px, (parent.height - 12px) * root.display-aspect);
+                                height: self.width / root.display-aspect;
+
+                                for tile in root.display-tiles : Rectangle {
+                                    x: board.width * tile.x;
+                                    y: board.height * tile.y;
+                                    width: board.width * tile.width;
+                                    height: board.height * tile.height;
+                                    background: tile.anchor ? Palette.accent-background : Palette.background;
+                                    border-width: 1px;
+                                    border-color: Palette.background.darker(0.4);
+                                    border-radius: 2px;
+
+                                    Text {
+                                        text: tile.label;
+                                        font-size: 10px;
+                                        color: tile.anchor ? Palette.accent-foreground : Palette.foreground;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
                                     }
-                                    root.sliders-changed();
-                                }
-                            }
-
-                            yaw-slider := SettingRow {
-                                label: "Yaw";
-                                hint: "Swings the aim point sideways across the globe, so the camera looks off-centre rather than at the middle.";
-                                minimum: -90;
-                                maximum: 90;
-                                value <=> root.camera-yaw;
-                                value-text: round(root.camera-yaw) + "°";
-                                value-width: 35px;
-                                changed => {
-                                    if root.camera-yaw > -3 && root.camera-yaw < 3 {
-                                        root.camera-yaw = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-
-                            pitch-slider := SettingRow {
-                                label: "Pitch";
-                                hint: "Swings the aim point up or down across the globe, which is what puts the horizon low in the frame.";
-                                minimum: -90;
-                                maximum: 90;
-                                value <=> root.camera-pitch;
-                                value-text: round(root.camera-pitch) + "°";
-                                value-width: 35px;
-                                changed => {
-                                    if root.camera-pitch > -3 && root.camera-pitch < 3 {
-                                        root.camera-pitch = 0;
-                                    }
-                                    root.sliders-changed();
                                 }
                             }
                         }
                     }
 
-                    GroupBox {
-                        title: "Framing";
-                        VerticalLayout {
+                    // --- Advanced toggle ---
+
+                    Rectangle { height: 8px; }
+
+                    TouchArea {
+                        height: 24px;
+                        clicked => { root.advanced-open = !root.advanced-open; }
+
+                        HorizontalLayout {
                             spacing: 4px;
-
-                            camera-fov-slider := SettingRow {
-                                label: "Field of view";
-                                hint: "How wide the Earth lens is: narrow flattens the globe the way a long lens does, wide exaggerates its curvature. The sky behind it has a lens of its own.";
-                                minimum: 10.0;
-                                maximum: 170.0;
-                                value <=> root.camera-fov;
-                                value-text: round(root.camera-fov) + "°";
-                                changed => { root.sliders-changed(); }
+                            Text {
+                                text: root.advanced-open ? "\u{25bc}" : "\u{25b6}";
+                                vertical-alignment: center;
+                                font-size: 11px;
                             }
-
-                            offset-x-slider := SettingRow {
-                                label: "Offset X";
-                                hint: "Slides the finished frame left or right without moving the camera.";
-                                minimum: -3.0;
-                                maximum: 3.0;
-                                value <=> root.camera-offset-x;
-                                value-text: round(root.camera-offset-x * 100) / 100;
-                                value-width: 35px;
-                                changed => {
-                                    if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
-                                        root.camera-offset-x = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
-                            }
-
-                            offset-y-slider := SettingRow {
-                                label: "Offset Y";
-                                hint: "Slides the finished frame up or down without moving the camera.";
-                                minimum: -3.0;
-                                maximum: 3.0;
-                                value <=> root.camera-offset-y;
-                                value-text: round(root.camera-offset-y * 100) / 100;
-                                value-width: 35px;
-                                changed => {
-                                    if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
-                                        root.camera-offset-y = 0;
-                                    }
-                                    root.sliders-changed();
-                                }
+                            Text {
+                                text: "Advanced";
+                                vertical-alignment: center;
+                                font-weight: 700;
                             }
                         }
                     }
 
-                    GroupBox {
-                        title: "Date / Time";
-                        VerticalLayout {
-                            spacing: 4px;
+                    // --- Collapsible advanced section ---
 
-                            SettingCheck {
-                                text: "Override date/time";
-                                hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were.";
-                                checked <=> root.use-custom-datetime;
-                                toggled => { root.datetime-override-toggled(); }
-                            }
+                    if root.advanced-open :
+                    VerticalLayout {
+                        spacing: 4px;
 
-                            if root.use-custom-datetime :
+                        GroupBox {
+                            title: "Rendering";
                             VerticalLayout {
                                 spacing: 4px;
 
-                                custom-hour-slider := SettingRow {
-                                    label: "Hour";
-                                    hint: "Time of day in UTC, which is what decides the longitude the Sun stands over.";
-                                    indent: 8px;
-                                    minimum: 0.0;
-                                    maximum: 23.99;
-                                    value <=> root.custom-hour;
-                                    value-text: root.hour-label;
-                                    changed => { root.sliders-changed(); }
-                                }
-
-                                custom-day-slider := SettingRow {
-                                    label: "Day";
-                                    hint: "Day of the year, which is what decides the Sun's declination and so the season the terminator shows.";
-                                    indent: 8px;
-                                    minimum: 1.0;
-                                    maximum: root.max-day-of-year;
-                                    value <=> root.custom-day-of-year;
-                                    value-text: root.day-label;
-                                    changed => { root.sliders-changed(); }
+                                SettingCombo {
+                                    label: "Texture";
+                                    hint: "Which map the globe is drawn from: the procedural grid, one of the two surface maps alone, or the day/night blend.";
+                                    model: texture-options;
+                                    current-index <=> root.texture-index;
+                                    selected => { root.texture-changed(); }
                                 }
 
                                 SettingCombo {
-                                    label: "Year";
-                                    hint: "Which year that day belongs to. The Sun barely notices; the Moon and the planets do.";
-                                    indent: 8px;
-                                    model: root.year-options;
-                                    current-index <=> root.custom-year-index;
-                                    selected => { root.sliders-changed(); }
+                                    label: "Resolution";
+                                    hint: "Width the surface maps are loaded at. Lower costs less memory and takes effect without a restart.";
+                                    model: texture-resolution-options;
+                                    current-index <=> root.texture-resolution-index;
+                                    selected => { root.texture-resolution-changed(); }
+                                }
+
+                                SettingCombo {
+                                    label: "Anti-aliasing";
+                                    hint: "How many samples each pixel is rendered from, which is what smooths the globe's edge and the star sprites.";
+                                    model: aa-options;
+                                    current-index <=> root.aa-index;
+                                    selected => { root.msaa-changed(); }
                                 }
                             }
                         }
-                    }
 
-                    GroupBox {
-                        title: "Clouds";
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            cloud-opacity-slider := SettingRow {
-                                label: "Day opacity";
-                                hint: "How strongly the cloud layer covers the sunlit surface underneath it.";
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.cloud-opacity;
-                                value-text: round(root.cloud-opacity * 100) + "%";
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            cloud-opacity-night-slider := SettingRow {
-                                label: "Night opacity";
-                                hint: "How strongly the cloud layer covers the night surface, where the city lights under it are far brighter than the cloud itself. At the top of the range nothing shines through.";
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.cloud-opacity-night;
-                                value-text: round(root.cloud-opacity-night * 100) + "%";
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            cloud-floor-slider := SettingRow {
-                                label: "Floor";
-                                hint: "Brightness below which a cloud pixel counts as clear sky, which is what trims the haze out of the source image.";
-                                minimum: 0.0;
-                                maximum: 0.5;
-                                value <=> root.cloud-floor;
-                                value-text: round(root.cloud-floor * 100) + "%";
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            cloud-gamma-slider := SettingRow {
-                                label: "Gamma";
-                                hint: "Contrast curve of the cloud layer: below one lifts the thin cloud, above one keeps only the dense tops.";
-                                minimum: 0.1;
-                                maximum: 2.0;
-                                value <=> root.cloud-gamma;
-                                value-text: round(root.cloud-gamma * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            cloud-night-slider := SettingRow {
-                                label: "Night brightness";
-                                hint: "How bright a cloud is on the night hemisphere, where the real light is far too faint to draw at this exposure.";
-                                minimum: 0.0;
-                                maximum: 0.6;
-                                value <=> root.cloud-night;
-                                value-text: round(root.cloud-night * 100) + "%";
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                        }
-                    }
-
-                    GroupBox {
-                        title: "Celestial";
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            SettingHeading { text: "Sky"; }
-
-                            sky-fov-slider := SettingRow {
-                                label: "Field of view";
-                                hint: "How much sky the background lens covers, which is what sets the scale of the constellations and the Milky Way.";
-                                indent: 8px;
-                                minimum: 60.0;
-                                maximum: 180.0;
-                                value <=> root.sky-fov;
-                                value-text: round(root.sky-fov) + "°";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            milky-way-intensity-slider := SettingRow {
-                                label: "Milky Way";
-                                hint: "Brightness of the diffuse galactic band behind the stars. Zero leaves it out of the frame.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.milky-way-intensity;
-                                value-text: round(root.milky-way-intensity * 100) / 100 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            SettingHeading { text: "Sun"; }
-
-                            sun-glow-slider := SettingRow {
-                                label: "Glare";
-                                hint: "Master strength of the Sun's glare, and the switch for the Sun itself: at zero neither the disk nor the glare is drawn.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 3.0;
-                                value <=> root.sun-glow;
-                                value-text: round(root.sun-glow * 100) / 100 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-rays-slider := SettingRow {
-                                label: "Rays";
-                                hint: "Strength of the fine radial needles the eye itself adds around a bright source.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.sun-rays;
-                                value-text: round(root.sun-rays * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-size-slider := SettingRow {
-                                label: "Size";
-                                hint: "Multiplies the Sun's radius above its true half degree, the way the Moon's does. The glare's inner lobe grows with it and the rest of it does not.";
-                                indent: 8px;
-                                minimum: 1.0;
-                                maximum: 8.0;
-                                value <=> root.sun-size;
-                                value-text: round(root.sun-size * 10) / 10 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-halo-radius-slider := SettingRow {
-                                label: "Halo radius";
-                                hint: "Angular radius of the faint colored ring around the glare.";
-                                indent: 8px;
-                                minimum: 1.5;
-                                maximum: 8.0;
-                                value <=> root.sun-halo-radius;
-                                value-text: round(root.sun-halo-radius * 10) / 10 + "°";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-flare-slider := SettingRow {
-                                label: "Lens flare";
-                                hint: "Aperture spikes and lens ghosts, which belong to a camera rather than to an eye.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.sun-flare;
-                                value-text: round(root.sun-flare * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-horizon-boost-slider := SettingRow {
-                                label: "Sunrise glare";
-                                hint: "How much brighter the glare peaks as the disk clears the horizon, before the eye adjusts. One is the physical answer.";
-                                indent: 8px;
-                                minimum: 1.0;
-                                maximum: 8.0;
-                                value <=> root.sun-horizon-boost;
-                                value-text: round(root.sun-horizon-boost * 10) / 10 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-horizon-reach-slider := SettingRow {
-                                label: "Adaptation";
-                                hint: "How far above the horizon, in horizon depths, the eye takes to settle back to normal.";
-                                indent: 8px;
-                                minimum: 0.5;
-                                maximum: 10.0;
-                                value <=> root.sun-horizon-reach;
-                                value-text: round(root.sun-horizon-reach * 10) / 10;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-horizon-depth-slider := SettingRow {
-                                label: "Horizon depth";
-                                hint: "Thickness of the horizon zone in Sun diameters. Zero uses the painted atmosphere alone.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 4.0;
-                                value <=> root.sun-horizon-depth;
-                                value-text: round(root.sun-horizon-depth * 10) / 10;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-reddening-slider := SettingRow {
-                                label: "Reddening";
-                                hint: "How much the low atmosphere colors the disk and the glare. One is the measured atmosphere. The warm band it spreads along the limb is the Atmosphere group's Sunrise band.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.sun-reddening;
-                                value-text: round(root.sun-reddening * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            sun-refraction-slider := SettingRow {
-                                label: "Refraction";
-                                hint: "Lifts and flattens the disk at the horizon the way the atmosphere bends its light.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.sun-refraction;
-                                value-text: round(root.sun-refraction * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            SettingHeading { text: "Moon"; }
-
-                            moon-brightness-slider := SettingRow {
-                                label: "Brightness";
-                                hint: "Brightness of the Moon's sunlit face, and the switch for the Moon itself: zero draws nothing.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 3.0;
-                                value <=> root.moon-brightness;
-                                value-text: round(root.moon-brightness * 100) / 100 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            moon-size-slider := SettingRow {
-                                label: "Size";
-                                hint: "Multiplies the Moon's radius above its true half degree. A narrower sky field of view magnifies it honestly instead.";
-                                indent: 8px;
-                                minimum: 1.0;
-                                maximum: 8.0;
-                                value <=> root.moon-size;
-                                value-text: round(root.moon-size * 10) / 10 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            moon-earthshine-slider := SettingRow {
-                                label: "Earthshine";
-                                hint: "Floor under the Moon's unlit face, so a new moon does not disappear altogether.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 0.5;
-                                value <=> root.moon-earthshine;
-                                value-text: round(root.moon-earthshine * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            SettingHeading { text: "Stars"; }
-
-                            star-intensity-slider := SettingRow {
-                                label: "Brightness";
-                                hint: "Display gain for the stars and the naked-eye planets, and the switch for both: zero leaves the sky empty.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 5.0;
-                                value <=> root.star-intensity;
-                                value-text: round(root.star-intensity * 100) / 100 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            star-size-slider := SettingRow {
-                                label: "Size";
-                                hint: "Multiplies the compact core of each star, leaving its halo to the two glow sliders.";
-                                indent: 8px;
-                                minimum: 0.5;
-                                maximum: 3.0;
-                                value <=> root.star-size;
-                                value-text: round(root.star-size * 100) / 100 + "×";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            star-glow-strength-slider := SettingRow {
-                                label: "Glow strength";
-                                hint: "How pronounced the soft halo around the brighter stars is.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 3.0;
-                                value <=> root.star-glow-strength;
-                                value-text: round(root.star-glow-strength * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            star-glow-radius-slider := SettingRow {
-                                label: "Glow radius";
-                                hint: "How far that halo reaches, in pixels at 1080p; a larger frame scales it up on its own.";
-                                indent: 8px;
-                                minimum: 1.0;
-                                maximum: 30.0;
-                                value <=> root.star-glow-radius;
-                                value-text: round(root.star-glow-radius * 10) / 10 + " px";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            star-contrast-slider := SettingRow {
-                                label: "Contrast";
-                                hint: "Separation between bright and faint stars; below zero they even out, above zero the bright ones pull away.";
-                                indent: 8px;
-                                minimum: -1.0;
-                                maximum: 1.0;
-                                value <=> root.star-contrast;
-                                value-text: round(root.star-contrast * 100) + "%";
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            star-mag-limit-slider := SettingRow {
-                                label: "Faintest";
-                                hint: "Dimmest apparent magnitude still drawn. The naked eye reaches about 6 under a dark sky, and the catalog stops at 7.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 7.0;
-                                value <=> root.star-mag-limit;
-                                value-text: round(root.star-mag-limit * 10) / 10;
-                                changed => { root.sliders-changed(); }
-                            }
-                        }
-                    }
-
-                    GroupBox {
-                        title: "Atmosphere";
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            SettingCheck {
-                                text: "Atmosphere glow";
-                                hint: "Master switch for the three glowing shells around the globe.";
-                                checked <=> root.atmo-enabled;
-                                toggled => { root.sliders-changed(); }
-                            }
-
-                            if root.atmo-enabled :
+                        GroupBox {
+                            title: "Camera Position";
                             VerticalLayout {
                                 spacing: 4px;
 
-                                SettingHeading { text: "Rayleigh"; }
-
-                                rayleigh-intensity-slider := SettingRow {
-                                    label: "Intensity";
-                                    hint: "Strength of the blue scattering halo that rings the daylit limb.";
-                                    indent: 8px;
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.rayleigh-intensity;
-                                    value-text: round(root.rayleigh-intensity * 100) + "%";
+                                longitude-slider := SettingRow {
+                                    label: "Longitude";
+                                    hint: "The meridian the camera hangs above, which is what turns the globe left and right.";
+                                    minimum: -180;
+                                    maximum: 180;
+                                    value <=> root.camera-longitude;
+                                    value-text: round(root.camera-longitude) + "°";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                rayleigh-sharpness-slider := SettingRow {
-                                    label: "Sharpness";
-                                    hint: "How tightly that halo hugs the limb; higher leaves a thinner, harder band.";
-                                    indent: 8px;
+                                latitude-slider := SettingRow {
+                                    label: "Latitude";
+                                    hint: "How far north or south of the equator the camera hangs, from one pole to the other.";
+                                    minimum: -89;
+                                    maximum: 89;
+                                    value <=> root.camera-latitude;
+                                    value-text: round(root.camera-latitude) + "°";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                zoom-slider := SettingRow {
+                                    label: "Zoom";
+                                    hint: "Distance from the Earth's centre in Earth radii, mapped exponentially so both ends of the slider stay useful.";
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.camera-zoom;
+                                    value-text: round(root.zoom-display-distance * 10) / 10;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Camera Orientation";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                tilt-slider := SettingRow {
+                                    label: "Tilt";
+                                    hint: "Rolls the whole frame around the view axis, tipping the poles away from vertical.";
+                                    minimum: -180;
+                                    maximum: 180;
+                                    value <=> root.camera-tilt;
+                                    value-text: round(root.camera-tilt) + "°";
+                                    value-width: 35px;
+                                    changed => {
+                                        if root.camera-tilt > -5 && root.camera-tilt < 5 {
+                                            root.camera-tilt = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+
+                                yaw-slider := SettingRow {
+                                    label: "Yaw";
+                                    hint: "Swings the aim point sideways across the globe, so the camera looks off-centre rather than at the middle.";
+                                    minimum: -90;
+                                    maximum: 90;
+                                    value <=> root.camera-yaw;
+                                    value-text: round(root.camera-yaw) + "°";
+                                    value-width: 35px;
+                                    changed => {
+                                        if root.camera-yaw > -3 && root.camera-yaw < 3 {
+                                            root.camera-yaw = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+
+                                pitch-slider := SettingRow {
+                                    label: "Pitch";
+                                    hint: "Swings the aim point up or down across the globe, which is what puts the horizon low in the frame.";
+                                    minimum: -90;
+                                    maximum: 90;
+                                    value <=> root.camera-pitch;
+                                    value-text: round(root.camera-pitch) + "°";
+                                    value-width: 35px;
+                                    changed => {
+                                        if root.camera-pitch > -3 && root.camera-pitch < 3 {
+                                            root.camera-pitch = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Framing";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                camera-fov-slider := SettingRow {
+                                    label: "Field of view";
+                                    hint: "How wide the Earth lens is: narrow flattens the globe the way a long lens does, wide exaggerates its curvature. The sky behind it has a lens of its own.";
                                     minimum: 10.0;
-                                    maximum: 100.0;
-                                    value <=> root.rayleigh-sharpness;
-                                    value-text: round(root.rayleigh-sharpness * 10) / 10;
-                                    value-width: 35px;
+                                    maximum: 170.0;
+                                    value <=> root.camera-fov;
+                                    value-text: round(root.camera-fov) + "°";
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                rayleigh-haze-slider := SettingRow {
-                                    label: "Haze";
-                                    hint: "How far the scattering bleeds inward over the disc itself rather than sitting on its edge.";
-                                    indent: 8px;
+                                offset-x-slider := SettingRow {
+                                    label: "Offset X";
+                                    hint: "Slides the finished frame left or right without moving the camera.";
+                                    minimum: -3.0;
+                                    maximum: 3.0;
+                                    value <=> root.camera-offset-x;
+                                    value-text: round(root.camera-offset-x * 100) / 100;
+                                    value-width: 35px;
+                                    changed => {
+                                        if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
+                                            root.camera-offset-x = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+
+                                offset-y-slider := SettingRow {
+                                    label: "Offset Y";
+                                    hint: "Slides the finished frame up or down without moving the camera.";
+                                    minimum: -3.0;
+                                    maximum: 3.0;
+                                    value <=> root.camera-offset-y;
+                                    value-text: round(root.camera-offset-y * 100) / 100;
+                                    value-width: 35px;
+                                    changed => {
+                                        if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
+                                            root.camera-offset-y = 0;
+                                        }
+                                        root.sliders-changed();
+                                    }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Date / Time";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                SettingCheck {
+                                    text: "Override date/time";
+                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were.";
+                                    checked <=> root.use-custom-datetime;
+                                    toggled => { root.datetime-override-toggled(); }
+                                }
+
+                                if root.use-custom-datetime :
+                                VerticalLayout {
+                                    spacing: 4px;
+
+                                    custom-hour-slider := SettingRow {
+                                        label: "Hour";
+                                        hint: "Time of day in UTC, which is what decides the longitude the Sun stands over.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 23.99;
+                                        value <=> root.custom-hour;
+                                        value-text: root.hour-label;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    custom-day-slider := SettingRow {
+                                        label: "Day";
+                                        hint: "Day of the year, which is what decides the Sun's declination and so the season the terminator shows.";
+                                        indent: 8px;
+                                        minimum: 1.0;
+                                        maximum: root.max-day-of-year;
+                                        value <=> root.custom-day-of-year;
+                                        value-text: root.day-label;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    SettingCombo {
+                                        label: "Year";
+                                        hint: "Which year that day belongs to. The Sun barely notices; the Moon and the planets do.";
+                                        indent: 8px;
+                                        model: root.year-options;
+                                        current-index <=> root.custom-year-index;
+                                        selected => { root.sliders-changed(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Clouds";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                cloud-opacity-slider := SettingRow {
+                                    label: "Day opacity";
+                                    hint: "How strongly the cloud layer covers the sunlit surface underneath it.";
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.rayleigh-haze;
-                                    value-text: round(root.rayleigh-haze * 100) + "%";
+                                    value <=> root.cloud-opacity;
+                                    value-text: round(root.cloud-opacity * 100) + "%";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                SettingHeading { text: "Sunrise band"; }
+                                cloud-opacity-night-slider := SettingRow {
+                                    label: "Night opacity";
+                                    hint: "How strongly the cloud layer covers the night surface, where the city lights under it are far brighter than the cloud itself. At the top of the range nothing shines through.";
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.cloud-opacity-night;
+                                    value-text: round(root.cloud-opacity-night * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
 
-                                atmo-sunrise-glow-slider := SettingRow {
-                                    label: "Brightness";
-                                    hint: "Brightness of the warm band the atmosphere takes around a rising or setting Sun.";
+                                cloud-floor-slider := SettingRow {
+                                    label: "Floor";
+                                    hint: "Brightness below which a cloud pixel counts as clear sky, which is what trims the haze out of the source image.";
+                                    minimum: 0.0;
+                                    maximum: 0.5;
+                                    value <=> root.cloud-floor;
+                                    value-text: round(root.cloud-floor * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                cloud-gamma-slider := SettingRow {
+                                    label: "Gamma";
+                                    hint: "Contrast curve of the cloud layer: below one lifts the thin cloud, above one keeps only the dense tops.";
+                                    minimum: 0.1;
+                                    maximum: 2.0;
+                                    value <=> root.cloud-gamma;
+                                    value-text: round(root.cloud-gamma * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                cloud-night-slider := SettingRow {
+                                    label: "Night brightness";
+                                    hint: "How bright a cloud is on the night hemisphere, where the real light is far too faint to draw at this exposure.";
+                                    minimum: 0.0;
+                                    maximum: 0.6;
+                                    value <=> root.cloud-night;
+                                    value-text: round(root.cloud-night * 100) + "%";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Celestial";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                SettingHeading { text: "Sky"; }
+
+                                sky-fov-slider := SettingRow {
+                                    label: "Field of view";
+                                    hint: "How much sky the background lens covers, which is what sets the scale of the constellations and the Milky Way.";
+                                    indent: 8px;
+                                    minimum: 60.0;
+                                    maximum: 180.0;
+                                    value <=> root.sky-fov;
+                                    value-text: round(root.sky-fov) + "°";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                milky-way-intensity-slider := SettingRow {
+                                    label: "Milky Way";
+                                    hint: "Brightness of the diffuse galactic band behind the stars. Zero leaves it out of the frame.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.milky-way-intensity;
+                                    value-text: round(root.milky-way-intensity * 100) / 100 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                SettingHeading { text: "Sun"; }
+
+                                sun-glow-slider := SettingRow {
+                                    label: "Glare";
+                                    hint: "Master strength of the Sun's glare, and the switch for the Sun itself: at zero neither the disk nor the glare is drawn.";
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 3.0;
-                                    value <=> root.atmo-sunrise-glow;
-                                    value-text: round(root.atmo-sunrise-glow * 100) / 100 + "×";
-                                    value-width: 35px;
+                                    value <=> root.sun-glow;
+                                    value-text: round(root.sun-glow * 100) / 100 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                atmo-sunrise-width-slider := SettingRow {
-                                    label: "Band width";
-                                    hint: "How far along the horizon that band reaches from the Sun.";
+                                sun-rays-slider := SettingRow {
+                                    label: "Rays";
+                                    hint: "Strength of the fine radial needles the eye itself adds around a bright source.";
                                     indent: 8px;
-                                    minimum: 10.0;
-                                    maximum: 90.0;
-                                    value <=> root.atmo-sunrise-width;
-                                    value-text: round(root.atmo-sunrise-width) + "°";
-                                    value-width: 35px;
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.sun-rays;
+                                    value-text: round(root.sun-rays * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                SettingHeading { text: "Nightglow"; }
+                                sun-size-slider := SettingRow {
+                                    label: "Size";
+                                    hint: "Multiplies the Sun's radius above its true half degree, the way the Moon's does. The glare's inner lobe grows with it and the rest of it does not.";
+                                    indent: 8px;
+                                    minimum: 1.0;
+                                    maximum: 8.0;
+                                    value <=> root.sun-size;
+                                    value-text: round(root.sun-size * 10) / 10 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
 
-                                nightglow-intensity-slider := SettingRow {
-                                    label: "Intensity";
-                                    hint: "Strength of the faint airglow that traces the night limb.";
+                                sun-halo-radius-slider := SettingRow {
+                                    label: "Halo radius";
+                                    hint: "Angular radius of the faint colored ring around the glare.";
+                                    indent: 8px;
+                                    minimum: 1.5;
+                                    maximum: 8.0;
+                                    value <=> root.sun-halo-radius;
+                                    value-text: round(root.sun-halo-radius * 10) / 10 + "°";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                sun-flare-slider := SettingRow {
+                                    label: "Lens flare";
+                                    hint: "Aperture spikes and lens ghosts, which belong to a camera rather than to an eye.";
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.nightglow-intensity;
-                                    value-text: round(root.nightglow-intensity * 100) + "%";
+                                    value <=> root.sun-flare;
+                                    value-text: round(root.sun-flare * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                sun-horizon-boost-slider := SettingRow {
+                                    label: "Sunrise glare";
+                                    hint: "How much brighter the glare peaks as the disk clears the horizon, before the eye adjusts. One is the physical answer.";
+                                    indent: 8px;
+                                    minimum: 1.0;
+                                    maximum: 8.0;
+                                    value <=> root.sun-horizon-boost;
+                                    value-text: round(root.sun-horizon-boost * 10) / 10 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                sun-horizon-reach-slider := SettingRow {
+                                    label: "Adaptation";
+                                    hint: "How far above the horizon, in horizon depths, the eye takes to settle back to normal.";
+                                    indent: 8px;
+                                    minimum: 0.5;
+                                    maximum: 10.0;
+                                    value <=> root.sun-horizon-reach;
+                                    value-text: round(root.sun-horizon-reach * 10) / 10;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                sun-horizon-depth-slider := SettingRow {
+                                    label: "Horizon depth";
+                                    hint: "Thickness of the horizon zone in Sun diameters. Zero uses the painted atmosphere alone.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 4.0;
+                                    value <=> root.sun-horizon-depth;
+                                    value-text: round(root.sun-horizon-depth * 10) / 10;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                sun-reddening-slider := SettingRow {
+                                    label: "Reddening";
+                                    hint: "How much the low atmosphere colors the disk and the glare. One is the measured atmosphere. The warm band it spreads along the limb is the Atmosphere group's Sunrise band.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.sun-reddening;
+                                    value-text: round(root.sun-reddening * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                sun-refraction-slider := SettingRow {
+                                    label: "Refraction";
+                                    hint: "Lifts and flattens the disk at the horizon the way the atmosphere bends its light.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.sun-refraction;
+                                    value-text: round(root.sun-refraction * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                SettingHeading { text: "Moon"; }
+
+                                moon-brightness-slider := SettingRow {
+                                    label: "Brightness";
+                                    hint: "Brightness of the Moon's sunlit face, and the switch for the Moon itself: zero draws nothing.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 3.0;
+                                    value <=> root.moon-brightness;
+                                    value-text: round(root.moon-brightness * 100) / 100 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-size-slider := SettingRow {
+                                    label: "Size";
+                                    hint: "Multiplies the Moon's radius above its true half degree. A narrower sky field of view magnifies it honestly instead.";
+                                    indent: 8px;
+                                    minimum: 1.0;
+                                    maximum: 8.0;
+                                    value <=> root.moon-size;
+                                    value-text: round(root.moon-size * 10) / 10 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-earthshine-slider := SettingRow {
+                                    label: "Earthshine";
+                                    hint: "Floor under the Moon's unlit face, so a new moon does not disappear altogether.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 0.5;
+                                    value <=> root.moon-earthshine;
+                                    value-text: round(root.moon-earthshine * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                SettingHeading { text: "Stars"; }
+
+                                star-intensity-slider := SettingRow {
+                                    label: "Brightness";
+                                    hint: "Display gain for the stars and the naked-eye planets, and the switch for both: zero leaves the sky empty.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 5.0;
+                                    value <=> root.star-intensity;
+                                    value-text: round(root.star-intensity * 100) / 100 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                star-size-slider := SettingRow {
+                                    label: "Size";
+                                    hint: "Multiplies the compact core of each star, leaving its halo to the two glow sliders.";
+                                    indent: 8px;
+                                    minimum: 0.5;
+                                    maximum: 3.0;
+                                    value <=> root.star-size;
+                                    value-text: round(root.star-size * 100) / 100 + "×";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                star-glow-strength-slider := SettingRow {
+                                    label: "Glow strength";
+                                    hint: "How pronounced the soft halo around the brighter stars is.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 3.0;
+                                    value <=> root.star-glow-strength;
+                                    value-text: round(root.star-glow-strength * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                star-glow-radius-slider := SettingRow {
+                                    label: "Glow radius";
+                                    hint: "How far that halo reaches, in pixels at 1080p; a larger frame scales it up on its own.";
+                                    indent: 8px;
+                                    minimum: 1.0;
+                                    maximum: 30.0;
+                                    value <=> root.star-glow-radius;
+                                    value-text: round(root.star-glow-radius * 10) / 10 + " px";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                star-contrast-slider := SettingRow {
+                                    label: "Contrast";
+                                    hint: "Separation between bright and faint stars; below zero they even out, above zero the bright ones pull away.";
+                                    indent: 8px;
+                                    minimum: -1.0;
+                                    maximum: 1.0;
+                                    value <=> root.star-contrast;
+                                    value-text: round(root.star-contrast * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                star-mag-limit-slider := SettingRow {
+                                    label: "Faintest";
+                                    hint: "Dimmest apparent magnitude still drawn. The naked eye reaches about 6 under a dark sky, and the catalog stops at 7.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 7.0;
+                                    value <=> root.star-mag-limit;
+                                    value-text: round(root.star-mag-limit * 10) / 10;
+                                    changed => { root.sliders-changed(); }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Atmosphere";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                SettingCheck {
+                                    text: "Atmosphere glow";
+                                    hint: "Master switch for the three glowing shells around the globe.";
+                                    checked <=> root.atmo-enabled;
+                                    toggled => { root.sliders-changed(); }
+                                }
+
+                                if root.atmo-enabled :
+                                VerticalLayout {
+                                    spacing: 4px;
+
+                                    SettingHeading { text: "Rayleigh"; }
+
+                                    rayleigh-intensity-slider := SettingRow {
+                                        label: "Intensity";
+                                        hint: "Strength of the blue scattering halo that rings the daylit limb.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.rayleigh-intensity;
+                                        value-text: round(root.rayleigh-intensity * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    rayleigh-sharpness-slider := SettingRow {
+                                        label: "Sharpness";
+                                        hint: "How tightly that halo hugs the limb; higher leaves a thinner, harder band.";
+                                        indent: 8px;
+                                        minimum: 10.0;
+                                        maximum: 100.0;
+                                        value <=> root.rayleigh-sharpness;
+                                        value-text: round(root.rayleigh-sharpness * 10) / 10;
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    rayleigh-haze-slider := SettingRow {
+                                        label: "Haze";
+                                        hint: "How far the scattering bleeds inward over the disc itself rather than sitting on its edge.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.rayleigh-haze;
+                                        value-text: round(root.rayleigh-haze * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    SettingHeading { text: "Sunrise band"; }
+
+                                    atmo-sunrise-glow-slider := SettingRow {
+                                        label: "Brightness";
+                                        hint: "Brightness of the warm band the atmosphere takes around a rising or setting Sun.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 3.0;
+                                        value <=> root.atmo-sunrise-glow;
+                                        value-text: round(root.atmo-sunrise-glow * 100) / 100 + "×";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    atmo-sunrise-width-slider := SettingRow {
+                                        label: "Band width";
+                                        hint: "How far along the horizon that band reaches from the Sun.";
+                                        indent: 8px;
+                                        minimum: 10.0;
+                                        maximum: 90.0;
+                                        value <=> root.atmo-sunrise-width;
+                                        value-text: round(root.atmo-sunrise-width) + "°";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    SettingHeading { text: "Nightglow"; }
+
+                                    nightglow-intensity-slider := SettingRow {
+                                        label: "Intensity";
+                                        hint: "Strength of the faint airglow that traces the night limb.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.nightglow-intensity;
+                                        value-text: round(root.nightglow-intensity * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    nightglow-balance-slider := SettingRow {
+                                        label: "Balance";
+                                        hint: "Mix between the orange sodium band and the green oxygen band of that airglow.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.nightglow-balance;
+                                        value-text: root.nightglow-balance <= 0.01 ? "orange" :
+                                                    root.nightglow-balance >= 0.99 ? "green" :
+                                                    round(root.nightglow-balance * 100) / 100;
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    nightglow-falloff-slider := SettingRow {
+                                        label: "Falloff";
+                                        hint: "How quickly the airglow fades with distance from the limb.";
+                                        indent: 8px;
+                                        minimum: 2.0;
+                                        maximum: 50.0;
+                                        value <=> root.nightglow-falloff;
+                                        value-text: round(root.nightglow-falloff * 10) / 10;
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        GroupBox {
+                            title: "Lighting";
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                terminator-slider := SettingRow {
+                                    label: "Terminator";
+                                    hint: "Width of the blend between the day and night maps across the day/night boundary.";
+                                    minimum: 0.01;
+                                    maximum: 0.3;
+                                    value <=> root.terminator-width;
+                                    value-text: round(root.terminator-width * 1000) / 1000;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                nightglow-balance-slider := SettingRow {
-                                    label: "Balance";
-                                    hint: "Mix between the orange sodium band and the green oxygen band of that airglow.";
+                                SettingCheck {
+                                    text: "Dayside shading";
+                                    hint: "Shade the daylit half by the Sun's angle instead of laying the map on flat.";
+                                    checked <=> root.diffuse-shading;
+                                    toggled => { root.sliders-changed(); }
+                                }
+
+                                diffuse-floor-slider := SettingRow {
+                                    label: "Floor";
+                                    hint: "How bright the dimmest shaded daylight still is, so the approach to the terminator does not go black.";
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.nightglow-balance;
-                                    value-text: root.nightglow-balance <= 0.01 ? "orange" :
-                                                root.nightglow-balance >= 0.99 ? "green" :
-                                                round(root.nightglow-balance * 100) / 100;
+                                    value <=> root.diffuse-floor;
+                                    value-text: round(root.diffuse-floor * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                nightglow-falloff-slider := SettingRow {
-                                    label: "Falloff";
-                                    hint: "How quickly the airglow fades with distance from the limb.";
+                                diffuse-ramp-slider := SettingRow {
+                                    label: "Ramp";
+                                    hint: "How quickly that shading falls off as the surface turns away from the Sun.";
                                     indent: 8px;
-                                    minimum: 2.0;
-                                    maximum: 50.0;
-                                    value <=> root.nightglow-falloff;
-                                    value-text: round(root.nightglow-falloff * 10) / 10;
+                                    minimum: 0.1;
+                                    maximum: 1.0;
+                                    value <=> root.diffuse-ramp;
+                                    value-text: round(root.diffuse-ramp * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                spec-shininess-slider := SettingRow {
+                                    label: "Shininess";
+                                    hint: "Tightness of the specular highlight the Sun leaves on the oceans; higher makes a smaller, harder glint.";
+                                    minimum: 10;
+                                    maximum: 500;
+                                    value <=> root.spec-shininess;
+                                    value-text: round(root.spec-shininess);
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                spec-intensity-slider := SettingRow {
+                                    label: "Glint";
+                                    hint: "Strength of that specular highlight.";
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.spec-intensity;
+                                    value-text: round(root.spec-intensity * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                fresnel-mix-slider := SettingRow {
+                                    label: "Fresnel mix";
+                                    hint: "How much the ocean brightens where it turns away from the camera, the way water does at a glancing angle.";
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.fresnel-mix;
+                                    value-text: round(root.fresnel-mix * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                fresnel-exp-slider := SettingRow {
+                                    label: "Fresnel extent";
+                                    hint: "How far in from the limb that glancing-angle brightening reaches.";
+                                    minimum: 1.0;
+                                    maximum: 8.0;
+                                    value <=> root.fresnel-exp;
+                                    value-text: round(root.fresnel-exp * 10) / 10;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
                             }
                         }
-                    }
 
-                    GroupBox {
-                        title: "Lighting";
-                        VerticalLayout {
-                            spacing: 4px;
+                        GroupBox {
+                            title: "Color Correction";
+                            VerticalLayout {
+                                spacing: 4px;
 
-                            terminator-slider := SettingRow {
-                                label: "Terminator";
-                                hint: "Width of the blend between the day and night maps across the day/night boundary.";
-                                minimum: 0.01;
-                                maximum: 0.3;
-                                value <=> root.terminator-width;
-                                value-text: round(root.terminator-width * 1000) / 1000;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
+                                SettingHeading { text: "Day Texture"; }
 
-                            SettingCheck {
-                                text: "Dayside shading";
-                                hint: "Shade the daylit half by the Sun's angle instead of laying the map on flat.";
-                                checked <=> root.diffuse-shading;
-                                toggled => { root.sliders-changed(); }
-                            }
+                                day-gamma-slider := SettingRow {
+                                    label: "Gamma";
+                                    hint: "Brightness curve of the daylit surface map; below one lifts the shadows, above one deepens them.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.day-gamma;
+                                    value-text: round((root.day-gamma <= 0.5 ? 0.2 + 1.6 * root.day-gamma : 1.0 + 4.0 * (root.day-gamma - 0.5)) * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
 
-                            diffuse-floor-slider := SettingRow {
-                                label: "Floor";
-                                hint: "How bright the dimmest shaded daylight still is, so the approach to the terminator does not go black.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.diffuse-floor;
-                                value-text: round(root.diffuse-floor * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
+                                day-saturation-slider := SettingRow {
+                                    label: "Saturation";
+                                    hint: "Colour intensity of the daylit surface map; zero is greyscale.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.day-saturation;
+                                    value-text: round(root.day-saturation * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
 
-                            diffuse-ramp-slider := SettingRow {
-                                label: "Ramp";
-                                hint: "How quickly that shading falls off as the surface turns away from the Sun.";
-                                indent: 8px;
-                                minimum: 0.1;
-                                maximum: 1.0;
-                                value <=> root.diffuse-ramp;
-                                value-text: round(root.diffuse-ramp * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
+                                SettingHeading { text: "Night Texture"; }
 
-                            spec-shininess-slider := SettingRow {
-                                label: "Shininess";
-                                hint: "Tightness of the specular highlight the Sun leaves on the oceans; higher makes a smaller, harder glint.";
-                                minimum: 10;
-                                maximum: 500;
-                                value <=> root.spec-shininess;
-                                value-text: round(root.spec-shininess);
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
+                                night-gamma-slider := SettingRow {
+                                    label: "Gamma";
+                                    hint: "Brightness curve of the city-lights map; below one brings out the sparse lights, above one keeps only the cities.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.night-gamma;
+                                    value-text: round((root.night-gamma <= 0.5 ? 0.2 + 1.6 * root.night-gamma : 1.0 + 4.0 * (root.night-gamma - 0.5)) * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
 
-                            spec-intensity-slider := SettingRow {
-                                label: "Glint";
-                                hint: "Strength of that specular highlight.";
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.spec-intensity;
-                                value-text: round(root.spec-intensity * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            fresnel-mix-slider := SettingRow {
-                                label: "Fresnel mix";
-                                hint: "How much the ocean brightens where it turns away from the camera, the way water does at a glancing angle.";
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.fresnel-mix;
-                                value-text: round(root.fresnel-mix * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            fresnel-exp-slider := SettingRow {
-                                label: "Fresnel extent";
-                                hint: "How far in from the limb that glancing-angle brightening reaches.";
-                                minimum: 1.0;
-                                maximum: 8.0;
-                                value <=> root.fresnel-exp;
-                                value-text: round(root.fresnel-exp * 10) / 10;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
+                                night-saturation-slider := SettingRow {
+                                    label: "Saturation";
+                                    hint: "Colour intensity of the city-lights map; zero is greyscale.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 2.0;
+                                    value <=> root.night-saturation;
+                                    value-text: round(root.night-saturation * 100) / 100;
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
                             }
                         }
-                    }
 
-                    GroupBox {
-                        title: "Color Correction";
-                        VerticalLayout {
-                            spacing: 4px;
-
-                            SettingHeading { text: "Day Texture"; }
-
-                            day-gamma-slider := SettingRow {
-                                label: "Gamma";
-                                hint: "Brightness curve of the daylit surface map; below one lifts the shadows, above one deepens them.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.day-gamma;
-                                value-text: round((root.day-gamma <= 0.5 ? 0.2 + 1.6 * root.day-gamma : 1.0 + 4.0 * (root.day-gamma - 0.5)) * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            day-saturation-slider := SettingRow {
-                                label: "Saturation";
-                                hint: "Colour intensity of the daylit surface map; zero is greyscale.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.day-saturation;
-                                value-text: round(root.day-saturation * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            SettingHeading { text: "Night Texture"; }
-
-                            night-gamma-slider := SettingRow {
-                                label: "Gamma";
-                                hint: "Brightness curve of the city-lights map; below one brings out the sparse lights, above one keeps only the cities.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 1.0;
-                                value <=> root.night-gamma;
-                                value-text: round((root.night-gamma <= 0.5 ? 0.2 + 1.6 * root.night-gamma : 1.0 + 4.0 * (root.night-gamma - 0.5)) * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
-
-                            night-saturation-slider := SettingRow {
-                                label: "Saturation";
-                                hint: "Colour intensity of the city-lights map; zero is greyscale.";
-                                indent: 8px;
-                                minimum: 0.0;
-                                maximum: 2.0;
-                                value <=> root.night-saturation;
-                                value-text: round(root.night-saturation * 100) / 100;
-                                value-width: 35px;
-                                changed => { root.sliders-changed(); }
-                            }
+                        Text {
+                            text: renderer-info;
+                            color: #888888;
+                            font-size: 11px;
+                            wrap: word-wrap;
                         }
                     }
+                }
+            }
 
-                    GroupBox {
-                        title: "Rendering";
-                        VerticalLayout {
-                            spacing: 4px;
+            HorizontalLayout {
+                padding: 8px;
+                vertical-stretch: 0;
 
-                            SettingCombo {
-                                label: "Texture";
-                                hint: "Which map the globe is drawn from: the procedural grid, one of the two surface maps alone, or the day/night blend.";
-                                model: texture-options;
-                                current-index <=> root.texture-index;
-                                selected => { root.texture-changed(); }
-                            }
-
-                            SettingCombo {
-                                label: "Resolution";
-                                hint: "Width the surface maps are loaded at. Lower costs less memory and takes effect without a restart.";
-                                model: texture-resolution-options;
-                                current-index <=> root.texture-resolution-index;
-                                selected => { root.texture-resolution-changed(); }
-                            }
-
-                            SettingCombo {
-                                label: "Anti-aliasing";
-                                hint: "How many samples each pixel is rendered from, which is what smooths the globe's edge and the star sprites.";
-                                model: aa-options;
-                                current-index <=> root.aa-index;
-                                selected => { root.msaa-changed(); }
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: renderer-info;
-                        color: #888888;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-
-                    Button {
-                        text: "About";
-                        min-width: 0;
-                        clicked => { root.show-about(); }
-                        Tooltip {
-                            Hint { text: "The version this is, and who the maps, the star catalog and the astronomy come from."; }
-                        }
+                about-button := Button {
+                    text: "About";
+                    min-width: 0;
+                    clicked => { root.show-about(); }
+                    Tooltip {
+                        Hint { text: "The version this is, and who the maps, the star catalog and the astronomy come from."; }
                     }
                 }
             }

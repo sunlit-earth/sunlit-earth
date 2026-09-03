@@ -684,3 +684,227 @@ fn test_save_preserves_settings_without_a_widget() {
         assert!((saved.cloud_opacity - 0.25).abs() < f32::EPSILON);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The sky slider's range
+// ---------------------------------------------------------------------------
+
+/// The sky slider stops at 180 degrees, and that is not the shader's ceiling.
+///
+/// `display::layout::SKY_FOV_MAX` is 330, which is the widest sky a spanned
+/// canvas may derive. The slider means the anchor screen's own field of view and
+/// every other screen extends outward from it, so widening the slider to the
+/// shader's clamp would offer a setting that means nothing on one screen and
+/// double-counts on several.
+#[test]
+fn test_the_sky_slider_stops_where_one_screen_stops() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/main.slint"),
+    )
+    .expect("read ui/main.slint");
+    let row = source
+        .split_once("sky-fov-slider := SettingRow {")
+        .expect("the sky field-of-view row")
+        .1
+        .split_once('}')
+        .expect("the end of that row")
+        .0;
+    assert!(
+        row.contains("minimum: 60.0;") && row.contains("maximum: 180.0;"),
+        "the sky field-of-view row reads:\n{row}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The Displays group
+// ---------------------------------------------------------------------------
+
+fn fabricated_monitors() -> Vec<sunlit_core::display::Monitor> {
+    use sunlit_core::display::Monitor;
+    vec![
+        Monitor {
+            id: "DP-1".to_owned(),
+            label: "DP-1".to_owned(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            primary: false,
+        },
+        Monitor {
+            id: "DP-2".to_owned(),
+            label: "DP-2".to_owned(),
+            x: 1920,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            primary: true,
+        },
+    ]
+}
+
+fn saved_with(
+    window: &MainWindow,
+    stored: &sunlit_core::config::AppConfig,
+) -> sunlit_core::config::AppConfig {
+    sunlit_earth::ui_callbacks::read_config_from_window_onto(window, &[1, 2, 4, 8], stored, false)
+}
+
+/// The screens the session has have to reach the combo, or the anchor cannot be
+/// chosen at all.
+#[test]
+fn test_the_screen_combo_offers_the_automatic_row_and_every_monitor() {
+    use slint::Model;
+
+    let window = create_window();
+    sunlit_earth::displays::apply_models_to_window(&window, &fabricated_monitors());
+
+    let rows: Vec<String> = window
+        .get_display_screen_options()
+        .iter()
+        .map(|row| row.to_string())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            sunlit_earth::displays::AUTOMATIC_SCREEN.to_owned(),
+            "DP-1  1920x1080".to_owned(),
+            "DP-2  2560x1440  primary".to_owned(),
+        ]
+    );
+
+    let modes: Vec<String> = window
+        .get_display_mode_options()
+        .iter()
+        .map(|row| row.to_string())
+        .collect();
+    assert_eq!(modes, sunlit_earth::displays::mode_options());
+}
+
+/// The anchor is a combo index in the window and an id in the config file, so
+/// the mapping between them is what a save depends on.
+#[test]
+fn test_the_anchor_and_the_mode_round_trip_through_a_save() {
+    use sunlit_core::config::AppConfig;
+    use sunlit_core::display::layout::DisplayMode;
+
+    let window = create_window();
+    sunlit_earth::displays::apply_models_to_window(&window, &fabricated_monitors());
+    let stored = AppConfig::default();
+
+    for (index, expected) in [(0, ""), (1, "DP-1"), (2, "DP-2")] {
+        window.set_display_anchor_index(index);
+        assert_eq!(saved_with(&window, &stored).anchor_monitor, expected);
+    }
+
+    for mode in DisplayMode::ALL {
+        window.set_display_mode_index(i32::try_from(mode.index()).unwrap());
+        assert_eq!(saved_with(&window, &stored).display_mode, mode);
+    }
+}
+
+/// An unplugged screen must not cost the setting that named it.
+///
+/// The combo shows the automatic row for a stored id the session does not have,
+/// because that is the screen the plan will actually be built around. Writing
+/// that row back would turn one unplugged cable into a lost preference.
+#[test]
+fn test_a_stored_anchor_the_session_lost_survives_a_save() {
+    use sunlit_core::config::AppConfig;
+
+    let window = create_window();
+    sunlit_earth::displays::apply_models_to_window(&window, &fabricated_monitors());
+    let stored = AppConfig {
+        anchor_monitor: "HDMI-9".to_owned(),
+        ..AppConfig::default()
+    };
+
+    let indices = sunlit_earth::ui_callbacks::ComboIndices::of(
+        &stored,
+        &[1, 2, 4, 8],
+        stored.texture_resolution,
+        &sunlit_earth::displays::screen_ids(&fabricated_monitors()),
+    );
+    assert_eq!(
+        indices.display_anchor, 0,
+        "a screen this session does not have shows as the automatic row"
+    );
+
+    window.set_display_anchor_index(indices.display_anchor);
+    assert_eq!(saved_with(&window, &stored).anchor_monitor, "HDMI-9");
+
+    // Moving to a screen this session does have is a deliberate change, and so
+    // is moving back to automatic from one.
+    window.set_display_anchor_index(1);
+    let chosen = saved_with(&window, &stored);
+    assert_eq!(chosen.anchor_monitor, "DP-1");
+    window.set_display_anchor_index(0);
+    assert_eq!(saved_with(&window, &chosen).anchor_monitor, "");
+}
+
+/// A window that was never told what screens the session has must not overwrite
+/// the stored anchor: that is macOS, where nothing can enumerate them.
+#[test]
+fn test_a_window_with_no_screen_model_leaves_the_stored_anchor_alone() {
+    use sunlit_core::config::AppConfig;
+
+    let window = create_window();
+    let stored = AppConfig {
+        anchor_monitor: "DP-2".to_owned(),
+        ..AppConfig::default()
+    };
+    assert_eq!(saved_with(&window, &stored).anchor_monitor, "DP-2");
+}
+
+/// The diagram highlights the screen the plan will be built around, which for
+/// the automatic row is whichever screen the system calls primary.
+#[test]
+fn test_the_diagram_marks_the_screen_the_plan_will_use() {
+    use slint::Model;
+
+    let window = create_window();
+    let monitors = fabricated_monitors();
+    sunlit_earth::displays::apply_diagram_to_window(&window, &monitors, None);
+
+    let tiles: Vec<_> = window.get_display_tiles().iter().collect();
+    assert_eq!(tiles.len(), 2);
+    assert!(
+        !tiles[0].anchor && tiles[1].anchor,
+        "the second monitor is the primary one"
+    );
+    approx::assert_relative_eq!(window.get_display_aspect(), 4480.0 / 1440.0);
+
+    sunlit_earth::displays::apply_diagram_to_window(&window, &monitors, Some("DP-1"));
+    let tiles: Vec<_> = window.get_display_tiles().iter().collect();
+    assert!(tiles[0].anchor && !tiles[1].anchor);
+}
+
+/// Three modes that all mean the same thing are noise on one screen, so the
+/// group is not there at all. The setting still persists.
+#[test]
+fn test_the_displays_group_is_absent_on_a_single_screen() {
+    let window = create_window();
+    sunlit_earth::displays::apply_diagram_to_window(&window, &fabricated_monitors()[..1], None);
+
+    let combos: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
+    assert!(
+        combos.is_empty(),
+        "the Displays group has nothing to say about one screen"
+    );
+}
+
+#[test]
+fn test_the_displays_group_is_there_on_two_screens() {
+    let window = create_window();
+    sunlit_earth::displays::apply_models_to_window(&window, &fabricated_monitors());
+    sunlit_earth::displays::apply_diagram_to_window(&window, &fabricated_monitors(), None);
+
+    for id in [
+        "MainWindow::display-mode-combo",
+        "MainWindow::display-screen-combo",
+    ] {
+        let found: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+        assert!(!found.is_empty(), "{id} should be in the tree");
+    }
+}

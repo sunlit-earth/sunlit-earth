@@ -193,8 +193,19 @@ pub fn event_forwarder(
             });
         }
         EngineEvent::TexturesReady => on_textures_ready(),
-        EngineEvent::WallpaperSet(Ok(())) => {
+        EngineEvent::WallpaperSet(Ok(note)) => {
             info!("wallpaper updated");
+            // What the desktop could not do is not a failure and does not go to
+            // the error path, but it is the one thing the person looking at
+            // three identical screens wants to read.
+            if !note.is_empty() {
+                let weak = weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_loading_text(note.into());
+                    }
+                });
+            }
             crate::ipc::signal("wallpaper_set");
         }
         EngineEvent::WallpaperSet(Err(e)) => {

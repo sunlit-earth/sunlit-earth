@@ -26,11 +26,13 @@ crossbeam-channel.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }
+windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_System_Com"] }
 winreg.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

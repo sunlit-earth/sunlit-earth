@@ -308,15 +308,19 @@ fn running_vm(image: Image, state: &RunState) -> String {
             state.ssh_host, state.ssh_port
         );
     }
+    // Every console, not the first: a guest booted with two screens has two of
+    // them, `vm view` opens both, and a reader who is told about one would go
+    // looking for the other.
+    let consoles = state.consoles();
     let _ = writeln!(
         out,
         "    {}: `cargo xtask vm view {image}`{}",
         image.console_label(),
-        state
-            .vnc
-            .as_ref()
-            .map(|vnc| format!("  (vnc {vnc})"))
-            .unwrap_or_default()
+        if consoles.is_empty() {
+            String::new()
+        } else {
+            format!("  (vnc {})", consoles.join(", "))
+        }
     );
     // A build's disk is the image being installed, not a throwaway child of an
     // image, and calling it an overlay would say the opposite of what ending
@@ -468,6 +472,24 @@ mod tests {
         assert!(text.contains("frees the memory and the overlay"), "{text}");
         assert!(text.contains("vnc 127.0.0.1:5900"), "{text}");
         assert!(text.contains("2.0 GiB in run state"), "{text}");
+    }
+
+    /// A guest booted with two screens has two consoles, `vm view` opens both,
+    /// and a reader told about one would go looking for the other.
+    #[test]
+    fn a_two_screen_guest_lists_both_of_its_consoles() {
+        let mut state = running_state(Image::Linux);
+        state.vnc_heads = vec!["127.0.0.1:5919".to_owned(), "127.0.0.1:5920".to_owned()];
+        state.screens = Some(2);
+        let text = running_vm(Image::Linux, &state);
+        assert!(
+            text.contains("(vnc 127.0.0.1:5919, 127.0.0.1:5920)"),
+            "{text}"
+        );
+        // And not the single address the record still carries from before the
+        // heads were written, which `consoles()` is there to stop being
+        // believed over the list.
+        assert!(!text.contains("vnc 127.0.0.1:5900"), "{text}");
     }
 
     #[test]

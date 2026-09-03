@@ -9,9 +9,10 @@ Windows is the platform that ships. Linux builds, tests, renders headlessly, and
 | `render` subcommand | yes | yes | yes |
 | Settings window | yes | yes, in the test guest | untested |
 | Set the desktop wallpaper | yes | yes, per desktop | no |
+| Address one monitor of several | yes (`IDesktopWallpaper`) | XFCE only; the rest span or take one image | no |
 | Native display query | yes (Win32) | yes (`xrandr`) | no |
 | Clean exit when the session ends | yes (`WM_ENDSESSION`) | yes (SIGTERM) | no |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (10 of 11 cases) or in a local VM (all 11) | yes, in a local VM (all 10 under KDE and XFCE, 8 under GNOME and Cinnamon) | compiles, unrun |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 13 cases) or in a local VM (all 13) | yes, in a local VM (all 12 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiles, unrun |
 
 Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:
 
@@ -19,6 +20,32 @@ Per-OS implementations live in four places, each behind a `cfg` and each documen
 - `engine::wallpaper_sink::SystemWallpaper`: Win32 on Windows, a per-desktop command on Linux (see Setting a wallpaper on Linux below), and on macOS `check_supported` returns "not supported on this platform yet" before anything is rendered with `publish` returning the same string if it is reached anyway. Not a stub that pretends to succeed, and not a refusal that arrives after a full-resolution render and readback.
 - `config::is_position_on_screen`: Win32 monitor enumeration on Windows and the `xrandr` outputs on Linux, which give the same shape of answer. Where there is no display to ask, and on any platform with no query, a coordinate-range sanity check against X11's INT16 window-position range, which is the coarse portable half of the same question. A run with no display still loads a config, so refusing every saved position there would move a window on the next run that has one.
 - `session_end::install`: the Win32 listener on Windows and a SIGTERM listener on Linux, both on their own thread, both quitting the event loop once however many times they are told. macOS returns `None` and says so.
+
+## One wallpaper per screen
+
+A publish is a plan over every monitor the session has (see [architecture.md](architecture.md) for the shape of it and [rendering.md](rendering.md) for the geometry). What differs per platform is two thin functions: enumerate the monitors, and hand the desktop N files instead of one. That split is deliberate, because it is what makes a Linux guest with two heads evidence about the model rather than only about Linux.
+
+**Enumerating.** `display::monitors()` keeps the three-valued answer the display query already had: `None` where there is no way to ask, an empty list where the query answered with nothing usable, and a list otherwise. On Linux it is `xrandr --query` through the same parser `outputs()` uses. On Windows it is the `EnumDisplayMonitors` walk that only ever kept the primary before, with `rcMonitor` as the rectangle, `szDevice` numbered into a label a person recognizes (`Display 2`), and the id taken from `IDesktopWallpaper::GetMonitorDevicePathAt` where the COM query answers, because that path is what `SetWallpaper` takes and it survives a reboot in a way `\\.\DISPLAY1` does not. The match from an `HMONITOR` to a device path is by comparing `GetMonitorRECT` against `rcMonitor`, which is the documented way and is exactly the kind of thing that works on one monitor and is ambiguous on two mirrored ones. Where the COM query fails the label stands in as the id and the sink refuses per-monitor work rather than addressing the wrong screen. macOS still answers `None` and everything degrades to a refusal before anything is rendered.
+
+**DPI.** `rcMonitor` is in virtual-screen coordinates, which are physical pixels only for a per-monitor DPI aware process, so being aware is a precondition for every rectangle above. winit declares `PER_MONITOR_AWARE_V2` behind a `Once` from `EventLoop::new`, and Slint reaches that constructor without overriding it, so a windowed run is aware by the time anything publishes. A run that creates no window is not, and `sunlit-earth displays` is exactly that run. So `wallpaper::ensure_dpi_awareness()` makes the declaration itself, once, from inside `enumerate_monitors` rather than from `main`: that is the one place no caller can skip, headless commands included. Calling it in a windowed run is harmless, and measured to be: with the app running and a window up, `SetProcessDpiAwarenessContext` reports the awareness already set, which is winit having got there first.
+
+What that does *not* settle is behavior under mixed scaling. The development host runs at 100 percent (`AppliedDPI` 96), where an unaware process reads the same rectangles an aware one does, so nothing measured here separates the two. `sunlit-earth displays` on a two-screen Windows machine with different scale factors is the thirty-second check that would, and until somebody runs it the mixed-DPI half stays open; `docs/roadmap.md` carries it.
+
+**Handing over.** Windows takes `IDesktopWallpaper` for anything with more than one monitor: `SetPosition(DWPOS_FILL)` and then `SetWallpaper(device_path, file)` per screen, or `SetPosition(DWPOS_SPAN)` with the canvas for one view across all of them. A single-monitor session keeps the `SystemParametersInfoW` path and the registry style write exactly as they were, so the one configuration that is regression-tested on every desktop and in the Hyper-V guest does not move. `GetWallpaper(monitor_id)` is the read-back, and it is the first time the Windows setter can be asserted the way the Linux one already is: by asking the shell what it holds rather than trusting an exit code.
+
+Linux differs per desktop, so `desktop.rs` says how far each row reaches rather than letting the sink guess:
+
+| Reach | Desktops | What a publish does |
+|---|---|---|
+| `PerMonitor` | XFCE, KDE Plasma | One image per screen: into the backdrop property named after that monitor on XFCE, into that screen's containment on KDE |
+| `Spanned` | GNOME, Cinnamon, MATE, Budgie | One image; `picture-options` is `spanned` for a view across the screens and `zoom` otherwise |
+| `OneImage` | LXQt | One image for every screen: the anchor's own picture, even in the span mode |
+
+A mode a desktop cannot reach is not a failure. The sink does the nearest thing and the publish says which, in the same voice as the existing refusals, and that sentence rides the success string back to the status line. `OneImage` is handed the anchor's picture rather than the canvas, because a canvas zoomed onto every screen separately is not the view it was cut to be.
+
+KDE reaches every screen, and not through `plasma-apply-wallpaperimage`, which is Plasma's own tool for this and writes every containment: it can neither give two screens two pictures nor leave one alone, which is why one-screen mode used to paint all of them. The scripting API behind that tool does both. `dbus-send` calls `org.kde.PlasmaShell.evaluateScript` with a script where `desktops()` lists the containments, each carries the `screen` it sits on, and `screenGeometry` says where that screen is. Plasma has no span mode of its own, and does not need one here: a view across the screens is already cut into one image per screen before the row sees it, so the span is per-screen crops like any other per-monitor publish.
+
+Two things about that script are worth knowing. It sorts the containments by where their screens sit rather than trusting the order `desktops()` returns, because Plasma numbers them by index and renumbers when the layout changes; `Placement::by_position` is sorted the same way, which is the whole reason that field exists. And a screen this publish left alone is a hole in that list rather than a missing entry, since dropping it would address every screen after it one place too early. `wallpaperPlugin` is written on every screen the publish paints, because a screen left on a colour or a slideshow would otherwise take the image into a plugin that does not read it.
 
 ## Setting a wallpaper on Linux
 

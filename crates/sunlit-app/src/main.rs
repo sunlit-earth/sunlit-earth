@@ -17,6 +17,7 @@ use sunlit_core::assets::cloud_fetcher;
 use sunlit_core::assets::cloud_source::HttpCloudSource;
 use sunlit_core::assets::texture_loader;
 use sunlit_core::config::{self, AppConfig, QualityTier};
+use sunlit_core::display;
 use sunlit_core::engine::clock::SystemClock;
 use sunlit_core::engine::wallpaper_sink::SystemWallpaper;
 use sunlit_core::engine::{self, EngineCommand, EngineConfig, EngineHandle};
@@ -24,6 +25,7 @@ use sunlit_core::params::SceneParams;
 use sunlit_core::renderer;
 use sunlit_core::scene::datetime;
 use sunlit_earth::MainWindow;
+use sunlit_earth::displays;
 use sunlit_earth::engine_client::{self, EngineLink};
 use sunlit_earth::ui_callbacks;
 
@@ -151,6 +153,12 @@ enum Commands {
         /// Path to a config file (TOML). If omitted, uses the saved user config.
         #[arg(short, long)]
         config: Option<PathBuf>,
+    },
+    /// Print the monitors this session has and the wallpaper plan they come to.
+    Displays {
+        /// Write the plan's images into this directory instead of the desktop.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -329,10 +337,81 @@ fn engine_config(
             .auto_refresh_enabled
             .then(|| Duration::from_mins(u64::from(config.auto_refresh_interval_minutes.max(1)))),
         wallpaper: Arc::new(SystemWallpaper),
+        display_mode: config.display_mode,
+        anchor_monitor: config.anchor(),
         on_event: Arc::new(|_| {}),
         record_metrics: true,
         mailbox: None,
     }
+}
+
+/// The `displays` subcommand: no window, no desktop, and no GPU unless asked.
+///
+/// It exists so that checking this feature on a borrowed two-screen machine is
+/// thirty seconds rather than an afternoon, and so that a bug report can carry
+/// the layout. Without `--out` nothing is rendered and no device is created at
+/// all: the plan is a pure function of the monitor list, and the enumeration is
+/// the half of this feature that no test on another machine can stand in for.
+fn run_displays(cli: &Cli, config: &AppConfig, out: Option<&std::path::Path>) -> ExitCode {
+    use sunlit_core::engine::wallpaper_sink::WallpaperSink;
+
+    debug!("startup mode: displays");
+    let monitors = match SystemWallpaper.monitors() {
+        Ok(monitors) => monitors,
+        Err(e) => {
+            error!("this session's monitors could not be listed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let params = SceneParams::from_config(config);
+    let settings = sunlit_core::display::layout::Framing {
+        camera_fov: params.camera.fov_deg,
+        sky_fov: params.sky_fov,
+        offset_x: params.camera.offset_x,
+        offset_y: params.camera.offset_y,
+    };
+    print!(
+        "{}",
+        displays::report(
+            &monitors,
+            config.display_mode,
+            config.anchor().as_deref(),
+            settings
+        )
+    );
+    let Some(dir) = out else {
+        return ExitCode::SUCCESS;
+    };
+
+    texture_loader::register_jxl_hook();
+    let (done_tx, done_rx) = crossbeam_channel::bounded::<Result<String, String>>(1);
+    let mut engine_config = engine_config(cli, config, (640, 360), false);
+    engine_config.preview_enabled = false;
+    engine_config.wallpaper = Arc::new(displays::DirectorySink::new(
+        dir.to_path_buf(),
+        monitors.clone(),
+    ));
+    engine_config.on_event = Arc::new(move |event| {
+        if let engine::EngineEvent::WallpaperSet(result) = event {
+            let _ = done_tx.try_send(result.clone());
+        }
+    });
+
+    let engine = engine::start(engine_config);
+    engine.send(EngineCommand::RenderWallpaperNow);
+    let status = match done_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT) {
+        Ok(Ok(_)) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
+            error!("the plan could not be rendered: {e}");
+            ExitCode::FAILURE
+        }
+        Err(_) => {
+            error!("the plan was not rendered within the timeout");
+            ExitCode::FAILURE
+        }
+    };
+    engine.shutdown();
+    status
 }
 
 /// The `render` subcommand: no window, no Slint backend, no event loop.
@@ -428,18 +507,29 @@ fn init_ui(window: &MainWindow, config: &AppConfig, texture_resolution: u32, lin
         .collect();
     window.set_year_options(slint::ModelRc::new(slint::VecModel::from(year_labels)));
 
+    // The one query the settings window makes. The engine re-queries on every
+    // publish, so what this list decides is only what the group offers to
+    // choose from; `None` is a platform with no way to ask and leaves the
+    // group with nothing to show, which is what hides it.
+    let monitors = display::monitors().unwrap_or_default();
+    displays::apply_models_to_window(window, &monitors);
+    displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
+
     ui_callbacks::apply_config_to_window(window, config);
-    let config_aa_index = config::find_sample_count_index(link.aa_counts(), config.sample_count);
     ui_callbacks::defer_combobox_indices(
         &window.as_weak(),
-        config_aa_index,
-        config.texture_index,
-        config::find_texture_resolution_index(texture_resolution),
+        ui_callbacks::ComboIndices::of(
+            config,
+            link.aa_counts(),
+            texture_resolution,
+            &displays::screen_ids(&monitors),
+        ),
     );
 
     ui_callbacks::register_change_callbacks(window, base_year, link);
     ui_callbacks::register_mouse_callbacks(window, link);
-    ui_callbacks::register_action_callbacks(window, link);
+    ui_callbacks::register_action_callbacks(window, link, &monitors);
+    ui_callbacks::register_display_callbacks(window, link, &monitors);
 }
 
 /// Wire the auto-refresh checkbox to the engine's scheduler and the tray mark.
@@ -759,6 +849,10 @@ fn main() -> ExitCode {
         }) => {
             let (output, width, height) = (output.clone(), *width, *height);
             run_render(&cli, &config, &output, width, height)
+        }
+        Some(Commands::Displays { out }) => {
+            let out = out.clone();
+            run_displays(&cli, &config, out.as_deref())
         }
         None => {
             // Single-instance enforcement (tray mode only), before the window

@@ -517,6 +517,24 @@ mod tests {
 
     // --- quantization ---
 
+    /// The display plan is a setting, not a shader parameter.
+    ///
+    /// `texture_resolution` set the precedent and this follows it: neither field
+    /// describes what a frame draws, so neither belongs in `SceneParams` or in
+    /// the digest that decides whether a frame is worth rendering. A digest that
+    /// moved with them would re-render the preview every time somebody changed
+    /// which screen the wallpaper goes on.
+    #[test]
+    fn the_display_plan_is_not_a_shader_parameter() {
+        let mut config = crate::config::AppConfig::default();
+        let before = SceneParams::from_config(&config);
+        config.display_mode = crate::display::layout::DisplayMode::AcrossScreens;
+        config.anchor_monitor = "DP-2".to_owned();
+        let after = SceneParams::from_config(&config);
+        assert_eq!(before.digest(), after.digest());
+        assert_eq!(before, after, "the plan reached SceneParams");
+    }
+
     #[test]
     fn digest_quantizes_to_thousandths() {
         let d = params().digest();

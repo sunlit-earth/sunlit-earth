@@ -6,9 +6,11 @@
 use slint::ComponentHandle;
 
 use crate::MainWindow;
+use crate::displays;
 use crate::engine_client::EngineLink;
 use crate::mouse_math;
 use sunlit_core::config::{self, AppConfig};
+use sunlit_core::display::Monitor;
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
@@ -215,7 +217,11 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
 }
 
 /// Register action callbacks: set wallpaper, load defaults, reset.
-pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
+///
+/// `monitors` is the list the Displays group was built from. Load-defaults and
+/// reset both move the display plan, and the engine has to be told: it holds the
+/// mode and the anchor of its own, exactly as it holds the texture resolution.
+pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink, monitors: &[Monitor]) {
     // "Set as Wallpaper" button: save config, then ask the engine to export.
     {
         let window_weak = window.as_weak();
@@ -233,6 +239,7 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
     // Load-defaults callback: restore all settings to AppConfig::default() without saving
     let window_weak = window.as_weak();
     let engine = link.clone();
+    let screens = monitors.to_vec();
     window.on_load_defaults(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -240,24 +247,31 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
         let defaults = AppConfig::default();
         apply_config_to_window(&win, &defaults);
 
-        let default_aa_index =
-            config::find_sample_count_index(engine.aa_counts(), defaults.sample_count);
         defer_combobox_indices(
             &win.as_weak(),
-            default_aa_index,
-            defaults.texture_index,
-            config::find_texture_resolution_index(defaults.texture_resolution),
+            ComboIndices::of(
+                &defaults,
+                engine.aa_counts(),
+                defaults.texture_resolution,
+                &displays::screen_ids_of_window(&win),
+            ),
         );
+        displays::apply_diagram_to_window(&win, &screens, defaults.anchor().as_deref());
         engine.set_resolution_is_one_run_only(false);
         engine.send(EngineCommand::SetTextureResolution(
             defaults.texture_resolution,
         ));
+        engine.send(EngineCommand::SetDisplayPlan {
+            mode: defaults.display_mode,
+            anchor: defaults.anchor(),
+        });
         engine.push_params(&win);
     });
 
     // Reset callback: reload config from disk and restore UI to last-saved state
     let window_weak = window.as_weak();
     let engine = link.clone();
+    let screens = monitors.to_vec();
     window.on_reset(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -265,36 +279,97 @@ pub fn register_action_callbacks(window: &MainWindow, link: &EngineLink) {
         let loaded = config::load_config();
         apply_config_to_window(&win, &loaded);
 
-        let loaded_aa_index =
-            config::find_sample_count_index(engine.aa_counts(), loaded.sample_count);
         defer_combobox_indices(
             &win.as_weak(),
-            loaded_aa_index,
-            loaded.texture_index,
-            config::find_texture_resolution_index(loaded.texture_resolution),
+            ComboIndices::of(
+                &loaded,
+                engine.aa_counts(),
+                loaded.texture_resolution,
+                &displays::screen_ids_of_window(&win),
+            ),
         );
+        displays::apply_diagram_to_window(&win, &screens, loaded.anchor().as_deref());
         engine.set_resolution_is_one_run_only(false);
         engine.send(EngineCommand::SetTextureResolution(
             loaded.texture_resolution,
         ));
+        engine.send(EngineCommand::SetDisplayPlan {
+            mode: loaded.display_mode,
+            anchor: loaded.anchor(),
+        });
         engine.push_params(&win);
     });
 }
 
+/// Wire the Displays group: the mode, the anchor screen, and the diagram.
+///
+/// The monitor list is the one the group's rows were built from rather than a
+/// fresh query, so a row and a rectangle never name different screens. A change
+/// is persisted at once, the way the auto-refresh controls are: it is a setting
+/// somebody chose rather than a slider they are still moving.
+pub fn register_display_callbacks(window: &MainWindow, link: &EngineLink, monitors: &[Monitor]) {
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    let screens = monitors.to_vec();
+    window.on_display_plan_changed(move || {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let anchor = displays::anchor_from_window(&win).filter(|id| !id.is_empty());
+        displays::apply_diagram_to_window(&win, &screens, anchor.as_deref());
+        engine.send(EngineCommand::SetDisplayPlan {
+            mode: displays::mode_from_window(&win),
+            anchor,
+        });
+        config::save_config(&read_config_from_window(&win, &engine));
+    });
+}
+
+/// Every `ComboBox` index a config decides.
+#[derive(Clone, Copy)]
+pub struct ComboIndices {
+    pub aa: i32,
+    pub texture: i32,
+    pub texture_resolution: i32,
+    pub display_mode: i32,
+    pub display_anchor: i32,
+}
+
+impl ComboIndices {
+    /// The rows a config asks for.
+    ///
+    /// `texture_resolution` is passed rather than read off the config because
+    /// the engine may have started at a width `--texture-resolution` chose.
+    /// `screen_ids` is what the window's screen combo offers, which is where a
+    /// stored anchor id becomes a row number, and an id this session does not
+    /// have lands on the automatic row.
+    pub fn of(
+        config: &AppConfig,
+        aa_counts: &[u32],
+        texture_resolution: u32,
+        screen_ids: &[String],
+    ) -> Self {
+        Self {
+            aa: config::find_sample_count_index(aa_counts, config.sample_count),
+            texture: config.texture_index,
+            texture_resolution: config::find_texture_resolution_index(texture_resolution),
+            display_mode: i32::try_from(config.display_mode.index()).unwrap_or_default(),
+            display_anchor: displays::anchor_index(screen_ids, &config.anchor_monitor),
+        }
+    }
+}
+
 /// Defer setting `ComboBox` indices so they apply after Slint processes model
-/// changes. This replaces three identical copies of the same pattern.
-pub fn defer_combobox_indices(
-    window_weak: &slint::Weak<MainWindow>,
-    aa_index: i32,
-    texture_index: i32,
-    texture_resolution_index: i32,
-) {
+/// changes. This replaces four identical copies of the same pattern.
+pub fn defer_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: ComboIndices) {
     let weak = window_weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
-            win.set_aa_index(aa_index);
-            win.set_texture_index(texture_index);
-            win.set_texture_resolution_index(texture_resolution_index);
+            win.set_aa_index(indices.aa);
+            win.set_texture_index(indices.texture);
+            win.set_texture_resolution_index(indices.texture_resolution);
+            win.set_display_mode_index(indices.display_mode);
+            win.set_display_anchor_index(indices.display_anchor);
             win.window().request_redraw();
         }
     })
@@ -528,6 +603,8 @@ pub fn read_config_from_window_onto(
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
         auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
         texture_resolution,
+        display_mode: displays::mode_from_window(window),
+        anchor_monitor: displays::anchor_to_store(window, &stored.anchor_monitor),
         window_x: Some(pos.x),
         window_y: Some(pos.y),
         window_width: Some(size.width),

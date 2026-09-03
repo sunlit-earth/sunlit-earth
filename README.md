@@ -94,7 +94,22 @@ Render a single frame without opening a window, on any of the three platforms:
 cargo run -- render --output earth.png --width 1920 --height 1080
 ```
 
+Print the screens this session has and the wallpaper plan they come to:
+
+```bash
+cargo run -- displays                  # the layout, the anchor screen, and every image the plan would render
+cargo run -- displays --out ./plan     # and write those images into a directory, leaving the desktop alone
+```
+
+Without `--out` it creates no GPU device and touches nothing, so it is the cheap way to see what the app makes of an unfamiliar layout, and the useful thing to paste into a bug report.
+
 The main flags are `--mode <tray|window>`, `--tray-start <visible|hidden>`, `--quality <low|medium|high>`, `--texture-resolution <8192|4096|2048>`, `--software-rendering`, `--textures-dir`, `--log-level`, and `--ipc-socket`. `cargo run -- --help` has the full list.
+
+### Several screens
+
+The wallpaper is one image per monitor at that monitor's own resolution, and the Displays group in the settings window says how the screens relate. It offers three modes: **One screen** paints one of them and leaves the rest alone, **Mirror** (the default) gives each screen the same view rendered at its own size and aspect ratio, and **Extend** renders one continuous view over the whole desktop and cuts it up. Below the modes is the screen the plan is anchored to, which is the one that gets the picture in one-screen mode and the one the view is centered on in the other two; leave it on **Primary (automatic)** to follow whatever the system calls primary. A diagram of the layout sits under both, with the anchor highlighted. The group is hidden on a session with one screen, where all three modes are the same thing, and both settings are stored in `config.toml` as `display_mode` and `anchor_monitor`.
+
+What a desktop can do with the plan differs. Windows and XFCE address each monitor individually; GNOME, Cinnamon, MATE and Budgie hold one image and can stretch it across everything; KDE Plasma and LXQt hold one image for all screens and get the anchor's. Where a desktop cannot do what the mode asked, the app does the nearest thing and the status line says which. [docs/platforms.md](docs/platforms.md) has the table.
 
 ### Developer tooling
 
@@ -108,7 +123,7 @@ cargo xtask vm doctor              # can this host run the VM suite? Read-only.
 cargo xtask vm setup               # the one command that changes the host; elevated on Windows
 cargo xtask vm build-image <image> # windows | linux | windows-builder | linux-builder
 cargo xtask vm up|ssh|view|smoke|status|down|purge ...
-cargo xtask e2e --target <host|windows|linux> [--keep] [--desktop <kde|gnome|xfce|cinnamon>]
+cargo xtask e2e --target <host|windows|linux> [--keep] [--desktop <kde|gnome|xfce|cinnamon>] [--screens <n>]
 cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cache] [--allow-expired-image] [--allow-dirty]
 cargo llvm-cov --html              # HTML coverage report under target/llvm-cov/html/
 ```
@@ -119,7 +134,7 @@ cargo llvm-cov --html              # HTML coverage report under target/llvm-cov/
 
 `config.toml`, the cloud cache, the downscaled surface textures in `texture_cache/`, the exported wallpaper, and the memory metrics CSV all live in the platform local data directory under `SunlitEarth`: `%LOCALAPPDATA%\SunlitEarth` on Windows, `~/.local/share/SunlitEarth` on Linux, `~/Library/Application Support/SunlitEarth` on macOS.
 
-The wallpaper is two files, `wallpaper-1.png` and `wallpaper-2.png`, and each publish writes whichever of them the desktop is not currently showing. A Linux desktop shell keys the wallpaper it has loaded on the path it was handed, so a new image at the path already in that setting is one nothing reloads; alternating means every publish hands over a path the desktop has to read.
+The wallpaper is one file per screen, `wallpaper-<slot>-<index>.png`, plus `wallpaper-<slot>-canvas.png` where one view is spread across every screen. There are two slots and each publish writes whichever slot the desktop is not currently showing, emptying it first. A Linux desktop shell keys the wallpaper it has loaded on the path it was handed, so a new image at the path already in that setting is one nothing reloads; alternating means every publish hands over a path the desktop has to read.
 
 ### Environment overrides
 

@@ -908,3 +908,76 @@ fn test_the_displays_group_is_there_on_two_screens() {
         assert!(!found.is_empty(), "{id} should be in the tree");
     }
 }
+
+/// A layout that moved while the window was open.
+///
+/// The whole reaction, in the order a person sees it: the combo rows become the
+/// screens that are there, the group disappears when one is left and comes back
+/// when the second returns, and the anchor lands on its own row again rather
+/// than on the automatic one, because the stored id was kept while its screen
+/// was gone.
+///
+/// The anchor row is the return value rather than a property read, because
+/// setting it goes through `defer_combobox_indices`, which needs an event loop
+/// this backend deliberately does not have.
+#[test]
+fn test_a_layout_that_changed_rebuilds_the_displays_group() {
+    use slint::Model;
+
+    let window = create_window();
+    let screens = sunlit_earth::displays::shared_monitors();
+    let both = fabricated_monitors();
+
+    let row = sunlit_earth::displays::replace_monitors(&window, &screens, both.clone(), "DP-2");
+    assert_eq!(
+        row, 2,
+        "the stored screen is the second row after automatic"
+    );
+    let rows: Vec<String> = window
+        .get_display_screen_options()
+        .iter()
+        .map(|row| row.to_string())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(window.get_display_tiles().iter().count(), 2);
+    assert_eq!(sunlit_earth::displays::monitors_of(&screens), both);
+
+    // Unplugged: one screen, and the group has nothing left to say.
+    let alone = vec![both[0].clone()];
+    let row = sunlit_earth::displays::replace_monitors(&window, &screens, alone.clone(), "DP-2");
+    assert_eq!(
+        row, 0,
+        "a screen this session no longer has shows as the automatic row"
+    );
+    assert_eq!(window.get_display_tiles().iter().count(), 1);
+    let combos: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
+    assert!(combos.is_empty(), "one screen hides the group");
+    assert_eq!(sunlit_earth::displays::monitors_of(&screens), alone);
+
+    // Plugged back in: the setting that named it was never overwritten, so the
+    // anchor follows its screen back.
+    let row = sunlit_earth::displays::replace_monitors(&window, &screens, both.clone(), "DP-2");
+    assert_eq!(row, 2, "the anchor follows its screen back");
+    assert_eq!(window.get_display_tiles().iter().count(), 2);
+    let combos: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
+    assert!(!combos.is_empty(), "a second screen brings the group back");
+}
+
+/// The diagram highlights the screen the plan will use, which for a stored id
+/// the session still has is that screen and not the primary.
+#[test]
+fn test_a_replaced_layout_highlights_the_stored_anchor() {
+    use slint::Model;
+
+    let window = create_window();
+    let screens = sunlit_earth::displays::shared_monitors();
+    sunlit_earth::displays::replace_monitors(&window, &screens, fabricated_monitors(), "DP-1");
+
+    let tiles: Vec<_> = window.get_display_tiles().iter().collect();
+    assert!(
+        tiles[0].anchor && !tiles[1].anchor,
+        "the stored screen is the anchor, even though the other one is primary"
+    );
+}

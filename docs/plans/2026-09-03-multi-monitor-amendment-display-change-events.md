@@ -118,6 +118,14 @@ The guest's video is a single fixed mode, so no automated case can make Windows 
 - **Debouncing in the watcher thread.** It would need a timed wait per platform and would not be testable on a mock clock.
 - **A switch to turn the watcher off.** No case for one yet; a watcher that could not start already leaves the app exactly as it was.
 
+## Departures
+
+Continuing the plan's numbering, each with what the code said that the amendment did not.
+
+12. **The UI's shared monitor list is an `Arc<Mutex<Vec<Monitor>>>` and not an `Rc<RefCell<Vec<Monitor>>>`.** The amendment has the three callbacks and the event handler sharing an `Rc` on the grounds that all four run on the UI thread. Three of them do; the fourth does not exist. `MonitorsChanged` reaches the forwarder on the engine thread, and what the forwarder hands to `invoke_from_event_loop` is a `Box<dyn FnOnce() + Send>`, so a closure that captures an `Rc` does not compile. The alternatives were a thread-local holding the list on the UI thread, which is global mutable state that every `slint_ui` case would then share, or leaving the list out of the closure entirely, which leaves the callbacks with no way to reach the new one. A `Mutex` says what is actually true, which is that the list crosses a thread, and it is uncontended: every read is on the UI thread and the one write is the hand-off.
+
+13. **The Linux watcher calls `randr_query_version` before selecting input.** The amendment lists the steps as connect, check the extension, create the window, `randr_select_input`, loop. The X server tracks a RandR version per client and assumes 1.0 for a client that never declared one, and `RRNotify` (the CRTC and output events) was added in 1.2: without the declaration the subscription is accepted and only `RRScreenChangeNotify` is ever delivered. So the call is not optional bookkeeping, it is what makes two of the three selected masks mean anything. `xrandr` itself does the same thing first.
+
 ## Open questions (continuing the plan's numbering)
 
 6. Does `WM_DISPLAYCHANGE` arrive for a main-display change that moves no resolution? Believed yes, since the primary's move re-origins the virtual desktop and goes through the same applied-configuration path; the hand check decides. If not, `WM_SETTINGCHANGE` with `SPI_SETWORKAREA` is the one-line addition, because the work area follows the primary.

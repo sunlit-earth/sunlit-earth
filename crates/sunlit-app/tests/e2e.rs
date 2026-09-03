@@ -2716,3 +2716,144 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         output.status
     );
 }
+
+/// plasmashell's process id over the session bus, or `None` when the shell is
+/// not there to answer.
+///
+/// `GetConnectionUnixProcessID` for `org.kde.plasmashell` on the session bus. The
+/// reply is a line ending in `uint32 <pid>`, and the pid is what tells a shell
+/// that kept running apart from one that crashed and was restarted under the same
+/// name.
+fn plasmashell_pid() -> Option<String> {
+    let out = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--reply-timeout=5000",
+            "--dest=org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.GetConnectionUnixProcessID",
+            "string:org.kde.plasmashell",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .last()
+        .filter(|pid| pid.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_owned)
+}
+
+/// Whether plasmashell answers an `evaluateScript`, the same interface the KDE
+/// wallpaper setter drives.
+fn plasmashell_answers() -> bool {
+    Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--reply-timeout=5000",
+            "--dest=org.kde.plasmashell",
+            "--type=method_call",
+            "/PlasmaShell",
+            "org.kde.PlasmaShell.evaluateScript",
+            "string:print(1);",
+        ])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// A burst of re-publishes does not crash plasmashell.
+///
+/// The file-lifecycle defect this branch fixes is Plasma's alone. Its
+/// `MediaProxy` keeps a `KDirWatch` on the current wallpaper file, and the old
+/// lifecycle rewrote a file into its live path and deleted and recreated the
+/// file of a screen it had moved on from. The first decoded a half-written image
+/// and the second asserted in the plugin, and on a distro that ships the plugin
+/// with assertions live the violated one takes the shell down. The other guest
+/// desktops read the wallpaper once at set time and never watch it, so only a
+/// Plasma session exercises this, and only a rapid re-publish makes the watch and
+/// the rewrite race.
+///
+/// So this publishes several times back to back with no pause and then asks
+/// whether plasmashell is still the same process answering D-Bus. A shell that
+/// crashed would answer under a new pid, or not answer at all. It is the cheap
+/// standing proxy for "it did not crash"; the definitive check stays the hand
+/// check on a two-screen Plasma machine, which `docs/roadmap.md` carries.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_plasmashell_survives_rapid_republishing() {
+    const CASE: &str = "test_plasmashell_survives_rapid_republishing";
+    const BURST: usize = 5;
+
+    if !wallpaper_supported() {
+        skip_case(CASE, "the wallpaper sink reports no setter for this session");
+        return;
+    }
+    if std::env::var_os(WALLPAPER_OPT_IN).is_none() {
+        skip_case(
+            CASE,
+            "this case replaces the desktop wallpaper, so it runs only where \
+             that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+    let is_plasma = sunlit_core::desktop::detect_current()
+        .is_some_and(|backend| backend.desktop == "KDE Plasma");
+    if !is_plasma {
+        skip_case(
+            CASE,
+            "the MediaProxy file watch this exercises is Plasma's; this session \
+             is not KDE, so the crash cannot happen here",
+        );
+        return;
+    }
+    let Some(before) = plasmashell_pid() else {
+        skip_case(
+            CASE,
+            "plasmashell is not answering the session bus, so it cannot be the \
+             survival proxy",
+        );
+        return;
+    };
+
+    let socket_name = unique_socket_name();
+    let (mut guard, watcher) = spawn_for_ipc(&socket_name, &isolated_config_path());
+
+    // Several full renders, readbacks, encodes and sets in a row, with nothing
+    // between them, which is what makes the watch and the rewrite race.
+    for pass in 1..=BURST {
+        let from = watcher.line_count();
+        send_ipc_command(&socket_name, "set-wallpaper");
+        let line = watcher.wait_for_signal_line_from("wallpaper_", from, Duration::from_mins(2));
+        assert!(
+            line.contains("wallpaper_set"),
+            "publish {pass} of {BURST} failed: {line}"
+        );
+    }
+
+    // Still the same process, which is what "did not crash" means here.
+    let after = plasmashell_pid();
+    assert_eq!(
+        after.as_deref(),
+        Some(before.as_str()),
+        "plasmashell is no longer answering as pid {before} after {BURST} rapid \
+         publishes, which is the crash this fix removes (now {after:?})"
+    );
+    assert!(
+        plasmashell_answers(),
+        "plasmashell stopped answering evaluateScript after {BURST} rapid publishes"
+    );
+    println!("{CASE}: plasmashell survived {BURST} rapid publishes as pid {before}");
+
+    send_ipc_command(&socket_name, "quit");
+    let output = wait_with_timeout(guard.take(), Duration::from_secs(15));
+    assert!(
+        output.status.success(),
+        "process exited: {:?}",
+        output.status
+    );
+}

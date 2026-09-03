@@ -472,7 +472,6 @@ mod win32 {
             WM_DESTROY => {
                 // SAFETY: ending this thread's own message loop, which is what
                 // a destroyed window with nothing else on the thread wants.
-                #[allow(unsafe_code)]
                 unsafe {
                     PostQuitMessage(0);
                 }

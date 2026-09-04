@@ -191,7 +191,7 @@ tools/                offline Python tools for preparing assets
 vm/                   VM templates and guest scripts, one directory per image
 ```
 
-The organizing principle is headless first: the engine runs to completion with no window at all, and the settings window is one optional client. [docs/README.md](docs/README.md) indexes the documentation. [docs/architecture.md](docs/architecture.md) is the engine, the parameters and the app; [docs/rendering.md](docs/rendering.md) is the shaders and every layer of the sky; [docs/retrospective-2026-08.md](docs/retrospective-2026-08.md) explains why the architecture looks the way it does.
+The organizing principle is headless first: the engine runs to completion with no window at all, and the settings window is one optional client. [docs/README.md](docs/README.md) indexes the documentation. [docs/architecture.md](docs/architecture.md) is the engine, the parameters and the app; [docs/rendering.md](docs/rendering.md) is the shaders and every layer of the sky; [docs/retrospective-2026-08.md](docs/reviews/2026-08-15-retrospective.md) explains why the architecture looks the way it does.
 
 ### Asset tools
 

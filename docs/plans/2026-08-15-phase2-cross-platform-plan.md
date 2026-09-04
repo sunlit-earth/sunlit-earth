@@ -2,7 +2,7 @@
 
 ## Summary
 
-Make the workspace build, run, and test on Linux and macOS, then expand CI from the single Windows job to a three-OS matrix with the two commented-out gates (`cargo fmt`, `-D warnings`) re-enabled. The engine and render layers must pass on lavapipe (Linux) and Metal (macOS) in addition to WARP (Windows). Wallpaper setting, tray integration on Linux, and VM orchestration are explicitly out of scope; they belong to the "Later" list and Phase 3 (see `docs/retrospective-2026-08.md`, sections 8.3 and 10).
+Make the workspace build, run, and test on Linux and macOS, then expand CI from the single Windows job to a three-OS matrix with the two commented-out gates (`cargo fmt`, `-D warnings`) re-enabled. The engine and render layers must pass on lavapipe (Linux) and Metal (macOS) in addition to WARP (Windows). Wallpaper setting, tray integration on Linux, and VM orchestration are explicitly out of scope; they belong to the "Later" list and Phase 3 (see `../reviews/2026-08-15-retrospective.md`, sections 8.3 and 10).
 
 ## Stakes Classification
 
@@ -10,7 +10,7 @@ Medium. Nothing here changes Windows behavior for existing users; the risk is ch
 
 ## Research
 
-Settled in `docs/retrospective-2026-08.md`:
+Settled in `../reviews/2026-08-15-retrospective.md`:
 
 - Hosted macOS Apple Silicon runners expose a paravirtualized Metal GPU; wgpu's own CI runs GPU tests on plain `macos-14` runners (section 11, question 1). A one-time probe of our specific pipeline (MSAA, mipmapped textures, buffer readback) is still required.
 - Linux hosted runners are the most capable windowed platform: xvfb plus lavapipe run the whole stack (section 8.3).

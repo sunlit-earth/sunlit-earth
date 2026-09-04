@@ -2,7 +2,7 @@
 
 ## Summary
 
-Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scene, assets, renderer, engine) and a thin `sunlit-app` (Slint UI shell). The engine owns its own thread, wgpu device, and resources, consumes a single unified `SceneParams` struct, and takes an injected clock and asset source so multi-day behavior can be simulated in seconds. The Slint UI becomes one client of the engine; the preview is delivered as pixel buffers instead of shared GPU textures, which removes the `WGPUConfiguration::Manual` coupling, the GPU thread-local, and (expected) the `process::exit(0)` teardown hack. Acceptance is defined by new tests: a mock-clock soak test, engine integration tests, and golden images on the existing Windows CI. Also in scope: quality tiers with a low default for dev and tests, and the Slint 1.17 upgrade with `SystemTrayIcon` replacing `tray.rs`. This is Phase 1 of `../retrospective-2026-08.md` section 10; the architecture is section 7.
+Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scene, assets, renderer, engine) and a thin `sunlit-app` (Slint UI shell). The engine owns its own thread, wgpu device, and resources, consumes a single unified `SceneParams` struct, and takes an injected clock and asset source so multi-day behavior can be simulated in seconds. The Slint UI becomes one client of the engine; the preview is delivered as pixel buffers instead of shared GPU textures, which removes the `WGPUConfiguration::Manual` coupling, the GPU thread-local, and (expected) the `process::exit(0)` teardown hack. Acceptance is defined by new tests: a mock-clock soak test, engine integration tests, and golden images on the existing Windows CI. Also in scope: quality tiers with a low default for dev and tests, and the Slint 1.17 upgrade with `SystemTrayIcon` replacing `tray.rs`. This is Phase 1 of `../reviews/2026-08-15-retrospective.md` section 10; the architecture is section 7.
 
 ## Stakes Classification
 
@@ -12,7 +12,7 @@ Restructure the crate into a Cargo workspace with a headless `sunlit-core` (scen
 
 ## Research
 
-- `../retrospective-2026-08.md` sections 4.4 (parameter amplification, lifecycle coupling), 7 (target architecture), 8.1/8.2 (test layers, soak tests), 10 Phase 1, 11 questions 1-4
+- `../reviews/2026-08-15-retrospective.md` sections 4.4 (parameter amplification, lifecycle coupling), 7 (target architecture), 8.1/8.2 (test layers, soak tests), 10 Phase 1, 11 questions 1-4
 - `2026-03-25-slint-shutdown-research.md` and the `process::exit(0)` comment in `src/main.rs` (teardown hazard being removed)
 - Slint 1.17 release notes and `SystemTrayIcon` docs (retrospective section 11, question 2)
 
@@ -108,7 +108,7 @@ Upgrade Slint; fix any DSL/API breakage. Replace the tray thread with `SystemTra
 
 ### Step 9: Docs and CI
 
-**Files**: `CLAUDE.md`, `.github/workflows/ci.yml`, `docs/retrospective-2026-08.md`, `docs/roadmap.md`
+**Files**: `CLAUDE.md`, `.github/workflows/ci.yml`, `../reviews/2026-08-15-retrospective.md`, `docs/roadmap.md`
 
 Rewrite CLAUDE.md for the workspace layout, engine architecture, new test commands, and tier defaults. CI: ensure workspace-wide test invocation, add the golden/contact-sheet steps. Note Phase 1 completion status in the retrospective; update roadmap entries that this phase resolved (non-blocking texture loading; memory budget entry gets a pointer to tiers).
 

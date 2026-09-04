@@ -2,7 +2,7 @@
 
 ## Summary
 
-Fix the unbounded memory growth in tray mode (7.3 GB RSS observed after 10 days) and prove the fix with a Windows e2e regression test that reproduces the leak in about a minute. The test is written first and must be red against the current code before the fix lands. Ships as 0.1.1. This is Phase 0 of the roadmap in `../retrospective-2026-08.md`, section 10.
+Fix the unbounded memory growth in tray mode (7.3 GB RSS observed after 10 days) and prove the fix with a Windows e2e regression test that reproduces the leak in about a minute. The test is written first and must be red against the current code before the fix lands. Ships as 0.1.1. This is Phase 0 of the roadmap in `../reviews/2026-08-15-retrospective.md`, section 10.
 
 ## Stakes Classification
 
@@ -12,7 +12,7 @@ Fix the unbounded memory growth in tray mode (7.3 GB RSS observed after 10 days)
 
 ## Research
 
-- `../retrospective-2026-08.md` section 4.1 (evidence chain) and section 8.2 (verification procedure)
+- `../reviews/2026-08-15-retrospective.md` section 4.1 (evidence chain) and section 8.2 (verification procedure)
 - `2026-03-30-fresh-astro-state-plan.md`: experimental confirmation that `BeforeRendering` stops firing when the window is hidden
 - `2026-03-28-research-slint-tray-app-patterns.md`: confirmation that Slint timers keep firing while the window is hidden (the drain timer relies on this)
 - Cloud source update cadence: eight times a day, every three hours (matteason/live-cloud-maps documentation)
@@ -124,7 +124,7 @@ Release builds compile out debug/info logging (`release_max_level_warn`), which 
 
 ### Step 6: Documentation
 
-**Files**: `CLAUDE.md`, `docs/roadmap.md`, `docs/retrospective-2026-08.md`
+**Files**: `CLAUDE.md`, `docs/roadmap.md`, `../reviews/2026-08-15-retrospective.md`
 
 Update the module descriptions in `CLAUDE.md` (cloud fetcher knobs, `query-memory` IPC command, mailbox + drain timer in the renderer, memory metrics file). Check off the roadmap bug entry only after Step 7's multi-day validation. Mark Phase 0 progress in the retrospective if anything deviated from this plan.
 
@@ -160,7 +160,7 @@ All changes are in `src/cloud_fetcher.rs`, `src/ipc.rs`, `src/renderer/textures.
 - [x] Step 3: regression test red against unfixed code (record below)
 - [x] Step 4: fix landed, regression test green
 - [x] Step 5: telemetry landed
-- [x] Step 6: docs updated (`CLAUDE.md`, `docs/roadmap.md`, `docs/retrospective-2026-08.md`)
+- [x] Step 6: docs updated (`CLAUDE.md`, `docs/roadmap.md`, `../reviews/2026-08-15-retrospective.md`)
 - [x] Step 7 items 1-2: full suite green, red-then-green record filled in below
 - [ ] Step 7 items 3-4: multi-day validation, roadmap check-off, 0.1.1 tag
 

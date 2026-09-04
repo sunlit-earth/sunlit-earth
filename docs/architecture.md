@@ -1,6 +1,6 @@
 # Architecture
 
-How the code is organized and why: the crate split, the engine thread and its clients, the parameter flow, the renderer's resources, the settings window, and the settings that are not shader parameters. The rendering itself (shaders, draw order, the celestial bodies, the clouds) is in [rendering.md](rendering.md), the tests in [testing.md](testing.md), and the per-OS behavior in [platforms.md](platforms.md). [retrospective-2026-08.md](retrospective-2026-08.md) section 7 is the reasoning behind the headless-first design; read it before changing the engine or the crate split.
+How the code is organized and why: the crate split, the engine thread and its clients, the parameter flow, the renderer's resources, the settings window, and the settings that are not shader parameters. The rendering itself (shaders, draw order, the celestial bodies, the clouds) is in [rendering.md](rendering.md), the tests in [testing.md](testing.md), and the per-OS behavior in [platforms.md](platforms.md). [retrospective-2026-08.md](reviews/2026-08-15-retrospective.md) section 7 is the reasoning behind the headless-first design; read it before changing the engine or the crate split.
 
 ## Workspace layout
 

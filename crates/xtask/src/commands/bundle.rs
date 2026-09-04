@@ -23,27 +23,24 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::commands::bake_icon;
+use crate::commands::{bake_icon, bake_licenses};
 use crate::guest::artifacts::TEXTURE_FILES;
 use crate::provider::target::Target;
 
 /// The package the bundle is named after, which is also the binary's stem.
 pub const PACKAGE: &str = "sunlit-earth";
 
-/// The attribution for the imagery, which travels inside `textures/` because it
-/// is about those files.
-pub const TEXTURE_PROVENANCE: &str = "PROVENANCE.md";
-
-/// The star catalog's attribution. That data is baked into the binary, so this
-/// is the only way its credit can travel at all.
-pub const STAR_ATTRIBUTION: &str = "crates/sunlit-core/src/assets/stars/ATTRIBUTION.md";
-
 /// The licence the workspace declares, as a file at the repository root.
 pub const LICENSE: &str = "LICENSE";
 
-/// The record, which goes in the bundle as well as beside it: a binary handed
-/// to somebody should be able to say what it was built from without the
-/// directory it came out of.
+/// The record, written beside the archive rather than inside it.
+///
+/// Amendment A2: it was in both places, and beside the archive is where it was
+/// always the more useful of the two. What the bundle carries now is the
+/// binary, the textures, `LICENSE` and the third-party notices, and nothing
+/// else: the credits that `ATTRIBUTION.md` and `textures/PROVENANCE.md` used
+/// to deliver as files are in the About window's attributions tab, and those
+/// two documents stay in the repository unmoved.
 pub const RECORD: &str = "build-info.json";
 
 /// The two archive formats, one per target.
@@ -80,20 +77,14 @@ pub struct Item {
     /// Both archive formats want them that way, and it is what the read-back
     /// comparison is made in.
     pub path: String,
-    pub source: Source,
+    /// Where its bytes come from on the host: the binary this run built, or
+    /// something the repository ships. Amendment A2 took the last item that
+    /// this run wrote rather than found out of the bundle, so every item is a
+    /// file now.
+    pub source: PathBuf,
     /// Whether the tarball's header says 0755. Without it the first thing a
     /// Linux user does is `chmod +x`.
     pub executable: bool,
-}
-
-/// Where an item's bytes come from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Source {
-    /// A file on the host: the binary this run built, or something the
-    /// repository ships.
-    File(PathBuf),
-    /// Something this run wrote rather than found.
-    Text(String),
 }
 
 /// A bundle assembled on disk, waiting to be staged and archived.
@@ -116,8 +107,6 @@ pub struct Sources<'a> {
     /// there being a bundle at all: without the assets it would promise a
     /// release and render a grid.
     pub textures: &'a Path,
-    /// `build-info.json` as it will be written beside the archive.
-    pub record: &'a str,
 }
 
 /// The bundle's own name, which is also the one directory an unpack produces.
@@ -177,31 +166,26 @@ pub fn version(repo: &Path) -> Result<String, String> {
 pub fn layout(target: Target, sources: &Sources) -> Vec<Item> {
     let mut items = vec![Item {
         path: exe_name(target).to_owned(),
-        source: Source::File(sources.exe.to_path_buf()),
+        source: sources.exe.to_path_buf(),
         executable: true,
     }];
 
-    for name in TEXTURE_FILES.into_iter().chain([TEXTURE_PROVENANCE]) {
+    for name in TEXTURE_FILES {
         items.push(Item {
             path: format!("textures/{name}"),
-            source: Source::File(sources.textures.join(name)),
+            source: sources.textures.join(name),
             executable: false,
         });
     }
 
     items.push(Item {
-        path: RECORD.to_owned(),
-        source: Source::Text(sources.record.to_owned()),
-        executable: false,
-    });
-    items.push(Item {
         path: LICENSE.to_owned(),
-        source: Source::File(sources.repo.join(LICENSE)),
+        source: sources.repo.join(LICENSE),
         executable: false,
     });
     items.push(Item {
-        path: "ATTRIBUTION.md".to_owned(),
-        source: Source::File(sources.repo.join(STAR_ATTRIBUTION)),
+        path: bake_licenses::NOTICES_PATH.to_owned(),
+        source: sources.repo.join(bake_licenses::NOTICES_PATH),
         executable: false,
     });
 
@@ -210,17 +194,17 @@ pub fn layout(target: Target, sources: &Sources) -> Vec<Item> {
         let icon = sources.repo.join("assets").join("icon");
         items.push(Item {
             path: "assets/linux/install-user.sh".to_owned(),
-            source: Source::File(linux.join("install-user.sh")),
+            source: linux.join("install-user.sh"),
             executable: true,
         });
         items.push(Item {
             path: "assets/linux/sunlit-earth.desktop".to_owned(),
-            source: Source::File(linux.join("sunlit-earth.desktop")),
+            source: linux.join("sunlit-earth.desktop"),
             executable: false,
         });
         items.push(Item {
             path: format!("assets/icon/{}.svg", bake_icon::ICON_NAME),
-            source: Source::File(icon.join(format!("{}.svg", bake_icon::ICON_NAME))),
+            source: icon.join(format!("{}.svg", bake_icon::ICON_NAME)),
             executable: false,
         });
         // Named through the bake's own list rather than by walking the baked
@@ -234,7 +218,7 @@ pub fn layout(target: Target, sources: &Sources) -> Vec<Item> {
                     "assets/icon/baked/{}",
                     relative.to_string_lossy().replace('\\', "/")
                 ),
-                source: Source::File(baked.join(relative)),
+                source: baked.join(relative),
                 executable: false,
             });
         }
@@ -278,20 +262,12 @@ pub fn assemble(parent: &Path, name: &str, items: &[Item]) -> Result<PathBuf, St
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         }
-        match &item.source {
-            Source::File(from) => {
-                std::fs::copy(from, &target).map_err(|e| {
-                    format!(
-                        "the bundle needs {} and cannot copy it: {e}",
-                        from.display()
-                    )
-                })?;
-            }
-            Source::Text(text) => {
-                std::fs::write(&target, text)
-                    .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
-            }
-        }
+        std::fs::copy(&item.source, &target).map_err(|e| {
+            format!(
+                "the bundle needs {} and cannot copy it: {e}",
+                item.source.display()
+            )
+        })?;
     }
     Ok(root)
 }
@@ -584,7 +560,6 @@ mod tests {
             repo,
             exe,
             textures,
-            record: "{\"format_version\":1}",
         }
     }
 
@@ -599,7 +574,7 @@ mod tests {
             std::fs::write(&path, body).expect("write");
         };
         write(LICENSE, b"GNU GENERAL PUBLIC LICENSE\n");
-        write(STAR_ATTRIBUTION, b"HYG v4.4\n");
+        write(bake_licenses::NOTICES_PATH, b"# Third-party licenses\n");
         write("assets/linux/install-user.sh", b"#!/usr/bin/env bash\n");
         write("assets/linux/sunlit-earth.desktop", b"[Desktop Entry]\n");
         write(
@@ -622,7 +597,6 @@ mod tests {
             // rather than storing it would be visible in the size.
             write(&format!("textures/{name}"), &vec![b'j'; 4096]);
         }
-        write(&format!("textures/{TEXTURE_PROVENANCE}"), b"where from\n");
         write("bin/sunlit-earth", &vec![b'x'; 8192]);
         write("bin/sunlit-earth.exe", &vec![b'x'; 8192]);
         repo
@@ -691,7 +665,7 @@ mod tests {
     /// Decision 30, both halves: what every bundle carries, and the one thing
     /// only the Linux bundle does.
     #[test]
-    fn every_bundle_carries_the_textures_the_record_and_the_licence() {
+    fn every_bundle_carries_the_textures_the_licence_and_the_third_party_notices() {
         let repo = PathBuf::from("/repo");
         let exe = PathBuf::from("/out/sunlit-earth");
         let textures = repo.join("textures");
@@ -705,13 +679,21 @@ mod tests {
                     "{target}: {paths:?}"
                 );
             }
+            assert!(paths.contains(&LICENSE), "{target}: {paths:?}");
             assert!(
-                paths.contains(&format!("textures/{TEXTURE_PROVENANCE}").as_str()),
+                paths.contains(&bake_licenses::NOTICES_PATH),
                 "{target}: {paths:?}"
             );
-            assert!(paths.contains(&RECORD), "{target}: {paths:?}");
-            assert!(paths.contains(&LICENSE), "{target}: {paths:?}");
-            assert!(paths.contains(&"ATTRIBUTION.md"), "{target}: {paths:?}");
+            // Amendment A2 took these three out. Asserted absent rather than
+            // simply unasserted, so a re-add fails here instead of passing.
+            for absent in [
+                "textures/PROVENANCE.md",
+                RECORD,
+                "ATTRIBUTION.md",
+                "assets/ATTRIBUTION.md",
+            ] {
+                assert!(!paths.contains(&absent), "{target} carries {absent}");
+            }
             // The binary is the one thing a tar header has to call executable.
             let exe_item = items
                 .iter()

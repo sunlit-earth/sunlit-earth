@@ -1124,17 +1124,170 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
     }
 }
 
-/// The About window's scroll area has the same shape as the sidebar's, and its
-/// version line does not wrap, so a long enough one takes the viewport past the
-/// window and would centre the content the same way.
+/// The header does not move when the version line outgrows the window.
+///
+/// This is what the old scroll-area version of the window got wrong: a
+/// non-wrapping line wider than the viewport took the content with it. The
+/// header is a fixed layout now, so the mark and the title stay at the left
+/// edge whatever the version string is.
 #[test]
-fn test_the_about_window_content_starts_at_its_left_edge() {
+fn test_the_about_window_header_holds_its_place_under_a_long_version() {
+    let window = about_window();
+
+    window.set_version("0.0.0".into());
+    let short = window.get_header_x();
+    window.set_version("0.0.0-".repeat(60).into());
+    let long = window.get_header_x();
+
+    approx::assert_relative_eq!(short, long);
+}
+
+/// The header is outside the tab area, so scrolling a tab cannot take the
+/// version line with it. That is the whole point of decision 3.
+#[test]
+fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
+    let window = about_window();
+    window.set_attributions(slint::StyledText::from_markdown(&"line\n\n".repeat(200)).unwrap());
+    materialize_about(&window);
+
+    let before = window.get_version_y();
+    let scrolled = scroll_the_open_tab(&window);
+    let after = window.get_version_y();
+
+    assert!(scrolled, "no scrollable element was found in the open tab");
+    approx::assert_relative_eq!(before, after);
+}
+
+/// Each tab is reachable and carries the document it is for.
+///
+/// The tab bar is a `TabWidget`, so a tab's content only exists while that tab
+/// is current; the assertion is on the property each one renders, which is
+/// what an empty tab would fail.
+#[test]
+fn test_all_three_tabs_are_reachable_and_carry_their_document() {
+    let window = about_window();
+    let labels: Vec<String> = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_accessible_role(i_slint_backend_testing::AccessibleRole::Tab)
+        .find_all()
+        .iter()
+        .filter_map(|tab| tab.accessible_label().map(|label| label.to_string()))
+        .collect();
+
+    assert_eq!(labels, ["Attributions", "License", "Third-party"]);
+    assert_ne!(window.get_attributions(), slint::StyledText::default());
+    assert_ne!(window.get_third_party(), slint::StyledText::default());
+    assert!(!window.get_license_text().is_empty());
+}
+
+/// A link in the attributions tab reaches `open-url` with the URL the document
+/// carries, which is the whole of the wiring between the markdown and the
+/// platform's handler.
+#[test]
+fn test_a_link_in_the_attributions_tab_reaches_open_url() {
+    let window = about_window();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured = opened.clone();
+    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    window.set_attributions(
+        slint::StyledText::from_markdown("[the link](https://example.invalid/target)").unwrap(),
+    );
+    materialize_about(&window);
+
+    // Not `mock_single_click`, which clicks the element's centre: the element
+    // is as wide as the tab and the link is a few characters at its left edge,
+    // so the centre is past the end of the text. The link's own glyphs are
+    // what the hit test is about.
+    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_type_name("StyledText")
+        .find_first()
+        .expect("the attributions tab has no StyledText");
+    click_at(&window, body.absolute_position(), 4.0, 6.0);
+
+    assert_eq!(
+        *opened.borrow(),
+        vec!["https://example.invalid/target".to_owned()],
+        "clicking the link did not reach open-url"
+    );
+}
+
+/// The header link goes through the same callback as the documents' links.
+#[test]
+fn test_the_repository_link_reaches_open_url() {
+    let window = about_window();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured = opened.clone();
+    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    materialize_about(&window);
+
+    let link: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "AboutWindow::repository-link").collect();
+    assert_eq!(link.len(), 1, "expected one repository link");
+    link[0].mock_single_click(slint::platform::PointerEventButton::Left);
+
+    let opened = opened.borrow();
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(
+        opened[0].starts_with("https://github.com/"),
+        "the header link opened {:?}",
+        opened[0]
+    );
+}
+
+/// An About window with all three documents in it, at a size a person would
+/// see, which is what the tab tests need before they can find anything.
+fn about_window() -> sunlit_earth::AboutWindow {
     init();
     let window = sunlit_earth::AboutWindow::new().unwrap();
-    window.window().set_size(slint::PhysicalSize::new(520, 420));
-    window.set_version("0.0.0-".repeat(60).into());
+    window.window().set_size(slint::PhysicalSize::new(560, 480));
+    window.set_version("1.2.3".into());
+    window.set_attributions(slint::StyledText::from_markdown("credits").unwrap());
+    window.set_third_party(slint::StyledText::from_markdown("- `a 1.0.0`: MIT").unwrap());
+    window.set_license_text("a licence\nsecond line\n".into());
+    materialize_about(&window);
+    window
+}
 
-    approx::assert_relative_eq!(window.get_content_x(), 0.0);
+/// Force a layout, so geometry and the element tree are there to look at.
+fn materialize_about(window: &sunlit_earth::AboutWindow) {
+    window.show().unwrap();
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+}
+
+/// Click a point offset from an element's own origin.
+///
+/// `ElementHandle` can only click an element's centre, and a link inside a
+/// paragraph is not at the centre of the paragraph.
+fn click_at(window: &sunlit_earth::AboutWindow, origin: slint::LogicalPosition, dx: f32, dy: f32) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    let position = slint::LogicalPosition::new(origin.x + dx, origin.y + dy);
+    for event in [
+        WindowEvent::PointerMoved { position },
+        WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        },
+        WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        },
+    ] {
+        window.window().dispatch_event(event);
+    }
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+}
+
+/// Scroll whatever in the open tab responds to a wheel, and say whether
+/// anything did.
+fn scroll_the_open_tab(window: &sunlit_earth::AboutWindow) -> bool {
+    let mut scrolled = false;
+    for element in ElementHandle::find_by_element_type_name(window, "StyledText") {
+        element.scroll(0.0, -400.0);
+        scrolled = true;
+    }
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    scrolled
 }
 
 /// The adapter name stays on one line however long it is. A word-wrapped

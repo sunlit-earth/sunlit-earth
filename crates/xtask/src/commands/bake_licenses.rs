@@ -49,6 +49,12 @@ pub const NOTICES_PATH: &str = "THIRD-PARTY-LICENSES.md";
 /// link, since SPDX has no page for one.
 const NO_SPDX_PAGE: &str = "no SPDX page";
 
+/// What a package's line says when the package carries no notice of its own.
+///
+/// Named rather than spelled twice: a test looking for this phrase against a
+/// generator that emits a different one is a test that cannot fail.
+const SILENT: &str = "vendors no license text";
+
 /// File-name prefixes that mean "this file is part of the grant".
 ///
 /// Prefixes rather than exact names because the tree spells them every way
@@ -685,7 +691,7 @@ pub fn render_notices(packages: &[Package]) -> String {
         } else {
             let _ = write!(out, ", authors: {}", package.authors.join("; "));
         }
-        out.push_str(", vendors no license text\n");
+        let _ = writeln!(out, ", {SILENT}");
     }
 
     out.push_str("\n## License texts\n\n");
@@ -961,17 +967,21 @@ mod tests {
         assert_eq!(leading_block_comment("/* unterminated"), None);
     }
 
-    /// Audit item 5: `astronomy-engine-bindings` is MIT and ships no file
-    /// named like a license, so a name-only search would report the one
-    /// library the rendered geometry depends on as carrying no notice.
+    /// `astronomy-engine-bindings` is MIT and ships no file named like a
+    /// license, so a name-only search reports the one library the rendered
+    /// geometry depends on as vendoring no notice.
     #[test]
     fn the_astronomy_engine_notice_reaches_the_committed_file() {
         let path = store::repo_root().join(NOTICES_PATH);
         let notices = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let line = notices
+            .lines()
+            .find(|line| line.starts_with("- `astronomy-engine-bindings "))
+            .expect("the crate is not in the notice file at all");
         assert!(
-            !notices.contains("`astronomy-engine-bindings 2.1.19`, MIT, ships no license file"),
-            "the vendored notice was not found"
+            !line.contains(SILENT),
+            "the vendored notice was not found: {line}"
         );
         assert!(
             notices.contains("Copyright (c) 2019-2023 Don Cross"),
@@ -1047,13 +1057,9 @@ mod tests {
         );
     }
 
-    /// Criterion 1, and the analogue of `the_committed_bake_matches_a_fresh_one`
-    /// in `bake_icon`: a dependency added or bumped without rerunning the bake
-    /// fails here rather than shipping a stale notice.
-    ///
-    /// The walk needs `cargo metadata` and the registry sources it points at,
-    /// so a checkout that cannot resolve the tree skips with a printed reason,
-    /// the way a test that needs the real textures does.
+    /// The walk needs `cargo metadata`, `cargo tree` and the registry sources
+    /// the manifests point at, so a checkout that cannot resolve the tree skips
+    /// with a printed reason rather than failing.
     #[test]
     fn the_committed_bake_matches_a_fresh_one() {
         let repo = store::repo_root();

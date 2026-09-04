@@ -33,14 +33,7 @@ pub const PACKAGE: &str = "sunlit-earth";
 /// The licence the workspace declares, as a file at the repository root.
 pub const LICENSE: &str = "LICENSE";
 
-/// The record, written beside the archive rather than inside it.
-///
-/// Amendment A2: it was in both places, and beside the archive is where it was
-/// always the more useful of the two. What the bundle carries now is the
-/// binary, the textures, `LICENSE` and the third-party notices, and nothing
-/// else: the credits that `ATTRIBUTION.md` and `textures/PROVENANCE.md` used
-/// to deliver as files are in the About window's attributions tab, and those
-/// two documents stay in the repository unmoved.
+/// The record, written beside the archive and not inside it.
 pub const RECORD: &str = "build-info.json";
 
 /// The two archive formats, one per target.
@@ -78,9 +71,7 @@ pub struct Item {
     /// comparison is made in.
     pub path: String,
     /// Where its bytes come from on the host: the binary this run built, or
-    /// something the repository ships. Amendment A2 took the last item that
-    /// this run wrote rather than found out of the bundle, so every item is a
-    /// file now.
+    /// something the repository ships.
     pub source: PathBuf,
     /// Whether the tarball's header says 0755. Without it the first thing a
     /// Linux user does is `chmod +x`.
@@ -684,8 +675,6 @@ mod tests {
                 paths.contains(&bake_licenses::NOTICES_PATH),
                 "{target}: {paths:?}"
             );
-            // Amendment A2 took these three out. Asserted absent rather than
-            // simply unasserted, so a re-add fails here instead of passing.
             for absent in [
                 "textures/PROVENANCE.md",
                 RECORD,

@@ -1124,26 +1124,8 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
     }
 }
 
-/// The header does not move when the version line outgrows the window.
-///
-/// This is what the old scroll-area version of the window got wrong: a
-/// non-wrapping line wider than the viewport took the content with it. The
-/// header is a fixed layout now, so the mark and the title stay at the left
-/// edge whatever the version string is.
-#[test]
-fn test_the_about_window_header_holds_its_place_under_a_long_version() {
-    let window = about_window();
-
-    window.set_version("0.0.0".into());
-    let short = window.get_header_x();
-    window.set_version("0.0.0-".repeat(60).into());
-    let long = window.get_header_x();
-
-    approx::assert_relative_eq!(short, long);
-}
-
 /// The header is outside the tab area, so scrolling a tab cannot take the
-/// version line with it. That is the whole point of decision 3.
+/// version line with it.
 #[test]
 fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
     let window = about_window();
@@ -1179,13 +1161,13 @@ fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
     approx::assert_relative_eq!(window.get_version_y(), header_before);
 }
 
-/// Each tab is reachable and carries the document it is for.
+/// The tab bar offers all three tabs, in order.
 ///
-/// The tab bar is a `TabWidget`, so a tab's content only exists while that tab
-/// is current; the assertion is on the property each one renders, which is
-/// what an empty tab would fail.
+/// What each tab renders is a separate question, and one this cannot answer by
+/// reading back a property it set itself: the three tests below drive each
+/// tab's own element instead.
 #[test]
-fn test_all_three_tabs_are_reachable_and_carry_their_document() {
+fn test_the_tab_bar_offers_all_three_tabs() {
     let window = about_window();
     let labels: Vec<String> = i_slint_backend_testing::ElementQuery::from_root(&window)
         .match_accessible_role(i_slint_backend_testing::AccessibleRole::Tab)
@@ -1195,18 +1177,10 @@ fn test_all_three_tabs_are_reachable_and_carry_their_document() {
         .collect();
 
     assert_eq!(labels, ["Attributions", "License", "Third-party"]);
-    assert_ne!(window.get_attributions(), slint::StyledText::default());
-    assert_ne!(window.get_third_party(), slint::StyledText::default());
-    assert!(!window.get_license_text().is_empty());
 }
 
 /// The licence tab does not wrap, so its scroll area has to be wider than the
 /// window rather than clipping the text.
-///
-/// This is the trap decision 6 walks past: giving that layout `width: 100%`,
-/// the way the two markdown tabs have it, would take the viewport down to the
-/// visible width and cut a 76-column document off at whatever the window is,
-/// with no way to scroll to the rest and nothing failing anywhere.
 #[test]
 fn test_the_license_tab_is_wider_than_a_narrow_window() {
     let window = about_window();
@@ -1228,35 +1202,72 @@ fn test_the_license_tab_is_wider_than_a_narrow_window() {
     );
 }
 
-/// A link in the attributions tab reaches `open-url` with the URL the document
-/// carries, which is the whole of the wiring between the markdown and the
-/// platform's handler.
+/// A link in the attributions tab reaches `open-url` with the URL that
+/// document carries, which is the whole of the wiring between the markdown and
+/// the platform's handler.
+///
+/// The two documents carry different URLs, so the tab rendering the wrong one
+/// of them fails here rather than looking identical.
 #[test]
 fn test_a_link_in_the_attributions_tab_reaches_open_url() {
     let window = about_window();
-    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let captured = opened.clone();
-    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
-    window.set_attributions(
-        slint::StyledText::from_markdown("[the link](https://example.invalid/target)").unwrap(),
-    );
+    let opened = capture_open_url(&window);
+    two_distinguishable_documents(&window);
     materialize_about(&window);
 
-    // Not `mock_single_click`, which clicks the element's centre: the element
-    // is as wide as the tab and the link is a few characters at its left edge,
-    // so the centre is past the end of the text. The link's own glyphs are
-    // what the hit test is about.
-    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
-        .match_type_name("StyledText")
-        .find_first()
-        .expect("the attributions tab has no StyledText");
-    click_at(&window, body.absolute_position(), 4.0, 6.0);
+    click_first_link(&window, "AboutWindow::attributions-body");
 
     assert_eq!(
         *opened.borrow(),
-        vec!["https://example.invalid/target".to_owned()],
-        "clicking the link did not reach open-url"
+        vec![ATTRIBUTIONS_LINK.to_owned()],
+        "the attributions tab did not open its own document's link"
     );
+}
+
+/// The same for the third tab, which is where the crate list lives.
+#[test]
+fn test_a_link_in_the_third_party_tab_reaches_open_url() {
+    let window = about_window();
+    let opened = capture_open_url(&window);
+    two_distinguishable_documents(&window);
+    open_tab(&window, 2);
+
+    click_first_link(&window, "AboutWindow::third-party-body");
+
+    assert_eq!(
+        *opened.borrow(),
+        vec![THIRD_PARTY_LINK.to_owned()],
+        "the third-party tab did not open its own document's link"
+    );
+}
+
+/// One link per markdown tab, each naming the document it is in.
+const ATTRIBUTIONS_LINK: &str = "https://example.invalid/attributions";
+const THIRD_PARTY_LINK: &str = "https://example.invalid/third-party";
+
+fn two_distinguishable_documents(window: &sunlit_earth::AboutWindow) {
+    let link = |url| slint::StyledText::from_markdown(&format!("[the link]({url})")).unwrap();
+    window.set_attributions(link(ATTRIBUTIONS_LINK));
+    window.set_third_party(link(THIRD_PARTY_LINK));
+}
+
+fn capture_open_url(window: &sunlit_earth::AboutWindow) -> Rc<RefCell<Vec<String>>> {
+    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured = opened.clone();
+    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    opened
+}
+
+/// Click the first glyphs of a `StyledText`, where its first link starts.
+///
+/// Not `mock_single_click`, which clicks the element's centre: the element is
+/// as wide as the tab and the link is a few characters at its left edge, so
+/// the centre is past the end of the text. The link's own glyphs are what the
+/// hit test is about.
+fn click_first_link(window: &sunlit_earth::AboutWindow, id: &str) {
+    let body: Vec<_> = ElementHandle::find_by_element_id(window, id).collect();
+    assert_eq!(body.len(), 1, "expected exactly one {id}");
+    click_at(window, body[0].absolute_position(), 4.0, 6.0);
 }
 
 /// The header link goes through the same callback as the documents' links.

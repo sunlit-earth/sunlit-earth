@@ -1061,13 +1061,9 @@ pub struct BuildInfo {
 
 /// The bundle this run wrote, as its own record describes it.
 ///
-/// It carries no size for the finished archive: the record was written into the
-/// bundle as well as beside it, and a size the archive would have to contain
-/// about itself is not a number that exists. Amendment A2 left the record
-/// beside the archive alone, so the field could now be added, and adding it is
-/// not what that amendment is for. What this carries is what the bundle is, and
-/// the one measurement that says the textures in it are found rather than
-/// assumed.
+/// What it carries is what the bundle is, and the one measurement that says the
+/// textures in it are found rather than assumed. It carries no size for the
+/// finished archive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BundleInfo {
     /// The one directory an unpack produces, which is also the archive's stem.
@@ -1285,11 +1281,8 @@ fn one_target(
         }
         info.duration_secs = started.elapsed().as_secs();
 
-        // Archived after verification because the record beside the archive
-        // has to carry what verification found. Amendment A2 took the record
-        // out of the bundle, so nothing inside the archive depends on the
-        // ordering any more; the ordering stays because changing it would
-        // change what a run does.
+        // Archived after verification, because the record written beside the
+        // archive has to carry what verification found.
         let archive = match &bundled {
             Some(bundled) => Some(seal_bundle(bundled, &version, target, &scratch)?),
             None => None,

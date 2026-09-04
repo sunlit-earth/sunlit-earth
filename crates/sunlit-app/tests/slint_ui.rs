@@ -1233,10 +1233,10 @@ fn test_a_link_in_the_attributions_tab_reaches_open_url() {
 }
 
 /// The tab lays a document out rather than stacking one paragraph on the next:
-/// a heading is bigger than body text, a bullet's text stands in a column of
-/// its own, a nested bullet is one step further in, and consecutive blocks are
-/// separated by the layout's spacing rather than by `StyledText`'s hardcoded
-/// zero.
+/// a heading is bigger than body text, an item's text starts to the right of
+/// its bullet, a nested item is one step further in, and consecutive blocks
+/// are separated by the layout's spacing rather than by `StyledText`'s
+/// hardcoded zero.
 #[test]
 fn test_the_attributions_tab_lays_its_blocks_out_as_a_document() {
     let window = about_window();
@@ -1263,7 +1263,7 @@ fn test_the_attributions_tab_lays_its_blocks_out_as_a_document() {
     );
     assert!(
         items[0].absolute_position().x > bullets[0].absolute_position().x,
-        "the bullet is not in a column of its own"
+        "the item's text does not start right of its bullet"
     );
     approx::assert_relative_eq!(
         items[1].absolute_position().x - items[0].absolute_position().x,

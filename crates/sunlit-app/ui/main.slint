@@ -1580,7 +1580,7 @@ export component AboutWindow inherits Window {
     // A model rather than one `styled-text`: the tab lays the document
     // out block by block. `about::document_model` builds it.
     in property <[AboutBlock]> attributions;
-    in property <styled-text> third-party;
+    in property <[AboutBlock]> third-party;
     // Plain text rather than markdown: the GPLv3 is hard-wrapped at 76
     // columns with indentation that carries meaning, and every markdown path
     // through Slint reflows it.
@@ -1758,18 +1758,50 @@ export component AboutWindow inherits Window {
             Tab {
                 title: "Third-party";
 
+                // The same block layout the attributions get, spelled out
+                // again rather than shared: element ids are static, so one
+                // component used by both tabs would leave a test unable to
+                // say which tab's rows it found.
                 ScrollView {
                     VerticalLayout {
                         width: 100%;
                         padding: 12px;
                         padding-right: 12px + root.scrollbar-width;
                         alignment: start;
+                        spacing: 8px;
 
-                        third-party-body := StyledText {
-                            text: root.third-party;
+                        for block in root.third-party : VerticalLayout {
+                            padding-top: block.kind == 1 ? 8px : 0px;
+                            padding-left: block.kind == 2
+                                ? block.depth * root.nesting-step + root.bullet-column
+                                : 0px;
 
-                            link-clicked(link) => {
-                                root.open-url(link);
+                            if block.kind == 1 : third-party-heading := Text {
+                                text: block.heading;
+                                font-weight: 700;
+                                font-size: block.depth == 1 ? 18px : 16px;
+                            }
+
+                            if block.kind == 0 : third-party-paragraph := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+                            }
+
+                            if block.kind == 2 : third-party-body := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+
+                                third-party-bullet := Text {
+                                    x: -root.bullet-column;
+                                    y: 0px;
+                                    text: "\u{2022}";
+                                }
                             }
                         }
                     }

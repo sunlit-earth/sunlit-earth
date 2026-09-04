@@ -413,8 +413,9 @@ pub fn collect(runner: &dyn Runner, repo: &Path) -> Result<Vec<Package>, String>
 /// table, no code block, no horizontal rule, because the parser rejects all
 /// three.
 pub fn render_list(packages: &[Package]) -> String {
+    // No title: the About window renders this document under a tab already
+    // labelled Third-party, and a heading repeating the label is noise there.
     let mut out = String::new();
-    out.push_str("# Third-party crates\n\n");
     out.push_str(
         "Every crate Sunlit Earth depends on, as the union over the three platforms it \
          builds for, so a few here are absent from any one build. Each license name links \

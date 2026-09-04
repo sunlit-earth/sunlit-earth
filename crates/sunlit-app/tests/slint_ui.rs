@@ -1277,7 +1277,8 @@ fn test_the_attributions_tab_lays_its_blocks_out_as_a_document() {
     );
 }
 
-/// The same for the third tab, which is where the crate list lives.
+/// The same for the third tab, which is where the crate list lives and which
+/// is laid out block by block too, so it has no one body element either.
 #[test]
 fn test_a_link_in_the_third_party_tab_reaches_open_url() {
     let window = about_window();
@@ -1285,7 +1286,11 @@ fn test_a_link_in_the_third_party_tab_reaches_open_url() {
     two_distinguishable_documents(&window);
     open_tab(&window, 2);
 
-    click_first_link(&window, "AboutWindow::third-party-body");
+    let bodies = third_party_bodies(&window);
+    assert_eq!(bodies.len(), 2, "expected the preamble and the one entry");
+    for body in &bodies {
+        click_at(&window, body.absolute_position(), 4.0, 6.0);
+    }
 
     assert_eq!(
         *opened.borrow(),
@@ -1338,9 +1343,9 @@ fn two_distinguishable_documents(window: &sunlit_earth::AboutWindow) {
     window.set_attributions(sunlit_earth::about::document_model(&format!(
         "# Sources\n\nthis paragraph carries no link\n\n- [the link]({ATTRIBUTIONS_LINK})\n"
     )));
-    window.set_third_party(
-        slint::StyledText::from_markdown(&format!("[the link]({THIRD_PARTY_LINK})")).unwrap(),
-    );
+    window.set_third_party(sunlit_earth::about::document_model(&format!(
+        "this preamble carries no link\n\n- [the link]({THIRD_PARTY_LINK})\n"
+    )));
 }
 
 /// Every element the attributions tab renders a block's inline markdown into,
@@ -1349,6 +1354,18 @@ fn attributions_bodies(window: &sunlit_earth::AboutWindow) -> Vec<ElementHandle>
     [
         "AboutWindow::attributions-paragraph",
         "AboutWindow::attributions-item",
+    ]
+    .into_iter()
+    .flat_map(|id| ElementHandle::find_by_element_id(window, id))
+    .collect()
+}
+
+/// The same for the third-party tab, whose rows carry their own ids so a test
+/// can say which tab it found.
+fn third_party_bodies(window: &sunlit_earth::AboutWindow) -> Vec<ElementHandle> {
+    [
+        "AboutWindow::third-party-paragraph",
+        "AboutWindow::third-party-body",
     ]
     .into_iter()
     .flat_map(|id| ElementHandle::find_by_element_id(window, id))
@@ -1378,12 +1395,6 @@ fn capture_open_url(window: &sunlit_earth::AboutWindow) -> Rc<RefCell<Vec<String
 /// as wide as the tab and the link is a few characters at its left edge, so
 /// the centre is past the end of the text. The link's own glyphs are what the
 /// hit test is about.
-fn click_first_link(window: &sunlit_earth::AboutWindow, id: &str) {
-    let body: Vec<_> = ElementHandle::find_by_element_id(window, id).collect();
-    assert_eq!(body.len(), 1, "expected exactly one {id}");
-    click_at(window, body[0].absolute_position(), 4.0, 6.0);
-}
-
 /// The header link goes through the same callback as the documents' links.
 #[test]
 fn test_the_repository_link_reaches_open_url() {
@@ -1415,7 +1426,7 @@ fn about_window() -> sunlit_earth::AboutWindow {
     window.window().set_size(slint::PhysicalSize::new(560, 480));
     window.set_version("1.2.3".into());
     window.set_attributions(sunlit_earth::about::document_model("credits"));
-    window.set_third_party(slint::StyledText::from_markdown("- `a 1.0.0`: MIT").unwrap());
+    window.set_third_party(sunlit_earth::about::document_model("- `a 1.0.0`: MIT"));
     window.set_license_text("a licence\nsecond line\n".into());
     materialize_about(&window);
     window

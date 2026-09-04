@@ -1179,6 +1179,34 @@ fn test_all_three_tabs_are_reachable_and_carry_their_document() {
     assert!(!window.get_license_text().is_empty());
 }
 
+/// The licence tab does not wrap, so its scroll area has to be wider than the
+/// window rather than clipping the text.
+///
+/// This is the trap decision 6 walks past: giving that layout `width: 100%`,
+/// the way the two markdown tabs have it, would take the viewport down to the
+/// visible width and cut a 76-column document off at whatever the window is,
+/// with no way to scroll to the rest and nothing failing anywhere.
+#[test]
+fn test_the_license_tab_is_wider_than_a_narrow_window() {
+    let window = about_window();
+    window.window().set_size(slint::PhysicalSize::new(360, 400));
+    window.set_license_text("x".repeat(200).into());
+    open_tab(&window, 1);
+
+    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_type_name("Text")
+        .find_all()
+        .into_iter()
+        .max_by(|a, b| a.size().width.total_cmp(&b.size().width))
+        .expect("the licence tab has no Text");
+
+    assert!(
+        body.size().width > 360.0,
+        "the licence body is {} wide in a 360 px window, so it was wrapped or clipped",
+        body.size().width
+    );
+}
+
 /// A link in the attributions tab reaches `open-url` with the URL the document
 /// carries, which is the whole of the wiring between the markdown and the
 /// platform's handler.
@@ -1245,6 +1273,15 @@ fn about_window() -> sunlit_earth::AboutWindow {
     window.set_license_text("a licence\nsecond line\n".into());
     materialize_about(&window);
     window
+}
+
+/// Make one tab current, since a `TabWidget` only lays the current one out.
+fn open_tab(window: &sunlit_earth::AboutWindow, index: usize) {
+    let tabs = i_slint_backend_testing::ElementQuery::from_root(window)
+        .match_accessible_role(i_slint_backend_testing::AccessibleRole::Tab)
+        .find_all();
+    tabs[index].invoke_accessible_default_action();
+    materialize_about(window);
 }
 
 /// Force a layout, so geometry and the element tree are there to look at.

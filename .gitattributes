@@ -19,3 +19,9 @@ assets/icon/baked/** binary
 # a packed float would be silent until the sky came out wrong.
 crates/sunlit-core/src/assets/stars/*.bin binary
 crates/sunlit-core/tests/fixtures/*.bin binary
+
+# The license corpus the third-party notice is baked from. Every one of these
+# texts goes into the committed document byte for byte, and a test compares
+# them, so a checkout that turned one into CRLF would fail the bake on a
+# machine nobody else can reproduce.
+assets/licenses/*.txt text eol=lf

@@ -23,7 +23,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    bake_icon, bake_stars, build_image, dist, doctor, e2e, setup, sweep, teardown, vm,
+    bake_icon, bake_licenses, bake_stars, build_image, dist, doctor, e2e, setup, sweep, teardown,
+    vm,
 };
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
@@ -90,22 +91,10 @@ enum Command {
         #[arg(long)]
         allow_dirty: bool,
     },
-    /// Rasterize the icon SVGs into the outputs the app ships. The results are
-    /// committed; rerun this when a source SVG changes.
-    BakeIcon {
-        /// Write the small-size review sheet into this directory instead of
-        /// baking. For the judgment a test cannot make.
-        #[arg(long, value_name = "DIR")]
-        review: Option<std::path::PathBuf>,
-    },
-    /// Bake the HYG star catalog into the runtime instance buffer format.
-    BakeStars {
-        /// HYG v4.4 CSV input.
-        #[arg(long, value_name = "CSV")]
-        input: std::path::PathBuf,
-        /// Binary catalog output.
-        #[arg(long, value_name = "BIN")]
-        output: std::path::PathBuf,
+    /// Regenerate a committed asset from its source.
+    Bake {
+        #[command(subcommand)]
+        command: BakeCommand,
     },
     /// Delete build artifacts no recent build has used. Needs cargo-sweep:
     /// `cargo install cargo-sweep`.
@@ -120,6 +109,36 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+/// The three committed assets that are generated rather than authored.
+///
+/// One verb with three objects rather than three sibling verbs: they all mean
+/// "regenerate a committed asset from its source", they are all rare, and the
+/// nested shape is the one `VmCommand` already established in this CLI.
+#[derive(Subcommand)]
+enum BakeCommand {
+    /// Rasterize the icon SVGs into the outputs the app ships. The results are
+    /// committed; rerun this when a source SVG changes.
+    Icon {
+        /// Write the small-size review sheet into this directory instead of
+        /// baking. For the judgment a test cannot make.
+        #[arg(long, value_name = "DIR")]
+        review: Option<std::path::PathBuf>,
+    },
+    /// Bake the HYG star catalog into the runtime instance buffer format.
+    Stars {
+        /// HYG v4.4 CSV input.
+        #[arg(long, value_name = "CSV")]
+        input: std::path::PathBuf,
+        /// Binary catalog output.
+        #[arg(long, value_name = "BIN")]
+        output: std::path::PathBuf,
+    },
+    /// Walk the shipping dependency tree and write the two third-party
+    /// notices: the About window's crate list and the license texts that
+    /// travel with the binary.
+    Licenses,
 }
 
 #[derive(Subcommand)]
@@ -263,8 +282,11 @@ fn main() -> ExitCode {
                 allow_dirty,
             },
         ),
-        Command::BakeIcon { review } => bake_icon::run(review),
-        Command::BakeStars { input, output } => bake_stars::run(&input, &output),
+        Command::Bake { command } => match command {
+            BakeCommand::Icon { review } => bake_icon::run(review),
+            BakeCommand::Stars { input, output } => bake_stars::run(&input, &output),
+            BakeCommand::Licenses => bake_licenses::run(&runner),
+        },
         Command::Sweep {
             time,
             maxsize,

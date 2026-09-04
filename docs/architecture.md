@@ -21,10 +21,13 @@ sunlit-earth/
       src/params.rs  # SceneParams, ParamsDigest, gamma slider mapping
       tests/         # engine, soak, golden, shading, render_pipeline
     sunlit-app/      # Slint shell: window, tray, IPC, config bridge
-      ui/main.slint  # MainWindow and TrayIcon
+      ui/main.slint  # MainWindow, AboutWindow and TrayIcon
       tests/         # e2e (desktop-gated), slint_ui
-    xtask/           # developer tooling: VM orchestration, the icon bake
+    xtask/           # developer tooling: VM orchestration, the icon, star and licence bakes
   assets/
+    ATTRIBUTION.md   # the credits, and what the About window's first tab renders
+    third-party.md   # the crate list its third tab renders (generated, committed)
+    licenses/        # the SPDX texts THIRD-PARTY-LICENSES.md is baked from
     icon/            # the mark: SVG master plus 32/24/16 variants, and baked/ (committed)
     linux/           # sunlit-earth.desktop and the user-local install script
   textures/          # local JXL assets, not part of the build: the two 8K Earth maps,
@@ -96,7 +99,9 @@ The tooltip's content is the custom-content form and not `Tooltip { text: ... }`
 
 Celestial is subdivided: Sky (the sky lens and the Milky Way), Sun, Moon, Stars. The subsections are what let the labels drop the noun they repeated (`Star brightness` is `Brightness` under Stars), which is what makes one label column wide enough for every group.
 
-`AboutWindow` is an ordinary exported window component. `about::AboutController` creates it on first use, supplies the package version and one attribution list owned by Rust, then reuses the handle. The settings control and tray callback clone the same controller.
+`AboutWindow` is an ordinary exported window component: a fixed header over a `TabWidget` of three tabs. `about::AboutController` creates it on first use, supplies the package version and the three documents, registers the link opener, then reuses the handle. The settings control and tray callback clone the same controller.
+
+The documents are `include_str!`s rather than files read at runtime: `assets/ATTRIBUTION.md` and `assets/third-party.md` for the two markdown tabs, and the repository's own `LICENSE` for the third. `git archive` of `HEAD` carries all three, so `cargo xtask dist` builds them in unchanged, and rustc records them in the dep-info, so editing one rebuilds the crate. Slint's `StyledText` renders a subset of CommonMark and cannot lay a document out: it rejects a heading, has no font size to give one, stacks paragraphs with no gap and no spacing property, and glues a list bullet to its paragraph as literal text, so a wrapped line gets no hanging indent. The two markdown tabs answer that differently, because their documents differ. `about::parse_blocks` cuts the attributions into blocks, a heading with its level, a list item with its nesting, or a paragraph, and the tab renders one element per row of an `AboutBlock` model, with only a block's own inline markdown reaching `StyledText::from_markdown`: a heading is a plain `Text`, since that is what carries a weight and a size, and a bullet is a `Text` drawn into the margin its item's padding leaves, because a `StyledText` laid out beside one in a `HorizontalLayout` reports the height of a single line whatever it wraps to. The third-party list is hundreds of uniform one-line entries with nothing to indent, so it stays one `StyledText` and `about::flatten_markdown` is what gets its leading heading through a parser that rejects headings: a heading becomes a bold line, a rule is dropped, nothing else is touched. The licence tab is a plain `Text` with `wrap: no-wrap` in a `ScrollView`, because that file is hard-wrapped at 76 columns with indentation that carries meaning and every markdown path through Slint reflows it. Links from all three tabs and from the header go through one `open-url` callback and out to the platform's own handler, with no `unsafe` and with only `http` and `https` reaching a shell.
 
 `TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, About, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
 

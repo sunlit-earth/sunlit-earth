@@ -1124,17 +1124,352 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
     }
 }
 
-/// The About window's scroll area has the same shape as the sidebar's, and its
-/// version line does not wrap, so a long enough one takes the viewport past the
-/// window and would centre the content the same way.
+/// The header is outside the tab area, so scrolling a tab cannot take the
+/// version line with it.
 #[test]
-fn test_the_about_window_content_starts_at_its_left_edge() {
+fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(&"line\n\n".repeat(200)));
+    materialize_about(&window);
+
+    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_type_name("StyledText")
+        .find_first()
+        .expect("the attributions tab has no StyledText");
+    let header_before = window.get_version_y();
+    let body_before = body.absolute_position().y;
+
+    // Not `ElementHandle::scroll`, which aims at the element's centre: a
+    // document taller than the window has its centre outside the window, and
+    // an event there reaches nothing. This aims at a point in the tab's own
+    // viewport, low enough to be under the header and the tab bar.
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(280.0, 350.0),
+            delta_x: 0.0,
+            delta_y: -400.0,
+        });
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+
+    // The body having moved is what stops this from passing because nothing
+    // scrolled at all.
+    assert!(
+        (body.absolute_position().y - body_before).abs() > 1.0,
+        "the tab did not scroll, so the header standing still proves nothing"
+    );
+    approx::assert_relative_eq!(window.get_version_y(), header_before);
+}
+
+/// The tab bar offers all three tabs, in order.
+///
+/// What each tab renders is a separate question, and one this cannot answer by
+/// reading back a property it set itself: the three tests below drive each
+/// tab's own element instead.
+#[test]
+fn test_the_tab_bar_offers_all_three_tabs() {
+    let window = about_window();
+    let labels: Vec<String> = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_accessible_role(i_slint_backend_testing::AccessibleRole::Tab)
+        .find_all()
+        .iter()
+        .filter_map(|tab| tab.accessible_label().map(|label| label.to_string()))
+        .collect();
+
+    assert_eq!(labels, ["Attributions", "License", "Third-party"]);
+}
+
+/// The licence tab does not wrap, so its scroll area has to be wider than the
+/// window rather than clipping the text.
+#[test]
+fn test_the_license_tab_is_wider_than_a_narrow_window() {
+    let window = about_window();
+    window.window().set_size(slint::PhysicalSize::new(360, 400));
+    window.set_license_text("x".repeat(200).into());
+    open_tab(&window, 1);
+
+    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_type_name("Text")
+        .find_all()
+        .into_iter()
+        .max_by(|a, b| a.size().width.total_cmp(&b.size().width))
+        .expect("the licence tab has no Text");
+
+    assert!(
+        body.size().width > 360.0,
+        "the licence body is {} wide in a 360 px window, so it was wrapped or clipped",
+        body.size().width
+    );
+}
+
+/// A link in the attributions tab reaches `open-url` with the URL that
+/// document carries, which is the whole of the wiring between the markdown and
+/// the platform's handler.
+///
+/// There is no one body element any more, so this clicks the first glyphs of
+/// every block the tab renders and asserts that one call arrived carrying the
+/// attributions document's own URL. The two documents carry different URLs, so
+/// a tab bound to the wrong one fails here rather than looking identical, and
+/// the paragraph in the fixture carries no link, so a stray call would fail it
+/// too.
+#[test]
+fn test_a_link_in_the_attributions_tab_reaches_open_url() {
+    let window = about_window();
+    let opened = capture_open_url(&window);
+    two_distinguishable_documents(&window);
+    materialize_about(&window);
+
+    let bodies = attributions_bodies(&window);
+    assert_eq!(bodies.len(), 2, "expected the paragraph and the bullet");
+    for body in &bodies {
+        click_at(&window, body.absolute_position(), 4.0, 6.0);
+    }
+
+    assert_eq!(
+        *opened.borrow(),
+        vec![ATTRIBUTIONS_LINK.to_owned()],
+        "the attributions tab did not open its own document's link"
+    );
+}
+
+/// The tab lays a document out rather than stacking one paragraph on the next:
+/// a heading is bigger than body text, an item's text starts to the right of
+/// its bullet, a nested item is one step further in, and consecutive blocks
+/// are separated by the layout's spacing rather than by `StyledText`'s
+/// hardcoded zero.
+#[test]
+fn test_the_attributions_tab_lays_its_blocks_out_as_a_document() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(
+        "# Imagery\n\nbody text\n\n- a top level item\n  - a nested item\n",
+    ));
+    materialize_about(&window);
+
+    let heading = one_element(&window, "AboutWindow::attributions-heading");
+    let paragraph = one_element(&window, "AboutWindow::attributions-paragraph");
+    let bullets = all_elements(&window, "AboutWindow::attributions-bullet");
+    let items = all_elements(&window, "AboutWindow::attributions-item");
+    assert_eq!(
+        (bullets.len(), items.len()),
+        (2, 2),
+        "two bullets, two texts"
+    );
+
+    assert!(
+        heading.size().height > paragraph.size().height,
+        "the heading measured {} against the paragraph's {}",
+        heading.size().height,
+        paragraph.size().height
+    );
+    assert!(
+        items[0].absolute_position().x > bullets[0].absolute_position().x,
+        "the item's text does not start right of its bullet"
+    );
+    approx::assert_relative_eq!(
+        items[1].absolute_position().x - items[0].absolute_position().x,
+        14.0
+    );
+    let gap =
+        paragraph.absolute_position().y - heading.absolute_position().y - heading.size().height;
+    assert!(
+        gap >= 8.0,
+        "the heading and the paragraph below it are {gap} apart"
+    );
+}
+
+/// The same for the third tab, which is where the crate list lives and which
+/// is laid out block by block too, so it has no one body element either.
+#[test]
+fn test_a_link_in_the_third_party_tab_reaches_open_url() {
+    let window = about_window();
+    let opened = capture_open_url(&window);
+    two_distinguishable_documents(&window);
+    open_tab(&window, 2);
+
+    let bodies = third_party_bodies(&window);
+    assert_eq!(bodies.len(), 2, "expected the preamble and the one entry");
+    for body in &bodies {
+        click_at(&window, body.absolute_position(), 4.0, 6.0);
+    }
+
+    assert_eq!(
+        *opened.borrow(),
+        vec![THIRD_PARTY_LINK.to_owned()],
+        "the third-party tab did not open its own document's link"
+    );
+}
+
+/// A wrapped list item keeps the whole column: its text is one box as tall as
+/// the lines it takes, so the block under it starts below the last of them.
+///
+/// This is the shape's load-bearing property. A `StyledText` reports the height
+/// of a single line unless it is a layout's own child, so a bullet laid out
+/// beside the text in a `HorizontalLayout` leaves every wrapped item one line
+/// tall and draws the rest of it over the block below.
+#[test]
+fn test_a_wrapped_list_item_does_not_spill_over_the_block_below() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(
+        "- short\n- a list item that runs on far enough to wrap over more than \
+         one line in a five hundred and sixty pixel window, which is what makes \
+         this measurement mean anything at all\n- the block below\n",
+    ));
+    materialize_about(&window);
+
+    let items = all_elements(&window, "AboutWindow::attributions-item");
+    assert_eq!(items.len(), 3, "three list items");
+    let (short, wrapped, below) = (&items[0], &items[1], &items[2]);
+
+    assert!(
+        wrapped.size().height >= short.size().height * 1.5,
+        "the long item measured {} against one line's {}, so it did not wrap",
+        wrapped.size().height,
+        short.size().height
+    );
+    assert!(
+        below.absolute_position().y >= wrapped.absolute_position().y + wrapped.size().height,
+        "the block below starts at {}, inside the wrapped item, which ends at {}",
+        below.absolute_position().y,
+        wrapped.absolute_position().y + wrapped.size().height
+    );
+    approx::assert_relative_eq!(wrapped.absolute_position().x, short.absolute_position().x);
+}
+
+/// One link per markdown tab, each naming the document it is in.
+const ATTRIBUTIONS_LINK: &str = "https://example.invalid/attributions";
+const THIRD_PARTY_LINK: &str = "https://example.invalid/third-party";
+
+fn two_distinguishable_documents(window: &sunlit_earth::AboutWindow) {
+    window.set_attributions(sunlit_earth::about::document_model(&format!(
+        "# Sources\n\nthis paragraph carries no link\n\n- [the link]({ATTRIBUTIONS_LINK})\n"
+    )));
+    window.set_third_party(sunlit_earth::about::document_model(&format!(
+        "this preamble carries no link\n\n- [the link]({THIRD_PARTY_LINK})\n"
+    )));
+}
+
+/// Every element the attributions tab renders a block's inline markdown into,
+/// the paragraphs first and the bullets after.
+fn attributions_bodies(window: &sunlit_earth::AboutWindow) -> Vec<ElementHandle> {
+    [
+        "AboutWindow::attributions-paragraph",
+        "AboutWindow::attributions-item",
+    ]
+    .into_iter()
+    .flat_map(|id| ElementHandle::find_by_element_id(window, id))
+    .collect()
+}
+
+/// The same for the third-party tab, whose rows carry their own ids so a test
+/// can say which tab it found.
+fn third_party_bodies(window: &sunlit_earth::AboutWindow) -> Vec<ElementHandle> {
+    [
+        "AboutWindow::third-party-paragraph",
+        "AboutWindow::third-party-body",
+    ]
+    .into_iter()
+    .flat_map(|id| ElementHandle::find_by_element_id(window, id))
+    .collect()
+}
+
+fn one_element(window: &sunlit_earth::AboutWindow, id: &str) -> ElementHandle {
+    let found = all_elements(window, id);
+    assert_eq!(found.len(), 1, "expected exactly one {id}");
+    found.into_iter().next().expect("one element")
+}
+
+fn all_elements(window: &sunlit_earth::AboutWindow, id: &str) -> Vec<ElementHandle> {
+    ElementHandle::find_by_element_id(window, id).collect()
+}
+
+fn capture_open_url(window: &sunlit_earth::AboutWindow) -> Rc<RefCell<Vec<String>>> {
+    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured = opened.clone();
+    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    opened
+}
+
+/// Click the first glyphs of a `StyledText`, where its first link starts.
+///
+/// Not `mock_single_click`, which clicks the element's centre: the element is
+/// as wide as the tab and the link is a few characters at its left edge, so
+/// the centre is past the end of the text. The link's own glyphs are what the
+/// hit test is about.
+/// The header link goes through the same callback as the documents' links.
+#[test]
+fn test_the_repository_link_reaches_open_url() {
+    let window = about_window();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured = opened.clone();
+    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    materialize_about(&window);
+
+    let link: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "AboutWindow::repository-link").collect();
+    assert_eq!(link.len(), 1, "expected one repository link");
+    link[0].mock_single_click(slint::platform::PointerEventButton::Left);
+
+    let opened = opened.borrow();
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(
+        opened[0].starts_with("https://github.com/"),
+        "the header link opened {:?}",
+        opened[0]
+    );
+}
+
+/// An About window with all three documents in it, at a size a person would
+/// see, which is what the tab tests need before they can find anything.
+fn about_window() -> sunlit_earth::AboutWindow {
     init();
     let window = sunlit_earth::AboutWindow::new().unwrap();
-    window.window().set_size(slint::PhysicalSize::new(520, 420));
-    window.set_version("0.0.0-".repeat(60).into());
+    window.window().set_size(slint::PhysicalSize::new(560, 480));
+    window.set_version("1.2.3".into());
+    window.set_attributions(sunlit_earth::about::document_model("credits"));
+    window.set_third_party(sunlit_earth::about::document_model("- `a 1.0.0`: MIT"));
+    window.set_license_text("a licence\nsecond line\n".into());
+    materialize_about(&window);
+    window
+}
 
-    approx::assert_relative_eq!(window.get_content_x(), 0.0);
+/// Make one tab current, since a `TabWidget` only lays the current one out.
+fn open_tab(window: &sunlit_earth::AboutWindow, index: usize) {
+    let tabs = i_slint_backend_testing::ElementQuery::from_root(window)
+        .match_accessible_role(i_slint_backend_testing::AccessibleRole::Tab)
+        .find_all();
+    tabs[index].invoke_accessible_default_action();
+    materialize_about(window);
+}
+
+/// Force a layout, so geometry and the element tree are there to look at.
+fn materialize_about(window: &sunlit_earth::AboutWindow) {
+    window.show().unwrap();
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+}
+
+/// Click a point offset from an element's own origin.
+///
+/// `ElementHandle` can only click an element's centre, and a link inside a
+/// paragraph is not at the centre of the paragraph.
+fn click_at(window: &sunlit_earth::AboutWindow, origin: slint::LogicalPosition, dx: f32, dy: f32) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    let position = slint::LogicalPosition::new(origin.x + dx, origin.y + dy);
+    for event in [
+        WindowEvent::PointerMoved { position },
+        WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        },
+        WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        },
+    ] {
+        window.window().dispatch_event(event);
+    }
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
 }
 
 /// The adapter name stays on one line however long it is. A word-wrapped
@@ -1162,4 +1497,54 @@ fn adapter_line_height(window: &MainWindow, renderer_info: &str) -> f32 {
         ElementHandle::find_by_element_id(window, "MainWindow::adapter-line").collect();
     assert_eq!(found.len(), 1, "expected exactly one adapter line");
     found[0].size().height
+}
+
+// A `Text` whose family and content the test drives, so the width it reports
+// is the width the font gives that string.
+slint::slint! {
+    export component FamilyProbe inherits Window {
+        in property <string> family;
+        in property <string> body;
+        out property <length> text-width: probe.preferred-width;
+        probe := Text {
+            font-family: root.family;
+            text: root.body;
+            wrap: no-wrap;
+        }
+    }
+}
+
+/// `about::MONO_FAMILY` has to name a fixed-width family that this platform
+/// actually has. Slint resolves no generic keyword: `font-family` reaches
+/// parley through `FontFamilyName::named`, so a name nobody has falls back to
+/// the proportional default and the licence tab silently loses its layout with
+/// no error anywhere. Four narrow glyphs and four wide ones come to the same
+/// width in a fixed-width font and nowhere else, which is the difference this
+/// measures.
+///
+/// The second half is what stops it passing for the wrong reason: the same
+/// measurement under the default family must disagree, or an equal result
+/// above would prove only that the probe cannot tell fonts apart.
+#[test]
+fn test_the_monospace_family_resolves_on_this_platform() {
+    init();
+    let probe = FamilyProbe::new().unwrap();
+
+    let width_of = |family: &str, body: &str| {
+        probe.set_family(family.into());
+        probe.set_body(body.into());
+        probe.get_text_width()
+    };
+
+    let narrow = width_of(sunlit_earth::about::MONO_FAMILY, "iiii");
+    let wide = width_of(sunlit_earth::about::MONO_FAMILY, "mmmm");
+    approx::assert_relative_eq!(narrow, wide);
+
+    let proportional_narrow = width_of("", "iiii");
+    let proportional_wide = width_of("", "mmmm");
+    assert!(
+        proportional_narrow < proportional_wide,
+        "the default family measured as fixed-width, so this test cannot tell \
+         a resolved monospace family from an unresolved one"
+    );
 }

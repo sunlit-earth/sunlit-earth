@@ -21,7 +21,7 @@ const ICON_SIZE: u32 = 32;
 ///
 /// Raw pixels rather than a PNG, because this is the only image the app owns
 /// and decoding one would put an image decoder in its dependency list for a
-/// single 4 KiB asset. `cargo xtask bake-icon` writes the file from
+/// single 4 KiB asset. `cargo xtask bake icon` writes the file from
 /// `assets/icon/sunlit-earth-32.svg`, the variant authored for this size.
 const TRAY_RGBA: &[u8] = include_bytes!("../../../assets/icon/baked/tray-32.rgba");
 

@@ -27,6 +27,7 @@ sunlit-earth/
   assets/
     ATTRIBUTION.md   # the credits, and what the About window's first tab renders
     third-party.md   # the crate list its third tab renders (generated, committed)
+    licenses/        # the SPDX texts THIRD-PARTY-LICENSES.md is baked from
     icon/            # the mark: SVG master plus 32/24/16 variants, and baked/ (committed)
     linux/           # sunlit-earth.desktop and the user-local install script
   textures/          # local JXL assets, not part of the build: the two 8K Earth maps,

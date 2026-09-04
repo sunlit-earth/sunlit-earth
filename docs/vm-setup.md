@@ -288,14 +288,14 @@ manifest's, not `git describe`, which has no tags to work from here; the commit 
 inside it. The credits are not in the archive either: the About window's attributions tab
 carries them now, `assets/ATTRIBUTION.md` and `textures/PROVENANCE.md` stay in the
 repository, and what does travel is the one thing a tab cannot deliver, which is the
-per-crate copyright notices.
+full text of every license in the dependency tree.
 
 | in the bundle | why |
 |---|---|
 | `sunlit-earth` / `sunlit-earth.exe` | 0755 in the tarball, so nobody has to `chmod +x` |
 | `textures/` | the four JXL assets. Without them the app draws the procedural grid |
 | `LICENSE` | the GPL 3.0 text the workspace declares |
-| `THIRD-PARTY-LICENSES.md` | the license texts and copyright notices of the crates in the binary. The About window's third tab lists the crates and links their identifiers, which is not the same thing as carrying the notices, so this file is what discharges the obligation |
+| `THIRD-PARTY-LICENSES.md` | the license of every crate in the binary and the full text of each of those licenses, from the canonical SPDX texts in `assets/licenses/`. The About window's third tab links each identifier to spdx.org, which is no use to somebody reading an unpacked archive offline, so this file is what carries the texts |
 | `assets/` | Linux only: the desktop entry, the hicolor icons, the SVG master and `install-user.sh`, which exists exactly for someone holding a binary and no package. Windows needs no equivalent, because the icon is a resource inside the exe |
 
 The zip stores the JXL entries and deflates the rest: they are compressed images already,

@@ -1,6 +1,6 @@
 # Attributions
 
-Sunlit Earth stands on public data, freely licensed imagery and open source libraries. Fuller records live in `textures/PROVENANCE.md` for the imagery and `assets/THIRD-PARTY-LICENSES.md` for every crate's license text and copyright notice.
+Sunlit Earth stands on public data, freely licensed imagery and open source libraries. Fuller records live in `textures/PROVENANCE.md` for the imagery and `assets/THIRD-PARTY-LICENSES.md` for every crate's license and the full text of it.
 
 ## Imagery
 
@@ -24,6 +24,6 @@ Sunlit Earth stands on public data, freely licensed imagery and open source libr
 - [jxl-oxide](https://github.com/tirr-c/jxl-oxide), with [libjxl](https://github.com/libjxl/libjxl) and the JPEG XL committee behind it, for the textures.
 - The [Rust](https://www.rust-lang.org/) project, for the language and the toolchain.
 
-Every crate in the dependency tree is listed under Third-party, and each one's license text and copyright notice is in `assets/THIRD-PARTY-LICENSES.md`.
+Every crate in the dependency tree is listed under Third-party, and the full text of every license in that tree is in `assets/THIRD-PARTY-LICENSES.md`.
 
 NASA is credited in words only. Its insignia and logotype are not used here, and nothing in this program implies NASA endorsement.

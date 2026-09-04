@@ -43,7 +43,15 @@ pub const SHIPPING_TARGETS: [&str; 3] = [
 pub const LIST_PATH: &str = "assets/third-party.md";
 
 /// The notice that travels in the release bundle, relative to the same root.
-pub const NOTICES_PATH: &str = "THIRD-PARTY-LICENSES.md";
+///
+/// It lives under `assets/` because it is a generated document a megabyte
+/// long, and the repository root is not where that belongs.
+pub const NOTICES_PATH: &str = "assets/THIRD-PARTY-LICENSES.md";
+
+/// What the same file is called inside the bundle, where it sits at the top
+/// level next to `LICENSE`: the first place someone unpacking a release looks
+/// for a notice, and no reason to make them open a directory for it.
+pub const NOTICES_NAME: &str = "THIRD-PARTY-LICENSES.md";
 
 /// Where an unrecognized `LicenseRef-` operand sends a reader instead of a
 /// link, since SPDX has no page for one.

@@ -1,6 +1,6 @@
 # Attributions
 
-Sunlit Earth is built on public data, freely licensed imagery and open source libraries. This file is the summary, and it is what the program's About window shows under Attributions. Two files in the repository go further: `textures/PROVENANCE.md` is the full record for the imagery, with source IDs, file hashes and download dates, and `THIRD-PARTY-LICENSES.md` carries the license texts and copyright notices of every crate in the dependency tree, which is also the one of the three that travels beside the binary.
+Sunlit Earth is built on public data, freely licensed imagery and open source libraries. This file is the summary, and it is what the program's About window shows under Attributions. Two files in the repository go further: `textures/PROVENANCE.md` is the full record for the imagery, with source IDs, file hashes and download dates, and `assets/THIRD-PARTY-LICENSES.md` carries the license texts and copyright notices of every crate in the dependency tree. That last one is also the only one of the three that travels beside the binary, where it sits at the top level of the release archive.
 
 ## Clouds
 

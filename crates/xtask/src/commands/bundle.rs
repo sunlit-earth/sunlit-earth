@@ -175,7 +175,7 @@ pub fn layout(target: Target, sources: &Sources) -> Vec<Item> {
         executable: false,
     });
     items.push(Item {
-        path: bake_licenses::NOTICES_PATH.to_owned(),
+        path: bake_licenses::NOTICES_NAME.to_owned(),
         source: sources.repo.join(bake_licenses::NOTICES_PATH),
         executable: false,
     });
@@ -672,7 +672,7 @@ mod tests {
             }
             assert!(paths.contains(&LICENSE), "{target}: {paths:?}");
             assert!(
-                paths.contains(&bake_licenses::NOTICES_PATH),
+                paths.contains(&bake_licenses::NOTICES_NAME),
                 "{target}: {paths:?}"
             );
             for absent in [

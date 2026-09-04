@@ -8,14 +8,8 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
-# The app no longer shares its wgpu device with Slint, so the unstable wgpu
-# feature (and with it the coupling between the Slint and wgpu versions) is gone.
 slint = "~1.17"
 slint-build = "~1.17"
-# `counters` turns wgpu's internal byte and object counters from compiled-out
-# no-ops into relaxed atomic adds on resource create and destroy, which is what
-# gives `memory-report` two totals measured by wgpu itself rather than only the
-# ones we compute. Backends that do not maintain a counter keep reporting zero.
 wgpu = { version = "28", features = ["counters"] }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
@@ -32,28 +26,11 @@ toml = "0.9"
 crc32fast = "1"
 csv = "1"
 dirs = "6"
-# The icon bake, xtask-only. `resvg` rasterizes the SVG masters and `ico`
-# assembles the multi-size Windows icon; both are pure Rust, so the bake runs
-# on any host with a toolchain and nothing is asked of a user's machine.
-# `default-features = false` drops resvg's text stack, which the mark, being
-# geometry only, has no use for.
 resvg = { version = "0.48", default-features = false }
 ico = "0.5"
-# The release bundle's two writers, xtask-only. Each target gets the archive its
-# own users expect: a zip, which Windows opens with no tool at all, and a
-# `.tar.gz`, which carries the binary's 0755 mode as an ordinary header field
-# rather than as a convention on top of the format. Both compress with `flate2`,
-# which `image`'s PNG support already put in the lockfile, so the pair costs the
-# workspace no new transitive tree; `zip` is cut down to that one method, since
-# bzip2, zstd and AES are three more C libraries to build for nothing.
 zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 flate2 = "1"
-# Compiles the app's one Windows resource, the exe icon, in the build script.
-# It finds the toolchain's `rc.exe` or `windres` and vendors a fallback. The app
-# takes it as a `cfg(windows)` build dependency, which cargo resolves against
-# the host, so the call sits in a `#[cfg(windows)]` block in the build script:
-# off a Windows host there is no crate to name.
 embed-resource = "3"
 tracing = { version = "0.1", features = ["max_level_trace", "release_max_level_warn"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -63,25 +40,10 @@ single-instance = "0.3"
 interprocess = "2"
 crossbeam-channel = "0.5"
 windows-sys = "0.59"
-# The COM half of the Windows wallpaper setter. `windows-sys` generates no COM
-# interfaces at all, so `IDesktopWallpaper`, which is the only way to address one
-# monitor, is not in it. This crate is already in the lockfile at this version as
-# a transitive dependency, so naming it directly adds two features to a crate
-# that is already compiled rather than a new tree.
 windows = "0.62"
 winreg = "0.56"
 mach2 = "0.6"
-# The Linux half of `session_end`. A signal handler may call almost nothing, and
-# quitting a Slint event loop is not on the list, so the delivery has to reach an
-# ordinary thread first: this crate's iterator does that with a self-pipe, which
-# is why it is here rather than a scoped `unsafe` around `libc::signal`.
 signal-hook = "0.3"
-# The Linux half of the display watcher. winit already puts this in the lockfile
-# at this version, and the features named here are a subset of the ones it
-# turns on, so a workspace build compiles nothing new. `RustConnection` is the
-# pure-Rust connection: no libxcb, no `unsafe` on our side, and safe to use from
-# two threads at once, which is what lets the stop path wake a thread that is
-# blocked waiting for an event.
 x11rb = { version = "0.13", default-features = false, features = ["randr"] }
 
 # dev-dependencies
@@ -94,7 +56,6 @@ regex-lite = "0.1"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Pedantic includes some noisy lints — suppress the ones that aren't useful
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"

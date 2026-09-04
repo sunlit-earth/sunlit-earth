@@ -37,15 +37,9 @@ windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_System_Com"] 
 winreg.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# RandR events, which is how an X session says its layout moved.
 x11rb.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Raw Mach bindings for the memory snapshot, nothing more. This is the macOS
-# counterpart of `windows-sys` above: declarations only, with the `unsafe` call
-# site and its SAFETY comment living in `memory.rs`. libc's own `mach_task_self`
-# is deprecated in favour of this crate, and libc does not declare
-# `task_vm_info` at all.
 mach2.workspace = true
 
 [dev-dependencies]

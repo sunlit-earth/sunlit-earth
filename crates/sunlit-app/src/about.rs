@@ -1,23 +1,35 @@
 //! Lazily created About window: the documents it shows and the link opener.
 //!
 //! Three documents reach the window, all of them `include_str!`'d at compile
-//! time so nothing reads a path at runtime. `assets/ATTRIBUTION.md` and
-//! `assets/third-party.md` are markdown and go through
-//! [`StyledText::from_markdown`]; the GPLv3 goes in as plain text, because
-//! every markdown path through Slint reflows a document that is already
-//! hard-wrapped at 76 columns with load-bearing indentation.
+//! time so nothing reads a path at runtime. The GPLv3 goes in as plain text,
+//! because every markdown path through Slint reflows a document that is
+//! already hard-wrapped at 76 columns with load-bearing indentation. The two
+//! markdown files take the two paths their shapes ask for.
 //!
-//! Slint's markdown subset rejects headings and horizontal rules, and both
-//! belong in a file that is also read on its own. [`flatten_markdown`] is the
-//! reconciliation: a heading becomes a bold line, a rule is dropped, and
-//! everything else passes through untouched.
+//! `assets/ATTRIBUTION.md` is a document: headings, sections, nested bullets.
+//! `StyledText` cannot lay one out, and that is a limit of the element rather
+//! than of how it is used. It rejects a heading outright and has no font size
+//! to give one, it stacks paragraphs with no gap and no spacing property, and
+//! its list bullet is literal text glued to the paragraph, so a wrapped line
+//! gets no hanging indent. So [`parse_blocks`] cuts the file into blocks, the
+//! tab renders one element per block, and only a block's own inline markdown
+//! goes through [`StyledText::from_markdown`]. A block is one paragraph by
+//! construction, which is also why none of them can hold a construct the
+//! subset rejects.
+//!
+//! `assets/third-party.md` is one heading over hundreds of uniform one-line
+//! entries with nothing to indent, where an element per line would cost far
+//! more than one element with hundreds of paragraphs. It stays a single
+//! `StyledText`, and [`flatten_markdown`] is what gets its heading through a
+//! parser that rejects headings: a heading becomes a bold line, a rule is
+//! dropped, and everything else passes through untouched.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use slint::ComponentHandle;
 
-use crate::{AboutWindow, MainWindow};
+use crate::{AboutBlock, AboutWindow, MainWindow};
 
 /// The credits, the source of truth for them, and what the bundle links to.
 const ATTRIBUTION: &str = include_str!("../../../assets/ATTRIBUTION.md");
@@ -68,7 +80,7 @@ impl AboutController {
         if slot.is_none() {
             let window = AboutWindow::new()?;
             window.set_version(env!("CARGO_PKG_VERSION").into());
-            window.set_attributions(styled(ATTRIBUTION));
+            window.set_attributions(document_model(ATTRIBUTION));
             window.set_third_party(styled(THIRD_PARTY));
             window.set_license_text(LICENSE.into());
             window.set_mono_family(MONO_FAMILY.into());
@@ -82,15 +94,188 @@ impl AboutController {
     }
 }
 
-/// One document, flattened and parsed, or its plain text if it will not parse.
+/// `AboutBlock::kind` for a paragraph, the one kind that carries no depth.
+pub const PARAGRAPH: i32 = 0;
+/// `AboutBlock::kind` for a heading, whose depth is its level, 1 through 6.
+pub const HEADING: i32 = 1;
+/// `AboutBlock::kind` for a list item, whose depth is its nesting.
+pub const LIST_ITEM: i32 = 2;
+
+/// The deepest nesting a list item is laid out at.
 ///
-/// A parse failure means the document grew a construct Slint's subset rejects,
-/// and an unstyled tab is a better outcome than an empty one.
+/// Every level costs 14 px of indentation, and a document nested deeper than
+/// this is not a document; without the cap a stray run of spaces would push a
+/// bullet's text out of a narrow window.
+const MAX_DEPTH: i32 = 4;
+
+/// The Attributions tab's model, one row per block of a markdown document.
+pub fn document_model(document: &str) -> slint::ModelRc<AboutBlock> {
+    let rows: Vec<AboutBlock> = parse_blocks(document).iter().map(row).collect();
+    slint::ModelRc::new(slint::VecModel::from(rows))
+}
+
+/// One block as the Slint side reads it.
+///
+/// A heading carries a plain string, because the tab renders it as a `Text` to
+/// give it a weight and a size that `StyledText` has no property for.
+fn row(block: &Block) -> AboutBlock {
+    let heading = matches!(block.kind, BlockKind::Heading);
+    AboutBlock {
+        kind: block.kind.tag(),
+        depth: block.depth,
+        heading: if heading {
+            block.text.as_str().into()
+        } else {
+            slint::SharedString::new()
+        },
+        body: if heading {
+            slint::StyledText::default()
+        } else {
+            styled_or_plain(&block.text)
+        },
+    }
+}
+
+/// One block of a markdown document, as the Attributions tab lays it out.
+#[derive(Debug, PartialEq, Eq)]
+struct Block {
+    kind: BlockKind,
+    /// A heading's level, a list item's nesting, and zero for a paragraph.
+    depth: i32,
+    /// The block's inline markdown, its marker and its indentation gone.
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockKind {
+    Paragraph,
+    Heading,
+    ListItem,
+}
+
+impl BlockKind {
+    /// The number the tab's three branches compare against. The layout test in
+    /// `slint_ui.rs` drives all three, which is what keeps the two sides
+    /// agreeing about them.
+    const fn tag(self) -> i32 {
+        match self {
+            Self::Paragraph => PARAGRAPH,
+            Self::Heading => HEADING,
+            Self::ListItem => LIST_ITEM,
+        }
+    }
+}
+
+/// The blocks of a markdown document.
+///
+/// What it recognizes: an ATX or setext heading, a bulleted list item at any
+/// nesting, and a run of anything else as one paragraph. A blank line ends a
+/// block, a thematic break ends one and renders as nothing, and any other line
+/// joins the open block as a soft wrap, which is what makes a wrapped bullet
+/// one text rather than two. Inline markdown is never touched. An ordered list
+/// is not a shape this recognizes, so it stays a paragraph and Slint's own
+/// list rendering has it.
+fn parse_blocks(document: &str) -> Vec<Block> {
+    let lines: Vec<&str> = document.lines().collect();
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut open: Option<Block> = None;
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        index += 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_thematic_break(trimmed) {
+            blocks.extend(open.take());
+            continue;
+        }
+        let underline = lines.get(index).map(|next| next.trim());
+        if can_carry_a_setext_underline(trimmed) && underline.is_some_and(is_setext_underline) {
+            blocks.extend(open.take());
+            index += 1;
+            blocks.push(Block {
+                kind: BlockKind::Heading,
+                depth: if underline.is_some_and(|next| next.starts_with('=')) {
+                    1
+                } else {
+                    2
+                },
+                text: trimmed.to_owned(),
+            });
+            continue;
+        }
+        if let Some((level, text)) = atx_heading(trimmed) {
+            blocks.extend(open.take());
+            if !text.is_empty() {
+                blocks.push(Block {
+                    kind: BlockKind::Heading,
+                    depth: level,
+                    text: text.to_owned(),
+                });
+            }
+            continue;
+        }
+        if let Some((depth, text)) = bullet_item(line) {
+            blocks.extend(open.take());
+            open = Some(Block {
+                kind: BlockKind::ListItem,
+                depth,
+                text: text.to_owned(),
+            });
+            continue;
+        }
+        match open.as_mut() {
+            Some(block) => {
+                block.text.push(' ');
+                block.text.push_str(trimmed);
+            }
+            None => {
+                open = Some(Block {
+                    kind: BlockKind::Paragraph,
+                    depth: 0,
+                    text: trimmed.to_owned(),
+                });
+            }
+        }
+    }
+    blocks.extend(open);
+    blocks
+}
+
+/// The nesting and the text of a bulleted list item, or `None` for a line that
+/// opens none.
+///
+/// Two columns to a level, which is the least a nested item under a `- ` marker
+/// can be indented by, and a tab counts as four.
+fn bullet_item(line: &str) -> Option<(i32, &str)> {
+    let text = line.trim_start().strip_prefix(['-', '*', '+'])?;
+    if !text.is_empty() && !text.starts_with(' ') {
+        return None;
+    }
+    let depth = i32::try_from(indent_width(line) / 2).unwrap_or(MAX_DEPTH);
+    Some((depth.min(MAX_DEPTH), text.trim()))
+}
+
+/// The width of a line's leading whitespace, a tab counting as four columns.
+fn indent_width(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+/// The third-party document, flattened and parsed.
 fn styled(document: &str) -> slint::StyledText {
-    let flattened = flatten_markdown(document);
-    slint::StyledText::from_markdown(&flattened).unwrap_or_else(|error| {
+    styled_or_plain(&flatten_markdown(document))
+}
+
+/// Markdown, or its plain text if it will not parse.
+///
+/// A parse failure means the text grew a construct Slint's subset rejects, and
+/// unstyled text is a better outcome than an empty tab.
+fn styled_or_plain(markdown: &str) -> slint::StyledText {
+    slint::StyledText::from_markdown(markdown).unwrap_or_else(|error| {
         tracing::warn!("an attribution document did not parse as markdown: {error}");
-        slint::StyledText::from_plain_text(&flattened)
+        slint::StyledText::from_plain_text(markdown)
     })
 }
 
@@ -139,8 +324,9 @@ fn flatten_markdown(document: &str) -> String {
     out
 }
 
-/// The text of an ATX heading line, or `None` when the line is not one.
-fn heading_text(trimmed: &str) -> Option<&str> {
+/// The level and the text of an ATX heading line, or `None` when the line is
+/// not one.
+fn atx_heading(trimmed: &str) -> Option<(i32, &str)> {
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
     if !(1..=6).contains(&hashes) {
         return None;
@@ -149,7 +335,15 @@ fn heading_text(trimmed: &str) -> Option<&str> {
     if !rest.is_empty() && !rest.starts_with(' ') {
         return None;
     }
-    Some(rest.trim().trim_end_matches('#').trim())
+    Some((
+        i32::try_from(hashes).ok()?,
+        rest.trim().trim_end_matches('#').trim(),
+    ))
+}
+
+/// The text of an ATX heading line, or `None` when the line is not one.
+fn heading_text(trimmed: &str) -> Option<&str> {
+    atx_heading(trimmed).map(|(_, text)| text)
 }
 
 /// Whether the line is a `CommonMark` thematic break.
@@ -292,6 +486,8 @@ fn platform_open(url: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use slint::Model as _;
+
     use super::*;
 
     /// Every document the window renders through the markdown parser, and the
@@ -301,16 +497,136 @@ mod tests {
         ("assets/third-party.md", THIRD_PARTY),
     ];
 
-    /// The one test that stops a future edit from silently blanking a tab:
+    /// What stops a future edit from silently blanking the third-party tab:
     /// Slint's subset rejects headings, rules, code blocks and tables, and a
     /// rejected document renders as unstyled text with no error anywhere.
     #[test]
-    fn every_shipped_document_parses_as_markdown() {
-        for (name, document) in RENDERED {
-            let flattened = flatten_markdown(document);
-            if let Err(error) = slint::StyledText::from_markdown(&flattened) {
-                panic!("{name} does not parse after flattening: {error}");
+    fn the_third_party_document_parses_after_flattening() {
+        let flattened = flatten_markdown(THIRD_PARTY);
+        if let Err(error) = slint::StyledText::from_markdown(&flattened) {
+            panic!("assets/third-party.md does not parse after flattening: {error}");
+        }
+    }
+
+    /// The same guard for the attributions document, which no longer meets the
+    /// parser whole: every block of it has to parse on its own, and the file
+    /// has to still cut into the shapes the tab renders. A heading is the one
+    /// block the parser never sees, since the tab draws it as a plain `Text`.
+    #[test]
+    fn every_block_of_the_attributions_document_parses_as_markdown() {
+        let blocks = parse_blocks(ATTRIBUTION);
+        assert!(
+            blocks.iter().any(|block| block.kind == BlockKind::Heading),
+            "no heading came out of the attributions document"
+        );
+        assert!(
+            blocks.iter().any(|block| block.kind == BlockKind::ListItem),
+            "no list item came out of the attributions document"
+        );
+        for block in blocks
+            .iter()
+            .filter(|block| block.kind != BlockKind::Heading)
+        {
+            if let Err(error) = slint::StyledText::from_markdown(&block.text) {
+                panic!(
+                    "a block of assets/ATTRIBUTION.md does not parse: {error}\n{:?}",
+                    block.text
+                );
             }
+        }
+    }
+
+    /// One row per block shape, since the parser is the whole of what turns a
+    /// markdown file into the tab's layout.
+    #[test]
+    fn the_parser_cuts_a_document_into_the_shapes_the_tab_renders() {
+        use BlockKind::{Heading, ListItem, Paragraph};
+
+        /// One block as the table below names it.
+        type Shape<'a> = (BlockKind, i32, &'a str);
+
+        let cases: &[(&str, &[Shape])] = &[
+            ("# Attributions", &[(Heading, 1, "Attributions")]),
+            ("## Imagery ##", &[(Heading, 2, "Imagery")]),
+            ("###### Six", &[(Heading, 6, "Six")]),
+            ("####### Seven", &[(Paragraph, 0, "####### Seven")]),
+            ("#NoSpace", &[(Paragraph, 0, "#NoSpace")]),
+            ("- item", &[(ListItem, 0, "item")]),
+            (
+                "* star\n+ plus",
+                &[(ListItem, 0, "star"), (ListItem, 0, "plus")],
+            ),
+            (
+                "- top\n  - nested",
+                &[(ListItem, 0, "top"), (ListItem, 1, "nested")],
+            ),
+            // A wrapped bullet is one text, or the second line would lose the
+            // hanging indent the bullet column exists for.
+            ("- item\n  wrapped on", &[(ListItem, 0, "item wrapped on")]),
+            ("- item\nlazily on", &[(ListItem, 0, "item lazily on")]),
+            ("\t- tabbed", &[(ListItem, 2, "tabbed")]),
+            // Five levels of indentation, capped at four.
+            ("          - far in", &[(ListItem, 4, "far in")]),
+            (
+                "one\ntwo\n\nthree",
+                &[(Paragraph, 0, "one two"), (Paragraph, 0, "three")],
+            ),
+            (
+                "# Head\nbody",
+                &[(Heading, 1, "Head"), (Paragraph, 0, "body")],
+            ),
+            (
+                "- item\n\n- another",
+                &[(ListItem, 0, "item"), (ListItem, 0, "another")],
+            ),
+            ("a\n\n---\n\nb", &[(Paragraph, 0, "a"), (Paragraph, 0, "b")]),
+            ("Clouds\n---", &[(Heading, 2, "Clouds")]),
+            ("Clouds\n===", &[(Heading, 1, "Clouds")]),
+            ("", &[]),
+            (
+                "- [a](https://example.invalid) and *this*",
+                &[(ListItem, 0, "[a](https://example.invalid) and *this*")],
+            ),
+        ];
+
+        for (document, expected) in cases {
+            let blocks = parse_blocks(document);
+            let shapes: Vec<Shape> = blocks
+                .iter()
+                .map(|block| (block.kind, block.depth, block.text.as_str()))
+                .collect();
+            assert_eq!(shapes, *expected, "{document:?}");
+            for block in blocks
+                .iter()
+                .filter(|block| block.kind != BlockKind::Heading)
+            {
+                assert!(
+                    slint::StyledText::from_markdown(&block.text).is_ok(),
+                    "{document:?} made a block that does not parse: {:?}",
+                    block.text
+                );
+            }
+        }
+    }
+
+    /// A heading's text reaches the tab as a plain string and everything else
+    /// as parsed markdown, which is the model's half of the layout.
+    #[test]
+    fn a_heading_row_carries_a_string_and_every_other_row_carries_markdown() {
+        let model = document_model("# Imagery\n\nbody\n\n- item\n");
+        let rows: Vec<AboutBlock> = model.iter().collect();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].kind, HEADING);
+        assert_eq!(rows[0].depth, 1);
+        assert_eq!(rows[0].heading, "Imagery");
+        assert_eq!(rows[0].body, slint::StyledText::default());
+
+        assert_eq!(rows[1].kind, PARAGRAPH);
+        assert_eq!(rows[2].kind, LIST_ITEM);
+        for row in &rows[1..] {
+            assert!(row.heading.is_empty(), "{row:?} carries a heading string");
+            assert_ne!(row.body, slint::StyledText::default());
         }
     }
 
@@ -528,7 +844,10 @@ mod tests {
         assert!(about.window().is_visible());
         assert_eq!(about.get_version(), env!("CARGO_PKG_VERSION"));
         assert_eq!(about.get_license_text(), LICENSE);
-        assert_ne!(about.get_attributions(), slint::StyledText::default());
+        assert!(
+            about.get_attributions().row_count() > 10,
+            "the attributions tab got no document"
+        );
         assert_ne!(about.get_third_party(), slint::StyledText::default());
     }
 }

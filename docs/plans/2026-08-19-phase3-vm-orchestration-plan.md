@@ -10,7 +10,7 @@ Low for the product, medium for the schedule. Almost everything new is developer
 
 ## Research
 
-Settled in `docs/retrospective-2026-08.md` sections 8.3 and 8.4, and in the 2026-08-19 planning discussion:
+Settled in `../reviews/2026-08-15-retrospective.md` sections 8.3 and 8.4, and in the 2026-08-19 planning discussion:
 
 - Hypervisor matrix: Hyper-V for the Windows guest on a Windows host, QEMU everywhere else (WHPX acceleration on Windows, KVM on Linux). The two providers coexist because WHPX runs on top of the Hyper-V hypervisor; the "Windows Hypervisor Platform" optional feature must be enabled alongside Hyper-V.
 - Packer stays for image building. Checked 2026-08-19: no community fork of Packer exists (Terraform got OpenTofu and Vault got OpenBao; Packer got nothing), and the alternatives are Linux-only (KVMage targets KVM/libvirt, virt-builder is libguestfs). Packer is BUSL-licensed since 2023, the same license that counted against Vagrant in section 8.3; the difference is that Packer here is a build-time tool invoked only by `vm build-image`, with templates in the repo and nothing at e2e runtime depending on it, and the BUSL restriction only bites when embedding it in a competing commercial product. The recorded fallback if Packer ever becomes a problem: move image building into the xtask on the same QEMU/QMP provider layer, reimplementing the boot orchestration Packer currently supplies.

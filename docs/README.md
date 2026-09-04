@@ -17,7 +17,7 @@
 - [related.md](related.md): competitive analysis of existing satellite imagery and rendered globe apps
 - [roadmap.md](roadmap.md): planned features and improvements, roughly ordered by priority, and the known defects
 - [notes.md](notes.md): open issues and research topics
-- [retrospective-2026-08.md](retrospective-2026-08.md): prototype retrospective: what worked, what failed (including the tray-mode memory leak analysis), and the plan for the next iteration
+- [retrospective-2026-08.md](reviews/2026-08-15-retrospective.md): prototype retrospective: what worked, what failed (including the tray-mode memory leak analysis), and the plan for the next iteration
 
 ## Plans
 

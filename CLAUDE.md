@@ -16,7 +16,7 @@ Early stage with frequent breaking changes. Windows is the platform that ships; 
 | What each OS does, the per-OS implementations, the Linux wallpaper setter, e2e gating | `docs/platforms.md` |
 | The icon bake and which surface consumes which raster | `docs/app-icon.md` |
 | Running the e2e suite or a release build in a VM | `docs/vm-setup.md` (the guide), `docs/vm-internals.md` (how the xtask is built) |
-| Why the architecture is headless first | `docs/retrospective-2026-08.md` section 7, before changing the engine or the crate split |
+| Why the architecture is headless first | `docs/reviews/2026-08-15-retrospective.md` section 7, before changing the engine or the crate split |
 | What is planned and what is known to be broken | `docs/roadmap.md` |
 | The research and plan behind a feature | `docs/plans/`, dated, one research and one plan document per feature |
 | Prerequisites, textures, CLI flags, environment variables, where files are written | `README.md` |

@@ -1129,7 +1129,7 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
 #[test]
 fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
     let window = about_window();
-    window.set_attributions(slint::StyledText::from_markdown(&"line\n\n".repeat(200)).unwrap());
+    window.set_attributions(sunlit_earth::about::document_model(&"line\n\n".repeat(200)));
     materialize_about(&window);
 
     let body = i_slint_backend_testing::ElementQuery::from_root(&window)
@@ -1206,8 +1206,12 @@ fn test_the_license_tab_is_wider_than_a_narrow_window() {
 /// document carries, which is the whole of the wiring between the markdown and
 /// the platform's handler.
 ///
-/// The two documents carry different URLs, so the tab rendering the wrong one
-/// of them fails here rather than looking identical.
+/// There is no one body element any more, so this clicks the first glyphs of
+/// every block the tab renders and asserts that one call arrived carrying the
+/// attributions document's own URL. The two documents carry different URLs, so
+/// a tab bound to the wrong one fails here rather than looking identical, and
+/// the paragraph in the fixture carries no link, so a stray call would fail it
+/// too.
 #[test]
 fn test_a_link_in_the_attributions_tab_reaches_open_url() {
     let window = about_window();
@@ -1215,12 +1219,61 @@ fn test_a_link_in_the_attributions_tab_reaches_open_url() {
     two_distinguishable_documents(&window);
     materialize_about(&window);
 
-    click_first_link(&window, "AboutWindow::attributions-body");
+    let bodies = attributions_bodies(&window);
+    assert_eq!(bodies.len(), 2, "expected the paragraph and the bullet");
+    for body in &bodies {
+        click_at(&window, body.absolute_position(), 4.0, 6.0);
+    }
 
     assert_eq!(
         *opened.borrow(),
         vec![ATTRIBUTIONS_LINK.to_owned()],
         "the attributions tab did not open its own document's link"
+    );
+}
+
+/// The tab lays a document out rather than stacking one paragraph on the next:
+/// a heading is bigger than body text, a bullet's text stands in a column of
+/// its own, a nested bullet is one step further in, and consecutive blocks are
+/// separated by the layout's spacing rather than by `StyledText`'s hardcoded
+/// zero.
+#[test]
+fn test_the_attributions_tab_lays_its_blocks_out_as_a_document() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(
+        "# Imagery\n\nbody text\n\n- a top level item\n  - a nested item\n",
+    ));
+    materialize_about(&window);
+
+    let heading = one_element(&window, "AboutWindow::attributions-heading");
+    let paragraph = one_element(&window, "AboutWindow::attributions-paragraph");
+    let bullets = all_elements(&window, "AboutWindow::attributions-bullet");
+    let items = all_elements(&window, "AboutWindow::attributions-item");
+    assert_eq!(
+        (bullets.len(), items.len()),
+        (2, 2),
+        "two bullets, two texts"
+    );
+
+    assert!(
+        heading.size().height > paragraph.size().height,
+        "the heading measured {} against the paragraph's {}",
+        heading.size().height,
+        paragraph.size().height
+    );
+    assert!(
+        items[0].absolute_position().x > bullets[0].absolute_position().x,
+        "the bullet is not in a column of its own"
+    );
+    approx::assert_relative_eq!(
+        items[1].absolute_position().x - items[0].absolute_position().x,
+        14.0
+    );
+    let gap =
+        paragraph.absolute_position().y - heading.absolute_position().y - heading.size().height;
+    assert!(
+        gap >= 8.0,
+        "the heading and the paragraph below it are {gap} apart"
     );
 }
 
@@ -1241,14 +1294,75 @@ fn test_a_link_in_the_third_party_tab_reaches_open_url() {
     );
 }
 
+/// A wrapped list item keeps the whole column: its text is one box as tall as
+/// the lines it takes, so the block under it starts below the last of them.
+///
+/// This is the shape's load-bearing property. A `StyledText` reports the height
+/// of a single line unless it is a layout's own child, so a bullet laid out
+/// beside the text in a `HorizontalLayout` leaves every wrapped item one line
+/// tall and draws the rest of it over the block below.
+#[test]
+fn test_a_wrapped_list_item_does_not_spill_over_the_block_below() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(
+        "- short\n- a list item that runs on far enough to wrap over more than \
+         one line in a five hundred and sixty pixel window, which is what makes \
+         this measurement mean anything at all\n- the block below\n",
+    ));
+    materialize_about(&window);
+
+    let items = all_elements(&window, "AboutWindow::attributions-item");
+    assert_eq!(items.len(), 3, "three list items");
+    let (short, wrapped, below) = (&items[0], &items[1], &items[2]);
+
+    assert!(
+        wrapped.size().height >= short.size().height * 1.5,
+        "the long item measured {} against one line's {}, so it did not wrap",
+        wrapped.size().height,
+        short.size().height
+    );
+    assert!(
+        below.absolute_position().y >= wrapped.absolute_position().y + wrapped.size().height,
+        "the block below starts at {}, inside the wrapped item, which ends at {}",
+        below.absolute_position().y,
+        wrapped.absolute_position().y + wrapped.size().height
+    );
+    approx::assert_relative_eq!(wrapped.absolute_position().x, short.absolute_position().x);
+}
+
 /// One link per markdown tab, each naming the document it is in.
 const ATTRIBUTIONS_LINK: &str = "https://example.invalid/attributions";
 const THIRD_PARTY_LINK: &str = "https://example.invalid/third-party";
 
 fn two_distinguishable_documents(window: &sunlit_earth::AboutWindow) {
-    let link = |url| slint::StyledText::from_markdown(&format!("[the link]({url})")).unwrap();
-    window.set_attributions(link(ATTRIBUTIONS_LINK));
-    window.set_third_party(link(THIRD_PARTY_LINK));
+    window.set_attributions(sunlit_earth::about::document_model(&format!(
+        "# Sources\n\nthis paragraph carries no link\n\n- [the link]({ATTRIBUTIONS_LINK})\n"
+    )));
+    window.set_third_party(
+        slint::StyledText::from_markdown(&format!("[the link]({THIRD_PARTY_LINK})")).unwrap(),
+    );
+}
+
+/// Every element the attributions tab renders a block's inline markdown into,
+/// the paragraphs first and the bullets after.
+fn attributions_bodies(window: &sunlit_earth::AboutWindow) -> Vec<ElementHandle> {
+    [
+        "AboutWindow::attributions-paragraph",
+        "AboutWindow::attributions-item",
+    ]
+    .into_iter()
+    .flat_map(|id| ElementHandle::find_by_element_id(window, id))
+    .collect()
+}
+
+fn one_element(window: &sunlit_earth::AboutWindow, id: &str) -> ElementHandle {
+    let found = all_elements(window, id);
+    assert_eq!(found.len(), 1, "expected exactly one {id}");
+    found.into_iter().next().expect("one element")
+}
+
+fn all_elements(window: &sunlit_earth::AboutWindow, id: &str) -> Vec<ElementHandle> {
+    ElementHandle::find_by_element_id(window, id).collect()
 }
 
 fn capture_open_url(window: &sunlit_earth::AboutWindow) -> Rc<RefCell<Vec<String>>> {
@@ -1300,7 +1414,7 @@ fn about_window() -> sunlit_earth::AboutWindow {
     let window = sunlit_earth::AboutWindow::new().unwrap();
     window.window().set_size(slint::PhysicalSize::new(560, 480));
     window.set_version("1.2.3".into());
-    window.set_attributions(slint::StyledText::from_markdown("credits").unwrap());
+    window.set_attributions(sunlit_earth::about::document_model("credits"));
     window.set_third_party(slint::StyledText::from_markdown("- `a 1.0.0`: MIT").unwrap());
     window.set_license_text("a licence\nsecond line\n".into());
     materialize_about(&window);

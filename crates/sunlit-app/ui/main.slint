@@ -14,6 +14,21 @@ export struct MonitorTile {
     anchor: bool,
 }
 
+// One block of the attributions document, cut out of the markdown by
+// `about::parse_blocks`.
+//
+// `kind` is 0 for a paragraph, 1 for a heading and 2 for a list item; `depth`
+// is a heading's level or a list item's nesting. A heading renders as a plain
+// `Text`, since `StyledText` has no font weight or size of its own, and so it
+// carries its text in `heading`; every other kind carries inline markdown in
+// `body`.
+export struct AboutBlock {
+    kind: int,
+    depth: int,
+    heading: string,
+    body: styled-text,
+}
+
 component Splitter inherits Rectangle {
     callback moved(length);
 
@@ -1562,7 +1577,9 @@ export component AboutWindow inherits Window {
     min-height: 300px;
 
     in property <string> version;
-    in property <styled-text> attributions;
+    // A model rather than one `styled-text`: the tab lays the document
+    // out block by block. `about::document_model` builds it.
+    in property <[AboutBlock]> attributions;
     in property <styled-text> third-party;
     // Plain text rather than markdown: the GPLv3 is hard-wrapped at 76
     // columns with indentation that carries meaning, and every markdown path
@@ -1583,6 +1600,10 @@ export component AboutWindow inherits Window {
     // The fluent ScrollView draws its bar over the flickable rather than
     // beside it, so a tab reserves the width whether the bar is showing.
     property <length> scrollbar-width: 14px;
+    // The attributions tab's two indents: what one level of nesting moves a
+    // list item by, and the column its bullet hangs in.
+    property <length> nesting-step: 14px;
+    property <length> bullet-column: 11px;
 
     VerticalLayout {
         padding: 16px;
@@ -1641,18 +1662,70 @@ export component AboutWindow inherits Window {
             Tab {
                 title: "Attributions";
 
+                // One element per block rather than one `StyledText` for the
+                // document, because `StyledText` cannot lay a document out:
+                // it stacks paragraphs with no gap between them, it has no
+                // font size to give a heading, and its list bullet is literal
+                // text glued to the paragraph, so a wrapped line gets no
+                // hanging indent. `about::parse_blocks` cuts the document into
+                // blocks and each block's inline markdown is parsed on its
+                // own, which is also why no block can hold a construct Slint's
+                // subset rejects.
                 ScrollView {
                     VerticalLayout {
                         width: 100%;
                         padding: 12px;
                         padding-right: 12px + root.scrollbar-width;
                         alignment: start;
+                        spacing: 8px;
 
-                        attributions-body := StyledText {
-                            text: root.attributions;
+                        for block in root.attributions : VerticalLayout {
+                            // A section break reads heavier than the gap
+                            // between two lines of the same section.
+                            padding-top: block.kind == 1 ? 8px : 0px;
+                            // The item's text keeps the whole column, so every
+                            // wrapped line of it starts under the first.
+                            padding-left: block.kind == 2
+                                ? block.depth * root.nesting-step + root.bullet-column
+                                : 0px;
 
-                            link-clicked(link) => {
-                                root.open-url(link);
+                            if block.kind == 1 : attributions-heading := Text {
+                                text: block.heading;
+                                font-weight: 700;
+                                font-size: block.depth == 1 ? 18px : 16px;
+                            }
+
+                            if block.kind == 0 : attributions-paragraph := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+                            }
+
+                            if block.kind == 2 : attributions-item := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+
+                                // Drawn into the margin the padding leaves
+                                // rather than laid out beside the text: a
+                                // `StyledText` reports the height of one line
+                                // unless it is a layout's own child, so a
+                                // bullet in a `HorizontalLayout` next to it
+                                // would leave every wrapped item one line tall
+                                // and spilling over the block below.
+                                attributions-bullet := Text {
+                                    x: -root.bullet-column;
+                                    // Beside the first line: a child of a
+                                    // non-layout element is centered in it
+                                    // otherwise, which for a wrapped item is
+                                    // the middle of the paragraph.
+                                    y: 0px;
+                                    text: "\u{2022}";
+                                }
                             }
                         }
                     }

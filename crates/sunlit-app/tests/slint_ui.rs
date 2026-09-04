@@ -1373,3 +1373,53 @@ fn adapter_line_height(window: &MainWindow, renderer_info: &str) -> f32 {
     assert_eq!(found.len(), 1, "expected exactly one adapter line");
     found[0].size().height
 }
+
+// A `Text` whose family and content the test drives, so the width it reports
+// is the width the font gives that string.
+slint::slint! {
+    export component FamilyProbe inherits Window {
+        in property <string> family;
+        in property <string> body;
+        out property <length> text-width: probe.preferred-width;
+        probe := Text {
+            font-family: root.family;
+            text: root.body;
+            wrap: no-wrap;
+        }
+    }
+}
+
+/// `about::MONO_FAMILY` has to name a fixed-width family that this platform
+/// actually has. Slint resolves no generic keyword: `font-family` reaches
+/// parley through `FontFamilyName::named`, so a name nobody has falls back to
+/// the proportional default and the licence tab silently loses its layout with
+/// no error anywhere. Four narrow glyphs and four wide ones come to the same
+/// width in a fixed-width font and nowhere else, which is the difference this
+/// measures.
+///
+/// The second half is what stops it passing for the wrong reason: the same
+/// measurement under the default family must disagree, or an equal result
+/// above would prove only that the probe cannot tell fonts apart.
+#[test]
+fn test_the_monospace_family_resolves_on_this_platform() {
+    init();
+    let probe = FamilyProbe::new().unwrap();
+
+    let width_of = |family: &str, body: &str| {
+        probe.set_family(family.into());
+        probe.set_body(body.into());
+        probe.get_text_width()
+    };
+
+    let narrow = width_of(sunlit_earth::about::MONO_FAMILY, "iiii");
+    let wide = width_of(sunlit_earth::about::MONO_FAMILY, "mmmm");
+    approx::assert_relative_eq!(narrow, wide);
+
+    let proportional_narrow = width_of("", "iiii");
+    let proportional_wide = width_of("", "mmmm");
+    assert!(
+        proportional_narrow < proportional_wide,
+        "the default family measured as fixed-width, so this test cannot tell \
+         a resolved monospace family from an unresolved one"
+    );
+}

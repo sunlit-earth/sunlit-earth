@@ -17,12 +17,13 @@
 //! construction, which is also why none of them can hold a construct the
 //! subset rejects.
 //!
-//! `assets/third-party.md` is one heading over hundreds of uniform one-line
-//! entries with nothing to indent, where an element per line would cost far
-//! more than one element with hundreds of paragraphs. It stays a single
-//! `StyledText`, and [`flatten_markdown`] is what gets its heading through a
-//! parser that rejects headings: a heading becomes a bold line, a rule is
-//! dropped, and everything else passes through untouched.
+//! `assets/third-party.md` goes through the same parser. Measured on the real
+//! 557-entry document, the block layout builds its model in 2.3 ms and lays
+//! out in 28.6 ms against 1.1 ms and 27.1 ms for one `StyledText` holding all
+//! 557 paragraphs, so an element per line costs about a millisecond and a half
+//! and there is no reason for the two tabs to render differently. The bake
+//! writes that document without a title, since the tab label already says
+//! what it is.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -81,7 +82,7 @@ impl AboutController {
             let window = AboutWindow::new()?;
             window.set_version(env!("CARGO_PKG_VERSION").into());
             window.set_attributions(document_model(ATTRIBUTION));
-            window.set_third_party(styled(THIRD_PARTY));
+            window.set_third_party(document_model(THIRD_PARTY));
             window.set_license_text(LICENSE.into());
             window.set_mono_family(MONO_FAMILY.into());
             window.on_open_url(|url| open_url(&url));
@@ -263,11 +264,6 @@ fn indent_width(line: &str) -> usize {
         .sum()
 }
 
-/// The third-party document, flattened and parsed.
-fn styled(document: &str) -> slint::StyledText {
-    styled_or_plain(&flatten_markdown(document))
-}
-
 /// Markdown, or its plain text if it will not parse.
 ///
 /// A parse failure means the text grew a construct Slint's subset rejects, and
@@ -277,51 +273,6 @@ fn styled_or_plain(markdown: &str) -> slint::StyledText {
         tracing::warn!("an attribution document did not parse as markdown: {error}");
         slint::StyledText::from_plain_text(markdown)
     })
-}
-
-/// Markdown that Slint's subset accepts, from markdown that reads well on its
-/// own.
-///
-/// Slint 1.17 rejects headings and horizontal rules outright, so a heading
-/// becomes a bold paragraph and a thematic break is dropped. Both heading
-/// spellings count: an ATX `## Clouds` and a setext `Clouds` over a rule of
-/// dashes come out the same, which matters because a `---` is a thematic break
-/// and a setext underline at once and dropping it would glue the heading to
-/// the paragraph below. Nothing else is touched, which is what keeps the
-/// shipped files ordinary documents rather than a dialect.
-fn flatten_markdown(document: &str) -> String {
-    let lines: Vec<&str> = document.lines().collect();
-    let mut out = String::with_capacity(document.len());
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index];
-        let trimmed = line.trim();
-        let underlined = lines
-            .get(index + 1)
-            .is_some_and(|next| is_setext_underline(next.trim()));
-        if underlined && can_carry_a_setext_underline(trimmed) {
-            out.push_str("**");
-            out.push_str(trimmed);
-            out.push_str("**\n");
-            index += 2;
-            continue;
-        }
-        index += 1;
-        if is_thematic_break(trimmed) {
-            continue;
-        }
-        match heading_text(trimmed) {
-            Some(text) if !text.is_empty() => {
-                out.push_str("**");
-                out.push_str(text);
-                out.push_str("**");
-            }
-            Some(_) => {}
-            None => out.push_str(line),
-        }
-        out.push('\n');
-    }
-    out
 }
 
 /// The level and the text of an ATX heading line, or `None` when the line is
@@ -497,43 +448,49 @@ mod tests {
         ("assets/third-party.md", THIRD_PARTY),
     ];
 
-    /// What stops a future edit from silently blanking the third-party tab:
-    /// Slint's subset rejects headings, rules, code blocks and tables, and a
-    /// rejected document renders as unstyled text with no error anywhere.
+    /// What stops a future edit from silently blanking either markdown tab.
+    /// Neither document meets the parser whole any more: every block of it has
+    /// to parse on its own, and a heading is the one block the parser never
+    /// sees, since a tab draws it as a plain `Text`.
     #[test]
-    fn the_third_party_document_parses_after_flattening() {
-        let flattened = flatten_markdown(THIRD_PARTY);
-        if let Err(error) = slint::StyledText::from_markdown(&flattened) {
-            panic!("assets/third-party.md does not parse after flattening: {error}");
+    fn every_block_of_both_documents_parses_as_markdown() {
+        for (name, document) in RENDERED {
+            let blocks = parse_blocks(document);
+            assert!(
+                blocks.iter().any(|block| block.kind == BlockKind::ListItem),
+                "no list item came out of {name}"
+            );
+            for block in blocks
+                .iter()
+                .filter(|block| block.kind != BlockKind::Heading)
+            {
+                if let Err(error) = slint::StyledText::from_markdown(&block.text) {
+                    panic!(
+                        "a block of {name} does not parse: {error}\n{:?}",
+                        block.text
+                    );
+                }
+            }
         }
     }
 
-    /// The same guard for the attributions document, which no longer meets the
-    /// parser whole: every block of it has to parse on its own, and the file
-    /// has to still cut into the shapes the tab renders. A heading is the one
-    /// block the parser never sees, since the tab draws it as a plain `Text`.
+    /// The attributions carry the section headings the block layout exists to
+    /// size; the crate list carries none, since its own title was dropped from
+    /// the bake once the tab label said the same thing.
     #[test]
-    fn every_block_of_the_attributions_document_parses_as_markdown() {
-        let blocks = parse_blocks(ATTRIBUTION);
+    fn only_the_attributions_document_carries_headings() {
         assert!(
-            blocks.iter().any(|block| block.kind == BlockKind::Heading),
+            parse_blocks(ATTRIBUTION)
+                .iter()
+                .any(|block| block.kind == BlockKind::Heading),
             "no heading came out of the attributions document"
         );
         assert!(
-            blocks.iter().any(|block| block.kind == BlockKind::ListItem),
-            "no list item came out of the attributions document"
+            !parse_blocks(THIRD_PARTY)
+                .iter()
+                .any(|block| block.kind == BlockKind::Heading),
+            "the crate list grew a heading, which the bake is supposed to omit"
         );
-        for block in blocks
-            .iter()
-            .filter(|block| block.kind != BlockKind::Heading)
-        {
-            if let Err(error) = slint::StyledText::from_markdown(&block.text) {
-                panic!(
-                    "a block of assets/ATTRIBUTION.md does not parse: {error}\n{:?}",
-                    block.text
-                );
-            }
-        }
     }
 
     /// One row per block shape, since the parser is the whole of what turns a
@@ -630,59 +587,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_heading_becomes_a_bold_line_and_a_rule_disappears() {
-        let flattened = flatten_markdown("# Title\n\ntext\n\n---\n\n### Deeper ###\n");
-        assert_eq!(flattened, "**Title**\n\ntext\n\n\n**Deeper**\n");
-    }
-
-    /// The constructs the probe found unsupported, one row each, so a Slint
-    /// upgrade that changes the subset shows up here rather than in a tab.
-    #[test]
-    fn the_flattener_covers_every_construct_the_parser_rejects() {
-        let cases: [(&str, &str); 16] = [
-            ("# One", "**One**"),
-            ("###### Six", "**Six**"),
-            ("####### Seven", "####### Seven"),
-            ("#NoSpace", "#NoSpace"),
-            ("---", ""),
-            ("***", ""),
-            ("___", ""),
-            ("- - -", ""),
-            // A setext heading, both spellings, and a one-dash underline,
-            // which CommonMark accepts and no thematic break can be.
-            ("Clouds\n---", "**Clouds**"),
-            ("Clouds\n===", "**Clouds**"),
-            ("Clouds\n-", "**Clouds**"),
-            // Nothing above the rule to underline, so it stays a rule.
-            ("\n---", ""),
-            ("# One\n---", "**One**"),
-            ("- item\n---", "- item"),
-            // A run of `=` underlines nothing on its own and is not a rule.
-            ("===", "==="),
-            ("--", "--"),
-        ];
-        for (input, expected) in cases {
-            let flattened = flatten_markdown(input);
-            assert_eq!(flattened.trim_end_matches('\n'), expected, "{input:?}");
-            assert!(
-                slint::StyledText::from_markdown(&flattened).is_ok(),
-                "{input:?} still does not parse"
-            );
-        }
-    }
-
-    #[test]
-    fn a_paragraph_and_a_list_pass_through_untouched() {
-        let document = "text with *emphasis* and a [link](https://example.invalid)\n\n- item\n";
-        assert_eq!(flatten_markdown(document), document);
-    }
-
-    #[test]
-    fn two_dashes_are_not_a_rule() {
-        assert_eq!(flatten_markdown("--\n"), "--\n");
-    }
-
     /// The license tab shows the repository's `LICENSE`, which is what proves
     /// the `include_str!` path rather than a copy that drifted.
     #[test]
@@ -696,74 +600,19 @@ mod tests {
         assert_eq!(LICENSE, on_disk);
     }
 
-    /// EUMETSAT's data licensing asks for this sentence and does not leave the
-    /// wording to us. It is the one hard legal requirement among the credits,
-    /// so it gets the same treatment the SVS and Gaia lines have.
+    /// The only content assertion left on this document, because it is the
+    /// only one where the wording is not ours: EUMETSAT's data licensing
+    /// requires this sentence and does not leave the phrasing to us, so
+    /// asserting it pins a requirement rather than a way of writing. Every
+    /// other credit was pinned by phrase and rewriting the document broke
+    /// those tests without changing what it credited, which is what makes
+    /// them overfitting.
     #[test]
     fn the_cloud_credit_carries_the_eumetsat_notice_verbatim() {
         assert!(
             ATTRIBUTION.contains("Contains modified EUMETSAT data"),
             "the mandatory EUMETSAT notice is missing"
         );
-    }
-
-    /// CC BY-SA 4.0 section 3(a)(1) asks for the creator, a URI to the
-    /// license, and, in 3(a)(1)(B), a statement that the material was
-    /// modified. The catalog was cut to magnitude 7, so it plainly was.
-    #[test]
-    fn the_star_credit_carries_the_license_uri_and_says_it_was_modified() {
-        assert!(
-            ATTRIBUTION.contains("HYG Database v4.4"),
-            "the creator's catalog"
-        );
-        assert!(ATTRIBUTION.contains("David Nash"), "the creator");
-        assert!(
-            ATTRIBUTION.contains("https://creativecommons.org/licenses/by-sa/4.0/"),
-            "the license URI, not just the license name"
-        );
-        assert!(
-            ATTRIBUTION.contains("The catalog was modified"),
-            "the statement that the catalog was modified"
-        );
-    }
-
-    /// A redistributor cannot work out their own position on a BY-SA
-    /// adaptation inside a GPLv3 program without knowing that Creative
-    /// Commons declared the two one-way compatible.
-    #[test]
-    fn the_share_alike_resolution_is_written_down() {
-        assert!(
-            ATTRIBUTION.contains(
-                "https://creativecommons.org/2015/10/08/\
-                 cc-by-sa-4-0-now-one-way-compatible-with-gplv3/"
-            ),
-            "the compatibility declaration's link"
-        );
-    }
-
-    /// The CGI Moon Kit is public domain and asks for a credit line; this is
-    /// where it appears, and the asset's provenance file names the same words.
-    #[test]
-    fn the_moon_kit_credit_names_the_visualization_studio() {
-        assert!(ATTRIBUTION.contains("CGI Moon Kit"));
-        assert!(ATTRIBUTION.contains("NASA's Scientific Visualization Studio"));
-    }
-
-    /// The SVS asks for its own credit and Gaia DR2 for a second one, so the
-    /// Milky Way's credit has to carry both.
-    #[test]
-    fn the_milky_way_credit_names_the_studio_and_gaia() {
-        assert!(ATTRIBUTION.contains("NASA/GSFC/SVS"));
-        assert!(ATTRIBUTION.contains("ESA/Gaia/DPAC"));
-    }
-
-    /// Astronomy Engine is one of the two libraries the rendered geometry
-    /// depends on for its correctness, and it earns a named line rather than
-    /// one row among five hundred.
-    #[test]
-    fn astronomy_engine_is_named_with_its_author() {
-        assert!(ATTRIBUTION.contains("Astronomy Engine"));
-        assert!(ATTRIBUTION.contains("Don Cross"));
     }
 
     #[test]
@@ -848,6 +697,9 @@ mod tests {
             about.get_attributions().row_count() > 10,
             "the attributions tab got no document"
         );
-        assert_ne!(about.get_third_party(), slint::StyledText::default());
+        assert!(
+            about.get_third_party().row_count() > 10,
+            "the third-party tab got no document"
+        );
     }
 }

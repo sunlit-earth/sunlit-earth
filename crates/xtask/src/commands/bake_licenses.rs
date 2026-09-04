@@ -569,16 +569,10 @@ pub fn render_list(packages: &[Package]) -> String {
     let mut out = String::new();
     out.push_str("# Third-party crates\n\n");
     out.push_str(
-        "These are the crates Sunlit Earth depends on. The list is the union over the three \
-         platforms this project builds for, and it names every normal dependency edge, so a \
-         crate here may be absent from the build you are running or may be one a procedural \
-         macro used at build time. It errs that way on purpose: a notice for a crate that is \
-         not in your copy misleads nobody, a missing notice for one that is does.\n\n",
-    );
-    out.push_str(
-        "Each license name links to its SPDX page, which carries the canonical text. The \
-         copyright lines, which differ crate by crate and are the part the MIT and BSD licenses \
-         actually require, are in `THIRD-PARTY-LICENSES.md` beside the program.\n\n",
+        "Every crate Sunlit Earth depends on, as the union over the three platforms it \
+         builds for, so a few here are absent from any one build. Each license name links \
+         to its SPDX page; the copyright notices are in `THIRD-PARTY-LICENSES.md` beside \
+         the program.\n\n",
     );
     for package in packages {
         let _ = writeln!(

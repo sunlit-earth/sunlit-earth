@@ -1568,6 +1568,10 @@ export component AboutWindow inherits Window {
     // columns with indentation that carries meaning, and every markdown path
     // through Slint reflows it.
     in property <string> license-text;
+    // Fed from Rust, because `font-family` takes one real family name and
+    // Slint resolves no generic: "monospace" lands on the proportional
+    // default with no error. `about::MONO_FAMILY` picks the platform's.
+    in property <string> mono-family;
 
     // Opened through the platform's own handler in `about.rs`. Every tab and
     // the header link go through this one callback.
@@ -1671,6 +1675,8 @@ export component AboutWindow inherits Window {
                         license-body := Text {
                             text: root.license-text;
                             wrap: no-wrap;
+                            font-family: root.mono-family;
+                            font-size: 12px;
                         }
                     }
                 }

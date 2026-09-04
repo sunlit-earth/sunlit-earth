@@ -31,6 +31,22 @@ const THIRD_PARTY: &str = include_str!("../../../assets/third-party.md");
 /// rebuilds this crate.
 const LICENSE: &str = include_str!("../../../LICENSE");
 
+/// The fixed-width family the licence tab asks for.
+///
+/// One real family name per platform rather than the generic "monospace",
+/// which Slint does not resolve: `font-family` reaches parley through
+/// `FontFamilyName::named`, so a generic keyword is looked up as a family
+/// nobody has and falls back to the proportional default with no error
+/// anywhere. Each name below has shipped with its platform for over a decade.
+/// `the_monospace_family_resolves_on_this_platform` is what keeps that true.
+pub const MONO_FAMILY: &str = if cfg!(target_os = "windows") {
+    "Consolas"
+} else if cfg!(target_os = "macos") {
+    "Menlo"
+} else {
+    "DejaVu Sans Mono"
+};
+
 /// Shared handle that creates the About window on first use and reuses it.
 #[derive(Clone, Default)]
 pub struct AboutController {
@@ -55,6 +71,7 @@ impl AboutController {
             window.set_attributions(styled(ATTRIBUTION));
             window.set_third_party(styled(THIRD_PARTY));
             window.set_license_text(LICENSE.into());
+            window.set_mono_family(MONO_FAMILY.into());
             window.on_open_url(|url| open_url(&url));
             *slot = Some(window);
         }

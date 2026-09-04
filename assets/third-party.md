@@ -1,8 +1,6 @@
 # Third-party crates
 
-These are the crates Sunlit Earth depends on. The list is the union over the three platforms this project builds for, and it names every normal dependency edge, so a crate here may be absent from the build you are running or may be one a procedural macro used at build time. It errs that way on purpose: a notice for a crate that is not in your copy misleads nobody, a missing notice for one that is does.
-
-Each license name links to its SPDX page, which carries the canonical text. The copyright lines, which differ crate by crate and are the part the MIT and BSD licenses actually require, are in `THIRD-PARTY-LICENSES.md` beside the program.
+Every crate Sunlit Earth depends on, as the union over the three platforms it builds for, so a few here are absent from any one build. Each license name links to its SPDX page; the copyright notices are in `THIRD-PARTY-LICENSES.md` beside the program.
 
 - `ab_glyph 0.2.32`: [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `ab_glyph_rasterizer 0.1.10`: [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)

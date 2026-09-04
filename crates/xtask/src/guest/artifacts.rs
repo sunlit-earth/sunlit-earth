@@ -128,8 +128,9 @@ pub fn build_args() -> Vec<String> {
 /// The command line that builds the Linux binaries inside WSL.
 ///
 /// `CARGO_TARGET_DIR` points into the distribution's own filesystem, which is
-/// the arrangement README.md documents: sharing `target/` between the Windows
-/// and Linux builds makes them fight over the same directory.
+/// the arrangement README.md documents: two platforms' artifacts do not collide
+/// in a shared `target/`, they accumulate, and the directory ends up holding
+/// both.
 pub fn wsl_build_command(distro: &str, repo_wsl_path: &str) -> Cmd {
     let script = format!(
         "cd {repo} && CARGO_TARGET_DIR=$HOME/sunlit-target cargo {args}",

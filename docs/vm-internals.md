@@ -170,8 +170,8 @@ it proves nothing about that. What running it does prove is the other half, and 
 is the release bundle rather than the loose binary. `commands::bundle` assembles one
 directory, named `sunlit-earth-<version>-<target>` after the version in the workspace
 manifest rather than after `git describe`, which this repository has no tags for: the
-binary, `textures/` with the four JXL assets and their `PROVENANCE.md`, `build-info.json`,
-`LICENSE`, and the star catalog's `ATTRIBUTION.md`, plus `assets/` on Linux, where
+binary, `textures/` with the four JXL assets, `LICENSE`, and
+`THIRD-PARTY-LICENSES.md`, plus `assets/` on Linux, where
 `install-user.sh` is the whole install story and on Windows the icon is a resource inside
 the exe. It is then written as the archive its target expects, a zip that stores the JXL
 entries and deflates the rest (the `zip` crate), or a `.tar.gz` where 0755 on the binary is

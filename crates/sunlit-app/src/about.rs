@@ -67,10 +67,8 @@ impl AboutController {
 
 /// One document, flattened and parsed, or its plain text if it will not parse.
 ///
-/// A parse failure means a committed document grew a construct Slint's subset
-/// rejects, which `every_shipped_document_parses_as_markdown` is there to
-/// catch first. If one ever gets past that, an unstyled tab is a better
-/// outcome than an empty one.
+/// A parse failure means the document grew a construct Slint's subset rejects,
+/// and an unstyled tab is a better outcome than an empty one.
 fn styled(document: &str) -> slint::StyledText {
     let flattened = flatten_markdown(document);
     slint::StyledText::from_markdown(&flattened).unwrap_or_else(|error| {
@@ -82,14 +80,31 @@ fn styled(document: &str) -> slint::StyledText {
 /// Markdown that Slint's subset accepts, from markdown that reads well on its
 /// own.
 ///
-/// Slint 1.17 rejects headings and horizontal rules outright, so an ATX
-/// heading becomes a bold paragraph and a thematic break is dropped. Nothing
-/// else is touched, which is what keeps the shipped files ordinary documents
-/// rather than a dialect.
+/// Slint 1.17 rejects headings and horizontal rules outright, so a heading
+/// becomes a bold paragraph and a thematic break is dropped. Both heading
+/// spellings count: an ATX `## Clouds` and a setext `Clouds` over a rule of
+/// dashes come out the same, which matters because a `---` is a thematic break
+/// and a setext underline at once and dropping it would glue the heading to
+/// the paragraph below. Nothing else is touched, which is what keeps the
+/// shipped files ordinary documents rather than a dialect.
 fn flatten_markdown(document: &str) -> String {
+    let lines: Vec<&str> = document.lines().collect();
     let mut out = String::with_capacity(document.len());
-    for line in document.lines() {
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
         let trimmed = line.trim();
+        let underlined = lines
+            .get(index + 1)
+            .is_some_and(|next| is_setext_underline(next.trim()));
+        if underlined && can_carry_a_setext_underline(trimmed) {
+            out.push_str("**");
+            out.push_str(trimmed);
+            out.push_str("**\n");
+            index += 2;
+            continue;
+        }
+        index += 1;
         if is_thematic_break(trimmed) {
             continue;
         }
@@ -139,6 +154,42 @@ fn is_thematic_break(trimmed: &str) -> bool {
     count >= 3
 }
 
+/// Whether the line is a `CommonMark` setext underline.
+///
+/// A run of `=` or a run of `-`, of any length and nothing else. `***` and
+/// `___` are thematic breaks only and never underline anything.
+fn is_setext_underline(trimmed: &str) -> bool {
+    !trimmed.is_empty() && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'))
+}
+
+/// Whether a setext underline below this line would make it a heading.
+///
+/// A paragraph line does; a blank line, another heading, a thematic break and
+/// a list item do not, and for those the underline is whatever it is on its
+/// own.
+fn can_carry_a_setext_underline(trimmed: &str) -> bool {
+    !trimmed.is_empty()
+        && heading_text(trimmed).is_none()
+        && !is_thematic_break(trimmed)
+        && !is_setext_underline(trimmed)
+        && !starts_a_list_item(trimmed)
+}
+
+/// Whether the line opens a list item, bulleted or ordered.
+fn starts_a_list_item(trimmed: &str) -> bool {
+    let bulleted = trimmed
+        .strip_prefix(['-', '*', '+'])
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '));
+    let ordered = {
+        let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+        digits > 0
+            && trimmed[digits..]
+                .strip_prefix(['.', ')'])
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+    };
+    bulleted || ordered
+}
+
 /// Hand a URL to the platform's own handler.
 ///
 /// `std::process::Command` rather than `ShellExecuteW`, which would be the
@@ -161,17 +212,22 @@ fn open_url(url: &str) {
 /// Every URL in the window comes from a file compiled into the binary, so this
 /// guards nothing that is reachable today. It exists so that the
 /// argument-injection question is unaskable rather than answerable by reading
-/// the three documents, and that takes more than a scheme check: the Windows
-/// opener goes through `cmd /C`, which reparses its argument and reads `&`,
-/// `|`, `<`, `>`, `^` and `%` as its own. So the rest of the URL has to be
-/// spelled out of a set that holds nothing a shell looks at.
+/// the documents, and that takes more than a scheme check: the Windows opener
+/// goes through `cmd /C`, which reparses its argument and reads `&`, `|`, `<`,
+/// `>`, `^` and `%` as its own. So the rest of the URL has to be spelled out
+/// of a set that holds nothing a shell looks at.
 ///
-/// The cost is that a query string and a percent-escape are both refused. No
-/// document in this program has either; one that grew one would be refused
-/// with a line in the log rather than opened.
+/// What that set admits and what it costs, exactly. A path, a fragment, a
+/// port, userinfo and a query string of one parameter all pass, since `?` and
+/// `=` are in. A second query parameter does not, because `&` is out. Neither
+/// does a percent-escape, because `%` is out. `,` and `;` are out as well:
+/// they are legal in a URL and `start` reads both as argument delimiters, so a
+/// URL carrying one would be truncated there and the wrong page opened, which
+/// is a worse failure than a refusal. No URL in the shipped documents needs
+/// any of the four, and a test walks every one of them through this check.
 fn is_web_url(url: &str) -> bool {
     /// URL characters that are not shell characters anywhere the opener runs.
-    const SAFE: &str = "-._~:/?#[]@+,;='";
+    const SAFE: &str = "-._~:/?#[]@+='";
 
     match url.split_once("://") {
         Some((scheme, rest)) => {
@@ -251,7 +307,7 @@ mod tests {
     /// upgrade that changes the subset shows up here rather than in a tab.
     #[test]
     fn the_flattener_covers_every_construct_the_parser_rejects() {
-        let cases: [(&str, &str); 8] = [
+        let cases: [(&str, &str); 16] = [
             ("# One", "**One**"),
             ("###### Six", "**Six**"),
             ("####### Seven", "####### Seven"),
@@ -260,6 +316,18 @@ mod tests {
             ("***", ""),
             ("___", ""),
             ("- - -", ""),
+            // A setext heading, both spellings, and a one-dash underline,
+            // which CommonMark accepts and no thematic break can be.
+            ("Clouds\n---", "**Clouds**"),
+            ("Clouds\n===", "**Clouds**"),
+            ("Clouds\n-", "**Clouds**"),
+            // Nothing above the rule to underline, so it stays a rule.
+            ("\n---", ""),
+            ("# One\n---", "**One**"),
+            ("- item\n---", "- item"),
+            // A run of `=` underlines nothing on its own and is not a rule.
+            ("===", "==="),
+            ("--", "--"),
         ];
         for (input, expected) in cases {
             let flattened = flatten_markdown(input);
@@ -371,6 +439,8 @@ mod tests {
             "http://example.invalid/x",
             "https://example.invalid",
             "https://spdx.org/licenses/MIT.html",
+            "https://example.invalid:8443/a/b#c",
+            "https://example.invalid/search?q=one",
         ] {
             assert!(is_web_url(allowed), "{allowed} should be opened");
         }
@@ -391,13 +461,16 @@ mod tests {
             "https://example.invalid/\"x\"",
             "https://example.invalid/$(x)",
             "https://example.invalid/x\ny",
+            // Legal in a URL, and `start` reads both as argument delimiters.
+            "https://example.invalid/a,b",
+            "https://example.invalid/a;b",
         ] {
             assert!(!is_web_url(refused), "{refused} should be refused");
         }
     }
 
-    /// Every URL the three documents carry has to survive the check, or a link
-    /// in the window would log a refusal instead of opening.
+    /// Every URL the two markdown documents carry has to survive the check, or
+    /// a link in the window would log a refusal instead of opening.
     #[test]
     fn every_link_in_the_shipped_documents_is_one_the_opener_accepts() {
         for (name, document) in RENDERED {

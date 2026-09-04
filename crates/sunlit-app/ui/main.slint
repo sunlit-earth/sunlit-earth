@@ -1573,7 +1573,6 @@ export component AboutWindow inherits Window {
     // the header link go through this one callback.
     callback open-url(url: string);
 
-    out property <length> header-x: header.x;
     out property <length> version-y: version-line.absolute-position.y;
 
     property <string> repository: "https://github.com/klamann/sunlit-earth";
@@ -1587,7 +1586,7 @@ export component AboutWindow inherits Window {
 
         // Fixed: the version, the copyright and the repository stay on screen
         // at any window size, and only the tab below scrolls.
-        header := HorizontalLayout {
+        HorizontalLayout {
             spacing: 16px;
             vertical-stretch: 0;
 

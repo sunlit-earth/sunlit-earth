@@ -5,6 +5,7 @@
 //! `runner::Runner`.
 
 pub mod bake_icon;
+pub mod bake_licenses;
 pub mod bake_stars;
 pub mod build_hyperv;
 pub mod build_image;

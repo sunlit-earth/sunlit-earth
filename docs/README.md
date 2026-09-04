@@ -18,6 +18,7 @@
 - [roadmap.md](roadmap.md): planned features and improvements, roughly ordered by priority, and the known defects
 - [notes.md](notes.md): open issues and research topics
 - [retrospective-2026-08.md](reviews/2026-08-15-retrospective.md): prototype retrospective: what worked, what failed (including the tray-mode memory leak analysis), and the plan for the next iteration
+- [2026-09-04-code-quality-review.md](reviews/2026-09-04-code-quality-review.md): pre-release code quality and resilience review of `sunlit-core` and `sunlit-app`: commentary, file length, structure, duplication, test cost and value, with the per-area reviewer notes under `reviews/2026-09-04-code-quality/`
 
 ## Plans
 

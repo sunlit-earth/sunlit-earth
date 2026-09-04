@@ -1,6 +1,6 @@
 # Attributions
 
-Sunlit Earth is built on public data, freely licensed imagery and open source libraries. This file is the summary that travels with the program. `textures/PROVENANCE.md` is the fuller record for the imagery, with source IDs, file hashes and download dates, and `THIRD-PARTY-LICENSES.md` carries the license texts and copyright notices of every crate in the dependency tree.
+Sunlit Earth is built on public data, freely licensed imagery and open source libraries. This file is the summary, and it is what the program's About window shows under Attributions. Two files in the repository go further: `textures/PROVENANCE.md` is the full record for the imagery, with source IDs, file hashes and download dates, and `THIRD-PARTY-LICENSES.md` carries the license texts and copyright notices of every crate in the dependency tree, which is also the one of the three that travels beside the binary.
 
 ## Clouds
 
@@ -10,25 +10,25 @@ The live cloud composite comes from [clouds.matteason.co.uk](https://clouds.matt
 
 ## Earth
 
-The day side is NASA's [Blue Marble Next Generation](https://earthobservatory.nasa.gov/features/BlueMarble), the May 2004 topography, produced by Reto Stöckli of the NASA Earth Observatory at NASA Goddard Space Flight Center from Terra MODIS observations. Credit: NASA Earth Observatory.
+The day side is NASA's Blue Marble Next Generation, the May 2004 topography, produced by Reto Stöckli of the NASA Earth Observatory at NASA Goddard Space Flight Center from Terra MODIS observations. Credit: [NASA Earth Observatory](https://earthobservatory.nasa.gov/).
 
-The night side is [Black Marble 2016](https://earthobservatory.nasa.gov/images/90008/night-light-maps-open-up-new-applications). Credit: NASA Earth Observatory images by Joshua Stevens, using Suomi NPP VIIRS data from Miguel Román, NASA GSFC, with the imagery from the NASA and NOAA Suomi NPP satellite.
+The night side is Black Marble 2016. Credit: [NASA Earth Observatory](https://earthobservatory.nasa.gov/) images by Joshua Stevens, using Suomi NPP VIIRS data from Miguel Román, NASA GSFC, with the imagery from the NASA and NOAA Suomi NPP satellite.
 
 ## Moon
 
 The lunar surface is the [CGI Moon Kit](https://svs.gsfc.nasa.gov/4720), SVS ID 4720, by NASA's Scientific Visualization Studio. Visualizer Ernie Wright (USRA), scientist Noah Petro (NASA/GSFC).
 
-The map underneath it is the LROC WAC natural color Hapke normalized mosaic built at [Arizona State University](https://wms.lroc.asu.edu/lroc), covering 70N to 70S, with the latitudes beyond that filled from the LOLA laser altimeter's albedo map.
+The map underneath it is the LROC WAC natural color Hapke normalized mosaic built at Arizona State University, covering 70N to 70S, with the latitudes beyond that filled from the LOLA laser altimeter's albedo map.
 
 ## Milky Way
 
-The diffuse band is [Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851), SVS ID 4851, credited to NASA/GSFC/SVS. Visualizer Ernie Wright (USRA). The layer is [Gaia](https://www.cosmos.esa.int/web/gaia) DR2 flux for stars fainter than magnitude 11.5, credited to ESA/Gaia/DPAC, and it deliberately excludes the bright stars that are drawn individually.
+The diffuse band is [Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851), SVS ID 4851, credited to NASA/GSFC/SVS. Visualizer Ernie Wright (USRA). The layer is Gaia DR2 flux for stars fainter than magnitude 11.5, credited to ESA/Gaia/DPAC, and it deliberately excludes the bright stars that are drawn individually.
 
 ## Stars
 
 The star field is derived from the [HYG Database v4.4](https://codeberg.org/astronexus/hyg) by David Nash, licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The catalog was modified: it was cut to the 15,597 stars of magnitude 7 and brighter, the Sun was removed, positions were propagated from epoch 2000 to 2026 using the catalog's own proper motions, and the colors were converted from B minus V color indices to RGB.
 
-HYG itself is a merge of three centuries of astrometry: the ESA [Hipparcos](https://www.cosmos.esa.int/web/hipparcos) catalog, the [Yale Bright Star Catalogue](http://tdc-www.harvard.edu/catalogs/bsc5.html), and the [Gliese](https://cdsarc.cds.unistra.fr/viz-bin/cat/V/70A) catalogue of nearby stars. The proper names it carries are those adopted by the [IAU Working Group on Star Names](https://www.iau.org/science/scientific_bodies/working_groups/280/).
+HYG itself is a merge of three centuries of astrometry: ESA's Hipparcos catalog, the Yale Bright Star Catalogue, and the Gliese catalogue of nearby stars. The proper names it carries are those adopted by the IAU Working Group on Star Names.
 
 The star blob inside the program is an adaptation of CC BY-SA 4.0 material shipped in a GPL-3.0-or-later program, which Creative Commons made possible in October 2015 by declaring [BY-SA 4.0 one way compatible with GPLv3](https://creativecommons.org/2015/10/08/cc-by-sa-4-0-now-one-way-compatible-with-gplv3/). Contributions to the adaptation are licensed under the GPLv3, so a redistributor looks to the GPLv3 alone to satisfy BY-SA's attribution and ShareAlike conditions.
 

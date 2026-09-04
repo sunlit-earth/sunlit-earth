@@ -1051,10 +1051,9 @@ pub struct BuildInfo {
     /// skipped that boot.
     ///
     /// Written either way rather than left out, unlike every other optional
-    /// field here. The record travels inside the bundle, so the person reading
-    /// it is usually not the person who ran the command and saw the two lines
-    /// that said so; a field that is not there reads as one the writer had no
-    /// answer for, and "nobody ran this" is an answer.
+    /// field here. The record is read long after the run, and usually by
+    /// somebody who did not watch it: a field that is not there reads as one
+    /// the writer had no answer for, and "nobody ran this" is an answer.
     #[serde(default)]
     pub verified_in: Option<String>,
     pub xtask_version: String,
@@ -1062,10 +1061,13 @@ pub struct BuildInfo {
 
 /// The bundle this run wrote, as its own record describes it.
 ///
-/// The record travels inside the bundle as well as beside it, so it cannot
-/// carry the finished archive's size: that is a number the archive would have to
-/// contain about itself. What it carries instead is what the bundle is, and the
-/// one measurement that says the textures in it are found rather than assumed.
+/// It carries no size for the finished archive: the record was written into the
+/// bundle as well as beside it, and a size the archive would have to contain
+/// about itself is not a number that exists. Amendment A2 left the record
+/// beside the archive alone, so the field could now be added, and adding it is
+/// not what that amendment is for. What this carries is what the bundle is, and
+/// the one measurement that says the textures in it are found rather than
+/// assumed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BundleInfo {
     /// The one directory an unpack produces, which is also the archive's stem.
@@ -1283,12 +1285,13 @@ fn one_target(
         }
         info.duration_secs = started.elapsed().as_secs();
 
-        // The record goes into the bundle only now, so that the copy inside it
-        // and the copy beside it are one file: what verification found is part
-        // of what a release binary was built from, and a bundle carrying a
-        // record that stopped short of it would be the stale one of two.
+        // Archived after verification because the record beside the archive
+        // has to carry what verification found. Amendment A2 took the record
+        // out of the bundle, so nothing inside the archive depends on the
+        // ordering any more; the ordering stays because changing it would
+        // change what a run does.
         let archive = match &bundled {
-            Some(bundled) => Some(seal_bundle(bundled, &version, target, &scratch, &info)?),
+            Some(bundled) => Some(seal_bundle(bundled, &version, target, &scratch)?),
             None => None,
         };
 
@@ -1356,10 +1359,6 @@ fn assemble_bundle(
             repo,
             exe,
             textures: &textures,
-            // Rewritten in place by `seal_bundle` once verification has said
-            // what it found; written now so the directory that is staged into
-            // the guest is the whole bundle rather than most of it.
-            record: &info.to_json(),
         },
     );
     let root = bundle::assemble(scratch, &name, &items)?;
@@ -1373,8 +1372,8 @@ fn assemble_bundle(
     Ok(Some(Bundled { name, root, items }))
 }
 
-/// Write the final record into the assembled bundle, archive it, and read the
-/// archive back with the crate that wrote it.
+/// Archive the assembled bundle and read the archive back with the crate that
+/// wrote it.
 ///
 /// The read-back is the cheap half of proving the bundle: that the archive holds
 /// exactly what the directory holds, at the sizes the directory has. The
@@ -1384,12 +1383,7 @@ fn seal_bundle(
     version: &str,
     target: Target,
     scratch: &Path,
-    info: &BuildInfo,
 ) -> Result<PathBuf, String> {
-    let record = bundled.root.join(bundle::RECORD);
-    std::fs::write(&record, info.to_json())
-        .map_err(|e| format!("cannot write {}: {e}", record.display()))?;
-
     let format = bundle::Format::of(target);
     let archive = scratch.join(bundle::archive_name(version, target));
     let bytes = bundle::write(
@@ -2041,8 +2035,8 @@ fn publish(
     if let Some(archive) = archive {
         copy(archive, &dist.join(file_name(archive)))?;
     }
-    std::fs::write(dist.join("build-info.json"), info.to_json())
-        .map_err(|e| format!("cannot write build-info.json: {e}"))
+    std::fs::write(dist.join(bundle::RECORD), info.to_json())
+        .map_err(|e| format!("cannot write {}: {e}", bundle::RECORD))
 }
 
 fn file_name(path: &Path) -> String {

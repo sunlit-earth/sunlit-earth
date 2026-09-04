@@ -1,19 +1,25 @@
-//! `cargo xtask bake licenses`: the dependency tree to the two notices it owes.
+//! `cargo xtask bake licenses`: the dependency tree to the two documents it
+//! owes.
 //!
 //! Every license in the tree except the handful that ask for nothing wants its
-//! notice carried by whoever distributes the binary, and until this existed
-//! nothing in the tree carried one. Two files come out of here. `assets/
-//! third-party.md` is the compact list the About window's third tab renders,
-//! one line per crate with each license identifier linked to its SPDX page.
-//! `THIRD-PARTY-LICENSES.md` is the notice itself: every license and notice
-//! file every shipping package carries, verbatim, with the per-crate copyright
-//! lines that are the part MIT and BSD actually require and that no canonical
-//! text can supply.
+//! text carried by whoever distributes the binary, and until this existed
+//! nothing in the tree carried one. Two files come out of here.
+//! `assets/third-party.md` is the compact list the About window's third tab
+//! renders, one line per crate with each license identifier linked to its SPDX
+//! page. `assets/THIRD-PARTY-LICENSES.md` is the document that travels in the
+//! release archive: the same crates, each identifier linked to a section of
+//! that same file, and the canonical text of every identifier the tree
+//! references, verbatim and exactly once.
 //!
-//! Both are committed rather than generated during `cargo build`, following
-//! `bake_icon` and `bake_stars`: a build gains no metadata walk and nothing
-//! runs one on a user's machine. [`render_list`] and [`render_notices`] are
-//! pure functions of a collected tree, which is what lets
+//! The canonical texts come from `assets/licenses/`, a committed corpus of
+//! `<identifier>.txt` files, and nothing here fetches anything. An identifier
+//! the corpus has no text for fails the bake with the URL to fetch it from and
+//! the path to save it at, which is the whole mechanism for adding a license.
+//!
+//! Both outputs are committed rather than generated during `cargo build`,
+//! following `bake_icon` and `bake_stars`: a build gains no metadata walk and
+//! nothing runs one on a user's machine. [`render_list`] and [`render_notices`]
+//! are pure functions of a collected tree, which is what lets
 //! `the_committed_bake_matches_a_fresh_one` compare the files on disk against a
 //! fresh walk and fail when a dependency was added without rerunning the bake.
 
@@ -42,10 +48,7 @@ pub const SHIPPING_TARGETS: [&str; 3] = [
 /// The compact list the About window renders, relative to the repository root.
 pub const LIST_PATH: &str = "assets/third-party.md";
 
-/// The notice that travels in the release bundle, relative to the same root.
-///
-/// It lives under `assets/` because it is a generated document a megabyte
-/// long, and the repository root is not where that belongs.
+/// The document that travels in the release bundle, relative to the same root.
 pub const NOTICES_PATH: &str = "assets/THIRD-PARTY-LICENSES.md";
 
 /// What the same file is called inside the bundle, where it sits at the top
@@ -53,61 +56,17 @@ pub const NOTICES_PATH: &str = "assets/THIRD-PARTY-LICENSES.md";
 /// for a notice, and no reason to make them open a directory for it.
 pub const NOTICES_NAME: &str = "THIRD-PARTY-LICENSES.md";
 
+/// The committed corpus of canonical license texts, one `<identifier>.txt` per
+/// identifier, relative to the repository root.
+pub const CORPUS_DIR: &str = "assets/licenses";
+
 /// Where an unrecognized `LicenseRef-` operand sends a reader instead of a
 /// link, since SPDX has no page for one.
 const NO_SPDX_PAGE: &str = "no SPDX page";
 
-/// What a package's line says when the package carries no notice of its own.
-///
-/// Named rather than spelled twice: a test looking for this phrase against a
-/// generator that emits a different one is a test that cannot fail.
-const SILENT: &str = "vendors no license text";
-
-/// File-name prefixes that mean "this file is part of the grant".
-///
-/// Prefixes rather than exact names because the tree spells them every way
-/// there is: `LICENSE-MIT`, `LICENSE.APACHE`, `license-mit`, `COPYING.LESSER`,
-/// `LICENSE-Apache-2.0_WITH_LLVM-exception`. `PATENTS` is here because the
-/// grants derived from Go's carry the patent grant in a separate file, and
-/// `NOTICE` because Apache-2.0 section 4(d) asks for it by name.
-const NOTICE_PREFIXES: [&str; 7] = [
-    "LICENSE",
-    "LICENCE",
-    "COPYING",
-    "COPYRIGHT",
-    "NOTICE",
-    "UNLICENSE",
-    "PATENTS",
-];
-
-/// A directory whose whole contents are the grant, which is the layout
-/// REUSE-compliant crates use. Slint's is the one in this tree.
-const NOTICE_DIR: &str = "LICENSES";
-
-/// Packages that carry a notice somewhere other than a file named like one.
-///
-/// A notice is found by file name, which is how every package in this tree but
-/// one carries it. `astronomy-engine-bindings` vendors Don Cross's C sources
-/// and their MIT notice lives in the leading comment of `astronomy.h` and
-/// nowhere else, so a name-only search reports the package as shipping no
-/// notice when in fact it ships one this program owes. The entry names the
-/// file; a bake that cannot find the notice in it fails rather than quietly
-/// writing a gap into the committed file.
-const VENDORED_NOTICES: [(&str, &str); 1] = [(
-    "astronomy-engine-bindings",
-    "astronomy/source/c/astronomy.h",
-)];
-
-/// One license or notice file a package ships.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Notice {
-    /// Its name inside the package, with a forward slash for a file inside
-    /// `LICENSES/`.
-    pub file: String,
-    /// Its contents, with line endings normalized to LF and a UTF-8 byte order
-    /// mark removed. Otherwise verbatim: this is the notice.
-    pub text: String,
-}
+/// What a package's line says in place of an expression when its manifest
+/// declares none.
+const UNDECLARED: &str = "license not declared in the manifest";
 
 /// One third-party crate that reaches the binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,20 +78,6 @@ pub struct Package {
     /// is what a `license-file`-only package looks like.
     pub license: String,
     pub repository: Option<String>,
-    pub authors: Vec<String>,
-    pub notices: Vec<Notice>,
-}
-
-/// What one `cargo metadata` run says about one package, before its notice
-/// files are read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Resolved {
-    name: String,
-    version: String,
-    license: String,
-    repository: Option<String>,
-    authors: Vec<String>,
-    manifest_path: PathBuf,
 }
 
 mod metadata {
@@ -153,9 +98,6 @@ mod metadata {
         pub version: String,
         pub license: Option<String>,
         pub repository: Option<String>,
-        #[serde(default)]
-        pub authors: Vec<String>,
-        pub manifest_path: String,
     }
 }
 
@@ -195,8 +137,7 @@ pub fn tree_cmd(cargo: &str, repo: &Path, target: &str) -> Cmd {
 ///
 /// Unfiltered, because the three trees between them name crates from all three
 /// platforms and this is only the lookup table the tree walks are resolved
-/// against: license, repository and the source directory the notices are read
-/// from.
+/// against: the license expression and the repository.
 pub fn metadata_cmd(cargo: &str, repo: &Path) -> Cmd {
     Cmd::new(cargo)
         .args(["metadata", "--format-version", "1", "--locked"])
@@ -239,7 +180,7 @@ fn cargo_program() -> String {
 /// A workspace member is code this repository wrote and licenses itself, so it
 /// is traversed by `cargo tree` and then dropped here: `sunlit-core` is in the
 /// binary, but it is not third-party.
-type Catalog = (BTreeMap<(String, String), Resolved>, Vec<(String, String)>);
+type Catalog = (BTreeMap<(String, String), Package>, Vec<(String, String)>);
 
 fn parse_catalog(json: &str) -> Result<Catalog, String> {
     let meta: metadata::Metadata =
@@ -253,7 +194,7 @@ fn parse_catalog(json: &str) -> Result<Catalog, String> {
         }
         catalog.insert(
             key,
-            Resolved {
+            Package {
                 name: package.name.clone(),
                 version: package.version.clone(),
                 license: package
@@ -262,8 +203,6 @@ fn parse_catalog(json: &str) -> Result<Catalog, String> {
                     .map(normalize_expression)
                     .unwrap_or_default(),
                 repository: package.repository.clone(),
-                authors: package.authors.clone(),
-                manifest_path: PathBuf::from(&package.manifest_path),
             },
         );
     }
@@ -287,8 +226,77 @@ pub fn normalize_expression(license: &str) -> String {
         .join(" ")
 }
 
-/// Where the canonical text of one identifier lives, or `None` when nothing
-/// derivable does.
+/// One piece of an SPDX expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Token<'a> {
+    /// A license or exception identifier.
+    Operand(&'a str),
+    /// An operator, or one character of the punctuation and spacing between
+    /// operands, carried through as it was written.
+    Other(&'a str),
+}
+
+/// An expression split into its operands and everything else.
+///
+/// One tokenizer for the three things that read an expression: the two link
+/// renderers and the walk that collects the identifiers a document needs texts
+/// for. A second implementation is a second answer to "what is an operand".
+fn tokens(license: &str) -> Vec<Token<'_>> {
+    let identifier = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_');
+    let mut out = Vec::new();
+    let mut start = None;
+    for (index, character) in license.char_indices() {
+        if identifier(character) {
+            start.get_or_insert(index);
+        } else {
+            if let Some(from) = start.take() {
+                out.push(classify(&license[from..index]));
+            }
+            out.push(Token::Other(&license[index..index + character.len_utf8()]));
+        }
+    }
+    if let Some(from) = start {
+        out.push(classify(&license[from..]));
+    }
+    out
+}
+
+fn classify(word: &str) -> Token<'_> {
+    if matches!(word.to_ascii_uppercase().as_str(), "OR" | "AND" | "WITH") {
+        Token::Other(word)
+    } else {
+        Token::Operand(word)
+    }
+}
+
+/// Every identifier an expression names, in the order it names them.
+fn identifiers(license: &str) -> Vec<&str> {
+    tokens(license)
+        .into_iter()
+        .filter_map(|token| match token {
+            Token::Operand(identifier) => Some(identifier),
+            Token::Other(_) => None,
+        })
+        .collect()
+}
+
+/// The expression with each operand rendered by `operand` and the operators,
+/// parentheses and spacing left where they are.
+fn render_expression(license: &str, operand: impl Fn(&str) -> String) -> String {
+    if license.is_empty() {
+        return UNDECLARED.to_owned();
+    }
+    tokens(license)
+        .into_iter()
+        .map(|token| match token {
+            Token::Operand(identifier) => operand(identifier),
+            Token::Other(text) => text.to_owned(),
+        })
+        .collect()
+}
+
+/// Where the canonical text of one identifier lives online, or `None` when
+/// nothing derivable does.
 ///
 /// Decision 9: one rule for every identifier rather than a table to maintain.
 /// SPDX has a page per identifier by construction, so the URL is derived from
@@ -309,179 +317,31 @@ pub fn license_url(identifier: &str) -> Option<String> {
     }
 }
 
-/// The expression with every operand turned into a markdown link.
+/// The expression with every operand turned into a link to its SPDX page.
 ///
 /// The operators are kept where they are, so `MIT OR Apache-2.0` reads as two
 /// links joined by `OR` rather than as one link that would have to lie about
 /// one of them, and `Apache-2.0 WITH LLVM-exception` links the exception too,
 /// which has an SPDX page of its own.
 pub fn link_expression(license: &str) -> String {
-    if license.is_empty() {
-        return "license not declared in the manifest".to_owned();
-    }
-    let mut out = String::new();
-    let mut word = String::new();
-    let flush = |word: &mut String, out: &mut String| {
-        if word.is_empty() {
-            return;
-        }
-        if matches!(word.to_ascii_uppercase().as_str(), "OR" | "AND" | "WITH") {
-            out.push_str(word);
-        } else if let Some(url) = license_url(word) {
-            out.push('[');
-            out.push_str(word);
-            out.push_str("](");
-            out.push_str(&url);
-            out.push(')');
-        } else {
-            out.push_str(word);
-            out.push_str(" (");
-            out.push_str(NO_SPDX_PAGE);
-            out.push(')');
-        }
-        word.clear();
-    };
-    for character in license.chars() {
-        if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+' | '_') {
-            word.push(character);
-        } else {
-            flush(&mut word, &mut out);
-            out.push(character);
-        }
-    }
-    flush(&mut word, &mut out);
-    out
+    render_expression(license, |identifier| match license_url(identifier) {
+        Some(url) => format!("[{identifier}]({url})"),
+        None => format!("{identifier} ({NO_SPDX_PAGE})"),
+    })
 }
 
-/// The leading `/* ... */` of a C source, markers and indentation included.
+/// The expression with every operand linked to the section of the notice
+/// document that carries its text.
 ///
-/// Verbatim rather than dedented and unwrapped: this is a copyright notice,
-/// and the fewer transformations between the file and the committed bytes the
-/// better.
-fn leading_block_comment(text: &str) -> Option<&str> {
-    let start = text.find("/*")?;
-    if !text[..start].trim().is_empty() {
-        return None;
-    }
-    let end = text[start..].find("*/")? + start + 2;
-    Some(&text[start..end])
-}
-
-/// The notice files one package directory carries, in name order.
-fn read_notices(name: &str, manifest_path: &Path) -> Result<Vec<Notice>, String> {
-    let dir = manifest_path.parent().ok_or_else(|| {
-        format!(
-            "{} has no parent directory to read notices from",
-            manifest_path.display()
-        )
-    })?;
-    let mut paths: Vec<(String, PathBuf)> = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot list {}: {e}", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
-    for entry in entries {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let upper = name.to_ascii_uppercase();
-        let is_dir = entry.path().is_dir();
-        if is_dir && upper == NOTICE_DIR {
-            let nested = std::fs::read_dir(entry.path())
-                .map_err(|e| format!("cannot list {}: {e}", entry.path().display()))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("cannot list {}: {e}", entry.path().display()))?;
-            for inner in nested {
-                if inner.path().is_file() {
-                    paths.push((
-                        format!("{name}/{}", inner.file_name().to_string_lossy()),
-                        inner.path(),
-                    ));
-                }
-            }
-        } else if !is_dir && NOTICE_PREFIXES.iter().any(|p| upper.starts_with(p)) {
-            paths.push((name, entry.path()));
-        }
-    }
-    paths.sort();
-    let mut notices: Vec<Notice> = paths
-        .into_iter()
-        .map(|(file, path)| {
-            let bytes =
-                std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            Ok::<Notice, String>(Notice {
-                file,
-                text: normalize_text(&decode(&bytes)),
-            })
-        })
-        .collect::<Result<_, _>>()?;
-
-    for (package, relative) in VENDORED_NOTICES {
-        if package != name {
-            continue;
-        }
-        let path = dir.join(relative);
-        let bytes = std::fs::read(&path).map_err(|e| {
-            format!(
-                "{package} is expected to carry its notice in {}: {e}",
-                path.display()
-            )
-        })?;
-        let text = decode(&bytes);
-        let comment = leading_block_comment(&text).ok_or_else(|| {
-            format!(
-                "{} does not start with the comment {package}'s notice is in",
-                path.display()
-            )
-        })?;
-        notices.push(Notice {
-            file: format!("{relative} (leading comment)"),
-            text: normalize_text(comment),
-        });
-    }
-    Ok(notices)
-}
-
-/// One notice file's bytes as text.
-///
-/// Almost every file in the tree is UTF-8, and `rav1e`'s `PATENTS` is not: it
-/// carries typographic quotes as single Windows-1252 bytes. A lossy UTF-8
-/// decode would put replacement characters where the quotes are, which is a
-/// corrupted legal text, so the fallback decodes the whole file as
-/// Windows-1252. That mapping is total, so it cannot fail, and for a file that
-/// really is UTF-8 it never runs.
-fn decode(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_owned(),
-        Err(_) => bytes.iter().map(|byte| cp1252(*byte)).collect(),
-    }
-}
-
-/// Windows-1252 for one byte. Identical to Latin-1 except for `0x80` to
-/// `0x9F`, where Latin-1 has unprintable controls and Windows-1252 has the
-/// punctuation this fallback exists for.
-fn cp1252(byte: u8) -> char {
-    const HIGH: [char; 32] = [
-        '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}',
-        '\u{2021}', '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}',
-        '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}',
-        '\u{2014}', '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}',
-        '\u{178}',
-    ];
-    if (0x80..=0x9F).contains(&byte) {
-        HIGH[usize::from(byte) - 0x80]
-    } else {
-        char::from(byte)
-    }
-}
-
-/// A notice's bytes as they go into a committed LF file.
-fn normalize_text(text: &str) -> String {
-    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut normalized = body.replace("\r\n", "\n").replace('\r', "\n");
-    while normalized.ends_with('\n') {
-        normalized.pop();
-    }
-    normalized.push('\n');
-    normalized
+/// An operand with no section is left unlinked rather than pointed at a
+/// section that does not exist, which cannot happen for a document built from
+/// [`license_texts`] of the same packages and is what
+/// `every_operand_link_in_the_committed_document_resolves` would catch.
+fn anchor_expression(license: &str, numbers: &BTreeMap<&str, usize>) -> String {
+    render_expression(license, |identifier| match numbers.get(identifier) {
+        Some(number) => format!("[{identifier}](#license-{number})"),
+        None => identifier.to_owned(),
+    })
 }
 
 /// Sort key that orders `0.9.4` before `0.10.1`.
@@ -499,7 +359,7 @@ fn version_key(version: &str) -> (Vec<u64>, String) {
     (numbers, version.to_owned())
 }
 
-/// Walk the three trees, union them, and read every notice file.
+/// Walk the three trees and union them.
 pub fn collect(runner: &dyn Runner, repo: &Path) -> Result<Vec<Package>, String> {
     let cargo = cargo_program();
     let metadata = runner
@@ -510,7 +370,7 @@ pub fn collect(runner: &dyn Runner, repo: &Path) -> Result<Vec<Package>, String>
     }
     let (catalog, members) = parse_catalog(&metadata.stdout)?;
 
-    let mut shipping: BTreeMap<(String, String), Resolved> = BTreeMap::new();
+    let mut shipping: BTreeMap<(String, String), Package> = BTreeMap::new();
     for target in SHIPPING_TARGETS {
         let output = runner
             .capture(&tree_cmd(&cargo, repo, target))
@@ -538,20 +398,7 @@ pub fn collect(runner: &dyn Runner, repo: &Path) -> Result<Vec<Package>, String>
         return Err("the shipping tree resolved to no third-party crates at all".to_owned());
     }
 
-    let mut packages: Vec<Package> = shipping
-        .into_values()
-        .map(|package| {
-            let notices = read_notices(&package.name, &package.manifest_path)?;
-            Ok(Package {
-                name: package.name,
-                version: package.version,
-                license: package.license,
-                repository: package.repository,
-                authors: package.authors,
-                notices,
-            })
-        })
-        .collect::<Result<_, String>>()?;
+    let mut packages: Vec<Package> = shipping.into_values().collect();
     packages.sort_by(|a, b| {
         (a.name.to_ascii_lowercase(), version_key(&a.version))
             .cmp(&(b.name.to_ascii_lowercase(), version_key(&b.version)))
@@ -571,7 +418,7 @@ pub fn render_list(packages: &[Package]) -> String {
     out.push_str(
         "Every crate Sunlit Earth depends on, as the union over the three platforms it \
          builds for, so a few here are absent from any one build. Each license name links \
-         to its SPDX page; the copyright notices are in `THIRD-PARTY-LICENSES.md` beside \
+         to its SPDX page; the full license texts are in `THIRD-PARTY-LICENSES.md` beside \
          the program.\n\n",
     );
     for package in packages {
@@ -596,140 +443,154 @@ fn fence_for(text: &str) -> String {
     "`".repeat(longest.max(2) + 1)
 }
 
-/// The notice that travels with the binary.
+/// One canonical license text, as the document carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicenseText {
+    /// The identifier the corpus file is named after.
+    pub identifier: String,
+    /// The corpus file's contents, verbatim.
+    pub text: String,
+}
+
+/// The canonical text of every identifier the tree references, in the order
+/// the document numbers the sections.
 ///
-/// Identical texts are carried once and referenced by number, which is what
-/// takes the file from five megabytes to under one: the Apache-2.0 text is
-/// byte for byte the same in nearly three hundred packages. Nothing is
-/// summarized or substituted; a package that ships no notice file is said to
-/// ship none rather than being given somebody else's copyright line.
-pub fn render_notices(packages: &[Package]) -> String {
-    let mut texts: Vec<(&str, Vec<String>)> = Vec::new();
-    let mut references: Vec<Vec<(usize, &str)>> = Vec::new();
+/// Case-insensitive by identifier with byte order as the tiebreak, so the two
+/// `LicenseRef-Slint-*` texts file with the letter a reader looks for them
+/// under rather than ahead of `LLVM-exception`, which is where ASCII would put
+/// them.
+pub fn license_texts(repo: &Path, packages: &[Package]) -> Result<Vec<LicenseText>, String> {
+    let mut referenced: BTreeMap<(String, &str), String> = BTreeMap::new();
     for package in packages {
-        let mut mine = Vec::new();
-        for notice in &package.notices {
-            let index = texts
-                .iter()
-                .position(|(text, _)| *text == notice.text.as_str())
-                .unwrap_or_else(|| {
-                    texts.push((notice.text.as_str(), Vec::new()));
-                    texts.len() - 1
-                });
-            texts[index]
-                .1
-                .push(format!("{} {}", package.name, package.version));
-            mine.push((index + 1, notice.file.as_str()));
+        for identifier in identifiers(&package.license) {
+            referenced
+                .entry((identifier.to_ascii_lowercase(), identifier))
+                .or_insert_with(|| format!("{} {}", package.name, package.version));
         }
-        references.push(mine);
     }
-    let silent = packages
+    referenced
+        .into_iter()
+        .map(|((_, identifier), referrer)| {
+            let path = corpus_path(repo, identifier);
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| no_corpus_text(identifier, &referrer, &path, &e))?;
+            Ok(LicenseText {
+                identifier: identifier.to_owned(),
+                text,
+            })
+        })
+        .collect()
+}
+
+fn corpus_path(repo: &Path, identifier: &str) -> PathBuf {
+    repo.join(CORPUS_DIR).join(format!("{identifier}.txt"))
+}
+
+/// What to do about an identifier the corpus has no text for.
+///
+/// This message is the whole mechanism for adding a license: a dependency that
+/// introduces one fails the bake here and nowhere else, so what it prints has
+/// to be everything a person needs to close the gap.
+fn no_corpus_text(identifier: &str, referrer: &str, path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "`{referrer}` is licensed under {identifier} and the corpus has no text for it: \
+         cannot read {} ({error}).\n\
+         Fetch https://spdx.org/licenses/{identifier}.json and save its `licenseText` field \
+         verbatim, with LF line endings, as {CORPUS_DIR}/{identifier}.txt in this repository. \
+         For a license exception the field is `licenseExceptionText` instead. A `LicenseRef-` \
+         identifier has no SPDX page at all: take its text from the package's own copy, name \
+         the file after the identifier the same way, and say in the document's preamble where \
+         it came from. Then rerun `cargo xtask bake licenses`.",
+        path.display()
+    )
+}
+
+/// The document that travels with the binary.
+///
+/// The canonical text of each identifier, carried once however many crates
+/// declare it, and one line per crate whose license links into it. Amendment
+/// A5: a canonical text is SPDX's template, so this file carries no crate's
+/// copyright holder, and its preamble says so rather than letting a reader
+/// assume otherwise.
+pub fn render_notices(packages: &[Package], texts: &[LicenseText]) -> String {
+    let numbers: BTreeMap<&str, usize> = texts
         .iter()
-        .filter(|package| package.notices.is_empty())
-        .count();
+        .enumerate()
+        .map(|(index, text)| (text.identifier.as_str(), index + 1))
+        .collect();
 
     let mut out = String::new();
     out.push_str("# Third-party licenses\n\n");
-    out.push_str(
+    let _ = write!(
+        out,
         "Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside \
-         this file. This file is the other half of the obligation: the licenses and copyright \
-         notices of the crates it depends on.\n\n",
+         this file. This file is the other half of the obligation: the license of each of the {} \
+         third-party crates the program links, and the full text of every license among them.\n\n",
+        packages.len()
     );
     let _ = write!(
         out,
-        "It covers {} crates. {} of them vendor no license text of their own, so no copyright \
-         line of theirs can be reproduced here; they have their own section below, carrying what \
-         their manifests do say. Nothing in this file is summarized, paraphrased, or supplied \
-         from a canonical text on a package's behalf.\n\n",
-        packages.len(),
-        silent
-    );
-    let _ = write!(
-        out,
-        "It is generated by `cargo xtask bake licenses` from the committed `Cargo.lock`, as the \
-         union over {} of `cargo tree --edges normal`, which is the set of crates a release \
-         build of each platform links. Build-dependencies, dev-dependencies and this \
-         repository's own crates are not in it, and neither is the effect of feature unification \
-         across dependency kinds, which is why the walk is `cargo tree` rather than the resolve \
-         graph `cargo metadata` prints. What the set does include is the crates a procedural \
-         macro used at build time, which are reachable by a normal edge and are not in the \
-         binary: it errs toward carrying a notice nobody needs rather than omitting one somebody \
-         does.\n\n",
+        "The crate set is the union over {} of `cargo tree --locked --package sunlit-earth \
+         --edges normal --target <triple>`, which is what a release build of each platform links, \
+         less this repository's own crates. Build-dependencies and dev-dependencies are not in \
+         it. A crate one particular build does not link is listed anyway, which is the direction \
+         to err. This file is generated by `cargo xtask bake licenses` from the committed \
+         `Cargo.lock` and the license texts in `{CORPUS_DIR}/`.\n\n",
         SHIPPING_TARGETS.join(", ")
     );
     out.push_str(
-        "The Packages section names each crate, its license expression, its repository and the \
-         numbers of the license texts it ships. The License texts section carries those texts \
-         verbatim, each once, naming the packages that ship it byte for byte.\n\n",
+        "Each text below is the canonical text of its identifier as SPDX publishes it, included \
+         once however many crates declare it, and nothing here is summarized or paraphrased. A \
+         canonical text is SPDX's template, so the copyright line in it is a placeholder rather \
+         than anybody's notice: the copyright holders of the individual crates are not \
+         reproduced in this file. `LicenseRef-Slint-Royalty-free-2.0` and \
+         `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page \
+         for either, and those are the copies from Slint's own repository.\n\n",
     );
 
     out.push_str("## Packages\n\n");
-    for (package, mine) in packages.iter().zip(&references) {
-        if mine.is_empty() {
-            continue;
+    for package in packages {
+        let _ = write!(
+            out,
+            "- `{} {}`, {}",
+            package.name,
+            package.version,
+            anchor_expression(&package.license, &numbers)
+        );
+        if let Some(repository) = &package.repository {
+            let _ = write!(out, ", {repository}");
         }
-        out.push_str(&describe(package));
-        let listed: Vec<String> = mine
-            .iter()
-            .map(|(number, file)| format!("{file} is text {number}"))
-            .collect();
-        let _ = writeln!(out, ", {}", listed.join(", "));
-    }
-
-    out.push_str("\n## Packages that vendor no license text\n\n");
-    out.push_str(
-        "These crates declare a license in their manifest and ship no copy of it and no \
-         copyright line. What follows is what their manifests say and nothing more: the \
-         identifier, the authors field where there is one, and the repository. The terms are the \
-         canonical text of the identifier, at `https://spdx.org/licenses/<identifier>.html`, and \
-         in most cases that same text is already reproduced below from another package. The \
-         copyright holder is not reproduced, because the package states none and a guess would \
-         put a fabricated attribution in a legal notice.\n\n",
-    );
-    for package in packages.iter().filter(|p| p.notices.is_empty()) {
-        out.push_str(&describe(package));
-        if package.authors.is_empty() {
-            out.push_str(", no authors field");
-        } else {
-            let _ = write!(out, ", authors: {}", package.authors.join("; "));
-        }
-        let _ = writeln!(out, ", {SILENT}");
+        out.push('\n');
     }
 
     out.push_str("\n## License texts\n\n");
-    for (index, (text, holders)) in texts.iter().enumerate() {
-        let _ = write!(out, "### Text {}\n\n", index + 1);
-        let _ = write!(out, "Shipped by: {}\n\n", holders.join(", "));
-        let fence = fence_for(text);
+    for (index, text) in texts.iter().enumerate() {
+        let number = index + 1;
+        let _ = write!(out, "<a id=\"license-{number}\"></a>\n\n");
+        let _ = write!(out, "### License {number}: {}\n\n", text.identifier);
+        let fence = fence_for(&text.text);
         out.push_str(&fence);
         out.push('\n');
-        out.push_str(text);
+        out.push_str(&text.text);
+        if !text.text.ends_with('\n') {
+            out.push('\n');
+        }
         out.push_str(&fence);
         out.push_str("\n\n");
     }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
     out
-}
-
-/// The half of a package's line that is the same in both sections.
-fn describe(package: &Package) -> String {
-    let mut line = format!("- `{} {}`", package.name, package.version);
-    if package.license.is_empty() {
-        line.push_str(", license not declared in the manifest");
-    } else {
-        let _ = write!(line, ", {}", package.license);
-    }
-    if let Some(repository) = &package.repository {
-        let _ = write!(line, ", {repository}");
-    }
-    line
 }
 
 /// Write both files into the repository.
 pub fn run(runner: &dyn Runner) -> Result<u8, String> {
     let repo = store::repo_root();
     let packages = collect(runner, &repo)?;
+    let texts = license_texts(&repo, &packages)?;
     let list = render_list(&packages);
-    let notices = render_notices(&packages);
+    let notices = render_notices(&packages, &texts);
     for (relative, contents) in [(LIST_PATH, &list), (NOTICES_PATH, &notices)] {
         let path = repo.join(relative);
         if let Some(parent) = path.parent() {
@@ -741,9 +602,10 @@ pub fn run(runner: &dyn Runner) -> Result<u8, String> {
         println!("wrote {} ({} bytes)", path.display(), contents.len());
     }
     println!(
-        "{} third-party crates across {}",
+        "{} third-party crates across {}, {} license texts",
         packages.len(),
-        SHIPPING_TARGETS.join(", ")
+        SHIPPING_TARGETS.join(", "),
+        texts.len()
     );
     Ok(0)
 }
@@ -752,6 +614,7 @@ pub fn run(runner: &dyn Runner) -> Result<u8, String> {
 mod tests {
     use super::*;
     use crate::runner::RealRunner;
+    use std::collections::BTreeSet;
 
     fn package(name: &str, version: &str, license: &str) -> Package {
         Package {
@@ -759,32 +622,149 @@ mod tests {
             version: version.to_owned(),
             license: normalize_expression(license),
             repository: None,
-            authors: Vec::new(),
-            notices: Vec::new(),
         }
     }
 
     /// A fabricated `cargo metadata` answer: the two workspace members and
-    /// three registry crates, one of them with a legacy license spelling.
+    /// two registry crates, one of them with a legacy license spelling.
     fn fabricated_metadata() -> String {
         serde_json::json!({
             "packages": [
                 {"id": "app", "name": "sunlit-earth", "version": "0.1.0",
-                 "license": "GPL-3.0-or-later", "repository": null, "authors": [],
-                 "manifest_path": "/repo/crates/sunlit-app/Cargo.toml"},
+                 "license": "GPL-3.0-or-later", "repository": null},
                 {"id": "core", "name": "sunlit-core", "version": "0.1.0",
-                 "license": "GPL-3.0-or-later", "repository": null, "authors": [],
-                 "manifest_path": "/repo/crates/sunlit-core/Cargo.toml"},
+                 "license": "GPL-3.0-or-later", "repository": null},
                 {"id": "normal", "name": "shipped", "version": "1.0.0",
-                 "license": "MIT/Apache-2.0", "repository": "https://example.invalid/shipped",
-                 "authors": ["A"], "manifest_path": "/registry/shipped-1.0.0/Cargo.toml"},
-                {"id": "silent", "name": "quiet", "version": "0.2.0",
-                 "license": null, "repository": null, "authors": [],
-                 "manifest_path": "/registry/quiet-0.2.0/Cargo.toml"}
+                 "license": "MIT/Apache-2.0", "repository": "https://example.invalid/shipped"},
+                {"id": "quiet", "name": "quiet", "version": "0.2.0",
+                 "license": null, "repository": null}
             ],
             "workspace_members": ["app", "core"]
         })
         .to_string()
+    }
+
+    /// The committed document, which several of these tests parse rather than
+    /// asking the renderer what it would have written.
+    fn committed_notices() -> String {
+        let path = store::repo_root().join(NOTICES_PATH);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+    }
+
+    /// The Packages half and the License texts half of a document.
+    fn halves(document: &str) -> (&str, &str) {
+        document
+            .split_once("\n## License texts\n")
+            .expect("the document has a License texts section")
+    }
+
+    /// Every `[label](target)` in a string, in the order they appear.
+    fn markdown_links(text: &str) -> Vec<(&str, &str)> {
+        let mut found = Vec::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('[') {
+            rest = &rest[open + 1..];
+            let Some(close) = rest.find("](") else { break };
+            let label = &rest[..close];
+            rest = &rest[close + 2..];
+            let Some(end) = rest.find(')') else { break };
+            found.push((label, &rest[..end]));
+            rest = &rest[end + 1..];
+        }
+        found
+    }
+
+    /// The same string with every `[label](target)` reduced to its label, so an
+    /// operand that was never linked reads the same as one that was.
+    fn without_links(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('[') {
+            out.push_str(&rest[..open]);
+            rest = &rest[open + 1..];
+            let Some(close) = rest.find("](") else {
+                out.push('[');
+                break;
+            };
+            out.push_str(&rest[..close]);
+            rest = &rest[close + 2..];
+            let Some(end) = rest.find(')') else { break };
+            rest = &rest[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The `id` of every explicit anchor in a string.
+    fn anchors_in(text: &str) -> BTreeSet<&str> {
+        let mut found = BTreeSet::new();
+        let mut rest = text;
+        while let Some(open) = rest.find("<a id=\"") {
+            rest = &rest[open + 7..];
+            let Some(end) = rest.find('"') else { break };
+            found.insert(&rest[..end]);
+            rest = &rest[end + 1..];
+        }
+        found
+    }
+
+    /// The number and identifier of every license section in a string.
+    fn sections_in(text: &str) -> Vec<(usize, &str)> {
+        text.lines()
+            .filter_map(|line| line.strip_prefix("### License "))
+            .map(|heading| {
+                let (number, identifier) = heading
+                    .split_once(": ")
+                    .unwrap_or_else(|| panic!("a section heading reads {heading:?}"));
+                (
+                    number
+                        .parse()
+                        .unwrap_or_else(|e| panic!("{heading:?} is not numbered: {e}")),
+                    identifier,
+                )
+            })
+            .collect()
+    }
+
+    /// The invariant the whole design rests on: every operand of every
+    /// package's expression is a link, and it lands on the section that carries
+    /// that operand's own text.
+    fn assert_every_operand_resolves(document: &str) -> usize {
+        let (packages, texts) = halves(document);
+        let anchors = anchors_in(texts);
+        assert!(!anchors.is_empty(), "the document defines no anchors");
+        let mut resolved = 0;
+        for line in packages.lines().filter(|line| line.starts_with("- `")) {
+            let fields: Vec<&str> = line.split(", ").collect();
+            let expression = fields
+                .get(1)
+                .unwrap_or_else(|| panic!("{line:?} names no license expression"));
+            let links = markdown_links(expression);
+            let plain = without_links(expression);
+            for identifier in identifiers(&plain) {
+                let Some((_, target)) = links.iter().find(|(label, _)| *label == identifier) else {
+                    panic!("{line:?} does not link {identifier}");
+                };
+                let anchor = target.strip_prefix('#').unwrap_or_else(|| {
+                    panic!("{line:?} sends {identifier} to {target}, which is not in this file")
+                });
+                assert!(
+                    anchors.contains(anchor),
+                    "{line:?} sends {identifier} to #{anchor}, which no section defines"
+                );
+                let section = format!("<a id=\"{anchor}\"></a>\n\n### License ");
+                let Some((_, after)) = texts.split_once(&section) else {
+                    panic!("#{anchor} heads no section");
+                };
+                let heading = after.lines().next().unwrap_or_default();
+                assert!(
+                    heading.ends_with(&format!(": {identifier}")),
+                    "{line:?} sends {identifier} to the section headed {heading:?}"
+                );
+                resolved += 1;
+            }
+        }
+        resolved
     }
 
     #[test]
@@ -854,6 +834,19 @@ mod tests {
             );
             assert_eq!(normalized.split(" OR ").count(), 2, "{normalized}");
         }
+    }
+
+    #[test]
+    fn an_expression_yields_its_operands_and_none_of_its_operators() {
+        assert_eq!(
+            identifiers("(MIT OR Apache-2.0) AND Unicode-3.0"),
+            ["MIT", "Apache-2.0", "Unicode-3.0"]
+        );
+        assert_eq!(
+            identifiers("Apache-2.0 WITH LLVM-exception OR MIT"),
+            ["Apache-2.0", "LLVM-exception", "MIT"]
+        );
+        assert!(identifiers("").is_empty());
     }
 
     #[test]
@@ -933,68 +926,10 @@ mod tests {
     }
 
     #[test]
-    fn an_identical_text_is_carried_once_and_referenced_twice() {
-        let shared = Notice {
-            file: "LICENSE-APACHE".to_owned(),
-            text: "the same words\n".to_owned(),
-        };
-        let mut first = package("alpha", "1.0.0", "Apache-2.0");
-        first.notices = vec![shared.clone()];
-        let mut second = package("beta", "2.0.0", "Apache-2.0");
-        second.notices = vec![shared];
-        let notices = render_notices(&[first, second]);
-        assert_eq!(notices.matches("the same words").count(), 1, "{notices}");
-        assert_eq!(notices.matches("is text 1").count(), 2, "{notices}");
-        assert!(
-            notices.contains("Shipped by: alpha 1.0.0, beta 2.0.0"),
-            "{notices}"
-        );
-    }
-
-    #[test]
     fn a_fence_is_longer_than_any_backtick_run_inside_the_text() {
         assert_eq!(fence_for("plain\n"), "```");
         assert_eq!(fence_for("``` inside\n"), "````");
         assert_eq!(fence_for("  ````` indented\n"), "``````");
-    }
-
-    #[test]
-    fn a_leading_c_comment_is_taken_verbatim_and_only_when_it_leads() {
-        let header = "/*\n    MIT License\n\n    Copyright (c) X\n*/\n\n#ifndef H\n";
-        assert_eq!(
-            leading_block_comment(header),
-            Some("/*\n    MIT License\n\n    Copyright (c) X\n*/")
-        );
-        assert_eq!(leading_block_comment("#include <x.h>\n/* later */"), None);
-        assert_eq!(leading_block_comment("/* unterminated"), None);
-    }
-
-    /// `astronomy-engine-bindings` is MIT and ships no file named like a
-    /// license, so a name-only search reports the one library the rendered
-    /// geometry depends on as vendoring no notice.
-    #[test]
-    fn the_astronomy_engine_notice_reaches_the_committed_file() {
-        let path = store::repo_root().join(NOTICES_PATH);
-        let notices = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        let line = notices
-            .lines()
-            .find(|line| line.starts_with("- `astronomy-engine-bindings "))
-            .expect("the crate is not in the notice file at all");
-        assert!(
-            !line.contains(SILENT),
-            "the vendored notice was not found: {line}"
-        );
-        assert!(
-            notices.contains("Copyright (c) 2019-2023 Don Cross"),
-            "Don Cross's copyright line is not in the notice file"
-        );
-    }
-
-    #[test]
-    fn a_notice_is_normalized_to_lf_with_one_trailing_newline() {
-        assert_eq!(normalize_text("\u{feff}a\r\nb\r\n\r\n"), "a\nb\n");
-        assert_eq!(normalize_text("a"), "a\n");
     }
 
     #[test]
@@ -1031,37 +966,171 @@ mod tests {
         }
     }
 
-    /// A package that vendors nothing goes in its own section with what its
-    /// manifest says, and nothing is invented to fill the gap.
+    /// The two expressions in this tree that an operand walk is most likely to
+    /// get wrong: one parenthesized, one carrying an exception through `WITH`.
+    /// Rendered here against the real corpus and then parsed back out of the
+    /// document, so a renderer that dropped the exception or swallowed a paren
+    /// fails even though `MIT OR Apache-2.0` would still look right.
     #[test]
-    fn a_package_that_vendors_nothing_carries_its_manifest_and_no_more() {
-        let mut bare = package("bare", "1.0.0", "MIT");
-        bare.authors = vec!["Someone <s@example.invalid>".to_owned()];
-        let notices = render_notices(&[bare]);
-        assert!(
-            notices.contains("## Packages that vendor no license text"),
-            "{notices}"
-        );
-        assert!(
-            notices.contains(
-                "- `bare 1.0.0`, MIT, authors: Someone <s@example.invalid>, \
-                 vendors no license text"
+    fn the_hard_expressions_link_every_operand_they_name() {
+        let repo = store::repo_root();
+        let packages = vec![
+            package("grouped", "1.0.0", "(MIT OR Apache-2.0) AND Unicode-3.0"),
+            package(
+                "excepted",
+                "2.0.0",
+                "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
             ),
-            "{notices}"
+            package(
+                "slinty",
+                "3.0.0",
+                "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR \
+                 LicenseRef-Slint-Software-3.0",
+            ),
+        ];
+        let texts = license_texts(&repo, &packages).expect("the committed corpus");
+        let document = render_notices(&packages, &texts);
+        assert_eq!(assert_every_operand_resolves(&document), 10, "{document}");
+        assert!(
+            document.contains("- `grouped 1.0.0`, ([MIT](#license-"),
+            "the parenthesis moved: {document}"
         );
         assert!(
-            !notices.contains("Copyright (c)"),
-            "a copyright line was synthesized"
-        );
-        assert!(
-            notices.contains("1 of them vendor no license text"),
-            "{notices}"
+            document.contains("WITH [LLVM-exception](#license-"),
+            "the exception lost its link: {document}"
         );
     }
 
-    /// The walk needs `cargo metadata`, `cargo tree` and the registry sources
-    /// the manifests point at, so a checkout that cannot resolve the tree skips
-    /// with a printed reason rather than failing.
+    /// The sections are ordered case-insensitively, which is the one thing
+    /// keeping `LLVM-exception` from filing ahead of the `LicenseRef-` texts a
+    /// reader looks for under L-i.
+    #[test]
+    fn the_sections_are_ordered_case_insensitively_and_numbered_from_one() {
+        let repo = store::repo_root();
+        let packages = vec![package(
+            "mixed",
+            "1.0.0",
+            "MIT OR LLVM-exception OR ISC OR LicenseRef-Slint-Software-3.0",
+        )];
+        let texts = license_texts(&repo, &packages).expect("the committed corpus");
+        let order: Vec<&str> = texts.iter().map(|text| text.identifier.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "ISC",
+                "LicenseRef-Slint-Software-3.0",
+                "LLVM-exception",
+                "MIT"
+            ]
+        );
+        let document = render_notices(&packages, &texts);
+        assert_eq!(
+            sections_in(halves(&document).1),
+            vec![
+                (1, "ISC"),
+                (2, "LicenseRef-Slint-Software-3.0"),
+                (3, "LLVM-exception"),
+                (4, "MIT")
+            ]
+        );
+    }
+
+    /// An identifier with no corpus file is the only way a license enters the
+    /// tree unnoticed, so the bake stops and says what to fetch, where the
+    /// field is, and where the file goes.
+    #[test]
+    fn an_identifier_with_no_corpus_text_names_the_url_and_the_path() {
+        let repo = store::repo_root();
+        let invented = package("invented", "1.0.0", "MIT AND Fictitious-1.0");
+        let error =
+            license_texts(&repo, &[invented]).expect_err("Fictitious-1.0 has no corpus file");
+        for expected in [
+            "Fictitious-1.0",
+            "invented 1.0.0",
+            "https://spdx.org/licenses/Fictitious-1.0.json",
+            "licenseText",
+            "licenseExceptionText",
+            "assets/licenses/Fictitious-1.0.txt",
+            "cargo xtask bake licenses",
+        ] {
+            assert!(error.contains(expected), "{expected:?} is missing: {error}");
+        }
+    }
+
+    /// The same invariant as `the_hard_expressions_link_every_operand_they_name`
+    /// over the document that actually ships, which is the one whose links a
+    /// reader clicks.
+    #[test]
+    fn every_operand_link_in_the_committed_document_resolves() {
+        let document = committed_notices();
+        let resolved = assert_every_operand_resolves(&document);
+        assert!(
+            resolved > 500,
+            "only {resolved} operands were checked, so the document is not the shipping one"
+        );
+    }
+
+    #[test]
+    fn every_referenced_identifier_has_exactly_one_section() {
+        let document = committed_notices();
+        let (packages, texts) = halves(&document);
+        let referenced: BTreeSet<&str> = packages
+            .lines()
+            .filter(|line| line.starts_with("- `"))
+            .flat_map(markdown_links)
+            .map(|(label, _)| label)
+            .collect();
+        let sections = sections_in(texts);
+        assert_eq!(
+            sections.len(),
+            referenced.len(),
+            "{} sections for {} identifiers",
+            sections.len(),
+            referenced.len()
+        );
+        for identifier in &referenced {
+            let mine: Vec<usize> = sections
+                .iter()
+                .filter(|(_, named)| named == identifier)
+                .map(|(number, _)| *number)
+                .collect();
+            assert_eq!(mine.len(), 1, "{identifier} has sections {mine:?}");
+        }
+        assert_eq!(
+            sections
+                .iter()
+                .map(|(number, _)| *number)
+                .collect::<Vec<_>>(),
+            (1..=sections.len()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Nothing may happen to a license text between the corpus and the
+    /// document: no rewrapping, no trimming, no line-ending conversion.
+    #[test]
+    fn each_corpus_text_reaches_the_document_byte_for_byte() {
+        let repo = store::repo_root();
+        let document = committed_notices();
+        let (_, texts) = halves(&document);
+        let sections = sections_in(texts);
+        assert!(sections.len() > 10, "{} sections", sections.len());
+        for (number, identifier) in sections {
+            let path = corpus_path(&repo, identifier);
+            let corpus = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+            assert_eq!(
+                texts.matches(corpus.as_str()).count(),
+                1,
+                "license {number}, {identifier}, is not in the document exactly as \
+                 {} has it",
+                path.display()
+            );
+        }
+    }
+
+    /// The walk needs `cargo metadata` and `cargo tree`, so a checkout that
+    /// cannot resolve the tree skips with a printed reason rather than failing.
+    /// The corpus is committed, so a failure to read it is not skippable.
     #[test]
     fn the_committed_bake_matches_a_fresh_one() {
         let repo = store::repo_root();
@@ -1072,9 +1141,10 @@ mod tests {
                 return;
             }
         };
+        let texts = license_texts(&repo, &packages).unwrap_or_else(|e| panic!("{e}"));
         for (relative, fresh) in [
             (LIST_PATH, render_list(&packages)),
-            (NOTICES_PATH, render_notices(&packages)),
+            (NOTICES_PATH, render_notices(&packages, &texts)),
         ] {
             let path = repo.join(relative);
             let committed = std::fs::read_to_string(&path)

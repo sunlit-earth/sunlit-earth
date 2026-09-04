@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    bake_icon, bake_licenses, bake_stars, build_image, dist, doctor, e2e, setup, sweep,
-    teardown, vm,
+    bake_icon, bake_licenses, bake_stars, build_image, dist, doctor, e2e, setup, sweep, teardown,
+    vm,
 };
 use crate::host::facts;
 use crate::provider::desktop::Desktop;

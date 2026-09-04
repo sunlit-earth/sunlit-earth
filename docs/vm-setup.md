@@ -283,16 +283,19 @@ against and what is easiest to run a host-side `render` with, and beside it one 
 that is the thing to hand somebody. It is a zip on Windows and a `.tar.gz` on Linux, each
 unpacking into a single directory named `sunlit-earth-<version>-<target>`, so unpacking
 anywhere produces one folder rather than a scattering. The version is the workspace
-manifest's, not `git describe`, which has no tags to work from here; the commit is inside,
-in the record.
+manifest's, not `git describe`, which has no tags to work from here; the commit is in
+`build-info.json`, which sits beside the archive in `target/dist/<target>/` rather than
+inside it. The credits are not in the archive either: the About window's attributions tab
+carries them now, `assets/ATTRIBUTION.md` and `textures/PROVENANCE.md` stay in the
+repository, and what does travel is the one thing a tab cannot deliver, which is the
+per-crate copyright notices.
 
 | in the bundle | why |
 |---|---|
 | `sunlit-earth` / `sunlit-earth.exe` | 0755 in the tarball, so nobody has to `chmod +x` |
-| `textures/` | the four JXL assets and `PROVENANCE.md`, which is the attribution for the imagery. Without them the app draws the procedural grid |
-| `build-info.json` | the same record as beside it, so it travels with the binary it describes |
+| `textures/` | the four JXL assets. Without them the app draws the procedural grid |
 | `LICENSE` | the GPL 3.0 text the workspace declares |
-| `ATTRIBUTION.md` | the star catalog's, which is baked into the binary and cannot travel any other way |
+| `THIRD-PARTY-LICENSES.md` | the license texts and copyright notices of the crates in the binary. The About window's third tab lists the crates and links their identifiers, which is not the same thing as carrying the notices, so this file is what discharges the obligation |
 | `assets/` | Linux only: the desktop entry, the hicolor icons, the SVG master and `install-user.sh`, which exists exactly for someone holding a binary and no package. Windows needs no equivalent, because the icon is a resource inside the exe |
 
 The zip stores the JXL entries and deflates the rest: they are compressed images already,

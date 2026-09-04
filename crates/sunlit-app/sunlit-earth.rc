@@ -3,6 +3,6 @@
 // is 1 and there is no second one.
 //
 // The path is relative to this file. The .ico is baked from the SVGs by
-// `cargo xtask bake-icon` and committed, so this is a plain read at build time
+// `cargo xtask bake icon` and committed, so this is a plain read at build time
 // with no rasterizer involved.
 1 ICON "../../assets/icon/baked/sunlit-earth.ico"

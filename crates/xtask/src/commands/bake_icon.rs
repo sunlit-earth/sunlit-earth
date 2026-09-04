@@ -1,4 +1,4 @@
-//! `cargo xtask bake-icon`: the icon SVGs to the rasters the app ships.
+//! `cargo xtask bake icon`: the icon SVGs to the rasters the app ships.
 //!
 //! The mark is four SVGs under `assets/icon/`, a master and three variants that
 //! shed detail rather than scale it, and everything the app shows an icon in
@@ -430,14 +430,14 @@ mod tests {
             assert_eq!(
                 committed.len(),
                 output.bytes.len(),
-                "{} is {} bytes on disk and {} freshly baked; run `cargo xtask bake-icon`",
+                "{} is {} bytes on disk and {} freshly baked; run `cargo xtask bake icon`",
                 output.path.display(),
                 committed.len(),
                 output.bytes.len()
             );
             assert!(
                 committed == output.bytes,
-                "{} differs from a fresh bake; run `cargo xtask bake-icon`",
+                "{} differs from a fresh bake; run `cargo xtask bake icon`",
                 output.path.display()
             );
         }

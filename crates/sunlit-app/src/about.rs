@@ -159,15 +159,27 @@ fn open_url(url: &str) {
 /// Whether a URL is one this program will hand to a shell.
 ///
 /// Every URL in the window comes from a file compiled into the binary, so this
-/// guards nothing that is reachable today. It is three lines, and it makes the
-/// argument-injection question unaskable rather than answerable by reading the
-/// three documents.
+/// guards nothing that is reachable today. It exists so that the
+/// argument-injection question is unaskable rather than answerable by reading
+/// the three documents, and that takes more than a scheme check: the Windows
+/// opener goes through `cmd /C`, which reparses its argument and reads `&`,
+/// `|`, `<`, `>`, `^` and `%` as its own. So the rest of the URL has to be
+/// spelled out of a set that holds nothing a shell looks at.
+///
+/// The cost is that a query string and a percent-escape are both refused. No
+/// document in this program has either; one that grew one would be refused
+/// with a line in the log rather than opened.
 fn is_web_url(url: &str) -> bool {
+    /// URL characters that are not shell characters anywhere the opener runs.
+    const SAFE: &str = "-._~:/?#[]@+,;='";
+
     match url.split_once("://") {
         Some((scheme, rest)) => {
             matches!(scheme, "http" | "https")
                 && !rest.is_empty()
-                && !url.chars().any(char::is_whitespace)
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || SAFE.contains(c))
         }
         None => false,
     }
@@ -370,9 +382,46 @@ mod tests {
             "example.invalid",
             "",
             "https://example.invalid/a b",
+            // What `cmd /C` would read as its own rather than as a URL.
+            "https://example.invalid/x&calc",
+            "https://example.invalid/x|calc",
+            "https://example.invalid/x>out",
+            "https://example.invalid/x^y",
+            "https://example.invalid/%PATH%",
+            "https://example.invalid/\"x\"",
+            "https://example.invalid/$(x)",
+            "https://example.invalid/x\ny",
         ] {
             assert!(!is_web_url(refused), "{refused} should be refused");
         }
+    }
+
+    /// Every URL the three documents carry has to survive the check, or a link
+    /// in the window would log a refusal instead of opening.
+    #[test]
+    fn every_link_in_the_shipped_documents_is_one_the_opener_accepts() {
+        for (name, document) in RENDERED {
+            for link in links_in(document) {
+                assert!(
+                    is_web_url(&link),
+                    "{name} carries {link}, which the opener refuses"
+                );
+            }
+        }
+    }
+
+    /// The `(url)` half of every `[text](url)` in a document.
+    fn links_in(document: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut rest = document;
+        while let Some(start) = rest.find("](") {
+            rest = &rest[start + 2..];
+            if let Some(end) = rest.find(')') {
+                found.push(rest[..end].to_owned());
+                rest = &rest[end..];
+            }
+        }
+        found
     }
 
     #[test]

@@ -9,23 +9,14 @@ publish = false
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# `rust-toolchain.toml`, which is the one place the pinned channel is spelled.
 toml = { workspace = true }
 time = { workspace = true, features = ["formatting"] }
 dirs = { workspace = true }
-# CRC-32 rather than a cryptographic digest: the question a checksum answers
-# here is "did this multi-gigabyte file get truncated or clobbered", not "did
-# someone substitute it", and the doctor has to be able to answer it without
-# reading tens of gigabytes at 500 MB/s. See `checksum` in `hash.rs`.
 crc32fast = { workspace = true }
 csv = { workspace = true }
-# The icon bake: SVG in, PNG and ICO out. Nothing else in the xtask draws.
 resvg = { workspace = true }
 ico = { workspace = true }
 image = { workspace = true }
-# The release bundle: one assembled directory written out by whichever writer
-# the target names. See the comment in the workspace manifest for why there are
-# two of them rather than one format for both.
 zip = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }

@@ -1,7 +1,6 @@
 [package]
 # The package (and therefore the binary) keeps the name `sunlit-earth` even
-# though the crate directory is `sunlit-app`, so `CARGO_BIN_EXE_sunlit-earth`,
-# the e2e suite, CI, and the release workflow all keep working unchanged.
+# though the crate directory is `sunlit-app`.
 name = "sunlit-earth"
 version.workspace = true
 edition.workspace = true
@@ -22,8 +21,6 @@ interprocess.workspace = true
 crossbeam-channel.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# AttachConsole, and the invisible window `session_end` listens on. Everything
-# else Win32 lives in sunlit-core.
 windows-sys = { workspace = true, features = [
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
@@ -33,13 +30,10 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# SIGTERM, which is how a Linux desktop session says it is ending.
 signal-hook.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
-# Test-only: the fine drag gain is checked against the sky lens's own
-# projection rather than against a second spelling of it.
 glam.workspace = true
 proptest.workspace = true
 serial_test.workspace = true

@@ -40,7 +40,7 @@ That list is a superset of what `ci.yml` installs, on purpose: the GitHub runner
 
 ### Linux from Windows (WSL)
 
-The Linux port is developed through WSL. Build into a Linux-native target directory, or the Windows and Linux artifacts fight over `target/`:
+The Linux port is developed through WSL. Build into a Linux-native target directory. WSL sees the repository at `/mnt/c/...`, and with `CARGO_TARGET_DIR` unset it builds into the same `target/` the Windows build uses; the two never collide, because the target triple is part of every artifact hash, so cargo writes a second complete set of artifacts beside the first and mentions nothing. `sunlit-app`'s build script fails a build it finds in a directory another platform has claimed, but a build script runs only once the dependencies are compiled, so the variable is still the thing to get right:
 
 ```bash
 wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/path/to/sunlit-earth && CARGO_TARGET_DIR=$HOME/sunlit-target cargo test --workspace'

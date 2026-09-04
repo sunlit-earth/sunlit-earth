@@ -41,7 +41,7 @@ cargo run -- displays              # the monitors this session has and the plan 
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden   # regenerate goldens for this adapter
 ```
 
-Building the Linux port from Windows goes through WSL with `CARGO_TARGET_DIR` pointed into the distribution, or the two builds fight over `target/`; the command is in README under "Linux from Windows (WSL)".
+Building the Linux port from Windows goes through WSL with `CARGO_TARGET_DIR` pointed into the distribution, or `target/` ends up holding two platforms' worth of artifacts; `sunlit-app`'s build script refuses a directory another platform has claimed, and the command is in README under "Linux from Windows (WSL)".
 
 ### The desktop e2e suite and the VMs
 
@@ -82,6 +82,8 @@ cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cac
 ### Rare
 
 `cargo xtask bake-icon` and `cargo xtask bake-stars` regenerate committed assets from their sources (`assets/icon/*.svg`, HYG v4.4); a test compares the committed output against a fresh bake, so they are only ever run after changing a source. `cargo llvm-cov --html` writes a coverage report under `target/llvm-cov/html/`.
+
+`cargo xtask sweep` deletes build artifacts no recent build has used, which cargo never does itself: an age pass for what nothing has touched in a week, then a size pass that takes the oldest artifacts until the directory fits in 25 GiB. Neither reaches the incremental caches, so it reports what those hold instead. Needs `cargo install cargo-sweep`; `--dry-run` reports and deletes nothing.
 
 ## Workspace
 

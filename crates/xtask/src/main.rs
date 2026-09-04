@@ -22,7 +22,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{bake_icon, bake_stars, build_image, dist, doctor, e2e, setup, teardown, vm};
+use crate::commands::{
+    bake_icon, bake_stars, build_image, dist, doctor, e2e, setup, sweep, teardown, vm,
+};
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
 use crate::provider::target::{HostOs, Image};
@@ -104,6 +106,19 @@ enum Command {
         /// Binary catalog output.
         #[arg(long, value_name = "BIN")]
         output: std::path::PathBuf,
+    },
+    /// Delete build artifacts no recent build has used. Needs cargo-sweep:
+    /// `cargo install cargo-sweep`.
+    Sweep {
+        /// Keep artifacts a build has used within this many days.
+        #[arg(long, default_value_t = 7, value_name = "DAYS")]
+        time: u32,
+        /// Shrink the target directory to this size, oldest artifacts first.
+        #[arg(long, default_value_t = 25, value_name = "GIB")]
+        maxsize: u32,
+        /// Report what both passes would delete, and delete nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -250,6 +265,18 @@ fn main() -> ExitCode {
         ),
         Command::BakeIcon { review } => bake_icon::run(review),
         Command::BakeStars { input, output } => bake_stars::run(&input, &output),
+        Command::Sweep {
+            time,
+            maxsize,
+            dry_run,
+        } => sweep::run(
+            &runner,
+            &sweep::Options {
+                days: time,
+                gibibytes: maxsize,
+                dry_run,
+            },
+        ),
         Command::Vm { command } => match command {
             VmCommand::Doctor => doctor::run(&runner),
             VmCommand::BuildImage { image } => build_image::run(&runner, image),

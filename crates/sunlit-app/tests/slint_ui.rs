@@ -1150,12 +1150,33 @@ fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
     window.set_attributions(slint::StyledText::from_markdown(&"line\n\n".repeat(200)).unwrap());
     materialize_about(&window);
 
-    let before = window.get_version_y();
-    let scrolled = scroll_the_open_tab(&window);
-    let after = window.get_version_y();
+    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
+        .match_type_name("StyledText")
+        .find_first()
+        .expect("the attributions tab has no StyledText");
+    let header_before = window.get_version_y();
+    let body_before = body.absolute_position().y;
 
-    assert!(scrolled, "no scrollable element was found in the open tab");
-    approx::assert_relative_eq!(before, after);
+    // Not `ElementHandle::scroll`, which aims at the element's centre: a
+    // document taller than the window has its centre outside the window, and
+    // an event there reaches nothing. This aims at a point in the tab's own
+    // viewport, low enough to be under the header and the tab bar.
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(280.0, 350.0),
+            delta_x: 0.0,
+            delta_y: -400.0,
+        });
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+
+    // The body having moved is what stops this from passing because nothing
+    // scrolled at all.
+    assert!(
+        (body.absolute_position().y - body_before).abs() > 1.0,
+        "the tab did not scroll, so the header standing still proves nothing"
+    );
+    approx::assert_relative_eq!(window.get_version_y(), header_before);
 }
 
 /// Each tab is reachable and carries the document it is for.
@@ -1313,18 +1334,6 @@ fn click_at(window: &sunlit_earth::AboutWindow, origin: slint::LogicalPosition, 
         window.window().dispatch_event(event);
     }
     i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
-}
-
-/// Scroll whatever in the open tab responds to a wheel, and say whether
-/// anything did.
-fn scroll_the_open_tab(window: &sunlit_earth::AboutWindow) -> bool {
-    let mut scrolled = false;
-    for element in ElementHandle::find_by_element_type_name(window, "StyledText") {
-        element.scroll(0.0, -400.0);
-        scrolled = true;
-    }
-    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
-    scrolled
 }
 
 /// The adapter name stays on one line however long it is. A word-wrapped

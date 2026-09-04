@@ -1,6 +1,6 @@
 # Third-party crates
 
-Every crate Sunlit Earth depends on, as the union over the three platforms it builds for, so a few here are absent from any one build. Each license name links to its SPDX page; the full license texts are in `THIRD-PARTY-LICENSES.md` beside the program.
+Every crate Sunlit Earth depends on, as the union over the three platforms it builds for, so a few here are absent from any one build. Each license name links to its SPDX page.
 
 - `ab_glyph 0.2.32`: [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `ab_glyph_rasterizer 0.1.10`: [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)

@@ -183,8 +183,6 @@ mod tests {
         assert_eq!(tag(&taken[0]), 5, "the newest frame must win");
     }
 
-    /// A decode of a superseded resolution finishing after its own replacement
-    /// is already parked.
     #[test]
     fn mailbox_keeps_the_newer_generation_whichever_order_the_two_arrive_in() {
         let mailbox = TextureMailbox::new(4);
@@ -201,8 +199,6 @@ mod tests {
         assert_eq!(parked_generation(&mailbox, 1), Some(2));
     }
 
-    /// Within one generation nothing is ordered and the newest arrival wins,
-    /// which is the plain latest-value behavior the cloud fetcher depends on.
     #[test]
     fn mailbox_still_takes_the_newest_message_of_the_same_generation() {
         let mailbox = TextureMailbox::new(4);

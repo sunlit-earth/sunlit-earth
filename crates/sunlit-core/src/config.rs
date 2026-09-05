@@ -897,7 +897,6 @@ mod tests {
         assert_eq!(config.custom_year, 0);
     }
 
-    /// A display mode nothing answers to costs the default, not the file.
     #[test]
     fn a_display_mode_this_build_does_not_have_loads_as_the_default() {
         let config: AppConfig = toml::from_str(
@@ -1337,8 +1336,6 @@ sky_fov = 111.0
 
     // --- find_sample_count_index ---
 
-    /// A count the adapter offers indexes itself; anything else lands on the
-    /// last entry, which is the strongest the adapter has.
     #[test]
     fn a_sample_count_indexes_itself_or_the_strongest_on_offer() {
         for (offered, requested, expected) in [

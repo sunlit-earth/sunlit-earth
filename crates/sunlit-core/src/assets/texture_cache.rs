@@ -473,8 +473,6 @@ mod tests {
         );
     }
 
-    /// The next successful write of an entry clears the temporary files an
-    /// earlier writer of it was killed holding.
     #[test]
     fn a_write_sweeps_unfinished_files_an_earlier_one_left() {
         let dir = temp_dir("sweep");
@@ -512,8 +510,6 @@ mod tests {
         );
     }
 
-    /// Two writers of the same entry must not share a temporary name, or the
-    /// second `File::create` truncates the first one's PNG mid-write.
     #[test]
     fn each_unfinished_name_is_the_writers_own() {
         let target = Path::new("C:/data/texture_cache/day.2048.png");
@@ -550,8 +546,6 @@ mod tests {
         );
     }
 
-    /// The cache is keyed on the source, so replacing the asset must not leave
-    /// the old downscale in use.
     #[test]
     fn a_changed_source_invalidates_the_cache() {
         let dir = temp_dir("invalidate");
@@ -606,8 +600,6 @@ mod tests {
         assert_eq!(uncached.pixels, read_back.pixels);
     }
 
-    /// A source replaced while it was being decoded must not be recorded as
-    /// where the old pixels came from.
     #[test]
     fn a_source_that_changed_during_the_decode_is_not_cached() {
         let dir = temp_dir("changed_mid_decode");

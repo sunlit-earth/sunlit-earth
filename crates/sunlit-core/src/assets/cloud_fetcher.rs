@@ -555,9 +555,6 @@ mod tests {
         }
     }
 
-    /// An offered width downloads a cloud image of exactly that width, which is
-    /// also what makes the mapping injective: lowering the resolution has to
-    /// lower the download.
     #[test]
     fn an_offered_width_is_its_own_variant() {
         for &width in &TEXTURE_RESOLUTIONS {
@@ -565,7 +562,6 @@ mod tests {
         }
     }
 
-    /// Every variant is 2:1, which is what an equirectangular projection is.
     #[test]
     fn every_variant_is_two_to_one() {
         for &width in &TEXTURE_RESOLUTIONS {
@@ -574,9 +570,6 @@ mod tests {
         }
     }
 
-    /// The renderer takes any width as a cap, so a width from outside the
-    /// offered set still has to land on a variant that exists, and never on a
-    /// sharper one than the surface it sits over.
     #[test]
     fn a_width_the_set_does_not_offer_takes_the_widest_that_fits() {
         let mut offered = TEXTURE_RESOLUTIONS;
@@ -623,8 +616,6 @@ mod tests {
         }
     }
 
-    /// Two variants must not share a cache entry, or a switch could be answered
-    /// with the previous variant's bytes.
     #[test]
     fn each_variant_has_its_own_cache_entry() {
         let dir = PathBuf::from("C:/tmp/sunlit");
@@ -639,9 +630,6 @@ mod tests {
         }
     }
 
-    /// What the override serves has no variant, so it must not be filed under a
-    /// name that claims one: the next run without the override would read that
-    /// entry and show whatever the override was pointed at.
     #[test]
     fn the_environment_override_gets_a_cache_entry_of_its_own() {
         let overridden = cache_stem(cloud_variant(4096), true);
@@ -689,8 +677,6 @@ mod tests {
         assert_eq!(dir, PathBuf::from("C:/tmp/sunlit"));
     }
 
-    /// The cloud cache lives under the one app folder, beside the config file
-    /// and the wallpaper output.
     #[test]
     fn the_cache_dir_without_an_override_is_the_app_folder() {
         let Some(dir) = resolve_cache_dir(None) else {
@@ -1027,9 +1013,6 @@ mod tests {
     // Following the texture resolution
     // -----------------------------------------------------------------------
 
-    /// Construction points the source at the URL the cache entry is named
-    /// after, so the two cannot disagree whatever the caller built the source
-    /// with.
     #[test]
     fn construction_points_the_source_at_the_variant_it_will_cache_under() {
         let source = Arc::new(ScriptedSource::new());
@@ -1149,8 +1132,6 @@ mod tests {
         assert_eq!(source.fetches(), 3);
     }
 
-    /// The same rule one door further in: a body that downloads but does not
-    /// decode must leave no freshness claim behind, on disk or in memory.
     #[test]
     fn an_undecodable_body_leaves_no_freshness_claim() {
         let scratch = ScratchDir::new("cloud_undecodable_body");
@@ -1194,8 +1175,6 @@ mod tests {
         assert_eq!(source.fetches(), 3);
     }
 
-    /// The other half of the same rule: with no cache entry and no network,
-    /// a switch posts nothing rather than blanking the overlay.
     #[test]
     fn a_switch_with_nothing_cached_and_no_network_posts_nothing() {
         let scratch = ScratchDir::new("cloud_switch_offline");
@@ -1215,8 +1194,6 @@ mod tests {
         );
     }
 
-    /// A switch must not be answered out of the previous variant's cache, and a
-    /// switch back must put what it left behind on screen.
     #[test]
     fn each_variant_keeps_its_own_cached_image_and_a_switch_back_shows_it() {
         let scratch = ScratchDir::new("cloud_variant_cache");

@@ -1,4 +1,4 @@
-<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 3046327. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
+<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 19312ba, the tree the review read, and were moved on 2026-09-05 for the files that changed on main since; the main report lists those under "Changes since the review". The changed code was not re-reviewed. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
 
 # Review: configuration and memory instrumentation (`sunlit-core`)
 

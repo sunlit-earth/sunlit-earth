@@ -1,4 +1,4 @@
-<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 3046327. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
+<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 19312ba, the tree the review read, and were moved on 2026-09-05 for the files that changed on main since; the main report lists those under "Changes since the review". The changed code was not re-reviewed. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
 
 # Review: `crates/sunlit-app` (the Slint shell)
 
@@ -6,13 +6,13 @@
 
 The crate is in good shape: no `unwrap()`, no `panic!`, no `todo!` anywhere in `src/`, every `unsafe` is scoped with a real `// SAFETY:` argument, and the latest-value preview mailbox in `engine_client.rs` is race-free on inspection. Three things stand out.
 
-First, commentary: roughly a third of the long comment blocks restate what `docs/architecture.md`, `docs/roadmap.md`, and the retrospective already say, sometimes three times over in one file. The clearest case is the missing-globe-texture argument, written out at `main.rs:275`, `main.rs:436`, `main.rs:942` and `docs/roadmap.md:99`.
+First, commentary: roughly a third of the long comment blocks restate what `docs/architecture.md`, `docs/roadmap.md`, and the retrospective already say, sometimes three times over in one file. The clearest case is the missing-globe-texture argument, written out at `main.rs:275`, `main.rs:436`, `main.rs:942` and `docs/roadmap.md:100`.
 
 Second, `main.rs` is one 200-line `run_app` inside a file that is CLI types, logging, texture resolution, two subcommands and the windowed path all at once. It splits cleanly along seams that already exist.
 
 Third, `ui_callbacks.rs` has zero test coverage for the four `register_*` functions (330 of its 674 lines), and its `on_load_defaults` and `on_reset` bodies are 25 duplicated lines.
 
-Two real defects: the auto-refresh interval slider does a config-file read plus write on every tick, and `--ipc-socket` panics on a name that is invalid or in use. `main.slint` at 1644 lines is long for a defensible reason and I recommend only a small split.
+Two real defects: the auto-refresh interval slider does a config-file read plus write on every tick, and `--ipc-socket` panics on a name that is invalid or in use. `main.slint` at 1644 lines (1868 since PR #45) is long for a defensible reason and I recommend only a small split.
 
 ## 2. Metrics
 
@@ -26,10 +26,10 @@ Two real defects: the auto-refresh interval slider does a config-file read plus 
 | `engine_client.rs` | 245 | 0 | 0 | 5 / 0 / 0 | `event_forwarder` (90) | 0 |
 | `ipc.rs` | 219 | 0 | 0 | 5 / 0 / 0 | `dispatch_command` (108) | 0 |
 | `tray.rs` | 141 | 22 | 2 | 4 / 0 / 0 | none | 0 |
-| `about.rs` | 105 | 51 | 3 | 0 / 0 / 0 | none | 0 |
+| `about.rs` | 105 (705 after PR #45) | 51 | 3 (9 after PR #45) | 0 / 0 / 0 | none | 0 |
 | `lib.rs` | 10 | 0 | 0 | 0 | none | 0 |
-| `build.rs` | 23 | 0 | 0 | 0 | none | n/a |
-| `ui/main.slint` | 1644 | n/a | n/a | 12 / 1 / 0 | `MainWindow` (1355) | n/a |
+| `build.rs` | 23 (93 after the target-directory fix) | 0 | 0 | 0 | none | n/a |
+| `ui/main.slint` | 1644 (1868 after PR #45) | n/a | n/a | 12 / 1 / 0 | `MainWindow` (1355) | n/a |
 
 Attributes: 21 `#[allow(...)]`, 0 `#[expect(...)]`. 8 of the 21 are `unsafe_code` (all in `session_end.rs` plus `main.rs:833`), 12 are cast lints, 1 is `too_many_lines` + `needless_pass_by_value` on `run_app`. `#[expect]` is used exactly once in the whole workspace (`sunlit-core/src/assets/stars.rs:35`), so `#[allow]` is the house style and this crate is consistent with it.
 
@@ -42,13 +42,13 @@ Proptest case count: default. There is no `ProptestConfig`, no `proptest.toml`, 
 ### A. Commentary
 
 **A1 (medium): The same argument written three times, and a fourth time in `docs/roadmap.md`.**
-`main.rs:275-281` (doc on `have_globe_texture`), `main.rs:436-449` (a 14-line block inside `run_render`), `main.rs:942-948` (doc on the test) and `docs/roadmap.md:99` all explain that `TexturesReady` never arrives for a directory holding only the Moon or the panorama. The block at `main.rs:436-449` additionally says "it is on the roadmap as its own fix", which is exactly the cross-reference the maintainer's rules put in commits and docs. Delete `436-449` entirely; the `let have_globe = have_globe_texture(...)` line plus the doc on the function already say it. Delete the test doc at `942-948` (the test name says it). Keep `275-281`, trimmed to the slot-index convention, which is the one non-obvious fact ("the slot is the index plus one").
+`main.rs:275-281` (doc on `have_globe_texture`), `main.rs:436-449` (a 14-line block inside `run_render`), `main.rs:942-948` (doc on the test) and `docs/roadmap.md:100` all explain that `TexturesReady` never arrives for a directory holding only the Moon or the panorama. The block at `main.rs:436-449` additionally says "it is on the roadmap as its own fix", which is exactly the cross-reference the maintainer's rules put in commits and docs. Delete `436-449` entirely; the `let have_globe = have_globe_texture(...)` line plus the doc on the function already say it. Delete the test doc at `942-948` (the test name says it). Keep `275-281`, trimmed to the slot-index convention, which is the one non-obvious fact ("the slot is the index plus one").
 
 **A2 (medium): `session_end.rs:320-336` carries a plan reference and repeats the module doc.**
 Line 321 reads "which is the Linux session's way of saying it is going (phase 5 decision 8)". The rest of the block restates paragraphs already in the module doc at `1-35` and in `docs/roadmap.md:19`. Keep only the last paragraph (`334-336`), the signal-handler-safety constraint, which is a real invariant and the reason `signal-hook` is a dependency. Delete the rest.
 
 **A3 (medium): `session_end.rs:1-35`, a 35-line module doc that is mostly history.**
-Lines 9-15 narrate the bug ("the tray process sat there until it was killed"), 16-23 argue an alternative that was rejected, 32-35 point at the roadmap. `docs/architecture.md:84` says all of it. The one sentence that must stay is lines 22-23: `HWND_MESSAGE` windows do not receive `WM_QUERYENDSESSION`/`WM_ENDSESSION`, which is an undocumented-looking Win32 fact that would be re-broken the first time somebody "tidies" the window into a message-only one. Trim 35 lines to about 10.
+Lines 9-15 narrate the bug ("the tray process sat there until it was killed"), 16-23 argue an alternative that was rejected, 32-35 point at the roadmap. `docs/architecture.md:87` says all of it. The one sentence that must stay is lines 22-23: `HWND_MESSAGE` windows do not receive `WM_QUERYENDSESSION`/`WM_ENDSESSION`, which is an undocumented-looking Win32 fact that would be re-broken the first time somebody "tidies" the window into a message-only one. Trim 35 lines to about 10.
 
 **A4 (medium): `main.rs:782-786` and `main.rs:802-806` are history.**
 "Nothing here used to answer either, so the shutdown screen named this process as the one preventing it" and "which is what retired the `process::exit(0)` that used to dodge a thread-local destruction panic in wgpu's `Queue::drop`". Both belong in the retrospective, which already has them. Delete the first; reduce the second to one sentence if the ordering constraint (engine shutdown before the display watcher stops) needs stating, which it does at `809-810` and already does.
@@ -56,13 +56,13 @@ Lines 9-15 narrate the bug ("the tray process sat there until it was killed"), 1
 **A5 (low): `mouse_math.rs` test bodies explain why the test exists.**
 `395-408`, `412-437`, `441-449`, `463-478` carry 4-8 line prose blocks including measurements ("`fine + (coarse - fine)` rounds away from `coarse` at 62 of these 1001 zooms", "at 140 degrees of sky it is never active"). The maintainer's rules name "notes on why a test exists" as belonging in commits. The measurement in `463-466` is the strongest of them because it justifies the branch in `drag_gain`; move it to the doc on `drag_gain` (where a shorter version already is, at `133-137`) and delete it here. Keep the `image_pixels` helper doc at `372-377`, which states the coordinate convention the helper returns.
 
-**A6 (low): `mouse_math.rs:109-125` and `127-154` duplicate `docs/architecture.md:85`.**
+**A6 (low): `mouse_math.rs:109-125` and `127-154` duplicate `docs/architecture.md:88`.**
 The architecture doc's paragraph on the drag gains is a near-verbatim expansion of these two doc comments. The `:param:`/`:returns:` sections are good API docs and should stay. The middle paragraphs ("Neither side of that ratio depends on the camera's distance, which is the point") are rationale. Trim each by about half.
 
 **A7 (low): restating comments.** `ui_callbacks.rs:1-4` ("Groups all Slint callback registrations by category and provides helper functions for applying/reading config to/from the window") says what the four function names say. `engine_client.rs:8` ends "exactly the failure mode Phase 0 removed from the texture path", a plan reference. `mouse_math.rs:3-4` ("These functions are extracted from the mouse callback closures in `main.rs`") is history and is now wrong: they are called from `ui_callbacks.rs`, not `main.rs`. That last one is a good illustration of comment rot.
 
 **A8: comments that earn their place (do not touch).**
-`ui_callbacks.rs:593-606`, the "read-modify-write against what is on disk" doc, states an invariant that prevented real data loss and is guarded by a named test; keep it. `main.rs:235-243` (`TEXTURE_MIN_BYTES`) carries the Git LFS pointer invariant, which nothing in the code says. `main.rs:657-661` names the display watcher's consumer and its "always" condition, which `CLAUDE.md` requires of every background producer. `displays.rs:173-188` explains why `replace_monitors` returns the row rather than only setting it, a testability constraint that is not visible from the signature. `ipc.rs:158-166` states that `query-memory`'s single line is a parsing contract. All of `main.slint`'s comments are of this kind: Slint layout gotchas (`34-43`, `65-69`, `116-120`, `174-178`, `631-636`) that would be silently re-broken without them.
+`ui_callbacks.rs:593-606`, the "read-modify-write against what is on disk" doc, states an invariant that prevented real data loss and is guarded by a named test; keep it. `main.rs:235-243` (`TEXTURE_MIN_BYTES`) carries the Git LFS pointer invariant, which nothing in the code says. `main.rs:657-661` names the display watcher's consumer and its "always" condition, which `CLAUDE.md` requires of every background producer. `displays.rs:173-188` explains why `replace_monitors` returns the row rather than only setting it, a testability constraint that is not visible from the signature. `ipc.rs:158-166` states that `query-memory`'s single line is a parsing contract. All of `main.slint`'s comments are of this kind: Slint layout gotchas (`49-58`, `80-84`, `131-135`, `189-193`, `646-651`) that would be silently re-broken without them.
 
 ### B. Length and structure
 
@@ -89,10 +89,10 @@ Four sections separated by blank lines: the monitor list (280-292), the anchor (
 **B4 (low): `engine_client::event_forwarder` at 90 lines is one closure with five match arms.**
 The `PreviewFrame` arm (157-189) carries the mailbox protocol and is the only non-trivial one. Extracting it as `fn forward_frame(mailbox: &Arc<PreviewMailbox>, weak: &Weak<MainWindow>, ...)` would make the protocol readable on its own. Optional.
 
-**B5: `ui/main.slint` at 1644 lines: a small split only.**
-It is one `MainWindow` (197-1551, 1355 lines) plus `AboutWindow` (1553-1588), `TrayIcon` (1594-1644), the `MonitorTile` struct (8-15) and six small reusable components (`Splitter` 17-32, `Hint` 44-63, `SettingRow` 70-114, `SettingCheck` 121-147, `SettingCombo` 150-190, `SettingHeading` 193-195). Inside `MainWindow`, 832 of those lines are the Advanced section (598-1429), ten `GroupBox`es of `SettingRow` instances.
+**B5: `ui/main.slint` at 1644 lines (1868 since PR #45): a small split only.**
+It is one `MainWindow` (212-1566, 1355 lines) plus `AboutWindow` (1568-1817, 41 lines at review time and 250 since PR #45), `TrayIcon` (1818-1868), the `MonitorTile` and `AboutBlock` structs (8-31) and six small reusable components (`Splitter` 32-47, `Hint` 59-78, `SettingRow` 85-129, `SettingCheck` 136-162, `SettingCombo` 165-205, `SettingHeading` 208-210). Inside `MainWindow`, 832 of those lines are the Advanced section (613-1444), ten `GroupBox`es of `SettingRow` instances.
 
-Worth splitting: `ui/widgets.slint` for lines 3-195 (the struct and the six components, 193 lines) and `ui/tray.slint` for 1590-1644. That takes `main.slint` to about 1400 and gives the reusable widgets a file whose name says what they are. `AboutWindow` (36 lines) can go with the tray or stay.
+Worth splitting: `ui/widgets.slint` for lines 3-210 (the two structs and the six components, 208 lines) and `ui/tray.slint` for 1814-1868. That takes `main.slint` to about 1600 and gives the reusable widgets a file whose name says what they are. `AboutWindow` was 36 lines when this was written and could go with the tray or stay; at 250 lines since PR #45 it is worth its own `about.slint`, which takes `main.slint` to about 1350.
 
 Not worth splitting: the Advanced section. Slint has no way to hand a component a group of two-way-bound properties in bulk. Extracting `GroupBox { title: "Celestial" }` (908-1152) into its own component means re-declaring all 24 of its `in-out property <float>`s in the child and writing 24 `<=>` bindings at the instantiation site, so 832 lines become about 900 across two files, and every new parameter costs three edits instead of two. The `Setting*` components already carry the repetition that could be factored out. Recommend leaving 598-1429 where it is and saying so in `docs/architecture.md`, which currently explains the widget design (line 91) but not why the file stays long.
 
@@ -118,7 +118,7 @@ Not worth splitting: the Advanced section. Slint has no way to hand a component 
 `on_load_defaults` and `on_reset` differ only in `AppConfig::default()` versus `config::load_config()`; everything after that (apply, defer combo indices, redraw the diagram, clear the one-run flag, send `SetTextureResolution`, send `SetDisplayPlan`, push params) is character-for-character the same. Extract `fn apply_whole_config(win: &MainWindow, engine: &EngineLink, screens: &SharedMonitors, config: &AppConfig)` and both callbacks become four lines.
 
 **D3 (medium): the gamma slider curve is re-implemented in `main.slint`, twice.**
-`main.slint:1384` and `main.slint:1410` compute `(day-gamma <= 0.5 ? 0.2 + 1.6 * day-gamma : 1.0 + 4.0 * (day-gamma - 0.5))` as the value label. That is `gamma_slider_to_value` from `sunlit-core/src/params.rs:430` with `GAMMA_MIN = 0.2` and `GAMMA_MAX = 3.0` inlined. I checked the arithmetic and it currently agrees. Change either constant and the two labels lie with no test failing. The crate already has the right pattern for this: `EngineLink::push_params` (`engine_client.rs:134`) computes `zoom_display_distance` in Rust and writes it to the window. Do the same with two `out property <float>` values and delete both inline formulas.
+`main.slint:1399` and `main.slint:1425` compute `(day-gamma <= 0.5 ? 0.2 + 1.6 * day-gamma : 1.0 + 4.0 * (day-gamma - 0.5))` as the value label. That is `gamma_slider_to_value` from `sunlit-core/src/params.rs:430` with `GAMMA_MIN = 0.2` and `GAMMA_MAX = 3.0` inlined. I checked the arithmetic and it currently agrees. Change either constant and the two labels lie with no test failing. The crate already has the right pattern for this: `EngineLink::push_params` (`engine_client.rs:134`) computes `zoom_display_distance` in Rust and writes it to the window. Do the same with two `out property <float>` values and delete both inline formulas.
 
 **D4 (low): `cli.quality.map_or(config.quality_tier, QualityTier::from)` at `main.rs:309` and `main.rs:667`.**
 `effective_texture_resolution` (297) exists for exactly this shape; add `effective_quality` beside it.
@@ -132,7 +132,7 @@ Not worth splitting: the Advanced section. Slint has no way to hand a component 
 ### E. Correctness and resilience
 
 **E1 (medium, confirmed by reading): the auto-refresh interval slider writes the config file on every tick.**
-`main.slint:416-424` binds the interval `Slider`'s `changed(value)` to `root.auto-refresh-changed()`. `main.rs:553-580` handles that callback and ends with `config::save_config(&ui_callbacks::read_config_from_window(&win, &engine))`. `read_config_from_window` (`ui_callbacks.rs:608`) calls `config::load_config()`, and `save_config` (`sunlit-core/src/config.rs:508`) serializes, writes `config.toml~` and renames it. So dragging the slider from 1 to 30 does about thirty read-serialize-write-rename cycles on the UI thread, plus thirty `SetAutoRefresh` commands. Fix: split the callback so the checkbox saves and the slider only sends `SetAutoRefresh`, with the save deferred to the checkbox, the "Set as Wallpaper" button, or window close, all of which already save. Alternatively debounce with a `slint::Timer`.
+`main.slint:431-439` binds the interval `Slider`'s `changed(value)` to `root.auto-refresh-changed()`. `main.rs:553-580` handles that callback and ends with `config::save_config(&ui_callbacks::read_config_from_window(&win, &engine))`. `read_config_from_window` (`ui_callbacks.rs:608`) calls `config::load_config()`, and `save_config` (`sunlit-core/src/config.rs:508`) serializes, writes `config.toml~` and renames it. So dragging the slider from 1 to 30 does about thirty read-serialize-write-rename cycles on the UI thread, plus thirty `SetAutoRefresh` commands. Fix: split the callback so the checkbox saves and the slider only sends `SetAutoRefresh`, with the save deferred to the checkbox, the "Set as Wallpaper" button, or window close, all of which already save. Alternatively debounce with a `slint::Timer`.
 
 **E2 (medium, confirmed by reading): `--ipc-socket` panics on a bad or busy name.**
 `ipc.rs:40-42` `.expect("failed to convert IPC socket name")` panics for a name `interprocess` cannot turn into a namespaced name, and `ipc.rs:44-47` `.expect("failed to create IPC listener")` panics when the name is already taken, which is the ordinary "a previous run left it behind" case on Linux and "another process holds the pipe" on Windows. `tray.rs:46-49` `.expect("failed to create single-instance mutex")` panics on the same input, since the mutex name is `format!("sunlit-earth-{name}")` (`main.rs:891-894`). All three are reachable from a documented CLI flag. Change `spawn_ipc_listener` to return `Result<JoinHandle<()>, String>` and have `run_app` log the error and continue without IPC (or return `ExitCode::FAILURE`); make `acquire_single_instance` return `Result` and treat the error as "assume we are alone" with a warning.
@@ -179,7 +179,7 @@ Total: 48 to 36, with no loss of coverage. The gain is readability rather than t
 **F2 (low): `main.rs:920` writes into a fixed shared path.**
 `std::env::temp_dir().join("sunlit_earth_test_texture_pointers")` and a 64 KiB write. If the test panics before line 939 the directory is left behind, and two concurrent runs of the binary collide. This is the workspace convention (`sunlit-core/src/config.rs` and `assets/cloud_fetcher.rs` do the same in a dozen places), so it is a workspace-level question rather than this file's, and not worth changing here alone.
 
-**F3 (low): `about.rs:87` calls `i_slint_backend_testing::init_no_event_loop()` with no guard.**
+**F3 (low): `about.rs:684` calls `i_slint_backend_testing::init_no_event_loop()` with no guard.**
 `tests/slint_ui.rs:26` uses a thread-local flag for exactly this, because `set_platform` panics on a second call. `about.rs` is the only unit test in the lib target that inits the backend, so it works today; the second one added will panic. Either move this test into `tests/slint_ui.rs` (where the guard is) or copy the guard.
 
 **F4 (low): `session_end.rs:479` permanently occupies a process-wide singleton.**

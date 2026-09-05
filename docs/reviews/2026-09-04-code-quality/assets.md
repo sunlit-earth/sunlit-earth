@@ -1,4 +1,4 @@
-<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 3046327. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
+<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 19312ba, the tree the review read, and were moved on 2026-09-05 for the files that changed on main since; the main report lists those under "Changes since the review". The changed code was not re-reviewed. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
 
 # Review: `crates/sunlit-core/src/assets/`
 
@@ -36,10 +36,10 @@ The comment ratio in the code half is the number that surprised me: `mailbox.rs`
 
 Four long comment blocks restate, sometimes almost sentence for sentence, text that already exists in `docs/architecture.md`:
 
-- `mailbox.rs:60-74` (the 15-line `post` doc, generation ordering) against `docs/architecture.md:125`.
-- `cloud_fetcher.rs:526-530` (why the cloud post carries no generation) against `docs/architecture.md:125`, which says the same thing in the same words ("a fetch of the old variant that lands after a switch is a cloud layer at the previous width for one poll").
-- `texture_cache.rs:145-148` and `texture_cache.rs:1-13` (stamped before the decode, why PNG) against `docs/architecture.md:115`.
-- `mailbox.rs:24-31` ("This replaces the unbounded channel that used to hold decoded pixel buffers ... which is exactly what hiding the window to the tray used to do to it") against `docs/architecture.md:205`, which already labels it the Phase 0 fix.
+- `mailbox.rs:60-74` (the 15-line `post` doc, generation ordering) against `docs/architecture.md:130`.
+- `cloud_fetcher.rs:526-530` (why the cloud post carries no generation) against `docs/architecture.md:130`, which says the same thing in the same words ("a fetch of the old variant that lands after a switch is a cloud layer at the previous width for one poll").
+- `texture_cache.rs:145-148` and `texture_cache.rs:1-13` (stamped before the decode, why PNG) against `docs/architecture.md:120`.
+- `mailbox.rs:24-31` ("This replaces the unbounded channel that used to hold decoded pixel buffers ... which is exactly what hiding the window to the tray used to do to it") against `docs/architecture.md:210`, which already labels it the Phase 0 fix.
 
 Recommendation: cut each of these to the one sentence a reader of the code needs and let `docs/architecture.md` carry the rest. For `mailbox.rs:24-31` the surviving sentence is "Latest-value: only the newest frame per slot is useful, so `post` overwrites rather than queues." The bug history goes. For `mailbox.rs:60-74`, keep the out-of-range paragraph (60-66, a real invariant about the consumer's slot array) and cut the generation paragraph (67-74) to two lines.
 

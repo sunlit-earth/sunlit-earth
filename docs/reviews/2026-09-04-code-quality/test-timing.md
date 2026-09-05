@@ -1,6 +1,6 @@
 # Per-test timing
 
-Measured on 2026-09-04 at commit 3046327: `cargo test --workspace -- --report-time --test-threads=1`, debug profile, Windows 11 host, whatever adapter each test selects (the golden suite forces the software adapter). Wall time including compilation from a cold target directory: 8m49s. `cargo clippy --all-targets`: 0 warnings. Note that libtest runs tests in name order, so the alphabetically first test of a target that shares a device or engine through a `LazyLock` pays that initialization.
+Measured on 2026-09-04 at commit 19312ba (the hash the tree carries after the history rewrite; it was 3046327 when measured): `cargo test --workspace -- --report-time --test-threads=1`, debug profile, Windows 11 host, whatever adapter each test selects (the golden suite forces the software adapter). Wall time including compilation from a cold target directory: 8m49s. `cargo clippy --all-targets`: 0 warnings. Note that libtest runs tests in name order, so the alphabetically first test of a target that shares a device or engine through a `LazyLock` pays that initialization.
 
 
 ## Totals per target (sum of per-test times, count, count over 1 s, count over 0.1 s)

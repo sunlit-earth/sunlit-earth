@@ -1,4 +1,4 @@
-<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 3046327. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
+<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 19312ba, the tree the review read, and were moved on 2026-09-05 for the files that changed on main since; the main report lists those under "Changes since the review". The changed code was not re-reviewed. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
 
 # Review: the engine thread and the wallpaper path (`sunlit-core`)
 
@@ -47,10 +47,10 @@ These are the clearest deletes under "no notes on why a test exists". There are 
 `// Verify the file exists and is non-empty`, `// Canonicalize to absolute path`, `// Set "Fill" wallpaper style before applying`, `// Encode path as null-terminated UTF-16`, `// null terminator`. Also `wallpaper.rs:499-500` ("Callback invoked by EnumDisplayMonitors for each monitor. Pushes each HMONITOR handle into the Vec pointed to by lparam") duplicates both the signature and the SAFETY comment three lines below. Delete all six. This block is noticeably older in style than the rest of the file; the `// SAFETY:` comments around it are good and should stay.
 
 **A6. `engine/mod.rs` design-history blocks. Severity: low.**
-Six blocks are rationale that belongs in `docs/`: `191-198` (why the mailbox is injectable), `203-209` ("A test that passes only on one of the two is worse than no test"), `561-571` (the mailbox slot assert, where the assert message already says what is wrong), `986-999` (enumerates every caller of `publish_wallpaper`, a list that will rot), `1039-1052` (the last paragraph duplicates `docs/architecture.md:146` almost verbatim), and part of `368-389`. About 60 lines. Everything else in this file earns its place: the 256-byte readback padding note at `1176-1180`, the `DISPLAY_SETTLE` burst explanation at `52-61`, the cloud-slot-not-purged note at `774-780`, and the retry-loop placement notes at `1303-1312` all carry non-obvious invariants.
+Six blocks are rationale that belongs in `docs/`: `191-198` (why the mailbox is injectable), `203-209` ("A test that passes only on one of the two is worse than no test"), `561-571` (the mailbox slot assert, where the assert message already says what is wrong), `986-999` (enumerates every caller of `publish_wallpaper`, a list that will rot), `1039-1052` (the last paragraph duplicates `docs/architecture.md:151` almost verbatim), and part of `368-389`. About 60 lines. Everything else in this file earns its place: the 256-byte readback padding note at `1176-1180`, the `DISPLAY_SETTLE` burst explanation at `52-61`, the cloud-slot-not-purged note at `774-780`, and the retry-loop placement notes at `1303-1312` all carry non-obvious invariants.
 
 **A7. The unbounded-channel justification at `engine/mod.rs:368-389`. Severity: none, keep.**
-22 lines, and `docs/architecture.md:206` explicitly points at it and says "keep it honest if any of those premises change". The two sentences that could go are the "Phase 0 leak" reference and "A bound was considered and rejected", which are history; the four bullets are the invariant.
+22 lines, and `docs/architecture.md:211` explicitly points at it and says "keep it honest if any of those premises change". The two sentences that could go are the "Phase 0 leak" reference and "A bound was considered and rejected", which are history; the four bullets are the invariant.
 
 **A8. `wallpaper_sink.rs:138-145` embeds a measurement. Severity: low.**
 "about 14 MB at 2560x1440, on a CPU rasterizer where there is no hardware to help". The invariant ("a sink that will refuse has to say so before the render") is the keeper; the number belongs in `docs/`.
@@ -177,7 +177,7 @@ Production uses `.expect("the published generation is poisoned")` at 214 and 326
 **E7. Verified: the loop never sleeps on wall time, and every queue is bounded or justified.**
 - `run` (679-721) blocks only on `rx.recv_timeout(TICK)` and `rx.try_recv()`; there is no `sleep` anywhere in the engine thread. The only `std::thread::sleep` in the module is `1330`, inside the cloud worker's retry backoff on its own thread, and it wakes to check for disconnection (1332-1334).
 - Every deadline is `self.clock.elapsed()` (829, 792, 810, 869); `Schedule::due` (433-440) recomputes from `now` rather than accumulating, and `schedule_does_not_burst_after_a_long_stall` pins it.
-- Cross-thread queues in this area: the command channel is `unbounded` with the four-bullet justification at the declaration (368-389, and `docs/architecture.md:206` points at it); the ready channel is `bounded(1)` (391); the three reply channels are `bounded(1)` (290, 305, 316); the cloud request channel is `bounded::<()>(1)` (1282) with the `busy` flag documented at 525-528. All five satisfy the rule.
+- Cross-thread queues in this area: the command channel is `unbounded` with the four-bullet justification at the declaration (368-389, and `docs/architecture.md:211` points at it); the ready channel is `bounded(1)` (391); the three reply channels are `bounded(1)` (290, 305, 316); the cloud request channel is `bounded::<()>(1)` (1282) with the `busy` flag documented at 525-528. All five satisfy the rule.
 - The reply channels use `recv()` with no timeout, but every caller is either `main` before the event loop or the IPC thread (`sunlit-app/src/ipc.rs:54` spawns its own), so a slow engine cannot freeze the UI.
 
 **E8. `expect` audit in non-test code. All four are real invariants.**
@@ -225,14 +225,14 @@ Totals: 53 tests across the five files. I would remove or merge 10.
 
 ### H. Documentation drift (outside the brief, but load-bearing)
 
-`docs/architecture.md:148` still describes the two-slot naming scheme: "The output alternates between two slots rather than being one name ... the names are `wallpaper-<slot>-<index>.png` per screen and `wallpaper-<slot>-canvas.png` for a span, and taking a slot empties it first." The code replaced that with per-publish generation directories (`gen-<millis>-<pid>-<counter>/<index>.png`, `wallpaper.rs:92-125`), and `sweep_legacy_files` (388-404) exists precisely to delete the files that paragraph describes. Severity: medium for a release, because that section is the one a contributor reads before touching `wallpaper.rs`.
+`docs/architecture.md:153` still describes the two-slot naming scheme: "The output alternates between two slots rather than being one name ... the names are `wallpaper-<slot>-<index>.png` per screen and `wallpaper-<slot>-canvas.png` for a span, and taking a slot empties it first." The code replaced that with per-publish generation directories (`gen-<millis>-<pid>-<counter>/<index>.png`, `wallpaper.rs:92-125`), and `sweep_legacy_files` (388-404) exists precisely to delete the files that paragraph describes. Severity: medium for a release, because that section is the one a contributor reads before touching `wallpaper.rs`.
 
 ## 4. Recommended refactors, by value over effort
 
 | # | Refactor | Effort | Risk | Why |
 |---|---|---|---|---|
 | 1 | Delete `wallpaper_on_monitor`; demote the other seven `wallpaper.rs` items, `DEFAULT_TARGET_SIZE` and `adapter_type_rank` to `pub(crate)`/private (C1) | 0.5 h | none, the compiler proves it | Shrinks the public surface of the crate right before its first release |
-| 2 | Update `docs/architecture.md:148` to the generation-directory scheme (H) | 0.5 h | none | The section is actively misleading about the code it introduces |
+| 2 | Update `docs/architecture.md:153` to the generation-directory scheme (H) | 0.5 h | none | The section is actively misleading about the code it introduces |
 | 3 | Check `textures_pending` before `check_supported` in `publish_wallpaper` (E2) | 0.5 h | low | Removes a few thousand `PATH` stats per deferred publish on Linux |
 | 4 | Merge the three Windows monitor-enumeration tests into one; drop the second `display::monitors()` call in `wallpaper_sink.rs:750`; remove the four tautological tests in `clock.rs` and `wgpu_init.rs` (F) | 1 h | none | Three COM round trips become one, and eight tests become four |
 | 5 | Extract `Publication::write_job` and collapse the duplicated write loops and error strings (D1, D2) | 2 h | low, both paths have tests | Removes 50 lines and prevents the two platforms drifting apart |

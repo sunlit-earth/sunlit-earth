@@ -1,4 +1,4 @@
-<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 3046327. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
+<!-- Reviewer notes for docs/reviews/2026-09-04-code-quality-review.md. Line numbers refer to commit 19312ba, the tree the review read, and were moved on 2026-09-05 for the files that changed on main since; the main report lists those under "Changes since the review". The changed code was not re-reviewed. "The brief" is the shared review instruction; "the maintainer's rules" are the project's comment conventions. Runtime claims here are reasoned from the code; the measured figures are in test-timing.md. -->
 
 # Review: the GPU-facing integration tests of `sunlit-core`
 
@@ -356,7 +356,7 @@ inline it or express it in terms of the shared predicate.
 names 18 and asserts each exists (1003-1008), and `check_golden_in:312` panics on a missing reference.
 `metal` is on `GENERATED_ADAPTERS` (line 70), so it does not skip. On macOS, 14 golden cases plus the
 distinguishability case fail. **Confirmed by directory listing and by reading the two code paths.**
-This is a known item, but `docs/roadmap.md:83` describes it as "seven of the suite's nine cases fail
+This is a known item, but `docs/roadmap.md:84` describes it as "seven of the suite's nine cases fail
 there" and names three missing star cases: the suite has since grown to eighteen and the entry is
 stale by roughly a factor of two. The suite is behaving as designed; the documentation is not. Fix the
 roadmap entry before release, and decide explicitly whether macOS ships with a red golden suite.
@@ -561,7 +561,7 @@ recover. The ordering is by lines and confusion removed per hour.
 | # | Change | Files | Effort | Risk | Value |
 |---|---|---|---|---|---|
 | 1 | Table-drive the remaining 61 assertions in `uniform_buffer_field_offsets_match_wgsl`, matching the loop the same test already has at 1353 (B1.2) | `render_pipeline.rs:1070-1352` | 1 h | Low, mechanical | **-280 lines** from the longest file in the area, and its two halves stop disagreeing |
-| 2 | Update `docs/roadmap.md:83` to the real size of the `metal` gap, and decide whether macOS ships with a red golden suite (E1) | `docs/roadmap.md` | 0.5 h plus a decision | None to code | Removes a stale claim right before a release; the gap is 14 cases, not the 3 the entry names |
+| 2 | Update `docs/roadmap.md:84` to the real size of the `metal` gap, and decide whether macOS ships with a red golden suite (E1) | `docs/roadmap.md` | 0.5 h plus a decision | None to code | Removes a stale claim right before a release; the gap is 14 cases, not the 3 the entry names |
 | 3 | Rebuild `UNIFORM_READBACK_SHADER` on top of `sphere.wgsl` with its probe on `@group(1)`, the way the two newer probes already do (B1.1) | `render_pipeline.rs:734-906` | 1.5 h | Low: the pattern exists twice in the same file | -71 lines, and the test starts checking production's WGSL instead of a copy that can drift silently |
 | 4 | Fix the four mis-named tests: two need a second render, one needs `>=`, two merge into a determinism check (E3) | `render_pipeline.rs:1829, 1857, 1904, 2292, 2360` | 1 h | Low | Four tests start testing what they say; costs nothing in run time |
 | 5 | Move the eleven measurement blocks from `golden.rs` into a table in `docs/testing.md`, keeping one sentence each (A3) | `golden.rs`, `docs/testing.md` | 1.5 h | None to behavior | -90 lines from a file that is 31% comments; the numbers land where they can be compared |

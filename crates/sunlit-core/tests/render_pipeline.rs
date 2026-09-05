@@ -537,7 +537,6 @@ fn day_side_brighter_than_night_side() {
     let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
     let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [30, 30, 30, 255]);
 
-    // Sun pointing along +Z (toward the camera at lon=0)
     let uniforms = Uniforms {
         terminator_width: 0.15,
         flags: 1, // diffuse enabled
@@ -557,7 +556,6 @@ fn day_side_brighter_than_night_side() {
         3 * size / 4,
     );
 
-    // Day-lit white sphere center should be significantly bright
     assert!(
         center_lum > 50.0,
         "Center of day-lit sphere should be bright, got luminance {center_lum:.1}"
@@ -593,7 +591,7 @@ fn single_texture_mode_ignores_the_night_side() {
 }
 
 // ---------------------------------------------------------------------------
-// Uniform buffer field offset test (Step 4.3)
+// Uniform buffer field offset test
 // ---------------------------------------------------------------------------
 
 /// A compute entry point appended to the production shaders, so the offsets it
@@ -805,7 +803,6 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             cache: None,
         });
 
-    // Write known values to a fresh uniform buffer
     let mut mvp = [0.0f32; 16];
     mvp[0] = 1.0;
     mvp[5] = 2.0;
@@ -994,12 +991,8 @@ const RULE_SKY_FOVS: [f32; 8] = [30.0, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 4
 const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
 
 /// Three rules exist once in WGSL and once in `scene::sun_occlusion`, and every
-/// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
-/// ramp and the shader draws that disk's antialiased edge with it; the CPU
-/// measures occlusion at a screen position the shader has to draw the Sun at;
-/// and the CPU integrates the light path over the visible disk to decide what
-/// color and how bright the glare is while the shader draws the disk that glare
-/// is supposed to have come from.
+/// pairing matters at the pixel; `docs/rendering.md` says which pairing is
+/// which.
 ///
 /// The viewport heights avoid 1080 and below, where the ramp clamps to 1.0 and
 /// any two knees agree: every golden and every engine frame renders there, so
@@ -1166,9 +1159,7 @@ fn round_trip_probe(@builtin(global_invocation_id) id: vec3<u32>) {
 
 /// `milky_way_direction` has to be the exact inverse of `sky_lens_project`
 /// after `view_from_eqj`, because the panorama it samples sits under sprites the
-/// forward pair places. Two transposes and a lens inversion is three places a
-/// sign can be wrong, and every one of them yields a plausible-looking sky
-/// rather than an obviously broken one.
+/// forward pair places.
 ///
 /// A round trip on the GPU rather than a re-derivation on the CPU: the forward
 /// half is production's, the inverse half is production's, and nothing here
@@ -1181,11 +1172,9 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
     /// How far a direction may come back from where it went in, as a distance
     /// between two unit vectors.
     ///
-    /// The round trip is exact to 6.5e-7 on warp and to 1.5e-4 on lavapipe,
-    /// which is the two adapters' transcendentals rather than anything about
-    /// the chain, and 1.5e-4 is half a hundredth of a degree. This sits an
-    /// order of magnitude above the worse of them and three below the faults it
-    /// exists to catch, which are 1.229 and 0.546.
+    /// An order of magnitude above the worse adapter's transcendental noise,
+    /// and three below the faults it exists to catch. The measurements are in
+    /// `docs/rendering.md`.
     const TOLERANCE: f32 = 1.0e-3;
 
     let ctx = RENDER_CTX.lock().unwrap();
@@ -1365,7 +1354,7 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
 }
 
 // ---------------------------------------------------------------------------
-// Fresnel specular tests (Step 2.1)
+// Fresnel specular tests
 // ---------------------------------------------------------------------------
 
 /// Average luminance of non-clear pixels in the frame.
@@ -1448,7 +1437,6 @@ fn fresnel_specular_brighter_at_grazing() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 128;
 
-    // All-water texture
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
     let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
 
@@ -1500,7 +1488,7 @@ fn fresnel_specular_brighter_at_grazing() {
 }
 
 // ---------------------------------------------------------------------------
-// Fresnel diffuse shift tests (Step 2.2)
+// Fresnel diffuse shift tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1511,7 +1499,6 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
     let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
 
-    // Without Fresnel diffuse shift
     let uniforms_no_shift = Uniforms {
         terminator_width: 0.15,
         flags: 1,
@@ -1573,7 +1560,6 @@ fn fresnel_diffuse_shift_absent_at_night() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 128;
 
-    // All-water texture
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
     let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
 
@@ -1671,7 +1657,6 @@ fn cloud_pipeline_renders_with_alpha() {
             cache: None,
         });
 
-    // 1x1 white cloud texture (fully opaque cloud)
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
     let dummy = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
@@ -1785,7 +1770,7 @@ fn cloud_pipeline_renders_with_alpha() {
 }
 
 // ---------------------------------------------------------------------------
-// Color correction: gamma tests (Step 3.2)
+// Color correction: gamma tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1845,7 +1830,7 @@ fn consecutive_renders_are_identical() {
 }
 
 // ---------------------------------------------------------------------------
-// Color correction: saturation tests (Step 3.3)
+// Color correction: saturation tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1863,7 +1848,6 @@ fn saturation_zero_produces_greyscale() {
 
     let pixels = render_frame(&ctx, &uniforms, &red, &black, size, size);
 
-    // Check all non-clear pixels: R, G, B should be approximately equal
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1877,7 +1861,6 @@ fn saturation_zero_produces_greyscale() {
         let dg = px[1].abs_diff(clear_g);
         let db = px[2].abs_diff(clear_b);
         if dr > 1 || dg > 1 || db > 1 {
-            // Non-clear pixel: check R == G == B within GPU tolerance
             let max_ch = px[0].max(px[1]).max(px[2]);
             let min_ch = px[0].min(px[1]).min(px[2]);
             if max_ch - min_ch > 2 {
@@ -1909,7 +1892,6 @@ fn saturation_above_one_increases_chroma() {
     };
     let pixels_saturated = render_frame(&ctx, &uniforms_saturated, &colorful, &black, size, size);
 
-    // Compute average chroma (max - min channel) across non-clear pixels
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1950,7 +1932,7 @@ fn saturation_above_one_increases_chroma() {
 }
 
 // ---------------------------------------------------------------------------
-// Color correction: independence tests (Step 3.4)
+// Color correction: independence tests
 // ---------------------------------------------------------------------------
 
 #[test]

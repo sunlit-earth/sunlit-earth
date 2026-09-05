@@ -26,6 +26,7 @@ use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
+use sunlit_core::memory::MemorySnapshot;
 use tracing::{debug, info, warn};
 
 /// A socket that is bound and not yet being served.
@@ -183,10 +184,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             // Answered on this thread: GetProcessMemoryInfo is process-wide,
             // so the reply is correct even when the event loop is idle or busy.
             match sunlit_core::memory::snapshot() {
-                Some(snap) => signal(&format!(
-                    "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
-                    snap.rss_bytes, snap.peak_rss_bytes, snap.private_bytes
-                )),
+                Some(snap) => signal(&MemorySignal::from(&snap).line()),
                 None => signal("memory_unavailable"),
             }
         }
@@ -247,6 +245,111 @@ fn report_displays() {
     }
 }
 
+/// The counters `query-memory` answers with.
+///
+/// Both halves of that contract in one place. The e2e suite reads the line back
+/// through [`MemorySignal::parse`], so a field renamed here is a compile error
+/// in the suite rather than a panic in a guest half an hour later. What the line
+/// looks like on the wire does not change: `CLAUDE.md` calls it a parsing
+/// contract and this makes it one the compiler can see.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemorySignal {
+    pub rss_bytes: u64,
+    pub peak_rss_bytes: u64,
+    pub private_bytes: u64,
+}
+
+impl MemorySignal {
+    /// The signal body, without the `SIGNAL:` prefix.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
+            self.rss_bytes, self.peak_rss_bytes, self.private_bytes
+        )
+    }
+
+    /// Read the counters back out of a `SIGNAL:memory ...` line.
+    ///
+    /// `None` where a field is missing or is not a number, which is a line this
+    /// program did not write.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        Some(Self {
+            rss_bytes: signal_field(line, "rss_bytes")?.parse().ok()?,
+            peak_rss_bytes: signal_field(line, "peak_rss_bytes")?.parse().ok()?,
+            private_bytes: signal_field(line, "private_bytes")?.parse().ok()?,
+        })
+    }
+}
+
+impl From<&MemorySnapshot> for MemorySignal {
+    fn from(snapshot: &MemorySnapshot) -> Self {
+        Self {
+            rss_bytes: snapshot.rss_bytes,
+            peak_rss_bytes: snapshot.peak_rss_bytes,
+            private_bytes: snapshot.private_bytes,
+        }
+    }
+}
+
+/// The plan `displays` answers with, read back off the line.
+///
+/// The other side of [`crate::displays::signal_line`], which builds it. The
+/// producer stays where the plan is computed; this is the one reader, and the
+/// round trip is unit-tested below, so a renamed field fails in `cargo unit`
+/// rather than in a guest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplaysSignal {
+    pub monitors: usize,
+    pub mode: String,
+    pub anchor: i32,
+    pub fell_back: bool,
+    /// One `x,y,width,height` per monitor, in the session's own order.
+    pub rects: Vec<String>,
+    /// One `width x height` per image the plan would export.
+    pub images: Vec<String>,
+}
+
+impl DisplaysSignal {
+    /// Read the plan back out of a `SIGNAL:displays ...` line.
+    ///
+    /// `None` where a field is missing or is not the shape it is written in.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        Some(Self {
+            monitors: signal_field(line, "monitors")?.parse().ok()?,
+            mode: signal_field(line, "mode")?.to_owned(),
+            anchor: signal_field(line, "anchor")?.parse().ok()?,
+            fell_back: signal_field(line, "fell_back")? != "0",
+            rects: signal_list(line, "rects")?,
+            images: signal_list(line, "images")?,
+        })
+    }
+}
+
+/// The value of one `key=` field of a signal line.
+///
+/// Every signal line is key=value pairs with no spaces in any value, which is
+/// the shape `query-memory` established and the reason a field can be found by
+/// splitting on whitespace.
+fn signal_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix(prefix.as_str()))
+}
+
+/// The value of one `key=` field that carries a `;`-separated list.
+///
+/// An empty field is an empty list rather than a list holding one empty entry.
+fn signal_list(line: &str, key: &str) -> Option<Vec<String>> {
+    let value = signal_field(line, key)?;
+    if value.is_empty() {
+        return Some(Vec::new());
+    }
+    Some(value.split(';').map(str::to_owned).collect())
+}
+
 pub(crate) fn signal(name: &str) {
     let msg = format!("SIGNAL:{name}\n");
     let stdout = std::io::stdout();
@@ -258,6 +361,112 @@ pub(crate) fn signal(name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two screens side by side, the second of them primary.
+    fn two_screens() -> Vec<sunlit_core::display::Monitor> {
+        use sunlit_core::display::Monitor;
+        vec![
+            Monitor {
+                id: "DP-1".to_owned(),
+                label: "DP-1".to_owned(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                primary: false,
+            },
+            Monitor {
+                id: "DP-2".to_owned(),
+                label: "DP-2".to_owned(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                primary: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_memory_counters_survive_the_line_they_are_written_on() {
+        let counters = MemorySignal {
+            rss_bytes: 123_456,
+            peak_rss_bytes: 234_567,
+            private_bytes: 345_678,
+        };
+        let line = format!("SIGNAL:{}", counters.line());
+        assert_eq!(MemorySignal::parse(&line), Some(counters));
+    }
+
+    /// A field whose name is the tail of another's must not be found by it.
+    #[test]
+    fn peak_rss_is_not_read_as_rss() {
+        let counters = MemorySignal {
+            rss_bytes: 1,
+            peak_rss_bytes: 2,
+            private_bytes: 3,
+        };
+        let parsed = MemorySignal::parse(&counters.line()).expect("the line it just wrote");
+        assert_eq!(parsed, counters);
+    }
+
+    #[test]
+    fn a_line_without_the_fields_is_not_a_memory_signal() {
+        assert_eq!(MemorySignal::parse("SIGNAL:memory_unavailable"), None);
+    }
+
+    /// The display plan survives the line it is written on, which is what ties
+    /// `displays::signal_line` to the only thing that reads it.
+    #[test]
+    fn the_display_plan_survives_the_line_it_is_written_on() {
+        use sunlit_core::display::layout::DisplayMode;
+
+        let monitors = two_screens();
+        let line = format!(
+            "SIGNAL:displays {}",
+            crate::displays::signal_line(&monitors, DisplayMode::EveryScreen, Some("DP-1"))
+        );
+        let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
+        assert_eq!(plan.monitors, monitors.len());
+        assert_eq!(plan.mode, DisplayMode::EveryScreen.name());
+        assert_eq!(plan.anchor, 0, "the stored id names the first screen");
+        assert!(!plan.fell_back);
+        assert_eq!(plan.rects, vec!["0,0,1920,1080", "1920,0,2560,1440"]);
+        assert_eq!(
+            plan.images.len(),
+            monitors.len(),
+            "every-screen exports one image per screen: {plan:?}"
+        );
+    }
+
+    /// An anchor this session does not have falls back, and says so.
+    #[test]
+    fn a_stored_screen_the_session_lost_is_reported_as_a_fallback() {
+        use sunlit_core::display::layout::DisplayMode;
+
+        let line = crate::displays::signal_line(
+            &two_screens(),
+            DisplayMode::OneScreen,
+            Some("a-screen-that-is-not-here"),
+        );
+        let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
+        assert!(plan.fell_back);
+        assert_eq!(plan.images.len(), 1, "one screen takes one image: {plan:?}");
+    }
+
+    /// A session with no screens has empty lists rather than lists holding one
+    /// empty entry, which is what a naive split would produce.
+    #[test]
+    fn a_session_with_no_screens_parses_to_empty_lists() {
+        use sunlit_core::display::layout::DisplayMode;
+
+        let line = crate::displays::signal_line(&[], DisplayMode::OneScreen, None);
+        let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
+        assert_eq!(plan.monitors, 0);
+        assert_eq!(plan.anchor, -1);
+        assert!(plan.rects.is_empty());
+        assert!(plan.images.is_empty());
+    }
 
     #[test]
     fn a_name_something_else_holds_is_an_error_rather_than_a_panic() {

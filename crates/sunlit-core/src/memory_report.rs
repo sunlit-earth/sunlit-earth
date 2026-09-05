@@ -5,8 +5,8 @@
 //! of what the renderer believes it owns. The point is the last two side by
 //! side: the day the columns disagree is the day there is a leak.
 //!
-//! The report is short on purpose. Everything below [`REPORT_FLOOR_BYTES`] is
-//! rolled into one line, and only the [`TOP_N`] largest allocation groups are
+//! The report is short on purpose. Everything below `REPORT_FLOOR_BYTES` is
+//! rolled into one line, and only the `TOP_N` largest allocation groups are
 //! listed, because a report nobody reads is telemetry rather than a tool.
 //!
 //! Only the section names are a contract. The numbers, their order within a
@@ -39,7 +39,7 @@ pub struct ProcessSection {
 
 /// wgpu's own running totals, in bytes and objects.
 ///
-/// Signed because [`wgpu::InternalCounter`] is: it counts up on create and down
+/// Signed because `wgpu::InternalCounter` is: it counts up on create and down
 /// on destroy, and a backend that only implements one half would go negative
 /// rather than wrap.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct AllocatorSection {
     pub total_allocated_bytes: u64,
     pub total_reserved_bytes: u64,
     pub blocks: usize,
-    /// The [`TOP_N`] largest groups of at least [`REPORT_FLOOR_BYTES`].
+    /// The `TOP_N` largest groups of at least `REPORT_FLOOR_BYTES`.
     pub top: Vec<AllocationGroup>,
     /// Allocations the two rules above left out.
     pub rolled_up_count: usize,

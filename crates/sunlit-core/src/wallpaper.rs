@@ -647,7 +647,7 @@ fn display_label(device: &str, index: usize) -> String {
 
 /// Detect the primary monitor's physical resolution in pixels.
 ///
-/// One enumeration, not two: this is [`enumerate_monitors`] narrowed to the
+/// One enumeration, not two: this is `enumerate_monitors` narrowed to the
 /// monitor a single-screen wallpaper is sized for, with the same fallback to
 /// the first that [`crate::display::primary_of`] makes for xrandr.
 #[cfg(windows)]

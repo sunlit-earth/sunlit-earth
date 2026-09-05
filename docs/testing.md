@@ -80,6 +80,26 @@ minutes on Linux and 45 on Windows, dominated by the two cases that publish a wa
 Windows guest run is about 97 seconds. `xtask`'s `job_timeout` sits above the budget rather than near the real runtime,
 so that a stuck case reports the signal it was waiting for instead of the job reporting that it ran out of time.
 
+**Why three golden cases compare a window, and why two turn a parameter up.** The suite's tolerance is a mean channel
+difference under 2.00 with at most 1 percent of pixels off by more than 24, measured over whatever region the case
+compares. A feature a few dozen pixels across cannot move a 512 by 256 frame past that, so three cases compare a window
+instead, and two more raise a parameter until the effect is larger than the tolerance. Each row below compares a
+reference against the same scene with the named feature deleted.
+
+| Case | Feature deleted | Over the whole frame | Over the case's own window |
+|---|---|---|---|
+| `moon_crescent` | the Moon | mean 0.22, passes | mean 3.12, 1.71 percent outliers |
+| `sun_rising_through_the_band` | the refraction tint | mean 10.04, 16.80 percent | mean 55.33, 83.09 percent |
+| `sun_rising_through_the_band` | the exposure gain | mean 7.27, 11.00 percent | mean 56.03, 98.58 percent |
+| `sun_rising_through_the_band` | the lift and the squash | mean 0.91, 0.22 percent, passes | mean 6.19, 4.58 percent |
+| `sunrise_band` | the forward lobe | mean 0.21, 0.40 percent, passes | mean 1.52, 2.83 percent |
+
+The two turned-up parameters are the same argument without a window. `sun_grazing_the_limb` runs `sun_glow` at 1.6
+because at the default strength losing the warm shift entirely comes to a mean of 2.33 against a tolerance of 2.00 and
+1.04 percent outliers against a limit of 1.00, which is a test that passes or fails on rounding. `sunrise_band` runs
+`atmo_sunrise_glow` at 3.0 for the same reason. Both sun cases also run at a 60 degree sky rather than the 140 degree
+default, for the reason `docs/rendering.md` gives beside the four goldens.
+
 ## CI/CD
 
 Three GitHub Actions workflows in `.github/workflows/`:

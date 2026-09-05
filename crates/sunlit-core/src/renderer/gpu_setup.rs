@@ -48,7 +48,6 @@ pub(super) fn create_renderer(
         mailbox: texture_mailbox,
         notify,
     } = config;
-    // Generate sphere mesh
     let mesh = sphere::generate_uv_sphere(64, 64);
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -83,7 +82,6 @@ pub(super) fn create_renderer(
         mapped_at_creation: false,
     });
 
-    // Shared sampler for all textures
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("texture_sampler"),
         address_mode_u: wgpu::AddressMode::Repeat,
@@ -137,8 +135,8 @@ pub(super) fn create_renderer(
         ],
     });
 
-    // 1x1 black dummy texture used as the night texture placeholder
-    // in single-texture bind groups (Grid, Day, Night modes).
+    // 1x1 black placeholder at binding 3 for every bind group that reads one
+    // texture.
     let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dummy_1x1"),
         size: wgpu::Extent3d {
@@ -521,13 +519,8 @@ pub(super) fn create_pipeline(
     })
 }
 
-/// The Moon: opaque, back-face culled, and out of the depth test's way.
-///
-/// Opaque because it has to cover the Sun's additive disk, which would show
-/// through anything else; back-face culled because that is what a convex
-/// sphere's own front-to-back needs and a depth comparison between the sky lens
-/// and the Earth's would compare two different projections; and no depth write,
-/// so the Earth still draws over it wherever the painted globe covers it.
+/// The Moon: opaque so it covers the Sun's additive disk, back-face culled, and
+/// out of the depth test's way. `docs/rendering.md` says why each of the three.
 pub(super) fn create_moon_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,

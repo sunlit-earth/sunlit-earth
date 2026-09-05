@@ -116,9 +116,8 @@ pub(super) fn write_uniforms<'a>(
         atmosphere_radius: RAYLEIGH_RADIUS,
         screen_offset,
         viewport,
-        // Only a Moon that is actually drawn hides anything: a glare fading
-        // behind something invisible is the same incoherence as one burning
-        // around a Moon that covers the disk.
+        // Only a Moon that is actually drawn hides anything; the field's own
+        // doc in `scene::sun_occlusion` says why.
         moon_disc: moon_drawn.and(moon.disc),
         horizon: sun_occlusion::SunHorizonParams {
             size: params.sun_size,
@@ -261,11 +260,7 @@ pub(super) fn encode_and_submit(
                 depth_slice: None,
                 resolve_target: target.resolve_target,
                 ops: wgpu::Operations {
-                    // Near black rather than the faint blue this was while it
-                    // was the whole sky. With stars, the planets, the Sun and a
-                    // panorama on it, a blue-tinted clear reads as haze under
-                    // the band and, where the band is dark, as a floor the
-                    // stars sit on. Unconditional, so a checkout without the
+                    // Near black, and unconditionally so: a checkout without the
                     // panorama's Git LFS object does not change color the day
                     // it arrives.
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -332,9 +327,6 @@ pub(super) fn encode_and_submit(
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..index_count, 0, 0..1);
 
-        // Cloud overlay (alpha blended, drawn before atmosphere so glow
-        // layers render on top — clouds are in the troposphere, well below
-        // the Rayleigh scattering and nightglow layers)
         if let (Some(cloud_pipe), Some(cloud_bg)) = (cloud_pipeline, cloud_bind_group) {
             pass.set_pipeline(cloud_pipe);
             pass.set_bind_group(0, cloud_bg, &[]);
@@ -342,22 +334,18 @@ pub(super) fn encode_and_submit(
             pass.draw_indexed(0..index_count, 0, 0..1);
         }
 
-        // Rayleigh scattering overlay (premultiplied alpha, simulates both
-        // in-scattering and extinction at the limb)
         if let (Some(pipe), Some(bg)) = (rayleigh_pipeline, rayleigh_bind_group) {
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, bg, &[]);
             pass.draw_indexed(0..index_count, 0, 0..1);
         }
 
-        // Nightglow orange overlay (additive, sodium D + FeO, ~1.014 radius)
         if let (Some(pipe), Some(bg)) = (nightglow_orange_pipeline, nightglow_orange_bind_group) {
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, bg, &[]);
             pass.draw_indexed(0..index_count, 0, 0..1);
         }
 
-        // Nightglow green overlay (additive, OI 557.7nm, ~1.015 radius)
         if let (Some(pipe), Some(bg)) = (nightglow_green_pipeline, nightglow_green_bind_group) {
             pass.set_pipeline(pipe);
             pass.set_bind_group(0, bg, &[]);
@@ -445,10 +433,6 @@ impl<'a> MilkyWay<'a> {
     /// arrived is not drawn either: it is an overlay, like the clouds and the
     /// Moon, so its absence is a sky without a band rather than something to
     /// wait for.
-    ///
-    /// Nothing about the frame can narrow this further. The draw is the whole
-    /// frame and the lens has an image of every pixel of it, so unlike the
-    /// Moon's there is no geometry here that can fail to appear.
     pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
         if params.milky_way_intensity <= 0.0 {
             return None;
@@ -522,10 +506,9 @@ impl<'a> Moon<'a> {
     /// is not drawn either: it is an overlay, like the clouds, so its absence
     /// is a picture without a Moon rather than something to wait for.
     ///
-    /// Both of those are properties of the configuration. The third condition,
-    /// whether this frame's geometry puts a silhouette on screen at all, is a
-    /// property of the frame, so [`write_uniforms`] applies it where the
-    /// placement is and hands back what is left.
+    /// The third condition, whether this frame's geometry puts a silhouette on
+    /// screen at all, is applied by [`write_uniforms`], which hands back what
+    /// is left.
     pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
         if params.moon_brightness <= 0.0 {
             return None;

@@ -51,9 +51,7 @@ pub const TEXTURE_LABELS: [&str; 4] = ["Grid", "Day", "Night", "Day/Night Blend"
 ///
 /// A mode is not a slot. The first three modes each draw the globe from one
 /// file-backed slot, `Blend` binds two of them together and has no slot of its
-/// own, and the cloud overlay has a slot but no mode. Those facts agreed
-/// numerically while the day/night blend index and the cloud slot were both
-/// three, which is what let one integer stand for both.
+/// own, and the cloud overlay has a slot but no mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextureMode {
     Grid,
@@ -561,9 +559,7 @@ impl Renderer {
     /// lands, and from startup until the first load does. Deliberately not the
     /// negation of `textures_ready`: a slot with no file behind it, and one
     /// whose decode failed and had its path cleared, are both terminal states
-    /// where nothing further is coming, so there is nothing to wait for. The
-    /// question this answers is "will this get better on its own", which is the
-    /// only sound reason to hold something back.
+    /// where nothing further is coming, so there is nothing to wait for.
     pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
@@ -730,7 +726,6 @@ impl Renderer {
     ) -> Result<Vec<u8>, String> {
         let inputs = self.last_inputs.as_ref().ok_or("No frame rendered yet")?;
 
-        // Look up the bind group that was used for the last rendered frame
         let bind_group = match self.last_resolved.as_ref().ok_or("No frame rendered yet")? {
             texture_routing::ResolvedTexture::Composite => self
                 .composite_bind_group
@@ -742,7 +737,6 @@ impl Renderer {
                 .ok_or("No bind group available")?,
         };
 
-        // Create temporary render textures with COPY_SRC for readback
         let (export_texture, export_depth, msaa_color_view, msaa_depth_view) =
             create_render_textures(
                 &self.device,
@@ -1061,11 +1055,9 @@ mod tests {
         }
     }
 
-    /// The cloud overlay is always the last slot, whatever comes before it, and
-    /// the mailbox has one slot per texture.
-    /// A layout too short for an overlay reports no slot for it rather than one
-    /// that belongs to something else, which is what keeps the cloud slot from
-    /// being read as a panorama in a shorter configuration.
+    /// The cloud overlay is always the last slot, whatever comes before it, the
+    /// mailbox has one slot per texture, and a layout too short for an overlay
+    /// reports no slot for it rather than one that belongs to something else.
     #[test]
     fn a_layout_without_an_overlay_says_so() {
         assert_eq!(SlotLayout::new(3).milky_way(), None);
@@ -1095,8 +1087,7 @@ mod tests {
         }
     }
 
-    /// No mode ever indexes past the file-backed slots, which is what kept the
-    /// old identity mapping from landing on the cloud slot.
+    /// No mode ever indexes past the file-backed slots.
     #[test]
     fn no_mode_reaches_the_cloud_slot() {
         for file_backed in 0..6 {

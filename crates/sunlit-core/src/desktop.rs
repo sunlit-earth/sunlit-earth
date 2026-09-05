@@ -16,6 +16,11 @@
 //! sink runs the commands, so the table is tested on every platform against
 //! fabricated sessions rather than only where a desktop exists.
 
+// Every row here drives a Linux desktop, so on another platform the crate calls
+// almost none of this. It is compiled and tested there anyway, which is what
+// lets the table be checked without a Linux machine.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 
 use crate::display::layout::DisplayMode;
@@ -26,7 +31,7 @@ use crate::display::layout::DisplayMode;
 /// meaningful: Budgie sets `Budgie:GNOME` and Ubuntu sets `ubuntu:GNOME`, so
 /// walking the list in order picks the desktop that claimed to be itself before
 /// the one it is built on.
-pub const DESKTOP_ENV: &str = "XDG_CURRENT_DESKTOP";
+pub(crate) const DESKTOP_ENV: &str = "XDG_CURRENT_DESKTOP";
 
 /// One command to run, as a program and its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,7 +263,7 @@ impl Backend {
     /// that says which, in the same voice as the refusals. `None` where the
     /// desktop did exactly what was asked, which includes every single-monitor
     /// session, since all three modes mean the same thing on one screen.
-    pub fn degradation(&self, mode: DisplayMode, screens: usize) -> Option<String> {
+    pub(crate) fn degradation(&self, mode: DisplayMode, screens: usize) -> Option<String> {
         if screens < 2 {
             return None;
         }
@@ -410,7 +415,7 @@ impl Backend {
     /// monitor either, so there was nowhere to put the image and nowhere to
     /// create one, which is a different problem from a setter that ran and did
     /// not work.
-    pub fn nothing_to_run(&self) -> String {
+    pub(crate) fn nothing_to_run(&self) -> String {
         format!(
             "{} has no wallpaper property to set: `xfconf-query -c {XFCE_CHANNEL} -l` \
              listed nothing ending in `{XFCE_IMAGE_PROPERTY}` and no connected \
@@ -445,12 +450,6 @@ fn xfce_properties<'a>(
         .map(ToOwned::to_owned)
 }
 
-/// A `file://` URI for a local path, which is what the gsettings keys want.
-///
-/// Percent-encoding is limited to the characters that would otherwise change
-/// what the URI means. The path this is called with is one the app wrote itself,
-/// under a directory named by the OS, so the general case is not the case here;
-/// a space in a home directory is, and that is the one that has to work.
 /// The one call that puts this publish on Plasma's screens.
 fn plasma_command(placement: &Placement) -> Invocation {
     Invocation::new(
@@ -511,6 +510,12 @@ fn js_string(path: &Path) -> String {
     format!("\"{escaped}\"")
 }
 
+/// A `file://` URI for a local path, which is what the gsettings keys want.
+///
+/// Percent-encoding is limited to the characters that would otherwise change
+/// what the URI means. The path this is called with is one the app wrote itself,
+/// under a directory named by the OS, so the general case is not the case here;
+/// a space in a home directory is, and that is the one that has to work.
 fn file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().bytes() {
@@ -628,7 +633,7 @@ const GNOME_BACKGROUND: Kind = Kind::Gsettings {
 /// that names a backend wins, so `Budgie:GNOME` is Budgie and `ubuntu:GNOME` is
 /// GNOME. Matching the table in its own order instead would make the first row
 /// win regardless of what the session said it was.
-pub fn detect(current_desktop: &str) -> Option<Backend> {
+fn detect(current_desktop: &str) -> Option<Backend> {
     current_desktop
         .split(':')
         .map(|token| token.trim().to_ascii_lowercase())
@@ -651,7 +656,7 @@ pub fn detect_current() -> Option<Backend> {
 /// Names what was detected rather than only refusing, because the two causes
 /// look identical from the outside: a desktop with no row in the table, and no
 /// desktop at all.
-pub fn no_backend_message(current_desktop: &str) -> String {
+pub(crate) fn no_backend_message(current_desktop: &str) -> String {
     let known: Vec<&str> = BACKENDS.iter().map(|(_, b)| b.desktop).collect();
     if current_desktop.trim().is_empty() {
         format!(

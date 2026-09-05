@@ -172,7 +172,7 @@ pub trait WallpaperSink: Send + Sync {
 ///
 /// Every use of it is logged where it happens, so a wallpaper at this size is
 /// never silently a guess.
-pub const DEFAULT_TARGET_SIZE: (u32, u32) = (2560, 1440);
+const DEFAULT_TARGET_SIZE: (u32, u32) = (2560, 1440);
 
 /// Message returned where there is no wallpaper setter at all.
 ///
@@ -462,6 +462,7 @@ fn run(command: &crate::desktop::Invocation) -> Result<String, String> {
 /// A sink that reports one screen of a fixed size and throws the pixels away,
 /// counting how many publishes it saw. Used by tests that care about the
 /// schedule rather than the image.
+#[doc(hidden)]
 pub struct CountingSink {
     size: (u32, u32),
     count: std::sync::atomic::AtomicUsize,

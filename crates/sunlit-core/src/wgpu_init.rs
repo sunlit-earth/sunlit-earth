@@ -45,7 +45,7 @@ pub fn instance() -> &'static wgpu::Instance {
 /// that any more, and the engine owns the device outright. The device keeps
 /// alive whatever it needs from the adapter, and the instance behind both is
 /// the process-wide `INSTANCE` above.
-pub struct WgpuContext {
+pub(crate) struct WgpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter_info: String,
@@ -72,7 +72,7 @@ pub struct WgpuContext {
 /// A machine with no adapter at all, or one whose driver refuses a device, is
 /// an ordinary thing to run into rather than a bug in this program, so both
 /// come back as an error for the caller to report.
-pub fn init(force_software: bool) -> Result<WgpuContext, String> {
+pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
     let adapters = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::all()));
 
     let adapter = select_adapter(&adapters, force_software)
@@ -148,7 +148,7 @@ pub fn init(force_software: bool) -> Result<WgpuContext, String> {
 /// references through the GL path today, because the tests force the software
 /// adapter and CI installs `mesa-vulkan-drivers`; if something ever does, the
 /// GL case needs the backend appended to its key.
-pub fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
+pub(crate) fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
     let lower = name.to_lowercase();
 
     // Mesa's Vulkan software driver is called lavapipe; it reports itself with
@@ -173,7 +173,7 @@ pub fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
 
 /// Rank a GPU device type for adapter selection priority.
 /// Lower is better: discrete GPU is preferred, CPU is last resort.
-pub(crate) fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
+fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
     match device_type {
         wgpu::DeviceType::DiscreteGpu => 0,
         wgpu::DeviceType::IntegratedGpu => 1,
@@ -214,6 +214,14 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> Option<&w
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A machine with nothing to render on is `init`'s error rather than its
+    /// panic, and this is the branch that decides it without a GPU to run on.
+    #[test]
+    fn no_adapter_is_an_answer_rather_than_a_panic() {
+        assert!(select_adapter(&[], false).is_none());
+        assert!(select_adapter(&[], true).is_none());
+    }
 
     #[test]
     fn software_rasterizers_are_keyed_by_name() {

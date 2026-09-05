@@ -36,7 +36,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// with no scratch set panics rather than falling back to the live directory, so
 /// a test that forgets the isolation fails loudly in CI instead of quietly on a
 /// desktop.
-pub fn wallpaper_dir() -> Result<PathBuf, String> {
+pub(crate) fn wallpaper_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     let dir = scratch_override().expect(
         "a unit test resolved wallpaper_dir() without a scratch override; wrap the \
@@ -103,6 +103,11 @@ struct Generation {
 /// until this process has published, where the modification times are all there
 /// is to go on. It also names the immediately previous generation the sweep must
 /// keep.
+///
+/// A poisoned lock is taken as it stands: the value behind it has no invariant a
+/// panic could leave half-built, and `commit` holds it across a `remove_dir_all`,
+/// so refusing it would turn one panic into a publish path that panics for the
+/// rest of the session.
 static PUBLISHED: Mutex<Option<Generation>> = Mutex::new(None);
 
 /// The number of publishes so far in this process, which makes a generation id
@@ -204,15 +209,16 @@ fn newest_generation(dir: &Path) -> Option<PathBuf> {
 
 /// The files the most recent publish wrote, empty where nothing has published.
 ///
-/// This is what a desktop's own store holds once the setter has run, which is
-/// what lets a test read the setting back and recognize it. What this process
-/// wrote, where it has written anything, and otherwise the newest generation on
-/// disk, which is how a process that did not do the publishing gets the same
-/// answer.
+/// What this process wrote, where it has written anything, and otherwise the
+/// newest generation on disk, which is how a process that did not do the
+/// publishing gets the same answer. Where the setter ran and took them, that is
+/// also what the desktop's own store holds, which is what lets a test read the
+/// setting back and recognize it; a publish whose setter failed is named here
+/// too, because the generation is committed before the setter runs.
 pub fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
     if let Some(generation) = PUBLISHED
         .lock()
-        .expect("the published generation is poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
     {
         return Ok(generation.files);
@@ -238,7 +244,7 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
 /// exactly as it was.
 ///
 /// [`commit`]: Publication::commit
-pub struct Publication {
+pub(crate) struct Publication {
     dir: PathBuf,
     files: Vec<PathBuf>,
 }
@@ -248,7 +254,7 @@ pub struct Publication {
 /// The directory is created empty and no earlier generation is touched. Sweeping
 /// waits for [`Publication::commit`], so a publish that fails part way through
 /// removes nothing the desktop is still showing.
-pub fn begin_publication() -> Result<Publication, String> {
+pub(crate) fn begin_publication() -> Result<Publication, String> {
     let root = wallpaper_dir()?;
     let dir = root.join(generation_name());
     std::fs::create_dir_all(&dir)
@@ -275,7 +281,7 @@ impl Publication {
     /// the "Set as Wallpaper" operation to complete and a larger file is the
     /// cheaper half of that trade. Windows preserves PNG wallpapers losslessly
     /// (no JPEG transcode), which avoids the banding artifacts TIFF produced.
-    pub fn write(
+    pub(crate) fn write(
         &mut self,
         suffix: &str,
         pixels: &[u8],
@@ -321,10 +327,10 @@ impl Publication {
     /// lifecycle exists to prevent. They are the previous "generation" for one
     /// cycle, kept through the first publish and swept on the second, by which
     /// point a generation has been set.
-    pub fn commit(self) -> Vec<PathBuf> {
+    pub(crate) fn commit(self) -> Vec<PathBuf> {
         let mut published = PUBLISHED
             .lock()
-            .expect("the published generation is poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(root) = self.dir.parent() {
             let previous = published
                 .as_ref()
@@ -449,7 +455,7 @@ fn encode_png(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(),
 /// first and is the outcome this wants either way, so the return value is not an
 /// error to report.
 #[cfg(windows)]
-pub fn ensure_dpi_awareness() {
+pub(crate) fn ensure_dpi_awareness() {
     use std::sync::Once;
 
     use windows_sys::Win32::UI::HiDpi::{
@@ -487,7 +493,7 @@ pub fn ensure_dpi_awareness() {
 /// API in this crate to ask, so it asks a program.
 #[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-pub fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
+pub(crate) fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
@@ -683,8 +689,8 @@ mod shell {
 
     /// A string the shell allocated with the COM task allocator.
     ///
-    /// `GetMonitorDevicePathAt` and `GetWallpaper` both hand back memory the
-    /// caller owns, and the wrapper exists so that every early return frees it.
+    /// `GetMonitorDevicePathAt` hands back memory the caller owns, and the
+    /// wrapper exists so that every early return frees it.
     struct TaskMem(PWSTR);
 
     impl TaskMem {
@@ -838,31 +844,7 @@ mod shell {
                 )
             })
         }
-
-        /// What the shell holds for one monitor, which is the read-back.
-        ///
-        /// Worth more than it looks: it is the first time the Windows setter can
-        /// be asserted the way the Linux one already is, by asking the shell
-        /// what it has rather than trusting an exit code.
-        pub fn get(&self, monitor: &str) -> Result<String, String> {
-            let id = HSTRING::from(monitor);
-            // SAFETY: the HSTRING outlives the call, and the returned string is
-            // owned by TaskMem from here on.
-            #[allow(unsafe_code)]
-            let path = unsafe { self.0.GetWallpaper(PCWSTR(id.as_ptr())) }
-                .map_err(|e| format!("cannot read {monitor}'s wallpaper: {e}"))?;
-            Ok(TaskMem(path).read())
-        }
     }
-}
-
-/// What the shell holds for one monitor, by its device path.
-///
-/// The Windows counterpart of reading a `gsettings` key back: an exit code is
-/// not evidence that a wallpaper was set, and this is.
-#[cfg(windows)]
-pub fn wallpaper_on_monitor(id: &str) -> Result<String, String> {
-    shell::DesktopWallpaperApi::open()?.get(id)
 }
 
 /// Make a finished job the Windows desktop's wallpaper.
@@ -887,7 +869,7 @@ pub fn wallpaper_on_monitor(id: &str) -> Result<String, String> {
 /// wallpaper on a configuration nobody has verified is the worst outcome
 /// available.
 #[cfg(windows)]
-pub fn set_wallpaper_job(
+pub(crate) fn set_wallpaper_job(
     job: &crate::engine::wallpaper_sink::WallpaperJob,
 ) -> Result<String, String> {
     use std::sync::Arc;
@@ -1046,7 +1028,7 @@ fn ensure_fill_style() -> Result<(), String> {
 /// Verifies the file exists and is non-empty, sets "Fill" display style,
 /// then calls `SystemParametersInfoW` with `SPI_SETDESKWALLPAPER`.
 #[cfg(windows)]
-pub fn set_wallpaper(path: &Path) -> Result<(), String> {
+pub(crate) fn set_wallpaper(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     // Verify the file exists and is non-empty

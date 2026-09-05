@@ -44,7 +44,8 @@ impl Output {
     ///
     /// Half-open on the far edges, so a window whose left edge is exactly the
     /// output's right edge is on the next one and not on this.
-    pub fn overlaps(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
+    #[cfg(any(not(windows), test))]
+    pub(crate) fn overlaps(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
         let right = self
             .x
             .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX));
@@ -65,7 +66,8 @@ impl Output {
 /// why this compares tokens rather than searching the line. A connected output
 /// with no mode assigned carries no geometry token and is skipped, because an
 /// output nothing is displayed on is not somewhere to put a window.
-pub fn parse_outputs(text: &str) -> Vec<Output> {
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_outputs(text: &str) -> Vec<Output> {
     let mut outputs = Vec::new();
     for line in text.lines() {
         // The mode list under each output is indented; the output's own line is
@@ -108,6 +110,7 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
 /// Rejecting anything else matters more than it looks: the rest of an output's
 /// line is free text ("normal left inverted right x axis y axis", "0mm x 0mm"),
 /// and the first token that happens to parse is taken as the geometry.
+#[cfg(any(target_os = "linux", test))]
 fn parse_geometry(token: &str) -> Option<(u32, u32, i32, i32)> {
     let (size, offsets) = token.split_once('+')?;
     let (width, height) = size.split_once('x')?;
@@ -120,6 +123,7 @@ fn parse_geometry(token: &str) -> Option<(u32, u32, i32, i32)> {
 }
 
 /// The two offsets out of what follows the first `+`.
+#[cfg(any(target_os = "linux", test))]
 fn split_offsets(text: &str) -> Option<(i32, i32)> {
     let at = text
         .char_indices()
@@ -195,7 +199,8 @@ impl From<Output> for Monitor {
 ///
 /// The same fallback [`primary_of`] makes, and for the same reason: a session
 /// that marks nothing primary is common and is not a session to refuse.
-pub fn primary_monitor_of(monitors: &[Monitor]) -> Option<&Monitor> {
+#[cfg(any(windows, test))]
+pub(crate) fn primary_monitor_of(monitors: &[Monitor]) -> Option<&Monitor> {
     monitors
         .iter()
         .find(|monitor| monitor.primary)

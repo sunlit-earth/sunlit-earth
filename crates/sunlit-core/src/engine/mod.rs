@@ -383,6 +383,12 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle, String> {
     // - The worst case is therefore a backlog for as long as one blocking
     //   operation takes: a 4K wallpaper export or an 8K mip upload, one to two
     //   seconds, so a couple of hundred entries and single-digit kilobytes.
+    //
+    // A bound was considered and rejected: a blocking `send` from the UI thread
+    // would deadlock against an engine that is mid-export, and a non-blocking
+    // `try_send` that drops `UpdateParams` can drop the *last* one, leaving the
+    // window and the engine permanently disagreeing. Neither failure is better
+    // than the bounded growth above.
     let (tx, rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
 

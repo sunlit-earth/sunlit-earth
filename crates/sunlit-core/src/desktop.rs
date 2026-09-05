@@ -462,9 +462,10 @@ fn plasma_command(placement: &Placement) -> Invocation {
 ///
 /// Plasma orders its containments however it likes and renumbers them when the
 /// layout changes, so the script sorts them by where their screens sit and
-/// matches that against `by_position`, which is sorted the same way. A screen
-/// whose entry is null is one this publish left alone and is stepped over, which
-/// is what keeps the rest aligned.
+/// matches that against `by_position`, which is sorted the same way. A
+/// containment on no screen (`screen` is -1) is not a desktop anyone can see and
+/// is dropped before the sort; a screen whose entry is null is one this publish
+/// left alone and is stepped over, which is what keeps the rest aligned.
 ///
 /// `wallpaperPlugin` is written every time because a screen left on a colour or
 /// a slideshow would otherwise take the image into a plugin that does not read

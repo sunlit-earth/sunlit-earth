@@ -4252,7 +4252,8 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
 /// from 0.73 to 1.26, which is bright stars sitting in bright parts of the Milky
 /// Way and nothing more. A star baked into the layer saturates the texels it
 /// covers, and such a core reads 2.32 against the brightest surround in the set
-/// and 5 or more against a typical one. Two sits between the two.
+/// and 5 or more against a typical one; the wrong SVS layer would do that to
+/// most of the 21 at once. Two sits between the two.
 ///
 /// What this window cannot see is a star confined to a single texel in the
 /// brightest part of the plane, which stays inside the bound;

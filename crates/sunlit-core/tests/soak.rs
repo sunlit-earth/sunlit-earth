@@ -48,9 +48,14 @@ const STEPS_PER_CLOUD_UPDATE: u64 = 3;
 /// would dominate the noise, small enough to decode hundreds of times.
 const CLOUD_WIDTH: u32 = 2048;
 const CLOUD_HEIGHT: u32 = 1024;
-/// Wallpaper export size. Small: the test is about the schedule and the
-/// memory, not the picture.
-const EXPORT_SIZE: (u32, u32) = (320, 192);
+/// Wallpaper export size.
+///
+/// Small on purpose, and the test is about the schedule and the memory rather
+/// than the picture: what the export has to do here is go through the publish
+/// path once per simulated hour, which it does at any size. Most of a step is
+/// the round trip rather than the render, so this buys less than it looks like
+/// it should; the measurements are in docs/testing.md.
+const EXPORT_SIZE: (u32, u32) = (160, 96);
 
 /// How long to wait for the engine to catch up with one simulated step.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);

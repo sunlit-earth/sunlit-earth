@@ -202,25 +202,12 @@ impl Harness {
         self.settle();
     }
 
-    /// Set the scene and hand back the preview frame of it.
-    ///
-    /// The engine emits a frame only when something changed, and on a shared
-    /// engine the case before this one may have left this very scene behind. So
-    /// the scene is applied and allowed to settle, and then the preview is
-    /// switched off and on again: what that debt puts on the wire is the frame
-    /// the engine is holding, which is this scene's whether it had to be drawn
-    /// again or not.
-    fn frame_for(&self, params: &SceneParams) -> (Vec<u8>, u32, u32) {
-        self.settle_at(params);
-        self.engine.send(EngineCommand::SetPreviewEnabled(false));
-        self.engine.send(EngineCommand::SetPreviewEnabled(true));
-        self.next_frame()
-    }
-
     /// Set the scene and block until the frame the change itself produces.
     ///
     /// For the cases that are about whether a change produces a frame at all,
-    /// which means the caller has to have left the engine on another scene.
+    /// which means the caller has to have left the engine on another scene. A
+    /// case that only wants to look at pixels asks for a `picture` instead,
+    /// which renders synchronously and needs no change to have happened.
     fn frame_after_change(&self, params: &SceneParams) -> (Vec<u8>, u32, u32) {
         self.engine
             .send(EngineCommand::UpdateParams(Box::new(*params)));
@@ -383,7 +370,39 @@ fn overlays_wanted() -> SceneParams {
 /// scratch directory in the file that is not dropped when a case ends: a
 /// `static` is never dropped, so the tree survives the process. Everything a
 /// case owns for itself is a `ScratchDir` of its own and goes away with it.
-static FIXTURES: LazyLock<ScratchDir> = LazyLock::new(|| ScratchDir::new("engine_shared"));
+static FIXTURES: LazyLock<ScratchDir> = LazyLock::new(|| {
+    sweep_abandoned_fixture_roots();
+    ScratchDir::new("engine_shared")
+});
+
+/// Remove the fixture roots earlier runs left behind.
+///
+/// `FIXTURES` is not dropped, so each run leaves its tree in place. An hour is
+/// far longer than this target has ever taken, so anything older than that
+/// belongs to a run that is over, and a run still going keeps its own.
+fn sweep_abandoned_fixture_roots() {
+    const ABANDONED_AFTER: Duration = Duration::from_hours(1);
+
+    let Ok(entries) = std::fs::read_dir(test_support::scratch_root()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("sunlit_earth_engine_shared_")
+        {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|at| at.elapsed().is_ok_and(|age| age > ABANDONED_AFTER));
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
 
 /// The engine for every case that needs no texture file of its own.
 ///
@@ -1953,7 +1972,7 @@ fn blend_params() -> SceneParams {
 fn a_resolution_switch_reloads_the_textures_in_both_directions() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let (rgba, _, _) = harness.frame_for(&blend_params());
+    let rgba = harness.picture(&blend_params(), FRAME);
     assert!(
         has_lit_pixels(&rgba),
         "the globe should be visible at first"
@@ -2337,7 +2356,12 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
     };
 
     let _gpu = gpu();
-    let cache = ScratchDir::new("engine_resolution_memory");
+    // Not a scratch directory: this is the downscale cache, and what it holds
+    // is two halved copies of the 8K assets that cost about six seconds each to
+    // build. It is keyed on the source's size and modification time, so a run
+    // that finds it warm is reading exactly what it would have written.
+    let cache = test_support::scratch_root().join("engine_resolution_memory_cache");
+    std::fs::create_dir_all(&cache).expect("create the downscale cache");
 
     // Build the narrow copies before measuring anything. Otherwise the switch
     // decodes both 8K sources one last time to make them, and those two 128 MiB
@@ -2345,15 +2369,14 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
     // snapshot is taken, which would hide the very thing being measured.
     sunlit_core::assets::texture_loader::register_jxl_hook();
     for path in paths.iter().flatten() {
-        sunlit_core::assets::texture_cache::load_at_resolution(path, NARROW, Some(cache.path()))
+        sunlit_core::assets::texture_cache::load_at_resolution(path, NARROW, Some(&cache))
             .expect("build the narrow copy");
     }
 
-    let cache_dir = cache.path().to_path_buf();
     let harness = Harness::start(|config| {
         config.texture_paths = paths.clone();
         config.texture_resolution = WIDE;
-        config.cache_dir = Some(cache_dir);
+        config.cache_dir = Some(cache.clone());
         config.params = blend_params();
     });
     harness.wait_for_textures("at 8192");
@@ -2519,9 +2542,11 @@ impl sunlit_core::assets::cloud_source::CloudSource for VariantCloud {
     }
 }
 
-/// The width the variant cases start and end at, and the one they switch to.
+/// The width the variant cases start and end at, the one they switch to, and
+/// the one no case leaves in the disk cache.
 const VARIANT_WIDE: u32 = 8192;
 const VARIANT_NARROW: u32 = 2048;
+const VARIANT_UNCACHED: u32 = 4096;
 
 /// The engine whose cloud source serves a different image per variant.
 struct Variant {
@@ -2556,7 +2581,6 @@ static VARIANT: LazyLock<Variant> = LazyLock::new(|| {
 
 fn variant(_gpu: &Gpu) -> &'static Variant {
     let group = &*VARIANT;
-    group.source.set_offline(false);
     if group.harness.restore_resolution() {
         wait_for_cloud_size(
             &group.harness,
@@ -2607,10 +2631,10 @@ fn the_cloud_variant_follows_the_texture_resolution() {
         "construction points the source at the configured variant"
     );
 
-    group.set_texture_resolution(VARIANT_NARROW);
+    group.set_texture_resolution(VARIANT_UNCACHED);
     wait_for_cloud_size(
         group,
-        VariantCloud::image_size(VARIANT_NARROW),
+        VariantCloud::image_size(VARIANT_UNCACHED),
         "after the switch",
     );
     let after = group.engine.memory_report().expect("a report");
@@ -2621,7 +2645,12 @@ fn the_cloud_variant_follows_the_texture_resolution() {
             .retarget_widths()
             .last()
             .expect("the switch retargeted the source"),
-        VARIANT_NARROW
+        VARIANT_UNCACHED
+    );
+    assert_eq!(
+        group.source.fetches(),
+        fetches + 1,
+        "a switch to a variant nothing has cached must cost a fetch of it"
     );
 
     // One cloud texture, at the new size: the replacement went through the
@@ -2632,7 +2661,7 @@ fn the_cloud_variant_follows_the_texture_resolution() {
         .filter(|texture| texture.label == "cloud_texture")
         .map(|texture| (texture.width, texture.height))
         .collect();
-    assert_eq!(sizes, [VariantCloud::image_size(VARIANT_NARROW)]);
+    assert_eq!(sizes, [VariantCloud::image_size(VARIANT_UNCACHED)]);
 
     // And the old one was actually freed, not merely forgotten. Skipped where
     // the backend keeps no texture counter; D3D12 and Vulkan both do.
@@ -2643,10 +2672,9 @@ fn the_cloud_variant_follows_the_texture_resolution() {
         panic!("wgpu reported negative texture memory");
     };
     println!(
-        "wgpu texture bytes: {:.2} MiB before, {:.2} MiB after, {} fetches before the switch",
+        "wgpu texture bytes: {:.2} MiB before, {:.2} MiB after",
         mib(measured_before),
-        mib(measured_after),
-        fetches
+        mib(measured_after)
     );
     if measured_before == 0 {
         println!("skipping the free check: this backend maintains no texture counter");
@@ -2703,32 +2731,44 @@ fn a_switch_back_to_a_cached_variant_shows_it_again() {
 /// gap would never close.
 #[test]
 fn a_switch_keeps_the_old_cloud_texture_until_the_new_one_lands() {
-    /// A width no earlier case has cached, so nothing on disk can answer for it
-    /// while the source is offline.
-    const UNCACHED: u32 = 4096;
+    const WIDE: u32 = VARIANT_WIDE;
+    const NARROW: u32 = VARIANT_NARROW;
 
-    let gpu = gpu();
-    let group = variant(&gpu);
-    let showing = VariantCloud::image_size(VARIANT_WIDE);
+    let _gpu = gpu();
+    let source = Arc::new(VariantCloud::new(WIDE));
+    let cloud = Arc::clone(&source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+    // An engine of its own, and no cache directory. A failed poll puts the
+    // fetcher into a fifteen second backoff, which the shared engine would then
+    // hand to whichever case came next, and a cache would answer the switch
+    // from disk rather than leaving it unanswered, which is the state this case
+    // is about.
+    let harness = Harness::start(move |config| {
+        config.texture_resolution = WIDE;
+        config.cloud = Some(cloud);
+    });
+    let showing = VariantCloud::image_size(WIDE);
+    wait_for_cloud_size(&harness, showing, "at startup");
 
-    group.source.set_offline(true);
-    group.set_texture_resolution(UNCACHED);
+    source.set_offline(true);
+    harness
+        .engine
+        .send(EngineCommand::SetTextureResolution(NARROW));
 
     // The retarget is a command, so a reply to a later one proves it was taken;
     // what follows has to be given a few of the engine's own ticks, because the
     // assertion is that nothing happens.
     let deadline = std::time::Instant::now() + CHANGE_TIMEOUT;
-    while group.source.retarget_widths().last() != Some(&UNCACHED) {
+    while source.retarget_widths().last() != Some(&NARROW) {
         assert!(
             std::time::Instant::now() < deadline,
             "the switch should still have reached the cloud pipeline: {:?}",
-            group.source.retarget_widths()
+            source.retarget_widths()
         );
         std::thread::sleep(Duration::from_millis(10));
     }
     std::thread::sleep(NOTHING_HAPPENS_IN);
 
-    let report = group.engine.memory_report().expect("a report");
+    let report = harness.engine.memory_report().expect("a report");
     let sizes: Vec<(u32, u32)> = report
         .expected
         .iter()
@@ -3990,9 +4030,14 @@ impl std::ops::Deref for RealSky {
     }
 }
 
-/// The width the real sky loads at: above the asset's own 4096, so it loads as
-/// it is and nothing is cached until a case asks for less.
-const REAL_SKY_WIDTH: u32 = 8192;
+/// The width the real sky loads at, and the one the cap case reaches up to.
+///
+/// The narrow end is the default because the halving is what the cache holds:
+/// the engine writes it once at startup and the case that reads it back costs
+/// nothing, where starting wide would mean decoding the 4096 source three more
+/// times.
+const REAL_SKY_WIDTH: u32 = 2048;
+const REAL_SKY_CAP: u32 = 8192;
 
 static REAL_SKY: LazyLock<Option<RealSky>> = LazyLock::new(|| {
     let path = real_asset("milkyway_2020_4k.jxl").ok()?;
@@ -4018,7 +4063,7 @@ fn real_sky(_gpu: &Gpu) -> Option<&'static RealSky> {
     }
     let group = REAL_SKY.as_ref()?;
     if group.harness.restore_resolution() {
-        wait_for_panorama_width(group, 4096);
+        wait_for_panorama_width(group, REAL_SKY_WIDTH);
     }
     group.harness.reset();
     Some(group)
@@ -4294,16 +4339,27 @@ fn the_panorama_follows_the_texture_resolution_cap() {
         return;
     };
 
+    // The engine loads at the narrow end, and the cache directory is this run's
+    // own, so the file being there is the halving having been written.
+    let narrow = wait_for_panorama_width(group, REAL_SKY_WIDTH);
+    println!(
+        "at the {REAL_SKY_WIDTH} setting the panorama loads at {}x{}",
+        narrow.0, narrow.1
+    );
+    assert_eq!(narrow, (2048, 1024));
     let cached = group
         .cache
         .join("texture_cache")
         .join("milkyway_2020_4k.2048.png");
-    let _ = std::fs::remove_file(&cached);
+    assert!(
+        cached.exists(),
+        "the halving was not written to {}",
+        cached.display()
+    );
 
-    // The engine starts at 8192, above the asset's own width.
-    let wide = wait_for_panorama_width(group, 4096);
+    let wide = wait_for_panorama_width_after(group, REAL_SKY_CAP, 4096);
     println!(
-        "at the {REAL_SKY_WIDTH} setting the panorama loads at {}x{}",
+        "at the {REAL_SKY_CAP} setting the panorama loads at {}x{}",
         wide.0, wide.1
     );
     assert_eq!(
@@ -4312,26 +4368,19 @@ fn the_panorama_follows_the_texture_resolution_cap() {
         "the widest setting is a cap, and the file is 4096 wide"
     );
 
-    group.set_texture_resolution(2048);
-    let narrow = wait_for_panorama_width(group, 2048);
-    println!(
-        "at the 2048 setting the panorama loads at {}x{}",
-        narrow.0, narrow.1
+    // Back down, which is the load that reads what the first one wrote rather
+    // than halving the source again. The width alone cannot show that; the file
+    // having to be there for it to succeed can.
+    assert_eq!(
+        wait_for_panorama_width_after(group, REAL_SKY_WIDTH, REAL_SKY_WIDTH),
+        narrow
     );
-    assert_eq!(narrow, (2048, 1024));
-    assert!(
-        cached.exists(),
-        "the halving was not written to {}",
-        cached.display()
-    );
+}
 
-    // Away and back, so the second load at the narrow width reads what the
-    // first one wrote rather than halving the source again. The width alone
-    // cannot show that; the file having to be there for it to succeed can.
-    group.set_texture_resolution(REAL_SKY_WIDTH);
-    wait_for_panorama_width(group, 4096);
-    group.set_texture_resolution(2048);
-    assert_eq!(wait_for_panorama_width(group, 2048), narrow);
+/// Reload the panorama at `resolution` and wait until it is `width` wide.
+fn wait_for_panorama_width_after(group: &RealSky, resolution: u32, width: u32) -> (u32, u32) {
+    group.set_texture_resolution(resolution);
+    wait_for_panorama_width(group, width)
 }
 
 // ---------------------------------------------------------------------------

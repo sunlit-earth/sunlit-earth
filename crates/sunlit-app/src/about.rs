@@ -11,9 +11,9 @@
 //! than of how it is used. It rejects a heading outright and has no font size
 //! to give one, it stacks paragraphs with no gap and no spacing property, and
 //! its list bullet is literal text glued to the paragraph, so a wrapped line
-//! gets no hanging indent. So [`parse_blocks`] cuts the file into blocks, the
+//! gets no hanging indent. So `parse_blocks` cuts the file into blocks, the
 //! tab renders one element per block, and only a block's own inline markdown
-//! goes through [`StyledText::from_markdown`]. A block is one paragraph by
+//! goes through `StyledText::from_markdown`. A block is one paragraph by
 //! construction, which is also why none of them can hold a construct the
 //! subset rejects.
 //!

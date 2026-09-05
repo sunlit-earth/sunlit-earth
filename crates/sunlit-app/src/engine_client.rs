@@ -5,7 +5,7 @@
 //! loop once per arrival, and turns whatever is parked into a `slint::Image`.
 //! Frames are replaced rather than queued: if the UI thread falls behind, only
 //! the newest frame is worth showing, and an unbounded queue of 2 MB buffers is
-//! exactly the failure mode Phase 0 removed from the texture path.
+//! exactly what this crate does not park in memory.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

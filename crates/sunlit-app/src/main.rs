@@ -457,20 +457,6 @@ fn run_render(
         }
     });
 
-    // Waiting for `TexturesReady` only makes sense if there is a globe texture
-    // to wait for. A slot with no path never gets a bind group and so never
-    // reports ready, and the overlays are not what readiness is about, so a
-    // directory holding only the Moon's file or the panorama's would turn the
-    // wait below into a guaranteed two-minute stall ending in an error about a
-    // problem that does not exist. What the globe draws from is the same either
-    // way, the procedural grid; an overlay is drawn if its own decode has landed
-    // by then, which is what waiting on `TexturesReady` never promised anyway.
-    //
-    // This covers a missing file, not a broken one. A texture that fails to
-    // decode leaves the slot in the same terminal state and still hangs the
-    // wait; that is a gap in `Renderer::textures_ready` itself, affecting every
-    // client rather than only this one, and it is on the roadmap as its own
-    // fix rather than patched around here.
     let have_globe = have_globe_texture(&engine_config.texture_paths);
 
     let engine = match engine::start(engine_config) {
@@ -603,7 +589,6 @@ fn register_auto_refresh_callback(
 
         send_auto_refresh(&engine, &win);
 
-        // Refresh immediately when toggling on (not on slider change)
         if enabled && !was_enabled {
             info!("auto-refresh: immediate refresh on enable");
             engine.push_params(&win);
@@ -831,9 +816,6 @@ fn run_app(
 
     let _instance_guard = instance_guard;
 
-    // Close handler depends on mode:
-    // - Tray: save geometry, hide window (stays in tray)
-    // - Windowed: quit the event loop (app exits)
     if use_tray {
         let window_weak = window.as_weak();
         let engine_link = link.clone();
@@ -872,9 +854,7 @@ fn run_app(
     sunlit_core::memory::log_memory_usage("before exit");
 
     // The engine owns the GPU device, so shutting it down here is an ordinary
-    // join on a worker thread. Slint holds no wgpu objects any more, which is
-    // what retired the process::exit(0) that used to dodge a thread-local
-    // destruction panic in wgpu's Queue::drop.
+    // join on a worker thread.
     engine.shutdown();
     // After the engine, so a hint that arrives during the teardown has an
     // engine to reach; the watcher's thread is woken and joined here.
@@ -968,7 +948,6 @@ fn main() -> ExitCode {
     let _guard = init_logging(cli.log_level.as_deref());
     info!("sunlit earth v{}", env!("CARGO_PKG_VERSION"));
 
-    // Validate: --tray-start hidden only makes sense with --mode tray
     if matches!(cli.tray_start, TrayStart::Hidden) && matches!(cli.mode, Mode::Window) {
         eprintln!("error: --tray-start hidden is only valid with --mode tray");
         return ExitCode::from(2);
@@ -985,8 +964,6 @@ fn main() -> ExitCode {
         "parsed CLI arguments"
     );
 
-    // Load config: from --config path if the render subcommand specifies one,
-    // otherwise from the user's saved config on disk.
     let config = match &cli.command {
         Some(Commands::Render {
             config: Some(path), ..
@@ -1048,12 +1025,6 @@ mod tests {
     use crate::test_support::ScratchDir;
 
     /// A pointer file exists, so `exists()` is not the question to ask.
-    ///
-    /// The smallest of the four assets is 285 KB and a checkout without the LFS
-    /// objects holds a couple of hundred bytes under the same name. What naming
-    /// one costs is a decode failure and an error line for a checkout that is
-    /// only incomplete, where the same run without the file at all is quiet and
-    /// draws the same picture.
     #[test]
     fn a_git_lfs_pointer_is_not_a_texture_path() {
         let dir = ScratchDir::new("texture_pointers");
@@ -1076,12 +1047,6 @@ mod tests {
     }
 
     /// An overlay is not something to wait for.
-    ///
-    /// The wait in `run_render` is for `TexturesReady`, which the renderer
-    /// reports from the globe's own slots, so a textures directory holding only
-    /// the Moon's file or the panorama's leaves nothing to wait for and asking
-    /// whether any path at all is present costs the two-minute timeout and an
-    /// error line for a picture that was never going to change.
     #[test]
     fn only_a_globe_texture_is_worth_waiting_for() {
         let path = || Some(PathBuf::from("stand-in.jxl"));

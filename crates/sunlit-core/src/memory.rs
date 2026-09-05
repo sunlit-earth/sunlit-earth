@@ -14,19 +14,13 @@
 //! | `peak_rss_bytes` | `PeakWorkingSetSize` | `VmHWM` | `resident_size_peak` |
 //! | `private_bytes` | `PrivateUsage` | `Private_Clean` + `Private_Dirty` | `phys_footprint` |
 //!
-//! The Linux private row is what `/proc/self/smaps_rollup` reports, which
-//! arrived in Linux 4.14 and can be absent under a hardened kernel. Where it
-//! is, `VmRSS` stands in (an upper bound, since it also counts shared pages)
-//! and the fallback says so in the log once per process.
-//!
 //! The numbers are close cousins rather than the same quantity, so compare
 //! them within one OS and not across. What every column does share is the
 //! property the tests depend on: parking a decoded frame makes it go up.
 //!
 //! The metrics file exists because release builds compile out `debug!` and
-//! `info!` (`release_max_level_warn`), so the tray-mode memory leak produced no
-//! telemetry at all across ten days of uptime. The CSV and the budget `warn!`
-//! both survive that filter.
+//! `info!` (`release_max_level_warn`); the CSV and the budget `warn!` both
+//! survive that filter.
 
 use std::fs;
 use std::io::Write;
@@ -94,7 +88,8 @@ fn milky_way_texture_bytes(texture_resolution: u32) -> u64 {
 /// Bytes the Moon's surface costs, at every resolution.
 ///
 /// 1024 by 512 RGBA8 with its mip chain is 2.67 MiB on the GPU, and the decode
-/// that produces it holds about the same again on the CPU while it runs. A
+/// that produces it holds about the same again on the CPU while it runs: 2.67
+/// plus 2.67, rounded up. A
 /// resolution switch purges and reloads this slot like the others, but the file
 /// is narrower than the narrowest cap the setting offers, so it is always loaded
 /// at its own width and the term does not move with the setting.
@@ -506,16 +501,9 @@ mod tests {
     const MIB: u64 = 1024 * 1024;
 
     /// The one cold-cache startup peak anyone has measured: about 2.43 GiB of
-    /// private bytes, at 8192, in a release build.
-    ///
-    /// Every resolution is held to this figure rather than to a smaller one
-    /// derived from it, and that is the point. The peak is dominated by the two
-    /// 8K JXL decodes, which a cold downscale cache performs whatever width it
-    /// was asked for; how much of the resident saving at a lower width also
-    /// shows up in the peak is exactly what nobody has measured. Deriving a
-    /// per-resolution peak from the budget's own decomposition would make the
-    /// two move together and assert nothing, and it would let the budget rest
-    /// on a saving that may not be there.
+    /// private bytes, at 8192, in a release build. Every resolution is held to
+    /// this figure rather than to a smaller one derived from it; the reasoning
+    /// is in `docs/testing.md`.
     const MEASURED_COLD_START_PEAK: u64 = 2488 * MIB;
 
     /// Build a snapshot with known values for format and rotation tests.
@@ -641,11 +629,6 @@ mod tests {
         );
     }
 
-    /// Every platform the project builds for must be able to measure itself,
-    /// and the figures it answers with have to be a process rather than a
-    /// parse accident. Asserting this on all three platforms is what stops a
-    /// broken per-OS snapshot from looking like a passing test suite: the soak
-    /// test and the budget warning both quietly become no-ops without it.
     #[test]
     fn snapshot_returns_plausible_figures_on_every_supported_platform() {
         let snap = snapshot();
@@ -691,14 +674,12 @@ mod tests {
         assert_eq!(parse_status_bytes(status, "VmSwap"), None);
     }
 
-    /// `VmRSS` must not be satisfied by a longer key that starts the same way.
     #[test]
     fn status_parser_requires_the_whole_key() {
         let status = "VmRSSExtra:\t 999 kB\nVmRSS:\t 100 kB\n";
         assert_eq!(parse_status_bytes(status, "VmRSS"), Some(100 * 1024));
     }
 
-    /// The scale factor is only correct if the value really is in kibibytes.
     #[test]
     fn status_parser_requires_the_kilobyte_unit() {
         assert_eq!(parse_status_bytes("Threads:\t 8\n", "Threads"), None);
@@ -732,17 +713,11 @@ mod tests {
         }
     }
 
-    /// The rule from the original comment: a warning that fires during normal
-    /// operation is a warning nobody reads. A cold cache at any resolution
-    /// still decodes both 8K sources, so that launch is the worst normal
-    /// operation gets and the budget has to clear it everywhere.
-    ///
-    /// The narrow end is the binding case, not a restatement of the wide one:
-    /// it gets the smallest resident allowance and has the same decode to pay
-    /// for. 2048 clears the measurement by 121 MiB where 8192 clears it by 633,
-    /// so a cold-start figure set too low fails here at the two lower widths
-    /// while the widest, which is where the 3 GiB total is anchored, still
-    /// passes.
+    /// A cold cache at any resolution still decodes both 8K sources, so that
+    /// launch is the worst normal operation gets and the budget has to clear it
+    /// everywhere. The narrow end is the binding case rather than a restatement
+    /// of the wide one: it gets the smallest resident allowance and has the same
+    /// decode to pay for. The measured clearances are in `docs/testing.md`.
     #[test]
     fn the_budget_stays_above_a_cold_cache_first_run_at_every_resolution() {
         for width in TEXTURE_RESOLUTIONS {
@@ -756,9 +731,9 @@ mod tests {
         }
     }
 
-    /// The other half of the same rule: a budget nothing can reach reports
-    /// nothing. At every resolution it stays under twice a cold start, so a
-    /// process that has doubled its startup footprint is named.
+    /// A budget nothing can reach reports nothing: at every resolution it stays
+    /// under twice a cold start, so a process that has doubled its startup
+    /// footprint is named.
     #[test]
     fn the_budget_is_low_enough_to_catch_a_runaway() {
         for width in TEXTURE_RESOLUTIONS {
@@ -772,8 +747,6 @@ mod tests {
         }
     }
 
-    /// The resident half is what the setting actually buys, so it has to be
-    /// the textures the app holds and not a number someone typed.
     #[test]
     fn the_resident_half_is_the_textures_the_renderer_keeps() {
         let surfaces = |width| {
@@ -784,11 +757,6 @@ mod tests {
         assert_eq!(surfaces(2048), 32 * MIB);
     }
 
-    /// The panorama's term follows the setting the way the surfaces do, and
-    /// stops at the source's own width rather than pretending a wider setting
-    /// buys a wider file. Both halves matter: a term that kept growing would
-    /// claim 170 MiB at 8192 that nothing allocates, and one that did not
-    /// shrink would give the narrow end an allowance it has no use for.
     #[test]
     fn the_panoramas_term_is_capped_at_the_width_of_the_file() {
         assert_eq!(milky_way_texture_bytes(4096), 4096 * 2048 * 4 * 4 / 3);
@@ -799,8 +767,6 @@ mod tests {
         );
     }
 
-    /// The renderer accepts any width as a cap, so the budget has to answer for
-    /// one no config offers rather than overflow on it.
     #[test]
     fn an_absurd_resolution_still_yields_a_budget() {
         assert!(private_bytes_budget(0) >= COLD_START_BYTES);

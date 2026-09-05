@@ -292,6 +292,10 @@ One entry per package: run, package, validator round date, MAJOR and MINOR count
 | 1 | 1.2 renderer side | 1 | 2026-09-05 | 0 | 4 | Two fixed in `288e7e5`, both comments. A replacement comment claimed a render target is never larger than what was asked for, contradicted by two tests twelve lines below it; and the `PREVIEW_USAGE` doc read as settled on the open question of `TEXTURE_BINDING`. MINOR 3 is informational and recorded under Open items. MINOR 4 was the orchestrator's, a departure-numbering collision, handled at merge. The validator reproduced review E1's swap itself and got `day_gamma: got 0.8, expected 1.5`. |
 | 1 | 1.3 the app | 1 | 2026-09-05 | 0 | 2 | Both fixed in `2ef528b`, neither declined. `SIGNAL:ipc_listener_ready` was printed before the thread it announces spawned, so a failed spawn would have sent every e2e client to a socket nobody accepts on; the signal moved to the `Ok` of the spawn. The auto-refresh save became departure 12 rather than a decline, after the implementer established that window close writes the stored interval back over an unsaved one. |
 
+| 2 | 2.1 engine targets | 1 | 2026-09-05 | **2** | 5 | Both MAJORs were one defect and both are fixed in `81459bf`. `SURFACE` was built at `texture_index: 0`, so its constructor's wait returned on the procedural grid with the file-backed day and night slots still empty, and the restructure had dropped the per-case waits that used to fill them. Four cases therefore passed only in their position (67 of 71 pass when each is run alone), and `a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode` rendered all three modes against the grid, so a broken day or night path would not have failed it. The validator reproduced both by running every case alone, by reversing the name order and by an ordinary filtered run. The fix starts the group in blend mode and waits for both slots by name; the implementer then found `REAL_SKY` had the same shape and fixed it too, and ruled out the other five with reasons. Independence proved afterwards three ways: 71 of 71 alone, reversed order green, seven filtered runs green. MINORs: the anchor case keeps a configured engine so `display_mode` and `anchor_monitor` are exercised at startup again; three 500 ms negative windows restored; the landmark floor moved with the area; `GROWTH_LIMIT` 16 to 8 MiB after the soak window halved. |
+| 2 | 2.2 GPU targets | 1 | 2026-09-05 | 0 | 3 | Two fixed in `116218e`, both tolerances the merges had silently loosened: three `datetime` rows asserting an exact zero went from epsilon 0.1 to 1.0, and `camera`'s per-component tolerances became one per row. Both restored to exactly what their predecessors carried. The third was the orchestrator's, a mislabelled gate block that would have put an error into this plan. |
+| 2 | 2.3 test modules and app tests | 1 | 2026-09-05 | **1** | 5 | All six fixed in `d183a8d`, none declined. The MAJOR: `desktop.rs:928` replaced the literal for xfconf's zoomed enumerant with the production constant that supplies it, making both sides of the assertion the same symbol, so changing that constant would ship a letterboxed wallpaper to every XFCE user with the suite green. It is an interop value rather than a project default, so `CLAUDE.md`'s no-pinning rule does not reach it. Restored with a comment saying why, and falsified. MINORs: the quality tier round trip used the debug default so a `sanitize` regression would only fail in release; a 1e-3 tolerance applied to all 55 agreement rows where one needed it; a lens equality loosened; the cloud cache folder name unasserted; the preview-size test re-deriving its own body. |
+
 No validator found a MAJOR finding, a broken behavior, or an unmet plan item in run 1. All three validators hit the same
 harness limitation and returned their reports as text rather than writing them; the orchestrator transcribed all three
 into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3.md`.
@@ -317,6 +321,58 @@ carried forward rather than declined, and each has a stated reason and a destina
   decides it.
 - `config.rs:319`'s `#[serde(default = "default_custom_year")]` is redundant under the struct-level `#[serde(default)]`.
   It is neither a `pub` item nor dead code in the compiler's sense, so it is left to the run that owns that file's tests.
+
+### Run 2
+
+The three handovers each numbered their own departures from 15 or from 1, so they are renumbered here into the single
+sequence. Package 2.1 supplied 15 to 20, package 2.2 21 to 24, package 2.3 25 to 31.
+
+15. **`engine.rs` goes 78 tests to 71, not to 57.** The review's 57 came from its F3 merge table; the merges that would
+    have reached it turned out to remove assertions rather than duplication. The run's gates are the two timings and the
+    rule that every removal names its successor, both met, so the count is a report rather than a miss.
+16. **The display-change cases need an engine that never publishes**, because the engine remembers that it has
+    published. A property of the engine that 91 disposable engines had hidden.
+17. **`camera_showing` refines eight coarse candidates rather than one.** The refinement lattice is a subset of the base
+    0.5 degree lattice, so the answer can only be a point the exhaustive scan also considered: 12.6k evaluations against
+    244.8k. Verified by the validator as a lattice argument, not as an equality.
+18. **`soak.rs`'s `EXPORT_SIZE` stays 160x96.** The review's item 6 estimated a saving that measurement did not support.
+19. **The landmark fixture is 5 degrees where one of its two cases used 4.** Closed after validation by moving the
+    vacuity floor with the area, 50 to 78 against 1101 measured lit pixels, rather than by declaring it.
+20. **The 2 s `SETTLE` became a poll on the source's own log plus `NOTHING_HAPPENS_IN`**, which is sound because the
+    slot purge, if it happened, would already have happened by the time the retarget is observable.
+21. **The `shading` target still creates two devices, and should.** See the amended acceptance line above: one device is
+    unreachable without deleting the cross-adapter test the review forbids deleting.
+22. **The review's fix for `fresnel_specular_brighter_at_grazing` does not hold, and the physics says why.** The review
+    is right about Schlick and wrong about the camera. At the specular peak `n_dot_v` is `cos(theta/2)`, so Fresnel only
+    beats head-on past about 110 degrees of sun-eye separation, and the old camera sat at 45 degrees behind a lens the
+    globe overflows, so the highlight was never in frame. Measured peak glint at distance 12 rises from 24.0 head-on to
+    78.2 at 150 degrees. The replacement compares head-on against 140 degrees and fails with the specular term switched
+    off, which both the implementer and the validator reproduced independently. **This corrects the review, not the
+    code, and matters for the runs still specified against that document.**
+23. **Item 6 belongs to package 2.1**, because both `render_to_file_*` tests live in `tests/engine.rs`. The plan's
+    ownership line misassigned it; confirmed by grep from two sides.
+24. **Two measurement sentences trimmed from `sky.rs` test doc comments**, because halving the sampling grid invalidated
+    the provenance they recorded.
+25. **Departure 6 is resolved: `wallpaper::get_primary_monitor_resolution` stays `pub` with one test.** Deleting it
+    cascades into `display::primary_monitor_of`, whose only other caller is a `display.rs` test, so both would be dead
+    under `-D warnings` and the deletion spans two files package 2.3 does not own. Written into run 4's package 4.1 item
+    list so it does not fall between 4.1 and 4.3.
+26. **`config.rs:319`'s redundant serde default is production code**, so package 2.3 verified it redundant (45 config
+    tests green without it) and handed it to the orchestrator, who applied it.
+27. **`load_partial_file_fills_defaults` was kept and strengthened rather than merged away.**
+28. **`ScratchDir` creates its own directory**, so three tests asserting that production code creates a parent were
+    rewritten to name a path below the scratch root that does not exist yet. Without that they would have become
+    tautologies. Recorded in `docs/testing.md` so the next person does not rediscover it by writing a test that cannot
+    fail.
+29. **`display.rs` (12 tests to 8) and `desktop.rs` (26 to 23) were merged although the item list does not name them.**
+    Both files are in the package's paths and both are C2 targets, so doing them here saves a later run reopening the
+    files. Declared rather than shipped silently.
+30. **`crates/sunlit-app/src/main.rs` gained one `#[cfg(test)]` module declaration outside its `mod tests` block**, to
+    reach the shared scratch helper. Outside the package's stated paths; granted by the orchestrator as the identical
+    allowance the plan already made for `tests/common/mod.rs`, and it compiles into no release build.
+31. **The plan's wording for `test_preset_changes_camera_properties` was not followed literally**, the merged test being
+    a better shape than the one the plan described.
+
 
 ## Run 1 gate record
 

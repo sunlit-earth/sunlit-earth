@@ -209,11 +209,12 @@ fn newest_generation(dir: &Path) -> Option<PathBuf> {
 
 /// The files the most recent publish wrote, empty where nothing has published.
 ///
-/// This is what a desktop's own store holds once the setter has run, which is
-/// what lets a test read the setting back and recognize it. What this process
-/// wrote, where it has written anything, and otherwise the newest generation on
-/// disk, which is how a process that did not do the publishing gets the same
-/// answer.
+/// What this process wrote, where it has written anything, and otherwise the
+/// newest generation on disk, which is how a process that did not do the
+/// publishing gets the same answer. Where the setter ran and took them, that is
+/// also what the desktop's own store holds, which is what lets a test read the
+/// setting back and recognize it; a publish whose setter failed is named here
+/// too, because the generation is committed before the setter runs.
 pub fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
     if let Some(generation) = PUBLISHED
         .lock()

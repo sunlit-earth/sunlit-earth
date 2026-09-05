@@ -358,11 +358,10 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 /// The `context` parameter describes the checkpoint (e.g. "after wgpu init").
 ///
 /// The level check comes first because `debug!` compiling out does not compile
-/// out the measurement behind it. This is called from about seventeen places,
-/// three of them per wallpaper export and one per cloud decode, and on Linux
-/// each call walks the page tables through `/proc/self/smaps_rollup`.
-/// `enabled!` folds to a constant when the level is compiled out
-/// (`release_max_level_warn`), so release builds drop the whole body.
+/// out the measurement behind it, and on Linux each call walks the page tables
+/// through `/proc/self/smaps_rollup`. `enabled!` folds to a constant when the
+/// level is compiled out (`release_max_level_warn`), so release builds drop the
+/// whole body.
 #[allow(clippy::cast_precision_loss)]
 pub fn log_memory_usage(context: &str) {
     if !tracing::enabled!(tracing::Level::DEBUG) {

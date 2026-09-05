@@ -450,12 +450,6 @@ fn xfce_properties<'a>(
         .map(ToOwned::to_owned)
 }
 
-/// A `file://` URI for a local path, which is what the gsettings keys want.
-///
-/// Percent-encoding is limited to the characters that would otherwise change
-/// what the URI means. The path this is called with is one the app wrote itself,
-/// under a directory named by the OS, so the general case is not the case here;
-/// a space in a home directory is, and that is the one that has to work.
 /// The one call that puts this publish on Plasma's screens.
 fn plasma_command(placement: &Placement) -> Invocation {
     Invocation::new(
@@ -516,6 +510,12 @@ fn js_string(path: &Path) -> String {
     format!("\"{escaped}\"")
 }
 
+/// A `file://` URI for a local path, which is what the gsettings keys want.
+///
+/// Percent-encoding is limited to the characters that would otherwise change
+/// what the URI means. The path this is called with is one the app wrote itself,
+/// under a directory named by the OS, so the general case is not the case here;
+/// a space in a home directory is, and that is the one that has to work.
 fn file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
     for byte in path.to_string_lossy().bytes() {

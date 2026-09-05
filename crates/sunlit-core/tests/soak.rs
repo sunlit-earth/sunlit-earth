@@ -1,6 +1,6 @@
 //! Mock-clock soak test.
 //!
-//! Fourteen simulated days of cloud updates and unattended wallpaper exports,
+//! Seven simulated days of cloud updates and unattended wallpaper exports,
 //! compressed into a few seconds by advancing an injected clock instead of
 //! waiting. This is the permanent guard for the Phase 0 leak class: a
 //! background producer whose consumer only runs under some condition.
@@ -30,14 +30,18 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 
 /// One simulated step. Auto-refresh fires once per step.
 ///
-/// One hour rather than 30 minutes: halving the step count keeps all 112
-/// cloud publications (where the memory assertion's power comes from) while
-/// shaving wall-clock time. Measured effect was modest (about 10%), because
-/// the per-step cost is dominated by the render and the engine wake-up, not
-/// the export itself.
+/// One hour rather than 30 minutes: the per-step cost is the render and the
+/// engine wake-up rather than the export, so what the step size buys is the
+/// number of steps, and the number of steps is what the wall time is.
 const STEP: Duration = Duration::from_hours(1);
-/// 14 simulated days at one step per hour.
-const STEPS: u64 = 14 * 24;
+/// Seven simulated days at one step per hour.
+///
+/// Fourteen days is what this ran for when it was written, and the halving is
+/// what took it from over a minute to about half of one. What the assertion
+/// needs is enough cloud updates behind it for a per-update leak to be
+/// unmissable, and 56 of them at one decoded frame each would be 450 MiB
+/// against a limit of 16.
+const STEPS: u64 = 7 * 24;
 /// The upstream cloud service publishes every three hours.
 const STEPS_PER_CLOUD_UPDATE: u64 = 3;
 /// Fixture cloud image size: large enough that a leaked frame (8 MiB decoded)
@@ -155,7 +159,7 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
+fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     let _guard = gpu_lock();
 
     let cloud = Arc::new(FixtureCloud::new(CLOUD_WIDTH, CLOUD_HEIGHT));
@@ -185,10 +189,20 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
 
     let engine = sunlit_core::engine::start(config).expect("the soak test needs a working adapter");
 
-    // Let the first cloud fetch and the first render settle before measuring.
+    // The fetch is not the thing to measure from: the decoded image is parked
+    // in the mailbox and reaches the GPU on a later tick, so the baseline has to
+    // be taken after the first cloud texture exists or the warm-up it is
+    // compared against would include that upload.
     wait_until("the first cloud fetch", || cloud.fetches() >= 1);
-    engine.send(EngineCommand::Poke);
-    std::thread::sleep(Duration::from_millis(500));
+    wait_until("the first cloud texture", || {
+        engine.send(EngineCommand::Poke);
+        engine.memory_report().is_ok_and(|report| {
+            report
+                .expected
+                .iter()
+                .any(|texture| texture.label == "cloud_texture")
+        })
+    });
 
     let startup = private_bytes();
     let started = Instant::now();
@@ -238,8 +252,9 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
 
     let expected_publications = STEPS / STEPS_PER_CLOUD_UPDATE;
     let expected_fetches = expected_publications + 1;
+    let simulated_days = STEPS / 24;
     println!(
-        "14 simulated days in {:.1}s: {exports} exports, {fetches} cloud fetches \
+        "{simulated_days} simulated days in {:.1}s: {exports} exports, {fetches} cloud fetches \
          (of {expected_publications} publications)",
         elapsed.as_secs_f64()
     );
@@ -253,24 +268,21 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
         fetches >= expected_fetches,
         "expected at least {expected_fetches} cloud downloads, got {fetches}"
     );
-    // The point is compression, not a benchmark: 14 days in two minutes is
-    // still a ratio of about 10 000 to 1. Measured on the development desktop
-    // on the software adapter (which is what this test uses, so that it
-    // behaves the same here as on CI): 49.8 s at the original 30-minute step,
-    // 44.6 s at the hourly step used now, so the margin to the bound is about
-    // 2.7x. The per-step cost is dominated by the render and the engine
-    // wake-up rather than the export. If a slower runner trips this, reduce
-    // STEPS (fewer simulated days, proportionally fewer publications) or
-    // shrink the render sizes; do not raise the bound.
+    // The point is compression, not a benchmark: seven days in two minutes is
+    // still a ratio of about 8 000 to 1, and the bound is there to catch a
+    // change that makes a step cost an order of magnitude more rather than to
+    // measure the machine. The measurements are in docs/testing.md. If a slower
+    // runner trips this, reduce STEPS (fewer simulated days, proportionally
+    // fewer publications) or shrink the render sizes; do not raise the bound.
     assert!(
         elapsed < Duration::from_mins(2),
-        "14 simulated days took {:.1}s, which defeats the purpose",
+        "{simulated_days} simulated days took {:.1}s, which defeats the purpose",
         elapsed.as_secs_f64()
     );
 
     // Memory: the whole point. Before Phase 0 the hidden path parked one
-    // decoded frame per update, which over these 112 updates would be about
-    // 900 MiB; the architecture here should add nothing per update at all.
+    // decoded frame per update, which over these updates would be hundreds of
+    // megabytes; the architecture here should add nothing per update at all.
     for (step, bytes) in &samples {
         println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
     }

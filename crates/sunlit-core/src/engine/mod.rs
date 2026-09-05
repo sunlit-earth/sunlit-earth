@@ -59,7 +59,11 @@ const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 /// render and a second visible swap when the late step lands. It is read off
 /// the injected clock and checked on the tick the loop already makes, so it
 /// adds no timer and no wakeup.
-const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
+///
+/// Public because the integration tests step over it. A test that spelled the
+/// number itself would still pass when this one moved, having quietly stopped
+/// stepping over anything.
+pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 
 /// Things a client asks the engine to do.
 pub enum EngineCommand {

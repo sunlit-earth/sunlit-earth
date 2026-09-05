@@ -397,7 +397,13 @@ fn run_displays(cli: &Cli, config: &AppConfig, out: Option<&std::path::Path>) ->
         }
     });
 
-    let engine = engine::start(engine_config);
+    let engine = match engine::start(engine_config) {
+        Ok(engine) => engine,
+        Err(e) => {
+            error!("the renderer could not start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     engine.send(EngineCommand::RenderWallpaperNow);
     let status = match done_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT) {
         Ok(Ok(_)) => ExitCode::SUCCESS,
@@ -449,7 +455,13 @@ fn run_render(
     // fix rather than patched around here.
     let have_globe = have_globe_texture(&engine_config.texture_paths);
 
-    let engine = engine::start(engine_config);
+    let engine = match engine::start(engine_config) {
+        Ok(engine) => engine,
+        Err(e) => {
+            error!("the renderer could not start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     if have_globe {
         if ready_rx.recv_timeout(RENDER_TEXTURE_TIMEOUT).is_err() {
             error!("textures were not ready within the timeout, rendering anyway");
@@ -651,7 +663,13 @@ fn run_app(
 
     let mut engine_config = engine_config(&cli, config, (800, 600), true);
     engine_config.on_event = on_event;
-    let engine: EngineHandle = engine::start(engine_config);
+    let engine: EngineHandle = match engine::start(engine_config) {
+        Ok(engine) => engine,
+        Err(e) => {
+            error!("the renderer could not start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     window.set_renderer_info(engine.adapter_info().into());
 
     // The display watcher's one consumer is the engine, and its condition is

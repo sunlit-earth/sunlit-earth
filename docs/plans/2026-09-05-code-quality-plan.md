@@ -168,7 +168,7 @@ Acceptance: the two timing gates; every engine test still asserts what it assert
 - The default-pinning tests in these modules replaced by property or agreement tests: `camera.rs`, `params.rs` gamma endpoints, `datetime.rs` range, `renderer/mod.rs` quantization (C1).
 - The `render_to_file_*` tests write under `CARGO_TARGET_TMPDIR` like the rest (C4).
 
-Acceptance: the shading target creates one device; the render_pipeline target's wall time is reported before and after; the golden target is untouched in behavior.
+Acceptance: the shading target creates at most two devices, one per adapter and neither per test, with the second reached only by the test that needs it (**amended during run 2**: "one device" is unreachable, because the only route to it deletes `software_adapter_produces_correct_results`, whose whole point is a second independent adapter, and forcing the file onto the software adapter would make the cross-check compare an adapter with itself; the review's E2 says not to delete that test, and its recommendation 12 asks for a `LazyLock` or a documented exception, which is what shipped); the render_pipeline target's wall time is reported before and after; the golden target is untouched in behavior.
 
 **Package 2.3, the remaining test modules and the app tests.** Paths: the `mod tests` blocks only of `crates/sunlit-core/src/config.rs`, `src/assets/**`, `src/memory.rs`, `src/memory_report.rs`, `src/display/**`, `src/display.rs`, `src/desktop.rs`, `src/wallpaper.rs`, `src/engine/**`; a new `crates/sunlit-core/src/test_support.rs` under `#[cfg(test)]`; `crates/sunlit-app/tests/slint_ui.rs`; the `mod tests` blocks of `crates/sunlit-app/src/**`. Notes: config-memory.md, assets.md, display.md, engine.md, tests-app.md.
 

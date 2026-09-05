@@ -234,8 +234,9 @@ pub(crate) fn resolve_sample_count(requested: u32, supported: &[u32], max_sample
         .unwrap_or(1)
 }
 
-/// Quantize width and height to the nearest multiple of `SIZE_GRANULARITY`,
-/// with a minimum of one granularity unit in each dimension.
+/// Quantize width and height down to a multiple of `SIZE_GRANULARITY`, never
+/// below one granularity unit in either dimension. Down rather than to the
+/// nearest, so a render target is never larger than what was asked for.
 pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     let qw = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
     let qh = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
@@ -336,8 +337,8 @@ pub(crate) struct Renderer {
     /// Called from decode threads after posting to the mailbox, so a client
     /// that only renders on demand knows there is work waiting.
     notify: NotifyFn,
-    /// 1x1 black texture used as the night texture placeholder in single-texture
-    /// bind groups (Grid, Day, Night modes).
+    /// 1x1 black texture standing in at binding 3 for every bind group that
+    /// reads one texture: the Grid, Day and Night modes, and the cloud overlay.
     dummy_texture_view: wgpu::TextureView,
     /// Bind group containing both day and night textures, used in blend mode.
     /// Created once both day and night texture slots have loaded.

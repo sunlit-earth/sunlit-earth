@@ -1,11 +1,9 @@
 //! The single scene parameter struct.
 //!
 //! `SceneParams` is the one description of "what to draw" that flows through
-//! every layer. Before it existed, the same thirty values were spelled out in
-//! the Slint properties, in `AppConfig`, in `FrameState`, in `ShadingParams`,
-//! and again when building `Uniforms`, so adding one shader knob meant touching
-//! eight files. Now there are exactly two translation points: the Slint bridge
-//! in `sunlit-app`, and the uniform encoder in `renderer::uniforms`.
+//! every layer, so there are exactly two translation points for it:
+//! `ui_callbacks::read_params_from_window` and `apply_params_to_window` in
+//! `sunlit-app`, and `renderer::render_pass::write_uniforms` here.
 
 use crate::config::AppConfig;
 use crate::scene::camera::CameraParams;

@@ -41,12 +41,12 @@ pub fn day_of_year_to_month_day(doy: u16, year: i32) -> (u8, u8) {
     let doy = doy.clamp(1, max_doy);
 
     let leap = is_leap_year(year);
-    // After Feb 28 in a leap year, the cumulative offset is one less
-    // than in a non-leap year, so we adjust the day-of-year down.
+    // The leap day pushes March and everything after it one day later in the
+    // year, which is one more day before each of those months.
     for month_idx in (0..12).rev() {
         let mut cum = CUMULATIVE_DAYS[month_idx];
         if leap && month_idx >= 2 {
-            cum += 1; // Feb has 29 days in a leap year
+            cum += 1;
         }
         if doy > cum {
             return ((month_idx + 1) as u8, (doy - cum) as u8);

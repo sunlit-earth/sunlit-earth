@@ -19,8 +19,9 @@ pub struct DecodedImage {
 
 /// Load and decode an image file into pixels the sphere can sample.
 ///
-/// The format is auto-detected by the `image` crate (including JXL when the
-/// decoding hook has been registered via [`register_jxl_hook`]).
+/// The format comes from the file extension, not from the content, because
+/// that is what `ImageReader::open` reads it from. JXL is one of them once the
+/// decoding hook has been registered through [`register_jxl_hook`].
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load(path: &Path) -> Result<DecodedImage, String> {
     let mut img = decode(path)?;

@@ -180,9 +180,6 @@ pub(crate) fn distance_to_zoom(distance: f32) -> f32 {
 }
 
 /// Orbital camera that orbits around the origin.
-///
-/// Longitude rotates around the Y axis, latitude tilts up/down,
-/// and distance controls how far the camera is from the origin.
 pub struct OrbitalCamera {
     /// Camera longitude in degrees (-180 to 180)
     pub longitude_deg: f32,
@@ -244,20 +241,16 @@ impl OrbitalCamera {
         let eye = self.eye_position();
         let up = glam::Vec3::Y;
 
-        // Compute local camera frame from eye toward origin
         let forward = (-eye).normalize();
         let right = forward.cross(up).normalize();
         let cam_up = right.cross(forward).normalize();
 
-        // Shift look-at point from origin toward Earth's surface.
-        // sin() maps slider degrees to offset: 0 deg -> center, 90 deg -> Earth surface (radius 1.0)
         let target = glam::Vec3::ZERO
             + right * self.yaw_deg.to_radians().sin()
             + cam_up * self.pitch_deg.to_radians().sin();
 
         let base_view = Mat4::look_at_rh(eye, target, up);
 
-        // Tilt stays as post-view rotation (roll around forward axis)
         let tilt = Mat4::from_rotation_z(self.tilt_deg.to_radians());
         tilt * base_view
     }

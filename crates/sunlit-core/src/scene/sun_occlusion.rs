@@ -34,10 +34,11 @@ pub(crate) const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
 ///
 /// At the default sky field of view the true disk is about 13 pixels across on
 /// a 4K render and under one pixel on a small preview, so without a floor the
-/// Sun collapses to a speck exactly where a user is tuning it. Phase A's stars
-/// carry the same clause for the same reason. The Moon subtends the same half
-/// degree and takes the same floor, or the two bodies that are the same size in
-/// the sky would be different sizes on screen wherever it is active.
+/// Sun collapses to a speck exactly where a user is tuning it. The star
+/// sprites carry the same clause for the same reason. The Moon subtends the
+/// same half degree and takes the same floor, or the two bodies that are the
+/// same size in the sky would be different sizes on screen wherever it is
+/// active.
 pub(crate) const MIN_BODY_DISK_RADIUS_PIXELS: f32 = 1.6;
 
 /// Output-density ramp shared with the star sprites: 1.0 at 1080p and below,
@@ -733,9 +734,8 @@ mod tests {
 
     // --- the light path through the band ---
 
-    /// Mallama's Table 3.2, as the amendment's research reconstructs it: the
-    /// lowest altitude of the ray, the cumulative air mass along it, and what
-    /// fraction of green light comes out the far side.
+    /// Mallama's Table 3.2: the lowest altitude of the ray, the cumulative air
+    /// mass along it, and what fraction of green light comes out the far side.
     const MALLAMA_TABLE: [(f32, f32, f32); 11] = [
         (32.0, 0.6, 0.90),
         (27.0, 1.3, 0.79),
@@ -764,9 +764,9 @@ mod tests {
 
     /// Transmission is exponential in air mass, so the fifth the fit is worth
     /// at the top of the band is a factor of one and a half at the bottom of
-    /// it. Twenty percent holds where the air mass is small; at 13 km the
-    /// model is 16 percent short of the table's 13 air masses and that comes
-    /// out as 41 percent more green.
+    /// it. Twenty percent holds where the air mass is small, and the 13 km row
+    /// is where the fit gives up; `docs/rendering.md` has the measured
+    /// disagreement there.
     #[test]
     fn the_transmitted_green_follows_the_table_where_the_air_mass_is_small() {
         for (height, _, transmitted) in MALLAMA_TABLE.iter().take(6) {
@@ -938,11 +938,11 @@ mod tests {
     /// a circle: scaling one axis takes a circle to an ellipse, so the pulled
     /// back limb agrees with the moved circle where the disk sits and curves
     /// away from it to either side. What that costs is a function of how large
-    /// the disk is against the globe, measured at the strongest flattening the
-    /// slider reaches: 0.025 of the visible fraction at the true half degree,
-    /// 0.065 at three times it and 0.121 at eight. It is worst where the disk
-    /// is deepest in the band, which is where its light is nearly gone, so a
-    /// glare already down to a hundredth is what carries the error.
+    /// the disk is against the globe, and it is worst where the disk is deepest
+    /// in the band, which is where its light is nearly gone, so a glare already
+    /// down to a hundredth is what carries the error. `docs/rendering.md` has
+    /// the error measured at each disk size; it leaves little room under this
+    /// case's tolerance, so the sampling density below is not free to fall.
     #[test]
     fn a_squashed_disk_against_the_limb_is_a_round_one_against_a_moved_limb() {
         let globe_radius = 120.0_f32;
@@ -1174,10 +1174,6 @@ mod tests {
     }
 
     /// `place_sun` hands the Moon's circle on to [`visibility`].
-    ///
-    /// Every other Moon case here calls `visibility` itself, so this is what
-    /// says the argument survives the way in: without it the field could be
-    /// dropped in the one function the renderer actually calls.
     #[test]
     fn place_sun_measures_the_sun_against_the_moon_it_was_given() {
         let viewport = agreeing_viewport();

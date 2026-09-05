@@ -307,9 +307,6 @@ mod tests {
     }
 
     /// A custom date and time selects the instant the widgets name.
-    ///
-    /// The branching `time_for_input` does used to sit on the sun path, and
-    /// these three cases moved here with it.
     #[test]
     fn a_custom_datetime_selects_the_instant_it_names() {
         let dt = DateTimeInput {

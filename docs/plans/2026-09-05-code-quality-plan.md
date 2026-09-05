@@ -252,7 +252,10 @@ Acceptance: the `params.rs` digest test fails when a field is added to the macro
 
 ## Departures
 
-Numbered, appended by the orchestrator from the handovers, with the reasoning. None yet.
+Numbered, appended by the orchestrator from the handovers, with the reasoning.
+
+1. **Run 1's branch is cut from `docs/code-quality-review`, not from `main`.** The kickoff condition was that the review's pull request is merged; #46 was still a draft. The maintainer chose stacked pull requests over waiting for the merge, so `refactor/quality-run-1` sits on top of the docs branch and the plan and the notes travel inside every pool worktree. Every later run stacks the same way until #46 lands. The wrap-up step that appends to this plan on the run branch works unchanged.
+2. **Package 1.3 moves the IPC listener bind ahead of the renderer and engine startup**, beyond the plan's "the listener failure is a warning". The baseline smoke test on the development host showed a second instance on an occupied socket name selecting the adapter, creating every texture and logging `engine started` before it reached the bind and panicked, about six seconds in. Decided by the maintainer at run 1's kickoff.
 
 ## Validation record
 

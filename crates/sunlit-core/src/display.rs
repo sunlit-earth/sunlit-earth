@@ -298,6 +298,11 @@ DP-3 disconnected 1920x1080+5120+0 (normal left inverted right x axis y axis) 0m
 eDP-1 disconnected (normal left inverted right x axis y axis)
 ";
 
+    /// The guest's one output, read whole.
+    ///
+    /// "0mm x 0mm" and "normal left inverted right x axis y axis" sit on the
+    /// same line and both contain an `x`, so a parser that searched for one
+    /// would find more geometry than there is.
     #[test]
     fn the_guests_single_output_is_read_with_its_mode() {
         let outputs = parse_outputs(GUEST);
@@ -318,41 +323,38 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         );
     }
 
+    /// The desk's five outputs come to exactly two, with their signs intact.
+    ///
+    /// Each of the three the parser drops is dropped for its own reason.
+    /// "disconnected" contains "connected", which is why whole tokens are
+    /// compared rather than the line searched. `DP-3` is disconnected and still
+    /// holding a mode, which is what xrandr prints for an output that was
+    /// configured and then unplugged, so the geometry filter alone would let it
+    /// through. `DP-2` is connected with nothing displayed on it, so a window
+    /// placed there would be on a black screen. `eDP-1` is neither.
     #[test]
-    fn a_disconnected_output_is_not_a_connected_one() {
-        // "disconnected" contains "connected", which is why the parser compares
-        // whole tokens; searching the line would find every unplugged port.
-        let outputs = parse_outputs(DESK);
-        let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(names, vec!["DP-1", "HDMI-1"]);
-        // DP-3 is the one only this excludes: disconnected and still holding a
-        // mode, which is what xrandr prints for an output that was configured
-        // and then unplugged. The geometry filter lets it through, and a monitor
-        // nobody can see is neither somewhere to put a window nor something to
-        // size a wallpaper for.
-        assert!(!outputs.iter().any(|o| o.name == "DP-3"), "{outputs:?}");
-    }
-
-    #[test]
-    fn an_output_with_no_mode_assigned_is_not_somewhere_to_put_a_window() {
-        // DP-2 is connected with nothing displayed on it, so it has no geometry
-        // and a window placed there would be on a black screen.
-        assert!(!parse_outputs(DESK).iter().any(|o| o.name == "DP-2"));
-    }
-
-    #[test]
-    fn negative_offsets_keep_their_sign() {
-        let outputs = parse_outputs(DESK);
-        let hdmi = outputs
-            .iter()
-            .find(|o| o.name == "HDMI-1")
-            .expect("the second monitor");
-        assert_eq!((hdmi.x, hdmi.y), (0, -200));
-        let dp = outputs
-            .iter()
-            .find(|o| o.name == "DP-1")
-            .expect("the first");
-        assert_eq!((dp.x, dp.y), (1680, 0));
+    fn the_desk_parses_to_the_outputs_a_window_could_go_on() {
+        assert_eq!(
+            parse_outputs(DESK),
+            vec![
+                Output {
+                    name: "DP-1".to_owned(),
+                    primary: false,
+                    width: 3440,
+                    height: 1440,
+                    x: 1680,
+                    y: 0,
+                },
+                Output {
+                    name: "HDMI-1".to_owned(),
+                    primary: true,
+                    width: 1680,
+                    height: 1050,
+                    x: 0,
+                    y: -200,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -387,14 +389,6 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
     }
 
     #[test]
-    fn the_free_text_after_the_geometry_is_not_mistaken_for_more_of_it() {
-        // "0mm x 0mm" and "normal left inverted right x axis y axis" both sit on
-        // the same line and both contain an `x`.
-        let outputs = parse_outputs(GUEST);
-        assert_eq!(outputs.len(), 1, "{outputs:?}");
-    }
-
-    #[test]
     fn nothing_at_all_is_no_outputs_rather_than_a_guess() {
         assert!(parse_outputs("").is_empty());
         assert!(parse_outputs("xrandr: Can't open display\n").is_empty());
@@ -419,11 +413,6 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
             Some("HDMI-1"),
             "the marked one, not the first listed"
         );
-    }
-
-    #[test]
-    fn the_monitor_rectangle_is_the_outputs_own_geometry() {
-        let monitors: Vec<Monitor> = parse_outputs(DESK).into_iter().map(Monitor::from).collect();
         assert_eq!(
             monitors[0].rect(),
             layout::Rect {

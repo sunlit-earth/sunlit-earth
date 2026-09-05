@@ -722,6 +722,10 @@ mod tests {
         }
     }
 
+    /// Setting only `picture-uri` leaves the dark theme showing the previous
+    /// wallpaper, and which one is showing depends on a setting this app has no
+    /// business reading. Cinnamon's schema has only the one key, so this is per
+    /// row rather than a rule.
     #[test]
     fn gnome_sets_both_keys_as_uris() {
         let cmds = commands("GNOME", "/home/tester/w.png", "");
@@ -739,20 +743,7 @@ mod tests {
                 ]
             );
         }
-    }
 
-    #[test]
-    fn the_dark_key_is_set_too_because_gnome_chooses_between_them() {
-        // Setting only `picture-uri` leaves the dark theme showing the previous
-        // wallpaper, and which one is showing depends on a setting this app has
-        // no business reading.
-        let keys: Vec<String> = commands("GNOME", "/w.png", "")
-            .into_iter()
-            .map(|c| c.args[2].clone())
-            .collect();
-        assert!(keys.contains(&"picture-uri-dark".to_owned()), "{keys:?}");
-        // Cinnamon's schema has only the one key, so this is per row rather than
-        // a rule.
         let cinnamon: Vec<String> = commands("X-Cinnamon", "/w.png", "")
             .into_iter()
             .map(|c| c.args[2].clone())
@@ -886,25 +877,6 @@ mod tests {
         );
     }
 
-    /// Plasma has no span mode, so a view across the screens arrives already cut
-    /// and goes out the same way every other per-monitor publish does.
-    #[test]
-    fn kde_reaches_every_monitor_and_lxqt_does_not() {
-        assert_eq!(detect("KDE").expect("a backend").reach(), Reach::PerMonitor);
-        assert_eq!(detect("LXQt").expect("a backend").reach(), Reach::OneImage);
-        for mode in [
-            DisplayMode::OneScreen,
-            DisplayMode::EveryScreen,
-            DisplayMode::AcrossScreens,
-        ] {
-            assert_eq!(
-                detect("KDE").expect("a backend").degradation(mode, 2),
-                None,
-                "{mode:?}"
-            );
-        }
-    }
-
     #[test]
     fn mate_takes_a_path_where_the_others_take_a_uri() {
         // The key is `picture-filename`, and a URI in it leaves the desktop with
@@ -953,7 +925,7 @@ mod tests {
         // The style comes first, so the write carrying the image is the one that
         // makes xfdesktop repaint.
         assert!(cmds[0].args[3].ends_with("image-style"), "{cmds:?}");
-        assert_eq!(cmds[0].args[5], "5", "zoomed, which is what fills");
+        assert_eq!(cmds[0].args[5], XFCE_ZOOMED, "zoomed, which is what fills");
         assert_eq!(
             cmds[1].args[3],
             "/backdrop/screen0/monitorVirtual-1/workspace0/last-image"
@@ -1033,30 +1005,23 @@ mod tests {
         }
     }
 
+    /// A listing with nowhere to put the image is a refusal, whatever else is
+    /// in it. Setting a fill mode on such a desktop, or running nothing at all,
+    /// would report a wallpaper nothing is showing.
     #[test]
-    fn an_xfce_session_with_a_style_but_no_image_property_is_still_a_refusal() {
-        // Setting a fill mode on a desktop with nowhere to put the image would
-        // report a wallpaper nothing is showing.
-        let backend = detect("XFCE").expect("a backend");
-        let listing = "/backdrop/screen0/monitor0/workspace0/image-style\n";
-        assert!(
-            backend
-                .commands(&Placement::single(PathBuf::from("/w.png")), listing)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn an_xfce_session_with_no_backdrop_property_is_a_refusal_not_a_success() {
-        // Nothing to run must never read as a wallpaper that was set.
+    fn an_xfce_listing_with_no_image_property_is_a_refusal_not_a_success() {
         let backend = detect("XFCE").expect("a backend");
         let placement = Placement::single(PathBuf::from("/w.png"));
-        assert!(
-            backend
-                .commands(&placement, "/backdrop/single-workspace-mode\n")
-                .is_empty()
-        );
-        assert!(backend.commands(&placement, "").is_empty());
+        for listing in [
+            "/backdrop/screen0/monitor0/workspace0/image-style\n",
+            "/backdrop/single-workspace-mode\n",
+            "",
+        ] {
+            assert!(
+                backend.commands(&placement, listing).is_empty(),
+                "{listing:?}"
+            );
+        }
         let message = backend.nothing_to_run();
         assert!(message.contains("XFCE"), "{message}");
         assert!(message.contains("last-image"), "{message}");
@@ -1190,6 +1155,10 @@ mod tests {
 
     /// Every row says how far it reaches, and the reach is what decides what a
     /// publish writes rather than the sink guessing per desktop.
+    ///
+    /// Plasma has no span mode, so a view across the screens arrives already cut
+    /// and goes out the same way every other per-monitor publish does, which is
+    /// why it reaches every mode without degrading any of them.
     #[test]
     fn every_row_says_how_far_it_reaches() {
         assert_eq!(detect("XFCE").unwrap().reach(), Reach::PerMonitor);
@@ -1202,6 +1171,13 @@ mod tests {
         }
         assert_eq!(detect("KDE").unwrap().reach(), Reach::PerMonitor);
         assert_eq!(detect("LXQt").unwrap().reach(), Reach::OneImage);
+        for mode in DisplayMode::ALL {
+            assert_eq!(
+                detect("KDE").unwrap().degradation(mode, 2),
+                None,
+                "{mode:?}"
+            );
+        }
     }
 
     /// A mode a desktop cannot reach is not a failure, and the sentence that

@@ -158,6 +158,17 @@ mod tests {
         assert_eq!(icon.size().height, ICON_SIZE);
     }
 
+    /// The name comes from `--ipc-socket`, and Windows reads the backslash in
+    /// it as a namespace separator and refuses the mutex outright.
+    #[cfg(windows)]
+    #[test]
+    fn a_mutex_name_windows_refuses_leaves_the_app_running_alone() {
+        assert!(matches!(
+            acquire_single_instance(r"sunlit-earth-bad\name"),
+            InstanceCheck::Alone(None)
+        ));
+    }
+
     #[test]
     fn the_tray_icon_is_a_disk_on_a_transparent_field() {
         // The length assertion above catches a bake at the wrong size; this

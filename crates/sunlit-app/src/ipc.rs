@@ -253,3 +253,20 @@ pub(crate) fn signal(name: &str) {
     let _ = lock.write_all(msg.as_bytes());
     let _ = lock.flush();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_something_else_holds_is_an_error_rather_than_a_panic() {
+        let name = format!("sunlit-earth-ipc-test-{}", std::process::id());
+        let held = bind(&name).expect("the first listener takes the name");
+        let second = bind(&name);
+        drop(held);
+        assert!(
+            second.is_err(),
+            "a name already taken has to be refused, not shared"
+        );
+    }
+}

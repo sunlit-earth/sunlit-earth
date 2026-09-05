@@ -332,6 +332,100 @@ sequence. Package 2.1 supplied 15 to 20, package 2.2 21 to 24, package 2.3 25 to
 31. **The plan's wording for `test_preset_changes_camera_properties` was not followed literally**, the merged test being
     a better shape than the one the plan described.
 
+### Run 3
+
+The three handovers numbered their own departures from 1, except package 3.2's, which continued the sequence. They are
+renumbered here into one list: package 3.1 supplied 32 to 37, package 3.2 38 to 42, package 3.3 43 to 48, and the
+orchestrator 49 to 54.
+
+32. **`assets/mailbox.rs` and `texture_cache.rs` are package 3.2's, not 3.1's.** The orchestrator's brief for 3.1 named
+    `mailbox.rs` among its targets in prose. Both files are under `src/assets/**`, which the plan gives to 3.2. Caught
+    by 3.1 three minutes into the run and corrected by message before either file was touched. The plan's path lists
+    decide; a brief's prose does not.
+33. **`wallpaper.rs`'s `wide_path.push(0); // null terminator` was left in place**, although engine note A5 lists it
+    among six restatements. It is a trailing comment on a code line, so removing it would rewrite that line, and package
+    3.1 had no exception to the no-code-changes rule. The other five went. Declined in the handover with the reasoning
+    rather than kept silently, and the validator agreed.
+34. **Five blocks the notes name were already gone**, deleted in run 1 or run 2 with the code or the test they sat on:
+    the two the brief warned about in `tests/engine.rs` and `tests/soak.rs`, `memory.rs`'s "seventeen places" census,
+    `wallpaper_sink.rs:678-683`, and `layout.rs`'s "old 180" comment. A note's line numbers are two runs stale.
+35. **One stale figure was found and fixed in `tests/soak.rs`.** `STEPS`'s doc compared 450 MiB against "a limit of 16"
+    where run 2 had halved `GROWTH_LIMIT` to 8 MiB. It now names the constant instead of a literal, so the comment
+    cannot drift from the assertion again.
+36. **The display area came down by 46 comment lines, not the review's estimated 220.** The review's figure came from
+    grepping one distinctive phrase per block against `docs/`; read whole, most of those blocks also carry
+    function-local content no document holds. The estimate is what was wrong, not the pass.
+37. **Moving a measurement out of source leaves two ends pointing at each other until the orchestrator lands the
+    prose.** `wgpu_init::adapter_key` gained a pointer at `docs/testing.md` while `docs/testing.md:37` still said the
+    deltas were on that function. Five such pointers existed at once. The orchestrator now places a package's moved
+    prose as soon as its handover lands, rather than at the merge.
+38. **Package 3.2 also unbracketed seven unresolvable intra-doc links**, which the plan's item list does not name. Run
+    1's visibility narrowing left `pub` items whose doc comments linked to items that are now private, so
+    `cargo doc --no-deps -p sunlit-core` emitted 13 warnings on the run base. A doc link that resolves to nothing is a
+    comment naming something the reader cannot reach, which is the review's 4.1 "comments that are wrong" category, and
+    the fix is to drop the brackets, which keeps the diff comment-only. Packages 3.3 and 3.1 took the other six.
+39. **Five of `golden.rs`'s eleven measurement blocks moved, not eleven.** The other six are framing geometry rather
+    than tolerance comparisons: two are on the notes' own keep list and four state why a camera or a window is where it
+    is. The validator checked the split block by block and agreed with all six.
+40. **`tests/shading.rs` was passed over on a first reading and then done.** `tests-gpu.md`'s section A classifies only
+    `render_pipeline.rs` and `golden.rs`, and the run's rule is that a comment one is unsure about stays. The
+    orchestrator overrode the outcome while keeping the method: the file is an owned path and carried four plain
+    restatements plus one "why this test exists" block, which plan decision 6 names outright. Two genuine keeps stayed.
+41. **`renderer/textures.rs` was passed over on a misread fence and then done.** The brief fenced "the invariants in
+    `renderer/textures.rs`", which the implementer read as fencing the file; `renderer.md` scores it 8 keep, 2 move, 0
+    delete. **A note without a section-A classification is not the same as a fence.** The ambiguity was the
+    orchestrator's wording.
+42. **The WGSL comments inside `render_pipeline.rs`'s three probe string literals were left alone.** The strings are
+    shader source the tests compile, so editing one changes compiled program text, and a line-oriented acceptance check
+    would not see it either way. The validator hashed all three literals at both ends of the range and confirmed them
+    byte-identical.
+43. **`have_globe_texture`'s doc is kept whole** rather than trimmed to the slot-index convention app.md's A1 proposes.
+44. **`drag_gain`'s doc is not trimmed by half**, which app.md A6 asks for on each of the two gain docs.
+45. **Attaching the watchers in `test_render_and_exit` was not the one line the review estimated**, because once the
+    watchers own the pipes the case's own reads have to come from them.
+46. **The `SIGNAL:displays` contract shipped as a round-trip test rather than a shared formatter.** Review D-4 asks for
+    the field names in one place; finishing that needs two lines in `displays.rs`, which package 3.3's acceptance
+    criterion does not open. What shipped parses the real producer's output with the reader the e2e suite uses, so a
+    rename in `signal_line` is a one-second `cargo unit` failure rather than a compile error. Run 5's package 5.1 owns
+    the rest. The `SIGNAL:memory` half is complete: `MemorySignal` is now the one place that line is written and read.
+47. **The `(Step X.Y)` banners in `slint_ui.rs` are four, not the review's three**, plus one further banner the review
+    did not list.
+48. **Three `cargo doc` intra-doc link warnings were added to package 3.3's item list**, which the plan does not name.
+    Same reasoning as departure 38.
+49. **No GitHub Actions run anywhere in this stack, and the cross-platform check moves into the VM guests.** Runs 1 and
+    2 left "dispatch `ci.yml` to compile Linux and macOS" as the largest unverified risk, since
+    `.github/workflows/ci.yml` is `workflow_dispatch` only and pushing triggers nothing. The maintainer declined the
+    dispatch: billed minutes are not to be spent, and the guests build and test both platforms for free. The Linux
+    compile is therefore discharged by `cargo xtask e2e --target linux`, which builds the binaries in WSL against the
+    Linux toolchain before booting the guest, and that is what covers run 1's five new `cfg` gates in `display/**`,
+    `desktop.rs`, `memory.rs` and `wallpaper.rs`. **macOS stays uncompiled by decision**, not by oversight; proper macOS
+    support is scheduled later.
+50. **The e2e suite runs in both guests at run 3's gate**, not only the Windows one. Package 3.3's item C6 rewrites the
+    spawn-and-watch plumbing of every case, so a compile check is not enough, and the Linux guest is the one whose job
+    timeout C6 reconciles.
+51. **The session runs unattended to 95 percent of the five-hour window, not the plan's 90**, and run 4 starts without
+    the plan's "below 50 percent" condition. The maintainer asked for run 3 finished, its draft pull request opened, and
+    run 4 carried as far as the budget allows, with no further feedback. The controlled pause moves to 95 and the
+    no-new-agent threshold moves with it.
+52. **Run 2's departures 15 to 31 were filed under Declined findings rather than in the Departures list**, so a reader
+    following a reference to departure 17 found the list ending at 14. Package 3.1's validator hit exactly that and had
+    to verify run 2's intent against the source instead. The list is now one contiguous sequence, departures 2 and 3 are
+    in numeric order, and two of the three items run 1 carried forward turned out to have been settled in run 2 without
+    the section being updated.
+53. **The xtask job-timeout change needed a test change the handover did not name.** Package 3.3's reserved-file edit
+    raises `job_timeout` to 60 minutes on Windows and 75 on Linux, which inverts the relation
+    `the_windows_guest_gets_more_time_than_the_linux_one` asserted. The old ordering came from the Windows guest's boot
+    overhead; the new one follows the suite's own budget, which is larger on Linux because the Linux guest runs the two
+    cases the Windows one gates itself out of. The test now states that relationship and keeps a floor. **An edit handed
+    to the orchestrator as exact text has to name whatever pins it.**
+54. **Where an area note's section A and the review's section 4.1 "what to keep" disagree, the fence wins.** Package
+    3.1 cut the rejected-alternative paragraph from the engine's unbounded-channel block on the strength of
+    `engine.md` A7 calling it history, and the review's keep list names that block by the range the paragraph closes.
+    A rejected alternative is design reasoning rather than an incident narrative: it says why the code has the shape it
+    has, which is what the maintainer's rules keep, and `CLAUDE.md` requires the reasoning at the declaration for this
+    one channel in particular. Restored. **This governs runs 4 and 5**, where the same disagreement is available in
+    every area note.
+
 ## Validation record
 
 One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.
@@ -350,12 +444,18 @@ No validator found a MAJOR finding, a broken behavior, or an unmet plan item in 
 harness limitation and returned their reports as text rather than writing them; the orchestrator transcribed all three
 into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3.md`.
 
+| 3 | 3.1 core engine side | 1 | 2026-09-06 | **1** | 3 | Two fixed and one declined in `123edf7`. The MAJOR is departure 54: the rejected-alternative paragraph was cut from a block the review's keep list names by range, and the handover then called placing it in `docs/architecture.md` optional because "nothing depends on this paragraph", when `architecture.md:212` said the full argument was on the channel. Restored, and the doc clause rewritten so it is true either way. MINOR: `plasma_script` lost Plasma's `screen == -1` convention, an external quirk that nothing else states, restored. MINOR declined with reason: "with the clean maximum well clear of it" restates the two figures beside it. MINOR resolved by the orchestrator before it was reported: five new `docs/` pointers named destinations that did not yet carry the prose. The validator proved the no-code-changes criterion by hashing each file with comment lines stripped and blank lines kept, which catches a rustfmt reflow, a moved blank line, a trailing comment removed from a code line and an attribute change in one stroke; all 12 files identical. |
+| 3 | 3.2 core renderer side | 1 | 2026-09-06 | **1** | 5 | Four fixed in `9c96218`, one was the orchestrator's. The MAJOR: a block `tests-gpu.md` A4 classifies "move" was deleted with no Reserved-files entry, and the pointer left behind claimed `docs/rendering.md` says which of the three shared rules pairs with which, which it does not. The prose was lost from both source and docs; restored to the source and the claim dropped. MINORs: the dummy-texture enumeration defect survived in a third place, `renderer/textures.rs` and `tests/shading.rs` were passed over (departures 40 and 41), and a cross-reference pointed at the weakest of three places carrying the reason. The fifth was the orchestrator's, that two of the three moved blocks partly duplicated prose `docs/rendering.md` already held, so they were merged into it rather than appended. Same hash proof, 21 files identical, plus the three probe string literals hashed separately. |
+| 3 | 3.3 the app and the e2e suite | 1 | 2026-09-06 | **1** | 4 | Three fixed in `132b5b4`, one corrected in the record, and the MAJOR was already fixed before the report arrived. The MAJOR was not in the branch: applying the handover's xtask edit verbatim breaks the test that pins the two job timeouts, which is departure 53 and `0de0e93`. MINORs: `peak_rss_is_not_read_as_rss` documented a guard it did not provide, since the field it is named for comes first in the emitted line, so the test passed under exactly the implementation the doc condemned; it now parses a hand-written line with the fields reordered and was falsified. `SIGNAL_REPLY` covered a `FindWindowW` poll its doc did not mention, which took a constant of its own. The parse-failure panics stopped naming the missing field, a diagnostic regression on the axis D-4 exists to improve; both types now carry a `read` returning `Result` and the panic names the field that failed. The record correction: the round-trip tests are not `displays::signal_line`'s first tests, a claim inherited from the plan and the brief. The validator compared all 15 cases line by line and found arguments, environment, config fixtures, readiness conditions and spawn counts preserved, every one of the four timeout constants taking the larger of its pair, and the `SIGNAL:memory` line byte-for-byte identical on the wire. |
+
 ## Budget record
 
 | Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
 |---|---|---|---|---|
 | 1 | 22 | 57 | 3 | 35 points of the five-hour window for three implementers, three validators and the orchestrator, well under the 50 the plan budgeted for a whole run. The pool's four cold builds were paid once here and are not repeated. Runs 2 to 5 need no shrinking on this evidence; three implementers per run stands. |
 | 2 | 64, with the window rolling over 38 minutes in | 41 of the new window | 3 | The maintainer authorised finishing the old window and continuing into the new one, so the run spans a rollover and the two numbers are not comparable. Measured cost after the rollover, covering all three validator rounds, three fix rounds, the merges and the gates: 39 points. Comparable to run 1's 35. |
+
+| 3 | 3, rising to about 60 by the merge | to be filled at wrap-up | 3 | The window rolled over between runs 2 and 3, so run 3 started almost empty. Three implementers, three validators, three fix rounds and the orchestrator's own merges, docs work and gates. The maintainer raised the controlled-pause threshold from 90 to 95 percent for this session and asked for run 4 to follow run 3 without the plan's "below 50 percent" start condition (departure 51). |
 
 ## Declined findings
 

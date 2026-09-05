@@ -899,7 +899,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     );
     assert!(
         (values[7] - 0.15).abs() < eps,
-        "terminator_width: got {}, expected 0.25",
+        "terminator_width: got {}, expected 0.15",
         values[7]
     );
     assert!(
@@ -914,7 +914,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     );
     assert!(
         (values[10] - 0.25).abs() < eps,
-        "diffuse_ramp: got {}, expected 0.55",
+        "diffuse_ramp: got {}, expected 0.25",
         values[10]
     );
     assert!(
@@ -984,7 +984,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     );
     assert!(
         (values[24] - 0.25).abs() < eps,
-        "cloud_floor: got {}, expected 0.55",
+        "cloud_floor: got {}, expected 0.25",
         values[24]
     );
     assert!(

@@ -471,15 +471,35 @@ mod tests {
     fn the_eye_sits_where_its_longitude_and_latitude_put_it() {
         // The pole is clamped short of 90 degrees to avoid gimbal lock, so the
         // camera lands near the +Y axis rather than on it.
+        // One tolerance per component: the two that are exactly zero or
+        // exactly the distance carry a float error near 1e-7, and only the
+        // components a rotation actually works on need room.
         for (longitude, latitude, expected, tolerance) in [
-            (0.0, 0.0, glam::Vec3::new(0.0, 0.0, 5.0), 1e-4),
-            (90.0, 0.0, glam::Vec3::new(5.0, 0.0, 0.0), 1e-4),
-            (0.0, 90.0, glam::Vec3::new(0.0, 5.0, 0.0), 0.02),
+            (0.0, 0.0, glam::Vec3::new(0.0, 0.0, 5.0), [1e-5, 1e-5, 1e-5]),
+            (
+                90.0,
+                0.0,
+                glam::Vec3::new(5.0, 0.0, 0.0),
+                [1e-4, 1e-5, 1e-4],
+            ),
+            (
+                0.0,
+                90.0,
+                glam::Vec3::new(0.0, 5.0, 0.0),
+                [0.01, 0.01, 0.02],
+            ),
         ] {
             let eye = OrbitalCamera::new(longitude, latitude, 5.0).eye_position();
-            assert_relative_eq!(eye.x, expected.x, epsilon = tolerance);
-            assert_relative_eq!(eye.y, expected.y, epsilon = tolerance);
-            assert_relative_eq!(eye.z, expected.z, epsilon = tolerance);
+            for (component, (actual, expected)) in [
+                (eye.x, expected.x),
+                (eye.y, expected.y),
+                (eye.z, expected.z),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_relative_eq!(actual, expected, epsilon = tolerance[component]);
+            }
         }
     }
 

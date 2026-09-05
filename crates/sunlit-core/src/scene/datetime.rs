@@ -217,16 +217,19 @@ mod tests {
 
     #[test]
     fn a_fractional_hour_keeps_its_seconds_for_the_ephemeris() {
-        for (hour, expected) in [
-            (0.0, (0, 0, 0.0)),
-            (14.5, (14, 30, 0.0)),
-            (14.75, (14, 45, 0.0)),
-            (12.5025, (12, 30, 9.0)),
-            (24.0, (23, 59, 59.0)),
+        // A whole hour, half hour or quarter hour has no seconds in it, so
+        // those rows are held to a tenth of one; the two that carry a seconds
+        // value are held to the second the caller reads.
+        for (hour, expected, epsilon) in [
+            (0.0, (0, 0, 0.0), 0.1),
+            (14.5, (14, 30, 0.0), 0.1),
+            (14.75, (14, 45, 0.0), 0.1),
+            (12.5025, (12, 30, 9.0), 1.0),
+            (24.0, (23, 59, 59.0), 1.0),
         ] {
             let (h, m, s) = hour_float_to_hms(hour);
             assert_eq!((h, m), (expected.0, expected.1), "hour {hour}");
-            assert_relative_eq!(s, expected.2, epsilon = 1.0);
+            assert_relative_eq!(s, expected.2, epsilon = epsilon);
         }
     }
 

@@ -60,8 +60,13 @@ const EXPORT_SIZE: (u32, u32) = (160, 96);
 /// How long to wait for the engine to catch up with one simulated step.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Growth allowed after warm-up: two decoded 2048x1024 frames.
-const GROWTH_LIMIT: u64 = 16 * 1024 * 1024;
+/// Growth allowed after warm-up: one decoded 2048x1024 frame.
+///
+/// Halved with `STEPS`, so that what the assertion catches per update is what
+/// it caught before: 49 publications against 8 MiB is the sensitivity 98 had
+/// against 16. Measured growth on the development desktop is 2.0 MiB with about
+/// 2.5 MiB of sample-to-sample noise, so the headroom is fourfold.
+const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
 /// Allocation allowed during warm-up: the first cloud texture, its mip chain,
 /// and wgpu's allocator pools.
 const WARMUP_LIMIT: u64 = 192 * 1024 * 1024;

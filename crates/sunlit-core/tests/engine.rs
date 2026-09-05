@@ -526,12 +526,18 @@ static SURFACE: LazyLock<Surface> = LazyLock::new(|| {
         config.cache_dir = Some(cache);
         config.wallpaper = sink_for_config;
         config.cloud = Some(clouds_for_config);
+        // Blend mode, because a file-backed slot is loaded only while the mode
+        // wants it. At `test_params`'s grid the procedural texture alone is
+        // what `TexturesReady` answers for, and both file-backed slots would
+        // still be empty when the first case read them.
+        config.params = blend_params();
         // Short, because the cloud cases swap the served map and the poll is
         // what carries the new one to the slot. Every poll the swap does not
         // follow answers "unchanged" from a string compare.
         config.cloud_poll_interval = Duration::from_millis(50);
     });
     harness.wait_for_textures("the fixture surface at startup");
+    wait_for_surface_slots(&harness, SURFACE_WIDTH);
     Surface {
         harness,
         sink,
@@ -541,14 +547,46 @@ static SURFACE: LazyLock<Surface> = LazyLock::new(|| {
 
 fn surface(_gpu: &Gpu) -> &'static Surface {
     let group = &*SURFACE;
+    // Blend mode before the width, and the width before the wait. A slot is
+    // loaded only while the mode wants it, so a case that left a single-texture
+    // mode behind would hand the next one an empty day or night slot, and a
+    // reload at the restored width would fetch only what that mode asked for.
+    group
+        .harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(blend_params())));
     if group.harness.restore_resolution() {
         group.harness.wait_for_textures("putting the width back");
     }
+    wait_for_surface_slots(&group.harness, SURFACE_WIDTH);
     let bands = group.clouds.serve_bands();
     wait_for_cloud_size(&group.harness, bands, "putting the cloud map back");
     group.harness.reset();
     group.sink.reset(two_screens());
     group
+}
+
+/// Block until the day and night slots hold a texture `width` wide.
+///
+/// `TexturesReady` answers for the mode the engine is in, and a case may leave
+/// behind a mode that wants neither file-backed slot, so a group whose cases
+/// read those slots asks about them by name rather than taking readiness for
+/// the answer.
+fn wait_for_surface_slots(harness: &Harness, width: u32) {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let report = harness.engine.memory_report().expect("a report");
+        if expected_widths(&report, "day_texture") == [width]
+            && expected_widths(&report, "night_texture") == [width]
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the fixture surface did not reach {width} within {TIMEOUT:?}:\n{report}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// The engine with the Moon and a banded panorama behind their slots.
@@ -1235,7 +1273,7 @@ fn unchanged_parameters_do_not_produce_another_frame() {
         .engine
         .send(EngineCommand::UpdateParams(Box::new(params)));
     assert!(
-        harness.drained_frame(Duration::from_millis(400)).is_none(),
+        harness.drained_frame(Duration::from_millis(500)).is_none(),
         "an identical scene must not be re-rendered"
     );
 }
@@ -1301,7 +1339,7 @@ fn switching_the_preview_on_owes_a_frame_and_switching_it_off_stops_them() {
         .engine
         .send(EngineCommand::UpdateParams(Box::new(moved)));
     assert!(
-        harness.drained_frame(Duration::from_millis(400)).is_none(),
+        harness.drained_frame(Duration::from_millis(500)).is_none(),
         "no frames should be delivered while the preview is off"
     );
 
@@ -1837,17 +1875,26 @@ fn a_taller_canvas_still_puts_the_globe_where_the_anchor_had_it() {
 /// else: the plan falls back to the primary and the publish says it did.
 #[test]
 fn a_stored_anchor_that_is_gone_falls_back_and_reports_it() {
-    let gpu = gpu();
-    let group = plain(&gpu);
-    group.sink.set_monitors(two_screens());
-    group.engine.send(EngineCommand::SetDisplayPlan {
-        mode: DisplayMode::OneScreen,
-        anchor: Some("a-screen-that-went-away".to_owned()),
+    let _gpu = gpu();
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    // The stored anchor is a configuration here rather than a command, which is
+    // how it reaches a real session: the app reads it out of the config file and
+    // hands it to `engine::start`. This is the one case that still does that, so
+    // it is what would notice `display_mode` or `anchor_monitor` going unread at
+    // startup.
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.display_mode = DisplayMode::OneScreen;
+        config.anchor_monitor = Some("a-screen-that-went-away".to_owned());
     });
 
-    let note = group.publish().expect("falling back is not a failure");
+    let note = harness.publish().expect("falling back is not a failure");
     assert!(note.contains('A'), "{note}");
-    assert_eq!(group.sink.publications()[0].anchor, 0);
+    let published = sink.publications();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].mode, DisplayMode::OneScreen);
+    assert_eq!(published[0].anchor, 0);
 }
 
 /// The plan is re-read on every publish rather than cached at startup.
@@ -1948,7 +1995,7 @@ fn an_unsupported_sample_count_still_renders() {
     assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
     assert!(has_lit_pixels(&rgba));
 
-    harness.drained_frame(Duration::from_millis(200));
+    harness.drained_frame(Duration::from_millis(300));
     let (rgba, _, _) = harness.frame_after_change(&SceneParams {
         sample_count: 64,
         // Change something visible too, so the frame is not suppressed by the
@@ -2005,7 +2052,7 @@ fn a_switch_to_the_current_resolution_does_nothing() {
 
     harness.set_texture_resolution(SURFACE_WIDTH);
     assert!(
-        harness.drained_frame(Duration::from_millis(400)).is_none(),
+        harness.drained_frame(Duration::from_millis(500)).is_none(),
         "a switch to the width already in force must not re-render"
     );
 }
@@ -2171,12 +2218,12 @@ fn a_stale_arrival_produces_no_frame_at_all() {
     harness.wait_for_textures("at startup");
     harness.set_texture_resolution(WIDE / 2);
     harness.wait_for_textures("after the switch");
-    harness.drained_frame(Duration::from_millis(200));
+    harness.drained_frame(Duration::from_millis(300));
 
     mailbox.post(decoded(DAY_SLOT, WIDE, 0, 0));
     harness.engine.send(EngineCommand::Poke);
     assert!(
-        harness.drained_frame(Duration::from_millis(400)).is_none(),
+        harness.drained_frame(Duration::from_millis(500)).is_none(),
         "a discarded arrival must not reach the GPU, and so must not produce a frame"
     );
 }
@@ -3792,7 +3839,11 @@ fn the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction() {
          the sprite's at {sprite:?} over {sprite_pixels}, \
          and the lens puts the direction at {expected:?}"
     );
-    assert!(lit > 50, "only {lit} pixels of the landmark are lit");
+    // The floor tracks the fixture's area: the shared landmark is 5 degrees
+    // where this case once painted its own at 4, and 1101 lit pixels were
+    // measured here, so this keeps the fourteenfold headroom the 4 degree
+    // disc had rather than inheriting a floor that got easier.
+    assert!(lit > 78, "only {lit} pixels of the landmark are lit");
     assert!(
         (1..=400).contains(&sprite_pixels),
         "{sprite_pixels} pixels changed with one sprite in the sky"
@@ -4062,6 +4113,12 @@ fn real_sky(_gpu: &Gpu) -> Option<&'static RealSky> {
         return None;
     }
     let group = REAL_SKY.as_ref()?;
+    // The layer has to be wanted before the width is restored, for the reason
+    // `surface` puts the mode back first.
+    group
+        .harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(panorama_params())));
     if group.harness.restore_resolution() {
         wait_for_panorama_width(group, REAL_SKY_WIDTH);
     }

@@ -259,16 +259,74 @@ Numbered, appended by the orchestrator from the handovers, with the reasoning.
 
 2. **Package 1.3 moves the IPC listener bind ahead of the renderer and engine startup**, beyond the plan's "the listener failure is a warning". The baseline smoke test on the development host showed a second instance on an occupied socket name selecting the adapter, creating every texture and logging `engine started` before it reached the bind and panicked, about six seconds in. Decided by the maintainer at run 1's kickoff.
 
+4. **`read_texture_rgba8` is defined in `renderer/render_pass.rs`, not `renderer/mod.rs`.** The plan's ownership lines give package 1.1 "the `read_texture_rgba8` function in `src/renderer/mod.rs`" and give package 1.2 the item "the `render_pass.rs` unwraps on device loss become errors". Both name the same three unwraps, because the function is defined in `render_pass.rs` and only re-exported from `mod.rs`. Package 1.2 stopped rather than guessing, the orchestrator confirmed it, and 1.1 discharged the item in `a0d1dc9`. The ownership line was wrong about the path, not about the function. No other unwrap or expect remains in that file.
+
+5. **Coalescing `RenderWallpaperNow` needed a flush in the `Shutdown` arm.** Moving the publish out of `handle` into `tick` would otherwise silently drop a request that shares a drain batch with `Shutdown`, which is an IPC `set-wallpaper` immediately followed by `quit`. With the flush the change is a pure optimization rather than a small behavior regression.
+
+6. **`wallpaper::get_primary_monitor_resolution` stays `pub`.** Its only callers are its own three tests, so `pub(crate)` is dead code on every platform and CI builds with `-D warnings`. Deleting it is the honest alternative but takes two Windows monitor tests with it, and run 2's package 2.3 is already scheduled to merge those three tests into one. The decision belongs there, with the evidence in hand. Validated as sound.
+
+7. **Narrowing an item whose only caller is on another platform makes it dead code locally, so four items took a `cfg` rather than an `allow`.** The xrandr parser and its two helpers are `#[cfg(any(target_os = "linux", test))]`, the pattern `memory.rs` already documents for its `/proc` parsers; `Output::overlaps` is `#[cfg(any(not(windows), test))]`; `Watcher::hwnd` is `#[cfg(test)]`. `desktop.rs` is the exception, since its whole design is per-desktop behavior as data with no `cfg`, so it takes one module-scoped `#[cfg_attr(not(target_os = "linux"), allow(dead_code))]`.
+
+8. **Deleting `wallpaper_on_monitor` cascaded into `shell::DesktopWallpaperApi::get`**, which existed only for it. It was the only Windows wallpaper read-back; the e2e suite's read-back is `Backend::discovery`, which is Linux-only, so nothing is lost today. A Windows read-back assertion would have to bring it back from git.
+
+9. **`Uniforms` is plain `pub`, not `#[doc(hidden)] pub`.** The review offers both. Plain `pub` matches the plan's wording, and the struct is a real part of the contract `CLAUDE.md`'s parameter checklist describes rather than a test double. The module carries a `//!` saying why it is public.
+
+10. **Five items the notes call narrowable stay `pub`, because item 1 gave them an external caller.** `Uniforms`, `Vertex`, `SphereMesh` and `generate_uv_sphere` are read by `tests/render_pipeline.rs`, which is outside the crate. `config::DEFAULT_TEXTURE_RESOLUTION` was already read by `crates/sunlit-app/tests/slint_ui.rs`, which the notes' grep did not cover.
+
+11. **Two occlusion tests went with `transit_fraction`.** `a_sun_in_the_annulus_is_visible_and_fully_in_transit` and `a_sun_past_the_atmosphere_is_out_of_transit` had the band as their whole subject; with the field gone each merely restated `a_sun_clear_of_the_silhouette_is_fully_visible` at another distance. The validator checked the geometry and agreed. The test helper `atmosphere()` went too, as its last caller.
+
+12. **The auto-refresh interval also gets a one-second deferred save.** The plan's item says the save moves to "the checkbox, the button and window close, which already save". Window close saves the geometry only, through `config::save_window_geometry`, which starts from the file rather than the window, so it does not merely fail to persist an unsaved interval, it writes the stored one back over it. Every Slint style routes the accessibility set-value action to the slider's `changed` and never to `released`, so without a deferred save a screen reader's change would reach the engine and never the disk. The timer is restarted on every tick and stopped by the release that would write anyway, so a drag still writes exactly once. Residual hole: an accessibility change followed by an exit inside the same second.
+
+13. **The readiness signal stays at serve time rather than moving to the bind**, even though the bind moved ahead of the GPU. Moving the signal with it would make the e2e suite's readiness wait a lie. Validator round 1 then found the signal was printed before the spawn it announces, which is fixed: it is now printed on the `Ok` of the spawn.
+
 ## Validation record
 
-One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined. None yet.
+One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.
+
+| Run | Package | Round | Date | MAJOR | MINOR | Outcome |
+|---|---|---|---|---|---|---|
+| 1 | 1.1 engine side | 1 | 2026-09-05 | 0 | 4 | All four fixed in `656ed05`, none declined. The substantive one: `render_if_dirty` emitted the preview as a side effect while `tick` emitted it again for the debt, so a failed readback cost two attempts per tick and a persistently failing device logged 20 to 40 lines a second. `render_if_dirty` now reports only whether a frame was drawn, `tick` is the single readback site, and a `readback_failed` latch logs the transition rather than the state. The other three: a comment describing the pre-change unwinding hazard, `private_bytes_budget` narrowed to private to match its two siblings, and an unwrapped doc line. |
+| 1 | 1.2 renderer side | 1 | 2026-09-05 | 0 | 4 | Two fixed in `288e7e5`, both comments. A replacement comment claimed a render target is never larger than what was asked for, contradicted by two tests twelve lines below it; and the `PREVIEW_USAGE` doc read as settled on the open question of `TEXTURE_BINDING`. MINOR 3 is informational and recorded under Open items. MINOR 4 was the orchestrator's, a departure-numbering collision, handled at merge. The validator reproduced review E1's swap itself and got `day_gamma: got 0.8, expected 1.5`. |
+| 1 | 1.3 the app | 1 | 2026-09-05 | 0 | 2 | Both fixed in `2ef528b`, neither declined. `SIGNAL:ipc_listener_ready` was printed before the thread it announces spawned, so a failed spawn would have sent every e2e client to a socket nobody accepts on; the signal moved to the `Ok` of the spawn. The auto-refresh save became departure 12 rather than a decline, after the implementer established that window close writes the stored interval back over an unsaved one. |
+
+No validator found a MAJOR finding, a broken behavior, or an unmet plan item in run 1. All three validators hit the same
+harness limitation and returned their reports as text rather than writing them; the orchestrator transcribed all three
+into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3.md`.
 
 ## Budget record
 
 | Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
 |---|---|---|---|---|
-| | | | | |
+| 1 | 22 | 57 | 3 | 35 points of the five-hour window for three implementers, three validators and the orchestrator, well under the 50 the plan budgeted for a whole run. The pool's four cold builds were paid once here and are not repeated. Runs 2 to 5 need no shrinking on this evidence; three implementers per run stands. |
 
 ## Declined findings
 
-Review findings the maintainer or an implementer declined, with the reason. None yet.
+Review findings the maintainer or an implementer declined, with the reason.
+
+None in run 1. Every MAJOR and MINOR finding from all three validator rounds was fixed. Three items were deliberately
+carried forward rather than declined, and each has a stated reason and a destination:
+
+- `renderer::PREVIEW_USAGE` still unions `TEXTURE_BINDING`, which nothing binds now that `Renderer::preview_texture` is
+  deleted. No test in the suite would show that dropping it is safe, so the flag stays and the comment now says it is an
+  open question rather than a decision. Renderer note C6.
+- `assets/texture_loader.rs`'s `flip_matches_the_image_crates_own` is kept. It still asserts that our flip matches the
+  reference implementation every golden image was generated with, and deleting tests is run 2's remit, so package 2.3
+  decides it.
+- `config.rs:319`'s `#[serde(default = "default_custom_year")]` is redundant under the struct-level `#[serde(default)]`.
+  It is neither a `pub` item nor dead code in the compiler's sense, so it is left to the run that owns that file's tests.
+
+## Open items
+
+- **The offset guard's real reach.** `uniform_buffer_field_offsets_match_wgsl` catches any change that moves an existing
+  field's offset, which is what item A2 asked for and what review E1's scenario exercises. It does not catch a field
+  appended into the trailing padding: replacing `_pad8` with a real field and setting it in `write_uniforms` leaves the
+  struct at 544 bytes with every probed offset unchanged, so all 21 tests pass while the shader still calls those bytes
+  padding. Closing that wants a field-count or offset-table check, and run 5's macro work over `params.rs` is the
+  natural home for it.
+- **Two rows of the review's 4.1 comment table fall in `tests/engine.rs` and `tests/soak.rs`**, which no run 1 package
+  owns. They belong to run 3's package 3.1.
+- **Neither Linux nor macOS was compiled in run 1.** Every new `cfg` gate was reasoned through by an implementer and
+  re-checked by a validator, but the only compiler run was Windows MSVC. CI on the run branch is the gate.
+- **The e2e suite has not run.** It compiles, with all 15 tests `#[ignore]`d as expected. Run 1's per-run gate says it
+  runs once in the Windows guest; that is outstanding and is the maintainer's or the orchestrator's under an explicit
+  grant.

@@ -2,8 +2,7 @@
 //!
 //! `Renderer` owns every GPU object and renders offscreen into its own texture.
 //! It knows nothing about windows, event loops, or Slint: callers hand it a
-//! `SceneParams` plus a sky state and either read the preview texture back
-//! or bind it directly.
+//! `SceneParams` plus a sky state and read the frame back as pixels.
 
 mod frame;
 mod gpu_setup;
@@ -217,7 +216,7 @@ pub fn build_aa_options(supported: &[u32], max_samples: u32) -> (Vec<String>, Ve
 /// combo box: take the highest supported count that is at most the requested
 /// one, and if the request is below everything on offer, take the lowest thing
 /// on offer instead. `1` is always a valid answer.
-pub fn resolve_sample_count(requested: u32, supported: &[u32], max_samples: u32) -> u32 {
+pub(crate) fn resolve_sample_count(requested: u32, supported: &[u32], max_samples: u32) -> u32 {
     let allowed: Vec<u32> = supported
         .iter()
         .copied()
@@ -237,7 +236,7 @@ pub fn resolve_sample_count(requested: u32, supported: &[u32], max_samples: u32)
 
 /// Quantize width and height to the nearest multiple of `SIZE_GRANULARITY`,
 /// with a minimum of one granularity unit in each dimension.
-pub fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
+pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     let qw = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
     let qh = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
     (qw, qh)
@@ -245,7 +244,7 @@ pub fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
 
 /// What a call to [`Renderer::render`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RenderOutcome {
+pub(crate) enum RenderOutcome {
     /// Nothing changed since the last frame; the preview texture still holds it.
     Skipped,
     /// A new frame was drawn into the preview texture.
@@ -253,7 +252,7 @@ pub enum RenderOutcome {
 }
 
 /// Everything needed to build a [`Renderer`] beyond the device and queue.
-pub struct RendererConfig {
+pub(crate) struct RendererConfig {
     pub sample_count: u32,
     pub width: u32,
     pub height: u32,
@@ -272,7 +271,7 @@ pub struct RendererConfig {
 }
 
 /// The GPU pipeline and every resource it owns.
-pub struct Renderer {
+pub(crate) struct Renderer {
     pipeline: wgpu::RenderPipeline,
     star_pipeline: wgpu::RenderPipeline,
     /// The diffuse Milky Way, the pass's first draw.
@@ -366,27 +365,22 @@ pub struct Renderer {
 impl Renderer {
     /// Create the pipeline, the sphere mesh, the grid texture, and the
     /// offscreen render targets.
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue, config: RendererConfig) -> Self {
+    pub(crate) fn new(device: wgpu::Device, queue: wgpu::Queue, config: RendererConfig) -> Self {
         gpu_setup::create_renderer(device, queue, config)
     }
 
-    /// The offscreen color target holding the most recent frame.
-    pub fn preview_texture(&self) -> &wgpu::Texture {
-        &self.render_texture
-    }
-
-    pub fn size(&self) -> (u32, u32) {
+    pub(crate) fn size(&self) -> (u32, u32) {
         (self.render_width, self.render_height)
     }
 
     /// Whether a frame has ever been drawn into the preview texture.
-    pub fn has_frame(&self) -> bool {
+    pub(crate) fn has_frame(&self) -> bool {
         self.last_state.is_some()
     }
 
     /// Resize the offscreen targets. The caller is expected to have quantized
     /// the size already; identical sizes are a no-op.
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn resize(&mut self, width: u32, height: u32) {
         if width == self.render_width && height == self.render_height {
             return;
         }
@@ -405,7 +399,7 @@ impl Renderer {
     /// Any width is accepted and acts as a cap. Which widths a user may choose
     /// between is a question for the config and the combo box, not for the
     /// renderer.
-    pub fn set_texture_resolution(&mut self, width: u32) -> bool {
+    pub(crate) fn set_texture_resolution(&mut self, width: u32) -> bool {
         if width == self.texture_resolution {
             return false;
         }
@@ -421,7 +415,7 @@ impl Renderer {
     }
 
     /// The width the file-backed textures are loaded at.
-    pub fn texture_resolution(&self) -> u32 {
+    pub(crate) fn texture_resolution(&self) -> u32 {
         self.texture_resolution
     }
 
@@ -430,7 +424,7 @@ impl Renderer {
     ///
     /// `adapter` is the slug from `wgpu_init::adapter_key`, which the renderer
     /// is not told and the engine is.
-    pub fn memory_report(&self, adapter: &str) -> MemoryReport {
+    pub(crate) fn memory_report(&self, adapter: &str) -> MemoryReport {
         crate::memory_report::collect(&self.device, adapter, self.expected_textures())
     }
 
@@ -501,7 +495,7 @@ impl Renderer {
     /// Deliberately independent of whether anything is being displayed: this is
     /// what keeps cloud updates flowing to the GPU while the window is hidden.
     /// Returns `true` if at least one texture was uploaded.
-    pub fn drain_texture_updates(&mut self) -> bool {
+    pub(crate) fn drain_texture_updates(&mut self) -> bool {
         process_decoded_textures(self)
     }
 
@@ -535,14 +529,14 @@ impl Renderer {
 
     /// The loading indicator text for the current texture selection, empty when
     /// nothing is loading.
-    pub fn loading_text(&self, texture_index: i32) -> String {
+    pub(crate) fn loading_text(&self, texture_index: i32) -> String {
         texture_routing::loading_text(self, TextureMode::from_index(texture_index))
     }
 
     /// Whether every texture the current mode needs has finished loading.
     /// The clouds, the Moon and the Milky Way are excluded: they are overlays,
     /// not requirements.
-    pub fn textures_ready(&self, texture_index: i32) -> bool {
+    pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
         if mode == TextureMode::Blend {
@@ -568,7 +562,7 @@ impl Renderer {
     /// where nothing further is coming, so there is nothing to wait for. The
     /// question this answers is "will this get better on its own", which is the
     /// only sound reason to hold something back.
-    pub fn textures_pending(&self, texture_index: i32) -> bool {
+    pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
         if mode == TextureMode::Blend {
@@ -589,7 +583,7 @@ impl Renderer {
     /// The scheduler calls this before an unattended wallpaper export so the
     /// image reflects the current time even when no frame has been drawn since
     /// the window was hidden.
-    pub fn set_sky_state(&mut self, sky: SkyState) {
+    pub(crate) fn set_sky_state(&mut self, sky: SkyState) {
         self.update_planets(&sky);
         if let Some(inputs) = &mut self.last_inputs {
             inputs.sky = sky;
@@ -600,7 +594,7 @@ impl Renderer {
     ///
     /// Kicks off background texture loads for the selected mode whether or not
     /// the frame is skipped, so a mode switch starts loading immediately.
-    pub fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
+    pub(crate) fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
         if params.sample_count != self.sample_count {
             debug!(
                 sample_count = params.sample_count,
@@ -677,7 +671,7 @@ impl Renderer {
     ///
     /// Only valid when the renderer was built with `COPY_SRC` on its preview
     /// texture (see [`RendererConfig`] users that need readback).
-    pub fn read_preview_pixels(&self) -> Result<Vec<u8>, String> {
+    pub(crate) fn read_preview_pixels(&self) -> Result<Vec<u8>, String> {
         read_texture_rgba8(
             &self.device,
             &self.queue,
@@ -696,7 +690,11 @@ impl Renderer {
     ///
     /// Returns `Err` when no frame has been rendered yet, since there is then
     /// no resolved texture binding to replay.
-    pub fn export_image(&self, target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
+    pub(crate) fn export_image(
+        &self,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<Vec<u8>, String> {
         let params = self.last_params.ok_or("No frame rendered yet")?;
         self.export_image_with(&params, target_width, target_height)
     }
@@ -709,7 +707,7 @@ impl Renderer {
     /// copies the resolution limits from the adapter and leaves the buffer size
     /// at the downlevel default, so the two are not the same number and neither
     /// is worth guessing.
-    pub fn export_limits(&self) -> (u32, u64) {
+    pub(crate) fn export_limits(&self) -> (u32, u64) {
         let limits = self.device.limits();
         (limits.max_texture_dimension_2d, limits.max_buffer_size)
     }
@@ -722,7 +720,7 @@ impl Renderer {
     /// is what the wallpaper path changes: the fields of view and the pan, all
     /// of which are derived per screen.
     #[allow(clippy::cast_precision_loss)]
-    pub fn export_image_with(
+    pub(crate) fn export_image_with(
         &self,
         params: &SceneParams,
         target_width: u32,

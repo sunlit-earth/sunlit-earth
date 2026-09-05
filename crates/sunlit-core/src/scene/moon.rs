@@ -21,7 +21,7 @@ use super::sun_occlusion::{MIN_BODY_DISK_RADIUS_PIXELS, ScreenCircle, pixel_scal
 
 /// The Moon's radius in the scene's unit of length: 1737.4 km against the
 /// Earth's equatorial 6378.137.
-pub const MOON_RADIUS_EARTH_RADII: f32 = 0.2724;
+pub(crate) const MOON_RADIUS_EARTH_RADII: f32 = 0.2724;
 
 /// The frame geometry [`place_moon`] needs.
 #[derive(Clone, Copy, Debug)]

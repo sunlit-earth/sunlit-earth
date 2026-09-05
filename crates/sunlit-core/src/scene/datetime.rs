@@ -15,7 +15,7 @@ pub fn year_range() -> (i32, i32) {
 ///
 /// A year is a leap year if it is divisible by 4, except for century
 /// years which must also be divisible by 400.
-pub fn is_leap_year(year: i32) -> bool {
+pub(crate) fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
@@ -79,7 +79,7 @@ pub fn month_day_label(doy: u16, year: i32) -> String {
 ///
 /// Clamps to \[0.0, 24.0). A value of exactly 24.0 maps to (23, 59).
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn hour_float_to_hm(h: f32) -> (u8, u8) {
+pub(crate) fn hour_float_to_hm(h: f32) -> (u8, u8) {
     let h = h.clamp(0.0, 24.0);
     if h >= 24.0 {
         return (23, 59);
@@ -111,7 +111,7 @@ pub fn hour_label(h: f32) -> String {
 /// Clamps to \[0.0, 24.0). A value of exactly 24.0 maps to (23, 59, 59.0)
 /// approximately.
 #[allow(clippy::cast_possible_truncation)]
-pub fn hour_float_to_hms(h: f32) -> (i32, i32, f64) {
+pub(crate) fn hour_float_to_hms(h: f32) -> (i32, i32, f64) {
     let h = f64::from(h.clamp(0.0, 24.0));
     if h >= 24.0 {
         return (23, 59, 59.0);

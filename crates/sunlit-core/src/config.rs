@@ -30,7 +30,7 @@ pub enum QualityTier {
 
 impl QualityTier {
     /// Low while developing, high in a shipped binary.
-    pub fn default_for_build() -> Self {
+    pub(crate) fn default_for_build() -> Self {
         if cfg!(debug_assertions) {
             Self::Low
         } else {
@@ -51,7 +51,7 @@ impl QualityTier {
 
     /// Upper bound on the preview width in physical pixels. The height follows
     /// from the aspect ratio.
-    pub fn max_preview_width(self) -> u32 {
+    pub(crate) fn max_preview_width(self) -> u32 {
         match self {
             Self::Low => 1280,
             Self::Medium => 1920,
@@ -72,7 +72,7 @@ impl Default for QualityTier {
 /// stops at one and [`AppConfig::sanitize`] clamps a file to it, the way the
 /// camera's own lens is clamped: a value nothing on screen can bring back is
 /// not a setting.
-pub const SUN_FLARE_MAX: f32 = 1.0;
+pub(crate) const SUN_FLARE_MAX: f32 = 1.0;
 
 /// The surface texture widths the user can choose between, widest first.
 ///
@@ -96,7 +96,7 @@ pub const DEFAULT_TEXTURE_RESOLUTION: u32 = 4096;
 /// A config file is a text file: a hand-edited or foreign value arrives here as
 /// a bare number, and the loader is the one place that has to reject it, since
 /// everything downstream treats the value as an exact halving of the source.
-pub fn resolve_texture_resolution(requested: u32) -> u32 {
+pub(crate) fn resolve_texture_resolution(requested: u32) -> u32 {
     if TEXTURE_RESOLUTIONS.contains(&requested) {
         return requested;
     }
@@ -444,7 +444,7 @@ const ENV_CONFIG: &str = "SUNLIT_EARTH_CONFIG";
 /// `SUNLIT_EARTH_CONFIG` overrides the location so tests do not read or write
 /// the developer's real settings. Returns `None` if the platform's local data
 /// directory cannot be determined.
-pub fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     config_path_from(crate::env_override(ENV_CONFIG).as_deref())
 }
 

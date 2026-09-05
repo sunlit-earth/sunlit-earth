@@ -9,9 +9,9 @@ use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
 use super::{Renderer, RendererConfig, SLOT_LABELS};
 
-/// Usage flags for the offscreen preview target. `TEXTURE_BINDING` lets a
-/// client bind it directly (the Slint shell does), `COPY_SRC` lets the engine
-/// read it back into a pixel buffer.
+/// Usage flags for the offscreen preview target. `COPY_SRC` is what the engine
+/// reads the frame back through; no client binds the texture itself, because
+/// preview frames cross to the UI as pixel buffers.
 const PREVIEW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
     .union(wgpu::TextureUsages::TEXTURE_BINDING)
     .union(wgpu::TextureUsages::COPY_SRC);
@@ -212,7 +212,8 @@ pub(super) fn create_renderer(
             loading: false,
         });
     }
-    // Slot 3 = cloud overlay (populated by the cloud fetcher thread, not file-based)
+    // The cloud overlay, always last because it comes from the fetcher rather
+    // than from a file. `SlotLayout::clouds` names its index.
     texture_slots.push(TextureSlot {
         bind_group: None,
         texture: None,
@@ -777,8 +778,8 @@ pub(super) fn create_nightglow_green_pipeline(
 
 /// Create all size-dependent render textures (resolve target, depth, and optional MSAA).
 ///
-/// `color_usage` controls the usage flags on the resolve (1x sample) color texture.
-/// Preview passes use `RENDER_ATTACHMENT | TEXTURE_BINDING`; export passes use
+/// `color_usage` controls the usage flags on the resolve (1x sample) color
+/// texture. Preview passes use `PREVIEW_USAGE`; export passes use
 /// `RENDER_ATTACHMENT | COPY_SRC` for GPU-to-CPU readback.
 pub(super) fn create_render_textures(
     device: &wgpu::Device,

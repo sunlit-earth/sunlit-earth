@@ -64,7 +64,7 @@ pub(crate) fn orient(img: &mut DecodedImage) {
 }
 
 /// Mirror every row, so east ends up where the sphere's winding expects it.
-pub(crate) fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
     let row_bytes = w * 4;
     for y in 0..height as usize {
@@ -80,7 +80,7 @@ pub(crate) fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 
 /// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
 /// with the sphere's u=0.
-pub(crate) fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
     let row_bytes = w * 4;
     let shift_bytes = w * 3; // 3/4 width in bytes (each pixel is 4 bytes)

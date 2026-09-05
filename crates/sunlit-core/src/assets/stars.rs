@@ -17,13 +17,9 @@ pub struct StarCatalog<'a> {
 
 impl StarCatalog<'_> {
     /// Number of star records in the catalog.
-    pub fn len(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> u32 {
         self.count
-    }
-
-    /// Whether the catalog contains no records.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
     }
 
     /// The byte for byte wgpu vertex buffer payload.
@@ -58,7 +54,7 @@ impl StarCatalog<'_> {
 
 /// Why an embedded star catalog could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StarCatalogError {
+pub(crate) enum StarCatalogError {
     HeaderTooShort,
     InvalidMagic,
     UnsupportedVersion(u32),
@@ -81,7 +77,7 @@ impl fmt::Display for StarCatalogError {
 impl std::error::Error for StarCatalogError {}
 
 /// Validate a catalog blob and borrow its instance payload.
-pub fn parse_catalog(bytes: &[u8]) -> Result<StarCatalog<'_>, StarCatalogError> {
+pub(crate) fn parse_catalog(bytes: &[u8]) -> Result<StarCatalog<'_>, StarCatalogError> {
     if bytes.len() < HEADER_SIZE {
         return Err(StarCatalogError::HeaderTooShort);
     }

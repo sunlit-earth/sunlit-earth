@@ -12,18 +12,22 @@
 //! [`DateTimeInput`] and [`make_time`] are production plumbing and live here
 //! because this is where they started; `sky` takes both.
 
+use astronomy_engine_bindings::astro_time_t;
+#[cfg(test)]
 use astronomy_engine_bindings::{
     Astronomy_Equator, Astronomy_MakeObserver, Astronomy_SiderealTime,
     astro_aberration_t_ABERRATION, astro_body_t_BODY_SUN, astro_equator_date_t_EQUATOR_OF_DATE,
-    astro_status_t_ASTRO_SUCCESS, astro_time_t,
+    astro_status_t_ASTRO_SUCCESS,
 };
+#[cfg(test)]
 use glam::Vec3;
 
 /// Compute the sun's direction as a unit vector in the renderer's world-space
-/// coordinate frame (Y-up, +X = prime meridian at equator, -Z = 90 degrees
+/// coordinate frame (Y-up, +Z = prime meridian at the equator, +X = 90 degrees
 /// East) for a specific `astro_time_t`.
-pub fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
-    // Get the sun's equatorial coordinates (right ascension and declination)
+#[cfg(test)]
+pub(crate) fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
+    // The sun's equatorial coordinates (right ascension and declination)
     // referred to the equator of date, with aberration correction.
     //
     // The observer is a surface point at 0N 0E, not the geocenter: that is a

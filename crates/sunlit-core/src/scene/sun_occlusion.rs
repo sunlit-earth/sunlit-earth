@@ -28,7 +28,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 /// Angular radius of the Sun's disk seen from Earth, in degrees. The seasonal
 /// variation (0.262 to 0.271) is below a pixel at any output this renders.
-pub const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
+pub(crate) const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
 
 /// Smallest radius either half-degree body is drawn at, in pixels at 1080p.
 ///
@@ -38,7 +38,7 @@ pub const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
 /// carry the same clause for the same reason. The Moon subtends the same half
 /// degree and takes the same floor, or the two bodies that are the same size in
 /// the sky would be different sizes on screen wherever it is active.
-pub const MIN_BODY_DISK_RADIUS_PIXELS: f32 = 1.6;
+pub(crate) const MIN_BODY_DISK_RADIUS_PIXELS: f32 = 1.6;
 
 /// Output-density ramp shared with the star sprites: 1.0 at 1080p and below,
 /// 2.0 at 4K and above.
@@ -48,7 +48,7 @@ pub fn pixel_scale(viewport_height: f32) -> f32 {
 
 /// Earth's radius in kilometers, which is what turns a shell radius in Earth
 /// radii into the height of the band it stands for.
-pub const EARTH_RADIUS_KM: f32 = 6371.0;
+pub(crate) const EARTH_RADIUS_KM: f32 = 6371.0;
 
 /// Scale height of the density the light path runs through, in kilometers.
 ///
@@ -73,7 +73,7 @@ const CHANNEL_TRANSMISSION: [f32; 3] = [0.90, 0.836, 0.73];
 /// atmosphere than the whole of it, and the exponential would otherwise run
 /// away where the disk sits behind the painted limb.
 #[must_use]
-pub fn limb_air_mass(height_km: f32, reddening: f32) -> f32 {
+pub(crate) fn limb_air_mass(height_km: f32, reddening: f32) -> f32 {
     HORIZON_AIR_MASS * (-height_km.max(0.0) / ATMOSPHERE_SCALE_HEIGHT_KM).exp() * reddening
 }
 
@@ -97,7 +97,8 @@ pub fn limb_transmission(height_km: f32, reddening: f32) -> Vec3 {
 /// is. What the disk and the glare are tinted with, since both are clipped
 /// bright long before the path stops carrying anything.
 #[must_use]
-pub fn limb_hue(height_km: f32, reddening: f32) -> Vec3 {
+#[cfg(test)]
+pub(crate) fn limb_hue(height_km: f32, reddening: f32) -> Vec3 {
     let transmitted = limb_transmission(height_km, reddening);
     transmitted / transmitted.max_element().max(1e-30)
 }
@@ -182,7 +183,8 @@ impl SunHorizonParams {
     /// The settings that leave the Sun exactly where geometry puts it, white,
     /// unmagnified and unboosted: what everything here answered before the
     /// band existed.
-    pub const GEOMETRIC: Self = Self {
+    #[cfg(test)]
+    pub(crate) const GEOMETRIC: Self = Self {
         size: 1.0,
         depth: 0.0,
         reddening: 0.0,
@@ -326,7 +328,7 @@ const REFRACTION_EXPONENT: f32 = 13.7;
 /// At `refraction` zero this is the identity with no magnification at all,
 /// which is what leaves the geometric Sun exactly where it was.
 #[must_use]
-pub fn refract(height: f32, refraction: f32) -> (f32, f32) {
+pub(crate) fn refract(height: f32, refraction: f32) -> (f32, f32) {
     let lift = REFRACTION_LIFT_ZONES * refraction;
     if lift <= 0.0 {
         return (height, 1.0);
@@ -389,7 +391,7 @@ const FLUX_STRIPS: usize = 64;
 /// is the smaller. Derived here rather than in the shader because it is one
 /// solve a frame against one per rim fragment.
 #[must_use]
-pub fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
+pub(crate) fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
     let cosine = half_width_deg.to_radians().cos();
     let half = 0.5_f32.powf(2.0 / 3.0);
     let sum = (2.0 - 2.0 * half * cosine) / (1.0 - half);
@@ -405,7 +407,7 @@ pub fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
 /// holds at `boost` until the whole disk stands clear and settles to one over
 /// `reach` zone widths above that, which is the sequence a rising Sun reads as.
 #[must_use]
-pub fn exposure_gain(lower_edge_height: f32, boost: f32, reach: f32) -> f32 {
+pub(crate) fn exposure_gain(lower_edge_height: f32, boost: f32, reach: f32) -> f32 {
     let settled = smoothstep(1.0, 1.0 + reach.max(1e-3), lower_edge_height);
     1.0 + (boost - 1.0) * (1.0 - settled)
 }
@@ -661,7 +663,8 @@ fn visibility(sun: ScreenCircle, globe: ScreenCircle, moon: Option<ScreenCircle>
 /// Read by nothing in the renderer. It exists so the screen-space function has
 /// something independent to be checked against in the one configuration where
 /// the two lenses agree about scale.
-pub fn angular_visible_fraction(sun_direction: Vec3, eye: Vec3, body_radius: f32) -> f32 {
+#[cfg(test)]
+pub(crate) fn angular_visible_fraction(sun_direction: Vec3, eye: Vec3, body_radius: f32) -> f32 {
     let distance = eye.length();
     if distance <= body_radius {
         return 0.0;

@@ -244,25 +244,24 @@ fn discard_cache_meta(path: &Path) {
 
 /// Decode a JPEG cloud image from raw bytes into RGBA8 pixel data.
 ///
-/// Applies the same transforms as equirectangular texture loading:
-/// horizontal flip and 1/4-width shift to align the prime meridian.
+/// Through [`texture_loader::orient`], so the overlay lands in the same UV
+/// layout as the file-backed maps and cannot drift from them.
 #[tracing::instrument(skip(bytes), fields(bytes_len = bytes.len()))]
 fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
     let img = image::load_from_memory(bytes)
         .map_err(|e| format!("Failed to decode cloud JPEG: {e}"))?
-        .fliph()
         .into_rgba8();
 
     let width = img.width();
     let height = img.height();
-    let mut pixels = img.into_raw();
-    texture_loader::shift_horizontal(&mut pixels, width, height);
-
-    Ok(DecodedImage {
-        pixels,
+    let mut decoded = DecodedImage {
+        pixels: img.into_raw(),
         width,
         height,
-    })
+    };
+    texture_loader::orient(&mut decoded);
+
+    Ok(decoded)
 }
 
 /// What one call to [`CloudUpdater::poll_once`] achieved.

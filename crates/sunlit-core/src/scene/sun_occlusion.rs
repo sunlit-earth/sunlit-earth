@@ -123,16 +123,11 @@ pub struct ScreenCircle {
     pub radius: f32,
 }
 
-/// How much of the Sun's disk the viewer can see, and how much of what is
-/// visible looks through the atmosphere shell.
+/// How much of the Sun's disk the viewer can see.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SunVisibility {
     /// Fraction of the disk's area outside the globe's painted silhouette.
     pub visible_fraction: f32,
-    /// Fraction of the disk's area inside the annulus between the painted
-    /// silhouette and the atmosphere shell's, which is the grazing band where
-    /// the light path runs through the lower atmosphere.
-    pub transit_fraction: f32,
 }
 
 /// The frame geometry [`place_sun`] needs, bundled because it is nine values
@@ -149,7 +144,8 @@ pub struct SunPlacementInputs {
     pub sky_fov_deg: f32,
     /// The Earth camera's vertical field of view.
     pub camera_fov_deg: f32,
-    /// Radius of the atmosphere shell that bounds the transit band.
+    /// Radius of the atmosphere shell, which sets the height of the band the
+    /// light path runs through and the width of the horizon zone.
     pub atmosphere_radius: f32,
     /// Post-projection pan, in NDC, as the sky lens applies it.
     pub screen_offset: Vec2,
@@ -553,7 +549,6 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
             disk_radius_pixels: floor,
             visibility: SunVisibility {
                 visible_fraction: 1.0,
-                transit_fraction: 0.0,
             },
             globe,
             zone_width_pixels: horizon_zone_width(
@@ -603,10 +598,6 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
             center: globe.center,
             radius: moved(globe.radius),
         },
-        ScreenCircle {
-            center: globe.center,
-            radius: moved(atmosphere.radius),
-        },
         inputs.moon_disc,
     );
 
@@ -644,37 +635,23 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
 ///
 /// The Moon comparison carries none of the mixed-lens caveat the globe one
 /// does: the Sun and the Moon are both imaged by the sky lens, so their circles
-/// are in the same lens and the answer agrees with an ephemeris. The transit
-/// band belongs to the globe alone, so the Moon does not enter it.
-pub fn visibility(
-    sun: ScreenCircle,
-    globe: ScreenCircle,
-    atmosphere: ScreenCircle,
-    moon: Option<ScreenCircle>,
-) -> SunVisibility {
+/// are in the same lens and the answer agrees with an ephemeris.
+fn visibility(sun: ScreenCircle, globe: ScreenCircle, moon: Option<ScreenCircle>) -> SunVisibility {
     let behind_globe = overlap_area(sun.radius, globe.radius, sun.center.distance(globe.center));
     let behind_moon = moon.map_or(0.0, |moon| {
         overlap_area(sun.radius, moon.radius, sun.center.distance(moon.center))
     });
     let hidden = behind_globe.max(behind_moon);
-    let within_atmosphere = overlap_area(
-        sun.radius,
-        atmosphere.radius,
-        sun.center.distance(atmosphere.center),
-    );
     let area = PI * sun.radius * sun.radius;
     if area <= 0.0 {
         let outside = |circle: ScreenCircle| sun.center.distance(circle.center) > circle.radius;
         let clear = outside(globe) && moon.is_none_or(outside);
-        let banded = clear && sun.center.distance(atmosphere.center) <= atmosphere.radius;
         return SunVisibility {
             visible_fraction: f32::from(u8::from(clear)),
-            transit_fraction: f32::from(u8::from(banded)),
         };
     }
     SunVisibility {
         visible_fraction: (1.0 - hidden / area).clamp(0.0, 1.0),
-        transit_fraction: ((within_atmosphere - behind_globe) / area).clamp(0.0, 1.0),
     }
 }
 
@@ -735,19 +712,12 @@ mod tests {
     use super::*;
     use crate::scene::camera::OrbitalCamera;
 
-    /// Concentric silhouettes to measure a sun disk against: the globe at 50
-    /// pixels and the atmosphere shell at 60, both around (100, 100).
+    /// The silhouette to measure a sun disk against: 50 pixels around
+    /// (100, 100).
     fn globe() -> ScreenCircle {
         ScreenCircle {
             center: Vec2::new(100.0, 100.0),
             radius: 50.0,
-        }
-    }
-
-    fn atmosphere() -> ScreenCircle {
-        ScreenCircle {
-            center: Vec2::new(100.0, 100.0),
-            radius: 60.0,
         }
     }
 
@@ -988,10 +958,6 @@ mod tests {
                         center: Vec2::ZERO,
                         radius: moved,
                     },
-                    ScreenCircle {
-                        center: Vec2::ZERO,
-                        radius: moved,
-                    },
                     None,
                 )
                 .visible_fraction;
@@ -1044,42 +1010,23 @@ mod tests {
     }
 
     #[test]
-    fn a_sun_clear_of_both_silhouettes_is_fully_visible() {
-        let v = visibility(sun_at(300.0, 5.0), globe(), atmosphere(), None);
+    fn a_sun_clear_of_the_silhouette_is_fully_visible() {
+        let v = visibility(sun_at(300.0, 5.0), globe(), None);
         assert_relative_eq!(v.visible_fraction, 1.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     #[test]
     fn a_sun_inside_the_painted_globe_is_fully_hidden() {
-        let v = visibility(sun_at(100.0, 5.0), globe(), atmosphere(), None);
+        let v = visibility(sun_at(100.0, 5.0), globe(), None);
         assert_relative_eq!(v.visible_fraction, 0.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     #[test]
     fn a_sun_centered_on_the_limb_is_half_visible() {
-        let v = visibility(sun_at(150.0, 5.0), globe(), atmosphere(), None);
+        let v = visibility(sun_at(150.0, 5.0), globe(), None);
         // A shade over half, because the limb curves away from the disk's
         // center rather than cutting it along a diameter.
         assert_relative_eq!(v.visible_fraction, 0.51, epsilon = 0.02);
-        // What cleared the limb is entirely inside the atmosphere circle,
-        // which is what the transit band means.
-        assert_relative_eq!(v.transit_fraction, v.visible_fraction, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn a_sun_in_the_annulus_is_visible_and_fully_in_transit() {
-        let v = visibility(sun_at(155.0, 2.0), globe(), atmosphere(), None);
-        assert_relative_eq!(v.visible_fraction, 1.0);
-        assert_relative_eq!(v.transit_fraction, 1.0);
-    }
-
-    #[test]
-    fn a_sun_past_the_atmosphere_is_out_of_transit() {
-        let v = visibility(sun_at(170.0, 2.0), globe(), atmosphere(), None);
-        assert_relative_eq!(v.visible_fraction, 1.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     /// A moon circle centered on a sun disk of the same size, well clear of
@@ -1091,9 +1038,8 @@ mod tests {
             center: sun.center,
             radius: 5.0,
         };
-        let v = visibility(sun, globe(), atmosphere(), Some(moon));
+        let v = visibility(sun, globe(), Some(moon));
         assert_relative_eq!(v.visible_fraction, 0.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     /// A moon somewhere else in the sky changes nothing, which is the case
@@ -1105,11 +1051,11 @@ mod tests {
             center: Vec2::new(340.0, 100.0),
             radius: 5.0,
         };
-        let v = visibility(sun, globe(), atmosphere(), Some(moon));
+        let v = visibility(sun, globe(), Some(moon));
         assert_relative_eq!(v.visible_fraction, 1.0);
         assert_relative_eq!(
             v.visible_fraction,
-            visibility(sun, globe(), atmosphere(), None).visible_fraction
+            visibility(sun, globe(), None).visible_fraction
         );
     }
 
@@ -1124,7 +1070,7 @@ mod tests {
             radius: 5.0,
         };
         let lens = 2.0 * (0.5_f32.acos() - 0.5 * 0.75_f32.sqrt()) / PI;
-        let v = visibility(sun, globe(), atmosphere(), Some(moon));
+        let v = visibility(sun, globe(), Some(moon));
         assert_relative_eq!(v.visible_fraction, 1.0 - lens, epsilon = 1e-5);
     }
 
@@ -1135,20 +1081,20 @@ mod tests {
     fn the_larger_occluder_decides_when_both_cover_the_sun() {
         // Centered on the painted limb, so the globe hides about half.
         let sun = sun_at(150.0, 5.0);
-        let globe_alone = visibility(sun, globe(), atmosphere(), None).visible_fraction;
+        let globe_alone = visibility(sun, globe(), None).visible_fraction;
         // A moon just clipping the other side of the same disk, hiding less.
         let small_bite = ScreenCircle {
             center: Vec2::new(158.0, 100.0),
             radius: 4.0,
         };
-        let with_small = visibility(sun, globe(), atmosphere(), Some(small_bite)).visible_fraction;
+        let with_small = visibility(sun, globe(), Some(small_bite)).visible_fraction;
         assert_relative_eq!(with_small, globe_alone);
         // And one covering the disk outright, hiding more than the globe does.
         let full = ScreenCircle {
             center: sun.center,
             radius: 6.0,
         };
-        let with_full = visibility(sun, globe(), atmosphere(), Some(full)).visible_fraction;
+        let with_full = visibility(sun, globe(), Some(full)).visible_fraction;
         assert_relative_eq!(with_full, 0.0);
     }
 
@@ -1159,7 +1105,7 @@ mod tests {
         for step in 0..=200 {
             #[allow(clippy::cast_precision_loss)]
             let x = 100.0 + step as f32 * 0.4;
-            let fraction = visibility(sun_at(x, 6.0), globe(), atmosphere(), None).visible_fraction;
+            let fraction = visibility(sun_at(x, 6.0), globe(), None).visible_fraction;
             assert!(
                 fraction >= previous - 1e-6,
                 "the visible fraction fell from {previous} to {fraction} at x = {x}"

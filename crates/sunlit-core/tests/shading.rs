@@ -131,6 +131,19 @@ fn create_blend_context(force_software: bool) -> BlendGpuContext {
 static GPU: LazyLock<Mutex<BlendGpuContext>> =
     LazyLock::new(|| Mutex::new(create_blend_context(false)));
 
+/// The second implementation `software_adapter_produces_correct_results`
+/// cross-checks against.
+///
+/// A `LazyLock` rather than a context per call, because the project's
+/// one-device rule is really a rule against creating devices per test: this is
+/// the one place in the suite that holds a second device at all, and it exists
+/// so a run on a discrete GPU still says something about what CI sees on a
+/// software rasterizer. `None` where the platform has no software adapter,
+/// which is macOS.
+static SOFTWARE_GPU: LazyLock<Option<Mutex<BlendGpuContext>>> = LazyLock::new(|| {
+    common::software_adapter_available().then(|| Mutex::new(create_blend_context(true)))
+});
+
 // ---------------------------------------------------------------------------
 // GPU dispatch helper
 // ---------------------------------------------------------------------------
@@ -300,65 +313,26 @@ const EPS: f32 = 1e-5;
 // Tests
 // ---------------------------------------------------------------------------
 
-#[test]
-fn ocean_monotonic() {
-    let cases = sweep(OCEAN_DAY, OCEAN_NIGHT, STEPS, W, true, FLOOR, RAMP);
-    let results = run_on_gpu(&cases);
-
-    let lums: Vec<f32> = results.iter().map(|r| luminance(&r.color)).collect();
-    for (i, w) in lums.windows(2).enumerate() {
-        assert!(
-            w[1] >= w[0] - EPS,
-            "Ocean monotonicity violated at step {i}: {:.6} -> {:.6}",
-            w[0],
-            w[1]
-        );
-    }
-}
+/// The fixtures the sweeps run over: an ocean and a landmass, both darker at
+/// night than by day.
+const DARKENING_PAIRS: [([f32; 3], [f32; 3], &str); 2] = [
+    (OCEAN_DAY, OCEAN_NIGHT, "ocean"),
+    (LAND_DAY, LAND_NIGHT, "land"),
+];
 
 #[test]
-fn land_monotonic() {
-    let cases = sweep(LAND_DAY, LAND_NIGHT, STEPS, W, true, FLOOR, RAMP);
-    let results = run_on_gpu(&cases);
+fn luminance_rises_monotonically_through_the_terminator() {
+    for (day, night, name) in DARKENING_PAIRS {
+        let cases = sweep(day, night, STEPS, W, true, FLOOR, RAMP);
+        let results = run_on_gpu(&cases);
 
-    let lums: Vec<f32> = results.iter().map(|r| luminance(&r.color)).collect();
-    for (i, w) in lums.windows(2).enumerate() {
-        assert!(
-            w[1] >= w[0] - EPS,
-            "Land monotonicity violated at step {i}: {:.6} -> {:.6}",
-            w[0],
-            w[1]
-        );
-    }
-}
-
-#[test]
-fn ocean_never_below_night() {
-    let cases = sweep(OCEAN_DAY, OCEAN_NIGHT, STEPS, W, true, FLOOR, RAMP);
-    let results = run_on_gpu(&cases);
-
-    let night_lum = luminance(&OCEAN_NIGHT);
-    let min_lum = results
-        .iter()
-        .map(|r| luminance(&r.color))
-        .reduce(f32::min)
-        .unwrap();
-    assert!(
-        min_lum >= night_lum - EPS,
-        "Ocean dipped below night: {min_lum:.6} < {night_lum:.6}"
-    );
-}
-
-#[test]
-fn per_channel_never_below_night() {
-    let cases = sweep(OCEAN_DAY, OCEAN_NIGHT, STEPS, W, true, FLOOR, RAMP);
-    let results = run_on_gpu(&cases);
-
-    for (i, r) in results.iter().enumerate() {
-        for (ch, (&got, &expected)) in r.color.iter().zip(OCEAN_NIGHT.iter()).enumerate() {
+        let lums: Vec<f32> = results.iter().map(|r| luminance(&r.color)).collect();
+        for (i, w) in lums.windows(2).enumerate() {
             assert!(
-                got >= expected - EPS,
-                "Ocean ch={ch} below night at step {i}: {got:.6} < {expected:.6}",
+                w[1] >= w[0] - EPS,
+                "{name} monotonicity violated at step {i}: {:.6} -> {:.6}",
+                w[0],
+                w[1]
             );
         }
     }
@@ -366,14 +340,23 @@ fn per_channel_never_below_night() {
 
 #[test]
 fn fully_lit_matches_day_color() {
-    let cases = vec![make_case(OCEAN_DAY, OCEAN_NIGHT, 1.0, W, true, FLOOR, RAMP)];
+    let pairs = [
+        (OCEAN_DAY, OCEAN_NIGHT, "ocean"),
+        (NYC_DAY, NYC_NIGHT, "NYC"),
+    ];
+    let cases: Vec<TestCase> = pairs
+        .iter()
+        .map(|&(day, night, _)| make_case(day, night, 1.0, W, true, FLOOR, RAMP))
+        .collect();
     let results = run_on_gpu(&cases);
 
-    for (ch, (&got, &expected)) in results[0].color.iter().zip(OCEAN_DAY.iter()).enumerate() {
-        assert!(
-            (got - expected).abs() < EPS,
-            "Fully-lit ch={ch}: {got:.6} vs expected {expected:.6}",
-        );
+    for (result, (day, _, name)) in results.iter().zip(pairs) {
+        for (ch, (&got, &expected)) in result.color.iter().zip(day.iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < EPS,
+                "{name} fully-lit ch={ch}: {got:.6} vs expected {expected:.6}",
+            );
+        }
     }
 }
 
@@ -425,87 +408,61 @@ fn diffuse_disabled_matches_pure_blend() {
 }
 
 #[test]
-fn nyc_fully_lit_matches_day_color() {
-    let cases = vec![make_case(NYC_DAY, NYC_NIGHT, 1.0, W, true, FLOOR, RAMP)];
-    let results = run_on_gpu(&cases);
-
-    for (ch, (&got, &expected)) in results[0].color.iter().zip(NYC_DAY.iter()).enumerate() {
-        assert!(
-            (got - expected).abs() < EPS,
-            "NYC fully-lit ch={ch}: got {got:.4}, expected day {expected:.4}",
-        );
-    }
-}
-
-#[test]
-fn nyc_day_side_not_dominated_by_city_lights() {
-    let day_lum = luminance(&NYC_DAY);
-    let night_lum = luminance(&NYC_NIGHT);
-
-    let cases: Vec<TestCase> = [0.3_f32, 0.5, 0.7, 1.0]
+fn city_lights_hold_the_lit_side_at_the_day_color() {
+    // NYC is the fixture whose night texture is brighter than its day one, so
+    // the clamp to min(night, day) is what the diffuse ramp runs into: every
+    // sample past the terminator is the day color exactly, ramp or no ramp.
+    let lit = [0.15_f32, 0.3, 0.45, 0.6, 1.0];
+    let cases: Vec<TestCase> = lit
         .iter()
         .map(|&ndl| make_case(NYC_DAY, NYC_NIGHT, ndl, W, true, FLOOR, RAMP))
+        .chain(
+            lit.iter()
+                .map(|&ndl| make_case(OCEAN_DAY, OCEAN_NIGHT, ndl, W, true, FLOOR, RAMP)),
+        )
         .collect();
     let results = run_on_gpu(&cases);
 
-    for (r, &ndl) in results.iter().zip(&[0.3_f32, 0.5, 0.7, 1.0]) {
-        let lum = luminance(&r.color);
-        assert!(
-            lum <= day_lum + EPS,
-            "NYC at n_dot_l={ndl}: luminance {lum:.4} exceeds \
-             day luminance {day_lum:.4} — city lights leaking"
-        );
-        assert!(
-            lum < night_lum,
-            "NYC at n_dot_l={ndl}: luminance {lum:.4} should be \
-             below night luminance {night_lum:.4}"
-        );
-    }
-}
-
-#[test]
-fn never_below_min_of_night_and_day() {
-    let configs: &[([f32; 3], [f32; 3])] = &[
-        (OCEAN_DAY, OCEAN_NIGHT),
-        (LAND_DAY, LAND_NIGHT),
-        (NYC_DAY, NYC_NIGHT),
-    ];
-
-    for &(day, night) in configs {
-        let cases = sweep(day, night, STEPS, W, true, FLOOR, RAMP);
-        let results = run_on_gpu(&cases);
-
-        for (i, r) in results.iter().enumerate() {
-            for ch in 0..3 {
-                let floor = night[ch].min(day[ch]);
-                assert!(
-                    r.color[ch] >= floor - EPS,
-                    "day={day:?} night={night:?} step={i} ch={ch}: \
-                     {:.6} < floor {:.6}",
-                    r.color[ch],
-                    floor
-                );
-            }
+    for (result, &ndl) in results.iter().zip(&lit) {
+        for (ch, (&got, &expected)) in result.color.iter().zip(NYC_DAY.iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < EPS,
+                "NYC at n_dot_l={ndl} ch={ch}: {got:.6} is not the day color {expected:.6}",
+            );
         }
     }
+
+    // The ocean's night texture is the darker one, so the same ramp does reach
+    // it. Without this the equality above would also hold for a shader with no
+    // diffuse term at all.
+    let ramped = luminance(&results[lit.len()].color);
+    assert!(
+        ramped < luminance(&OCEAN_DAY) - EPS,
+        "the diffuse ramp should darken the ocean just past the terminator, \
+         got {ramped:.6} against a day luminance of {:.6}",
+        luminance(&OCEAN_DAY)
+    );
 }
 
 #[test]
 fn never_below_min_across_color_range() {
+    // The three named fixtures are in here as rows, so their own pairs are
+    // among the combinations below.
     let days: &[[f32; 3]] = &[
         [0.02, 0.03, 0.20],
-        [0.05, 0.08, 0.30],
+        OCEAN_DAY,
         [0.10, 0.10, 0.10],
-        [0.28, 0.24, 0.20],
-        [0.30, 0.25, 0.15],
+        NYC_DAY,
+        LAND_DAY,
         [0.80, 0.80, 0.80],
     ];
     let nights: &[[f32; 3]] = &[
         [0.00, 0.00, 0.00],
-        [0.01, 0.01, 0.04],
+        OCEAN_NIGHT,
+        LAND_NIGHT,
         [0.05, 0.04, 0.02],
         [0.30, 0.28, 0.15],
-        [0.55, 0.50, 0.30],
+        NYC_NIGHT,
         [0.80, 0.75, 0.60],
     ];
 
@@ -555,18 +512,16 @@ fn software_adapter_produces_correct_results() {
     // The case exists so a developer on a discrete GPU can trust a CI result
     // produced on a software rasterizer. Where CI is itself the hardware
     // adapter, the other cases in this file already cover that adapter.
-    let available = common::software_adapter_available();
     assert!(
-        available || cfg!(target_os = "macos"),
+        SOFTWARE_GPU.is_some() || cfg!(target_os = "macos"),
         "no software adapter: Windows has WARP and Linux has lavapipe, so this is a \
          broken environment rather than a platform without one"
     );
-    if !available {
+    let Some(software) = SOFTWARE_GPU.as_ref() else {
         eprintln!("no software adapter on this platform, skipping");
         return;
-    }
-
-    let gpu = create_blend_context(true);
+    };
+    let gpu = software.lock().unwrap();
 
     // Run a representative subset: ocean + NYC sweeps
     let mut cases = sweep(OCEAN_DAY, OCEAN_NIGHT, 500, W, true, FLOOR, RAMP);

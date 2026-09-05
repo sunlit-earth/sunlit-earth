@@ -81,7 +81,7 @@ fn screen_options(monitors: &[Monitor]) -> Vec<String> {
 }
 
 /// The id each row of the screen combo addresses, parallel to
-/// [`screen_options`]. The automatic row addresses none, and its id is empty.
+/// `screen_options`. The automatic row addresses none, and its id is empty.
 ///
 /// The window carries this list, which is what lets a save read an anchor id
 /// out of a combo index without the monitor list being passed around with it.

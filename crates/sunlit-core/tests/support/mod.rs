@@ -310,8 +310,12 @@ fn cloud_bands_image() -> image::RgbaImage {
 pub const CLOUD_FIXTURE_PARTIAL: u8 = 178;
 
 /// A cloud map at one value everywhere.
+///
+/// Half the banded map's width, so that a test which swaps one for the other on
+/// a running engine can see which of the two reached the GPU by its size, and
+/// so it can wait for that rather than guess at how long a poll takes.
 fn cloud_uniform_image(value: u8) -> image::RgbaImage {
-    let width = CLOUD_FIXTURE_WIDTH;
+    let width = CLOUD_FIXTURE_WIDTH / 2;
     let mut img = image::RgbaImage::new(width, width / 2);
     for (_, _, pixel) in img.enumerate_pixels_mut() {
         *pixel = rgba([value, value, value]);
@@ -319,29 +323,16 @@ fn cloud_uniform_image(value: u8) -> image::RgbaImage {
     img
 }
 
-/// A cloud source that serves one generated map and then reports it unchanged.
-///
-/// The cloud slot is fed by the fetcher rather than by `texture_paths`, so this
-/// is the only way a test renders a cloud pixel at all. PNG rather than JPEG,
-/// so the bands reach the shader with the edges they were drawn with.
-pub struct FixtureClouds {
+/// One encoded map and the `ETag` that names it.
+struct ServedCloud {
     bytes: Vec<u8>,
     etag: String,
+    size: (u32, u32),
 }
 
-impl FixtureClouds {
-    /// The banded map, encoded once.
-    pub fn bands() -> Self {
-        Self::from_image(cloud_bands_image(), "cloud-bands-fixture")
-    }
-
-    /// One value everywhere, for a case that needs a density between the two
-    /// the bands offer.
-    pub fn uniform(value: u8) -> Self {
-        Self::from_image(cloud_uniform_image(value), "cloud-uniform-fixture")
-    }
-
-    fn from_image(image: image::RgbaImage, etag: &str) -> Self {
+impl ServedCloud {
+    fn new(image: image::RgbaImage, etag: &str) -> Self {
+        let size = image.dimensions();
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut bytes, image::ImageFormat::Png)
@@ -349,7 +340,52 @@ impl FixtureClouds {
         Self {
             bytes: bytes.into_inner(),
             etag: etag.to_owned(),
+            size,
         }
+    }
+}
+
+/// A cloud source that serves one generated map and then reports it unchanged,
+/// until a test asks it for a different one.
+///
+/// The cloud slot is fed by the fetcher rather than by `texture_paths`, so this
+/// is the only way a test renders a cloud pixel at all. PNG rather than JPEG,
+/// so the bands reach the shader with the edges they were drawn with. Which map
+/// it serves is behind a lock because the engine that reads it is shared: a case
+/// that needs the other one swaps it and waits for the size to follow.
+pub struct FixtureClouds {
+    served: std::sync::Mutex<ServedCloud>,
+}
+
+impl FixtureClouds {
+    /// The banded map, encoded once.
+    pub fn bands() -> Self {
+        Self {
+            served: std::sync::Mutex::new(ServedCloud::new(
+                cloud_bands_image(),
+                "cloud-bands-fixture",
+            )),
+        }
+    }
+
+    /// Serve the banded map from the next poll on.
+    pub fn serve_bands(&self) -> (u32, u32) {
+        self.serve(ServedCloud::new(cloud_bands_image(), "cloud-bands-fixture"))
+    }
+
+    /// Serve one value everywhere, for a case that needs a density between the
+    /// two the bands offer. Answers with the size to wait for.
+    pub fn serve_uniform(&self, value: u8) -> (u32, u32) {
+        self.serve(ServedCloud::new(
+            cloud_uniform_image(value),
+            "cloud-uniform-fixture",
+        ))
+    }
+
+    fn serve(&self, next: ServedCloud) -> (u32, u32) {
+        let size = next.size;
+        *self.served.lock().expect("the cloud fixture is poisoned") = next;
+        size
     }
 }
 
@@ -358,17 +394,24 @@ impl sunlit_core::assets::cloud_source::CloudSource for FixtureClouds {
         &self,
         known_etag: Option<&str>,
     ) -> Result<Option<sunlit_core::assets::cloud_source::CloudImage>, String> {
-        if known_etag == Some(self.etag.as_str()) {
+        let served = self.served.lock().expect("the cloud fixture is poisoned");
+        if known_etag == Some(served.etag.as_str()) {
             return Ok(None);
         }
         Ok(Some(sunlit_core::assets::cloud_source::CloudImage {
-            bytes: self.bytes.clone(),
-            etag: Some(self.etag.clone()),
+            bytes: served.bytes.clone(),
+            etag: Some(served.etag.clone()),
             last_modified: None,
         }))
     }
 
     fn describe(&self) -> String {
-        format!("cloud fixture ({})", self.etag)
+        format!(
+            "cloud fixture ({})",
+            self.served
+                .lock()
+                .expect("the cloud fixture is poisoned")
+                .etag
+        )
     }
 }

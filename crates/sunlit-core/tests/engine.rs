@@ -5,12 +5,22 @@
 //! re-render, a changed one does) rather than pixel values, so they survive
 //! adapter differences.
 //!
-//! Every test that starts an engine holds `GPU_SERIAL` for its whole lifetime.
-//! The engine creates its own wgpu device, and creating several devices
-//! concurrently crashes on Windows, so the lock keeps at most one engine alive
-//! at a time.
+//! An engine start costs about 1.3 seconds, almost all of it the wgpu device
+//! and the seven pipelines compiled from `sphere.wgsl`, and none of it depends
+//! on anything a case varies. So the cases are grouped by the configuration
+//! they need, each group shares one engine for the whole run, and everything a
+//! case does differ in reaches that engine as a command. What cannot be a
+//! command is what a group is: the texture files behind the slots, the cloud
+//! source, the sink and the clock are all read once at startup, and a case that
+//! needs its own reads a `harness_of_its_own`.
+//!
+//! Every case takes `gpu()` first and holds it to the end, so exactly one
+//! engine is rendering at any moment. The shared engines stay alive between
+//! cases, which is the point of them; `Harness::reset` is what puts one back
+//! the way its group expects to find it.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -22,21 +32,32 @@ use sunlit_core::config::QualityTier;
 use sunlit_core::display::Monitor;
 use sunlit_core::display::layout::DisplayMode;
 use sunlit_core::engine::clock::MockClock;
-use sunlit_core::engine::wallpaper_sink::{
-    CountingSink, Frame, JobImages, WallpaperJob, WallpaperSink,
-};
-use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent, EngineHandle};
+use sunlit_core::engine::wallpaper_sink::{Frame, JobImages, WallpaperJob, WallpaperSink};
+use sunlit_core::engine::{DISPLAY_SETTLE, EngineCommand, EngineConfig, EngineEvent, EngineHandle};
 use sunlit_core::params::SceneParams;
 
 mod support;
 
+#[path = "../src/test_support.rs"]
+mod test_support;
+
+use test_support::ScratchDir;
+
 static GPU_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-/// Hold the GPU lock even if a previous test panicked while holding it.
-fn gpu_lock() -> MutexGuard<'static, ()> {
-    GPU_SERIAL
+/// Proof that this thread is the one allowed to drive an engine.
+///
+/// Every case holds one for its whole body. The shared engines below are
+/// reachable only through a reference to it, so nothing can render while
+/// another case is rendering, and a case that starts an engine of its own is
+/// serialized against the shared ones too.
+struct Gpu(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+/// Take the GPU, recovering it even if a previous case panicked holding it.
+fn gpu() -> Gpu {
+    Gpu(GPU_SERIAL
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
 /// How long to wait for the engine to produce something before giving up.
@@ -44,6 +65,12 @@ const TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Deterministic test parameters: the procedural grid texture, no MSAA, a
 /// fixed date so the sun does not move between runs.
+///
+/// The four overlays are switched off rather than left at their defaults,
+/// because a shared engine has fixtures behind slots an individual case may
+/// know nothing about. Off here is the same frame the case would have got from
+/// an engine with an empty slot, and a case about one of them switches its own
+/// back on.
 fn test_params() -> SceneParams {
     let mut params = SceneParams {
         texture_index: 0,
@@ -53,6 +80,10 @@ fn test_params() -> SceneParams {
         // default-on flare would put pixels in frames that are counting what
         // the Sun itself paints.
         sun_flare: 0.0,
+        moon_brightness: 0.0,
+        milky_way_intensity: 0.0,
+        cloud_opacity: 0.0,
+        cloud_opacity_night: 0.0,
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;
@@ -65,27 +96,122 @@ fn test_params() -> SceneParams {
 struct Harness {
     engine: EngineHandle,
     events: Receiver<EngineEvent>,
-    _guard: MutexGuard<'static, ()>,
+    /// What `reset` puts the preview back to.
+    preview_size: (u32, u32),
+    /// The width the slots load at when no case has asked for another, and
+    /// what the last case to ask left behind.
+    texture_resolution: AtomicU32,
+    default_resolution: u32,
 }
 
 impl Harness {
     fn start(configure: impl FnOnce(&mut EngineConfig)) -> Self {
-        let guard = gpu_lock();
         let (tx, events): (Sender<EngineEvent>, Receiver<EngineEvent>) =
             crossbeam_channel::unbounded();
         let mut config = EngineConfig::headless((512, 288));
         config.params = test_params();
-        config.wallpaper = Arc::new(CountingSink::new(320, 192));
         config.on_event = Arc::new(move |event| {
             let _ = tx.send(event);
         });
         configure(&mut config);
+        let preview_size = config.preview_size;
+        let default_resolution = config.texture_resolution;
         Self {
             engine: sunlit_core::engine::start(config)
                 .expect("the harness needs a working adapter"),
             events,
-            _guard: guard,
+            preview_size,
+            texture_resolution: AtomicU32::new(default_resolution),
+            default_resolution,
         }
+    }
+
+    /// Wait for the engine to finish a whole iteration, then throw away every
+    /// event it has produced so far.
+    ///
+    /// A reply is sent while the loop is draining commands and the render comes
+    /// after that drain, so two replies bracket one complete iteration:
+    /// whatever the engine still owed when the first came back has been emitted
+    /// by the time the second does, and the drain that follows takes all of it.
+    fn settle(&self) {
+        for _ in 0..2 {
+            let _ = self.engine.memory_report();
+        }
+        while self.events.try_recv().is_ok() {}
+    }
+
+    /// Put a shared engine back the way its group's cases expect to find it.
+    ///
+    /// The scene is deliberately not part of this: every case sets its own
+    /// before it looks at anything, and re-rendering a baseline nobody reads
+    /// would cost a render per case. Neither is the texture width, because how
+    /// to wait for a reload depends on what is behind the slots, which is the
+    /// group's business rather than the harness's.
+    fn reset(&self) {
+        self.engine.send(EngineCommand::SetPreviewEnabled(true));
+        self.engine.send(EngineCommand::SetPreviewSize(
+            self.preview_size.0,
+            self.preview_size.1,
+        ));
+        self.settle();
+    }
+
+    /// Put the slots back at the group's own width, and answer whether that
+    /// was a change the caller has to wait out.
+    fn restore_resolution(&self) -> bool {
+        if self
+            .texture_resolution
+            .swap(self.default_resolution, Ordering::SeqCst)
+            == self.default_resolution
+        {
+            return false;
+        }
+        self.engine
+            .send(EngineCommand::SetTextureResolution(self.default_resolution));
+        true
+    }
+
+    /// Reload the slots at `width`, remembering it so `reset` puts it back.
+    fn set_texture_resolution(&self, width: u32) {
+        self.texture_resolution.store(width, Ordering::SeqCst);
+        self.engine.send(EngineCommand::SetTextureResolution(width));
+    }
+
+    /// Set the scene and hand back the picture it makes, rendered now.
+    ///
+    /// Synchronous, through the export path: the reply cannot arrive before the
+    /// parameters have been applied, so there is no frame from the case before
+    /// this one to mistake for this one's.
+    fn picture(&self, params: &SceneParams, (width, height): (u32, u32)) -> Vec<u8> {
+        self.engine
+            .send(EngineCommand::UpdateParams(Box::new(*params)));
+        self.export(width, height)
+    }
+
+    /// The picture at the current scene, rendered now.
+    fn export(&self, width: u32, height: u32) -> Vec<u8> {
+        self.engine
+            .export_pixels(width, height)
+            .expect("the engine should be able to export")
+    }
+
+    /// Apply the scene and wait until the engine has finished with it.
+    fn settle_at(&self, params: &SceneParams) {
+        self.engine
+            .send(EngineCommand::UpdateParams(Box::new(*params)));
+        self.settle();
+    }
+
+    /// Set the scene and block until the frame the change itself produces.
+    ///
+    /// For the cases that are about whether a change produces a frame at all,
+    /// which means the caller has to have left the engine on another scene. A
+    /// case that only wants to look at pixels asks for a `picture` instead,
+    /// which renders synchronously and needs no change to have happened.
+    fn frame_after_change(&self, params: &SceneParams) -> (Vec<u8>, u32, u32) {
+        self.engine
+            .send(EngineCommand::UpdateParams(Box::new(*params)));
+        self.next_frame()
     }
 
     /// Block until the next preview frame, or panic on timeout.
@@ -164,6 +290,50 @@ impl Harness {
         }
         found
     }
+
+    /// Ask for a wallpaper and block until the engine has finished trying.
+    fn publish(&self) -> Result<String, String> {
+        self.engine.send(EngineCommand::RenderWallpaperNow);
+        self.wait_for_publish()
+    }
+
+    /// Block until the engine has finished a publish attempt.
+    fn wait_for_publish(&self) -> Result<String, String> {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if let EngineEvent::WallpaperSet(result) = event {
+                return result;
+            }
+        }
+        panic!("no publish finished within {TIMEOUT:?}");
+    }
+
+    /// Send a display-change hint and wait until the engine has taken it.
+    ///
+    /// The round trip matters rather than the report: commands are handled in
+    /// the order they were sent, so an answer to a later one is proof that the
+    /// hint was read at the clock reading the case meant it to be read at.
+    fn hint(&self) {
+        self.engine.send(EngineCommand::DisplaysChanged);
+        let _ = self.engine.memory_report();
+    }
+
+    /// Move the clock and ask the engine to look at its schedule now.
+    fn advance(&self, clock: &MockClock, by: Duration) {
+        clock.advance(by);
+        self.engine.send(EngineCommand::Poke);
+    }
+
+    /// The next layout the engine announces, or `None` if it announces none.
+    fn next_layout(&self, within: Duration) -> Option<Vec<Monitor>> {
+        let deadline = std::time::Instant::now() + within;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if let EngineEvent::MonitorsChanged(monitors) = event {
+                return Some(monitors);
+            }
+        }
+        None
+    }
 }
 
 /// A frame is "lit" when at least one pixel is clearly brighter than the
@@ -171,6 +341,341 @@ impl Harness {
 fn has_lit_pixels(rgba: &[u8]) -> bool {
     rgba.chunks_exact(4)
         .any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40)
+}
+
+// ---------------------------------------------------------------------------
+// The shared engines
+// ---------------------------------------------------------------------------
+
+/// The size the preview quantizes to for every group here, and the size the
+/// cases that read pixels export at.
+const FRAME: (u32, u32) = (512, 256);
+
+/// `test_params` with the Moon and the Milky Way switched back on.
+///
+/// The renderer loads an overlay's texture when the overlay is wanted and not
+/// before, so an engine whose slots have to be full starts from this.
+fn overlays_wanted() -> SceneParams {
+    SceneParams {
+        moon_brightness: SceneParams::default().moon_brightness,
+        milky_way_intensity: 1.0,
+        ..test_params()
+    }
+}
+
+/// The fixture files the shared engines read.
+///
+/// One directory for the whole run, because a shared engine outlives every
+/// case and the files behind its slots have to outlive it. This is the only
+/// scratch directory in the file that is not dropped when a case ends: a
+/// `static` is never dropped, so the tree survives the process. Everything a
+/// case owns for itself is a `ScratchDir` of its own and goes away with it.
+static FIXTURES: LazyLock<ScratchDir> = LazyLock::new(|| {
+    sweep_abandoned_fixture_roots();
+    ScratchDir::new("engine_shared")
+});
+
+/// Remove the fixture roots earlier runs left behind.
+///
+/// `FIXTURES` is not dropped, so each run leaves its tree in place. An hour is
+/// far longer than this target has ever taken, so anything older than that
+/// belongs to a run that is over, and a run still going keeps its own.
+fn sweep_abandoned_fixture_roots() {
+    const ABANDONED_AFTER: Duration = Duration::from_hours(1);
+
+    let Ok(entries) = std::fs::read_dir(test_support::scratch_root()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("sunlit_earth_engine_shared_")
+        {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|at| at.elapsed().is_ok_and(|age| age > ABANDONED_AFTER));
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// The engine for every case that needs no texture file of its own.
+///
+/// The sink and the clock are the two things a case cannot replace on a running
+/// engine, so both are here and both are steerable: the monitor list moves, the
+/// refusal switches on and off, and the clock only ever goes forward, which is
+/// all any case asks of it.
+struct Plain {
+    harness: Harness,
+    sink: Arc<RecordingSink>,
+    clock: Arc<MockClock>,
+}
+
+impl std::ops::Deref for Plain {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+static PLAIN: LazyLock<Plain> = LazyLock::new(|| {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (sink_for_config, clock_for_config) = (Arc::clone(&sink), Arc::clone(&clock));
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.clock = clock_for_config;
+    });
+    Plain {
+        harness,
+        sink,
+        clock,
+    }
+});
+
+fn plain(_gpu: &Gpu) -> &'static Plain {
+    let group = &*PLAIN;
+    group.harness.reset();
+    group.sink.reset(two_screens());
+    group.harness.engine.send(EngineCommand::SetDisplayPlan {
+        mode: DisplayMode::default(),
+        anchor: None,
+    });
+    group
+}
+
+/// The engine the display-change cases share, with no publish behind it.
+///
+/// Separate from [`PLAIN`] for one reason: the engine remembers whether it has
+/// ever put a wallpaper on the desk, and three of these cases are about what a
+/// layout change does when it has not. Nothing here ever publishes
+/// successfully, so that stays true however the cases are ordered.
+struct Watching {
+    harness: Harness,
+    sink: Arc<RecordingSink>,
+    clock: Arc<MockClock>,
+}
+
+impl std::ops::Deref for Watching {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+static WATCHING: LazyLock<Watching> = LazyLock::new(|| {
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (sink_for_config, clock_for_config) = (Arc::clone(&sink), Arc::clone(&clock));
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.clock = clock_for_config;
+    });
+    Watching {
+        harness,
+        sink,
+        clock,
+    }
+});
+
+fn watching(_gpu: &Gpu) -> &'static Watching {
+    let group = &*WATCHING;
+    group.harness.reset();
+    group.sink.reset(two_screens());
+    group
+}
+
+/// The engine with the fixture surface behind the day and night slots and a
+/// cloud source behind the overlay.
+///
+/// The resolution cases and the cloud cases share it: both want file-backed
+/// slots, neither disturbs the other, and the two together are eleven engine
+/// starts in one.
+struct Surface {
+    harness: Harness,
+    sink: Arc<RecordingSink>,
+    clouds: Arc<support::FixtureClouds>,
+}
+
+impl std::ops::Deref for Surface {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+/// The width the fixture surface is written at, and the width the slots hold
+/// when no case has asked for another.
+const SURFACE_WIDTH: u32 = support::SURFACE_FIXTURE_WIDTH;
+
+static SURFACE: LazyLock<Surface> = LazyLock::new(|| {
+    let dir = FIXTURES.join("surface");
+    let paths = support::write_surface_fixtures(&dir).paths();
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let clouds = Arc::new(support::FixtureClouds::bands());
+    let (sink_for_config, clouds_for_config, cache) =
+        (Arc::clone(&sink), Arc::clone(&clouds), dir.clone());
+    let harness = Harness::start(move |config| {
+        config.texture_paths = paths;
+        config.texture_resolution = SURFACE_WIDTH;
+        config.cache_dir = Some(cache);
+        config.wallpaper = sink_for_config;
+        config.cloud = Some(clouds_for_config);
+        // Blend mode, because a file-backed slot is loaded only while the mode
+        // wants it. At `test_params`'s grid the procedural texture alone is
+        // what `TexturesReady` answers for, and both file-backed slots would
+        // still be empty when the first case read them.
+        config.params = blend_params();
+        // Short, because the cloud cases swap the served map and the poll is
+        // what carries the new one to the slot. Every poll the swap does not
+        // follow answers "unchanged" from a string compare.
+        config.cloud_poll_interval = Duration::from_millis(50);
+    });
+    harness.wait_for_textures("the fixture surface at startup");
+    wait_for_surface_slots(&harness, SURFACE_WIDTH);
+    Surface {
+        harness,
+        sink,
+        clouds,
+    }
+});
+
+fn surface(_gpu: &Gpu) -> &'static Surface {
+    let group = &*SURFACE;
+    // Blend mode before the width, and the width before the wait. A slot is
+    // loaded only while the mode wants it, so a case that left a single-texture
+    // mode behind would hand the next one an empty day or night slot, and a
+    // reload at the restored width would fetch only what that mode asked for.
+    group
+        .harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(blend_params())));
+    if group.harness.restore_resolution() {
+        group.harness.wait_for_textures("putting the width back");
+    }
+    wait_for_surface_slots(&group.harness, SURFACE_WIDTH);
+    let bands = group.clouds.serve_bands();
+    wait_for_cloud_size(&group.harness, bands, "putting the cloud map back");
+    group.harness.reset();
+    group.sink.reset(two_screens());
+    group
+}
+
+/// Block until the day and night slots hold a texture `width` wide.
+///
+/// `TexturesReady` answers for the mode the engine is in, and a case may leave
+/// behind a mode that wants neither file-backed slot, so a group whose cases
+/// read those slots asks about them by name rather than taking readiness for
+/// the answer.
+fn wait_for_surface_slots(harness: &Harness, width: u32) {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let report = harness.engine.memory_report().expect("a report");
+        if expected_widths(&report, "day_texture") == [width]
+            && expected_widths(&report, "night_texture") == [width]
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the fixture surface did not reach {width} within {TIMEOUT:?}:\n{report}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The engine with the Moon and a banded panorama behind their slots.
+///
+/// Two overlays in one engine because neither case group can see the other's:
+/// the Moon cases run with `milky_way_intensity` at zero and the panorama cases
+/// with `moon_brightness` at zero, both of which `test_params` already sets.
+struct Sky {
+    harness: Harness,
+}
+
+impl std::ops::Deref for Sky {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+static SKY: LazyLock<Sky> = LazyLock::new(|| {
+    let dir = FIXTURES.join("sky");
+    let moon = support::write_moon_fixture(&dir);
+    let panorama = support::write_panorama_bands_fixture(&dir);
+    let cache = dir.clone();
+    let harness = Harness::start(move |config| {
+        config.preview_size = FRAME;
+        config.texture_paths = vec![None, None, Some(moon), Some(panorama)];
+        config.cache_dir = Some(cache);
+        // An overlay's texture is loaded when the overlay is wanted and not
+        // before, so the engine has to start with both switched on or neither
+        // slot would ever fill. Every case sets its own scene afterwards, and
+        // a loaded slot stays loaded.
+        config.params = overlays_wanted();
+    });
+    harness.wait_for_slot_texture("moon_texture");
+    harness.wait_for_slot_texture("milky_way_texture");
+    Sky { harness }
+});
+
+fn sky(_gpu: &Gpu) -> &'static Sky {
+    let group = &*SKY;
+    group.harness.reset();
+    group
+}
+
+/// The engine whose panorama is one disc at Sirius and black everywhere else.
+///
+/// Separate from [`SKY`] because the two fixtures answer opposite questions: a
+/// landmark is exactly the one-pixel-wide feature the seam case is looking for,
+/// so it cannot be in the map that case reads.
+struct Landmark {
+    harness: Harness,
+}
+
+impl std::ops::Deref for Landmark {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+/// Sirius, right ascension and declination in degrees at J2000, and the
+/// angular radius the fixture paints it at.
+const LANDMARK: (f32, f32) = (101.287, -16.716);
+const LANDMARK_RADIUS_DEGREES: f32 = 5.0;
+
+static LANDMARK_SKY: LazyLock<Landmark> = LazyLock::new(|| {
+    let dir = FIXTURES.join("landmark");
+    let path = support::write_panorama_landmark_fixture(
+        &dir,
+        "landmark.png",
+        LANDMARK.0,
+        LANDMARK.1,
+        LANDMARK_RADIUS_DEGREES,
+    );
+    let cache = dir.clone();
+    let harness = Harness::start(move |config| {
+        config.preview_size = FRAME;
+        config.texture_paths = vec![None, None, None, Some(path)];
+        config.cache_dir = Some(cache);
+        config.params = overlays_wanted();
+    });
+    harness.wait_for_slot_texture("milky_way_texture");
+    Landmark { harness }
+});
+
+fn landmark_sky(_gpu: &Gpu) -> &'static Landmark {
+    let group = &*LANDMARK_SKY;
+    group.harness.reset();
+    group
 }
 
 #[test]
@@ -182,18 +687,14 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     // what lets this assert what its name says rather than the much weaker "one
     // pixel changed": at intensity zero each of those pixels is still exactly
     // the clear color, not a dimmed star.
-    let harness = Harness::start(|config| {
-        config.params.atmo_enabled = false;
-        config.params.star_intensity = 0.0;
-    });
-    let (stars_off, _, _) = harness.next_frame();
-    let mut stars_on_params = test_params();
-    stars_on_params.atmo_enabled = false;
-    stars_on_params.star_intensity = 1.5;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(stars_on_params)));
-    let (stars_on, _, _) = harness.next_frame();
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let mut params = test_params();
+    params.atmo_enabled = false;
+    params.star_intensity = 0.0;
+    let stars_off = harness.picture(&params, FRAME);
+    params.star_intensity = 1.5;
+    let stars_on = harness.picture(&params, FRAME);
 
     let mut star_pixels = 0_usize;
     for (index, (off, on)) in stars_off
@@ -219,22 +720,16 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
 fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
     const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
-    let harness = Harness::start(|config| {
-        config.params.star_intensity = 2.0;
-        config.params.star_size = 0.5;
-        config.params.star_glow_strength = 0.0;
-        config.params.star_mag_limit = 4.0;
-    });
-    let (small_stars, _, _) = harness.next_frame();
-    let mut large_params = test_params();
-    large_params.star_intensity = 2.0;
-    large_params.star_size = 3.0;
-    large_params.star_glow_strength = 0.0;
-    large_params.star_mag_limit = 4.0;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(large_params)));
-    let (large_stars, _, _) = harness.next_frame();
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let mut params = test_params();
+    params.star_intensity = 2.0;
+    params.star_size = 0.5;
+    params.star_glow_strength = 0.0;
+    params.star_mag_limit = 4.0;
+    let small_stars = harness.picture(&params, FRAME);
+    params.star_size = 3.0;
+    let large_stars = harness.picture(&params, FRAME);
 
     let expanded_core = small_stars
         .chunks_exact(4)
@@ -250,14 +745,13 @@ fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
 fn wider_sky_fov_reveals_more_catalog_directions() {
     const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
-    let harness = Harness::start(|config| config.params.sky_fov = 60.0);
-    let (narrow_sky, _, _) = harness.next_frame();
-    let mut wide_params = test_params();
-    wide_params.sky_fov = 140.0;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(wide_params)));
-    let (wide_sky, _, _) = harness.next_frame();
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let mut params = test_params();
+    params.sky_fov = 60.0;
+    let narrow_sky = harness.picture(&params, FRAME);
+    params.sky_fov = 140.0;
+    let wide_sky = harness.picture(&params, FRAME);
 
     let newly_visible_pixels = narrow_sky
         .chunks_exact(4)
@@ -284,9 +778,9 @@ fn wider_sky_fov_reveals_more_catalog_directions() {
 /// limb. The atmosphere is off so that the only thing these cases can be
 /// measuring is the Sun.
 ///
-/// Those five numbers are for the 512 by 256 the preview quantizes down to,
-/// which `sun_off_and_on` asserts rather than assumes: at another aspect ratio
-/// the painted silhouette is a different size and all five move.
+/// Those five numbers are for `FRAME`, the size these cases export at: at
+/// another aspect ratio the painted silhouette is a different size and all five
+/// move.
 fn sun_params(longitude: f32) -> SceneParams {
     let mut params = test_params();
     params.datetime.custom_day_of_year = 172;
@@ -298,33 +792,24 @@ fn sun_params(longitude: f32) -> SceneParams {
 }
 
 /// Render `params` with the Sun off and then on, and return both frames.
-fn sun_off_and_on(longitude: f32) -> (Vec<u8>, Vec<u8>) {
-    sun_off_and_on_framed(sun_params(longitude))
+fn sun_off_and_on(harness: &Harness, longitude: f32) -> (Vec<u8>, Vec<u8>) {
+    sun_off_and_on_framed(harness, sun_params(longitude))
 }
 
 /// The same for a framing the caller has already adjusted.
-fn sun_off_and_on_framed(params: SceneParams) -> (Vec<u8>, Vec<u8>) {
-    sun_off_and_on_at(params, 1.5)
+fn sun_off_and_on_framed(harness: &Harness, params: SceneParams) -> (Vec<u8>, Vec<u8>) {
+    sun_off_and_on_at(harness, params, 1.5)
 }
 
 /// The same again at a glare strength of the caller's choosing, for a case
 /// that needs the disk clipped white while the glare around it is not.
-fn sun_off_and_on_at(params: SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
+fn sun_off_and_on_at(harness: &Harness, params: SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
     let mut off = params;
     off.sun_glow = 0.0;
-    let harness = Harness::start(|config| config.params = off);
-    let (off, width, height) = harness.next_frame();
-    assert_eq!(
-        (width, height),
-        (512, 256),
-        "the longitudes these cases pick are for one framing"
-    );
+    let off = harness.picture(&off, FRAME);
     let mut on = params;
     on.sun_glow = glow;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(on)));
-    let (on, _, _) = harness.next_frame();
+    let on = harness.picture(&on, FRAME);
     (off, on)
 }
 
@@ -338,7 +823,8 @@ fn sun_off_and_on_at(params: SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
 /// by the same factor, which at the saturated squash here is 98.7 pixels.
 #[test]
 fn a_sun_behind_the_painted_globe_paints_nothing() {
-    let (off, on) = sun_off_and_on(176.0);
+    let gpu = gpu();
+    let (off, on) = sun_off_and_on(plain(&gpu), 176.0);
     let differing = off
         .chunks_exact(4)
         .zip(on.chunks_exact(4))
@@ -352,7 +838,8 @@ fn a_sun_behind_the_painted_globe_paints_nothing() {
 
 #[test]
 fn zero_sun_glow_takes_the_sun_out_of_the_frame() {
-    let (off, on) = sun_off_and_on(160.0);
+    let gpu = gpu();
+    let (off, on) = sun_off_and_on(plain(&gpu), 160.0);
     let mut painted = 0_usize;
     for (index, (dark, lit)) in off.chunks_exact(4).zip(on.chunks_exact(4)).enumerate() {
         if dark == lit {
@@ -374,11 +861,13 @@ fn zero_sun_glow_takes_the_sun_out_of_the_frame() {
 
 #[test]
 fn a_sun_grazing_the_limb_turns_the_glare_warm() {
+    let gpu = gpu();
+    let harness = plain(&gpu);
     // What each longitude adds to its own sun-off frame, summed per channel.
     // Comparing that against the other longitude's would compare two different
     // Earths; comparing each against its own leaves only the Sun.
     let warmth = |longitude: f32| {
-        let (off, on) = sun_off_and_on(longitude);
+        let (off, on) = sun_off_and_on(harness, longitude);
         let mut added = [0_u64; 3];
         for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
             for (channel, total) in added.iter_mut().enumerate() {
@@ -411,8 +900,8 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
 /// a brightest gain of 254 whatever the exposure does, and the two framings
 /// below would compare equal at every setting. The gain multiplies the glare's
 /// amplitude, so what it moves is how much light there is.
-fn sun_light(params: SceneParams) -> (usize, u64) {
-    let (off, on) = sun_off_and_on_framed(params);
+fn sun_light(harness: &Harness, params: SceneParams) -> (usize, u64) {
+    let (off, on) = sun_off_and_on_framed(harness, params);
     let mut painted = 0;
     let mut total = 0;
     for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
@@ -434,7 +923,8 @@ fn sun_light(params: SceneParams) -> (usize, u64) {
 /// 3527 pixels, and 558 of them with the exposure gain taken out.
 #[test]
 fn a_sliver_of_sun_over_the_limb_still_glares() {
-    let (painted, _) = sun_light(sun_params(172.0));
+    let gpu = gpu();
+    let (painted, _) = sun_light(plain(&gpu), sun_params(172.0));
     assert!(
         painted > 2000,
         "a sliver of Sun in the band painted only {painted} pixels"
@@ -451,8 +941,10 @@ fn a_sliver_of_sun_over_the_limb_still_glares() {
 /// because the brightest of the glare is clipped at both.
 #[test]
 fn the_glare_peaks_as_the_disk_clears_the_horizon() {
-    let (_, at_the_zone) = sun_light(sun_params(168.0));
-    let (_, well_clear) = sun_light(sun_params(160.0));
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let (_, at_the_zone) = sun_light(harness, sun_params(168.0));
+    let (_, well_clear) = sun_light(harness, sun_params(160.0));
     assert!(
         at_the_zone > well_clear * 2,
         "the glare at the top of the zone added {at_the_zone} against \
@@ -469,10 +961,12 @@ fn the_glare_peaks_as_the_disk_clears_the_horizon() {
 /// against the 2.74 the case above gets at the default.
 #[test]
 fn the_physical_exposure_has_no_peak() {
+    let gpu = gpu();
+    let harness = plain(&gpu);
     let flat = |longitude: f32| {
         let mut params = sun_params(longitude);
         params.sun_horizon_boost = 1.0;
-        sun_light(params).1
+        sun_light(harness, params).1
     };
     let at_the_zone = flat(168.0);
     let well_clear = flat(160.0);
@@ -513,22 +1007,13 @@ fn horizon_params(longitude: f32) -> SceneParams {
 /// and the shell's own blue cancel and what is left is the light this
 /// amendment moved. Red minus blue because the band and the transmitted disk
 /// are red by construction and everything else the frame holds is not.
-fn sunrise_excess(longitude: f32) -> i64 {
+fn sunrise_excess(harness: &Harness, longitude: f32) -> i64 {
     let params = horizon_params(longitude);
     let mut dark = params;
     dark.sun_glow = 0.0;
     dark.atmo_sunrise_glow = 0.0;
-    let harness = Harness::start(|config| config.params = dark);
-    let (dark, width, height) = harness.next_frame();
-    assert_eq!(
-        (width, height),
-        (512, 256),
-        "the longitudes this case picks are for one framing"
-    );
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(params)));
-    let (lit, _, _) = harness.next_frame();
+    let dark = harness.picture(&dark, FRAME);
+    let lit = harness.picture(&params, FRAME);
     lit.chunks_exact(4)
         .zip(dark.chunks_exact(4))
         .map(|(lit, dark)| {
@@ -547,9 +1032,11 @@ fn sunrise_excess(longitude: f32) -> i64 {
 /// Through the sky lens the same two are 381 and 31221, an eighty-second.
 #[test]
 fn the_sunrise_band_arrives_with_the_suns_image() {
-    let no_sun_to_see = sunrise_excess(163.353_15);
-    let image_at_the_limb = sunrise_excess(117.658_22);
-    let disk_emerged = sunrise_excess(115.931_64);
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let no_sun_to_see = sunrise_excess(harness, 163.353_15);
+    let image_at_the_limb = sunrise_excess(harness, 117.658_22);
+    let disk_emerged = sunrise_excess(harness, 115.931_64);
     assert!(
         no_sun_to_see * 20 < image_at_the_limb,
         "a framing whose Sun is nowhere near the painted limb still reddened it \
@@ -576,8 +1063,8 @@ fn the_sunrise_band_arrives_with_the_suns_image() {
 #[test]
 fn a_pan_past_the_frame_corner_still_draws_the_sun() {
     /// Pixels the Sun added more than a handful of levels to, and its most.
-    fn added(params: SceneParams) -> (usize, u8) {
-        let (off, on) = sun_off_and_on_framed(params);
+    fn added(harness: &Harness, params: SceneParams) -> (usize, u8) {
+        let (off, on) = sun_off_and_on_framed(harness, params);
         let mut painted = 0;
         let mut brightest = 0;
         for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
@@ -590,16 +1077,18 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
         (painted, brightest)
     }
 
+    let gpu = gpu();
+    let harness = plain(&gpu);
     let mut framed = sun_params(68.0);
     assert_eq!(
-        added(framed),
+        added(harness, framed),
         (0, 0),
         "no point of an unpanned frame is within the glare's cone here, so \
          the Sun may not touch a pixel of it"
     );
 
     framed.camera.offset_x = -0.9;
-    let (painted, brightest) = added(framed);
+    let (painted, brightest) = added(harness, framed);
     assert!(
         painted > 4000 && brightest > 8,
         "the pan brings the frame's nearest pixel to 10.2 degrees from the \
@@ -623,10 +1112,11 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
 /// pixels and the glare without it gains at most 52.
 #[test]
 fn an_enlarged_disk_reaching_the_frame_corner_is_drawn() {
+    let gpu = gpu();
     let mut framed = sun_params(105.0);
     framed.sun_size = 8.0;
     framed.sun_rays = 0.0;
-    let (off, on) = sun_off_and_on_at(framed, 0.25);
+    let (off, on) = sun_off_and_on_at(plain(&gpu), framed, 0.25);
     let clipped = off
         .chunks_exact(4)
         .zip(on.chunks_exact(4))
@@ -665,17 +1155,11 @@ fn a_pan_slides_the_composite_without_shearing_it() {
         params.camera.offset_x = offset_x;
         params
     };
-    let harness = Harness::start(|config| config.params = panned_params(0.0));
-    let (centered, width, height) = harness.next_frame();
-    assert_eq!(
-        (width, height),
-        (512, 256),
-        "the pan below is a pixel count for one framing"
-    );
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(panned_params(PAN))));
-    let (panned, _, _) = harness.next_frame();
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let (width, height) = FRAME;
+    let centered = harness.picture(&panned_params(0.0), FRAME);
+    let panned = harness.picture(&panned_params(PAN), FRAME);
 
     let row = width as usize * 4;
     let compared = height as usize * (width as usize - SHIFT) * 3;
@@ -729,31 +1213,19 @@ fn a_pan_slides_the_composite_without_shearing_it() {
 
 /// Two small texture files and a cache directory to go with them.
 ///
-/// The resolution tests need file-backed slots, which the headless config
-/// deliberately has none of. Small and bright rather than realistic: what is
-/// being tested is the purge and the reload, and an 8K asset would make every
-/// one of these tests a minute long.
+/// For the cases that have an engine of their own: the shared surface group
+/// reads `support::write_surface_fixtures` instead. Small and bright rather
+/// than realistic, and deletable, which is what the mailbox cases need.
 struct TextureFixtures {
-    dir: std::path::PathBuf,
+    dir: ScratchDir,
 }
 
 impl TextureFixtures {
-    /// The width both files are written at. A switch below this halves for real
-    /// and exercises the on-disk cache; these are not one of the widths the
-    /// combo box offers, because the renderer takes any width as a cap and the
-    /// three on offer are the config's business.
-    const WIDTH: u32 = 128;
-
-    fn new(name: &str) -> Self {
-        Self::with_width(name, Self::WIDTH)
-    }
-
-    /// Fixtures at a chosen width, for the one test that needs a decode slow
-    /// enough to still be running a moment after it was spawned.
+    /// Fixtures at a chosen width. Not one of the widths the combo box offers,
+    /// because the renderer takes any width as a cap and the three on offer are
+    /// the config's business.
     fn with_width(name: &str, width: u32) -> Self {
-        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the fixture directory");
+        let dir = ScratchDir::new(name);
         for file in ["day.png", "night.png"] {
             let mut img = image::RgbaImage::new(width, width / 2);
             for (x, y, px) in img.enumerate_pixels_mut() {
@@ -766,6 +1238,10 @@ impl TextureFixtures {
             img.save(dir.join(file)).expect("write a fixture texture");
         }
         Self { dir }
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
     }
 
     /// Delete the files, so that a slot backed by one becomes terminal on its
@@ -784,36 +1260,18 @@ impl TextureFixtures {
     }
 }
 
-impl Drop for TextureFixtures {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-#[test]
-fn engine_renders_a_first_preview_frame() {
-    let harness = Harness::start(|_| {});
-    let (rgba, width, height) = harness.next_frame();
-
-    assert_eq!((width, height), (512, 256), "512x288 quantizes to 512x256");
-    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
-    assert!(
-        has_lit_pixels(&rgba),
-        "the globe should be visible on the first frame"
-    );
-}
-
 #[test]
 fn unchanged_parameters_do_not_produce_another_frame() {
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let params = test_params();
+    harness.settle_at(&params);
 
     // Resending the same parameters marks the engine dirty, but the renderer's
     // own dirty check must still recognize that nothing actually changed.
     harness
         .engine
-        .send(EngineCommand::UpdateParams(Box::new(test_params())));
+        .send(EngineCommand::UpdateParams(Box::new(params)));
     assert!(
         harness.drained_frame(Duration::from_millis(500)).is_none(),
         "an identical scene must not be re-rendered"
@@ -822,9 +1280,9 @@ fn unchanged_parameters_do_not_produce_another_frame() {
 
 #[test]
 fn changed_parameters_produce_a_new_frame() {
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    harness.settle_at(&test_params());
 
     let moved = SceneParams {
         camera: sunlit_core::scene::camera::CameraParams {
@@ -833,31 +1291,44 @@ fn changed_parameters_produce_a_new_frame() {
         },
         ..test_params()
     };
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(moved)));
-
-    let (rgba, _, _) = harness.next_frame();
+    let (rgba, width, height) = harness.frame_after_change(&moved);
+    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
     assert!(has_lit_pixels(&rgba));
 }
 
 #[test]
 fn preview_size_changes_are_quantized_and_applied() {
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
+    let gpu = gpu();
+    let harness = plain(&gpu);
 
-    harness.engine.send(EngineCommand::SetPreviewSize(300, 200));
-    let (rgba, width, height) = harness.next_frame();
-    assert_eq!((width, height), (256, 192));
-    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+    for (asked, quantized) in [((300, 200), (256, 192)), ((512, 288), (512, 256))] {
+        harness
+            .engine
+            .send(EngineCommand::SetPreviewSize(asked.0, asked.1));
+        let (rgba, width, height) = harness.next_frame();
+        assert_eq!((width, height), quantized, "{asked:?}");
+        assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
+    }
 }
 
+/// Three states of one debt: the preview owes a frame when it is switched on,
+/// owes nothing while it is off, and pays the debt out of the texture that is
+/// already there rather than out of a re-render.
+///
+/// An engine of its own, because the first state is a client that hides the
+/// window before anything has been drawn, which is what `--tray-start hidden`
+/// does, and no shared engine has never drawn anything.
 #[test]
-fn disabling_the_preview_stops_frames_without_stopping_the_engine() {
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
+fn switching_the_preview_on_owes_a_frame_and_switching_it_off_stops_them() {
+    let _gpu = gpu();
+    let harness = Harness::start(|config| config.preview_enabled = false);
+
+    // Nothing has been drawn yet, so the debt has to survive a tick that has
+    // nothing to pay it with.
+    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
+    let (first, width, height) = harness.next_frame();
+    assert_eq!(first.len(), (width as usize) * (height as usize) * 4);
+    assert!(has_lit_pixels(&first));
 
     harness.engine.send(EngineCommand::SetPreviewEnabled(false));
     let moved = SceneParams {
@@ -872,158 +1343,66 @@ fn disabling_the_preview_stops_frames_without_stopping_the_engine() {
         "no frames should be delivered while the preview is off"
     );
 
-    // The engine is still alive and resumes on demand.
+    // Back to the scene the first frame was drawn from, so the dirty check
+    // would suppress a re-render and the only thing that can produce a frame
+    // is the debt paying itself out of the existing texture.
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(test_params())));
+    harness.settle();
     harness.engine.send(EngineCommand::SetPreviewEnabled(true));
-    harness.next_frame();
-}
-
-#[test]
-fn enabling_the_preview_before_any_frame_exists_still_delivers_one() {
-    // The window can be hidden before the engine has drawn anything, which is
-    // what `--tray-start hidden` does. Showing it later must produce a frame:
-    // the owed-frame debt has to survive a tick where there is nothing to pay
-    // it with yet.
-    let harness = Harness::start(|config| config.preview_enabled = false);
-    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
-    let (rgba, width, height) = harness.next_frame();
-    assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
-    assert!(has_lit_pixels(&rgba));
-}
-
-#[test]
-fn re_enabling_the_preview_resends_the_current_frame_unchanged() {
-    // Hide, change nothing, show again. The dirty check would suppress a
-    // re-render, so the frame has to come from the texture that is already
-    // there or the window stays blank until the user touches a control.
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
-
-    harness.engine.send(EngineCommand::SetPreviewEnabled(false));
-    assert!(
-        harness.drained_frame(Duration::from_millis(300)).is_none(),
-        "no frames while the preview is off"
+    let (again, _, _) = harness.next_frame();
+    assert_eq!(
+        again, first,
+        "re-enabling the preview sent something other than the frame that was already there"
     );
-
-    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
-    let (rgba, _, _) = harness.next_frame();
-    assert!(has_lit_pixels(&rgba));
 }
 
 #[test]
 fn render_to_file_writes_a_png_at_the_requested_size() {
-    let harness = Harness::start(|_| {});
-    let dir = std::env::temp_dir().join("sunlit_earth_test_engine_render_to_file");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    let path = dir.join("out.png");
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    let dir = ScratchDir::new("engine_render_to_file");
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(test_params())));
 
+    let path = dir.join("out.png");
     harness
         .engine
         .render_to_file(path.clone(), 320, 192)
         .expect("render_to_file should succeed");
-
     let decoded = image::open(&path).expect("output should be a readable PNG");
-    assert_eq!(decoded.width(), 320);
-    assert_eq!(decoded.height(), 192);
+    assert_eq!((decoded.width(), decoded.height()), (320, 192));
     assert!(
         has_lit_pixels(decoded.to_rgba8().as_raw()),
         "the exported image should contain the globe"
     );
 
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn render_to_file_works_with_the_preview_disabled() {
-    let harness = Harness::start(|config| config.preview_enabled = false);
-    let dir = std::env::temp_dir().join("sunlit_earth_test_engine_headless_render");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    let path = dir.join("headless.png");
-
+    // A hidden window is the case the render subcommand runs in, and the export
+    // has no business depending on whether anybody is watching.
+    harness.engine.send(EngineCommand::SetPreviewEnabled(false));
+    let headless = dir.join("headless.png");
     harness
         .engine
-        .render_to_file(path.clone(), 256, 144)
+        .render_to_file(headless.clone(), 256, 144)
         .expect("a headless engine must still be able to export");
-
-    let decoded = image::open(&path).expect("output should be a readable PNG");
+    let decoded = image::open(&headless).expect("output should be a readable PNG");
     assert_eq!((decoded.width(), decoded.height()), (256, 144));
-
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(has_lit_pixels(decoded.to_rgba8().as_raw()));
 }
 
 #[test]
 fn wallpaper_now_publishes_one_frame_at_the_sink_size() {
-    let sink = Arc::new(CountingSink::new(320, 192));
-    let sink_for_config = Arc::clone(&sink);
-    let harness = Harness::start(move |config| config.wallpaper = sink_for_config);
-    harness.next_frame();
-
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut published = false;
-    while let Ok(event) = harness.events.recv_deadline(deadline) {
-        if let EngineEvent::WallpaperSet(result) = event {
-            result.expect("publishing to a counting sink cannot fail");
-            published = true;
-            break;
-        }
-    }
-    assert!(published, "no WallpaperSet event within {TIMEOUT:?}");
-    assert_eq!(sink.count(), 1);
-}
-
-/// A sink that refuses up front, and records anything asked of it afterwards.
-///
-/// This is the shape of `SystemWallpaper` off Windows, which cannot be
-/// exercised directly on the machine this suite usually runs on. What matters
-/// is not only that the export fails but that it fails before the expensive
-/// part: the monitor list is the engine's first step toward a native-resolution
-/// render and a readback of the whole image, so a count of zero there is the
-/// assertion that nothing was rendered.
-struct RefusingSink {
-    layout_queries: std::sync::atomic::AtomicUsize,
-    publishes: std::sync::atomic::AtomicUsize,
-}
-
-impl RefusingSink {
-    const REASON: &'static str = "this sink refuses on purpose";
-
-    fn new() -> Self {
-        Self {
-            layout_queries: std::sync::atomic::AtomicUsize::new(0),
-            publishes: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    fn layout_queries(&self) -> usize {
-        self.layout_queries
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    fn publishes(&self) -> usize {
-        self.publishes.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-impl WallpaperSink for RefusingSink {
-    fn check_supported(&self) -> Result<(), String> {
-        Err(Self::REASON.to_owned())
-    }
-
-    fn monitors(&self) -> Result<Vec<Monitor>, String> {
-        self.layout_queries
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(vec![screen("only", 0, 320, 192, true)])
-    }
-
-    fn publish(&self, _job: &WallpaperJob) -> Result<String, String> {
-        self.publishes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(String::new())
-    }
+    let gpu = gpu();
+    let group = plain(&gpu);
+    let published = publish_plan(
+        group,
+        vec![screen("only", 0, 320, 192, true)],
+        DisplayMode::default(),
+        None,
+    );
+    assert_eq!(published.images, vec![Some((320, 192))]);
 }
 
 /// One fabricated monitor.
@@ -1042,7 +1421,10 @@ fn screen(id: &str, x: i32, width: u32, height: u32, primary: bool) -> Monitor {
 /// A sink that reports a fabricated layout and keeps what it was handed.
 ///
 /// This is what proves the engine asks for the right images in each mode with
-/// no display anywhere, so it runs on Windows and macOS as well as Linux.
+/// no display anywhere, so it runs on Windows and macOS as well as Linux. It
+/// also stands in for the sink that cannot publish at all, which is what
+/// `SystemWallpaper` is on a Linux desktop the table does not know: `refuse`
+/// switches that on and `reset` switches it back off.
 struct RecordingSink {
     /// Behind a lock because a display-change case moves the layout under a
     /// running engine, which is the whole thing those cases are about.
@@ -1051,7 +1433,7 @@ struct RecordingSink {
     /// other trace, so this is what says it happened at all.
     queries: std::sync::atomic::AtomicUsize,
     /// What `check_supported` answers; `None` accepts.
-    refusal: Option<String>,
+    refusal: Mutex<Option<String>>,
     published: Mutex<Vec<Publication>>,
 }
 
@@ -1071,24 +1453,28 @@ struct Publication {
 
 impl RecordingSink {
     /// The reason a refusing recording sink gives.
-    const REFUSED: &'static str = "this recording sink refuses on purpose";
+    const REFUSED: &str = "this recording sink refuses on purpose";
 
     fn new(monitors: Vec<Monitor>) -> Self {
         Self {
             monitors: Mutex::new(monitors),
             queries: std::sync::atomic::AtomicUsize::new(0),
-            refusal: None,
+            refusal: Mutex::new(None),
             published: Mutex::new(Vec::new()),
         }
     }
 
-    /// The same sink with no wallpaper setter behind it, which is a Linux
-    /// desktop the table does not know.
-    fn refusing(monitors: Vec<Monitor>) -> Self {
-        Self {
-            refusal: Some(Self::REFUSED.to_owned()),
-            ..Self::new(monitors)
-        }
+    /// Forget everything the previous case did to this sink.
+    fn reset(&self, monitors: Vec<Monitor>) {
+        self.set_monitors(monitors);
+        *self.refusal.lock().expect("the recording is poisoned") = None;
+        self.publications().clear();
+        self.queries.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Answer every later `check_supported` with a refusal.
+    fn refuse(&self) {
+        *self.refusal.lock().expect("the recording is poisoned") = Some(Self::REFUSED.to_owned());
     }
 
     /// Move the layout under the running engine.
@@ -1107,7 +1493,7 @@ impl RecordingSink {
 
 impl WallpaperSink for RecordingSink {
     fn check_supported(&self) -> Result<(), String> {
-        match &self.refusal {
+        match &*self.refusal.lock().expect("the recording is poisoned") {
             Some(reason) => Err(reason.clone()),
             None => Ok(()),
         }
@@ -1161,60 +1547,41 @@ impl WallpaperSink for RecordingSink {
 
 /// Publish once with a fabricated layout and a mode, and answer with what the
 /// sink was handed.
-fn publish_plan(monitors: Vec<Monitor>, mode: DisplayMode, anchor: Option<&str>) -> Publication {
-    publish_plan_with(monitors, mode, anchor, test_params())
+fn publish_plan(
+    group: &Plain,
+    monitors: Vec<Monitor>,
+    mode: DisplayMode,
+    anchor: Option<&str>,
+) -> Publication {
+    publish_plan_with(group, monitors, mode, anchor, test_params())
 }
 
 /// The same, with the scene said out loud, for the cases that compare pixels.
 fn publish_plan_with(
+    group: &Plain,
     monitors: Vec<Monitor>,
     mode: DisplayMode,
     anchor: Option<&str>,
     params: SceneParams,
 ) -> Publication {
-    let sink = Arc::new(RecordingSink::new(monitors));
-    let sink_for_config = Arc::clone(&sink);
-    let anchor = anchor.map(ToOwned::to_owned);
-    let harness = Harness::start(move |config| {
-        config.wallpaper = sink_for_config;
-        config.display_mode = mode;
-        config.anchor_monitor = anchor;
-        config.params = params;
+    group.sink.set_monitors(monitors);
+    group.engine.send(EngineCommand::SetDisplayPlan {
+        mode,
+        anchor: anchor.map(ToOwned::to_owned),
     });
-    harness.next_frame();
-    publish_once(&harness, &sink)
-}
-
-/// Publish for one fabricated screen and hand the engine back still running.
-///
-/// The identity cases need a second export out of the same engine, at the same
-/// size, through the path this feature replaced, and two engines cannot be
-/// compared byte for byte: they are two devices, and the one-at-a-time rule in
-/// CLAUDE.md means they are not even alive at once.
-fn publish_one_screen(monitor: Monitor, mode: DisplayMode) -> (Harness, Publication) {
-    let sink = Arc::new(RecordingSink::new(vec![monitor]));
-    let sink_for_config = Arc::clone(&sink);
-    let harness = Harness::start(move |config| {
-        config.wallpaper = sink_for_config;
-        config.display_mode = mode;
-    });
-    harness.next_frame();
-    let published = publish_once(&harness, &sink);
-    (harness, published)
+    group
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(params)));
+    publish_once(group)
 }
 
 /// Ask for a wallpaper, wait for it, and take the one publish it made.
-fn publish_once(harness: &Harness, sink: &RecordingSink) -> Publication {
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    while let Ok(event) = harness.events.recv_deadline(deadline) {
-        if let EngineEvent::WallpaperSet(result) = event {
-            result.expect("publishing to a recording sink cannot fail");
-            break;
-        }
-    }
-    let mut published = sink.publications();
+fn publish_once(group: &Plain) -> Publication {
+    group.sink.publications().clear();
+    group
+        .publish()
+        .expect("publishing to a recording sink cannot fail");
+    let mut published = group.sink.publications();
     assert_eq!(published.len(), 1, "exactly one publish was asked for");
     published.pop().expect("the one publish")
 }
@@ -1238,17 +1605,16 @@ fn two_screens() -> Vec<Monitor> {
 /// before this one would have written for the same screen.
 #[test]
 fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
+    let gpu = gpu();
+    let group = plain(&gpu);
     for mode in DisplayMode::ALL {
-        let (harness, published) = publish_one_screen(screen("only", 0, 320, 192, true), mode);
+        let published = publish_plan(group, vec![screen("only", 0, 320, 192, true)], mode, None);
         assert_eq!(published.mode, mode);
         assert_eq!(published.anchor, 0);
         assert_eq!(published.images, vec![Some((320, 192))], "{mode:?}");
         assert_eq!(published.renders, 1, "{mode:?}");
 
-        let before = harness
-            .engine
-            .export_pixels(320, 192)
-            .expect("the pre-feature export path");
+        let before = group.export(320, 192);
         assert_eq!(
             picture(&published, 0).pixels,
             before,
@@ -1266,14 +1632,17 @@ fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
 /// it is precisely the render at the contained lens.
 #[test]
 fn a_portrait_screen_takes_the_contained_lens_instead_of_the_old_one() {
-    let (harness, published) =
-        publish_one_screen(screen("tall", 0, 192, 320, true), DisplayMode::EveryScreen);
+    let gpu = gpu();
+    let group = plain(&gpu);
+    let published = publish_plan(
+        group,
+        vec![screen("tall", 0, 192, 320, true)],
+        DisplayMode::EveryScreen,
+        None,
+    );
     assert_eq!(published.images, vec![Some((192, 320))]);
 
-    let before = harness
-        .engine
-        .export_pixels(192, 320)
-        .expect("the pre-feature export path");
+    let before = group.export(192, 320);
     assert_ne!(
         picture(&published, 0).pixels,
         before,
@@ -1286,13 +1655,7 @@ fn a_portrait_screen_takes_the_contained_lens_instead_of_the_old_one() {
     contained.camera.fov_deg =
         sunlit_core::display::layout::contain_camera_fov(contained.camera.fov_deg, 192, 320);
     assert!(contained.camera.fov_deg > test_params().camera.fov_deg);
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(contained)));
-    let widened = harness
-        .engine
-        .export_pixels(192, 320)
-        .expect("the contained lens at the same size");
+    let widened = group.picture(&contained, (192, 320));
     assert_eq!(
         picture(&published, 0).pixels,
         widened,
@@ -1302,7 +1665,9 @@ fn a_portrait_screen_takes_the_contained_lens_instead_of_the_old_one() {
 
 #[test]
 fn every_screen_renders_one_image_per_distinct_size() {
-    let published = publish_plan(two_screens(), DisplayMode::EveryScreen, None);
+    let gpu = gpu();
+    let group = plain(&gpu);
+    let published = publish_plan(group, two_screens(), DisplayMode::EveryScreen, None);
     assert_eq!(published.images, vec![Some((320, 192)), Some((320, 192))]);
     assert_eq!(
         published.renders, 1,
@@ -1312,6 +1677,7 @@ fn every_screen_renders_one_image_per_distinct_size() {
 
     // Different sizes are one render each, at each screen's own size.
     let published = publish_plan(
+        group,
         vec![
             screen("A", 0, 320, 192, true),
             screen("B", 320, 256, 128, false),
@@ -1325,19 +1691,22 @@ fn every_screen_renders_one_image_per_distinct_size() {
 
 #[test]
 fn one_screen_paints_the_anchor_and_leaves_the_others_alone() {
-    let published = publish_plan(two_screens(), DisplayMode::OneScreen, None);
+    let gpu = gpu();
+    let group = plain(&gpu);
+    let published = publish_plan(group, two_screens(), DisplayMode::OneScreen, None);
     assert_eq!(published.images, vec![Some((320, 192)), None]);
     assert_eq!(published.renders, 1);
 
     // And the anchor is the stored one where the session still has it.
-    let published = publish_plan(two_screens(), DisplayMode::OneScreen, Some("B"));
+    let published = publish_plan(group, two_screens(), DisplayMode::OneScreen, Some("B"));
     assert_eq!(published.anchor, 1);
     assert_eq!(published.images, vec![None, Some((320, 192))]);
 }
 
 #[test]
 fn across_screens_renders_one_canvas_and_cuts_it() {
-    let published = publish_plan(two_screens(), DisplayMode::AcrossScreens, None);
+    let gpu = gpu();
+    let published = publish_plan(plain(&gpu), two_screens(), DisplayMode::AcrossScreens, None);
     assert_eq!(
         published.canvas,
         Some((640, 192)),
@@ -1430,9 +1799,11 @@ fn the_anchors_crop_of_a_span_is_the_picture_it_would_have_had_alone() {
         screen("A", 0, 640, 360, true),
         screen("B", 640, 640, 360, false),
     ];
-    let spanned = publish_plan(monitors.clone(), DisplayMode::AcrossScreens, None);
+    let gpu = gpu();
+    let group = plain(&gpu);
+    let spanned = publish_plan(group, monitors.clone(), DisplayMode::AcrossScreens, None);
     assert_eq!(spanned.canvas, Some((1280, 360)));
-    let alone = publish_plan(monitors, DisplayMode::EveryScreen, None);
+    let alone = publish_plan(group, monitors, DisplayMode::EveryScreen, None);
 
     let (mean, outliers) = compare(picture(&spanned, 0), picture(&alone, 0));
     assert!(
@@ -1476,9 +1847,17 @@ fn a_taller_canvas_still_puts_the_globe_where_the_anchor_had_it() {
         moon_brightness: 0.0,
         ..test_params()
     };
-    let spanned = publish_plan_with(monitors.clone(), DisplayMode::AcrossScreens, None, params);
+    let gpu = gpu();
+    let group = plain(&gpu);
+    let spanned = publish_plan_with(
+        group,
+        monitors.clone(),
+        DisplayMode::AcrossScreens,
+        None,
+        params,
+    );
     assert_eq!(spanned.canvas, Some((1280, 480)));
-    let alone = publish_plan_with(monitors, DisplayMode::EveryScreen, None, params);
+    let alone = publish_plan_with(group, monitors, DisplayMode::EveryScreen, None, params);
 
     let (cx, cy, radius) = globe(picture(&spanned, 0));
     let (alone_x, alone_y, alone_radius) = globe(picture(&alone, 0));
@@ -1496,61 +1875,47 @@ fn a_taller_canvas_still_puts_the_globe_where_the_anchor_had_it() {
 /// else: the plan falls back to the primary and the publish says it did.
 #[test]
 fn a_stored_anchor_that_is_gone_falls_back_and_reports_it() {
+    let _gpu = gpu();
     let sink = Arc::new(RecordingSink::new(two_screens()));
+    // The stored anchor is a configuration here rather than a command, which is
+    // how it reaches a real session: the app reads it out of the config file and
+    // hands it to `engine::start`. This is the one case that still does that, so
+    // it is what would notice `display_mode` or `anchor_monitor` going unread at
+    // startup.
     let sink_for_config = Arc::clone(&sink);
     let harness = Harness::start(move |config| {
         config.wallpaper = sink_for_config;
         config.display_mode = DisplayMode::OneScreen;
         config.anchor_monitor = Some("a-screen-that-went-away".to_owned());
     });
-    harness.next_frame();
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
 
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut note = None;
-    while let Ok(event) = harness.events.recv_deadline(deadline) {
-        if let EngineEvent::WallpaperSet(result) = event {
-            note = Some(result.expect("falling back is not a failure"));
-            break;
-        }
-    }
-    let note = note.expect("no WallpaperSet event");
+    let note = harness.publish().expect("falling back is not a failure");
     assert!(note.contains('A'), "{note}");
-    assert_eq!(sink.publications()[0].anchor, 0);
+    let published = sink.publications();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].mode, DisplayMode::OneScreen);
+    assert_eq!(published[0].anchor, 0);
 }
 
 /// The plan is re-read on every publish rather than cached at startup.
 #[test]
 fn a_new_display_plan_changes_the_next_publish() {
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let sink_for_config = Arc::clone(&sink);
-    let harness = Harness::start(move |config| {
-        config.wallpaper = sink_for_config;
-        config.display_mode = DisplayMode::EveryScreen;
+    let gpu = gpu();
+    let group = plain(&gpu);
+    group.sink.set_monitors(two_screens());
+    group.engine.send(EngineCommand::SetDisplayPlan {
+        mode: DisplayMode::EveryScreen,
+        anchor: None,
     });
-    harness.next_frame();
 
-    let wait_for_publish = || {
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        while let Ok(event) = harness.events.recv_deadline(deadline) {
-            if let EngineEvent::WallpaperSet(result) = event {
-                result.expect("a recording sink cannot fail");
-                return;
-            }
-        }
-        panic!("no WallpaperSet event within {TIMEOUT:?}");
-    };
-
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-    wait_for_publish();
-    harness.engine.send(EngineCommand::SetDisplayPlan {
+    group.publish().expect("a recording sink cannot fail");
+    group.engine.send(EngineCommand::SetDisplayPlan {
         mode: DisplayMode::AcrossScreens,
         anchor: Some("B".to_owned()),
     });
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-    wait_for_publish();
+    group.publish().expect("a recording sink cannot fail");
 
-    let published = sink.publications();
+    let published = group.sink.publications();
     assert_eq!(published.len(), 2);
     assert_eq!(published[0].mode, DisplayMode::EveryScreen);
     assert!(published[0].canvas.is_none());
@@ -1559,41 +1924,38 @@ fn a_new_display_plan_changes_the_next_publish() {
     assert_eq!(published[1].anchor, 1);
 }
 
+/// A sink that refuses up front is never asked for its monitors.
+///
+/// What matters is not only that the export fails but that it fails before the
+/// expensive part: the monitor list is the engine's first step toward a
+/// native-resolution render and a readback of the whole image, so a query count
+/// that did not move is the assertion that nothing was rendered.
 #[test]
 fn a_sink_that_cannot_publish_is_never_asked_to_render() {
-    let sink = Arc::new(RefusingSink::new());
-    let sink_for_config = Arc::clone(&sink);
-    let harness = Harness::start(move |config| config.wallpaper = sink_for_config);
-    harness.next_frame();
+    let gpu = gpu();
+    let group = plain(&gpu);
+    group.sink.refuse();
+    let before = group.sink.queries();
 
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut reported = None;
-    while let Ok(event) = harness.events.recv_deadline(deadline) {
-        if let EngineEvent::WallpaperSet(result) = event {
-            reported = Some(result.expect_err("a refusing sink cannot succeed"));
-            break;
-        }
-    }
+    let reported = group.publish().expect_err("a refusing sink cannot succeed");
     assert_eq!(
-        reported.as_deref(),
-        Some(RefusingSink::REASON),
+        reported,
+        RecordingSink::REFUSED,
         "the sink's own reason should reach the client unchanged"
     );
     assert_eq!(
-        sink.layout_queries(),
-        0,
+        group.sink.queries(),
+        before,
         "the engine asked a sink that had already refused for its monitors"
     );
-    assert_eq!(sink.publishes(), 0);
+    assert!(group.sink.publications().is_empty());
 }
 
 #[test]
 fn switching_texture_mode_produces_a_new_frame() {
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    harness.settle_at(&test_params());
 
     // Slot 1 has no file behind it in this configuration, so the renderer
     // falls back to the grid. The frame still has to be re-rendered: the
@@ -1603,20 +1965,22 @@ fn switching_texture_mode_produces_a_new_frame() {
         texture_index: 1,
         ..test_params()
     };
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(swapped)));
-    let (rgba, width, height) = harness.next_frame();
+    let (rgba, width, height) = harness.frame_after_change(&swapped);
     assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
 }
 
+/// A sample count the adapter does not offer renders anyway, whether it is
+/// there at startup or arrives later.
+///
+/// A saved config, or a combo box index built against a different adapter, can
+/// ask for one. Before the engine resolved it against the adapter, that reached
+/// `create_render_textures` and killed the engine thread with a wgpu validation
+/// error: the window came up, IPC answered, and no frame ever arrived. The
+/// startup half is why this has an engine of its own: the count has to be in
+/// the configuration the renderer is built from.
 #[test]
 fn an_unsupported_sample_count_still_renders() {
-    // A saved config, or a combo box index built against a different adapter,
-    // can ask for a sample count this GPU does not offer. Before the engine
-    // resolved it against the adapter, that reached create_render_textures and
-    // killed the engine thread with a wgpu validation error: the window came
-    // up, IPC answered, and no frame ever arrived.
+    let _gpu = gpu();
     let harness = Harness::start(|config| {
         // The High tier deliberately does not cap the sample count, so the
         // adapter's own support list is the only thing between this config and
@@ -1630,57 +1994,39 @@ fn an_unsupported_sample_count_still_renders() {
     let (rgba, width, height) = harness.next_frame();
     assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
     assert!(has_lit_pixels(&rgba));
-}
 
-#[test]
-fn an_unsupported_sample_count_arriving_later_still_renders() {
-    let harness = Harness::start(|config| config.quality = QualityTier::High);
-    harness.next_frame();
     harness.drained_frame(Duration::from_millis(300));
-
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(SceneParams {
-            sample_count: 64,
-            // Change something visible too, so the frame is not suppressed by
-            // the dirty check once the count resolves back to what it was.
-            cloud_opacity: 0.1,
-            ..test_params()
-        })));
-    let (rgba, _, _) = harness.next_frame();
+    let (rgba, _, _) = harness.frame_after_change(&SceneParams {
+        sample_count: 64,
+        // Change something visible too, so the frame is not suppressed by the
+        // dirty check once the count resolves back to what it was.
+        cloud_opacity: 0.1,
+        ..test_params()
+    });
     assert!(has_lit_pixels(&rgba));
 }
 
-/// Start an engine on the fixture textures in day/night blend mode, which is
-/// the mode that needs both file-backed slots and the composite bind group
-/// built from them.
-fn blend_harness(fixtures: &TextureFixtures, width: u32) -> Harness {
-    Harness::start(|config| {
-        config.texture_paths = fixtures.paths();
-        config.texture_resolution = width;
-        config.cache_dir = Some(fixtures.dir.clone());
-        config.params = SceneParams {
-            texture_index: 3,
-            ..test_params()
-        };
-    })
+/// The day and night maps blended, which is the mode that needs both
+/// file-backed slots and the composite bind group built from them.
+fn blend_params() -> SceneParams {
+    SceneParams {
+        texture_index: 3,
+        ..test_params()
+    }
 }
 
 #[test]
 fn a_resolution_switch_reloads_the_textures_in_both_directions() {
-    let fixtures = TextureFixtures::new("engine_resolution_switch");
-    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
-    harness.wait_for_textures("at startup");
-    let (rgba, _, _) = harness.next_frame();
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    let rgba = harness.picture(&blend_params(), FRAME);
     assert!(
         has_lit_pixels(&rgba),
         "the globe should be visible at first"
     );
 
     // Down: the textures in memory are destroyed and the halved ones loaded.
-    harness.engine.send(EngineCommand::SetTextureResolution(
-        TextureFixtures::WIDTH / 2,
-    ));
+    harness.set_texture_resolution(SURFACE_WIDTH / 4);
     harness.wait_for_textures("after switching down");
     let (rgba, _, _) = harness.next_frame();
     assert!(
@@ -1690,9 +2036,7 @@ fn a_resolution_switch_reloads_the_textures_in_both_directions() {
 
     // Up again: the same path in reverse, which is the one that would break if
     // the purge left a destroyed texture behind in a bind group.
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(TextureFixtures::WIDTH));
+    harness.set_texture_resolution(SURFACE_WIDTH);
     harness.wait_for_textures("after switching back up");
     let (rgba, _, _) = harness.next_frame();
     assert!(has_lit_pixels(&rgba));
@@ -1702,15 +2046,11 @@ fn a_resolution_switch_reloads_the_textures_in_both_directions() {
 /// reset and load-defaults callbacks both do) costs nothing.
 #[test]
 fn a_switch_to_the_current_resolution_does_nothing() {
-    let fixtures = TextureFixtures::new("engine_resolution_noop");
-    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
-    harness.wait_for_textures("at startup");
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(300));
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    harness.settle_at(&blend_params());
 
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(TextureFixtures::WIDTH));
+    harness.set_texture_resolution(SURFACE_WIDTH);
     assert!(
         harness.drained_frame(Duration::from_millis(500)).is_none(),
         "a switch to the width already in force must not re-render"
@@ -1723,22 +2063,16 @@ fn a_switch_to_the_current_resolution_does_nothing() {
 /// only spawned from inside `render`, so all three purges here happen before
 /// the first spawn and no decode is ever in flight during them. That makes this
 /// a test of the purge being repeatable and of the last command winning, not of
-/// the stale-arrival ordering; `a_stale_decode_arriving_after_a_switch_is_never_applied`
+/// the stale-arrival ordering; `a_stale_decode_must_not_replace_the_texture_that_superseded_it`
 /// is that one.
 #[test]
 fn switches_in_quick_succession_end_on_the_last_one() {
-    let fixtures = TextureFixtures::new("engine_resolution_races");
-    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
-    harness.wait_for_textures("at startup");
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    harness.settle_at(&blend_params());
 
-    for width in [
-        TextureFixtures::WIDTH / 2,
-        TextureFixtures::WIDTH,
-        TextureFixtures::WIDTH / 4,
-    ] {
-        harness
-            .engine
-            .send(EngineCommand::SetTextureResolution(width));
+    for width in [SURFACE_WIDTH / 2, SURFACE_WIDTH, SURFACE_WIDTH / 4] {
+        harness.set_texture_resolution(width);
     }
 
     harness.wait_for_textures("after three switches in a row");
@@ -1776,19 +2110,21 @@ fn decoded(slot_index: usize, width: u32, generation: u64, value: u8) -> Decoded
 /// The slot is made terminal first, by deleting the file behind it, so that
 /// nothing the engine does can supply a texture afterwards. `TexturesReady` can
 /// then only fire if the fresh post survived, which is what makes this test fail
-/// when the guard is removed.
+/// when the guard is removed. An engine of its own for the mailbox, which is
+/// read once when the engine is built.
 #[test]
 fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
     const WIDE: u32 = 256;
     const DAY_SLOT: usize = 1;
 
+    let _gpu = gpu();
     let fixtures = TextureFixtures::with_width("engine_resolution_stale", WIDE);
     let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
     let injected = mailbox.clone();
     let harness = Harness::start(|config| {
         config.texture_paths = fixtures.paths();
         config.texture_resolution = WIDE;
-        config.cache_dir = Some(fixtures.dir.clone());
+        config.cache_dir = Some(fixtures.path().to_path_buf());
         config.mailbox = Some(injected);
         config.params = SceneParams {
             // The day texture alone, and no atmosphere: then every lit pixel
@@ -1810,9 +2146,7 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
     // clears the slot's path, which is terminal: from here the only textures
     // this slot can ever get are the ones posted below.
     fixtures.remove_files();
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(WIDE / 2));
+    harness.set_texture_resolution(WIDE / 2);
     harness.wait_for_status(|text| !text.is_empty(), "the reload should start");
     harness.wait_for_status(str::is_empty, "the reload should fail and stop loading");
 
@@ -1839,7 +2173,7 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
 /// a slot index its own array does not have, which is a panic in the middle of a
 /// session. The assertion runs on the engine thread before it reports an
 /// adapter, so the caller gets an error instead of a handle rather than a
-/// thread that quietly died.
+/// thread that quietly died, and no device is ever created.
 #[test]
 fn a_mailbox_that_does_not_match_the_slot_count_is_refused() {
     let mut config = EngineConfig::headless((64, 64));
@@ -1866,13 +2200,14 @@ fn a_stale_arrival_produces_no_frame_at_all() {
     const WIDE: u32 = 256;
     const DAY_SLOT: usize = 1;
 
+    let _gpu = gpu();
     let fixtures = TextureFixtures::with_width("engine_resolution_stale_alone", WIDE);
     let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
     let injected = mailbox.clone();
     let harness = Harness::start(|config| {
         config.texture_paths = fixtures.paths();
         config.texture_resolution = WIDE;
-        config.cache_dir = Some(fixtures.dir.clone());
+        config.cache_dir = Some(fixtures.path().to_path_buf());
         config.mailbox = Some(injected);
         config.params = SceneParams {
             texture_index: 1,
@@ -1881,9 +2216,7 @@ fn a_stale_arrival_produces_no_frame_at_all() {
         };
     });
     harness.wait_for_textures("at startup");
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(WIDE / 2));
+    harness.set_texture_resolution(WIDE / 2);
     harness.wait_for_textures("after the switch");
     harness.drained_frame(Duration::from_millis(300));
 
@@ -1897,20 +2230,21 @@ fn a_stale_arrival_produces_no_frame_at_all() {
 
 /// A resolution change while the first load is still running converges.
 ///
-/// The purge here happens with a decode genuinely in flight, which is the state
-/// Step 3 promises to survive and the one the quick-succession test above cannot
-/// reach. The in-flight decode's post is discarded when it arrives; what must
-/// still happen is the reload, and the only evidence that it did is the slot
-/// becoming ready at all.
+/// The purge here happens with a decode genuinely in flight, which the
+/// quick-succession case above cannot reach. The in-flight decode's post is
+/// discarded when it arrives; what must still happen is the reload, and the only
+/// evidence that it did is the slot becoming ready at all. An engine of its own,
+/// because the load it interrupts is the one the engine starts with.
 #[test]
 fn a_switch_while_the_first_load_is_running_still_converges() {
     const WIDE: u32 = 1024;
 
+    let _gpu = gpu();
     let fixtures = TextureFixtures::with_width("engine_resolution_midload", WIDE);
     let harness = Harness::start(|config| {
         config.texture_paths = fixtures.paths();
         config.texture_resolution = WIDE;
-        config.cache_dir = Some(fixtures.dir.clone());
+        config.cache_dir = Some(fixtures.path().to_path_buf());
         config.params = SceneParams {
             texture_index: 1,
             atmo_enabled: false,
@@ -1918,9 +2252,7 @@ fn a_switch_while_the_first_load_is_running_still_converges() {
         };
     });
     harness.wait_for_status(|text| !text.is_empty(), "the first load should start");
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(WIDE / 4));
+    harness.set_texture_resolution(WIDE / 4);
 
     harness.wait_for_textures("after a switch mid-load");
     let (rgba, _, _) = harness.next_frame();
@@ -1937,33 +2269,25 @@ fn a_switch_while_the_first_load_is_running_still_converges() {
 /// textures were ready rather than after.
 #[test]
 fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
-    let fixtures = TextureFixtures::new("engine_resolution_wallpaper");
-    let sink = Arc::new(CountingSink::new(64, 32));
-    let published = Arc::clone(&sink);
-    let harness = Harness::start(|config| {
-        config.texture_paths = fixtures.paths();
-        config.texture_resolution = TextureFixtures::WIDTH;
-        config.cache_dir = Some(fixtures.dir.clone());
-        config.wallpaper = published;
-        config.params = SceneParams {
-            texture_index: 3,
-            ..test_params()
-        };
-    });
-    harness.wait_for_textures("at startup");
-    harness.drained_frame(Duration::from_millis(300));
-    assert_eq!(sink.count(), 0, "nothing has asked for a wallpaper yet");
+    let gpu = gpu();
+    let group = surface(&gpu);
+    group
+        .sink
+        .set_monitors(vec![screen("only", 0, 64, 32, true)]);
+    group.settle_at(&blend_params());
+    assert!(
+        group.sink.publications().is_empty(),
+        "nothing has asked for a wallpaper yet"
+    );
 
     // Both commands are handled before the engine ticks, so the purge has
     // already emptied the slots when the publish is asked for.
-    harness.engine.send(EngineCommand::SetTextureResolution(
-        TextureFixtures::WIDTH / 2,
-    ));
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    group.set_texture_resolution(SURFACE_WIDTH / 4);
+    group.engine.send(EngineCommand::RenderWallpaperNow);
 
     let deadline = std::time::Instant::now() + TIMEOUT;
     let mut ready_first = None;
-    while let Ok(event) = harness.events.recv_deadline(deadline) {
+    while let Ok(event) = group.events.recv_deadline(deadline) {
         match event {
             EngineEvent::TexturesReady => {
                 ready_first.get_or_insert(true);
@@ -1976,7 +2300,11 @@ fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
                     "the wallpaper was published before the textures were loaded, \
                      which means it was published from the procedural grid"
                 );
-                assert_eq!(sink.count(), 1, "exactly one frame should be published");
+                assert_eq!(
+                    group.sink.publications().len(),
+                    1,
+                    "exactly one frame should be published"
+                );
                 return;
             }
             _ => {}
@@ -2003,37 +2331,39 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
-/// The repository's real assets, if this checkout has them.
+/// An asset in `textures/`, or the reason it is not usable.
 ///
 /// `textures/**` is Git LFS, so a checkout without the objects holds pointer
 /// files of a couple of hundred bytes, which exist as far as anything that only
 /// asks about existence is concerned. Size is what tells the two apart, the same
 /// check the guest staging in the xtask makes.
-fn real_textures() -> Result<Vec<Option<std::path::PathBuf>>, String> {
-    /// Smaller than either asset and far larger than an LFS pointer.
+fn real_asset(name: &str) -> Result<std::path::PathBuf, String> {
+    /// Smaller than any of the assets and far larger than an LFS pointer.
     const MIN_BYTES: u64 = 64 * 1024;
 
     let dir = sunlit_core::assets::texture_loader::resolve_textures_dir(None)
         .ok_or_else(|| "there is no textures directory".to_owned())?;
-    let mut paths = Vec::new();
-    for name in [
+    let path = dir.join(name);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() >= MIN_BYTES => Ok(path),
+        Ok(meta) => Err(format!(
+            "{name} is {} bytes, which is a Git LFS pointer rather than the asset",
+            meta.len()
+        )),
+        Err(e) => Err(format!("{name} is not readable: {e}")),
+    }
+}
+
+/// The repository's real surface and Moon assets, if this checkout has them.
+fn real_textures() -> Result<Vec<Option<std::path::PathBuf>>, String> {
+    [
         "world.topo.200405.jxl",
         "BlackMarble_2016.jxl",
         "lroc_color_poles_1k.jxl",
-    ] {
-        let path = dir.join(name);
-        match std::fs::metadata(&path) {
-            Ok(meta) if meta.len() >= MIN_BYTES => paths.push(Some(path)),
-            Ok(meta) => {
-                return Err(format!(
-                    "{name} is {} bytes, which is a Git LFS pointer rather than the asset",
-                    meta.len()
-                ));
-            }
-            Err(e) => return Err(format!("{name} is not readable: {e}")),
-        }
-    }
-    Ok(paths)
+    ]
+    .into_iter()
+    .map(|name| real_asset(name).map(Some))
+    .collect()
 }
 
 /// Going down a resolution has to give the memory back, which is the whole
@@ -2049,6 +2379,10 @@ fn real_textures() -> Result<Vec<Option<std::path::PathBuf>>, String> {
 /// Only the software adapter is measured here (the headless config forces it),
 /// which is what puts the textures in process memory in the first place; on a
 /// discrete GPU they would live in VRAM, where this counter cannot see them.
+///
+/// An engine of its own, and the slowest case in the file: the two 8K sources
+/// are decoded once each, which is about six seconds apiece, and no shared
+/// engine may carry them because every case that shares it would pay for them.
 #[test]
 fn lowering_the_resolution_lowers_the_process_footprint() {
     /// Drop the measurement must show, out of roughly 320 MiB expected.
@@ -2068,8 +2402,13 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
         }
     };
 
-    let cache = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("resolution_memory_cache");
-    std::fs::create_dir_all(&cache).expect("create the cache directory");
+    let _gpu = gpu();
+    // Not a scratch directory: this is the downscale cache, and what it holds
+    // is two halved copies of the 8K assets that cost about six seconds each to
+    // build. It is keyed on the source's size and modification time, so a run
+    // that finds it warm is reading exactly what it would have written.
+    let cache = test_support::scratch_root().join("engine_resolution_memory_cache");
+    std::fs::create_dir_all(&cache).expect("create the downscale cache");
 
     // Build the narrow copies before measuring anything. Otherwise the switch
     // decodes both 8K sources one last time to make them, and those two 128 MiB
@@ -2085,10 +2424,7 @@ fn lowering_the_resolution_lowers_the_process_footprint() {
         config.texture_paths = paths.clone();
         config.texture_resolution = WIDE;
         config.cache_dir = Some(cache.clone());
-        config.params = SceneParams {
-            texture_index: 3,
-            ..test_params()
-        };
+        config.params = blend_params();
     });
     harness.wait_for_textures("at 8192");
     harness.next_frame();
@@ -2176,9 +2512,9 @@ impl VariantCloud {
         }
     }
 
-    fn go_offline(&self) {
+    fn set_offline(&self, offline: bool) {
         self.offline
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+            .store(offline, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The image size this source serves for `variant_width`.
@@ -2253,6 +2589,56 @@ impl sunlit_core::assets::cloud_source::CloudSource for VariantCloud {
     }
 }
 
+/// The width the variant cases start and end at, the one they switch to, and
+/// the one no case leaves in the disk cache.
+const VARIANT_WIDE: u32 = 8192;
+const VARIANT_NARROW: u32 = 2048;
+const VARIANT_UNCACHED: u32 = 4096;
+
+/// The engine whose cloud source serves a different image per variant.
+struct Variant {
+    harness: Harness,
+    source: Arc<VariantCloud>,
+}
+
+impl std::ops::Deref for Variant {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+static VARIANT: LazyLock<Variant> = LazyLock::new(|| {
+    let dir = FIXTURES.join("variant");
+    std::fs::create_dir_all(&dir).expect("create the variant cache directory");
+    let source = Arc::new(VariantCloud::new(VARIANT_WIDE));
+    let cloud = Arc::clone(&source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+    let harness = Harness::start(move |config| {
+        config.texture_resolution = VARIANT_WIDE;
+        config.cloud = Some(cloud);
+        config.cache_dir = Some(dir);
+    });
+    wait_for_cloud_size(
+        &harness,
+        VariantCloud::image_size(VARIANT_WIDE),
+        "at startup",
+    );
+    Variant { harness, source }
+});
+
+fn variant(_gpu: &Gpu) -> &'static Variant {
+    let group = &*VARIANT;
+    if group.harness.restore_resolution() {
+        wait_for_cloud_size(
+            &group.harness,
+            VariantCloud::image_size(VARIANT_WIDE),
+            "putting the variant back",
+        );
+    }
+    group.harness.reset();
+    group
+}
+
 /// Block until the cloud texture in the report is `expected`, or panic.
 ///
 /// Polling the report is also what keeps the engine ticking, and there is no
@@ -2282,43 +2668,37 @@ fn wait_for_cloud_size(harness: &Harness, expected: (u32, u32), what: &str) {
 /// of the new variant, and the replacement frees the texture it replaced.
 #[test]
 fn the_cloud_variant_follows_the_texture_resolution() {
-    const WIDE: u32 = 8192;
-    const NARROW: u32 = 2048;
-
-    let source = Arc::new(VariantCloud::new(WIDE));
-    let cloud = Arc::clone(&source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
-    let harness = Harness::start(move |config| {
-        config.texture_resolution = WIDE;
-        config.cloud = Some(cloud);
-    });
-
-    wait_for_cloud_size(&harness, VariantCloud::image_size(WIDE), "at startup");
-    harness.next_frame();
-    let before = harness.engine.memory_report().expect("a report");
-    assert_eq!(source.fetches(), 1);
+    let gpu = gpu();
+    let group = variant(&gpu);
+    let before = group.engine.memory_report().expect("a report");
+    let fetches = group.source.fetches();
     assert_eq!(
-        source.retarget_widths(),
-        [WIDE],
+        group.source.retarget_widths()[0],
+        VARIANT_WIDE,
         "construction points the source at the configured variant"
     );
 
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(NARROW));
+    group.set_texture_resolution(VARIANT_UNCACHED);
     wait_for_cloud_size(
-        &harness,
-        VariantCloud::image_size(NARROW),
+        group,
+        VariantCloud::image_size(VARIANT_UNCACHED),
         "after the switch",
     );
-    harness.next_frame();
-    let after = harness.engine.memory_report().expect("a report");
+    let after = group.engine.memory_report().expect("a report");
 
     assert_eq!(
-        source.fetches(),
-        2,
-        "the switch must cost a fetch of the new variant"
+        *group
+            .source
+            .retarget_widths()
+            .last()
+            .expect("the switch retargeted the source"),
+        VARIANT_UNCACHED
     );
-    assert_eq!(source.retarget_widths(), [WIDE, NARROW]);
+    assert_eq!(
+        group.source.fetches(),
+        fetches + 1,
+        "a switch to a variant nothing has cached must cost a fetch of it"
+    );
 
     // One cloud texture, at the new size: the replacement went through the
     // slot rather than beside it.
@@ -2328,7 +2708,7 @@ fn the_cloud_variant_follows_the_texture_resolution() {
         .filter(|texture| texture.label == "cloud_texture")
         .map(|texture| (texture.width, texture.height))
         .collect();
-    assert_eq!(sizes, [VariantCloud::image_size(NARROW)]);
+    assert_eq!(sizes, [VariantCloud::image_size(VARIANT_UNCACHED)]);
 
     // And the old one was actually freed, not merely forgotten. Skipped where
     // the backend keeps no texture counter; D3D12 and Vulkan both do.
@@ -2364,56 +2744,33 @@ fn the_cloud_variant_follows_the_texture_resolution() {
 /// The whole chain matters here and the unit tests cannot reach it: the command
 /// retargets the worker, the worker calls `set_resolution` before its next
 /// poll, that poll is answered with a 304 because the entry it just adopted is
-/// current, and nothing in production calls `post_cached` after startup. This
-/// is the only engine test with both a cache directory and a cloud source, and
-/// it takes both to reach the cloud disk cache: the resolution tests have a
-/// directory but no cloud, and the other cloud tests have a cloud but no
-/// directory.
+/// current, and nothing in production calls `post_cached` after startup.
 #[test]
 fn a_switch_back_to_a_cached_variant_shows_it_again() {
-    const WIDE: u32 = 8192;
-    const NARROW: u32 = 2048;
+    let gpu = gpu();
+    let group = variant(&gpu);
 
-    let cache = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cloud_switch_back_cache");
-    let _ = std::fs::remove_dir_all(&cache);
-    std::fs::create_dir_all(&cache).expect("create the cache directory");
-
-    let source = Arc::new(VariantCloud::new(WIDE));
-    let cloud = Arc::clone(&source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
-    let cache_dir = cache.clone();
-    let harness = Harness::start(move |config| {
-        config.texture_resolution = WIDE;
-        config.cloud = Some(cloud);
-        config.cache_dir = Some(cache_dir);
-    });
-
-    wait_for_cloud_size(&harness, VariantCloud::image_size(WIDE), "at startup");
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(NARROW));
+    group.set_texture_resolution(VARIANT_NARROW);
     wait_for_cloud_size(
-        &harness,
-        VariantCloud::image_size(NARROW),
+        group,
+        VariantCloud::image_size(VARIANT_NARROW),
         "after switching down",
     );
+    let downloaded = group.source.fetches();
 
     // Both entries are now on disk and neither has gone stale, so the switch
     // back is answered with a 304 and has to fall back to what it cached.
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(WIDE));
+    group.set_texture_resolution(VARIANT_WIDE);
     wait_for_cloud_size(
-        &harness,
-        VariantCloud::image_size(WIDE),
+        group,
+        VariantCloud::image_size(VARIANT_WIDE),
         "after switching back up",
     );
     assert_eq!(
-        source.fetches(),
-        2,
+        group.source.fetches(),
+        downloaded,
         "the switch back is served from disk, not downloaded again"
     );
-
-    let _ = std::fs::remove_dir_all(&cache);
 }
 
 /// A switch must not empty the cloud slot: a cloudless globe while a download
@@ -2421,31 +2778,43 @@ fn a_switch_back_to_a_cached_variant_shows_it_again() {
 /// gap would never close.
 #[test]
 fn a_switch_keeps_the_old_cloud_texture_until_the_new_one_lands() {
-    const WIDE: u32 = 8192;
-    const NARROW: u32 = 2048;
-    /// Long enough for the retarget, the failed poll, and several ticks.
-    const SETTLE: Duration = Duration::from_secs(2);
+    const WIDE: u32 = VARIANT_WIDE;
+    const NARROW: u32 = VARIANT_NARROW;
 
+    let _gpu = gpu();
     let source = Arc::new(VariantCloud::new(WIDE));
     let cloud = Arc::clone(&source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
+    // An engine of its own, and no cache directory. A failed poll puts the
+    // fetcher into a fifteen second backoff, which the shared engine would then
+    // hand to whichever case came next, and a cache would answer the switch
+    // from disk rather than leaving it unanswered, which is the state this case
+    // is about.
     let harness = Harness::start(move |config| {
         config.texture_resolution = WIDE;
         config.cloud = Some(cloud);
     });
+    let showing = VariantCloud::image_size(WIDE);
+    wait_for_cloud_size(&harness, showing, "at startup");
 
-    wait_for_cloud_size(&harness, VariantCloud::image_size(WIDE), "at startup");
-
-    source.go_offline();
+    source.set_offline(true);
     harness
         .engine
         .send(EngineCommand::SetTextureResolution(NARROW));
-    std::thread::sleep(SETTLE);
 
-    assert_eq!(
-        source.retarget_widths(),
-        [WIDE, NARROW],
-        "the switch should still have reached the cloud pipeline"
-    );
+    // The retarget is a command, so a reply to a later one proves it was taken;
+    // what follows has to be given a few of the engine's own ticks, because the
+    // assertion is that nothing happens.
+    let deadline = std::time::Instant::now() + CHANGE_TIMEOUT;
+    while source.retarget_widths().last() != Some(&NARROW) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the switch should still have reached the cloud pipeline: {:?}",
+            source.retarget_widths()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+
     let report = harness.engine.memory_report().expect("a report");
     let sizes: Vec<(u32, u32)> = report
         .expected
@@ -2455,7 +2824,7 @@ fn a_switch_keeps_the_old_cloud_texture_until_the_new_one_lands() {
         .collect();
     assert_eq!(
         sizes,
-        [VariantCloud::image_size(WIDE)],
+        [showing],
         "the old cloud texture must survive a switch the network cannot answer:\n{report}"
     );
 }
@@ -2476,10 +2845,9 @@ fn expected_widths(report: &sunlit_core::memory_report::MemoryReport, label: &st
 
 #[test]
 fn the_report_names_the_textures_the_renderer_owns() {
-    let fixtures = TextureFixtures::new("engine_memory_report");
-    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
-    harness.wait_for_textures("at startup");
-    harness.next_frame();
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    harness.settle_at(&blend_params());
 
     let report = harness
         .engine
@@ -2487,21 +2855,15 @@ fn the_report_names_the_textures_the_renderer_owns() {
         .expect("the engine should answer with a report");
     println!("{report}");
 
-    assert_eq!(
-        expected_widths(&report, "day_texture"),
-        [TextureFixtures::WIDTH]
-    );
-    assert_eq!(
-        expected_widths(&report, "night_texture"),
-        [TextureFixtures::WIDTH]
-    );
+    assert_eq!(expected_widths(&report, "day_texture"), [SURFACE_WIDTH]);
+    assert_eq!(expected_widths(&report, "night_texture"), [SURFACE_WIDTH]);
     assert_eq!(
         expected_widths(&report, "grid_texture").len(),
         1,
         "the procedural grid is always resident"
     );
     // The preview target, at the size the harness asked for.
-    assert_eq!(expected_widths(&report, "render_texture"), [512]);
+    assert_eq!(expected_widths(&report, "render_texture"), [FRAME.0]);
     assert!(report.expected_bytes() > 0);
 }
 
@@ -2517,10 +2879,9 @@ fn the_report_names_the_textures_the_renderer_owns() {
 /// order of magnitude, not a factor of two.
 #[test]
 fn the_measured_and_computed_texture_totals_agree() {
-    let fixtures = TextureFixtures::new("engine_memory_report_totals");
-    let harness = blend_harness(&fixtures, TextureFixtures::WIDTH);
-    harness.wait_for_textures("at startup");
-    harness.next_frame();
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    harness.settle_at(&blend_params());
 
     let report = harness.engine.memory_report().expect("a report");
     let expected = report.expected_bytes();
@@ -2554,22 +2915,18 @@ fn the_measured_and_computed_texture_totals_agree() {
 /// is the one that measures the real pair, where they are present.
 #[test]
 fn a_switch_down_leaves_no_texture_at_the_old_width() {
-    const WIDE: u32 = 256;
-    const NARROW: u32 = 32;
+    const NARROW: u32 = SURFACE_WIDTH / 8;
 
-    let fixtures = TextureFixtures::with_width("engine_memory_report_switch", WIDE);
-    let harness = blend_harness(&fixtures, WIDE);
-    harness.wait_for_textures("at startup");
-    harness.next_frame();
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    harness.settle_at(&blend_params());
 
     let before = harness.engine.memory_report().expect("a report");
-    assert_eq!(expected_widths(&before, "day_texture"), [WIDE]);
+    assert_eq!(expected_widths(&before, "day_texture"), [SURFACE_WIDTH]);
 
-    harness
-        .engine
-        .send(EngineCommand::SetTextureResolution(NARROW));
+    harness.set_texture_resolution(NARROW);
     harness.wait_for_textures("after switching down");
-    harness.next_frame();
+    harness.settle();
 
     let after = harness.engine.memory_report().expect("a report");
     println!("{after}");
@@ -2580,7 +2937,7 @@ fn a_switch_down_leaves_no_texture_at_the_old_width() {
             .expected
             .iter()
             .any(|texture| texture.label.ends_with("_texture")
-                && texture.width == WIDE
+                && texture.width == SURFACE_WIDTH
                 && texture.mip_levels > 1),
         "a texture at the old width survived the switch:\n{after}"
     );
@@ -2594,8 +2951,9 @@ fn a_switch_down_leaves_no_texture_at_the_old_width() {
 /// shows it as the difference between the two totals it prints.
 #[test]
 fn the_allocator_section_reports_reserved_at_least_as_large_as_allocated() {
-    let harness = Harness::start(|_| {});
-    harness.next_frame();
+    let gpu = gpu();
+    let harness = plain(&gpu);
+    harness.settle_at(&test_params());
     let report = harness.engine.memory_report().expect("a report");
 
     let Some(allocator) = &report.allocator else {
@@ -2621,23 +2979,6 @@ fn the_allocator_section_reports_reserved_at_least_as_large_as_allocated() {
     );
 }
 
-#[test]
-fn textures_ready_fires_for_the_procedural_grid() {
-    let harness = Harness::start(|_| {});
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut ready = false;
-    while let Ok(event) = harness.events.recv_deadline(deadline) {
-        if matches!(event, EngineEvent::TexturesReady) {
-            ready = true;
-            break;
-        }
-    }
-    assert!(
-        ready,
-        "the grid texture is built up front and is always ready"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // The Moon
 // ---------------------------------------------------------------------------
@@ -2660,15 +3001,12 @@ fn moon_params() -> SceneParams {
     params.sun_glow = 0.0;
     params.sky_fov = 60.0;
     params.moon_size = 8.0;
+    // Back on, since `test_params` switches every overlay off.
+    params.moon_brightness = SceneParams::default().moon_brightness;
     // Earthshine well above the clear color, so the unlit face is part of what
     // "only adds light" is measured over rather than a wash against the sky.
     params.moon_earthshine = 0.2;
     params
-}
-
-/// Texture paths for a configuration whose Moon slot points at `moon`.
-fn moon_paths(moon: Option<std::path::PathBuf>) -> Vec<Option<std::path::PathBuf>> {
-    vec![None, None, moon]
 }
 
 /// The Moon adds light to a dark sky and takes none away.
@@ -2678,39 +3016,14 @@ fn moon_paths(moon: Option<std::path::PathBuf>) -> Vec<Option<std::path::PathBuf
 /// off frame against an on frame.
 #[test]
 fn a_moon_on_the_night_sky_only_adds_light() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_adds_light");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let params = moon_params();
-
-    let harness = Harness::start(|config| {
-        config.params = params;
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    // The first frame is what spawns the load, and the texture arrives on a
-    // later tick, so the frames come from the export path rather than from the
-    // preview: an export renders now, with whatever the renderer holds.
-    let (_, width, height) = harness.next_frame();
-    assert_eq!(
-        (width, height),
-        (512, 256),
-        "this framing is for one aspect ratio"
-    );
-    harness.wait_for_slot_texture("moon_texture");
-    let on = harness
-        .engine
-        .export_pixels(512, 256)
-        .expect("the engine should be able to export");
+    let on = harness.picture(&params, FRAME);
 
     let mut without = params;
     without.moon_brightness = 0.0;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(without)));
-    harness.next_frame();
-    let off = harness
-        .engine
-        .export_pixels(512, 256)
-        .expect("the engine should be able to export");
+    let off = harness.picture(&without, FRAME);
 
     let mut brighter = 0;
     for (before, after) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
@@ -2727,33 +3040,24 @@ fn a_moon_on_the_night_sky_only_adds_light() {
         brighter > 500,
         "only {brighter} pixels got brighter with an eight times Moon in frame"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A Moon switched off and a Moon with no texture behind it are the same
 /// picture, which is what makes the missing asset a non-event.
 #[test]
 fn a_switched_off_moon_and_a_missing_texture_draw_the_same_frame() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_off");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
     let params = moon_params();
 
+    // The one case that holds two engines at once, and it needs them because
+    // the difference it is about is a configuration rather than a parameter:
+    // the shared sky engine has a Moon behind its slot and the plain one has
+    // nothing behind any of them.
     let mut off = params;
     off.moon_brightness = 0.0;
-    let with_texture = {
-        let harness = Harness::start(|config| {
-            config.params = off;
-            config.texture_paths = moon_paths(Some(fixture.clone()));
-        });
-        harness.next_frame().0
-    };
-    let without_texture = {
-        let harness = Harness::start(|config| {
-            config.params = params;
-            config.texture_paths = moon_paths(None);
-        });
-        harness.next_frame().0
-    };
+    let with_texture = sky(&gpu).picture(&off, FRAME);
+    let without_texture = plain(&gpu).picture(&params, FRAME);
+
     let differing = with_texture
         .chunks_exact(4)
         .zip(without_texture.chunks_exact(4))
@@ -2763,7 +3067,6 @@ fn a_switched_off_moon_and_a_missing_texture_draw_the_same_frame() {
         differing, 0,
         "{differing} pixels differ between a switched-off Moon and a missing one"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A Moon at the antipode of the view axis is not drawn at all.
@@ -2777,45 +3080,27 @@ fn a_switched_off_moon_and_a_missing_texture_draw_the_same_frame() {
 /// frame it produces has to be the frame with no Moon in it.
 #[test]
 fn a_moon_at_the_view_antipode_draws_nothing() {
-    const WIDTH: u32 = 512;
-    const HEIGHT: u32 = 256;
+    let (width, height) = FRAME;
 
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_antipode");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let mut params = moon_params();
     let direction = sky_for(&params).moon_position.normalize();
     params.camera.latitude = direction.y.asin().to_degrees();
     params.camera.longitude = direction.x.atan2(direction.z).to_degrees();
 
     #[allow(clippy::cast_precision_loss)]
-    let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
+    let viewport = glam::Vec2::new(width as f32, height as f32);
     assert_eq!(
         moon_placement(&params, viewport).disc,
         None,
         "this framing is the one where the disc is empty, or it measures nothing"
     );
 
-    let harness = Harness::start(|config| {
-        config.params = params;
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    harness.next_frame();
-    harness.wait_for_slot_texture("moon_texture");
-    let behind = harness
-        .engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
-
+    let behind = harness.picture(&params, FRAME);
     let mut without = params;
     without.moon_brightness = 0.0;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(without)));
-    harness.next_frame();
-    let off = harness
-        .engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
+    let off = harness.picture(&without, FRAME);
 
     let differing = behind
         .chunks_exact(4)
@@ -2826,24 +3111,14 @@ fn a_moon_at_the_view_antipode_draws_nothing() {
         differing, 0,
         "{differing} pixels differ between a Moon behind the camera and no Moon at all"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The Moon is an overlay: its texture is not what `TexturesReady` waits for,
-/// and the slot it lands in is the one the layout reserves for it.
+/// The Moon's texture lands in the slot the layout reserves for it, at the
+/// width of the file behind it.
 #[test]
-fn the_moon_texture_lands_in_its_own_slot_without_delaying_readiness() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_slot");
-    let fixture = support::write_moon_fixture(&dir);
-    let harness = Harness::start(|config| {
-        config.params = moon_params();
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    // Readiness arrives with the grid alone, before the Moon has decoded.
-    harness.wait_for_textures("at startup");
-    harness.next_frame();
-    harness.wait_for_slot_texture("moon_texture");
-
+fn the_moon_texture_lands_in_its_own_slot() {
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let report = harness
         .engine
         .memory_report()
@@ -2852,7 +3127,6 @@ fn the_moon_texture_lands_in_its_own_slot_without_delaying_readiness() {
         expected_widths(&report, "moon_texture"),
         [support::MOON_FIXTURE_WIDTH]
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The instant `doy` and `hour` name, in 2026.
@@ -3023,23 +3297,12 @@ fn the_lit_fraction_tracks_the_ephemeris_at_three_phases() {
     /// which is what keeps the geocentric answer applicable.
     const INSTANTS: [(u16, i32); 3] = [(199, 16), (189, 8), (185, 4)];
 
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_phase");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let mut params = moon_params();
     // No earthshine, so the unlit face is black and the threshold is a
     // question about sunlight rather than about the floor.
     params.moon_earthshine = 0.0;
-    params.datetime.custom_day_of_year = INSTANTS[0].0;
-    #[allow(clippy::cast_precision_loss)]
-    let hour = f32::from(u16::try_from(INSTANTS[0].1).expect("a small hour"));
-    params.datetime.custom_hour = hour;
-
-    let harness = Harness::start(|config| {
-        config.params = params;
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    harness.next_frame();
-    harness.wait_for_slot_texture("moon_texture");
 
     #[allow(clippy::cast_precision_loss)]
     let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
@@ -3047,14 +3310,7 @@ fn the_lit_fraction_tracks_the_ephemeris_at_three_phases() {
         let mut at = params;
         at.datetime.custom_day_of_year = doy;
         at.datetime.custom_hour = f32::from(u16::try_from(hour).expect("a small hour"));
-        harness
-            .engine
-            .send(EngineCommand::UpdateParams(Box::new(at)));
-        harness.next_frame();
-        let pixels = harness
-            .engine
-            .export_pixels(WIDTH, HEIGHT)
-            .expect("the engine should be able to export");
+        let pixels = harness.picture(&at, (WIDTH, HEIGHT));
 
         let disc = moon_disc(&at, viewport);
         let lit = disc_pixels(&pixels, WIDTH, disc)
@@ -3073,7 +3329,6 @@ fn the_lit_fraction_tracks_the_ephemeris_at_three_phases() {
             "day {doy} hour {hour}: the drawn fraction {fraction:.4} is not the              ephemeris {expected:.4}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The lit limb faces the Sun.
@@ -3088,23 +3343,13 @@ fn the_lit_limb_faces_the_sun() {
     const WIDTH: u32 = 1600;
     const HEIGHT: u32 = 800;
 
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_limb");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let mut params = moon_params();
     params.moon_earthshine = 0.0;
     params.datetime.custom_day_of_year = 199;
     params.datetime.custom_hour = 16.0;
-
-    let harness = Harness::start(|config| {
-        config.params = params;
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    harness.next_frame();
-    harness.wait_for_slot_texture("moon_texture");
-    let pixels = harness
-        .engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
+    let pixels = harness.picture(&params, (WIDTH, HEIGHT));
 
     #[allow(clippy::cast_precision_loss)]
     let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
@@ -3130,7 +3375,6 @@ fn the_lit_limb_faces_the_sun() {
         separation < 10.0,
         "the lit side points {separation:.1} degrees away from the Sun"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The glare fades behind a Moon that covers the Sun.
@@ -3152,8 +3396,8 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
     /// The view axis this far off the Sun, in degrees.
     const OFF_AXIS: f32 = 7.0;
 
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_eclipse");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let mut params = moon_params();
     params.sun_glow = 1.0;
     params.datetime.custom_year = 2024;
@@ -3188,27 +3432,10 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
         "this framing is meant to put the Sun's disk inside the Moon's"
     );
 
-    let harness = Harness::start(|config| {
-        config.params = params;
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    harness.next_frame();
-    harness.wait_for_slot_texture("moon_texture");
-    let eclipsed = harness
-        .engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
-
+    let eclipsed = harness.picture(&params, (WIDTH, HEIGHT));
     let mut without = params;
     without.moon_brightness = 0.0;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(without)));
-    harness.next_frame();
-    let burning = harness
-        .engine
-        .export_pixels(WIDTH, HEIGHT)
-        .expect("the engine should be able to export");
+    let burning = harness.picture(&without, (WIDTH, HEIGHT));
 
     // Far enough out that the Moon's own mesh cannot reach, since the disc is
     // the image of the cone every one of its vertices is inside.
@@ -3243,7 +3470,6 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
         dimmed > 1000,
         "only {dimmed} pixels dimmed outside the Moon's silhouette"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Earthshine lifts the unlit face and nothing else.
@@ -3254,41 +3480,26 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
 /// without it differ only inside the disk, and only upward.
 #[test]
 fn earthshine_lifts_the_unlit_face_only() {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_moon_earthshine");
-    let fixture = support::write_moon_fixture(&dir);
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let mut params = moon_params();
     params.moon_earthshine = 0.0;
-
-    let harness = Harness::start(|config| {
-        config.params = params;
-        config.texture_paths = moon_paths(Some(fixture.clone()));
-    });
-    harness.next_frame();
-    harness.wait_for_slot_texture("moon_texture");
-    let dark = harness
-        .engine
-        .export_pixels(512, 256)
-        .expect("the engine should be able to export");
+    let dark = harness.picture(&params, FRAME);
 
     let mut lifted = params;
     lifted.moon_earthshine = 0.3;
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(lifted)));
-    harness.next_frame();
-    let shone = harness
-        .engine
-        .export_pixels(512, 256)
-        .expect("the engine should be able to export");
+    let shone = harness.picture(&lifted, FRAME);
 
-    let disc = moon_disc(&params, glam::Vec2::new(512.0, 256.0));
+    #[allow(clippy::cast_precision_loss)]
+    let disc = moon_disc(&params, glam::Vec2::new(FRAME.0 as f32, FRAME.1 as f32));
     let mut raised = 0;
+    let width = FRAME.0 as usize;
     for (index, (before, after)) in dark.chunks_exact(4).zip(shone.chunks_exact(4)).enumerate() {
         if before == after {
             continue;
         }
         #[allow(clippy::cast_precision_loss)]
-        let position = glam::Vec2::new((index % 512) as f32, (index / 512) as f32);
+        let position = glam::Vec2::new((index % width) as f32, (index / width) as f32);
         assert!(
             position.distance(disc.center) <= disc.radius + 1.5,
             "earthshine changed a pixel {:.1} px from the disk's center, which is {:.1} across",
@@ -3306,7 +3517,6 @@ fn earthshine_lifts_the_unlit_face_only() {
         raised > 100,
         "only {raised} pixels changed with the earthshine floor at 0.3"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -3321,6 +3531,14 @@ fn earthshine_lifts_the_unlit_face_only() {
 /// through `sky_lens_disc`, which is the CPU's own spelling of the projection
 /// rather than a new one. The frames these cases render have the Sun switched
 /// off, so where it lands is not part of the choice.
+///
+/// Coarse then fine: four degrees over the whole sphere, then half a degree
+/// over the eight degree neighborhood the coarse pass won. The clearance being
+/// maximized varies over degrees rather than over half of one, so the answer is
+/// the flat scan's for a fiftieth of its two hundred thousand cameras. A coarse
+/// pass that landed somewhere wrong would not pass silently: every case that
+/// calls this asserts that the direction it asked for really is on screen and
+/// really is clear of the painted globe.
 fn camera_showing(
     eqj: glam::Vec3,
     sky: &sunlit_core::scene::sky::SkyState,
@@ -3328,49 +3546,91 @@ fn camera_showing(
     viewport: glam::Vec2,
 ) -> (f32, f32) {
     let world = sky.world_from_eqj * eqj;
-    let mut best = (f32::MIN, (0.0, 0.0));
+    let score = |longitude: f32, latitude: f32| -> Option<f32> {
+        let camera = sunlit_core::scene::camera::OrbitalCamera::new(
+            longitude,
+            latitude,
+            sunlit_core::scene::camera::zoom_to_distance(params.camera.zoom),
+        );
+        let view_direction = (camera.view_matrix() * world.extend(0.0)).truncate();
+        let circle = sunlit_core::scene::sun_occlusion::sky_lens_disc(
+            view_direction,
+            0.0,
+            params.sky_fov,
+            glam::Vec2::ZERO,
+            viewport,
+        )?;
+        let globe = sunlit_core::scene::sun_occlusion::globe_screen_circle(
+            camera.mvp_matrix(viewport.x / viewport.y),
+            camera.distance,
+            1.0,
+            camera.fov_deg,
+            viewport,
+        );
+        let inset = circle
+            .center
+            .x
+            .min(viewport.x - circle.center.x)
+            .min(circle.center.y)
+            .min(viewport.y - circle.center.y);
+        Some(inset.min(circle.center.distance(globe.center) - globe.radius))
+    };
+
+    let sweep = |bounds: (f32, f32, f32, f32), step: f32, best: &mut (f32, (f32, f32))| {
+        let (from_longitude, to_longitude, from_latitude, to_latitude) = bounds;
+        let mut longitude = from_longitude;
+        while longitude < to_longitude {
+            let mut latitude = from_latitude;
+            while latitude < to_latitude {
+                if let Some(score) = score(longitude, latitude)
+                    && score > best.0
+                {
+                    *best = (score, (longitude, latitude));
+                }
+                latitude += step;
+            }
+            longitude += step;
+        }
+    };
+
+    // The coarse pass keeps several candidates rather than one, because the
+    // score has plateaus: two framings eight degrees apart can differ by a
+    // tenth of a pixel, and refining only the coarse winner would settle on
+    // whichever side of the plateau the four degree grid happened to sample.
+    let mut coarse: Vec<(f32, (f32, f32))> = Vec::new();
     let mut longitude = -180.0_f32;
     while longitude < 180.0 {
         let mut latitude = -85.0_f32;
         while latitude < 85.0 {
-            let camera = sunlit_core::scene::camera::OrbitalCamera::new(
-                longitude,
-                latitude,
-                sunlit_core::scene::camera::zoom_to_distance(params.camera.zoom),
-            );
-            let view_direction = (camera.view_matrix() * world.extend(0.0)).truncate();
-            if let Some(circle) = sunlit_core::scene::sun_occlusion::sky_lens_disc(
-                view_direction,
-                0.0,
-                params.sky_fov,
-                glam::Vec2::ZERO,
-                viewport,
-            ) {
-                let globe = sunlit_core::scene::sun_occlusion::globe_screen_circle(
-                    camera.mvp_matrix(viewport.x / viewport.y),
-                    camera.distance,
-                    1.0,
-                    camera.fov_deg,
-                    viewport,
-                );
-                let inset = circle
-                    .center
-                    .x
-                    .min(viewport.x - circle.center.x)
-                    .min(circle.center.y)
-                    .min(viewport.y - circle.center.y);
-                let clearance = circle.center.distance(globe.center) - globe.radius;
-                let score = inset.min(clearance);
-                if score > best.0 {
-                    best = (score, (longitude, latitude));
-                }
+            if let Some(score) = score(longitude, latitude) {
+                coarse.push((score, (longitude, latitude)));
             }
-            latitude += 0.5;
+            latitude += 4.0;
         }
-        longitude += 0.5;
+        longitude += 4.0;
+    }
+    coarse.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    let mut best = (f32::MIN, (0.0_f32, 0.0_f32));
+    for &(_, (longitude, latitude)) in coarse.iter().take(CANDIDATES) {
+        sweep(
+            (
+                longitude - 8.0,
+                longitude + 8.0,
+                (latitude - 8.0).max(-85.0),
+                (latitude + 8.0).min(85.0),
+            ),
+            0.5,
+            &mut best,
+        );
     }
     best.1
 }
+
+/// Coarse candidates refined at half a degree. Eight covers the plateau every
+/// direction these cases ask about has, measured against the exhaustive scan
+/// this replaced.
+const CANDIDATES: usize = 8;
 
 /// A unit vector in equatorial J2000 coordinates from right ascension and
 /// declination, both in degrees.
@@ -3417,69 +3677,24 @@ fn globe_circle(
     )
 }
 
-/// A framing with a panorama fixture in the sky, at 512 by 256.
-///
-/// The datetime and camera are the caller's, through `params`; what this owns is
-/// the fixture, the engine, and the wait for the texture to arrive, which
-/// `TexturesReady` does not cover because the panorama is an overlay.
-struct PanoramaHarness {
-    harness: Harness,
-    dir: std::path::PathBuf,
-}
-
-impl PanoramaHarness {
-    const WIDTH: u32 = 512;
-    const HEIGHT: u32 = 256;
-
-    fn new(
-        name: &str,
-        params: SceneParams,
-        fixture: impl FnOnce(&Path) -> std::path::PathBuf,
-    ) -> Self {
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = fixture(&dir);
-        let harness = Harness::start(|config| {
-            config.preview_size = (Self::WIDTH, Self::HEIGHT);
-            config.params = params;
-            config.texture_paths = vec![None, None, None, Some(path)];
-            config.cache_dir = Some(dir.clone());
-        });
-        harness.wait_for_slot_texture("milky_way_texture");
-        Self { harness, dir }
-    }
-
-    fn export(&self, params: &SceneParams) -> Vec<u8> {
-        self.harness
-            .engine
-            .send(EngineCommand::UpdateParams(Box::new(*params)));
-        self.harness
-            .engine
-            .export_pixels(Self::WIDTH, Self::HEIGHT)
-            .expect("the engine should be able to export")
-    }
-
-    /// The same framing with the layer switched off, which is what isolates
-    /// what the layer drew from the globe and the clear color.
-    fn export_pair(&self, params: &SceneParams) -> (Vec<u8>, Vec<u8>) {
-        let on = self.export(params);
-        let off = self.export(&SceneParams {
+/// The frame the layer paints, and the same framing with it switched off,
+/// which is what isolates the layer from the globe and the clear color.
+fn panorama_pair(harness: &Harness, params: &SceneParams) -> (Vec<u8>, Vec<u8>) {
+    let on = harness.picture(params, FRAME);
+    let off = harness.picture(
+        &SceneParams {
             milky_way_intensity: 0.0,
             ..*params
-        });
-        (on, off)
-    }
-
-    fn viewport() -> glam::Vec2 {
-        #[allow(clippy::cast_precision_loss)]
-        glam::Vec2::new(Self::WIDTH as f32, Self::HEIGHT as f32)
-    }
+        },
+        FRAME,
+    );
+    (on, off)
 }
 
-impl Drop for PanoramaHarness {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+/// `FRAME` as the placement helpers want it.
+fn viewport() -> glam::Vec2 {
+    #[allow(clippy::cast_precision_loss)]
+    glam::Vec2::new(FRAME.0 as f32, FRAME.1 as f32)
 }
 
 /// Parameters for the panorama cases: a pinned instant, a globe small enough to
@@ -3548,18 +3763,13 @@ fn difference_centroid(differences: &[u32], width: u32, floor: u32) -> (glam::Ve
 /// sky's difference rather than a corner's.
 #[test]
 fn a_panorama_fills_the_sky_and_zero_intensity_empties_it() {
+    let gpu = gpu();
     let params = panorama_params();
-    let panorama = PanoramaHarness::new(
-        "engine_panorama_switch",
-        params,
-        support::write_panorama_bands_fixture,
-    );
-
-    let (on, off) = panorama.export_pair(&params);
+    let (on, off) = panorama_pair(sky(&gpu), &params);
     let differences = channel_differences(&on, &off);
     let changed = differences.iter().filter(|&&d| d > 0).count();
     let total = differences.len();
-    let circle = globe_circle(&params, PanoramaHarness::viewport());
+    let circle = globe_circle(&params, viewport());
     println!(
         "the panorama changes {changed} of {total} pixels, \
          with a globe {:.0} px across in the middle of them",
@@ -3586,13 +3796,12 @@ fn a_panorama_fills_the_sky_and_zero_intensity_empties_it() {
 /// painted globe is subtracted out rather than reasoned about.
 #[test]
 fn the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction() {
-    /// Sirius, right ascension and declination in degrees at J2000.
-    const SIRIUS: (f32, f32) = (101.287, -16.716);
-
+    let gpu = gpu();
+    let harness = landmark_sky(&gpu);
     let mut params = panorama_params();
-    let direction = eqj_direction(SIRIUS.0, SIRIUS.1);
+    let direction = eqj_direction(LANDMARK.0, LANDMARK.1);
     let sky = sky_for(&params);
-    let viewport = PanoramaHarness::viewport();
+    let viewport = viewport();
     let (longitude, latitude) = camera_showing(direction, &sky, &params, viewport);
     params.camera.longitude = longitude;
     params.camera.latitude = latitude;
@@ -3611,13 +3820,9 @@ fn the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction() {
         circle.radius * 2.0
     );
 
-    let panorama = PanoramaHarness::new("engine_panorama_landmark", params, |dir| {
-        support::write_panorama_landmark_fixture(dir, "sirius.png", SIRIUS.0, SIRIUS.1, 4.0)
-    });
-
-    let (with_landmark, without) = panorama.export_pair(&params);
+    let (with_landmark, without) = panorama_pair(harness, &params);
     let (landmark, lit) =
-        difference_centroid(&channel_differences(&with_landmark, &without), 512, 300);
+        difference_centroid(&channel_differences(&with_landmark, &without), FRAME.0, 300);
 
     let starry = SceneParams {
         milky_way_intensity: 0.0,
@@ -3625,19 +3830,20 @@ fn the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction() {
         star_mag_limit: -1.0,
         ..params
     };
-    let with_star = panorama.export(&starry);
-    let (sprite, sprite_pixels) = difference_centroid(
-        &channel_differences(&with_star, &without),
-        PanoramaHarness::WIDTH,
-        60,
-    );
+    let with_star = harness.picture(&starry, FRAME);
+    let (sprite, sprite_pixels) =
+        difference_centroid(&channel_differences(&with_star, &without), FRAME.0, 60);
 
     println!(
         "the landmark's centroid is at {landmark:?} over {lit} pixels, \
          the sprite's at {sprite:?} over {sprite_pixels}, \
          and the lens puts the direction at {expected:?}"
     );
-    assert!(lit > 50, "only {lit} pixels of the landmark are lit");
+    // The floor tracks the fixture's area: the shared landmark is 5 degrees
+    // where this case once painted its own at 4, and 1101 lit pixels were
+    // measured here, so this keeps the fourteenfold headroom the 4 degree
+    // disc had rather than inheriting a floor that got easier.
+    assert!(lit > 78, "only {lit} pixels of the landmark are lit");
     assert!(
         (1..=400).contains(&sprite_pixels),
         "{sprite_pixels} pixels changed with one sprite in the sky"
@@ -3683,12 +3889,14 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
     /// on both.
     const SECOND_DIFFERENCE_TOLERANCE: i32 = 12;
 
+    let gpu = gpu();
+    let harness = sky(&gpu);
     let mut params = panorama_params();
-    let sky = sky_for(&params);
-    let viewport = PanoramaHarness::viewport();
+    let state = sky_for(&params);
+    let viewport = viewport();
     let (longitude, latitude) = camera_showing(
         eqj_direction(CUT_RIGHT_ASCENSION, 0.0),
-        &sky,
+        &state,
         &params,
         viewport,
     );
@@ -3718,16 +3926,11 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
         "the branch cut crosses the frame at only {on_screen} of the five declinations sampled"
     );
 
-    let panorama = PanoramaHarness::new(
-        "engine_panorama_seam",
-        params,
-        support::write_panorama_bands_fixture,
-    );
-    let pixels = panorama.export(&params);
+    let pixels = harness.picture(&params, FRAME);
     let circle = globe_circle(&params, viewport);
 
-    let width = PanoramaHarness::WIDTH as usize;
-    let height = PanoramaHarness::HEIGHT as usize;
+    let width = FRAME.0 as usize;
+    let height = FRAME.1 as usize;
     let value = |x: usize, y: usize| i32::from(pixels[(y * width + x) * 4]);
     let sky_pixel = |x: usize, y: usize| {
         #[allow(clippy::cast_precision_loss)]
@@ -3779,21 +3982,19 @@ fn the_wrap_column_is_not_a_band_of_the_coarsest_mip() {
 /// degree lens and cannot move at all.
 #[test]
 fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
-    const LANDMARK: (f32, f32) = (101.287, -16.716);
-    /// The landmark's own angular radius in the fixture.
-    const LANDMARK_RADIUS_DEGREES: f32 = 5.0;
-
+    let gpu = gpu();
+    let harness = landmark_sky(&gpu);
     let mut params = panorama_params();
     // Further out than the other cases, so a landmark magnified by the narrow
     // end of the slider still has room beside the globe.
     params.camera.zoom = 0.8;
-    let sky = sky_for(&params);
-    let viewport = PanoramaHarness::viewport();
+    let state = sky_for(&params);
+    let viewport = viewport();
     // Chosen at the narrow end, where the layer is magnified most and the
     // landmark is hardest to keep in frame.
     let (longitude, latitude) = camera_showing(
         eqj_direction(LANDMARK.0, LANDMARK.1),
-        &sky,
+        &state,
         &SceneParams {
             sky_fov: 60.0,
             ..params
@@ -3802,16 +4003,6 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
     );
     params.camera.longitude = longitude;
     params.camera.latitude = latitude;
-
-    let panorama = PanoramaHarness::new("engine_panorama_fov", params, |dir| {
-        support::write_panorama_landmark_fixture(
-            dir,
-            "landmark.png",
-            LANDMARK.0,
-            LANDMARK.1,
-            LANDMARK_RADIUS_DEGREES,
-        )
-    });
 
     let measure = |sky_fov: f32| {
         let framing = SceneParams { sky_fov, ..params };
@@ -3836,7 +4027,7 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
             disc.center.distance(circle.center),
             circle.radius * 2.0
         );
-        let (on, off) = panorama.export_pair(&framing);
+        let (on, off) = panorama_pair(harness, &framing);
         let landmark = channel_differences(&on, &off)
             .iter()
             .filter(|&&d| d > 300)
@@ -3873,6 +4064,93 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
     );
 }
 
+/// The engine whose panorama slot holds the shipped asset, where the checkout
+/// has it.
+///
+/// `None` where `textures/**` is still Git LFS pointers, which is what makes
+/// the two cases that need it skip rather than fail.
+struct RealSky {
+    harness: Harness,
+    cache: std::path::PathBuf,
+}
+
+impl std::ops::Deref for RealSky {
+    type Target = Harness;
+    fn deref(&self) -> &Harness {
+        &self.harness
+    }
+}
+
+/// The width the real sky loads at, and the one the cap case reaches up to.
+///
+/// The narrow end is the default because the halving is what the cache holds:
+/// the engine writes it once at startup and the case that reads it back costs
+/// nothing, where starting wide would mean decoding the 4096 source three more
+/// times.
+const REAL_SKY_WIDTH: u32 = 2048;
+const REAL_SKY_CAP: u32 = 8192;
+
+static REAL_SKY: LazyLock<Option<RealSky>> = LazyLock::new(|| {
+    let path = real_asset("milkyway_2020_4k.jxl").ok()?;
+    let dir = FIXTURES.join("real_sky");
+    std::fs::create_dir_all(&dir).expect("create the real sky cache directory");
+    let cache = dir.clone();
+    let harness = Harness::start(move |config| {
+        config.preview_size = FRAME;
+        config.params = panorama_params();
+        config.texture_paths = vec![None, None, None, Some(path)];
+        config.cache_dir = Some(dir);
+        config.texture_resolution = REAL_SKY_WIDTH;
+    });
+    harness.wait_for_slot_texture("milky_way_texture");
+    Some(RealSky { harness, cache })
+});
+
+/// The shipped panorama's engine, or `None` with a printed reason.
+fn real_sky(_gpu: &Gpu) -> Option<&'static RealSky> {
+    if let Err(why) = real_asset("milkyway_2020_4k.jxl") {
+        println!("skipping: {why}; `git lfs pull` fetches the assets");
+        return None;
+    }
+    let group = REAL_SKY.as_ref()?;
+    // The layer has to be wanted before the width is restored, for the reason
+    // `surface` puts the mode back first.
+    group
+        .harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(panorama_params())));
+    if group.harness.restore_resolution() {
+        wait_for_panorama_width(group, REAL_SKY_WIDTH);
+    }
+    group.harness.reset();
+    Some(group)
+}
+
+/// Block until the panorama in the report is `width` wide, and answer with its
+/// size.
+fn wait_for_panorama_width(harness: &Harness, width: u32) -> (u32, u32) {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let report = harness
+            .engine
+            .memory_report()
+            .expect("the engine should answer with a report");
+        if let Some(texture) = report
+            .expected
+            .iter()
+            .find(|texture| texture.label == "milky_way_texture")
+            && texture.width == width
+        {
+            return (texture.width, texture.height);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no {width} wide panorama within {TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// The real panorama has the galactic plane where the plane is.
 ///
 /// The fixture cases pin the map from a direction to a texel, but the fixture
@@ -3889,26 +4167,17 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
 /// Skips with a printed reason where `textures/**` is still Git LFS pointers.
 #[test]
 fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
-    let Some(path) = real_panorama() else {
+    let gpu = gpu();
+    let Some(harness) = real_sky(&gpu) else {
         return;
     };
 
     let base = panorama_params();
-    let sky = sky_for(&base);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_panorama_real");
-    let _ = std::fs::remove_dir_all(&dir);
-    let harness = Harness::start(|config| {
-        config.preview_size = (PanoramaHarness::WIDTH, PanoramaHarness::HEIGHT);
-        config.params = base;
-        config.texture_paths = vec![None, None, None, Some(path)];
-        config.cache_dir = Some(dir.clone());
-    });
-    harness.wait_for_slot_texture("milky_way_texture");
-
-    let viewport = PanoramaHarness::viewport();
+    let state = sky_for(&base);
+    let viewport = viewport();
     let sample = |name: &str, right_ascension: f32, declination: f32| {
         let direction = eqj_direction(right_ascension, declination);
-        let (longitude, latitude) = camera_showing(direction, &sky, &base, viewport);
+        let (longitude, latitude) = camera_showing(direction, &state, &base, viewport);
         let mut params = base;
         params.camera.longitude = longitude;
         params.camera.latitude = latitude;
@@ -3917,8 +4186,7 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (x, y) = (position.x.round() as u32, position.y.round() as u32);
         assert!(
-            (5..PanoramaHarness::WIDTH - 5).contains(&x)
-                && (5..PanoramaHarness::HEIGHT - 5).contains(&y),
+            (5..FRAME.0 - 5).contains(&x) && (5..FRAME.1 - 5).contains(&y),
             "{name} is at ({x}, {y}), which is not a window inside the frame"
         );
         assert!(
@@ -3926,20 +4194,14 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
                 > globe_circle(&params, viewport).radius + 10.0,
             "{name} lands on the painted globe"
         );
-        harness
-            .engine
-            .send(EngineCommand::UpdateParams(Box::new(params)));
-        let pixels = harness
-            .engine
-            .export_pixels(PanoramaHarness::WIDTH, PanoramaHarness::HEIGHT)
-            .expect("the engine should be able to export");
+        let pixels = harness.picture(&params, FRAME);
         // A window rather than a pixel, because the sky is Gaia photon noise
         // and one texel of it is not what is being compared.
         let mut total = 0_u32;
         let mut count = 0_u32;
-        for wy in y.saturating_sub(4)..(y + 5).min(PanoramaHarness::HEIGHT) {
-            for wx in x.saturating_sub(4)..(x + 5).min(PanoramaHarness::WIDTH) {
-                let index = ((wy * PanoramaHarness::WIDTH + wx) * 4) as usize;
+        for wy in y.saturating_sub(4)..(y + 5).min(FRAME.1) {
+            for wx in x.saturating_sub(4)..(x + 5).min(FRAME.0) {
+                let index = ((wy * FRAME.0 + wx) * 4) as usize;
                 total += u32::from(pixels[index])
                     + u32::from(pixels[index + 1])
                     + u32::from(pixels[index + 2]);
@@ -3974,7 +4236,6 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
             "the plane through Carina reads {carina} and {name} {pole}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// No star the sprite pipeline draws is baked into the real panorama.
@@ -4020,8 +4281,12 @@ fn no_bright_star_is_baked_into_the_real_panorama() {
     /// The core may be this much brighter than what surrounds it.
     const RATIO_BOUND: f64 = 2.0;
 
-    let Some(path) = real_panorama() else {
-        return;
+    let path = match real_asset("milkyway_2020_4k.jxl") {
+        Ok(path) => path,
+        Err(why) => {
+            println!("skipping: {why}; `git lfs pull` fetches the assets");
+            return;
+        }
     };
     sunlit_core::assets::texture_loader::register_jxl_hook();
     let panorama = image::open(&path)
@@ -4113,33 +4378,6 @@ fn no_bright_star_is_baked_into_the_real_panorama() {
     );
 }
 
-/// The panorama in `textures/`, or `None` with a printed reason.
-fn real_panorama() -> Option<std::path::PathBuf> {
-    /// Far larger than a Git LFS pointer and far smaller than the asset.
-    const MIN_BYTES: u64 = 64 * 1024;
-
-    let Some(dir) = sunlit_core::assets::texture_loader::resolve_textures_dir(None) else {
-        println!("skipping: there is no textures directory");
-        return None;
-    };
-    let path = dir.join("milkyway_2020_4k.jxl");
-    match std::fs::metadata(&path) {
-        Ok(meta) if meta.len() >= MIN_BYTES => Some(path),
-        Ok(meta) => {
-            println!(
-                "skipping: {} is {} bytes, which is a Git LFS pointer rather than the asset",
-                path.display(),
-                meta.len()
-            );
-            None
-        }
-        Err(e) => {
-            println!("skipping: {} is not readable: {e}", path.display());
-            None
-        }
-    }
-}
-
 /// The panorama follows the texture resolution cap, and the halving cache is
 /// what serves the narrow end.
 ///
@@ -4153,65 +4391,53 @@ fn real_panorama() -> Option<std::path::PathBuf> {
 /// Skips with a printed reason where `textures/**` is still Git LFS pointers.
 #[test]
 fn the_panorama_follows_the_texture_resolution_cap() {
-    let Some(path) = real_panorama() else {
+    let gpu = gpu();
+    let Some(group) = real_sky(&gpu) else {
         return;
     };
 
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_panorama_cap");
-    let _ = std::fs::remove_dir_all(&dir);
-    let params = panorama_params();
-
-    let width_of = |resolution: u32| {
-        let harness = Harness::start(|config| {
-            config.preview_size = (256, 128);
-            config.params = params;
-            config.texture_paths = vec![None, None, None, Some(path.clone())];
-            config.cache_dir = Some(dir.clone());
-            config.texture_resolution = resolution;
-        });
-        harness.wait_for_slot_texture("milky_way_texture");
-        let report = harness
-            .engine
-            .memory_report()
-            .expect("the engine should answer with a report");
-        let texture = report
-            .expected
-            .iter()
-            .find(|texture| texture.label == "milky_way_texture")
-            .expect("the panorama is in the report once it has arrived");
-        (texture.width, texture.height)
-    };
-
-    let cached = dir.join("texture_cache").join("milkyway_2020_4k.2048.png");
-    assert!(
-        !cached.exists(),
-        "the cache directory starts empty, and {} is in it",
-        cached.display()
+    // The engine loads at the narrow end, and the cache directory is this run's
+    // own, so the file being there is the halving having been written.
+    let narrow = wait_for_panorama_width(group, REAL_SKY_WIDTH);
+    println!(
+        "at the {REAL_SKY_WIDTH} setting the panorama loads at {}x{}",
+        narrow.0, narrow.1
     );
-
-    let (wide, wide_height) = width_of(8192);
-    println!("at the 8192 setting the panorama loads at {wide}x{wide_height}");
-    assert_eq!(
-        (wide, wide_height),
-        (4096, 2048),
-        "the widest setting is a cap, and the file is 4096 wide"
-    );
-
-    let (narrow, narrow_height) = width_of(2048);
-    println!("at the 2048 setting the panorama loads at {narrow}x{narrow_height}");
-    assert_eq!((narrow, narrow_height), (2048, 1024));
+    assert_eq!(narrow, (2048, 1024));
+    let cached = group
+        .cache
+        .join("texture_cache")
+        .join("milkyway_2020_4k.2048.png");
     assert!(
         cached.exists(),
         "the halving was not written to {}",
         cached.display()
     );
 
-    // The second run at the same width reads what the first wrote, which is the
-    // point of the cache and not something the width alone can show.
-    let (again, _) = width_of(2048);
-    assert_eq!(again, narrow);
+    let wide = wait_for_panorama_width_after(group, REAL_SKY_CAP, 4096);
+    println!(
+        "at the {REAL_SKY_CAP} setting the panorama loads at {}x{}",
+        wide.0, wide.1
+    );
+    assert_eq!(
+        wide,
+        (4096, 2048),
+        "the widest setting is a cap, and the file is 4096 wide"
+    );
 
-    let _ = std::fs::remove_dir_all(&dir);
+    // Back down, which is the load that reads what the first one wrote rather
+    // than halving the source again. The width alone cannot show that; the file
+    // having to be there for it to succeed can.
+    assert_eq!(
+        wait_for_panorama_width_after(group, REAL_SKY_WIDTH, REAL_SKY_WIDTH),
+        narrow
+    );
+}
+
+/// Reload the panorama at `resolution` and wait until it is `width` wide.
+fn wait_for_panorama_width_after(group: &RealSky, resolution: u32, width: u32) -> (u32, u32) {
+    group.set_texture_resolution(resolution);
+    wait_for_panorama_width(group, width)
 }
 
 // ---------------------------------------------------------------------------
@@ -4272,33 +4498,6 @@ fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> ScenePara
     params
 }
 
-/// Start an engine on the fixture surface with the banded cloud fixture behind
-/// the cloud slot, in blend mode, and wait until both have arrived.
-fn cloud_harness(dir: &Path, params: SceneParams) -> (Harness, support::SurfaceFixtures) {
-    cloud_harness_with(dir, params, support::FixtureClouds::bands())
-}
-
-/// The same, with the caller's own cloud map.
-fn cloud_harness_with(
-    dir: &Path,
-    params: SceneParams,
-    source: support::FixtureClouds,
-) -> (Harness, support::SurfaceFixtures) {
-    let surface = support::write_surface_fixtures(dir);
-    let paths = surface.paths();
-    let clouds = Arc::new(source) as Arc<dyn sunlit_core::assets::cloud_source::CloudSource>;
-    let cache = dir.to_path_buf();
-    let harness = Harness::start(move |config| {
-        config.texture_paths = paths;
-        config.cache_dir = Some(cache);
-        config.cloud = Some(clouds);
-        config.params = params;
-    });
-    harness.wait_for_textures("the fixture surface");
-    harness.wait_for_slot_texture("cloud_texture");
-    (harness, surface)
-}
-
 /// Noon UTC, where the frame center of a camera at longitude 180 is as deep into
 /// the night as the globe goes, and midnight, where the same pixels are lit.
 const NIGHT_HOUR: f32 = 12.0;
@@ -4315,25 +4514,19 @@ const DAY_HOUR: f32 = 0.0;
 /// opacity covers the ground completely at any density of one.
 #[test]
 fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_ordering");
+    let gpu = gpu();
+    let harness = surface(&gpu);
     let params = cloud_case_params(3, 180.0, NIGHT_HOUR);
-    let (harness, _surface) = cloud_harness(&dir, params);
 
-    let covered = harness
-        .engine
-        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-        .expect("the engine should be able to export");
-    harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+    let covered = harness.picture(&params, CLOUD_CASE_SIZE);
+    let bare = harness.picture(
+        &SceneParams {
             cloud_opacity: 0.0,
             cloud_opacity_night: 0.0,
             ..params
-        })));
-    let bare = harness
-        .engine
-        .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-        .expect("the engine should be able to export");
+        },
+        CLOUD_CASE_SIZE,
+    );
 
     let (covered, bare) = (
         center_window_mean(&covered, CLOUD_CASE_SIZE),
@@ -4345,7 +4538,6 @@ fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
         "a night-side cloud reads {covered:.1} over ground that reads {bare:.1}: \
          the layer is darkening the night side instead of lighting it"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The cloud layer is shaded by the sun in every texture mode, not only in the
@@ -4365,23 +4557,13 @@ fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
 fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
     const MODES: [(i32, &str); 3] = [(0, "grid"), (1, "day"), (2, "night")];
 
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_sentinel");
-    // Blend mode at startup, so both file-backed slots are loaded before any
-    // single-texture mode asks for one and no reading falls back to the grid.
-    let (harness, _surface) = cloud_harness(&dir, cloud_case_params(3, 180.0, NIGHT_HOUR));
+    let gpu = gpu();
+    let harness = surface(&gpu);
 
     for (mode, name) in MODES {
         let mut means = Vec::new();
         for hour in [DAY_HOUR, NIGHT_HOUR] {
-            harness
-                .engine
-                .send(EngineCommand::UpdateParams(Box::new(cloud_case_params(
-                    mode, 180.0, hour,
-                ))));
-            let pixels = harness
-                .engine
-                .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-                .expect("the engine should be able to export");
+            let pixels = harness.picture(&cloud_case_params(mode, 180.0, hour), CLOUD_CASE_SIZE);
             means.push(center_window_mean(&pixels, CLOUD_CASE_SIZE));
         }
         let (lit, unlit) = (means[0], means[1]);
@@ -4392,7 +4574,6 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
              the cloud ramp is reading the sentinel rather than its own width"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Either opacity at zero switches off its own hemisphere and not the layer.
@@ -4408,24 +4589,19 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
 /// `fs_cloud` holds the base off zero, so this is the shape that reaches it.
 #[test]
 fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_hemispheres");
+    let gpu = gpu();
+    let harness = surface(&gpu);
     let base = cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR);
-    let (harness, _surface) = cloud_harness(&dir, base);
     let read = |day: f32, night: f32| {
-        harness
-            .engine
-            .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+        let pixels = harness.picture(
+            &SceneParams {
                 cloud_opacity: day,
                 cloud_opacity_night: night,
                 ..base
-            })));
-        center_window_mean(
-            &harness
-                .engine
-                .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-                .expect("the engine should be able to export"),
+            },
             CLOUD_CASE_SIZE,
-        )
+        );
+        center_window_mean(&pixels, CLOUD_CASE_SIZE)
     };
 
     let day_only = read(base.cloud_opacity, 0.0);
@@ -4441,7 +4617,6 @@ fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
         (night_only - deck).abs() < 2.0,
         "with only the night opacity up the night side reads {night_only:.1} rather than the          deck's {deck:.1}, so the layer is not drawing when the day slider is zero"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The night opacity covers the ground at the top of its range, and lets it
@@ -4459,27 +4634,25 @@ fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
 /// ground by ignoring the slider would pass the first assertion alone.
 #[test]
 fn the_night_opacity_reaches_full_cover() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("engine_cloud_night_opacity");
+    let gpu = gpu();
+    let harness = surface(&gpu);
     let base = cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR);
-    let (harness, _surface) = cloud_harness_with(
-        &dir,
-        SceneParams {
-            cloud_opacity_night: 0.0,
-            ..base
-        },
-        support::FixtureClouds::uniform(support::CLOUD_FIXTURE_PARTIAL),
-    );
+
+    // The banded map is 255 or nothing, so any nonzero night opacity covers the
+    // ground completely and there is no covering left to measure. This is the
+    // one case that needs the partial map, and the size is how it knows the
+    // swap has reached the slot.
+    let uniform = harness.clouds.serve_uniform(support::CLOUD_FIXTURE_PARTIAL);
+    wait_for_cloud_size(harness, uniform, "the partial cloud map");
+
     let read = |night_opacity: f32| {
-        harness
-            .engine
-            .send(EngineCommand::UpdateParams(Box::new(SceneParams {
+        let pixels = harness.picture(
+            &SceneParams {
                 cloud_opacity_night: night_opacity,
                 ..base
-            })));
-        let pixels = harness
-            .engine
-            .export_pixels(CLOUD_CASE_SIZE.0, CLOUD_CASE_SIZE.1)
-            .expect("the engine should be able to export");
+            },
+            CLOUD_CASE_SIZE,
+        );
         center_window_mean(&pixels, CLOUD_CASE_SIZE)
     };
 
@@ -4503,7 +4676,6 @@ fn the_night_opacity_reaches_full_cover() {
         partly > covered + 5.0 && partly < uncovered - 5.0,
         "the default night opacity reads {partly:.1}, which is not between the {covered:.1} of          full cover and the {uncovered:.1} of none, so the slider is not doing the covering"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -4519,58 +4691,6 @@ const CHANGE_TIMEOUT: Duration = Duration::from_secs(20);
 /// several of its ticks and not a guess at how fast the machine is.
 const NOTHING_HAPPENS_IN: Duration = Duration::from_millis(400);
 
-/// An engine on a clock the case moves, over a layout the case can move too.
-fn watching_harness(sink: Arc<RecordingSink>) -> (Harness, Arc<MockClock>) {
-    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let clock_for_config = Arc::clone(&clock);
-    let harness = Harness::start(move |config| {
-        config.wallpaper = sink;
-        config.clock = clock_for_config;
-    });
-    harness.next_frame();
-    (harness, clock)
-}
-
-impl Harness {
-    /// Send a display-change hint and wait until the engine has taken it.
-    ///
-    /// The round trip matters rather than the report: commands are handled in
-    /// the order they were sent, so an answer to a later one is proof that the
-    /// hint was read at the clock reading the case meant it to be read at.
-    fn hint(&self) {
-        self.engine.send(EngineCommand::DisplaysChanged);
-        let _ = self.engine.memory_report();
-    }
-
-    /// Move the clock and ask the engine to look at its schedule now.
-    fn advance(&self, clock: &MockClock, by: Duration) {
-        clock.advance(by);
-        self.engine.send(EngineCommand::Poke);
-    }
-
-    /// The next layout the engine announces, or `None` if it announces none.
-    fn next_layout(&self, within: Duration) -> Option<Vec<Monitor>> {
-        let deadline = std::time::Instant::now() + within;
-        while let Ok(event) = self.events.recv_deadline(deadline) {
-            if let EngineEvent::MonitorsChanged(monitors) = event {
-                return Some(monitors);
-            }
-        }
-        None
-    }
-
-    /// Block until the engine has finished a publish attempt.
-    fn wait_for_publish(&self) -> Result<String, String> {
-        let deadline = std::time::Instant::now() + CHANGE_TIMEOUT;
-        while let Ok(event) = self.events.recv_deadline(deadline) {
-            if let EngineEvent::WallpaperSet(result) = event {
-                return result;
-            }
-        }
-        panic!("no publish finished within {CHANGE_TIMEOUT:?}");
-    }
-}
-
 /// Block until the sink has been asked for its monitors `target` times.
 fn wait_for_queries(sink: &RecordingSink, target: usize) {
     let deadline = std::time::Instant::now() + CHANGE_TIMEOUT;
@@ -4584,69 +4704,69 @@ fn wait_for_queries(sink: &RecordingSink, target: usize) {
     }
 }
 
-/// Give the engine the settle and a hint's worth of a baseline to compare
-/// against, so the cases below start from a layout the engine has seen.
-fn establish_baseline(harness: &Harness, clock: &MockClock, sink: &RecordingSink) {
-    harness.hint();
-    harness.advance(clock, DISPLAY_SETTLE + Duration::from_secs(1));
-    let announced = harness
-        .next_layout(CHANGE_TIMEOUT)
-        .expect("the first layout the engine sees is one it has nothing to compare against");
-    assert_eq!(announced, sink.monitors().expect("the sink answers"));
+/// A one-screen layout no case has used before, and none will use again.
+///
+/// The engine remembers the layout it last settled on for as long as it runs,
+/// and every case here is about the difference between a layout that changed
+/// and one that did not. A shared engine outlives the case that gave it its
+/// last layout, so a case that reused a size would be asking about a change
+/// that had already happened.
+fn an_unfamiliar_layout(id: &str) -> Vec<Monitor> {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let width = 256 + NEXT.fetch_add(1, Ordering::Relaxed) * 8;
+    vec![screen(id, 0, width, 160, true)]
 }
 
-/// The settle the engine uses, spelled here so the cases read as the plan does.
-/// It is not imported from the engine because it is private there, and a case
-/// that pinned the number would be testing a constant rather than behavior:
-/// what these use it for is to step over it.
-const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
+/// Give the engine the settle and a hint's worth of a baseline to compare
+/// against, so the cases below start from a layout the engine has seen.
+fn establish_baseline(group: &Watching) {
+    let layout = an_unfamiliar_layout("baseline");
+    group.sink.set_monitors(layout.clone());
+    group.hint();
+    group.advance(&group.clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    let announced = group
+        .next_layout(CHANGE_TIMEOUT)
+        .expect("a layout the engine has not seen before is one it announces");
+    assert_eq!(announced, layout);
+}
 
-/// A layout that did not change is one query and nothing else.
+/// A settled burst is one query and, where nothing moved, nothing else.
 ///
 /// The hints this design pays for and discards are exactly this case: a resume
 /// from sleep, a scaling change, a color depth change. Each costs one
-/// enumeration and an equal comparison, and nothing on the desk moves.
+/// enumeration and an equal comparison, and nothing on the desk moves. A burst
+/// of them costs the same one enumeration, because a change is a burst on both
+/// platforms.
 #[test]
-fn a_hint_about_a_layout_that_did_not_change_is_one_query_and_nothing_else() {
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let (harness, clock) = watching_harness(Arc::clone(&sink));
-    establish_baseline(&harness, &clock, &sink);
+fn a_settled_burst_of_hints_is_one_query_whatever_it_was_made_of() {
+    let gpu = gpu();
+    let group = watching(&gpu);
+    establish_baseline(group);
 
-    let before = sink.queries();
-    harness.hint();
-    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
-    wait_for_queries(&sink, before + 1);
-
+    let before = group.sink.queries();
+    group.hint();
+    group.advance(&group.clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    wait_for_queries(&group.sink, before + 1);
     assert!(
-        harness.next_layout(NOTHING_HAPPENS_IN).is_none(),
+        group.next_layout(NOTHING_HAPPENS_IN).is_none(),
         "the layout is the one the engine already knows, so there is nothing to announce"
     );
     assert_eq!(
-        sink.queries(),
+        group.sink.queries(),
         before + 1,
-        "one settled burst is one query, whatever it was made of"
+        "one settled burst is one query"
     );
-    assert!(sink.publications().is_empty());
-}
+    assert!(group.sink.publications().is_empty());
 
-/// A burst is one query, because a change is a burst on both platforms.
-#[test]
-fn every_hint_of_one_burst_collapses_into_a_single_query() {
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let (harness, clock) = watching_harness(Arc::clone(&sink));
-    establish_baseline(&harness, &clock, &sink);
-
-    let before = sink.queries();
     for _ in 0..5 {
-        harness.hint();
+        group.hint();
     }
-    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
-    wait_for_queries(&sink, before + 1);
+    group.advance(&group.clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    wait_for_queries(&group.sink, before + 2);
     std::thread::sleep(NOTHING_HAPPENS_IN);
-
     assert_eq!(
-        sink.queries(),
-        before + 1,
+        group.sink.queries(),
+        before + 2,
         "five hints inside the settle window are one layout change"
     );
 }
@@ -4658,26 +4778,26 @@ fn every_hint_of_one_burst_collapses_into_a_single_query() {
 /// swap that the second one immediately invalidates.
 #[test]
 fn a_hint_during_the_settle_moves_the_deadline_it_found() {
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let (harness, clock) = watching_harness(Arc::clone(&sink));
-    establish_baseline(&harness, &clock, &sink);
+    let gpu = gpu();
+    let group = watching(&gpu);
+    establish_baseline(group);
 
-    let before = sink.queries();
-    harness.hint();
-    harness.advance(&clock, Duration::from_millis(1500));
-    harness.hint();
+    let before = group.sink.queries();
+    group.hint();
+    group.advance(&group.clock, Duration::from_millis(1500));
+    group.hint();
 
     // The first hint's deadline has passed; the second one's has not.
-    harness.advance(&clock, Duration::from_secs(1));
+    group.advance(&group.clock, Duration::from_secs(1));
     std::thread::sleep(NOTHING_HAPPENS_IN);
     assert_eq!(
-        sink.queries(),
+        group.sink.queries(),
         before,
         "the second hint should have moved the deadline the first one set"
     );
 
-    harness.advance(&clock, Duration::from_secs(1));
-    wait_for_queries(&sink, before + 1);
+    group.advance(&group.clock, Duration::from_secs(1));
+    wait_for_queries(&group.sink, before + 1);
 }
 
 /// The rule, in the case it was written for: the desk holds a picture this
@@ -4685,34 +4805,35 @@ fn a_hint_during_the_settle_moves_the_deadline_it_found() {
 /// is here, at the sizes that layout has.
 #[test]
 fn a_layout_that_changed_under_a_published_wallpaper_is_published_again() {
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let (harness, clock) = watching_harness(Arc::clone(&sink));
+    let gpu = gpu();
+    let group = plain(&gpu);
+    group.sink.set_monitors(an_unfamiliar_layout("docked"));
 
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-    harness
-        .wait_for_publish()
+    group
+        .publish()
         .expect("publishing to a recording sink cannot fail");
-    assert_eq!(sink.publications().len(), 1);
+    assert_eq!(group.sink.publications().len(), 1);
 
     // The notebook was undocked: one screen left, and a different one.
-    let alone = vec![screen("internal", 0, 256, 160, true)];
-    sink.set_monitors(alone.clone());
-    harness.hint();
-    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    let alone = an_unfamiliar_layout("internal");
+    let size = (alone[0].width, alone[0].height);
+    group.sink.set_monitors(alone.clone());
+    group.hint();
+    group.advance(&group.clock, DISPLAY_SETTLE + Duration::from_secs(1));
 
-    let announced = harness
+    let announced = group
         .next_layout(CHANGE_TIMEOUT)
         .expect("a layout that changed is announced");
     assert_eq!(announced, alone);
 
-    harness
+    group
         .wait_for_publish()
         .expect("publishing to a recording sink cannot fail");
-    let published = sink.publications();
+    let published = group.sink.publications();
     assert_eq!(published.len(), 2, "the change published once more");
     assert_eq!(
         published[1].images,
-        vec![Some((256, 160))],
+        vec![Some(size)],
         "the second publish is for the screen that is there now, at its own size"
     );
 }
@@ -4721,23 +4842,23 @@ fn a_layout_that_changed_under_a_published_wallpaper_is_published_again() {
 /// wallpaper does not get one because they moved a screen.
 #[test]
 fn a_layout_that_changed_with_nothing_on_the_desk_is_announced_and_not_published() {
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let (harness, clock) = watching_harness(Arc::clone(&sink));
-    establish_baseline(&harness, &clock, &sink);
+    let gpu = gpu();
+    let group = watching(&gpu);
+    establish_baseline(group);
 
-    let alone = vec![screen("internal", 0, 256, 160, true)];
-    sink.set_monitors(alone.clone());
-    harness.hint();
-    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    let alone = an_unfamiliar_layout("internal");
+    group.sink.set_monitors(alone.clone());
+    group.hint();
+    group.advance(&group.clock, DISPLAY_SETTLE + Duration::from_secs(1));
 
     assert_eq!(
-        harness.next_layout(CHANGE_TIMEOUT),
+        group.next_layout(CHANGE_TIMEOUT),
         Some(alone),
         "the window still has to be told, so its diagram is not a layout from ten minutes ago"
     );
     std::thread::sleep(NOTHING_HAPPENS_IN);
     assert!(
-        sink.publications().is_empty(),
+        group.sink.publications().is_empty(),
         "no wallpaper was ever asked for, so a moved screen does not produce one"
     );
 }
@@ -4746,26 +4867,24 @@ fn a_layout_that_changed_with_nothing_on_the_desk_is_announced_and_not_published
 /// an error in the status line out of nowhere.
 #[test]
 fn a_layout_that_changed_after_a_refusal_is_announced_and_not_published() {
-    let sink = Arc::new(RecordingSink::refusing(two_screens()));
-    let (harness, clock) = watching_harness(Arc::clone(&sink));
+    let gpu = gpu();
+    let group = watching(&gpu);
+    group.sink.refuse();
 
-    harness.engine.send(EngineCommand::RenderWallpaperNow);
-    let refusal = harness
-        .wait_for_publish()
-        .expect_err("a refusing sink cannot publish");
+    let refusal = group.publish().expect_err("a refusing sink cannot publish");
     assert_eq!(refusal, RecordingSink::REFUSED);
 
-    establish_baseline(&harness, &clock, &sink);
-    let alone = vec![screen("internal", 0, 256, 160, true)];
-    sink.set_monitors(alone.clone());
-    harness.hint();
-    harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
+    establish_baseline(group);
+    let alone = an_unfamiliar_layout("internal");
+    group.sink.set_monitors(alone.clone());
+    group.hint();
+    group.advance(&group.clock, DISPLAY_SETTLE + Duration::from_secs(1));
 
-    assert_eq!(harness.next_layout(CHANGE_TIMEOUT), Some(alone));
+    assert_eq!(group.next_layout(CHANGE_TIMEOUT), Some(alone));
     std::thread::sleep(NOTHING_HAPPENS_IN);
-    assert!(sink.publications().is_empty());
+    assert!(group.sink.publications().is_empty());
     assert!(
-        harness.next_layout(NOTHING_HAPPENS_IN).is_none(),
+        group.next_layout(NOTHING_HAPPENS_IN).is_none(),
         "one layout change is one announcement"
     );
 }

@@ -9,11 +9,14 @@
 //!
 //! Two things happen here and not in the shader. The model matrix is assembled,
 //! so the vertex shader reads one transform and knows nothing about lunar
-//! coordinates; and the disk's radius in pixels is floored the way
-//! [`super::sun_occlusion::place_sun`] floors the Sun's, by inflating that
-//! matrix's scale. The floor is one rule with one spelling on one side of the
-//! language boundary, which is what the two shared sky-lens rules could not
-//! have.
+//! coordinates; and the disk is floored to the same
+//! [`super::sun_occlusion::MIN_BODY_DISK_RADIUS_PIXELS`] the Sun takes, so the
+//! two bodies that subtend the same half degree are the same size on screen.
+//! The constant and the [`super::sun_occlusion::pixel_scale`] ramp are what the
+//! two share; the flooring itself is not. `place_sun` clamps the projected
+//! radius directly, which leaves a disc that is no longer the image of any
+//! cone, while the Moon's true radius is inflated and re-imaged, so its disc
+//! stays a real projection and its center moves a little with it.
 
 use glam::{Mat3, Mat4, Vec2, Vec3};
 
@@ -21,7 +24,7 @@ use super::sun_occlusion::{MIN_BODY_DISK_RADIUS_PIXELS, ScreenCircle, pixel_scal
 
 /// The Moon's radius in the scene's unit of length: 1737.4 km against the
 /// Earth's equatorial 6378.137.
-pub const MOON_RADIUS_EARTH_RADII: f32 = 0.2724;
+pub(crate) const MOON_RADIUS_EARTH_RADII: f32 = 0.2724;
 
 /// The frame geometry [`place_moon`] needs.
 #[derive(Clone, Copy, Debug)]

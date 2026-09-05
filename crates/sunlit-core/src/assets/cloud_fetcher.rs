@@ -26,10 +26,11 @@ use super::texture_loader::{self, DecodedImage};
 /// Callback invoked after a new frame has been posted, so a client that only
 /// works on demand knows there is something waiting. Headless callers that poll
 /// on their own schedule pass a no-op.
-pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type NotifyFn = Arc<dyn Fn() + Send + Sync>;
 
 /// A notify callback that does nothing.
-pub fn no_notify() -> NotifyFn {
+#[cfg(test)]
+pub(crate) fn no_notify() -> NotifyFn {
     Arc::new(|| {})
 }
 
@@ -49,7 +50,7 @@ const MAX_RETRY_DELAY: Duration = Duration::from_mins(5);
 /// Split out from the worker loop so the schedule can be tested without
 /// actually sleeping through it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RetryBackoff {
+pub(crate) struct RetryBackoff {
     delay: Duration,
 }
 
@@ -61,6 +62,7 @@ impl RetryBackoff {
     }
 
     /// How long to wait before the next attempt.
+    #[cfg(test)]
     pub fn delay(&self) -> Duration {
         self.delay
     }
@@ -107,7 +109,7 @@ struct CacheMeta {
 /// takes the widest variant that does not exceed it, and one below all of them
 /// takes the smallest: sharper clouds than surface is the one combination worth
 /// ruling out.
-pub fn cloud_variant(resolution: u32) -> (u32, u32) {
+pub(crate) fn cloud_variant(resolution: u32) -> (u32, u32) {
     let width = TEXTURE_RESOLUTIONS
         .iter()
         .copied()
@@ -244,30 +246,29 @@ fn discard_cache_meta(path: &Path) {
 
 /// Decode a JPEG cloud image from raw bytes into RGBA8 pixel data.
 ///
-/// Applies the same transforms as equirectangular texture loading:
-/// horizontal flip and 1/4-width shift to align the prime meridian.
+/// Through [`texture_loader::orient`], so the overlay lands in the same UV
+/// layout as the file-backed maps and cannot drift from them.
 #[tracing::instrument(skip(bytes), fields(bytes_len = bytes.len()))]
 fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
     let img = image::load_from_memory(bytes)
         .map_err(|e| format!("Failed to decode cloud JPEG: {e}"))?
-        .fliph()
         .into_rgba8();
 
     let width = img.width();
     let height = img.height();
-    let mut pixels = img.into_raw();
-    texture_loader::shift_horizontal(&mut pixels, width, height);
-
-    Ok(DecodedImage {
-        pixels,
+    let mut decoded = DecodedImage {
+        pixels: img.into_raw(),
         width,
         height,
-    })
+    };
+    texture_loader::orient(&mut decoded);
+
+    Ok(decoded)
 }
 
 /// What one call to [`CloudUpdater::poll_once`] achieved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PollOutcome {
+pub(crate) enum PollOutcome {
     /// A new frame was decoded and posted to the mailbox.
     Updated,
     /// The source reported no change.
@@ -278,7 +279,7 @@ pub enum PollOutcome {
 
 /// Turns a [`CloudSource`] into decoded frames in the texture mailbox, keeping
 /// the on-disk cache in step.
-pub struct CloudUpdater {
+pub(crate) struct CloudUpdater {
     source: Arc<dyn CloudSource>,
     mailbox: TextureMailbox,
     notify: NotifyFn,

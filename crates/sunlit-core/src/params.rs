@@ -1,18 +1,16 @@
 //! The single scene parameter struct.
 //!
 //! `SceneParams` is the one description of "what to draw" that flows through
-//! every layer. Before it existed, the same thirty values were spelled out in
-//! the Slint properties, in `AppConfig`, in `FrameState`, in `ShadingParams`,
-//! and again when building `Uniforms`, so adding one shader knob meant touching
-//! eight files. Now there are exactly two translation points: the Slint bridge
-//! in `sunlit-app`, and the uniform encoder in `renderer::uniforms`.
+//! every layer, so there are exactly two translation points for it:
+//! `ui_callbacks::read_params_from_window` and `apply_params_to_window` in
+//! `sunlit-app`, and `renderer::render_pass::write_uniforms` here.
 
 use crate::config::AppConfig;
 use crate::scene::camera::CameraParams;
 use crate::scene::sun::DateTimeInput;
 
 /// Radius of the cloud shell, just above the surface.
-pub const CLOUD_SPHERE_RADIUS: f32 = 1.0015;
+pub(crate) const CLOUD_SPHERE_RADIUS: f32 = 1.0015;
 /// Half-width of the cloud layer's own terminator ramp, in units of n dot l.
 ///
 /// Wider than the globe's 0.1: the shell's tangent condition already shifts the
@@ -21,11 +19,11 @@ pub const CLOUD_SPHERE_RADIUS: f32 = 1.0015;
 /// constant rather than a slider, because nobody wants to tune two terminators.
 pub const CLOUD_TERMINATOR_WIDTH: f32 = 0.18;
 /// Radius of the Rayleigh scattering shell.
-pub const RAYLEIGH_RADIUS: f32 = 1.015;
+pub(crate) const RAYLEIGH_RADIUS: f32 = 1.015;
 /// Radius of the orange (sodium D + iron oxide) nightglow shell.
-pub const NIGHTGLOW_ORANGE_RADIUS: f32 = 1.014;
+pub(crate) const NIGHTGLOW_ORANGE_RADIUS: f32 = 1.014;
 /// Radius of the green (OI 557.7nm) nightglow shell.
-pub const NIGHTGLOW_GREEN_RADIUS: f32 = 1.015;
+pub(crate) const NIGHTGLOW_GREEN_RADIUS: f32 = 1.015;
 
 const GAMMA_MIN: f32 = 0.2;
 const GAMMA_MAX: f32 = 3.0;
@@ -276,7 +274,7 @@ impl SceneParams {
 
     /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
     /// the draw call entirely.
-    pub fn effective_rayleigh_intensity(&self) -> f32 {
+    pub(crate) fn effective_rayleigh_intensity(&self) -> f32 {
         if self.atmo_enabled {
             self.rayleigh_intensity
         } else {
@@ -285,7 +283,7 @@ impl SceneParams {
     }
 
     /// Nightglow intensity after the atmosphere master switch.
-    pub fn effective_nightglow_intensity(&self) -> f32 {
+    pub(crate) fn effective_nightglow_intensity(&self) -> f32 {
         if self.atmo_enabled {
             self.nightglow_intensity
         } else {
@@ -298,7 +296,7 @@ impl SceneParams {
     /// Camera values compare exactly; every other float is rounded to integer
     /// thousandths so that sub-visible slider jitter does not force a redraw.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn digest(&self) -> ParamsDigest {
+    pub(crate) fn digest(&self) -> ParamsDigest {
         ParamsDigest {
             camera: self.camera,
             texture_index: self.texture_index,
@@ -361,7 +359,7 @@ fn q(value: f32) -> i32 {
 
 /// Quantize a direction vector to integer milliradians for stable comparison.
 #[allow(clippy::cast_possible_truncation)]
-pub fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
+pub(crate) fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
     [q(dir.x), q(dir.y), q(dir.z)]
 }
 
@@ -370,7 +368,7 @@ pub fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
 /// `datetime` is deliberately absent: the derived sky state is compared
 /// separately, so a live UTC render changes even though `datetime` does not.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ParamsDigest {
+pub(crate) struct ParamsDigest {
     pub camera: CameraParams,
     pub texture_index: i32,
     pub sample_count: u32,

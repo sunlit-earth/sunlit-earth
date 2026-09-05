@@ -19,8 +19,9 @@ pub struct DecodedImage {
 
 /// Load and decode an image file into pixels the sphere can sample.
 ///
-/// The format is auto-detected by the `image` crate (including JXL when the
-/// decoding hook has been registered via [`register_jxl_hook`]).
+/// The format comes from the file extension, not from the content, because
+/// that is what `ImageReader::open` reads it from. JXL is one of them once the
+/// decoding hook has been registered through [`register_jxl_hook`].
 #[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load(path: &Path) -> Result<DecodedImage, String> {
     let mut img = decode(path)?;
@@ -64,7 +65,7 @@ pub(crate) fn orient(img: &mut DecodedImage) {
 }
 
 /// Mirror every row, so east ends up where the sphere's winding expects it.
-pub(crate) fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
     let row_bytes = w * 4;
     for y in 0..height as usize {
@@ -80,7 +81,7 @@ pub(crate) fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 
 /// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
 /// with the sphere's u=0.
-pub(crate) fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
     let row_bytes = w * 4;
     let shift_bytes = w * 3; // 3/4 width in bytes (each pixel is 4 bytes)

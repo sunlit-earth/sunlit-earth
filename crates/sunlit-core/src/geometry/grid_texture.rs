@@ -15,7 +15,7 @@ const GRID_WHITE: [u8; 3] = [204, 204, 204];
 const MAJOR_YELLOW: [u8; 3] = [255, 230, 77];
 
 #[allow(clippy::cast_precision_loss)]
-pub fn generate(width: u32, height: u32) -> Vec<u8> {
+pub(crate) fn generate(width: u32, height: u32) -> Vec<u8> {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
 
     for y in 0..height {

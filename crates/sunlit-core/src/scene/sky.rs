@@ -60,7 +60,7 @@ const PLANETS: [(PlanetKind, astro_body_t); 5] = [
 ];
 
 /// Compute all astronomy inputs for a scene at an injected UTC time.
-pub fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
+pub(crate) fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
     compute_sky_state_from_time(time_for_input(dt, now_utc))
 }
 
@@ -70,7 +70,7 @@ pub fn compute_sky_state(dt: &DateTimeInput) -> SkyState {
 }
 
 /// Compute the sky state from an Astronomy Engine time value.
-pub fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
+pub(crate) fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
     let world_from_eqj = rotation_world_from_eqj(&mut time);
     let sun_direction = body_direction(astro_body_t_BODY_SUN, time, world_from_eqj);
     let planets = PLANETS.map(|(kind, body)| PlanetState {

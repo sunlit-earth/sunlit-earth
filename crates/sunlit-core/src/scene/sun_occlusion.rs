@@ -28,7 +28,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 /// Angular radius of the Sun's disk seen from Earth, in degrees. The seasonal
 /// variation (0.262 to 0.271) is below a pixel at any output this renders.
-pub const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
+pub(crate) const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
 
 /// Smallest radius either half-degree body is drawn at, in pixels at 1080p.
 ///
@@ -38,7 +38,7 @@ pub const SUN_ANGULAR_RADIUS_DEGREES: f32 = 0.267;
 /// carry the same clause for the same reason. The Moon subtends the same half
 /// degree and takes the same floor, or the two bodies that are the same size in
 /// the sky would be different sizes on screen wherever it is active.
-pub const MIN_BODY_DISK_RADIUS_PIXELS: f32 = 1.6;
+pub(crate) const MIN_BODY_DISK_RADIUS_PIXELS: f32 = 1.6;
 
 /// Output-density ramp shared with the star sprites: 1.0 at 1080p and below,
 /// 2.0 at 4K and above.
@@ -48,7 +48,7 @@ pub fn pixel_scale(viewport_height: f32) -> f32 {
 
 /// Earth's radius in kilometers, which is what turns a shell radius in Earth
 /// radii into the height of the band it stands for.
-pub const EARTH_RADIUS_KM: f32 = 6371.0;
+pub(crate) const EARTH_RADIUS_KM: f32 = 6371.0;
 
 /// Scale height of the density the light path runs through, in kilometers.
 ///
@@ -73,7 +73,7 @@ const CHANNEL_TRANSMISSION: [f32; 3] = [0.90, 0.836, 0.73];
 /// atmosphere than the whole of it, and the exponential would otherwise run
 /// away where the disk sits behind the painted limb.
 #[must_use]
-pub fn limb_air_mass(height_km: f32, reddening: f32) -> f32 {
+pub(crate) fn limb_air_mass(height_km: f32, reddening: f32) -> f32 {
     HORIZON_AIR_MASS * (-height_km.max(0.0) / ATMOSPHERE_SCALE_HEIGHT_KM).exp() * reddening
 }
 
@@ -97,7 +97,8 @@ pub fn limb_transmission(height_km: f32, reddening: f32) -> Vec3 {
 /// is. What the disk and the glare are tinted with, since both are clipped
 /// bright long before the path stops carrying anything.
 #[must_use]
-pub fn limb_hue(height_km: f32, reddening: f32) -> Vec3 {
+#[cfg(test)]
+pub(crate) fn limb_hue(height_km: f32, reddening: f32) -> Vec3 {
     let transmitted = limb_transmission(height_km, reddening);
     transmitted / transmitted.max_element().max(1e-30)
 }
@@ -123,16 +124,11 @@ pub struct ScreenCircle {
     pub radius: f32,
 }
 
-/// How much of the Sun's disk the viewer can see, and how much of what is
-/// visible looks through the atmosphere shell.
+/// How much of the Sun's disk the viewer can see.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SunVisibility {
     /// Fraction of the disk's area outside the globe's painted silhouette.
     pub visible_fraction: f32,
-    /// Fraction of the disk's area inside the annulus between the painted
-    /// silhouette and the atmosphere shell's, which is the grazing band where
-    /// the light path runs through the lower atmosphere.
-    pub transit_fraction: f32,
 }
 
 /// The frame geometry [`place_sun`] needs, bundled because it is nine values
@@ -149,7 +145,8 @@ pub struct SunPlacementInputs {
     pub sky_fov_deg: f32,
     /// The Earth camera's vertical field of view.
     pub camera_fov_deg: f32,
-    /// Radius of the atmosphere shell that bounds the transit band.
+    /// Radius of the atmosphere shell, which sets the height of the band the
+    /// light path runs through and the width of the horizon zone.
     pub atmosphere_radius: f32,
     /// Post-projection pan, in NDC, as the sky lens applies it.
     pub screen_offset: Vec2,
@@ -186,7 +183,8 @@ impl SunHorizonParams {
     /// The settings that leave the Sun exactly where geometry puts it, white,
     /// unmagnified and unboosted: what everything here answered before the
     /// band existed.
-    pub const GEOMETRIC: Self = Self {
+    #[cfg(test)]
+    pub(crate) const GEOMETRIC: Self = Self {
         size: 1.0,
         depth: 0.0,
         reddening: 0.0,
@@ -330,7 +328,7 @@ const REFRACTION_EXPONENT: f32 = 13.7;
 /// At `refraction` zero this is the identity with no magnification at all,
 /// which is what leaves the geometric Sun exactly where it was.
 #[must_use]
-pub fn refract(height: f32, refraction: f32) -> (f32, f32) {
+pub(crate) fn refract(height: f32, refraction: f32) -> (f32, f32) {
     let lift = REFRACTION_LIFT_ZONES * refraction;
     if lift <= 0.0 {
         return (height, 1.0);
@@ -393,7 +391,7 @@ const FLUX_STRIPS: usize = 64;
 /// is the smaller. Derived here rather than in the shader because it is one
 /// solve a frame against one per rim fragment.
 #[must_use]
-pub fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
+pub(crate) fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
     let cosine = half_width_deg.to_radians().cos();
     let half = 0.5_f32.powf(2.0 / 3.0);
     let sum = (2.0 - 2.0 * half * cosine) / (1.0 - half);
@@ -409,7 +407,7 @@ pub fn henyey_greenstein_asymmetry(half_width_deg: f32) -> f32 {
 /// holds at `boost` until the whole disk stands clear and settles to one over
 /// `reach` zone widths above that, which is the sequence a rising Sun reads as.
 #[must_use]
-pub fn exposure_gain(lower_edge_height: f32, boost: f32, reach: f32) -> f32 {
+pub(crate) fn exposure_gain(lower_edge_height: f32, boost: f32, reach: f32) -> f32 {
     let settled = smoothstep(1.0, 1.0 + reach.max(1e-3), lower_edge_height);
     1.0 + (boost - 1.0) * (1.0 - settled)
 }
@@ -553,7 +551,6 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
             disk_radius_pixels: floor,
             visibility: SunVisibility {
                 visible_fraction: 1.0,
-                transit_fraction: 0.0,
             },
             globe,
             zone_width_pixels: horizon_zone_width(
@@ -603,10 +600,6 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
             center: globe.center,
             radius: moved(globe.radius),
         },
-        ScreenCircle {
-            center: globe.center,
-            radius: moved(atmosphere.radius),
-        },
         inputs.moon_disc,
     );
 
@@ -644,37 +637,23 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
 ///
 /// The Moon comparison carries none of the mixed-lens caveat the globe one
 /// does: the Sun and the Moon are both imaged by the sky lens, so their circles
-/// are in the same lens and the answer agrees with an ephemeris. The transit
-/// band belongs to the globe alone, so the Moon does not enter it.
-pub fn visibility(
-    sun: ScreenCircle,
-    globe: ScreenCircle,
-    atmosphere: ScreenCircle,
-    moon: Option<ScreenCircle>,
-) -> SunVisibility {
+/// are in the same lens and the answer agrees with an ephemeris.
+fn visibility(sun: ScreenCircle, globe: ScreenCircle, moon: Option<ScreenCircle>) -> SunVisibility {
     let behind_globe = overlap_area(sun.radius, globe.radius, sun.center.distance(globe.center));
     let behind_moon = moon.map_or(0.0, |moon| {
         overlap_area(sun.radius, moon.radius, sun.center.distance(moon.center))
     });
     let hidden = behind_globe.max(behind_moon);
-    let within_atmosphere = overlap_area(
-        sun.radius,
-        atmosphere.radius,
-        sun.center.distance(atmosphere.center),
-    );
     let area = PI * sun.radius * sun.radius;
     if area <= 0.0 {
         let outside = |circle: ScreenCircle| sun.center.distance(circle.center) > circle.radius;
         let clear = outside(globe) && moon.is_none_or(outside);
-        let banded = clear && sun.center.distance(atmosphere.center) <= atmosphere.radius;
         return SunVisibility {
             visible_fraction: f32::from(u8::from(clear)),
-            transit_fraction: f32::from(u8::from(banded)),
         };
     }
     SunVisibility {
         visible_fraction: (1.0 - hidden / area).clamp(0.0, 1.0),
-        transit_fraction: ((within_atmosphere - behind_globe) / area).clamp(0.0, 1.0),
     }
 }
 
@@ -684,7 +663,8 @@ pub fn visibility(
 /// Read by nothing in the renderer. It exists so the screen-space function has
 /// something independent to be checked against in the one configuration where
 /// the two lenses agree about scale.
-pub fn angular_visible_fraction(sun_direction: Vec3, eye: Vec3, body_radius: f32) -> f32 {
+#[cfg(test)]
+pub(crate) fn angular_visible_fraction(sun_direction: Vec3, eye: Vec3, body_radius: f32) -> f32 {
     let distance = eye.length();
     if distance <= body_radius {
         return 0.0;
@@ -735,19 +715,12 @@ mod tests {
     use super::*;
     use crate::scene::camera::OrbitalCamera;
 
-    /// Concentric silhouettes to measure a sun disk against: the globe at 50
-    /// pixels and the atmosphere shell at 60, both around (100, 100).
+    /// The silhouette to measure a sun disk against: 50 pixels around
+    /// (100, 100).
     fn globe() -> ScreenCircle {
         ScreenCircle {
             center: Vec2::new(100.0, 100.0),
             radius: 50.0,
-        }
-    }
-
-    fn atmosphere() -> ScreenCircle {
-        ScreenCircle {
-            center: Vec2::new(100.0, 100.0),
-            radius: 60.0,
         }
     }
 
@@ -988,10 +961,6 @@ mod tests {
                         center: Vec2::ZERO,
                         radius: moved,
                     },
-                    ScreenCircle {
-                        center: Vec2::ZERO,
-                        radius: moved,
-                    },
                     None,
                 )
                 .visible_fraction;
@@ -1044,42 +1013,23 @@ mod tests {
     }
 
     #[test]
-    fn a_sun_clear_of_both_silhouettes_is_fully_visible() {
-        let v = visibility(sun_at(300.0, 5.0), globe(), atmosphere(), None);
+    fn a_sun_clear_of_the_silhouette_is_fully_visible() {
+        let v = visibility(sun_at(300.0, 5.0), globe(), None);
         assert_relative_eq!(v.visible_fraction, 1.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     #[test]
     fn a_sun_inside_the_painted_globe_is_fully_hidden() {
-        let v = visibility(sun_at(100.0, 5.0), globe(), atmosphere(), None);
+        let v = visibility(sun_at(100.0, 5.0), globe(), None);
         assert_relative_eq!(v.visible_fraction, 0.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     #[test]
     fn a_sun_centered_on_the_limb_is_half_visible() {
-        let v = visibility(sun_at(150.0, 5.0), globe(), atmosphere(), None);
+        let v = visibility(sun_at(150.0, 5.0), globe(), None);
         // A shade over half, because the limb curves away from the disk's
         // center rather than cutting it along a diameter.
         assert_relative_eq!(v.visible_fraction, 0.51, epsilon = 0.02);
-        // What cleared the limb is entirely inside the atmosphere circle,
-        // which is what the transit band means.
-        assert_relative_eq!(v.transit_fraction, v.visible_fraction, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn a_sun_in_the_annulus_is_visible_and_fully_in_transit() {
-        let v = visibility(sun_at(155.0, 2.0), globe(), atmosphere(), None);
-        assert_relative_eq!(v.visible_fraction, 1.0);
-        assert_relative_eq!(v.transit_fraction, 1.0);
-    }
-
-    #[test]
-    fn a_sun_past_the_atmosphere_is_out_of_transit() {
-        let v = visibility(sun_at(170.0, 2.0), globe(), atmosphere(), None);
-        assert_relative_eq!(v.visible_fraction, 1.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     /// A moon circle centered on a sun disk of the same size, well clear of
@@ -1091,9 +1041,8 @@ mod tests {
             center: sun.center,
             radius: 5.0,
         };
-        let v = visibility(sun, globe(), atmosphere(), Some(moon));
+        let v = visibility(sun, globe(), Some(moon));
         assert_relative_eq!(v.visible_fraction, 0.0);
-        assert_relative_eq!(v.transit_fraction, 0.0);
     }
 
     /// A moon somewhere else in the sky changes nothing, which is the case
@@ -1105,11 +1054,11 @@ mod tests {
             center: Vec2::new(340.0, 100.0),
             radius: 5.0,
         };
-        let v = visibility(sun, globe(), atmosphere(), Some(moon));
+        let v = visibility(sun, globe(), Some(moon));
         assert_relative_eq!(v.visible_fraction, 1.0);
         assert_relative_eq!(
             v.visible_fraction,
-            visibility(sun, globe(), atmosphere(), None).visible_fraction
+            visibility(sun, globe(), None).visible_fraction
         );
     }
 
@@ -1124,7 +1073,7 @@ mod tests {
             radius: 5.0,
         };
         let lens = 2.0 * (0.5_f32.acos() - 0.5 * 0.75_f32.sqrt()) / PI;
-        let v = visibility(sun, globe(), atmosphere(), Some(moon));
+        let v = visibility(sun, globe(), Some(moon));
         assert_relative_eq!(v.visible_fraction, 1.0 - lens, epsilon = 1e-5);
     }
 
@@ -1135,20 +1084,20 @@ mod tests {
     fn the_larger_occluder_decides_when_both_cover_the_sun() {
         // Centered on the painted limb, so the globe hides about half.
         let sun = sun_at(150.0, 5.0);
-        let globe_alone = visibility(sun, globe(), atmosphere(), None).visible_fraction;
+        let globe_alone = visibility(sun, globe(), None).visible_fraction;
         // A moon just clipping the other side of the same disk, hiding less.
         let small_bite = ScreenCircle {
             center: Vec2::new(158.0, 100.0),
             radius: 4.0,
         };
-        let with_small = visibility(sun, globe(), atmosphere(), Some(small_bite)).visible_fraction;
+        let with_small = visibility(sun, globe(), Some(small_bite)).visible_fraction;
         assert_relative_eq!(with_small, globe_alone);
         // And one covering the disk outright, hiding more than the globe does.
         let full = ScreenCircle {
             center: sun.center,
             radius: 6.0,
         };
-        let with_full = visibility(sun, globe(), atmosphere(), Some(full)).visible_fraction;
+        let with_full = visibility(sun, globe(), Some(full)).visible_fraction;
         assert_relative_eq!(with_full, 0.0);
     }
 
@@ -1159,7 +1108,7 @@ mod tests {
         for step in 0..=200 {
             #[allow(clippy::cast_precision_loss)]
             let x = 100.0 + step as f32 * 0.4;
-            let fraction = visibility(sun_at(x, 6.0), globe(), atmosphere(), None).visible_fraction;
+            let fraction = visibility(sun_at(x, 6.0), globe(), None).visible_fraction;
             assert!(
                 fraction >= previous - 1e-6,
                 "the visible fraction fell from {previous} to {fraction} at x = {x}"

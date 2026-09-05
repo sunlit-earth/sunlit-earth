@@ -50,7 +50,7 @@ impl TextureMailbox {
     /// mailbox that disagrees with it either drops messages for the high slots
     /// or hands over an index that array does not have. `Engine::new` compares
     /// the two rather than trusting them to match.
-    pub fn slot_count(&self) -> usize {
+    pub(crate) fn slot_count(&self) -> usize {
         self.slots
             .lock()
             .expect("texture mailbox lock poisoned")
@@ -98,7 +98,7 @@ impl TextureMailbox {
     }
 
     /// Take every parked message, leaving the mailbox empty.
-    pub fn take_all(&self) -> Vec<DecodedTextureMessage> {
+    pub(crate) fn take_all(&self) -> Vec<DecodedTextureMessage> {
         let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
         slots.iter_mut().filter_map(Option::take).collect()
     }

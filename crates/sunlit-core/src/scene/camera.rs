@@ -32,15 +32,15 @@ impl Default for CameraParams {
 }
 
 /// The Earth lens a preset and a fresh config start from.
-pub const DEFAULT_CAMERA_FOV: f32 = 20.0;
+pub(crate) const DEFAULT_CAMERA_FOV: f32 = 20.0;
 /// Narrowest Earth lens the settings window offers, in degrees.
-pub const CAMERA_FOV_MIN: f32 = 10.0;
+pub(crate) const CAMERA_FOV_MIN: f32 = 10.0;
 /// Widest Earth lens the settings window offers, in degrees.
 ///
 /// The perspective projection scales by `1 / tan(fov / 2)`, which reaches zero
 /// at 180 degrees and takes the whole scene to a point with it. 170 is as wide
 /// as the lens goes while the projection is still finite.
-pub const CAMERA_FOV_MAX: f32 = 170.0;
+pub(crate) const CAMERA_FOV_MAX: f32 = 170.0;
 
 /// Camera presets for the 3x3 preset grid in the UI.
 ///
@@ -163,9 +163,9 @@ pub const PRESETS: [CameraParams; 9] = [
 ];
 
 /// Minimum camera distance (closest zoom).
-pub const ZOOM_DISTANCE_MIN: f32 = 1.5;
+pub(crate) const ZOOM_DISTANCE_MIN: f32 = 1.5;
 /// Maximum camera distance (farthest zoom).
-pub const ZOOM_DISTANCE_MAX: f32 = 80.0;
+pub(crate) const ZOOM_DISTANCE_MAX: f32 = 80.0;
 
 /// Map a normalized slider value (0.0 to 1.0) to a camera distance
 /// using an exponential curve: `1.5 * (80.0 / 1.5)^t`.
@@ -175,7 +175,7 @@ pub fn zoom_to_distance(t: f32) -> f32 {
 
 /// Inverse of `zoom_to_distance`: convert a camera distance back to
 /// a normalized slider value.
-pub fn distance_to_zoom(distance: f32) -> f32 {
+pub(crate) fn distance_to_zoom(distance: f32) -> f32 {
     (distance / ZOOM_DISTANCE_MIN).ln() / (ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN).ln()
 }
 
@@ -263,7 +263,7 @@ impl OrbitalCamera {
     }
 
     /// Compute the projection matrix for the given aspect ratio.
-    pub fn projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
+    pub(crate) fn projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
         Mat4::perspective_rh(self.fov_deg.to_radians(), aspect_ratio, 0.1, 100.0)
     }
 

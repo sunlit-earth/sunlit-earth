@@ -108,10 +108,7 @@ pub fn coarse_drag_gain(zoom: f32) -> f32 {
 ///
 /// Half the angle one pixel spans at the center of the sky lens, so the Sun's
 /// image moves half a pixel per pixel of cursor near the frame's center and
-/// about one at its edge. Neither side of that ratio depends on the camera's
-/// distance, which is the point: the sunrise is drawn through the sky lens and
-/// the sky lens has no zoom, so a gain that follows the camera is fine at one
-/// distance and coarse at another.
+/// about one at its edge, at every camera distance.
 ///
 /// :param `sky_fov_deg`: the sky lens's field of view in degrees
 /// :param `preview_width_px`: the preview's width in logical pixels
@@ -269,14 +266,12 @@ mod tests {
 
     #[test]
     fn globe_drag_horizontal_without_tilt() {
-        // Dragging right should decrease longitude (globe rotates left)
         let (lon, _lat) = apply_globe_drag(0.0, 0.0, 0.0, 0.5, 10.0, 0.0);
         assert!(lon < 0.0, "dragging right should decrease longitude");
     }
 
     #[test]
     fn globe_drag_vertical_without_tilt() {
-        // Dragging up (negative dy) should decrease latitude
         let (_lon, lat) = apply_globe_drag(0.0, 0.0, 0.0, 0.5, 0.0, -10.0);
         assert!(lat < 0.0, "dragging up should decrease latitude");
     }
@@ -294,12 +289,9 @@ mod tests {
 
     #[test]
     fn globe_drag_tilt_correction_rotates_deltas() {
-        // With 90-degree tilt, horizontal drag should affect latitude
-        // and vertical drag should affect longitude
         let (_lon_tilted, lat_tilted) = apply_globe_drag(0.0, 0.0, 90.0, 0.5, 10.0, 0.0);
         let (_lon_normal, lat_normal) = apply_globe_drag(0.0, 0.0, 0.0, 0.5, 10.0, 0.0);
 
-        // With 90-degree tilt, the horizontal drag component should mostly affect latitude
         assert!(
             lat_tilted.abs() > lat_normal.abs(),
             "90-degree tilt should redirect horizontal drag to latitude"
@@ -308,7 +300,6 @@ mod tests {
 
     #[test]
     fn globe_drag_zoom_sensitivity() {
-        // At zoom=0 (closest), movement should be smaller than at zoom=1 (farthest)
         let (lon_close, _) = apply_globe_drag(0.0, 0.0, 0.0, 0.0, 10.0, 0.0);
         let (lon_far, _) = apply_globe_drag(0.0, 0.0, 0.0, 1.0, 10.0, 0.0);
         assert!(
@@ -362,9 +353,7 @@ mod tests {
         // The fine gain is a property of the sky lens rather than of the
         // camera, so the only thing that can make a slow drag differ between
         // two zooms is the cap against the coarse gain. Walking the whole
-        // slider is what says where that is: at 140 degrees of sky it is never
-        // active and the rate is one number from end to end, and at 180 it is
-        // active at the nearest zooms and nowhere else.
+        // slider is what says where that cap is active.
         for (sky_fov, capped_somewhere) in [(140.0_f32, false), (180.0, true)] {
             let fine = fine_drag_gain(sky_fov, 1920.0);
             let mut capped = 0;
@@ -388,10 +377,9 @@ mod tests {
 
     #[test]
     fn the_fine_gain_never_exceeds_the_coarse_one() {
-        // At the nearest zoom the coarse gain is 0.056 degrees per pixel and
-        // the fine one at the widest sky is 0.060, which is the one framing
-        // where a deliberate hand would otherwise turn the globe faster than a
-        // sweeping one.
+        // The nearest zoom against the widest sky is the one framing where a
+        // deliberate hand would otherwise turn the globe faster than a sweeping
+        // one.
         let coarse = coarse_drag_gain(0.0);
         let fine = fine_drag_gain(180.0, 1920.0);
         assert!(fine > coarse, "the two no longer cross at the nearest zoom");
@@ -412,8 +400,8 @@ mod tests {
     fn a_sweep_turns_the_globe_exactly_as_it_always_did() {
         // Every zoom the slider reaches, because the blend's own arithmetic is
         // where this could fail: `fine + (coarse - fine)` rounds away from
-        // `coarse` at 62 of these 1001 zooms, which is why the sweeping end
-        // returns the coarse gain itself.
+        // `coarse` at some of them, which is why the sweeping end returns the
+        // coarse gain itself.
         let fine = fine_drag_gain(140.0, 1920.0);
         for step in 0..=1000_u16 {
             let zoom = f32::from(step) / 1000.0;

@@ -12,7 +12,7 @@ use slint::ComponentHandle;
 use sunlit_earth::MainWindow;
 
 // ---------------------------------------------------------------------------
-// Initialization boilerplate (Step 2.1)
+// Initialization boilerplate
 // ---------------------------------------------------------------------------
 
 /// Initialize the Slint testing backend for the current thread.
@@ -55,7 +55,7 @@ fn test_window_creates_successfully() {
 }
 
 // ---------------------------------------------------------------------------
-// Property round-trip tests (Step 2.2)
+// Property round-trip tests
 // ---------------------------------------------------------------------------
 
 /// The Earth lens travels with the rest of the camera, so a round trip is the
@@ -304,11 +304,7 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
 }
 
 // ---------------------------------------------------------------------------
-// Preset callback wiring
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Load-defaults callback tests (Step 2.4)
+// Load-defaults callback tests
 // ---------------------------------------------------------------------------
 
 /// The button exists, is unique, and invokes its callback; what the callback
@@ -335,18 +331,15 @@ fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
         win.set_diffuse_shading(defaults.diffuse_shading);
     });
 
-    // Set several values the defaults are not
     window.set_camera_longitude(123.0);
     window.set_camera_zoom(0.99);
     window.set_diffuse_shading(false);
 
-    // Click "Load Defaults"
     let buttons: Vec<_> =
         ElementHandle::find_by_accessible_label(&window, "Load Defaults").collect();
     assert_eq!(buttons.len(), 1);
     buttons[0].invoke_accessible_default_action();
 
-    // Verify all properties reset to defaults
     let defaults = sunlit_core::config::AppConfig::default();
     approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
     approx::assert_relative_eq!(window.get_camera_zoom(), defaults.zoom);
@@ -354,7 +347,7 @@ fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
 }
 
 // ---------------------------------------------------------------------------
-// Advanced section visibility toggle tests (Step 2.5)
+// Advanced section visibility toggle tests
 // ---------------------------------------------------------------------------
 
 /// The advanced section's controls are in the element tree only while it is
@@ -745,12 +738,6 @@ fn test_the_diagram_marks_the_screen_the_plan_will_use() {
 }
 
 /// A layout that moved while the window was open.
-///
-/// The whole reaction, in the order a person sees it: the combo rows become the
-/// screens that are there, the group disappears when one is left and comes back
-/// when the second returns, and the anchor lands on its own row again rather
-/// than on the automatic one, because the stored id was kept while its screen
-/// was gone.
 ///
 /// The anchor row is the return value rather than a property read, because
 /// setting it goes through `defer_combobox_indices`, which needs an event loop

@@ -1,7 +1,4 @@
 //! UI callback registration and config-to-window bridge functions.
-//!
-//! Groups all Slint callback registrations by category and provides helper
-//! functions for applying/reading config to/from the window.
 
 use slint::ComponentHandle;
 
@@ -70,12 +67,12 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
     });
 }
 
-/// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
-/// tilt drag, scroll zoom, and preset application.
+/// Register mouse interaction callbacks: globe drag (left), frame drag
+/// (right), orient drag (middle), tilt drag (left and right together), scroll
+/// zoom, and preset application.
 pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
     register_globe_drag(window, link);
 
-    // Right-drag callback: adjust framing (offset X/Y)
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_drag_frame(move |dx, dy| {
@@ -94,7 +91,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Middle-drag callback: adjust pitch and yaw
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_drag_orient(move |dx, dy| {
@@ -108,7 +104,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Left+right drag callback: adjust tilt (horizontal only)
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_drag_tilt(move |dx, _dy| {
@@ -119,7 +114,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Mouse scroll callback: zoom in/out
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_scroll(move |delta| {
@@ -130,7 +124,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Apply-preset callback: set camera parameters from the PRESETS array
     let window_weak = window.as_weak();
     let engine = link.clone();
     #[allow(clippy::cast_sign_loss)]
@@ -166,7 +159,6 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
         }
     });
 
-    // When "Override date/time" is toggled on, initialize sliders to current UTC time
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_datetime_override_toggled(move || {
@@ -227,7 +219,6 @@ pub fn register_action_callbacks(
     link: &EngineLink,
     screens: &displays::SharedMonitors,
 ) {
-    // "Set as Wallpaper" button: save config, then ask the engine to export.
     {
         let window_weak = window.as_weak();
         let engine = link.clone();
@@ -241,7 +232,6 @@ pub fn register_action_callbacks(
         });
     }
 
-    // Load-defaults callback: restore all settings to AppConfig::default() without saving
     let window_weak = window.as_weak();
     let engine = link.clone();
     let for_defaults = std::sync::Arc::clone(screens);
@@ -277,7 +267,6 @@ pub fn register_action_callbacks(
         engine.push_params(&win);
     });
 
-    // Reset callback: reload config from disk and restore UI to last-saved state
     let window_weak = window.as_weak();
     let engine = link.clone();
     let for_reset = std::sync::Arc::clone(screens);
@@ -421,12 +410,10 @@ pub fn defer_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Co
 pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     apply_params_to_window(window, &SceneParams::from_config(config));
 
-    // Auto-refresh
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
     #[allow(clippy::cast_precision_loss)] // interval_minutes fits in f32 mantissa
     window.set_auto_refresh_interval(config.auto_refresh_interval_minutes as f32);
 
-    // Update display labels
     update_datetime_labels(window, datetime::base_year());
 }
 

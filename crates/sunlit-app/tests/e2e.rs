@@ -197,7 +197,6 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Output {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process exited — collect output.
                 let stdout = child.stdout.take().map_or_else(Vec::new, |mut s| {
                     use std::io::Read;
                     let mut buf = Vec::new();
@@ -217,10 +216,8 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Output {
                 };
             }
             Ok(None) => {
-                // Still running.
                 if start.elapsed() > timeout {
                     let _ = child.kill();
-                    // Wait for the killed process to clean up.
                     let _ = child.wait();
                     panic!(
                         "child process did not exit within {:.0}s — killed",
@@ -313,7 +310,6 @@ struct MemoryEntry {
 
 /// Parse all "memory usage" lines from stderr, stripping ANSI escape codes.
 fn parse_memory_entries(stderr: &str) -> Vec<MemoryEntry> {
-    // Strip ANSI escape sequences: ESC [ ... m
     let ansi_re = regex_lite::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
 
     let mut entries = Vec::new();
@@ -365,19 +361,13 @@ fn rgb_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 3] {
 
 /// Assert that a corner of the render is empty space rather than globe.
 ///
-/// A patch and not a pixel, because the sky is drawn there. A single sample
-/// asks whether one point happens to be free of stars, and the answer moved to
-/// within four pixels of the top-left corner the moment stars were turned on
-/// by default: a nudge to a star default, the catalog, or the fixture's date
-/// would eventually land one on the sample and report "expected black" about a
-/// globe that is exactly where it should be. What the case actually means is
-/// that the corner is mostly empty, which a patch can say and a pixel cannot.
-/// Stars are small and sparse; a globe filling the corner is neither.
-///
-/// What a patch cannot survive is a layer that paints every pixel of the sky,
-/// so the fixture config switches the Milky Way off for the same reason it
-/// switches the clouds off: this case reads the picture by color, and both of
-/// those put a color where it reads.
+/// A patch and not a pixel, because the sky is drawn there: a single sample
+/// asks whether one point happens to be free of stars, and a star default, the
+/// catalog or the fixture's date could land one on that sample and report
+/// "expected black" about a globe that is exactly where it should be. What the
+/// case means is that the corner is mostly empty, which a patch can say and a
+/// pixel cannot. Stars are small and sparse; a globe filling the corner is
+/// neither.
 const CORNER_PATCH: u32 = 16;
 const CORNER_BLACK_FRACTION: f64 = 0.5;
 
@@ -484,7 +474,8 @@ fn assert_ice(rgb: [u8; 3], label: &str) {
 // IPC helpers
 // ---------------------------------------------------------------------------
 
-/// Monotonically increasing counter for unique socket names.
+/// Monotonically increasing counter for names that have to be unique within
+/// this process: socket names and throwaway config paths.
 static SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Generate a unique local socket name for a test.
@@ -870,7 +861,7 @@ fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
 /// Encode a JPEG the stub server can serve as the cloud image.
 ///
 /// The gradient keeps the encoded file small while the decoded RGBA buffer is
-/// `width * height * 4` bytes, which is what the leak used to park in memory.
+/// `width * height * 4` bytes, which is the allocation the case is watching.
 fn cloud_fixture_jpeg(width: u32, height: u32) -> Vec<u8> {
     let mut img = image::RgbImage::new(width, height);
     for (x, y, pixel) in img.enumerate_pixels_mut() {
@@ -960,24 +951,14 @@ fn test_binary_exists() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_render_and_exit() {
-    // 1. Create a temp directory and output path. RAII so a failing assertion
-    //    below still cleans the directory up.
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
     let config_path = fixture("e2e_config.toml");
-    // A cache directory of its own, and empty, because the memory profile this
-    // case asserts on is the profile of a run that decodes the surface
-    // textures. Out of a warm downscale cache there is no decode: measured in
-    // the Linux guest on 2026-09-01, the same render peaked at 2088 MB and
-    // settled to 444 MB with a cold cache and sat flat at 381 MB with a warm
-    // one, where the peak is the last sample and "settled" means nothing. What
-    // used to guarantee the cold cache was the order the suite happens to run
-    // in: the only case that warmed it sorted after this one, until a new case
-    // sorted before it and the assertion started failing on an app that had not
-    // changed.
+    // A cache directory of its own, so this case pays the texture decode rather
+    // than inheriting a warm cache from whichever case ran first. The memory
+    // profile asserted on below is the profile of a run that decodes.
     let cache_dir = temp_dir.path().join("cache");
 
-    // 2. Spawn the binary with the render subcommand.
     let child = Command::new(binary())
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
@@ -1001,18 +982,8 @@ fn test_render_and_exit() {
         .spawn()
         .expect("failed to spawn sunlit-earth binary");
 
-    // 3. Wait for the process to exit. A minute rather than the 30 seconds
-    //    this had: the cache directory above makes every run of this case pay
-    //    the decode that used to be paid by whichever run of the suite happened
-    //    to go first. Timed on this host on 2026-09-01, debug build, empty
-    //    cache, the same 800x800 render: 5.9 s on the GPU and 8.0 s on the
-    //    software adapter, against 2.5 s warm. The guest is a software
-    //    rasterizer on a slower CPU and has never been timed at all, and the
-    //    only thing a generous timeout costs is how long a genuinely hung
-    //    process takes to be reported.
     let output = wait_with_timeout(child, Duration::from_mins(1));
 
-    // 4. Assert exit code is 0.
     assert!(
         output.status.success(),
         "process exited with non-zero status: {:?}\nstderr:\n{}",
@@ -1020,7 +991,6 @@ fn test_render_and_exit() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // 5. Assert the render output file exists and is non-empty.
     assert!(
         output_path.exists(),
         "render output file was not created at {}",
@@ -1031,65 +1001,46 @@ fn test_render_and_exit() {
         .len();
     assert!(file_size > 0, "render output file is empty (0 bytes)");
 
-    // 6. Decode the PNG with the image crate.
     let img = image::open(&output_path).expect("failed to decode render output PNG");
 
-    // 7. Assert image dimensions match the requested size.
     let (width, height) = img.dimensions();
     assert_eq!(width, 800, "render output width mismatch");
     assert_eq!(height, 800, "render output height mismatch");
 
-    // 8. Sample pixels at known geographic locations to validate the
-    //    rendered globe. The config places the camera at lon=11, lat=48
-    //    (Central Europe) at 17:00 UTC on summer solstice, so the
-    //    terminator runs through eastern Europe with India/Tibet in night.
+    // The fixture config places the camera at lon=11, lat=48 (Central Europe)
+    // at 17:00 UTC on the summer solstice, so the terminator runs through
+    // eastern Europe with India and Tibet in night, which is what the sample
+    // coordinates below mean.
     let rgba = img.to_rgba8();
 
-    // Corners should be space: empty background, with whatever stars the sky
-    // put there.
     assert_space_corner(&rgba, false, false, "top-left corner");
     assert_space_corner(&rgba, true, false, "top-right corner");
     assert_space_corner(&rgba, false, true, "bottom-left corner");
     assert_space_corner(&rgba, true, true, "bottom-right corner");
 
-    // Center: Central Europe — should be greenish (vegetation)
     assert_greenish(rgb_at(&rgba, 400, 400), "center (Central Europe)");
-
-    // Sahara: south of center — should be yellowish/sandy
     assert_yellowish(rgb_at(&rgba, 420, 560), "Sahara");
-
-    // Atlantic Ocean: west/left of center — should be blue
     assert_blue(rgb_at(&rgba, 250, 400), "Atlantic Ocean");
-
-    // Greenland: upper-left — should be bright white (ice/snow)
     assert_ice(rgb_at(&rgba, 300, 175), "Greenland");
-
-    // Indian Ocean: night side, far east — should be very dark water
     assert_night_ocean(rgb_at(&rgba, 730, 500), "Indian Ocean (night)");
-
-    // Tibet: night side land with nightglow — dim and bluish
     assert_night_land(rgb_at(&rgba, 730, 300), "Tibet (night)");
 
-    // 9. Parse stderr — assert no line contains " ERROR ".
     let stderr_text = String::from_utf8_lossy(&output.stderr);
     for line in stderr_text.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 
-    // 10. Assert stderr contains "first frame rendered".
     assert!(
         stderr_text.contains("first frame rendered"),
         "stderr does not contain 'first frame rendered':\n{stderr_text}"
     );
 
-    // 11. Validate memory usage profile from debug log entries.
     let mem = parse_memory_entries(&stderr_text);
     assert!(
         !mem.is_empty(),
         "no memory usage entries found in stderr (is log level debug?)"
     );
 
-    // Phase A: Early memory should be low (before textures load).
     if let Some(entry) = mem.iter().find(|e| e.context == "after window creation") {
         assert!(
             entry.rss_mb < 300.0,
@@ -1099,14 +1050,12 @@ fn test_render_and_exit() {
         );
     }
 
-    // Phase B: Peak RSS should stay within limits during rendering.
     let peak = mem.iter().map(|e| e.peak_rss_mb).fold(0.0f64, f64::max);
     assert!(
         peak < 3000.0,
         "peak RSS too high: {peak:.0} MB (expected < 3000 MB)"
     );
 
-    // Phase C: Memory should settle down before exit.
     if let Some(entry) = mem.iter().rev().find(|e| e.context == "before exit") {
         assert!(
             entry.rss_mb < 1000.0,
@@ -1118,13 +1067,7 @@ fn test_render_and_exit() {
         // construction and the comparison asks whether the decode's memory came
         // back before the last sample. With nothing decoded the profile is flat
         // and the last sample is the high-water mark itself, so the comparison
-        // is a number against itself and the numbers are printed instead. The
-        // cache directory above is what makes a decode happen; this reads the
-        // log to confirm one did rather than assuming it, which is what the
-        // case was doing when it started failing. It is not a skip for a
-        // checkout without the Git LFS objects: those runs fail at the surface
-        // colors above, which need the real 8K maps, long before they reach
-        // here.
+        // is a number against itself and the numbers are printed instead.
         if mem.iter().any(|e| e.context == "after texture decode") {
             assert!(
                 entry.rss_mb < peak,
@@ -1155,7 +1098,6 @@ fn test_tray_mode_ipc_lifecycle() {
     }
     let socket_name = unique_socket_name();
 
-    // 1. Spawn the binary in tray mode with window hidden and IPC enabled.
     let mut guard = ChildGuard::new(
         Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
@@ -1179,36 +1121,31 @@ fn test_tray_mode_ipc_lifecycle() {
     let stdout_watcher = StdoutWatcher::new(child);
     let watcher = StderrWatcher::new(child);
 
-    // 2. Wait for the IPC listener and the deferred hide to complete.
-    //    The deferred hide fires via Timer::single_shot(ZERO) after the
-    //    event loop starts. We must wait for it before sending show-window
-    //    to avoid a race where show fires before the timer hides the window.
+    // The deferred hide fires via `Timer::single_shot(ZERO)` once the event
+    // loop starts, so it has to be waited for before show-window, or show
+    // races the timer that hides the window.
     let ready_timeout = Duration::from_secs(30);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("window_hidden_deferred", ready_timeout);
 
-    // 3. Show the window via IPC so the rendering notifier fires
-    //    (hidden windows don't trigger Slint rendering callbacks).
+    // A hidden window fires no Slint rendering callback, so the window has to
+    // be shown before a frame can be waited for.
     send_ipc_command(&socket_name, "show-window");
     stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(10));
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
-    // 4. Hide the window via IPC (actual window.hide()).
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
 
-    // 5. Send quit via IPC and wait for graceful exit.
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
 
-    // 6. Assert exit code 0.
     assert!(
         output.status.success(),
         "process exited with non-zero status: {:?}",
         output.status
     );
 
-    // 7. Assert expected log messages are present.
     let stderr = watcher.lines().join("\n");
     assert!(
         stderr.contains("startup mode: tray"),
@@ -1223,7 +1160,6 @@ fn test_tray_mode_ipc_lifecycle() {
         "stderr missing 'quit_event_loop':\n{stderr}"
     );
 
-    // 8. Assert no ERROR lines in stderr.
     for line in watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
@@ -1359,7 +1295,6 @@ fn test_session_end_shuts_down_promptly() {
 fn test_windowed_mode_graceful_shutdown() {
     let socket_name = unique_socket_name();
 
-    // 1. Spawn in windowed mode with IPC enabled.
     let mut guard = ChildGuard::new(
         Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
@@ -1383,16 +1318,13 @@ fn test_windowed_mode_graceful_shutdown() {
     let stdout_watcher = StdoutWatcher::new(child);
     let watcher = StderrWatcher::new(child);
 
-    // 2. Wait for readiness.
     let ready_timeout = Duration::from_secs(30);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     watcher.wait_for_log("first frame rendered", ready_timeout);
 
-    // 3. Send quit via IPC.
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
 
-    // 4. Assert exit code 0 and expected log messages.
     assert!(
         output.status.success(),
         "process exited with non-zero status: {:?}",
@@ -1409,7 +1341,6 @@ fn test_windowed_mode_graceful_shutdown() {
         "stderr missing 'quit_event_loop':\n{stderr}"
     );
 
-    // 5. No errors in log.
     for line in watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
@@ -1429,7 +1360,6 @@ fn test_single_instance_second_exits() {
     }
     let socket_name = unique_socket_name();
 
-    // 1. Spawn instance A in tray mode with IPC (acquires the single-instance mutex).
     let mut guard_a = ChildGuard::new(
         Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
@@ -1446,13 +1376,11 @@ fn test_single_instance_second_exits() {
     let stdout_watcher_a = StdoutWatcher::new(instance_a);
     let _watcher_a = StderrWatcher::new(instance_a);
 
-    // 2. Wait for instance A to be ready.
     let ready_timeout = Duration::from_secs(30);
     stdout_watcher_a.wait_for_signal("ipc_listener_ready", ready_timeout);
 
-    // 3. Spawn instance B with the SAME ipc-socket name so it uses the
-    //    same scoped mutex as A (otherwise it checks the default mutex
-    //    which may conflict with a real running instance).
+    // The same socket name as A, so B takes the mutex scoped to that name
+    // rather than the default one, which a real running instance may hold.
     let instance_b = Command::new(binary())
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
@@ -1463,28 +1391,23 @@ fn test_single_instance_second_exits() {
         .spawn()
         .expect("failed to spawn instance B");
 
-    // 4. Wait for B with a 10-second timeout.
     let output_b = wait_with_timeout(instance_b, Duration::from_secs(10));
 
-    // 5. B should have exited with code 0.
     assert!(
         output_b.status.success(),
         "instance B exited with non-zero status: {:?}",
         output_b.status
     );
 
-    // 6. B's stderr should contain the single-instance detection message.
     let stderr_b = String::from_utf8_lossy(&output_b.stderr);
     assert!(
         stderr_b.contains("another instance is already running"),
         "instance B stderr missing single-instance message:\n{stderr_b}"
     );
 
-    // 7. Clean up instance A via IPC quit.
     send_ipc_command(&socket_name, "quit");
     let output_a = wait_with_timeout(guard_a.take(), Duration::from_secs(10));
 
-    // 8. Instance A should exit with code 0.
     assert!(
         output_a.status.success(),
         "instance A exited with non-zero status: {:?}",
@@ -1492,18 +1415,12 @@ fn test_single_instance_second_exits() {
     );
 }
 
-/// Verify that the Slint event loop stays alive and the window can be
-/// shown again after being hidden via tray close.
-///
-/// The critical assertion: after hiding, the `show-window` IPC command
-/// is processed. If the event loop dies after hide, this times out.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_tray_hide_show_cycle() {
     let socket_name = unique_socket_name();
 
-    // 1. Spawn the binary in tray mode with IPC enabled.
     let mut guard = ChildGuard::new(
         Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
@@ -1522,50 +1439,40 @@ fn test_tray_hide_show_cycle() {
     let stdout_watcher = StdoutWatcher::new(child);
     let stderr_watcher = StderrWatcher::new(child);
 
-    // 2. Wait for the IPC listener and first frame via stdout signals.
     let ready_timeout = Duration::from_secs(30);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
-    // 3. Hide the window via IPC (actual window.hide()).
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
 
-    // 4. KEY TEST: Show again. If the event loop died after hide,
-    //    this command will never be processed and the test times out.
     send_ipc_command(&socket_name, "show-window");
     stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(10));
 
-    // 5. Send quit via IPC and wait for graceful exit.
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
 
-    // 6. Assert exit code 0.
     assert!(
         output.status.success(),
         "process exited with non-zero status: {:?}",
         output.status
     );
 
-    // 7. Assert no ERROR lines in stderr.
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 }
 
-/// Verify that GPU resources persist after `window.hide()` and that
-/// `export_wallpaper_image()` works on a hidden window.
+/// A wallpaper export must still succeed on a hidden window.
 ///
-/// This is a gate test for the wallpaper scheduler feature: if the GPU
-/// export fails after hide, automatic wallpaper refresh in tray mode
-/// is not viable without a show-render-hide cycle.
+/// Automatic refresh in tray mode is only viable without a show-render-hide
+/// cycle if the GPU resources outlive `window.hide()`.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_gpu_persistence_after_hide() {
     let socket_name = unique_socket_name();
 
-    // 1. Spawn in tray mode with visible window and IPC enabled.
     let mut guard = ChildGuard::new(
         Command::new(binary())
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
@@ -1584,22 +1491,17 @@ fn test_gpu_persistence_after_hide() {
     let stdout_watcher = StdoutWatcher::new(child);
     let stderr_watcher = StderrWatcher::new(child);
 
-    // 2. Wait for GPU init and first frame.
     let ready_timeout = Duration::from_secs(30);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
 
-    // 3. Hide the window — GPU resources should persist.
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(10));
 
-    // 4. CRITICAL ASSERTION: GPU export must succeed on a hidden window.
-    //    If RenderingTeardown fires on hide, this would fail with
-    //    "GPU not initialized".
+    // A `RenderingTeardown` on hide would fail this with "GPU not initialized".
     send_ipc_command(&socket_name, "export-test");
     stdout_watcher.wait_for_signal("export_test_ok", Duration::from_secs(30));
 
-    // 5. Clean exit.
     send_ipc_command(&socket_name, "quit");
     let output = wait_with_timeout(guard.take(), Duration::from_secs(10));
 
@@ -1609,18 +1511,16 @@ fn test_gpu_persistence_after_hide() {
         output.status
     );
 
-    // 6. No errors in log.
     for line in stderr_watcher.lines() {
         assert!(!line.contains(" ERROR "), "found ERROR in stderr:\n{line}");
     }
 }
 
-/// Verify that cloud updates arriving while the window is hidden do not grow
-/// process memory without bound.
+/// Cloud updates arriving while the window is hidden must not grow process
+/// memory without bound.
 ///
-/// This is the regression test for the tray-mode memory leak: decoded cloud
-/// frames used to accumulate in an unbounded channel that was drained only from
-/// `BeforeRendering`, which stops firing once the window is hidden. The test
+/// Decoded cloud frames reach the GPU through a channel drained from
+/// `BeforeRendering`, which stops firing once the window is hidden. The case
 /// points the fetcher at a local stub server, hides the window, publishes 15
 /// updates, and asserts both that private bytes stay bounded and that the
 /// updates still reach the GPU while hidden.
@@ -1638,7 +1538,6 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     const SETTLE: Duration = Duration::from_secs(8);
 
     let socket_name = unique_socket_name();
-    // RAII so a failing assertion below still cleans the directory up.
     let temp_dir = TempDirGuard::new();
     let cache_dir = temp_dir.path().join("cache");
     let textures_dir = temp_dir.path().join("textures");
@@ -1647,10 +1546,10 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
 
     let (port, stub) = spawn_cloud_stub(cloud_fixture_jpeg(FIXTURE_WIDTH, FIXTURE_HEIGHT));
 
-    // 1. Spawn in windowed mode: no tray icon and no single-instance mutex,
-    //    while hiding over IPC still reproduces the exact leak condition.
-    //    The empty textures directory leaves the JXL slots unloaded, so cloud
-    //    frames are the only large allocations in flight.
+    // Windowed, so there is no tray icon and no single-instance mutex, while
+    // hiding over IPC still reaches the same state. The empty textures
+    // directory leaves the JXL slots unloaded, so cloud frames are the only
+    // large allocations in flight.
     let mut guard = ChildGuard::new(
         Command::new(binary())
             .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
@@ -1681,42 +1580,35 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     let stdout_watcher = StdoutWatcher::new(child);
     let stderr_watcher = StderrWatcher::new(child);
 
-    // 2. Wait for startup and for the first cloud image to be downloaded and
-    //    uploaded to the GPU while the window is still visible.
     let ready_timeout = Duration::from_mins(1);
     stdout_watcher.wait_for_signal("ipc_listener_ready", ready_timeout);
     stdout_watcher.wait_for_signal("first_frame_rendered", ready_timeout);
     wait_for_downloads(&stub, 1, ready_timeout);
     stderr_watcher.wait_for_log("GPU texture created", ready_timeout);
 
-    // 3. Hide the window. From here on BeforeRendering no longer fires.
+    // From here on `BeforeRendering` no longer fires.
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", Duration::from_secs(15));
 
-    // 4. Let everything in flight settle, then take the baseline sample.
     std::thread::sleep(SETTLE);
     let baseline = query_memory(&socket_name, &stdout_watcher);
     let stderr_cursor = stderr_watcher.line_count();
 
-    // 5. Publish new cloud images, waiting for each download to be served.
     for _ in 0..UPDATES {
         let target = stub.gets.load(Ordering::SeqCst) + 1;
         stub.version.fetch_add(1, Ordering::SeqCst);
         wait_for_downloads(&stub, target, Duration::from_secs(15));
     }
 
-    // 6. Settle again so the last update is processed, then take the end sample.
     std::thread::sleep(SETTLE);
     let end = query_memory(&socket_name, &stdout_watcher);
 
-    // 7. The GPU must still be usable while hidden.
     send_ipc_command(&socket_name, "export-test");
     stdout_watcher.wait_for_signal("export_test_ok", Duration::from_secs(30));
 
-    // 8. Close the log range covering the hidden phase, then show again and
-    //    shut down cleanly before asserting, so a failing run still produces a
-    //    complete log instead of a killed process. Showing the window drains
-    //    everything that was parked, so the cursor must be taken before it.
+    // Shut down cleanly before asserting, so a failing run still produces a
+    // complete log instead of a killed process. Showing the window drains
+    // everything that was parked, so the cursor must be taken before it.
     let stderr_cursor_end = stderr_watcher.line_count();
     send_ipc_command(&socket_name, "show-window");
     stdout_watcher.wait_for_signal("window_shown", Duration::from_secs(15));
@@ -1749,8 +1641,8 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         mib(GROWTH_LIMIT_BYTES)
     );
 
-    // 9. The leak assertion. Private bytes (commit charge) is used instead of
-    //    RSS because working-set trimming can hide heap growth from RSS.
+    // Private bytes (commit charge) rather than RSS, because working-set
+    // trimming can hide heap growth from RSS.
     assert!(
         private_growth < GROWTH_LIMIT_BYTES,
         "private bytes grew by {:.1} MiB across {UPDATES} cloud updates while hidden \
@@ -1760,7 +1652,6 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         mib(rss_growth)
     );
 
-    // 10. Updates must be processed while hidden, not merely discarded.
     assert!(
         created_while_hidden > 0,
         "no 'GPU texture created' line after the window was hidden: \
@@ -1861,32 +1752,6 @@ fn test_memory_report() {
     }
 }
 
-/// Ask this desktop what its wallpaper is, and check the answer is ours.
-///
-/// Answers with the file name the desktop was found to be holding, so that a
-/// caller which publishes twice can require the second answer to differ from the
-/// first. `None` where this desktop's setter has no store to ask.
-///
-/// A setter that exited zero is a weaker claim than a wallpaper that changed,
-/// and the difference is not theoretical: the XFCE backend passed this case
-/// while the desktop went on showing xfdesktop's own default, because it wrote a
-/// property no current xfdesktop reads. Only a screenshot caught that, and a
-/// screenshot is not standing regression cover. Reading the setting back is the
-/// part of it a test can do by itself.
-///
-/// The read-back is derived from the writes the sink performs rather than
-/// written out again, so a row that sets the wrong key reads the wrong key back
-/// and fails here instead of agreeing with itself. Two backends have no store to
-/// ask, Plasma's tool and `LXQt`'s file manager, and those say so rather than
-/// failing.
-///
-/// Derivation alone would not have caught the XFCE case, though, and that is
-/// what the last assertion is for: the old row wrote the properties the session
-/// listed, so reading those same properties back would have found the path in
-/// them and agreed that all was well. What was missing is the property named
-/// after the connected monitor, which is the only one xfdesktop reads. So a
-/// desktop whose settings are named after its own monitors has to hold the image
-/// in one of those, and nothing else counts.
 /// The placement the app would have made for this session, rebuilt from what it
 /// actually wrote: the file per monitor where this desktop takes one, and the
 /// first file otherwise.
@@ -1912,6 +1777,18 @@ fn placement_of(
     }
 }
 
+/// Ask this desktop what its wallpaper is, and check the answer is ours.
+///
+/// Answers with the file name the desktop was found to be holding, so that a
+/// caller which publishes twice can require the second answer to differ from the
+/// first. `None` where this desktop's setter has no store to ask, which is
+/// Plasma's tool and `LXQt`'s file manager.
+///
+/// The read-back is derived from the writes the sink performs rather than
+/// written out again, so a row that sets the wrong key reads the wrong key back
+/// and fails here instead of agreeing with itself. A desktop whose settings are
+/// named after its own monitors has to hold the image in one of those and
+/// nothing else counts, which is what the last assertion is for.
 #[cfg(target_os = "linux")]
 fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> Option<String> {
     assert!(
@@ -1987,9 +1864,9 @@ fn assert_the_desktop_holds_the_wallpaper(published: &[std::path::PathBuf]) -> O
         backend.desktop
     );
 
-    // The XFCE clause, expressed as what makes XFCE different rather than by
-    // name: asking the session which properties it has is the same thing as
-    // those properties being named after this session's own monitors.
+    // Expressed as what makes such a desktop different rather than by name:
+    // asking the session which properties it has is the same thing as those
+    // properties being named after this session's own monitors.
     if backend.discovery().is_some() {
         assert!(
             !monitors.is_empty(),
@@ -2072,11 +1949,8 @@ fn read_setting(query: &sunlit_core::desktop::Invocation) -> String {
 
 /// Verify that the app renders and publishes a real desktop wallpaper.
 ///
-/// This is the one case that changes something outside the process, which is
-/// why it is opt-in rather than platform-gated: it is harmless in a throwaway
-/// VM and rude on a developer's desktop, and those are the same Windows. The
-/// VM job sets `SUNLIT_EARTH_E2E_WALLPAPER`; nothing else does, so a plain
-/// `cargo e2e` skips it and says so.
+/// The one case that changes something outside the process, so it is opt-in
+/// through `WALLPAPER_OPT_IN` rather than platform-gated.
 ///
 /// What it exercises is the whole path the "Set as Wallpaper" button uses:
 /// render at the sink's native resolution, read back, encode a PNG, and hand
@@ -2184,7 +2058,6 @@ fn test_set_wallpaper() {
             !files.is_empty(),
             "publish {pass}: the engine reported a wallpaper and wrote no file"
         );
-        // One image per screen this session has, each at that screen's own size.
         assert_the_files_match_the_layout(&files);
 
         // Everything above is the app's own account of what it did. This is the
@@ -2767,12 +2640,10 @@ fn plasmashell_answers() -> bool {
 
 /// A burst of re-publishes does not crash plasmashell.
 ///
-/// The file-lifecycle defect this branch fixes is Plasma's alone. Its
-/// `MediaProxy` keeps a `KDirWatch` on the current wallpaper file, and the old
-/// lifecycle rewrote a file into its live path and deleted and recreated the
-/// file of a screen it had moved on from. The first decoded a half-written image
-/// and the second asserted in the plugin, and on a distro that ships the plugin
-/// with assertions live the violated one takes the shell down. The other guest
+/// Plasma's `MediaProxy` keeps a `KDirWatch` on the current wallpaper file, so a
+/// file rewritten in its live path can be decoded half-written, and a file
+/// deleted and recreated can trip an assertion in the plugin, which on a distro
+/// that ships it with assertions live takes the shell down. The other guest
 /// desktops read the wallpaper once at set time and never watch it, so only a
 /// Plasma session exercises this, and only a rapid re-publish makes the watch and
 /// the rewrite race.
@@ -2781,7 +2652,7 @@ fn plasmashell_answers() -> bool {
 /// whether plasmashell is still the same process answering D-Bus. A shell that
 /// crashed would answer under a new pid, or not answer at all. It is the cheap
 /// standing proxy for "it did not crash"; the definitive check stays the hand
-/// check on a two-screen Plasma machine, which `docs/roadmap.md` carries.
+/// check on a two-screen Plasma machine.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]

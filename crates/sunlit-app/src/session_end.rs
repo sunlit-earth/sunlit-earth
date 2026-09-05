@@ -8,31 +8,16 @@
 //!
 //! Windows asks every top-level window for permission first
 //! (`WM_QUERYENDSESSION`) and then tells it the session is going
-//! (`WM_ENDSESSION`). An application that answers neither is the one the
-//! shutdown screen names as preventing the reboot, and Windows kills it once
-//! its timeout runs out. winit handles neither message, and Slint is winit, so
-//! nothing in this program ever learned that Windows was going down: the tray
-//! process sat there until it was killed.
-//!
-//! The listener is a window of this module's own rather than a hook into
-//! Slint's. Reaching into Slint's window means subclassing a handle winit owns
-//! and following whatever it does with it; a window here is independent of
-//! whether the settings window is shown, hidden, or gone. It is created and
-//! never shown, and it is deliberately an ordinary top-level window rather than
-//! a message-only one, because `HWND_MESSAGE` windows do not receive these two
-//! messages at all.
+//! (`WM_ENDSESSION`), and winit handles neither, so the listener is a window of
+//! this module's own. It is created and never shown, and it is deliberately an
+//! ordinary top-level window rather than a message-only one, because
+//! `HWND_MESSAGE` windows do not receive these two messages at all.
 //!
 //! It pumps its own messages on its own thread, so the answer does not wait on
 //! whatever the main thread is doing. The answer to `WM_QUERYENDSESSION` is
-//! always yes: vetoing is what puts an application on that screen. Nothing is
-//! torn down until `WM_ENDSESSION` says the session is really ending, because
-//! a proposed shutdown can still be cancelled.
-//!
-//! What the Linux half is not is the whole conversation. A desktop that wants to
-//! know whether an application is *ready* to be closed asks over the session bus,
-//! through logind's inhibitor protocol; SIGTERM arrives after that decision has
-//! been made. So this uses the grace period rather than participating in the
-//! question, and the inhibitor half stays on the roadmap. macOS gets nothing yet.
+//! always yes: vetoing is what puts an application on the shutdown screen.
+//! Nothing is torn down until `WM_ENDSESSION` says the session is really
+//! ending, because a proposed shutdown can still be cancelled.
 
 use std::time::Duration;
 
@@ -169,10 +154,9 @@ mod platform {
         let Some(after) = handler.force_exit_after else {
             return;
         };
-        // The retrospective retired `process::exit` from the ordinary path, and
-        // this is not it: the session is going either way, and the choice here
-        // is between exiting ourselves and being the application Windows names
-        // on the shutdown screen before killing it.
+        // The session is going either way, and the choice here is between
+        // exiting ourselves and being the application Windows names on the
+        // shutdown screen before killing it.
         let _ = std::thread::Builder::new()
             .name("session-end-guard".to_owned())
             .spawn(move || {
@@ -318,17 +302,7 @@ pub use platform::{CLASS_NAME, Watcher, install};
 pub use unix::{Watcher, install};
 
 /// SIGTERM, on its own thread, which is the Linux session's way of saying it is
-/// going (phase 5 decision 8).
-///
-/// The same shape as the Windows listener and for the same reasons: its own
-/// thread, so the answer does not wait on whatever the main thread is doing, and
-/// one shutdown however many times the question is asked. What it is not is the
-/// whole of the story. A desktop that wants to know whether an application is
-/// ready to be closed asks over the session bus, through logind's inhibitor
-/// protocol, and this answers nothing there: what it does is take the ten to
-/// ninety seconds of grace the session gives a process it has already decided to
-/// end, and use them to exit cleanly rather than be killed. The inhibitor half is
-/// a roadmap item.
+/// going.
 ///
 /// A signal handler may call almost nothing, and quitting a Slint event loop is
 /// not on that list, so nothing here runs in a handler: `signal-hook`'s iterator
@@ -420,13 +394,6 @@ mod tests {
     }
 
     /// The Linux decision, which is one signal and not the others.
-    ///
-    /// SIGHUP is the one worth pinning rather than merely leaving out: it arrives
-    /// when a controlling terminal goes away, and the e2e suite starts this
-    /// application from a process whose terminal is not its own, so treating it
-    /// as the session ending would end a run in the middle of a test. SIGINT is
-    /// left to its default, because Ctrl-C in a terminal already ends the process
-    /// and a developer pressing it is not a session ending.
     #[test]
     #[cfg(target_os = "linux")]
     fn only_sigterm_means_the_linux_session_is_ending() {

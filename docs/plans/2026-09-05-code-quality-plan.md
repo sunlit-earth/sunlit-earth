@@ -279,6 +279,8 @@ Numbered, appended by the orchestrator from the handovers, with the reasoning.
 
 13. **The readiness signal stays at serve time rather than moving to the bind**, even though the bind moved ahead of the GPU. Moving the signal with it would make the e2e suite's readiness wait a lie. Validator round 1 then found the signal was printed before the spawn it announces, which is fixed: it is now printed on the `Ok` of the spawn.
 
+14. **Run 2 started at 64 percent of the five-hour window, above the plan's threshold of 50.** The maintainer authorised spending the remainder because the window rolls over in about 38 minutes, which makes the usual risk, a run force-stopped mid-flight, a short wait rather than a loss. The controlled pause at 90 percent still applies until the rollover. Run 2's branch stacks on `refactor/quality-run-1` for the reason in departure 1, so runs 1 and 2 are a two-deep stack on `docs/code-quality-review` until #46 merges.
+
 ## Validation record
 
 One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.

@@ -363,8 +363,10 @@ fn join_engine(thread: Option<JoinHandle<()>>) {
 /// Start the engine on its own thread.
 ///
 /// Blocks until the GPU device exists, so the returned handle can report the
-/// adapter and the supported sample counts without another round trip.
-pub fn start(config: EngineConfig) -> EngineHandle {
+/// adapter and the supported sample counts without another round trip. That is
+/// also the step most likely to fail on a machine with no working graphics
+/// driver, and it fails as an error the caller can put in front of the user.
+pub fn start(config: EngineConfig) -> Result<EngineHandle, String> {
     // Unbounded, deliberately, and this is the reasoning the resource-flow rule
     // asks for at the declaration site:
     //
@@ -394,20 +396,29 @@ pub fn start(config: EngineConfig) -> EngineHandle {
     let thread = std::thread::Builder::new()
         .name("sunlit-engine".into())
         .spawn(move || {
-            let mut engine = Engine::new(config, rx, &command_tx, &ready_tx);
-            drop(ready_tx);
-            engine.run();
+            // `Engine::new` reports its own failure through `ready`, so there is
+            // nothing left to say here; the loop simply never runs.
+            if let Ok(mut engine) = Engine::new(config, rx, &command_tx, &ready_tx) {
+                drop(ready_tx);
+                engine.run();
+            }
         })
-        .expect("failed to spawn engine thread");
+        .map_err(|e| format!("the engine thread could not be started: {e}"))?;
 
-    let adapter = ready_rx
-        .recv()
-        .expect("engine thread died before reporting its adapter");
-
-    EngineHandle {
-        tx,
-        thread: Some(thread),
-        adapter,
+    match ready_rx.recv() {
+        Ok(Ok(adapter)) => Ok(EngineHandle {
+            tx,
+            thread: Some(thread),
+            adapter,
+        }),
+        Ok(Err(reason)) => {
+            join_engine(Some(thread));
+            Err(reason)
+        }
+        Err(_) => {
+            join_engine(Some(thread));
+            Err("the engine thread stopped before it could report its adapter".to_owned())
+        }
     }
 }
 
@@ -535,8 +546,8 @@ impl Engine {
         config: EngineConfig,
         rx: Receiver<EngineCommand>,
         command_tx: &Sender<EngineCommand>,
-        ready: &Sender<AdapterReport>,
-    ) -> Self {
+        ready: &Sender<Result<AdapterReport, String>>,
+    ) -> Result<Self, String> {
         let EngineConfig {
             force_software,
             texture_paths,
@@ -567,8 +578,9 @@ impl Engine {
         // with too many hands the consumer a slot index its own array does not
         // have, which is a panic in the middle of a session. Both were
         // impossible by construction until the mailbox could be injected.
-        // Failing here means failing before `ready` is sent, which turns it into
-        // a panic in `start` rather than a thread that quietly died.
+        // Failing here means failing before `ready` is sent, so `start` reports
+        // a thread that never got as far as its adapter rather than handing back
+        // a handle to a thread that quietly died.
         let slots = SlotLayout::new(texture_paths.len());
         if let Some(mailbox) = &mailbox {
             assert_eq!(
@@ -580,12 +592,18 @@ impl Engine {
             );
         }
 
-        let gpu = crate::wgpu_init::init(force_software);
-        let _ = ready.send(AdapterReport {
+        let gpu = match crate::wgpu_init::init(force_software) {
+            Ok(gpu) => gpu,
+            Err(reason) => {
+                let _ = ready.send(Err(reason.clone()));
+                return Err(reason);
+            }
+        };
+        let _ = ready.send(Ok(AdapterReport {
             info: gpu.adapter_info.clone(),
             key: gpu.adapter_key.clone(),
             supported_sample_counts: gpu.supported_sample_counts.clone(),
-        });
+        }));
         crate::memory::log_memory_usage("engine: after wgpu init");
 
         let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()));
@@ -643,7 +661,7 @@ impl Engine {
             )
         });
 
-        Self {
+        Ok(Self {
             rx,
             clock,
             on_event,
@@ -673,7 +691,7 @@ impl Engine {
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
-        }
+        })
     }
 
     fn run(&mut self) {
@@ -973,9 +991,19 @@ impl Engine {
     }
 
     /// Read the preview target back and hand the pixels to the client.
+    ///
+    /// A readback that fails costs this frame and nothing more: the next tick
+    /// tries again, and a device that is gone for good will say so on the paths
+    /// that have somewhere to report it.
     fn emit_preview(&self) {
         let (width, height) = self.renderer.size();
-        let rgba = self.renderer.read_preview_pixels();
+        let rgba = match self.renderer.read_preview_pixels() {
+            Ok(rgba) => rgba,
+            Err(e) => {
+                warn!(error = %e, "the preview frame could not be read back");
+                return;
+            }
+        };
         self.emit(EngineEvent::PreviewFrame {
             rgba,
             width,

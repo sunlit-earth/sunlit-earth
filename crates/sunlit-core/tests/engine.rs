@@ -81,7 +81,8 @@ impl Harness {
         });
         configure(&mut config);
         Self {
-            engine: sunlit_core::engine::start(config),
+            engine: sunlit_core::engine::start(config)
+                .expect("the harness needs a working adapter"),
             events,
             _guard: guard,
         }
@@ -1836,17 +1837,22 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
 /// slots and the posts for the high ones are dropped, leaving those slots
 /// waiting for a load that was thrown away; too many and the consumer is handed
 /// a slot index its own array does not have, which is a panic in the middle of a
-/// session. The panic seen here is `start`'s, because the assertion runs on the
-/// engine thread before it reports an adapter, so the caller learns about it
-/// rather than a thread quietly dying.
+/// session. The assertion runs on the engine thread before it reports an
+/// adapter, so the caller gets an error instead of a handle rather than a
+/// thread that quietly died.
 #[test]
-#[should_panic(expected = "engine thread died before reporting its adapter")]
 fn a_mailbox_that_does_not_match_the_slot_count_is_refused() {
     let mut config = EngineConfig::headless((64, 64));
     // Three file-backed paths need five slots: the grid, all three of them,
     // the clouds.
     config.mailbox = Some(TextureMailbox::new(3));
-    let _ = sunlit_core::engine::start(config);
+    let Err(error) = sunlit_core::engine::start(config) else {
+        panic!("a mailbox with the wrong slot count must not produce a handle");
+    };
+    assert!(
+        error.contains("before it could report its adapter"),
+        "unexpected error: {error}"
+    );
 }
 
 /// A stale arrival that nothing is racing is discarded rather than drawn.

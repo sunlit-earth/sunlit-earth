@@ -677,7 +677,7 @@ impl Renderer {
     ///
     /// Only valid when the renderer was built with `COPY_SRC` on its preview
     /// texture (see [`RendererConfig`] users that need readback).
-    pub fn read_preview_pixels(&self) -> Vec<u8> {
+    pub fn read_preview_pixels(&self) -> Result<Vec<u8>, String> {
         read_texture_rgba8(
             &self.device,
             &self.queue,
@@ -806,7 +806,7 @@ impl Renderer {
             &export_texture,
             target_width,
             target_height,
-        );
+        )?;
         crate::memory::log_memory_usage("wallpaper: after pixel readback");
         Ok(pixels)
     }

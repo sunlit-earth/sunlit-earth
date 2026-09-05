@@ -502,6 +502,7 @@ fn render_frame(
     ctx.queue.submit(std::iter::once(encoder.finish()));
 
     common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, width, height)
+        .expect("reading the render target back")
 }
 
 /// Count pixels that are NOT the clear color.
@@ -2225,7 +2226,8 @@ fn cloud_pipeline_renders_with_alpha() {
     }
     ctx.queue.submit(std::iter::once(encoder.finish()));
 
-    let pixels = common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, size, size);
+    let pixels = common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, size, size)
+        .expect("reading the render target back");
     let visible = count_non_clear_pixels(&pixels);
 
     assert!(

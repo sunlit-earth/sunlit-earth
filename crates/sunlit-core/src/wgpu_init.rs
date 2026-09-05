@@ -68,11 +68,15 @@ pub struct WgpuContext {
 /// 1. `WGPU_ADAPTER_NAME` env var (substring match, case-insensitive)
 /// 2. Best available GPU (`DiscreteGpu` > `IntegratedGpu` > others)
 /// 3. CPU/software fallback as last resort
-pub fn init(force_software: bool) -> WgpuContext {
+///
+/// A machine with no adapter at all, or one whose driver refuses a device, is
+/// an ordinary thing to run into rather than a bug in this program, so both
+/// come back as an error for the caller to report.
+pub fn init(force_software: bool) -> Result<WgpuContext, String> {
     let adapters = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::all()));
-    assert!(!adapters.is_empty(), "No wgpu adapters found");
 
-    let adapter = select_adapter(&adapters, force_software);
+    let adapter = select_adapter(&adapters, force_software)
+        .ok_or("no graphics adapter is available on this system")?;
     let info = adapter.get_info();
     let adapter_info = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
     let adapter_key = adapter_key(&info.name, info.backend);
@@ -94,20 +98,20 @@ pub fn init(force_software: bool) -> WgpuContext {
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
         ..Default::default()
     }))
-    .expect("Failed to create wgpu device");
+    .map_err(|e| format!("the graphics adapter \"{adapter_info}\" refused a device: {e}"))?;
 
     let supported_sample_counts = adapter
         .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
         .flags
         .supported_sample_counts();
 
-    WgpuContext {
+    Ok(WgpuContext {
         device,
         queue,
         adapter_info,
         adapter_key,
         supported_sample_counts,
-    }
+    })
 }
 
 /// Short, filesystem-safe slug naming the implementation behind an adapter.
@@ -179,13 +183,13 @@ pub(crate) fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
     }
 }
 
-fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Adapter {
+fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> Option<&wgpu::Adapter> {
     if force_software {
         if let Some(adapter) = adapters
             .iter()
             .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
         {
-            return adapter;
+            return Some(adapter);
         }
         warn!("no software adapter found, using default selection");
     }
@@ -197,7 +201,7 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
             .iter()
             .find(|a| a.get_info().name.to_lowercase().contains(&name_lower))
         {
-            return adapter;
+            return Some(adapter);
         }
         warn!(name = %name, "WGPU_ADAPTER_NAME not found, using default selection");
     }
@@ -205,7 +209,6 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
     adapters
         .iter()
         .min_by_key(|a| adapter_type_rank(a.get_info().device_type))
-        .expect("No adapters available")
 }
 
 #[cfg(test)]

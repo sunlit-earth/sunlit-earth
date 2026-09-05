@@ -594,6 +594,11 @@ impl<'a> Overlays<'a> {
 ///
 /// Creates a staging buffer with 256-byte row alignment, copies the texture
 /// into it, maps the buffer synchronously, and strips any row padding.
+///
+/// Losing the device mid-readback is an ordinary event on Windows, where a
+/// driver update or a reset takes it out from under a running process. This is
+/// the wallpaper export and the preview readback, so it fails one frame rather
+/// than the engine thread.
 #[allow(clippy::cast_possible_truncation)]
 pub fn read_texture_rgba8(
     device: &wgpu::Device,
@@ -601,7 +606,7 @@ pub fn read_texture_rgba8(
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     // bytes_per_row must be aligned to 256 for buffer-texture copies
     let bytes_per_row_unaligned = width * 4;
     let bytes_per_row = (bytes_per_row_unaligned + 255) & !255;
@@ -641,10 +646,16 @@ pub fn read_texture_rgba8(
     let slice = readback.slice(..);
     let (tx, rx) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
-        tx.send(result).unwrap();
+        // The callback can run while this function is unwinding, and a send to
+        // a receiver that is already gone must not panic a second time.
+        let _ = tx.send(result);
     });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    rx.recv().unwrap().expect("buffer mapping failed");
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| format!("the GPU device was lost while reading pixels back: {e}"))?;
+    rx.recv()
+        .map_err(|_| "the readback never reported whether it was mapped".to_owned())?
+        .map_err(|e| format!("the readback buffer could not be mapped: {e}"))?;
 
     let mapped = slice.get_mapped_range();
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -656,5 +667,5 @@ pub fn read_texture_rgba8(
     drop(mapped);
     readback.unmap();
 
-    pixels
+    Ok(pixels)
 }

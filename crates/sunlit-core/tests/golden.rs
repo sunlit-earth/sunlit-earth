@@ -126,7 +126,9 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     // a source no case here could draw a cloud pixel at all; `base_params`
     // turns the layer off for every case that is not about it.
     config.cloud = Some(std::sync::Arc::new(support::FixtureClouds::bands()));
-    Mutex::new(sunlit_core::engine::start(config))
+    Mutex::new(
+        sunlit_core::engine::start(config).expect("the golden suite needs a working adapter"),
+    )
 });
 
 fn engine() -> MutexGuard<'static, EngineHandle> {

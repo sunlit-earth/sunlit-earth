@@ -183,7 +183,7 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
     config.auto_refresh = Some(STEP);
     config.wallpaper = sink.clone();
 
-    let engine = sunlit_core::engine::start(config);
+    let engine = sunlit_core::engine::start(config).expect("the soak test needs a working adapter");
 
     // Let the first cloud fetch and the first render settle before measuring.
     wait_until("the first cloud fetch", || cloud.fetches() >= 1);

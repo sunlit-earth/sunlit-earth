@@ -13,9 +13,8 @@
 //! is the same conclusion `session_end.rs` in the app reached for the shutdown
 //! messages, and the Windows half here has the same shape as a result.
 //!
-//! A watcher that cannot start is not an error. The app carries on exactly as
-//! it did before this existed: the monitor list is re-queried on every publish,
-//! and the auto-refresh interval decides how long a stale layout stays stale.
+//! A watcher that cannot start is not an error: the monitor list is re-queried
+//! on every publish either way.
 
 use std::sync::Arc;
 
@@ -51,18 +50,9 @@ pub fn start(_notify: NotifyFn) -> Option<Watcher> {
 
 /// `RandR`, through the pure-Rust X11 connection.
 ///
-/// The connection is to the X server the query already talks to: under a
-/// Wayland session that is `XWayland`, which implements `RandR` over the
-/// compositor's outputs and is expected to fire for the same changes. That half
-/// is unverified until a Wayland session is something the suite runs in. A
-/// Wayland session with no `XWayland` has no `DISPLAY`, no watcher, and no query,
-/// all for the same reason.
-///
-/// `RandR` rather than the alternatives, each considered. D-Bus signals exist per
-/// desktop (`KScreen`, Mutter's `DisplayConfig`) and there is no common one; udev
-/// hotplug events see a connector change rather than a layout change made in a
-/// settings dialog, and see nothing at all through `XWayland`; polling `xrandr` is
-/// the busy loop this feature exists to avoid.
+/// The connection is to the X server the query already talks to, which under a
+/// Wayland session is `XWayland`. A Wayland session with no `XWayland` has no
+/// `DISPLAY`, no watcher, and no query, all for the same reason.
 #[cfg(target_os = "linux")]
 mod x11 {
     use std::sync::Arc;
@@ -231,12 +221,10 @@ mod x11 {
 
 /// `WM_DISPLAYCHANGE`, on an invisible top-level window of this module's own.
 ///
-/// A message-only window will not do. Microsoft's own words are that one "is
-/// not visible, has no z-order, cannot be enumerated, and does not receive
-/// broadcast messages", and `WM_DISPLAYCHANGE` is a broadcast to top-level
-/// windows. So this is the established shape instead: an ordinary top-level
-/// window that is never shown, pumping its own messages on its own thread.
-/// `GLFW`'s Win32 helper window is the same thing for the same reason.
+/// A message-only window will not do: it receives no broadcast messages, and
+/// `WM_DISPLAYCHANGE` is a broadcast to top-level windows. So this is an
+/// ordinary top-level window that is never shown, pumping its own messages on
+/// its own thread.
 ///
 /// Not a second use of the app's `session_end` window, and not Slint's. The two
 /// listeners are the same dozen lines of Win32 and nothing else: different
@@ -493,11 +481,9 @@ mod linux_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    /// Starting and stopping is the whole of what a test can assert here: a
-    /// layout change is not something a test process may make on somebody's
-    /// desk, and everything after the hint is the engine's, where a mock clock
-    /// decides. What it does prove is the connection, the extension check, the
-    /// `select_input` and the wake, which is every call this half makes.
+    /// Only the start and the stop can be asserted without a real layout change,
+    /// which is still the connection, the extension check, the `select_input`
+    /// and the wake: every call this half makes.
     #[test]
     fn a_watcher_starts_and_stops_on_a_session_with_a_display() {
         if crate::env_override("DISPLAY").is_none() {

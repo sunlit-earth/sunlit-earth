@@ -538,22 +538,91 @@ uniformly slow host would have inflated the after half equally and a quiet host 
 Not done in run 2: the e2e suite was neither run nor needed, since the run touches no production behavior beyond one
 `pub` and one deleted serde attribute. The cross-platform compile is still owed from run 1.
 
+## Run 3 gate record
+
+Run on the merged run branch in `pool-0`, adapter to itself.
+
+- `cargo fmt --check` clean. `cargo clippy --all-targets` clean, zero warnings.
+- `cargo test` green across the workspace: core lib 398 in 0.15 s, engine 71 in 55.04 s, golden 20 in 3.06 s,
+  render_pipeline 17 in 0.62 s, shading 7 in 0.78 s, soak 1 in 29.11 s, app lib 76, app bin 2, e2e 15 ignored and
+  compiling, slint_ui 35, xtask 633.
+- `git status --short crates/sunlit-core/tests/golden/` empty; no golden regenerated anywhere in the run.
+- `cargo doc --no-deps -p sunlit-core -p sunlit-earth` **zero warnings**, from 16 on the run base.
+
+**The run's own gate: no code changes.** Packages 3.1 and 3.2 changed none at all, and package 3.3 changed none outside
+`tests/e2e.rs` and `src/ipc.rs`. Each package's validator proved it by hashing every changed file with its comment lines
+stripped and its blank lines kept, at both ends of the range: 12 files identical for 3.1, 21 for 3.2, and the eight
+non-exempt files read at `-U3` for 3.3. That check catches what a line filter cannot, namely a rustfmt reflow, a moved
+blank line, a trailing comment taken off a code line, and any attribute change. Package 3.2's three probe string
+literals, which hold WGSL the tests compile and which no line-oriented check can see, were hashed separately and are
+byte-identical.
+
+**Comment lines.**
+
+| package | before | after | non-comment lines |
+|---|---|---|---|
+| 3.1 core engine side | 3600 | 3409 | 10223, unchanged |
+| 3.2 core renderer side | 3117 | 2886 | 12772, unchanged |
+| 3.3 the app and the e2e suite | 2043 | 1940 | 8234 to 8248, all of it item C6 inside the two open files |
+| total | 8760 | 8235 | |
+
+651 comment lines were deleted and 126 added back, as doc comments on the helpers item C6 introduced. `tests/e2e.rs`
+went 2862 lines to 2612.
+
+**The e2e suite in both guests, on `b4fe444`.** That commit carries all three packages and every fix; the only changes
+after it are six rustdoc bracket removals in `sunlit-core` doc comments and this document, neither of which the suite
+can see.
+
+- **Windows guest**, Hyper-V, `SLINT_BACKEND=winit-software`: exit 0, **15 passed, 0 failed in 91.24 s**, guest
+  destroyed afterwards. Two cases gated themselves at runtime and said why, the same two as run 1:
+  `test_a_layout_change_republishes_the_wallpaper` needs a Linux `display::outputs` query, and
+  `test_plasmashell_survives_rapid_republishing` needs KDE. No ERROR line and no panic anywhere in the run.
+- **Linux guest**, QEMU, KDE: exit 0, **14 passed, 0 failed in 73.75 s**, guest destroyed afterwards. The one case fewer
+  is `test_session_end_shuts_down_promptly`, which is Win32. No ERROR line and no panic.
+
+Both runs matter more than usual, because item C6 rewrote the spawn-and-watch plumbing of every case and the suite
+cannot run on the development host. Three specific risks the validators named were all cleared by them:
+
+- `test_windowed_mode_graceful_shutdown` now waits for the `first_frame_rendered` signal rather than the log line of the
+  same event, and `--mode window` had never run in the Windows guest, because `lifecycle_mode_args()` picks tray there.
+  It passed in both.
+- Five cases gained a "no ERROR line in stderr" assertion they did not have. None of the five failed, and the whole of
+  both runs is free of ERROR lines.
+- `test_a_layout_change_republishes_the_wallpaper` was the highest-risk of the five, and the Windows guest skips it. It
+  ran for real in the Linux guest, changing Virtual-1 to 5120x2160 and reading the layout back as
+  `SIGNAL:displays_changed monitors=1`, and passed.
+
+`test_plasmashell_survives_rapid_republishing` also ran for real on KDE, surviving five rapid publishes as pid 1057.
+That case has never run in this stack before; run 1's Windows-only gate skipped it.
+
+**The cross-platform compile, and what is still owed.** Departure 49 moved this off GitHub Actions and into the guests.
+`cargo xtask e2e --target linux` builds the binaries in WSL against the Linux toolchain before booting the guest, so the
+Linux half of the item runs 1 and 2 left open is now discharged: everything those runs changed under `display/**`,
+`desktop.rs`, `memory.rs` and `wallpaper.rs`, including run 1's five new `cfg` gates, compiles and passes its own suite
+on Linux. **macOS remains uncompiled**, by the maintainer's decision rather than by oversight.
+
 ## Open items
 
+- **`golden.rs`'s `close_camera` and `docs/rendering.md` disagree about the sky lens at the painted limb**, 57 degrees
+  against 63 for what reads as the same quantity. Both predate run 3 and package 3.2's validator correctly declined it
+  as out of scope. The orchestrator's partial derivation supports 57: at 512 by 256 the projection is isotropic at
+  1/256 of a projected unit per pixel, so a painted limb 204 pixels out gives a projected length of 0.797, and with
+  `sky_lens_edge_radius(140) = tan(35 degrees) = 0.7002` that is `2 * atan(0.5580)`, or 58.3 degrees. What is not
+  verified is the 204 pixels itself, which comes from the perspective camera rather than the sky lens, so the figure is
+  offered as evidence rather than as a correction. Whoever settles it should check both numbers against the code and fix
+  the loser.
 - **The offset guard's real reach.** `uniform_buffer_field_offsets_match_wgsl` catches any change that moves an existing
   field's offset, which is what item A2 asked for and what review E1's scenario exercises. It does not catch a field
   appended into the trailing padding: replacing `_pad8` with a real field and setting it in `write_uniforms` leaves the
   struct at 544 bytes with every probed offset unchanged, so all 21 tests pass while the shader still calls those bytes
   padding. Closing that wants a field-count or offset-table check, and run 5's macro work over `params.rs` is the
   natural home for it.
-- **Two rows of the review's 4.1 comment table fall in `tests/engine.rs` and `tests/soak.rs`**, which no run 1 package
-  owns. They belong to run 3's package 3.1.
-- **Neither Linux nor macOS was compiled in run 1.** Every new `cfg` gate was reasoned through by an implementer and
-  re-checked by a validator, but the only compiler run was Windows MSVC. Note that `.github/workflows/ci.yml` is
-  `workflow_dispatch` only, so pushing the run branch does not check this: it has to be asked for with
-  `gh workflow run ci.yml --ref refactor/quality-run-1`, and it bills against the private repository's minutes at 2x for
-  Windows and 10x for macOS. Run 1 changed per-OS code in `display/**`, `desktop.rs`, `memory.rs` and `wallpaper.rs` and
-  added five new `cfg` gates, so this is worth one dispatch before the run merges.
-- **The e2e suite has not run.** It compiles, with all 15 tests `#[ignore]`d as expected. Run 1's per-run gate says it
-  runs once in the Windows guest; that is outstanding and is the maintainer's or the orchestrator's under an explicit
-  grant.
+- **Neither Linux nor macOS was compiled in runs 1 and 2.** **Closed for Linux in run 3**, by
+  `cargo xtask e2e --target linux`, which builds in WSL against the Linux toolchain and then passes the suite in the
+  guest. macOS is deliberately deferred; see departure 49.
+- **The e2e suite has not run.** **Closed.** It ran green in the Windows guest at run 1's gate and in both guests at
+  run 3's.
+- **Two rows of the review's 4.1 comment table fell in `tests/engine.rs` and `tests/soak.rs`.** **Closed**: run 2 had
+  already rewritten both files and neither comment survived, which run 3 confirmed by grep. The last outstanding row of
+  that table, the misattached doc in `tests/e2e.rs`, was fixed by package 3.3. **The table is now fully discharged**,
+  as are the six documentation drifts the same section names.

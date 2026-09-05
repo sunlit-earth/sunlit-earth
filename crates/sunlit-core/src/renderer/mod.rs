@@ -969,39 +969,35 @@ mod tests {
     // quantize_to_granularity
     // -----------------------------------------------------------------------
 
+    /// Each dimension comes back as the largest whole number of granules that
+    /// fits in it, and never zero. Stated as the property rather than as
+    /// numbers, because the granularity is a constant the renderer may change.
     #[test]
-    fn quantize_zero_gives_one_granularity() {
-        assert_eq!(quantize_to_granularity(0, 0), (64, 64));
-    }
-
-    #[test]
-    fn quantize_below_granularity() {
-        assert_eq!(quantize_to_granularity(63, 63), (64, 64));
-    }
-
-    #[test]
-    fn quantize_exact_boundary() {
-        assert_eq!(quantize_to_granularity(64, 64), (64, 64));
-    }
-
-    #[test]
-    fn quantize_just_above_boundary() {
-        assert_eq!(quantize_to_granularity(65, 65), (64, 64));
-    }
-
-    #[test]
-    fn quantize_double_boundary() {
-        assert_eq!(quantize_to_granularity(128, 128), (128, 128));
-    }
-
-    #[test]
-    fn quantize_mixed_dimensions() {
-        assert_eq!(quantize_to_granularity(129, 200), (128, 192));
-    }
-
-    #[test]
-    fn quantize_typical_display() {
-        assert_eq!(quantize_to_granularity(1920, 1080), (1920, 1024));
+    fn quantization_floors_each_dimension_to_a_whole_granule() {
+        let granule = SIZE_GRANULARITY;
+        for (width, height) in [
+            (0, 0),
+            (granule - 1, granule - 1),
+            (granule, granule),
+            (granule + 1, granule + 1),
+            (granule * 2, granule * 2),
+            (granule * 2 + 1, granule * 3 + 8),
+            (1920, 1080),
+        ] {
+            let (quantized_width, quantized_height) = quantize_to_granularity(width, height);
+            for (requested, quantized) in [(width, quantized_width), (height, quantized_height)] {
+                assert_eq!(quantized % granule, 0, "{requested} is not whole granules");
+                assert!(quantized >= granule, "{requested} quantized to nothing");
+                assert!(
+                    quantized <= requested.max(granule),
+                    "{requested} quantized up to {quantized}"
+                );
+                assert!(
+                    quantized + granule > requested,
+                    "{requested} quantized to {quantized}, a whole granule short"
+                );
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

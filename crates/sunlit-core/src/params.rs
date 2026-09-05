@@ -1068,15 +1068,14 @@ mod tests {
 
     // --- gamma slider mapping ---
 
+    /// The slider's three anchors, against the range's own constants rather
+    /// than the numbers they hold today.
     #[test]
-    fn gamma_slider_endpoints() {
-        assert_relative_eq!(gamma_slider_to_value(0.0), 0.2, epsilon = 1e-5);
-        assert_relative_eq!(gamma_slider_to_value(1.0), 3.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn gamma_slider_midpoint_is_identity() {
+    fn the_gamma_slider_spans_its_range_around_the_identity() {
+        assert_relative_eq!(gamma_slider_to_value(0.0), GAMMA_MIN, epsilon = 1e-5);
         assert_relative_eq!(gamma_slider_to_value(0.5), 1.0, epsilon = 1e-5);
+        assert_relative_eq!(gamma_slider_to_value(1.0), GAMMA_MAX, epsilon = 1e-5);
+        assert_relative_eq!(gamma_value_to_slider(1.0), 0.5, epsilon = 1e-5);
     }
 
     #[test]
@@ -1097,14 +1096,9 @@ mod tests {
 
     #[test]
     fn gamma_roundtrip() {
-        for gamma in [0.2, 0.5, 1.0, 2.0, 3.0] {
+        for gamma in [GAMMA_MIN, 0.5, 1.0, 2.0, GAMMA_MAX] {
             let t = gamma_value_to_slider(gamma);
             assert_relative_eq!(gamma_slider_to_value(t), gamma, epsilon = 1e-5);
         }
-    }
-
-    #[test]
-    fn gamma_inverse_midpoint() {
-        assert_relative_eq!(gamma_value_to_slider(1.0), 0.5, epsilon = 1e-5);
     }
 }

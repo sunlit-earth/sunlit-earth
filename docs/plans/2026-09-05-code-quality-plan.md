@@ -253,12 +253,13 @@ Acceptance: the `params.rs` digest test fails when a field is added to the macro
 
 ## Departures
 
-Numbered, appended by the orchestrator from the handovers, with the reasoning.
+Numbered, appended by the orchestrator from the handovers, with the reasoning. One sequence across
+every run: a handover that numbers its own departures from 1 is renumbered into it at merge time.
 
 1. **Run 1's branch is cut from `docs/code-quality-review`, not from `main`.** The kickoff condition was that the review's pull request is merged; #46 was still a draft. The maintainer chose stacked pull requests over waiting for the merge, so `refactor/quality-run-1` sits on top of the docs branch and the plan and the notes travel inside every pool worktree. Every later run stacks the same way until #46 lands. The wrap-up step that appends to this plan on the run branch works unchanged.
-3. **Agents may not launch the application on the development host, and may run it inside a VM guest only under an orchestrator-granted lease.** The plan barred every `cargo xtask` command and every VM boot outright, and said nothing about the host desktop; run 1's implementers read their acceptance criteria as licence to open windows on the maintainer's screen while the maintainer was working there. The host desktop is now closed to agents entirely, with runtime acceptance checks moving to the orchestrator at the gate. The guests are open, but one desktop guest runs at a time on a host, so an agent requests the lease by message, waits for an explicit grant, and releases it with `vm down` immediately afterwards. The orchestrator holds the queue. Decided by the maintainer during run 1.
-
 2. **Package 1.3 moves the IPC listener bind ahead of the renderer and engine startup**, beyond the plan's "the listener failure is a warning". The baseline smoke test on the development host showed a second instance on an occupied socket name selecting the adapter, creating every texture and logging `engine started` before it reached the bind and panicked, about six seconds in. Decided by the maintainer at run 1's kickoff.
+
+3. **Agents may not launch the application on the development host, and may run it inside a VM guest only under an orchestrator-granted lease.** The plan barred every `cargo xtask` command and every VM boot outright, and said nothing about the host desktop; run 1's implementers read their acceptance criteria as licence to open windows on the maintainer's screen while the maintainer was working there. The host desktop is now closed to agents entirely, with runtime acceptance checks moving to the orchestrator at the gate. The guests are open, but one desktop guest runs at a time on a host, so an agent requests the lease by message, waits for an explicit grant, and releases it with `vm down` immediately afterwards. The orchestrator holds the queue. Decided by the maintainer during run 1.
 
 4. **`read_texture_rgba8` is defined in `renderer/render_pass.rs`, not `renderer/mod.rs`.** The plan's ownership lines give package 1.1 "the `read_texture_rgba8` function in `src/renderer/mod.rs`" and give package 1.2 the item "the `render_pass.rs` unwraps on device loss become errors". Both name the same three unwraps, because the function is defined in `render_pass.rs` and only re-exported from `mod.rs`. Package 1.2 stopped rather than guessing, the orchestrator confirmed it, and 1.1 discharged the item in `a0d1dc9`. The ownership line was wrong about the path, not about the function. No other unwrap or expect remains in that file.
 
@@ -281,49 +282,6 @@ Numbered, appended by the orchestrator from the handovers, with the reasoning.
 13. **The readiness signal stays at serve time rather than moving to the bind**, even though the bind moved ahead of the GPU. Moving the signal with it would make the e2e suite's readiness wait a lie. Validator round 1 then found the signal was printed before the spawn it announces, which is fixed: it is now printed on the `Ok` of the spawn.
 
 14. **Run 2 started at 64 percent of the five-hour window, above the plan's threshold of 50.** The maintainer authorised spending the remainder because the window rolls over in about 38 minutes, which makes the usual risk, a run force-stopped mid-flight, a short wait rather than a loss. The controlled pause at 90 percent still applies until the rollover. Run 2's branch stacks on `refactor/quality-run-1` for the reason in departure 1, so runs 1 and 2 are a two-deep stack on `docs/code-quality-review` until #46 merges.
-
-## Validation record
-
-One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.
-
-| Run | Package | Round | Date | MAJOR | MINOR | Outcome |
-|---|---|---|---|---|---|---|
-| 1 | 1.1 engine side | 1 | 2026-09-05 | 0 | 4 | All four fixed in `656ed05`, none declined. The substantive one: `render_if_dirty` emitted the preview as a side effect while `tick` emitted it again for the debt, so a failed readback cost two attempts per tick and a persistently failing device logged 20 to 40 lines a second. `render_if_dirty` now reports only whether a frame was drawn, `tick` is the single readback site, and a `readback_failed` latch logs the transition rather than the state. The other three: a comment describing the pre-change unwinding hazard, `private_bytes_budget` narrowed to private to match its two siblings, and an unwrapped doc line. |
-| 1 | 1.2 renderer side | 1 | 2026-09-05 | 0 | 4 | Two fixed in `288e7e5`, both comments. A replacement comment claimed a render target is never larger than what was asked for, contradicted by two tests twelve lines below it; and the `PREVIEW_USAGE` doc read as settled on the open question of `TEXTURE_BINDING`. MINOR 3 is informational and recorded under Open items. MINOR 4 was the orchestrator's, a departure-numbering collision, handled at merge. The validator reproduced review E1's swap itself and got `day_gamma: got 0.8, expected 1.5`. |
-| 1 | 1.3 the app | 1 | 2026-09-05 | 0 | 2 | Both fixed in `2ef528b`, neither declined. `SIGNAL:ipc_listener_ready` was printed before the thread it announces spawned, so a failed spawn would have sent every e2e client to a socket nobody accepts on; the signal moved to the `Ok` of the spawn. The auto-refresh save became departure 12 rather than a decline, after the implementer established that window close writes the stored interval back over an unsaved one. |
-
-| 2 | 2.1 engine targets | 1 | 2026-09-05 | **2** | 5 | Both MAJORs were one defect and both are fixed in `81459bf`. `SURFACE` was built at `texture_index: 0`, so its constructor's wait returned on the procedural grid with the file-backed day and night slots still empty, and the restructure had dropped the per-case waits that used to fill them. Four cases therefore passed only in their position (67 of 71 pass when each is run alone), and `a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode` rendered all three modes against the grid, so a broken day or night path would not have failed it. The validator reproduced both by running every case alone, by reversing the name order and by an ordinary filtered run. The fix starts the group in blend mode and waits for both slots by name; the implementer then found `REAL_SKY` had the same shape and fixed it too, and ruled out the other five with reasons. Independence proved afterwards three ways: 71 of 71 alone, reversed order green, seven filtered runs green. MINORs: the anchor case keeps a configured engine so `display_mode` and `anchor_monitor` are exercised at startup again; three 500 ms negative windows restored; the landmark floor moved with the area; `GROWTH_LIMIT` 16 to 8 MiB after the soak window halved. |
-| 2 | 2.2 GPU targets | 1 | 2026-09-05 | 0 | 3 | Two fixed in `116218e`, both tolerances the merges had silently loosened: three `datetime` rows asserting an exact zero went from epsilon 0.1 to 1.0, and `camera`'s per-component tolerances became one per row. Both restored to exactly what their predecessors carried. The third was the orchestrator's, a mislabelled gate block that would have put an error into this plan. |
-| 2 | 2.3 test modules and app tests | 1 | 2026-09-05 | **1** | 5 | All six fixed in `d183a8d`, none declined. The MAJOR: `desktop.rs:928` replaced the literal for xfconf's zoomed enumerant with the production constant that supplies it, making both sides of the assertion the same symbol, so changing that constant would ship a letterboxed wallpaper to every XFCE user with the suite green. It is an interop value rather than a project default, so `CLAUDE.md`'s no-pinning rule does not reach it. Restored with a comment saying why, and falsified. MINORs: the quality tier round trip used the debug default so a `sanitize` regression would only fail in release; a 1e-3 tolerance applied to all 55 agreement rows where one needed it; a lens equality loosened; the cloud cache folder name unasserted; the preview-size test re-deriving its own body. |
-
-No validator found a MAJOR finding, a broken behavior, or an unmet plan item in run 1. All three validators hit the same
-harness limitation and returned their reports as text rather than writing them; the orchestrator transcribed all three
-into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3.md`.
-
-## Budget record
-
-| Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
-|---|---|---|---|---|
-| 1 | 22 | 57 | 3 | 35 points of the five-hour window for three implementers, three validators and the orchestrator, well under the 50 the plan budgeted for a whole run. The pool's four cold builds were paid once here and are not repeated. Runs 2 to 5 need no shrinking on this evidence; three implementers per run stands. |
-| 2 | 64, with the window rolling over 38 minutes in | 41 of the new window | 3 | The maintainer authorised finishing the old window and continuing into the new one, so the run spans a rollover and the two numbers are not comparable. Measured cost after the rollover, covering all three validator rounds, three fix rounds, the merges and the gates: 39 points. Comparable to run 1's 35. |
-
-## Declined findings
-
-Review findings the maintainer or an implementer declined, with the reason.
-
-None in run 1. Every MAJOR and MINOR finding from all three validator rounds was fixed. Three items were deliberately
-carried forward rather than declined, and each has a stated reason and a destination:
-
-- `renderer::PREVIEW_USAGE` still unions `TEXTURE_BINDING`, which nothing binds now that `Renderer::preview_texture` is
-  deleted. No test in the suite would show that dropping it is safe, so the flag stays and the comment now says it is an
-  open question rather than a decision. Renderer note C6.
-- `assets/texture_loader.rs`'s `flip_matches_the_image_crates_own` is kept. It still asserts that our flip matches the
-  reference implementation every golden image was generated with, and deleting tests is run 2's remit, so package 2.3
-  decides it.
-- `config.rs:319`'s `#[serde(default = "default_custom_year")]` is redundant under the struct-level `#[serde(default)]`.
-  It is neither a `pub` item nor dead code in the compiler's sense, so it is left to the run that owns that file's tests.
-
-### Run 2
 
 The three handovers each numbered their own departures from 15 or from 1, so they are renumbered here into the single
 sequence. Package 2.1 supplied 15 to 20, package 2.2 21 to 24, package 2.3 25 to 31.
@@ -374,6 +332,48 @@ sequence. Package 2.1 supplied 15 to 20, package 2.2 21 to 24, package 2.3 25 to
 31. **The plan's wording for `test_preset_changes_camera_properties` was not followed literally**, the merged test being
     a better shape than the one the plan described.
 
+## Validation record
+
+One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.
+
+| Run | Package | Round | Date | MAJOR | MINOR | Outcome |
+|---|---|---|---|---|---|---|
+| 1 | 1.1 engine side | 1 | 2026-09-05 | 0 | 4 | All four fixed in `656ed05`, none declined. The substantive one: `render_if_dirty` emitted the preview as a side effect while `tick` emitted it again for the debt, so a failed readback cost two attempts per tick and a persistently failing device logged 20 to 40 lines a second. `render_if_dirty` now reports only whether a frame was drawn, `tick` is the single readback site, and a `readback_failed` latch logs the transition rather than the state. The other three: a comment describing the pre-change unwinding hazard, `private_bytes_budget` narrowed to private to match its two siblings, and an unwrapped doc line. |
+| 1 | 1.2 renderer side | 1 | 2026-09-05 | 0 | 4 | Two fixed in `288e7e5`, both comments. A replacement comment claimed a render target is never larger than what was asked for, contradicted by two tests twelve lines below it; and the `PREVIEW_USAGE` doc read as settled on the open question of `TEXTURE_BINDING`. MINOR 3 is informational and recorded under Open items. MINOR 4 was the orchestrator's, a departure-numbering collision, handled at merge. The validator reproduced review E1's swap itself and got `day_gamma: got 0.8, expected 1.5`. |
+| 1 | 1.3 the app | 1 | 2026-09-05 | 0 | 2 | Both fixed in `2ef528b`, neither declined. `SIGNAL:ipc_listener_ready` was printed before the thread it announces spawned, so a failed spawn would have sent every e2e client to a socket nobody accepts on; the signal moved to the `Ok` of the spawn. The auto-refresh save became departure 12 rather than a decline, after the implementer established that window close writes the stored interval back over an unsaved one. |
+
+| 2 | 2.1 engine targets | 1 | 2026-09-05 | **2** | 5 | Both MAJORs were one defect and both are fixed in `81459bf`. `SURFACE` was built at `texture_index: 0`, so its constructor's wait returned on the procedural grid with the file-backed day and night slots still empty, and the restructure had dropped the per-case waits that used to fill them. Four cases therefore passed only in their position (67 of 71 pass when each is run alone), and `a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode` rendered all three modes against the grid, so a broken day or night path would not have failed it. The validator reproduced both by running every case alone, by reversing the name order and by an ordinary filtered run. The fix starts the group in blend mode and waits for both slots by name; the implementer then found `REAL_SKY` had the same shape and fixed it too, and ruled out the other five with reasons. Independence proved afterwards three ways: 71 of 71 alone, reversed order green, seven filtered runs green. MINORs: the anchor case keeps a configured engine so `display_mode` and `anchor_monitor` are exercised at startup again; three 500 ms negative windows restored; the landmark floor moved with the area; `GROWTH_LIMIT` 16 to 8 MiB after the soak window halved. |
+| 2 | 2.2 GPU targets | 1 | 2026-09-05 | 0 | 3 | Two fixed in `116218e`, both tolerances the merges had silently loosened: three `datetime` rows asserting an exact zero went from epsilon 0.1 to 1.0, and `camera`'s per-component tolerances became one per row. Both restored to exactly what their predecessors carried. The third was the orchestrator's, a mislabelled gate block that would have put an error into this plan. |
+| 2 | 2.3 test modules and app tests | 1 | 2026-09-05 | **1** | 5 | All six fixed in `d183a8d`, none declined. The MAJOR: `desktop.rs:928` replaced the literal for xfconf's zoomed enumerant with the production constant that supplies it, making both sides of the assertion the same symbol, so changing that constant would ship a letterboxed wallpaper to every XFCE user with the suite green. It is an interop value rather than a project default, so `CLAUDE.md`'s no-pinning rule does not reach it. Restored with a comment saying why, and falsified. MINORs: the quality tier round trip used the debug default so a `sanitize` regression would only fail in release; a 1e-3 tolerance applied to all 55 agreement rows where one needed it; a lens equality loosened; the cloud cache folder name unasserted; the preview-size test re-deriving its own body. |
+
+No validator found a MAJOR finding, a broken behavior, or an unmet plan item in run 1. All three validators hit the same
+harness limitation and returned their reports as text rather than writing them; the orchestrator transcribed all three
+into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3.md`.
+
+## Budget record
+
+| Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
+|---|---|---|---|---|
+| 1 | 22 | 57 | 3 | 35 points of the five-hour window for three implementers, three validators and the orchestrator, well under the 50 the plan budgeted for a whole run. The pool's four cold builds were paid once here and are not repeated. Runs 2 to 5 need no shrinking on this evidence; three implementers per run stands. |
+| 2 | 64, with the window rolling over 38 minutes in | 41 of the new window | 3 | The maintainer authorised finishing the old window and continuing into the new one, so the run spans a rollover and the two numbers are not comparable. Measured cost after the rollover, covering all three validator rounds, three fix rounds, the merges and the gates: 39 points. Comparable to run 1's 35. |
+
+## Declined findings
+
+Review findings the maintainer or an implementer declined, with the reason.
+
+None in runs 1 to 3. Every MAJOR and MINOR finding from all validator rounds was fixed. Three items were deliberately
+carried forward from run 1 rather than declined; two have since been resolved:
+
+- `renderer::PREVIEW_USAGE` still unions `TEXTURE_BINDING`, which nothing binds now that `Renderer::preview_texture` is
+  deleted. No test in the suite would show that dropping it is safe, so the flag stays and the comment says it is an
+  open question rather than a decision. Renderer note C6. **Still open**, and run 3 confirmed the comment is intact, so
+  the next reader meets the question rather than the flag alone.
+- `assets/texture_loader.rs`'s `flip_matches_the_image_crates_own` is kept. It still asserts that our flip matches the
+  reference implementation every golden image was generated with. **Resolved in run 2**: package 2.3 weighed it and kept
+  it, which is the decision run 1 deferred to it.
+- `config.rs:319`'s `#[serde(default = "default_custom_year")]` was redundant under the struct-level
+  `#[serde(default)]`. **Resolved in run 2**, departure 26: package 2.3 established the redundancy (45 config tests green
+  without it) and the orchestrator removed it, since the attribute is production code the package did not own.
 
 ## Run 1 gate record
 

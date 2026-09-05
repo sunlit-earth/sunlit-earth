@@ -153,17 +153,22 @@ mod tests {
         msg.result.as_ref().expect("test messages are Ok").width
     }
 
+    /// Slots are independent of each other, and a take empties every one of
+    /// them.
     #[test]
-    fn mailbox_take_all_empties_the_mailbox() {
+    fn mailbox_take_all_empties_every_slot() {
         let mailbox = TextureMailbox::new(4);
         mailbox.post(message(0, 1));
         mailbox.post(message(3, 2));
+        mailbox.post(message(0, 3));
 
         let mut taken = mailbox.take_all();
         taken.sort_by_key(|m| m.slot_index);
         assert_eq!(taken.len(), 2);
         assert_eq!(taken[0].slot_index, 0);
+        assert_eq!(tag(&taken[0]), 3, "slot 0 keeps the newer frame");
         assert_eq!(taken[1].slot_index, 3);
+        assert_eq!(tag(&taken[1]), 2, "slot 3 is untouched by slot 0");
 
         assert!(
             mailbox.take_all().is_empty(),
@@ -183,43 +188,23 @@ mod tests {
         assert_eq!(tag(&taken[0]), 5, "the newest frame must win");
     }
 
-    #[test]
-    fn mailbox_keeps_one_message_per_slot_independently() {
-        let mailbox = TextureMailbox::new(4);
-        mailbox.post(message(0, 1));
-        mailbox.post(message(1, 1));
-        mailbox.post(message(0, 2));
-
-        let mut taken = mailbox.take_all();
-        taken.sort_by_key(|m| m.slot_index);
-        assert_eq!(taken.len(), 2);
-        assert_eq!(tag(&taken[0]), 2, "slot 0 keeps the newer frame");
-        assert_eq!(tag(&taken[1]), 1, "slot 1 is untouched");
-    }
-
     /// The failure this guard exists for: a decode of a superseded resolution
     /// finishing after its own replacement is already parked. Overwriting it
     /// would lose the only copy of the texture anyone wants, since the consumer
     /// discards the stale one on sight.
     #[test]
-    fn mailbox_keeps_the_newer_parked_message_over_a_stale_arrival() {
+    fn mailbox_keeps_the_newer_generation_whichever_order_the_two_arrive_in() {
         let mailbox = TextureMailbox::new(4);
         mailbox.post(stamped(1, 2048, 2));
         mailbox.post(stamped(1, 8192, 1));
-
         assert_eq!(
             parked_generation(&mailbox, 1),
             Some(2),
             "the stale arrival must not replace its own replacement"
         );
-    }
 
-    #[test]
-    fn mailbox_replaces_a_stale_parked_message_with_a_newer_arrival() {
-        let mailbox = TextureMailbox::new(4);
         mailbox.post(stamped(1, 8192, 1));
         mailbox.post(stamped(1, 2048, 2));
-
         assert_eq!(parked_generation(&mailbox, 1), Some(2));
     }
 

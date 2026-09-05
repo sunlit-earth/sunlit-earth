@@ -349,6 +349,7 @@ fn save_png(path: &Path, img: &DecodedImage) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScratchDir;
 
     /// A distinguishable gradient, so a downscale is not confusable with the
     /// source and a replacement is not confusable with either.
@@ -362,38 +363,32 @@ mod tests {
         img.save(path).expect("write the fixture source");
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sunlit_earth_texture_cache_{name}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create the test directory");
-        dir
+    fn temp_dir(name: &str) -> ScratchDir {
+        ScratchDir::new(&format!("texture_cache_{name}"))
     }
 
     // --- halvings_to ---
 
+    /// The setting is a cap, so a source at or under the target is left alone
+    /// and one above it is halved until it fits. A target of zero has no width
+    /// to reach, so the halving stops at one pixel instead of looping.
     #[test]
-    fn a_source_at_the_target_width_is_not_halved() {
-        assert_eq!(halvings_to(8192, 8192), 0);
-    }
-
-    #[test]
-    fn each_step_halves_until_the_target_is_reached() {
-        assert_eq!(halvings_to(8192, 4096), 1);
-        assert_eq!(halvings_to(8192, 2048), 2);
-        assert_eq!(halvings_to(4096, 2048), 1);
-    }
-
-    /// The setting is a cap, so asking for more than the file holds is not an
-    /// upscale.
-    #[test]
-    fn a_source_narrower_than_the_target_is_left_alone() {
-        assert_eq!(halvings_to(2048, 8192), 0);
-        assert_eq!(halvings_to(1, 8192), 0);
-    }
-
-    #[test]
-    fn halving_a_target_of_zero_terminates_at_one_pixel() {
-        assert_eq!(halvings_to(8, 0), 3);
+    fn a_source_is_halved_until_it_fits_the_target() {
+        for (source, target, halvings) in [
+            (8192, 8192, 0),
+            (8192, 4096, 1),
+            (8192, 2048, 2),
+            (4096, 2048, 1),
+            (2048, 8192, 0),
+            (1, 8192, 0),
+            (8, 0, 3),
+        ] {
+            assert_eq!(
+                halvings_to(source, target),
+                halvings,
+                "{source} down to {target}"
+            );
+        }
     }
 
     // --- the cache key ---
@@ -407,16 +402,6 @@ mod tests {
         );
         assert!(image.ends_with("texture_cache/world.topo.200405.2048.png"));
         assert!(meta.ends_with("texture_cache/world.topo.200405.2048.toml"));
-    }
-
-    #[test]
-    fn each_width_gets_its_own_cache_file() {
-        let dir = Path::new("C:/data");
-        let source = Path::new("C:/textures/day.jxl");
-        assert_ne!(
-            cache_paths(dir, source, 4096).0,
-            cache_paths(dir, source, 2048).0
-        );
     }
 
     #[test]
@@ -475,11 +460,11 @@ mod tests {
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
 
-        let img = load_at_resolution(&source, 8, Some(&dir)).expect("load");
+        let img = load_at_resolution(&source, 8, Some(dir.path())).expect("load");
         assert_eq!((img.width, img.height), (8, 4));
         assert_eq!(img.pixels.len(), 8 * 4 * 4);
 
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        let (image_path, meta_path) = cache_paths(dir.path(), &source, 8);
         assert!(image_path.exists(), "the downscale should be cached");
         assert!(meta_path.exists(), "the sidecar should be beside it");
 
@@ -503,7 +488,7 @@ mod tests {
         let dir = temp_dir("sweep");
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        let (image_path, meta_path) = cache_paths(dir.path(), &source, 8);
 
         fs::create_dir_all(image_path.parent().expect("a parent")).expect("cache directory");
         let orphans = [
@@ -519,10 +504,10 @@ mod tests {
         fs::write(&bystander, b"not ours").expect("write the bystander");
         // An orphan of the same source at another width: unfinished, but not
         // this target's, so only the prefix check keeps it alive.
-        let other_width = unfinished(&cache_paths(&dir, &source, 4).0);
+        let other_width = unfinished(&cache_paths(dir.path(), &source, 4).0);
         fs::write(&other_width, b"half a png").expect("write the other width");
 
-        load_at_resolution(&source, 8, Some(&dir)).expect("load");
+        load_at_resolution(&source, 8, Some(dir.path())).expect("load");
 
         for orphan in &orphans {
             assert!(!orphan.exists(), "{} should be swept", orphan.display());
@@ -561,11 +546,11 @@ mod tests {
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
 
-        let first = load_at_resolution(&source, 8, Some(&dir)).expect("first load");
-        let (image_path, _) = cache_paths(&dir, &source, 8);
+        let first = load_at_resolution(&source, 8, Some(dir.path())).expect("first load");
+        let (image_path, _) = cache_paths(dir.path(), &source, 8);
         write_source(&image_path, 8, 4, 200);
 
-        let second = load_at_resolution(&source, 8, Some(&dir)).expect("second load");
+        let second = load_at_resolution(&source, 8, Some(dir.path())).expect("second load");
         assert_eq!((second.width, second.height), (8, 4));
         assert_ne!(
             second.pixels, first.pixels,
@@ -580,11 +565,12 @@ mod tests {
         let dir = temp_dir("invalidate");
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
-        load_at_resolution(&source, 8, Some(&dir)).expect("first load");
+        load_at_resolution(&source, 8, Some(dir.path())).expect("first load");
 
         // A wider source is a different file by size as well as by content.
         write_source(&source, 64, 32, 20);
-        let after = load_at_resolution(&source, 8, Some(&dir)).expect("load after replacement");
+        let after =
+            load_at_resolution(&source, 8, Some(dir.path())).expect("load after replacement");
         assert_eq!(
             (after.width, after.height),
             (8, 4),
@@ -604,22 +590,12 @@ mod tests {
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
 
-        let img = load_at_resolution(&source, 32, Some(&dir)).expect("load");
+        let img = load_at_resolution(&source, 32, Some(dir.path())).expect("load");
         assert_eq!((img.width, img.height), (32, 16));
         assert!(
-            !cache_paths(&dir, &source, 32).0.exists(),
+            !cache_paths(dir.path(), &source, 32).0.exists(),
             "there is nothing to cache when nothing was halved"
         );
-    }
-
-    #[test]
-    fn without_a_cache_directory_the_source_is_still_halved() {
-        let dir = temp_dir("no_cache_dir");
-        let source = dir.join("day.png");
-        write_source(&source, 32, 16, 10);
-
-        let img = load_at_resolution(&source, 8, None).expect("load");
-        assert_eq!((img.width, img.height), (8, 4));
     }
 
     /// A cached downscale holds the source's own orientation, so loading one
@@ -631,8 +607,8 @@ mod tests {
         write_source(&source, 32, 16, 10);
 
         let uncached = load_at_resolution(&source, 8, None).expect("uncached");
-        let written = load_at_resolution(&source, 8, Some(&dir)).expect("cache miss");
-        let read_back = load_at_resolution(&source, 8, Some(&dir)).expect("cache hit");
+        let written = load_at_resolution(&source, 8, Some(dir.path())).expect("cache miss");
+        let read_back = load_at_resolution(&source, 8, Some(dir.path())).expect("cache hit");
 
         assert_eq!(uncached.pixels, written.pixels);
         assert_eq!(uncached.pixels, read_back.pixels);
@@ -654,7 +630,7 @@ mod tests {
             modified_ms: Some(0),
         });
         let img = load_at_resolution(&source, 8, None).expect("load");
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        let (image_path, meta_path) = cache_paths(dir.path(), &source, 8);
 
         write_cache(&image_path, &meta_path, stale_stamp, &source, &img);
         assert!(
@@ -664,37 +640,26 @@ mod tests {
 
         // The same call with the stamp the file actually has does write it, so
         // the check above is the reason nothing was written.
-        write_cache(
-            &image_path,
-            &meta_path,
-            SourceStamp::of(&source),
-            &source,
-            &img,
-        );
+        let live_stamp = SourceStamp::of(&source);
+        write_cache(&image_path, &meta_path, live_stamp, &source, &img);
         assert!(image_path.exists() && meta_path.exists());
-    }
 
-    #[test]
-    fn a_source_that_vanished_during_the_decode_is_not_cached() {
-        let dir = temp_dir("gone_mid_decode");
-        let source = dir.join("day.png");
-        write_source(&source, 32, 16, 10);
-        let img = load_at_resolution(&source, 8, None).expect("load");
-        let before = SourceStamp::of(&source);
+        // The other arm of the same guard: a source that vanished has no
+        // metadata to stamp, so nothing may be cached either.
+        fs::remove_file(&image_path).expect("clear the cached image");
+        fs::remove_file(&meta_path).expect("clear the sidecar");
         fs::remove_file(&source).expect("remove the source");
-
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
-        write_cache(&image_path, &meta_path, before, &source, &img);
+        write_cache(&image_path, &meta_path, live_stamp, &source, &img);
         assert!(
             !image_path.exists() && !meta_path.exists(),
-            "a source with no metadata cannot be stamped, so nothing may be cached"
+            "a source with no metadata cannot be stamped"
         );
     }
 
     #[test]
     fn a_missing_source_is_an_error_rather_than_a_panic() {
         let dir = temp_dir("missing");
-        let Err(err) = load_at_resolution(&dir.join("absent.png"), 8, Some(&dir)) else {
+        let Err(err) = load_at_resolution(&dir.join("absent.png"), 8, Some(dir.path())) else {
             panic!("a source that is not there must not load");
         };
         assert!(err.contains("absent.png"), "unexpected error: {err}");

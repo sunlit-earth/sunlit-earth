@@ -271,13 +271,10 @@ fn fs_star(in: StarOutput) -> @location(0) vec4<f32> {
 // The Moon
 //
 // A textured sphere at its true position, distance and orientation, drawn with
-// the sky: after the stars and the Sun's disk, before the Earth, so the painted
-// globe covers whatever falls inside its own disc and a Moon crossing the Sun
-// covers the disk. Its vertices reach the screen as directions from the eye
-// through the same sky lens the stars use, which is what makes parallax and
-// apparent size exact at every camera distance; its own front-to-back is
-// back-face culling, exact on a convex sphere, rather than a depth test between
-// two lenses that would mean nothing.
+// the sky. Its vertices reach the screen as directions from the eye through the
+// same sky lens the stars use, which is what makes parallax and apparent size
+// exact at every camera distance. Draw order and culling are in
+// `docs/rendering.md`.
 // ---------------------------------------------------------------------------
 
 /// Width of the terminator, in units of n dot l.
@@ -299,11 +296,9 @@ fn vs_moon(in: VertexInput) -> MoonOutput {
         (uniforms.sky_view * vec4<f32>(world_position - uniforms.eye_pos, 0.0)).xyz
     );
     var out: MoonOutput;
-    // No offscreen guard here, unlike `vs_star`: a sprite's four vertices share
-    // one direction, so one verdict moves all of them, where a mesh judged per
-    // vertex would keep every triangle that straddles the verdict. The whole
-    // mesh is inside one cone, and `scene::moon::place_moon` measures that cone
-    // before the draw is submitted at all.
+    // No offscreen guard here, unlike `vs_star`: the whole mesh is inside one
+    // cone, and `scene::moon::place_moon` measures that cone before the draw is
+    // submitted at all.
     out.clip_position = vec4<f32>(sky_lens_project(view_direction).ndc, 1.0, 1.0);
     out.uv = in.uv;
     // The model matrix carries a uniform scale and a rotation, so the position
@@ -345,7 +340,6 @@ fn schlick_fresnel(n_dot_v: f32, exponent: f32) -> f32 {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let day = textureSample(sphere_texture, sphere_sampler, in.uv);
 
-    // Apply day color correction (gamma first, then saturation)
     var day_rgb = apply_gamma(day.rgb, uniforms.day_gamma);
     day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
 
@@ -357,7 +351,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let night_color = textureSample(night_texture, sphere_sampler, in.uv).rgb;
 
-    // Apply night color correction (gamma first, then saturation)
     var night_rgb = apply_gamma(night_color, uniforms.night_gamma);
     night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
 
@@ -430,9 +423,9 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
     // A cloud top at the shell's radius keeps the direct beam until the Sun is
-    // sqrt(1 - 1/r^2) below its local horizontal, 3.14 degrees at this radius,
-    // which is the same tangent condition fs_rayleigh calls earth_limb_ndotv.
-    // So the ramp is centered there rather than on the ground's terminator.
+    // sqrt(1 - 1/r^2) below its local horizontal, which is the same tangent
+    // condition fs_rayleigh calls earth_limb_ndotv. So the ramp is centered
+    // there rather than on the ground's terminator.
     let shell_shift = sqrt(1.0 - 1.0 / (uniforms.cloud_sphere_radius * uniforms.cloud_sphere_radius));
     let w = uniforms.cloud_terminator;
     let sunlit = smoothstep(-shell_shift - w, -shell_shift + w, n_dot_l);
@@ -440,14 +433,10 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     // field's doc comment in uniforms.rs.
     let brightness = mix(vec3<f32>(uniforms.cloud_night), vec3<f32>(1.0), sunlit);
     // The two hemispheres carry their own opacity, because one alpha does not
-    // read the same on both. A deck at cloud_night is darker than what it covers
-    // on the night side, where a city core is display white, so the surface wins
-    // a blend that on the day side it loses invisibly; and half a percent of the
-    // source's texels get past a raw 0.97, so a density of 0.45 is what a cloud
-    // that looks solid is worth and a straight multiply cannot reach full cover
-    // from it. The day side keeps that multiply. The night side reads its slider
-    // as an optical depth, which is what puts full cover at the top of the range
-    // and leaves an edge that still fades.
+    // read the same on both: the day side keeps the multiply on coverage, and
+    // the night side reads its slider as an optical depth, which is what puts
+    // full cover at the top of the range and leaves an edge that still fades.
+    // `docs/rendering.md` has the measurements that forced the split.
     let depth = uniforms.cloud_opacity_night
         / max(1.0 - uniforms.cloud_opacity_night, NIGHT_OPACITY_MIN_TRANSMITTANCE);
     // The base is held off zero because pow(0, 0) is a NaN through WGSL's
@@ -683,12 +672,10 @@ fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
 
 // --- The Sun ---
 //
-// Two draws, because the Sun is two things at once. Its body is a celestial
-// object, drawn with the sky and covered by the painted globe like anything
-// else there. Its glare forms in the observer rather than in the scene, so it
-// is a second quad drawn last over everything, faded by the fraction of the
-// disk the globe leaves visible rather than by whether the disk survived the
-// depth test. One draw could be occluded or overlaying, not both.
+// Two draws, because the Sun is two things at once: its body is a celestial
+// object drawn with the sky, and its glare forms in the observer rather than in
+// the scene and is a second quad drawn last over everything. The argument for
+// splitting them is in `docs/rendering.md`.
 //
 // Every falloff is measured in degrees from the sun's center, reconstructed
 // per fragment by inverting the sky lens, so the composition is correct at any
@@ -1051,10 +1038,8 @@ fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
     }
     // Veiling glare scales with the illuminance the source delivers, which is
     // the visible area times what the path transmits; the square root is
-    // Stevens' exponent for a point source and the low-dynamic-range stand-in
-    // for the compression an HDR pipeline would do. A tenth of a clear disk
-    // then glares at a third rather than at a tenth, which is why a sliver over
-    // the horizon glares at all. The gain on top is the eye's own lag.
+    // Stevens' exponent for a point source. The gain on top is the eye's own
+    // adaptation lag.
     color = color * uniforms.sun_glow * uniforms.sun_horizon_gain * sqrt(uniforms.sun_flux);
 
     return vec4<f32>(color + dither(position), 0.0);
@@ -1065,9 +1050,8 @@ fn fs_sun_glare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
 //
 // The diffuse band as a panorama of the whole celestial sphere, sampled per
 // pixel through the inverse of the lens the sprites are projected with. It is
-// the first draw of the pass, before the stars, so everything else in the sky
-// sits on top of it; source position here is after the Sun only because
-// `sky_lens_direction` has to be declared before it is called.
+// the first draw of the pass; its source position here is after the Sun only
+// because `sky_lens_direction` has to be declared before it is called.
 // ---------------------------------------------------------------------------
 
 /// Where the loader's own orientation pass leaves right ascension zero.
@@ -1092,7 +1076,7 @@ fn milky_way_uv(direction: vec3<f32>) -> vec2<f32> {
 ///
 /// The inverse of `sky_lens_project` after `view_from_eqj`, which is what puts
 /// the panorama at the same scale and orientation as the sprites drawn on top
-/// of it. The lens half is phase B's and the two transposes are this layer's.
+/// of it.
 fn milky_way_direction(position: vec2<f32>) -> vec3<f32> {
     let view_direction = sky_lens_direction(position);
     let world_direction = (transpose(uniforms.sky_view) * vec4<f32>(view_direction, 0.0)).xyz;
@@ -1119,10 +1103,8 @@ fn milky_way_uv_gradient(direction: vec3<f32>, derivative: vec3<f32>) -> vec2<f3
     return vec2<f32>(du, dv);
 }
 
-/// The whole frame, always: the sky lens has an image of every pixel of it
-/// short of the antipode, and the antipode is past the corner at every field of
-/// view the slider offers, so there is no region to leave undrawn and nothing
-/// here to cull. Whether the layer is drawn at all is `MilkyWay::select`.
+/// The whole frame, always: there is no region the sky lens leaves undrawn and
+/// nothing here to cull. Whether the layer is drawn at all is `MilkyWay::select`.
 @vertex
 fn vs_milky_way(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(sky_quad_corner(vertex_index), 1.0, 1.0);

@@ -89,10 +89,10 @@ fn milky_way_texture_bytes(texture_resolution: u32) -> u64 {
 ///
 /// 1024 by 512 RGBA8 with its mip chain is 2.67 MiB on the GPU, and the decode
 /// that produces it holds about the same again on the CPU while it runs: 2.67
-/// plus 2.67, rounded up. A
-/// resolution switch purges and reloads this slot like the others, but the file
-/// is narrower than the narrowest cap the setting offers, so it is always loaded
-/// at its own width and the term does not move with the setting.
+/// plus 2.67, rounded up. A resolution switch purges and reloads this slot like
+/// the others, but the file is narrower than the narrowest cap the setting
+/// offers, so it is always loaded at its own width and the term does not move
+/// with the setting.
 const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
 
 /// Soft budget for committed private memory. Crossing it emits a `warn!`.

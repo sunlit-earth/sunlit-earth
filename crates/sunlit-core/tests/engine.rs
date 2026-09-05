@@ -4251,8 +4251,8 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
 /// of it are measured. Across the 21 records inside the limit the ratio runs
 /// from 0.73 to 1.26, which is bright stars sitting in bright parts of the Milky
 /// Way and nothing more. A star baked into the layer saturates the texels it
-/// covers, which reads 2.32 against the brightest surround in the set and 5 or
-/// more against a typical one. Two sits between the two.
+/// covers, and such a core reads 2.32 against the brightest surround in the set
+/// and 5 or more against a typical one. Two sits between the two.
 ///
 /// What this window cannot see is a star confined to a single texel in the
 /// brightest part of the plane, which stays inside the bound;

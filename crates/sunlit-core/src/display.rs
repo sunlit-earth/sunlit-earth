@@ -2,10 +2,9 @@
 //! than with an API.
 //!
 //! Two questions need the same answer: how large to render a wallpaper, and
-//! whether a saved window position is still
-//! somewhere a person can reach. On Windows both come from Win32 monitor
-//! enumeration. On Linux the query is `xrandr --query`, whose output is parsed
-//! here.
+//! whether a saved window position is still somewhere a person can reach. On
+//! Windows both come from Win32 monitor enumeration. On Linux the query is
+//! `xrandr --query`, whose output is parsed here.
 //!
 //! xrandr rather than a windowing dependency. `sunlit-core` owns no window, and
 //! Slint's public `Window` API reports the window's own size and nothing about

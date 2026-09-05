@@ -466,7 +466,6 @@ fn never_below_min_across_color_range() {
         [0.80, 0.75, 0.60],
     ];
 
-    // Batch all combinations into one GPU dispatch
     let mut cases = Vec::new();
     let mut meta = Vec::new(); // (day, night) per case for error messages
     for day in days {
@@ -508,10 +507,6 @@ fn software_adapter_produces_correct_results() {
     // reason to stop checking the platforms that do have one, so the absence is
     // only tolerated on macOS: on Windows (WARP) and Linux (lavapipe) a missing
     // software adapter means the environment is broken and this fails.
-    //
-    // The case exists so a developer on a discrete GPU can trust a CI result
-    // produced on a software rasterizer. Where CI is itself the hardware
-    // adapter, the other cases in this file already cover that adapter.
     assert!(
         SOFTWARE_GPU.is_some() || cfg!(target_os = "macos"),
         "no software adapter: Windows has WARP and Linux has lavapipe, so this is a \
@@ -523,7 +518,6 @@ fn software_adapter_produces_correct_results() {
     };
     let gpu = software.lock().unwrap();
 
-    // Run a representative subset: ocean + NYC sweeps
     let mut cases = sweep(OCEAN_DAY, OCEAN_NIGHT, 500, W, true, FLOOR, RAMP);
     cases.extend(sweep(NYC_DAY, NYC_NIGHT, 500, W, true, FLOOR, RAMP));
     let results = dispatch(&gpu, &cases);
@@ -549,7 +543,6 @@ fn software_adapter_produces_correct_results() {
     // NYC sweep (next 501 results): day side not dominated by city lights
     let nyc = &results[501..];
     let day_lum = luminance(&NYC_DAY);
-    // Check the last result (n_dot_l = 1.0, fully lit)
     let fully_lit = &nyc[500];
     for (ch, (&got, &expected)) in fully_lit.color.iter().zip(NYC_DAY.iter()).enumerate() {
         assert!(
@@ -557,7 +550,6 @@ fn software_adapter_produces_correct_results() {
             "Software: NYC fully-lit ch={ch}: got {got:.4}, expected {expected:.4}",
         );
     }
-    // Mid-day samples should not exceed day luminance
     for &step in &[375, 400, 425, 500] {
         let lum = luminance(&nyc[step].color);
         assert!(

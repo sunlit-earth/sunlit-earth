@@ -482,8 +482,8 @@ impl CloudUpdater {
             last_modified: fetched.last_modified,
         };
         if let Some(path) = self.meta_path.as_deref() {
-            // The sidecar goes only where its image went; `save_cache_image`'s
-            // doc has the reason.
+            // The sidecar goes only where its image went; `discard_cache_meta`
+            // says why an entry must not keep one without the other.
             if cached {
                 save_cache_meta(&meta, path);
             } else {

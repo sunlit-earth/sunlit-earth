@@ -991,8 +991,12 @@ const RULE_SKY_FOVS: [f32; 8] = [30.0, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 4
 const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
 
 /// Three rules exist once in WGSL and once in `scene::sun_occlusion`, and every
-/// pairing matters at the pixel; `docs/rendering.md` says which pairing is
-/// which.
+/// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
+/// ramp and the shader draws that disk's antialiased edge with it; the CPU
+/// measures occlusion at a screen position the shader has to draw the Sun at;
+/// and the CPU integrates the light path over the visible disk to decide what
+/// color and how bright the glare is while the shader draws the disk that glare
+/// is supposed to have come from.
 ///
 /// The viewport heights avoid 1080 and below, where the ramp clamps to 1.0 and
 /// any two knees agree: every golden and every engine frame renders there, so

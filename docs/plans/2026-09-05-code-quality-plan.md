@@ -348,7 +348,11 @@ ame'` exit 0 with no panic: the app came up, loaded the cached cloud image, set
 - **Two rows of the review's 4.1 comment table fall in `tests/engine.rs` and `tests/soak.rs`**, which no run 1 package
   owns. They belong to run 3's package 3.1.
 - **Neither Linux nor macOS was compiled in run 1.** Every new `cfg` gate was reasoned through by an implementer and
-  re-checked by a validator, but the only compiler run was Windows MSVC. CI on the run branch is the gate.
+  re-checked by a validator, but the only compiler run was Windows MSVC. Note that `.github/workflows/ci.yml` is
+  `workflow_dispatch` only, so pushing the run branch does not check this: it has to be asked for with
+  `gh workflow run ci.yml --ref refactor/quality-run-1`, and it bills against the private repository's minutes at 2x for
+  Windows and 10x for macOS. Run 1 changed per-OS code in `display/**`, `desktop.rs`, `memory.rs` and `wallpaper.rs` and
+  added five new `cfg` gates, so this is worth one dispatch before the run merges.
 - **The e2e suite has not run.** It compiles, with all 15 tests `#[ignore]`d as expected. Run 1's per-run gate says it
   runs once in the Windows guest; that is outstanding and is the maintainer's or the orchestrator's under an explicit
   grant.

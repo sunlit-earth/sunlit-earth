@@ -205,6 +205,7 @@ Review items D1 to D4 for `sunlit-core`. Branch `refactor/quality-run-4`. Every 
 - `wallpaper/{mod,windows,linux}.rs` with `Publication::write_job` shared, following the per-OS submodule pattern (D1, D4).
 - `engine/{schedule,protocol,handle,cloud_worker,publish}.rs`; `Engine::new` and `handle` extracted (D4).
 - `tests/engine/` as a directory target with the helpers beside the tests that use them; `tests/common/` split if the note's seam is still there (D4).
+- Delete `wallpaper::get_primary_monitor_resolution` and, with it, `display::primary_monitor_of`, whose only other caller is a `display.rs` test. Run 2 established that the function's sole caller is its own test and that narrowing it to `pub(crate)` makes it dead code under `-D warnings`; the deletion has to be one commit because it spans `wallpaper.rs` and `display.rs`, and 4.3's `display.rs` work is where the second half lands. The merged test `wallpaper::tests::every_monitor_is_enumerated_with_a_rectangle_and_one_of_them_is_primary` composes `enumerate_monitors()` and the primary it finds directly once the function is gone. (Deferred from run 2 as departure 15.)
 
 **Package 4.2, the renderer.** Paths: `crates/sunlit-core/src/renderer/**`, `crates/sunlit-core/shaders/**`, `crates/sunlit-core/tests/render_pipeline.rs`, `tests/golden.rs`. Notes: renderer.md, tests-gpu.md.
 

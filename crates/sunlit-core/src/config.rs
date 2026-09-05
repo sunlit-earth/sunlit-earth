@@ -316,7 +316,6 @@ pub struct AppConfig {
     pub use_custom_datetime: bool,
     pub custom_hour: f32,
     pub custom_day_of_year: f32,
-    #[serde(default = "default_custom_year")]
     pub custom_year: i32,
 
     // Window geometry (None on first launch — let the OS place the window)

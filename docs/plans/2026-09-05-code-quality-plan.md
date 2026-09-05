@@ -305,6 +305,7 @@ into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3
 | Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
 |---|---|---|---|---|
 | 1 | 22 | 57 | 3 | 35 points of the five-hour window for three implementers, three validators and the orchestrator, well under the 50 the plan budgeted for a whole run. The pool's four cold builds were paid once here and are not repeated. Runs 2 to 5 need no shrinking on this evidence; three implementers per run stands. |
+| 2 | 64, with the window rolling over 38 minutes in | 41 of the new window | 3 | The maintainer authorised finishing the old window and continuing into the new one, so the run spans a rollover and the two numbers are not comparable. Measured cost after the rollover, covering all three validator rounds, three fix rounds, the merges and the gates: 39 points. Comparable to run 1's 35. |
 
 ## Declined findings
 
@@ -402,6 +403,40 @@ ame'` exit 0 with no panic: the app came up, loaded the cached cloud image, set
   readiness signal, among them `test_tray_mode_ipc_lifecycle`, `test_memory_report`, `test_set_wallpaper` and
   `test_single_instance_second_exits`, all passed, so the signal still arrives when and as the suite expects. The
   harness log does not echo `SIGNAL:` lines, so the evidence is those cases passing rather than a line read directly.
+
+## Run 2 gate record
+
+Run on the merged run branch in `pool-0`, adapter to itself.
+
+- `cargo fmt --check` clean. `cargo clippy --all-targets` clean, zero warnings.
+- `cargo test` green across the workspace: core lib 398 in 0.15 s, engine 71, golden 20 in 3.18 s, render_pipeline 17
+  in 0.69 s, shading 7 in 0.80 s, soak 1 in 33.46 s, app lib 69, app bin 2, e2e 15 ignored and compiling, slint_ui 35,
+  xtask 633.
+- `git status --short crates/sunlit-core/tests/golden/` empty; no golden regenerated anywhere in the run.
+
+**The two timing gates, honestly.**
+
+| | review baseline | orchestrator baseline | after, warm | after, cold |
+|---|---|---|---|---|
+| `engine` | 161.6 s | 173.49 s | **57.21 s, 56.35 s** | **65.73 s** |
+| `soak` | 65.6 s | 66.28 s | **33.21 s, 33.46 s** | |
+
+The engine gate of 60 s is **met warm and missed cold**. The first run in a freshly merged worktree, with the downscale
+cache empty, was 65.73 s here and 61.82 s on the validator's host; every subsequent run is 56 to 57 s. A fresh checkout
+and CI are cold, so the gate as worded is met only on a warm target directory. This is not a regression, since the base
+paid the same cost, and nothing in run 2 introduced it. It is recorded rather than chased.
+
+The soak gate of 35 s is met in every condition measured.
+
+**The speedup is 3.1x on the engine target**, against the orchestrator's own idle-machine baseline of 173.49 s. The
+implementer's paired measurement reported 197.01 s before and 55.22 s after, a 3.5x ratio, but the before half was taken
+while packages 2.2 and 2.3 were competing for the adapter; the implementer's own third figure of 180.18 s, labelled at
+the time as taken under load, corroborates that. The validator argued the drift theory does not hold, because a
+uniformly slow host would have inflated the after half equally and a quiet host would then show about 49 s, where 54 to
+57 s is what reproduces. The pairing keeps the ratio internally consistent, but 3.1x is the number to quote.
+
+Not done in run 2: the e2e suite was neither run nor needed, since the run touches no production behavior beyond one
+`pub` and one deleted serde attribute. The cross-platform compile is still owed from run 1.
 
 ## Open items
 

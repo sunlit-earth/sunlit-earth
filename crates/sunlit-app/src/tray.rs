@@ -30,7 +30,7 @@ const TRAY_RGBA: &[u8] = include_bytes!("../../../assets/icon/baked/tray-32.rgba
 const _: () = assert!(TRAY_RGBA.len() == (ICON_SIZE * ICON_SIZE * 4) as usize);
 
 /// The tray icon: the baked mark wrapped in the buffer Slint wants.
-pub fn create_icon() -> slint::Image {
+fn create_icon() -> slint::Image {
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
         TRAY_RGBA, ICON_SIZE, ICON_SIZE,
     );

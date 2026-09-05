@@ -6,7 +6,7 @@
 //! is the icon bytes, the callback wiring, and the single-instance mutex.
 
 use slint::ComponentHandle;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use sunlit_core::engine::EngineCommand;
 
@@ -37,24 +37,51 @@ pub fn create_icon() -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// What the single-instance check found.
+pub enum InstanceCheck {
+    /// Nobody else holds the name. The guard, when there is one, must be kept
+    /// alive for the entire process lifetime: dropping it releases the OS mutex
+    /// and lets another instance start. `None` is a mutex that could not be
+    /// created at all, where carrying on alone is the friendlier of the two
+    /// wrong answers.
+    Alone(Option<single_instance::SingleInstance>),
+    /// Another instance holds the name, and this one is expected to exit.
+    AlreadyRunning,
+}
+
 /// Check that no other instance of Sunlit Earth is running.
 ///
-/// Returns the `SingleInstance` guard, which must be kept alive for the entire
-/// process lifetime; dropping it releases the OS mutex and allows another
-/// instance to start. `None` means an instance is already running, and the
-/// caller is expected to exit.
-pub fn acquire_single_instance(mutex_name: &str) -> Option<single_instance::SingleInstance> {
-    let instance = single_instance::SingleInstance::new(mutex_name)
-        .expect("failed to create single-instance mutex");
-    instance.is_single().then_some(instance)
+/// The name is derived from `--ipc-socket`, so it is as much the user's to get
+/// wrong as the socket name is: on Windows a backslash in it is a namespace
+/// separator and the mutex is refused outright.
+///
+/// :param `mutex_name`: the process-wide name this instance claims
+/// :returns: what the check found
+pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
+    match single_instance::SingleInstance::new(mutex_name) {
+        Ok(instance) if instance.is_single() => InstanceCheck::Alone(Some(instance)),
+        Ok(_) => InstanceCheck::AlreadyRunning,
+        Err(e) => {
+            warn!("the single-instance mutex `{mutex_name}` could not be created: {e}");
+            InstanceCheck::Alone(None)
+        }
+    }
 }
 
 /// Create the tray icon and wire its callbacks to the window and the engine.
 ///
 /// The returned handle must be kept alive: dropping it removes the icon from
-/// the tray.
-pub fn create_tray(window: &MainWindow, engine: &EngineLink, about: &AboutController) -> TrayIcon {
-    let tray = TrayIcon::new().expect("failed to create tray icon");
+/// the tray. `None` is a session with no tray to put an icon in, a Linux
+/// desktop running no `StatusNotifierItem` host being the ordinary case, and
+/// leaves the caller to run windowed.
+pub fn create_tray(
+    window: &MainWindow,
+    engine: &EngineLink,
+    about: &AboutController,
+) -> Option<TrayIcon> {
+    let tray = TrayIcon::new()
+        .inspect_err(|e| warn!("this session has no tray to put an icon in: {e}"))
+        .ok()?;
     tray.set_tray_image(create_icon());
     tray.set_auto_refresh_enabled(window.get_auto_refresh_enabled());
 
@@ -114,8 +141,10 @@ pub fn create_tray(window: &MainWindow, engine: &EngineLink, about: &AboutContro
         slint::quit_event_loop().ok();
     });
 
-    tray.show().expect("failed to show tray icon");
-    tray
+    tray.show()
+        .inspect_err(|e| warn!("the tray icon could not be shown: {e}"))
+        .ok()?;
+    Some(tray)
 }
 
 #[cfg(test)]

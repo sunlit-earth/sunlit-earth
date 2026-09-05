@@ -322,7 +322,11 @@ export component MainWindow inherits Window {
 
     in-out property <bool> auto-refresh-enabled: false;
     in-out property <float> auto-refresh-interval: 5.0;
+    // The settled change: the schedule is updated and the config is written.
     callback auto-refresh-changed();
+    // The interval while the handle is still moving: the schedule follows, the
+    // config waits for the release.
+    callback auto-refresh-interval-moved();
 
     // The Displays group. Every model here is filled in from Rust, and an empty
     // `display-tiles` is a session whose monitors could not be enumerated at
@@ -432,7 +436,8 @@ export component MainWindow inherits Window {
                             minimum: 1;
                             maximum: 30;
                             value <=> root.auto-refresh-interval;
-                            changed(value) => { root.auto-refresh-changed(); }
+                            changed(value) => { root.auto-refresh-interval-moved(); }
+                            released(value) => { root.auto-refresh-changed(); }
                             Tooltip {
                                 Hint { text: "How long between one wallpaper render and the next."; }
                             }

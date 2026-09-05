@@ -318,7 +318,7 @@ pub fn register_action_callbacks(
 ///
 /// The monitor list is the one the group's rows were built from rather than a
 /// fresh query, so a row and a rectangle never name different screens. A change
-/// is persisted at once, the way the auto-refresh controls are: it is a setting
+/// is persisted at once, the way the auto-refresh checkbox is: it is a setting
 /// somebody chose rather than a slider they are still moving.
 pub fn register_display_callbacks(
     window: &MainWindow,

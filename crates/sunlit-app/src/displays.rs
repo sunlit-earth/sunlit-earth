@@ -31,10 +31,23 @@ pub fn shared_monitors() -> SharedMonitors {
 
 /// The list as it stands, copied out from under the lock.
 pub fn monitors_of(screens: &SharedMonitors) -> Vec<Monitor> {
+    lock(screens).clone()
+}
+
+/// Put the session's monitors in the shared list.
+pub fn set_monitors(screens: &SharedMonitors, monitors: Vec<Monitor>) {
+    *lock(screens) = monitors;
+}
+
+/// The list, whether or not a panic elsewhere left the lock poisoned.
+///
+/// A `Vec<Monitor>` is replaced whole and has no invariant a half-finished
+/// write could break, so reading through the poison is better than turning one
+/// panic into a second one on the UI thread.
+fn lock(screens: &SharedMonitors) -> std::sync::MutexGuard<'_, Vec<Monitor>> {
     screens
         .lock()
-        .expect("the monitor list lock is poisoned")
-        .clone()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The first row of the screen combo: follow whatever the system calls primary.
@@ -201,7 +214,7 @@ pub fn replace_monitors(
     crate::ui_callbacks::defer_combobox_indices(&window.as_weak(), indices);
     let stored = (!stored_anchor.trim().is_empty()).then_some(stored_anchor);
     apply_diagram_to_window(window, &monitors, stored);
-    *screens.lock().expect("the monitor list lock is poisoned") = monitors;
+    set_monitors(screens, monitors);
     row
 }
 

@@ -28,49 +28,85 @@ use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
 use tracing::{debug, info, warn};
 
-/// Spawn a background thread that listens for IPC commands on a local socket.
+/// A socket that is bound and not yet being served.
 ///
-/// Commands are dispatched directly via `invoke_from_event_loop` to the Slint
-/// event loop thread. Returns a `JoinHandle` for the listener thread.
-pub fn spawn_ipc_listener(
-    socket_name: &str,
-    window_weak: slint::Weak<crate::MainWindow>,
-    engine: EngineLink,
-) -> std::thread::JoinHandle<()> {
+/// Binding and serving are two steps because the name can only be taken once:
+/// a name the platform refuses, or one another instance already holds, is an
+/// answer the caller wants before it selects an adapter and builds every
+/// texture, not after.
+pub struct IpcListener {
+    listener: interprocess::local_socket::Listener,
+    socket_name: String,
+}
+
+/// Take the local socket `socket_name` names.
+///
+/// The error is a sentence for the log: an app that cannot be reached over IPC
+/// still draws the globe, so the caller is expected to carry on without it.
+///
+/// :param `socket_name`: the name from `--ipc-socket`
+/// :returns: the bound socket, or why it could not be taken
+pub fn bind(socket_name: &str) -> Result<IpcListener, String> {
     let name = socket_name
         .to_ns_name::<GenericNamespaced>()
-        .expect("failed to convert IPC socket name");
-
+        .map_err(|e| format!("`{socket_name}` is not a usable socket name: {e}"))?;
     let listener = ListenerOptions::new()
         .name(name)
         .create_sync()
-        .expect("failed to create IPC listener");
+        .map_err(|e| format!("the socket `{socket_name}` could not be opened: {e}"))?;
+    Ok(IpcListener {
+        listener,
+        socket_name: socket_name.to_owned(),
+    })
+}
 
-    info!("ipc listener ready on {socket_name}");
-    println!("SIGNAL:ipc_listener_ready");
+impl IpcListener {
+    /// Spawn a background thread that dispatches the commands this socket
+    /// receives.
+    ///
+    /// Commands are dispatched directly via `invoke_from_event_loop` to the
+    /// Slint event loop thread. The readiness signal is written here rather
+    /// than at the bind, so a client that waits for it finds a socket that is
+    /// being accepted on.
+    ///
+    /// :param `window_weak`: the window the window commands reach
+    /// :param engine: the engine the rest reach
+    /// :returns: the listener thread, or why it could not be started
+    pub fn serve(
+        self,
+        window_weak: slint::Weak<crate::MainWindow>,
+        engine: EngineLink,
+    ) -> Result<std::thread::JoinHandle<()>, String> {
+        let Self {
+            listener,
+            socket_name,
+        } = self;
+        info!("ipc listener ready on {socket_name}");
+        println!("SIGNAL:ipc_listener_ready");
 
-    std::thread::Builder::new()
-        .name("ipc-listener".into())
-        .spawn(move || {
-            for conn in listener.incoming() {
-                match conn {
-                    Ok(stream) => {
-                        let mut reader = BufReader::new(stream);
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                            continue;
+        std::thread::Builder::new()
+            .name("ipc-listener".into())
+            .spawn(move || {
+                for conn in listener.incoming() {
+                    match conn {
+                        Ok(stream) => {
+                            let mut reader = BufReader::new(stream);
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                continue;
+                            }
+                            let cmd = line.trim().to_owned();
+                            drop(reader);
+                            dispatch_command(&cmd, &window_weak, &engine);
                         }
-                        let cmd = line.trim().to_owned();
-                        drop(reader);
-                        dispatch_command(&cmd, &window_weak, &engine);
-                    }
-                    Err(e) => {
-                        warn!("ipc accept error: {e}");
+                        Err(e) => {
+                            warn!("ipc accept error: {e}");
+                        }
                     }
                 }
-            }
-        })
-        .expect("failed to spawn ipc-listener thread")
+            })
+            .map_err(|e| format!("the ipc listener thread could not be started: {e}"))
+    }
 }
 
 /// Parse and dispatch a single IPC command via `invoke_from_event_loop`.

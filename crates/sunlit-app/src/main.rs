@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use slint::ComponentHandle;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -162,6 +163,26 @@ enum Commands {
     },
 }
 
+/// How loud each dependency is allowed to be, whatever this app's level is.
+///
+/// The decoders and the graphics stack log per frame and per tile at their own
+/// default, which buries everything this program has to say.
+const DEPENDENCY_LEVELS: [&str; 13] = [
+    "wgpu_core=warn",
+    "wgpu_hal=error",
+    "naga=warn",
+    "winit=warn",
+    "ureq=warn",
+    "ureq_proto=warn",
+    "rustls=warn",
+    "jxl_render=warn",
+    "jxl_grid=warn",
+    "jxl_modular=warn",
+    "jxl_bitstream=warn",
+    "jxl_frame=warn",
+    "jxl_color=warn",
+];
+
 /// Initialize the global tracing subscriber.
 ///
 /// `cli_level` is the default log level from the `--log-level` CLI flag.
@@ -181,25 +202,13 @@ fn init_logging(cli_level: Option<&str>) -> Option<tracing_appender::non_blockin
 
     let base_filter = match cli_level {
         Some(level) => EnvFilter::new(level),
-        None => {
-            EnvFilter::from_default_env().add_directive("info".parse().expect("valid directive"))
-        }
+        None => EnvFilter::from_default_env().add_directive(LevelFilter::INFO.into()),
     };
 
-    let env_filter = base_filter
-        .add_directive("wgpu_core=warn".parse().expect("valid directive"))
-        .add_directive("wgpu_hal=error".parse().expect("valid directive"))
-        .add_directive("naga=warn".parse().expect("valid directive"))
-        .add_directive("winit=warn".parse().expect("valid directive"))
-        .add_directive("ureq=warn".parse().expect("valid directive"))
-        .add_directive("ureq_proto=warn".parse().expect("valid directive"))
-        .add_directive("rustls=warn".parse().expect("valid directive"))
-        .add_directive("jxl_render=warn".parse().expect("valid directive"))
-        .add_directive("jxl_grid=warn".parse().expect("valid directive"))
-        .add_directive("jxl_modular=warn".parse().expect("valid directive"))
-        .add_directive("jxl_bitstream=warn".parse().expect("valid directive"))
-        .add_directive("jxl_frame=warn".parse().expect("valid directive"))
-        .add_directive("jxl_color=warn".parse().expect("valid directive"));
+    let env_filter = DEPENDENCY_LEVELS
+        .iter()
+        .filter_map(|directive| directive.parse().ok())
+        .fold(base_filter, EnvFilter::add_directive);
 
     if sync_log {
         let fmt_layer = fmt::layer()
@@ -532,7 +541,7 @@ fn init_ui(
         ),
     );
 
-    *screens.lock().expect("the monitor list lock is poisoned") = monitors;
+    displays::set_monitors(screens, monitors);
 
     ui_callbacks::register_change_callbacks(window, base_year, link);
     ui_callbacks::register_mouse_callbacks(window, link);
@@ -540,7 +549,11 @@ fn init_ui(
     ui_callbacks::register_display_callbacks(window, link, screens);
 }
 
-/// Wire the auto-refresh checkbox to the engine's scheduler and the tray mark.
+/// Wire the auto-refresh controls to the engine's scheduler and the tray mark.
+///
+/// Two callbacks, because the interval slider reports every pixel of a drag:
+/// the schedule follows the handle, and the config file is written once, when
+/// the change is settled.
 fn register_auto_refresh_callback(
     window: &MainWindow,
     link: &EngineLink,
@@ -562,12 +575,7 @@ fn register_auto_refresh_callback(
             tray.set_auto_refresh_enabled(enabled);
         }
 
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let interval_minutes = u64::from(win.get_auto_refresh_interval().max(1.0) as u32);
-        engine.send(EngineCommand::SetAutoRefresh {
-            enabled,
-            interval: Duration::from_mins(interval_minutes),
-        });
+        send_auto_refresh(&engine, &win);
 
         // Refresh immediately when toggling on (not on slider change)
         if enabled && !was_enabled {
@@ -577,6 +585,24 @@ fn register_auto_refresh_callback(
         }
 
         config::save_config(&ui_callbacks::read_config_from_window(&win, &engine));
+    });
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    window.on_auto_refresh_interval_moved(move || {
+        if let Some(win) = window_weak.upgrade() {
+            send_auto_refresh(&engine, &win);
+        }
+    });
+}
+
+/// Tell the engine what the auto-refresh controls now say.
+fn send_auto_refresh(engine: &EngineLink, window: &MainWindow) {
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let interval_minutes = u64::from(window.get_auto_refresh_interval().max(1.0) as u32);
+    engine.send(EngineCommand::SetAutoRefresh {
+        enabled: window.get_auto_refresh_enabled(),
+        interval: Duration::from_mins(interval_minutes),
     });
 }
 
@@ -627,9 +653,22 @@ fn run_app(
 
     let use_tray = matches!(cli.mode, Mode::Tray);
     let tray_start = cli.tray_start;
-    let ipc_socket = cli.ipc_socket.clone();
 
-    let window = MainWindow::new().expect("Failed to create window");
+    // Ahead of the window and the engine: a name the platform refuses, or one
+    // another instance is already holding, is an answer worth having before the
+    // adapter is selected and every texture decoded rather than six seconds
+    // after. The app runs without the control channel either way.
+    let ipc = cli.ipc_socket.as_deref().and_then(|name| {
+        info!("binding the IPC socket {name}");
+        sunlit_earth::ipc::bind(name)
+            .inspect_err(|e| warn!("{e}; carrying on without IPC"))
+            .ok()
+    });
+
+    let Ok(window) = MainWindow::new().inspect_err(|e| error!("no window could be created: {e}"))
+    else {
+        return ExitCode::FAILURE;
+    };
     window.set_version(env!("CARGO_PKG_VERSION").into());
     sunlit_core::memory::log_memory_usage("after window creation");
 
@@ -684,8 +723,15 @@ fn run_app(
     // The tray icon is a top-level Slint component of its own; it must exist
     // before the auto-refresh callback so the two views of that setting can be
     // kept in step.
-    let tray =
-        use_tray.then(|| std::rc::Rc::new(sunlit_earth::tray::create_tray(&window, &link, &about)));
+    let tray = if use_tray {
+        sunlit_earth::tray::create_tray(&window, &link, &about).map(std::rc::Rc::new)
+    } else {
+        None
+    };
+    // A session with no tray host leaves the window as the only way to reach
+    // the app, so from here on this run is a windowed one: the close button
+    // ends it and the window is shown whatever `--tray-start` asked for.
+    let use_tray = tray.is_some();
     register_auto_refresh_callback(&window, &link, config, tray.clone());
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
         window
@@ -755,13 +801,52 @@ fn run_app(
         });
     }
 
-    // Spawn IPC listener if --ipc-socket was provided.
-    let _ipc_handle = ipc_socket.map(|name| {
-        info!("spawning IPC listener on {name}");
-        sunlit_earth::ipc::spawn_ipc_listener(&name, window.as_weak(), link.clone())
+    // The socket taken at the top of this function starts being answered here,
+    // now that there is a window and an engine to answer for.
+    let _ipc_thread = ipc.and_then(|listener| {
+        listener
+            .serve(window.as_weak(), link.clone())
+            .inspect_err(|e| warn!("{e}; carrying on without IPC"))
+            .ok()
     });
 
-    window.show().expect("Failed to show window");
+    let status = run_event_loop(&window, &link, use_tray, tray_start);
+
+    sunlit_core::memory::log_memory_usage("before exit");
+
+    // The engine owns the GPU device, so shutting it down here is an ordinary
+    // join on a worker thread. Slint holds no wgpu objects any more, which is
+    // what retired the process::exit(0) that used to dodge a thread-local
+    // destruction panic in wgpu's Queue::drop.
+    engine.shutdown();
+    // After the engine, so a hint that arrives during the teardown has an
+    // engine to reach; the watcher's thread is woken and joined here.
+    if let Some(watcher) = display_watch {
+        watcher.stop();
+    }
+    drop(viewport_timer);
+    drop(startup_refresh_timer);
+    drop(tray);
+
+    debug!("exiting");
+    status
+}
+
+/// Show the window and run the event loop until something quits it.
+///
+/// Both steps answer with a `PlatformError` when the session has no display
+/// server or no usable backend, which is a message for the user rather than a
+/// backtrace. The caller tears the engine down either way.
+fn run_event_loop(
+    window: &MainWindow,
+    link: &EngineLink,
+    use_tray: bool,
+    tray_start: TrayStart,
+) -> ExitCode {
+    if let Err(e) = window.show() {
+        error!("the window could not be shown: {e}");
+        return ExitCode::FAILURE;
+    }
 
     // In tray mode with --tray-start hidden, defer the hide to a zero-duration
     // timer so it fires after the event loop is running. Hiding synchronously
@@ -781,9 +866,8 @@ fn run_app(
 
     // Windows asks its top-level windows for permission before a reboot and
     // then tells them the session is ending; a Linux session sends SIGTERM and
-    // kills what has not gone. Nothing here used to answer either, so the
-    // shutdown screen named this process as the one preventing it. The listener
-    // quits the loop, and the ordinary teardown below then runs.
+    // kills what has not gone. The listener quits the loop, and the ordinary
+    // teardown then runs.
     let _session_end = sunlit_earth::session_end::install(
         Some(sunlit_earth::session_end::FORCE_EXIT_AFTER),
         || {
@@ -795,26 +879,11 @@ fn run_app(
     );
 
     info!("entering event loop");
-    slint::run_event_loop_until_quit().expect("Failed to run event loop");
-    info!("event loop exited");
-
-    sunlit_core::memory::log_memory_usage("before exit");
-
-    // The engine owns the GPU device, so shutting it down here is an ordinary
-    // join on a worker thread. Slint holds no wgpu objects any more, which is
-    // what retired the process::exit(0) that used to dodge a thread-local
-    // destruction panic in wgpu's Queue::drop.
-    engine.shutdown();
-    // After the engine, so a hint that arrives during the teardown has an
-    // engine to reach; the watcher's thread is woken and joined here.
-    if let Some(watcher) = display_watch {
-        watcher.stop();
+    if let Err(e) = slint::run_event_loop_until_quit() {
+        error!("the event loop stopped: {e}");
+        return ExitCode::FAILURE;
     }
-    drop(viewport_timer);
-    drop(startup_refresh_timer);
-    drop(tray);
-
-    debug!("exiting");
+    info!("event loop exited");
     ExitCode::SUCCESS
 }
 
@@ -892,11 +961,13 @@ fn main() -> ExitCode {
                     Some(name) => format!("sunlit-earth-{name}"),
                     None => "sunlit-earth-app".to_string(),
                 };
-                let Some(guard) = sunlit_earth::tray::acquire_single_instance(&mutex_name) else {
-                    info!("another instance is already running, exiting");
-                    return ExitCode::SUCCESS;
-                };
-                Some(guard)
+                match sunlit_earth::tray::acquire_single_instance(&mutex_name) {
+                    sunlit_earth::tray::InstanceCheck::AlreadyRunning => {
+                        info!("another instance is already running, exiting");
+                        return ExitCode::SUCCESS;
+                    }
+                    sunlit_earth::tray::InstanceCheck::Alone(guard) => guard,
+                }
             } else {
                 None
             };

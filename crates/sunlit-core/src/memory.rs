@@ -106,7 +106,7 @@ const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
 /// resident, so the Low end of the setting is not judged against the High end's
 /// footprint. At the widest resolution this is 3 GiB, the Moon's 6 MiB and the
 /// panorama's 42.7 MiB.
-pub fn private_bytes_budget(texture_resolution: u32) -> u64 {
+pub(crate) fn private_bytes_budget(texture_resolution: u32) -> u64 {
     COLD_START_BYTES
         .saturating_add(BUDGET_HEADROOM_BYTES)
         .saturating_add(resident_texture_bytes(texture_resolution))
@@ -389,7 +389,7 @@ pub fn log_memory_usage(context: &str) {
 /// the samples a real installation is accumulating; without it, every
 /// test-spawned process pollutes the soak data. Returns `None` if the
 /// platform's local data directory cannot be determined.
-pub fn metrics_path() -> Option<PathBuf> {
+fn metrics_path() -> Option<PathBuf> {
     metrics_path_from(crate::env_override(ENV_METRICS_DIR).as_deref())
 }
 
@@ -466,7 +466,7 @@ fn file_len(path: &Path) -> u64 {
 }
 
 /// Append one sample to the metrics CSV at `path`.
-pub fn append_metrics_sample(path: &Path, snap: &MemorySnapshot) {
+fn append_metrics_sample(path: &Path, snap: &MemorySnapshot) {
     append_sample_to(path, snap, METRICS_MAX_BYTES);
 }
 
@@ -477,7 +477,7 @@ pub fn append_metrics_sample(path: &Path, snap: &MemorySnapshot) {
 /// minutes) with the width the renderer is currently loading at, which is what
 /// most of the budget is spent on. Does nothing on platforms without a memory
 /// snapshot implementation.
-pub fn record_metrics_sample(texture_resolution: u32) {
+pub(crate) fn record_metrics_sample(texture_resolution: u32) {
     let Some(snap) = snapshot() else {
         return;
     };

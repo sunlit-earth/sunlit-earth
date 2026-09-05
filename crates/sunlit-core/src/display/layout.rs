@@ -88,7 +88,7 @@ impl DisplayMode {
     }
 
     /// The mode a config file's name refers to, where it names one.
-    pub fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         let name = name.trim();
         Self::ALL.into_iter().find(|mode| mode.name() == name)
     }
@@ -130,12 +130,12 @@ pub struct Rect {
 
 impl Rect {
     /// The first column past this rectangle, wide enough not to wrap.
-    pub fn right(&self) -> i64 {
+    fn right(&self) -> i64 {
         i64::from(self.x) + i64::from(self.width)
     }
 
     /// The first row past this rectangle.
-    pub fn bottom(&self) -> i64 {
+    fn bottom(&self) -> i64 {
         i64::from(self.y) + i64::from(self.height)
     }
 
@@ -146,7 +146,7 @@ impl Rect {
 
     /// This rectangle relative to another one's origin.
     #[must_use]
-    pub fn relative_to(&self, origin: &Self) -> Self {
+    pub(crate) fn relative_to(&self, origin: &Self) -> Self {
         Self {
             x: self.x - origin.x,
             y: self.y - origin.y,
@@ -257,8 +257,8 @@ pub struct Framing {
 /// 331 degrees and a thousand to 359.7. 330 clears a seven-wide span at that
 /// position and about eleven at the default, and leaves the frame corner 13
 /// degrees clear of the antipode.
-pub const SKY_FOV_MIN: f32 = 60.0;
-pub const SKY_FOV_MAX: f32 = 330.0;
+pub(crate) const SKY_FOV_MIN: f32 = 60.0;
+pub(crate) const SKY_FOV_MAX: f32 = 330.0;
 
 /// The Earth lens for one screen's own aspect ratio.
 ///
@@ -283,7 +283,7 @@ pub fn contain_camera_fov(camera_fov: f32, width: u32, height: u32) -> f32 {
 }
 
 /// The framing one screen is rendered with.
-pub fn screen_framing(settings: Framing, width: u32, height: u32) -> Framing {
+pub(crate) fn screen_framing(settings: Framing, width: u32, height: u32) -> Framing {
     Framing {
         camera_fov: contain_camera_fov(settings.camera_fov, width, height),
         ..settings

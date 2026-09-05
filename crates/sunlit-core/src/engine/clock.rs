@@ -51,6 +51,7 @@ impl Clock for SystemClock {
 /// A clock that only moves when a test tells it to.
 ///
 /// UTC time moves with it, so simulated days really do rotate the Earth.
+#[doc(hidden)]
 pub struct MockClock {
     elapsed: Mutex<Duration>,
     base_utc: OffsetDateTime,

@@ -29,7 +29,7 @@ pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
 pub use x11::{Watcher, start};
 
 #[cfg(windows)]
-pub use win32::{CLASS_NAME, Watcher, start};
+pub use win32::{Watcher, start};
 
 /// `RandR` on Linux and `WM_DISPLAYCHANGE` on Windows. macOS has
 /// `CGDisplayRegisterReconfigurationCallback`, and that belongs to the setter
@@ -272,7 +272,7 @@ mod win32 {
     const WM_DISPLAYCHANGE: u32 = 0x007E;
 
     /// The window class this module registers.
-    pub const CLASS_NAME: &str = "SunlitEarthDisplayWatch";
+    const CLASS_NAME: &str = "SunlitEarthDisplayWatch";
 
     /// The running watcher.
     #[derive(Debug)]
@@ -284,7 +284,8 @@ mod win32 {
     impl Watcher {
         /// The listening window, for a test that delivers the message Windows
         /// would.
-        pub fn hwnd(&self) -> isize {
+        #[cfg(test)]
+        pub(super) fn hwnd(&self) -> isize {
             self.hwnd
         }
 
@@ -566,6 +567,10 @@ mod windows_tests {
         assert_eq!(hints.load(Ordering::SeqCst), 1);
 
         // A message the watcher does not answer must not become a hint.
+        //
+        // SAFETY: the same window this test installed, still alive, and
+        // `WM_SETTINGCHANGE` with null parameters, which the window procedure
+        // passes to `DefWindowProcW` unread.
         #[allow(unsafe_code)]
         unsafe {
             SendMessageW(hwnd as _, 0x001A, 0, 0);

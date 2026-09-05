@@ -17,7 +17,7 @@
 //! disc is a circle in pixels; and the globe's silhouette is a circle there
 //! too. Pixels are also the one space both lenses agree is isotropic.
 //!
-//! [`angular_visible_fraction`] is the ephemeris answer, computed from the
+//! `angular_visible_fraction` is the ephemeris answer, computed from the
 //! true angles and read by nothing in the renderer. It is the second
 //! implementation the tests compare the screen-space one against, the same
 //! role `scene::sun` plays for the sun direction.
@@ -202,9 +202,9 @@ pub struct SunPlacement {
     /// it. The shader rebuilds the screen position from this, so there is one
     /// formula and not two.
     pub view_direction: Vec3,
-    /// The disk's radius in pixels, never below
-    /// [`MIN_BODY_DISK_RADIUS_PIXELS`] times the density ramp. This is the
-    /// unsquashed radius, which is what the quad has to span.
+    /// The disk's radius in pixels, never below `MIN_BODY_DISK_RADIUS_PIXELS`
+    /// times the density ramp. This is the unsquashed radius, which is what the
+    /// quad has to span.
     pub disk_radius_pixels: f32,
     pub visibility: SunVisibility,
     /// The painted globe's silhouette, which every horizon effect is measured

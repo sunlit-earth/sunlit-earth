@@ -171,8 +171,8 @@ pub struct AppConfig {
     pub offset_x: f32,
     pub offset_y: f32,
     /// Vertical field of view of the Earth lens, in degrees, between
-    /// [`CAMERA_FOV_MIN`] and [`CAMERA_FOV_MAX`]. The sky has its own lens and
-    /// its own `sky_fov`; this one frames the globe.
+    /// `CAMERA_FOV_MIN` and `CAMERA_FOV_MAX`. The sky has its own lens and its
+    /// own `sky_fov`; this one frames the globe.
     pub camera_fov: f32,
 
     // Rendering

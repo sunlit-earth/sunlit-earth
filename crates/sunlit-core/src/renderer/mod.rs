@@ -126,7 +126,7 @@ impl SlotLayout {
 
     /// Whether `slot` holds one of the globe's own maps.
     ///
-    /// This is the question [`Renderer::textures_ready`] answers, from the other
+    /// This is the question `Renderer::textures_ready` answers, from the other
     /// side: the globe is what readiness is about, and the overlays are excluded
     /// from it, so a configuration whose only file is an overlay's has nothing to
     /// wait for. Slot 0 is the procedural grid, which needs no file at all.

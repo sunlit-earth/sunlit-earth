@@ -1,6 +1,6 @@
 //! Cloud texture caching, decoding, and polling.
 //!
-//! A [`CloudUpdater`] owns the on-disk cache and turns a [`CloudSource`] into
+//! A `CloudUpdater` owns the on-disk cache and turns a [`CloudSource`] into
 //! decoded frames parked in the texture mailbox. The engine drives it from its
 //! own worker thread on its own schedule.
 //!

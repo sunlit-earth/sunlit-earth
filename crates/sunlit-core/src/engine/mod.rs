@@ -481,6 +481,10 @@ struct Engine {
     /// A wallpaper update was asked for while a texture was still on its way,
     /// and happens as soon as it arrives.
     wallpaper_owed: bool,
+    /// A client asked for a wallpaper update. The publish happens in `tick`, so
+    /// several requests drained together cost one native-resolution render
+    /// rather than one each.
+    publish_asked: bool,
     /// How this session's monitors relate to each other, and which one the plan
     /// is built around. Read only when a wallpaper is published.
     display_mode: crate::display::layout::DisplayMode,
@@ -677,6 +681,7 @@ impl Engine {
                 owed: false,
             },
             wallpaper_owed: false,
+            publish_asked: false,
             display_mode,
             anchor_monitor,
             display_recheck: None,
@@ -759,7 +764,7 @@ impl Engine {
                 }
                 self.preview.enabled = enabled;
             }
-            EngineCommand::RenderWallpaperNow => self.publish_wallpaper(),
+            EngineCommand::RenderWallpaperNow => self.publish_asked = true,
             EngineCommand::SetDisplayPlan { mode, anchor } => {
                 self.display_mode = mode;
                 self.anchor_monitor = anchor;
@@ -837,7 +842,15 @@ impl Engine {
                 // next drain forward instead of sitting out the interval.
                 self.drain.next = Duration::ZERO;
             }
-            EngineCommand::Shutdown => return false,
+            EngineCommand::Shutdown => {
+                // A publish asked for in the same drain batch as the shutdown
+                // is still someone's request, and there is no tick left to do
+                // it in.
+                if std::mem::take(&mut self.publish_asked) {
+                    self.publish_wallpaper();
+                }
+                return false;
+            }
         }
         true
     }
@@ -908,7 +921,10 @@ impl Engine {
         // After the render, so that a publish held back by a reload goes out on
         // the tick the reload lands and in the order the events describe: the
         // textures became ready, and then the wallpaper was set from them.
-        if self.wallpaper_owed {
+        //
+        // One publish however many asked for it: a double-click on "Set as
+        // Wallpaper", or the tray and IPC arriving together, are one wallpaper.
+        if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
             self.publish_wallpaper();
         }
     }
@@ -1026,6 +1042,14 @@ impl Engine {
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
     fn publish_wallpaper(&mut self) {
+        // A debt that already stands has had its support answer, and the only
+        // thing left that can change is whether the textures have landed. `tick`
+        // comes back here every 50 ms until it is paid, and on Linux
+        // `check_supported` walks `PATH` with a stat per directory.
+        if self.wallpaper_owed && self.renderer.textures_pending(self.params.texture_index) {
+            return;
+        }
+
         // Support first, before the size query, the render, and the wait below.
         // Off Windows this is the whole answer, and everything after it is
         // something to pay for on the way to a refusal that was already known:

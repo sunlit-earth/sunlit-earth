@@ -106,7 +106,7 @@ const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
 /// resident, so the Low end of the setting is not judged against the High end's
 /// footprint. At the widest resolution this is 3 GiB, the Moon's 6 MiB and the
 /// panorama's 42.7 MiB.
-pub(crate) fn private_bytes_budget(texture_resolution: u32) -> u64 {
+fn private_bytes_budget(texture_resolution: u32) -> u64 {
     COLD_START_BYTES
         .saturating_add(BUDGET_HEADROOM_BYTES)
         .saturating_add(resident_texture_bytes(texture_resolution))

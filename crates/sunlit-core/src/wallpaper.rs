@@ -689,8 +689,8 @@ mod shell {
 
     /// A string the shell allocated with the COM task allocator.
     ///
-    /// `GetMonitorDevicePathAt` hands back memory the
-    /// caller owns, and the wrapper exists so that every early return frees it.
+    /// `GetMonitorDevicePathAt` hands back memory the caller owns, and the
+    /// wrapper exists so that every early return frees it.
     struct TaskMem(PWSTR);
 
     impl TaskMem {

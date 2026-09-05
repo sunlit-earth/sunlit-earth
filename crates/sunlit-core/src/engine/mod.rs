@@ -523,6 +523,10 @@ struct Engine {
 struct PreviewState {
     enabled: bool,
     owed: bool,
+    /// Whether the last readback failed. A device that keeps failing is still
+    /// retried on every tick, because it may come back, but it costs one line
+    /// in the log rather than twenty a second.
+    readback_failed: bool,
 }
 
 /// The cloud fetch thread and the flag that keeps requests from piling up.
@@ -679,6 +683,7 @@ impl Engine {
             preview: PreviewState {
                 enabled: preview_enabled,
                 owed: false,
+                readback_failed: false,
             },
             wallpaper_owed: false,
             publish_asked: false,
@@ -902,19 +907,18 @@ impl Engine {
             self.recheck_displays();
         }
 
-        let emitted = self.render_if_dirty();
-        if self.preview.enabled && self.preview.owed {
-            if emitted {
-                self.preview.owed = false;
-            } else if self.renderer.has_frame() && self.emit_preview() {
-                // Nothing changed while the preview was off, so re-send the
-                // frame that is already in the texture. A window that was
-                // hidden and shown again would otherwise show nothing until
-                // the user touched a control.
-                self.preview.owed = false;
-            }
-            // If no frame exists yet the debt stands: the first render will
-            // pay it.
+        // A frame just drawn goes out, and so does a debt from the preview
+        // being turned back on: nothing changed while it was off, so the frame
+        // already in the texture is the answer. Either way the readback happens
+        // once per tick, and a debt no readback could pay stands until one can,
+        // including the case where no frame exists yet.
+        let rendered = self.render_if_dirty();
+        if self.preview.enabled
+            && (rendered || self.preview.owed)
+            && self.renderer.has_frame()
+            && self.emit_preview()
+        {
+            self.preview.owed = false;
         }
 
         // After the render, so that a publish held back by a reload goes out on
@@ -959,7 +963,8 @@ impl Engine {
         sky::compute_sky_state_at(&self.params.datetime, self.clock.now_utc())
     }
 
-    /// Returns whether a preview frame was emitted.
+    /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
+    /// a tick asks the preview target for its pixels once however it got here.
     fn render_if_dirty(&mut self) -> bool {
         if !self.dirty {
             return false;
@@ -984,10 +989,7 @@ impl Engine {
             self.emit(EngineEvent::TexturesReady);
         }
 
-        if matches!(outcome, RenderOutcome::Rendered { .. }) && self.preview.enabled {
-            return self.emit_preview();
-        }
-        false
+        matches!(outcome, RenderOutcome::Rendered { .. })
     }
 
     /// Write the memory report to the log once, the first time the scene is
@@ -1008,18 +1010,23 @@ impl Engine {
     /// whether one got there.
     ///
     /// A readback that fails costs this frame and nothing more, and the caller
-    /// keeps whatever debt it was paying, so the next tick tries again. A device
-    /// that is gone for good says so on the paths that have somewhere to report
-    /// it.
-    fn emit_preview(&self) -> bool {
+    /// keeps whatever debt it was paying, so the next tick tries again. Only the
+    /// first failure of a run is logged, because the retry is every 50 ms and a
+    /// device that is gone stays gone. A device that is gone for good says so on
+    /// the paths that have somewhere to report it.
+    fn emit_preview(&mut self) -> bool {
         let (width, height) = self.renderer.size();
         let rgba = match self.renderer.read_preview_pixels() {
             Ok(rgba) => rgba,
             Err(e) => {
-                warn!(error = %e, "the preview frame could not be read back");
+                if !self.preview.readback_failed {
+                    self.preview.readback_failed = true;
+                    warn!(error = %e, "the preview frame could not be read back");
+                }
                 return false;
             }
         };
+        self.preview.readback_failed = false;
         self.emit(EngineEvent::PreviewFrame {
             rgba,
             width,

@@ -646,8 +646,8 @@ pub fn read_texture_rgba8(
     let slice = readback.slice(..);
     let (tx, rx) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
-        // The callback can run while this function is unwinding, and a send to
-        // a receiver that is already gone must not panic a second time.
+        // A lost device returns below with the receiver dropped, and this
+        // callback can still run afterwards; failing to send is that case.
         let _ = tx.send(result);
     });
     device

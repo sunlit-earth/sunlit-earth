@@ -36,6 +36,15 @@ const RENDER_TEXTURE_TIMEOUT: Duration = Duration::from_mins(2);
 /// How often the app checks whether the preview viewport changed size.
 const VIEWPORT_POLL: Duration = Duration::from_millis(200);
 
+/// How long the auto-refresh interval must sit still before it is written.
+///
+/// A drag is written when the handle is released, and the keyboard's arrows,
+/// Home and End release too. What has no release at all is the accessibility
+/// action a screen reader drives, which every Slint style routes straight to
+/// `changed`, so without this the value would reach the engine and never reach
+/// the disk.
+const AUTO_REFRESH_SAVE_DELAY: Duration = Duration::from_secs(1);
+
 /// Sunlit Earth: get a realistic 3D view of Earth as seen from space and set it as your wallpaper
 #[derive(Parser)]
 #[command(version)]
@@ -565,16 +574,21 @@ fn init_ui(
 ///
 /// Two callbacks, because the interval slider reports every pixel of a drag:
 /// the schedule follows the handle, and the config file is written once, when
-/// the change is settled.
+/// the change is settled. A change that never settles because nothing released
+/// the handle is written by [`AUTO_REFRESH_SAVE_DELAY`]'s timer instead, since
+/// closing the window saves the geometry and not the settings.
 fn register_auto_refresh_callback(
     window: &MainWindow,
     link: &EngineLink,
     config: &AppConfig,
     tray: Option<std::rc::Rc<sunlit_earth::TrayIcon>>,
 ) {
+    let save_timer = std::rc::Rc::new(slint::Timer::default());
+
     let window_weak = window.as_weak();
     let engine = link.clone();
     let prev_enabled = std::cell::Cell::new(config.auto_refresh_enabled);
+    let settled = std::rc::Rc::clone(&save_timer);
     window.on_auto_refresh_changed(move || {
         let Some(win) = window_weak.upgrade() else {
             return;
@@ -596,15 +610,33 @@ fn register_auto_refresh_callback(
             engine.send(EngineCommand::RenderWallpaperNow);
         }
 
+        // What this writes covers anything the timer below was still holding.
+        settled.stop();
         config::save_config(&ui_callbacks::read_config_from_window(&win, &engine));
     });
 
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_auto_refresh_interval_moved(move || {
-        if let Some(win) = window_weak.upgrade() {
-            send_auto_refresh(&engine, &win);
-        }
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        send_auto_refresh(&engine, &win);
+
+        let deferred_window = window_weak.clone();
+        let deferred_engine = engine.clone();
+        save_timer.start(
+            slint::TimerMode::SingleShot,
+            AUTO_REFRESH_SAVE_DELAY,
+            move || {
+                if let Some(win) = deferred_window.upgrade() {
+                    config::save_config(&ui_callbacks::read_config_from_window(
+                        &win,
+                        &deferred_engine,
+                    ));
+                }
+            },
+        );
     });
 }
 

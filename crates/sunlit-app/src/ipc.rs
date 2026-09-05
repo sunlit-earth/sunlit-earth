@@ -65,9 +65,9 @@ impl IpcListener {
     /// receives.
     ///
     /// Commands are dispatched directly via `invoke_from_event_loop` to the
-    /// Slint event loop thread. The readiness signal is written here rather
-    /// than at the bind, so a client that waits for it finds a socket that is
-    /// being accepted on.
+    /// Slint event loop thread. The readiness signal is written once the
+    /// accepting thread exists, rather than at the bind, so a client that waits
+    /// for it finds a socket somebody is answering on.
     ///
     /// :param `window_weak`: the window the window commands reach
     /// :param engine: the engine the rest reach
@@ -81,10 +81,7 @@ impl IpcListener {
             listener,
             socket_name,
         } = self;
-        info!("ipc listener ready on {socket_name}");
-        println!("SIGNAL:ipc_listener_ready");
-
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("ipc-listener".into())
             .spawn(move || {
                 for conn in listener.incoming() {
@@ -105,7 +102,11 @@ impl IpcListener {
                     }
                 }
             })
-            .map_err(|e| format!("the ipc listener thread could not be started: {e}"))
+            .map_err(|e| format!("the ipc listener thread could not be started: {e}"))?;
+
+        info!("ipc listener ready on {socket_name}");
+        println!("SIGNAL:ipc_listener_ready");
+        Ok(thread)
     }
 }
 

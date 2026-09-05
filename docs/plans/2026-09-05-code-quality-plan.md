@@ -335,7 +335,14 @@ ame'` exit 0 with no panic: the app came up, loaded the cached cloud image, set
   the panics return.
 - The separate "once normally" start was skipped by the maintainer's decision: the invalid-socket run exercises the same
   startup path end to end apart from the socket name, and the baseline run before any change had already been observed.
-- The e2e suite in the Windows guest is **not** done. It remains run 1's one outstanding gate.
+- The e2e suite in the Windows guest: **done and green.** `cargo xtask e2e --target windows` on `cdaa33c`, exit 0,
+  `15 passed; 0 failed` in 97.43 s, no error or panic line in the run, guest destroyed afterwards. Two cases gated
+  themselves at runtime and said why, as designed: `test_a_layout_change_republishes_the_wallpaper` needs a second
+  output or a second mode and `display::outputs` is a Linux query, and `test_plasmashell_survives_rapid_republishing`
+  needs KDE. This is the first end-to-end exercise of package 1.3's `bind`/`serve` split; the cases that depend on the
+  readiness signal, among them `test_tray_mode_ipc_lifecycle`, `test_memory_report`, `test_set_wallpaper` and
+  `test_single_instance_second_exits`, all passed, so the signal still arrives when and as the suite expects. The
+  harness log does not echo `SIGNAL:` lines, so the evidence is those cases passing rather than a line read directly.
 
 ## Open items
 

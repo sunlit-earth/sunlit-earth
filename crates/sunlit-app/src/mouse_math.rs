@@ -1,24 +1,28 @@
 //! Pure math functions for mouse interaction with the globe.
 //!
-//! These functions are extracted from the mouse callback closures in `main.rs`
-//! so they can be unit-tested independently of the Slint UI.
+//! They are the arithmetic behind the callbacks `ui_callbacks` registers, kept
+//! apart from the Slint window so they can be tested without one.
 
 use sunlit_core::scene::camera::zoom_to_distance;
 use sunlit_core::scene::sun_occlusion;
 
 /// Wrap a longitude value into the `[-180, 180)` range.
 #[must_use]
-pub fn wrap_longitude(lon: f32) -> f32 {
+fn wrap_longitude(lon: f32) -> f32 {
     ((lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 }
 
 /// Wrap a tilt value into the `[-180, 180)` range.
 #[must_use]
-pub fn wrap_angle_180(angle: f32) -> f32 {
+fn wrap_angle_180(angle: f32) -> f32 {
     ((angle + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 }
 
-/// Apply tilt-corrected globe rotation from a mouse drag.
+/// Apply tilt-corrected globe rotation from a mouse drag, at the gain the
+/// zoom implies.
+///
+/// A test convenience: the callbacks pass a gain of their own through
+/// [`apply_globe_drag_at`], which is what the drag actually uses.
 ///
 /// :param lon: current longitude in degrees
 /// :param lat: current latitude in degrees
@@ -27,15 +31,9 @@ pub fn wrap_angle_180(angle: f32) -> f32 {
 /// :param dx: horizontal mouse delta in pixels
 /// :param dy: vertical mouse delta in pixels
 /// :returns: new `(longitude, latitude)` tuple
+#[cfg(test)]
 #[must_use]
-pub fn apply_globe_drag(
-    lon: f32,
-    lat: f32,
-    tilt_deg: f32,
-    zoom: f32,
-    dx: f32,
-    dy: f32,
-) -> (f32, f32) {
+fn apply_globe_drag(lon: f32, lat: f32, tilt_deg: f32, zoom: f32, dx: f32, dy: f32) -> (f32, f32) {
     apply_globe_drag_at(lon, lat, tilt_deg, dx, dy, coarse_drag_gain(zoom))
 }
 
@@ -73,18 +71,18 @@ pub fn apply_globe_drag_at(
 /// Cursor speed at and below which the drag turns the globe at the fine gain,
 /// in logical pixels per second: a pixel every 16 milliseconds, a hand placing
 /// the cursor rather than moving it.
-pub const FINE_DRAG_SPEED: f32 = 60.0;
+const FINE_DRAG_SPEED: f32 = 60.0;
 
 /// Cursor speed at and above which it turns at the coarse gain: an ordinary
 /// sweep across the globe.
-pub const COARSE_DRAG_SPEED: f32 = 600.0;
+const COARSE_DRAG_SPEED: f32 = 600.0;
 
 /// How long the speed estimate takes to follow the hand, in seconds.
 ///
 /// Deltas arrive as whole pixels at whatever rate the mouse reports, so a raw
 /// per-event speed is noisy by a factor of two and the gain would flicker
 /// between the two ends over one slow drag.
-pub const DRAG_SPEED_TIME_CONSTANT: f32 = 0.06;
+const DRAG_SPEED_TIME_CONSTANT: f32 = 0.06;
 
 /// Longest interval between two moves that still counts as one drag, in
 /// seconds. A pause reads as a slow start rather than as a jump.
@@ -175,12 +173,6 @@ impl DragSpeed {
         let instant = delta_px.abs() / interval;
         let alpha = 1.0 - (-interval / DRAG_SPEED_TIME_CONSTANT).exp();
         self.speed += alpha * (instant - self.speed);
-        self.speed
-    }
-
-    /// The estimate as it stands, without folding anything in.
-    #[must_use]
-    pub fn speed(self) -> f32 {
         self.speed
     }
 }

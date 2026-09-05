@@ -2,8 +2,8 @@
 //!
 //! Seven simulated days of cloud updates and unattended wallpaper exports,
 //! compressed into a few seconds by advancing an injected clock instead of
-//! waiting. This is the permanent guard for the Phase 0 leak class: a
-//! background producer whose consumer only runs under some condition.
+//! waiting. This is the permanent guard against a background producer whose
+//! consumer only runs under some condition.
 //!
 //! Nothing here touches the network, the desktop, or the real clock.
 
@@ -36,11 +36,9 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 const STEP: Duration = Duration::from_hours(1);
 /// Seven simulated days at one step per hour.
 ///
-/// Fourteen days is what this ran for when it was written, and the halving is
-/// what took it from over a minute to about half of one. What the assertion
-/// needs is enough cloud updates behind it for a per-update leak to be
-/// unmissable, and 56 of them at one decoded frame each would be 450 MiB
-/// against a limit of 16.
+/// What the assertion needs is enough cloud updates behind it for a per-update
+/// leak to be unmissable, and 56 of them at one decoded frame each would be
+/// 450 MiB against `GROWTH_LIMIT`'s 8.
 const STEPS: u64 = 7 * 24;
 /// The upstream cloud service publishes every three hours.
 const STEPS_PER_CLOUD_UPDATE: u64 = 3;
@@ -62,10 +60,10 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Growth allowed after warm-up: one decoded 2048x1024 frame.
 ///
-/// Halved with `STEPS`, so that what the assertion catches per update is what
-/// it caught before: 49 publications against 8 MiB is the sensitivity 98 had
-/// against 16. Measured growth on the development desktop is 2.0 MiB with about
-/// 2.5 MiB of sample-to-sample noise, so the headroom is fourfold.
+/// Sized with `STEPS` so the sensitivity per update is fixed, at 49
+/// publications against 8 MiB. Measured growth on the development desktop is
+/// 2.0 MiB with about 2.5 MiB of sample-to-sample noise, so the headroom is
+/// fourfold.
 const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
 /// Allocation allowed during warm-up: the first cloud texture, its mip chain,
 /// and wgpu's allocator pools.
@@ -187,8 +185,7 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
 
     let mut config = EngineConfig::headless((512, 288));
     config.params = params;
-    // Nothing is looking at the preview: this is the hidden-window scenario,
-    // which is exactly the one the old architecture stopped servicing.
+    // Nothing is looking at the preview: this is the hidden-window scenario.
     config.preview_enabled = false;
     config.clock = clock.clone();
     config.cloud = Some(cloud.clone());
@@ -290,18 +287,16 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
         elapsed.as_secs_f64()
     );
 
-    // Memory: the whole point. Before Phase 0 the hidden path parked one
-    // decoded frame per update, which over these updates would be hundreds of
-    // megabytes; the architecture here should add nothing per update at all.
+    // Memory: the whole point. A hidden path that parked one decoded frame per
+    // update would cost hundreds of megabytes over these updates; this
+    // architecture should add nothing per update at all.
     for (step, bytes) in &samples {
         println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
     }
 
     let (startup, baseline, end) = match (startup, baseline, end) {
         (Some(startup), Some(baseline), Some(end)) => (startup, baseline, end),
-        // Three independent reads feed this, and any one of them coming back
-        // empty used to disable the assertion for the whole run while every
-        // other assertion stayed green. On a platform `memory::snapshot`
+        // Three independent reads feed this. On a platform `memory::snapshot`
         // implements, a missing sample is a broken counter and not a reason to
         // stop testing: it fails here, the way the software-adapter test fails
         // when the adapter it queried for should have been there.

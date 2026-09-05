@@ -705,7 +705,14 @@ fn run_app(
     let engine: EngineHandle = match engine::start(engine_config) {
         Ok(engine) => engine,
         Err(e) => {
+            // The window that would have carried this message is never shown,
+            // so the console is the only place left to put it. A release build
+            // attaches the parent's console at startup for exactly this.
             error!("the renderer could not start: {e}");
+            eprintln!("sunlit earth: the renderer could not start: {e}");
+            if !cli.software_rendering {
+                eprintln!("try --software-rendering if this machine has no usable GPU driver");
+            }
             return ExitCode::FAILURE;
         }
     };

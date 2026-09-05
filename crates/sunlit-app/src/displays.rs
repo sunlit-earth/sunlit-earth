@@ -65,7 +65,7 @@ pub fn mode_options() -> Vec<String> {
 ///
 /// `Monitor::label` is what a person recognizes the screen by and is never used
 /// to address it: the connector name on Linux, `Display 2` on Windows.
-pub fn screen_label(monitor: &Monitor) -> String {
+fn screen_label(monitor: &Monitor) -> String {
     let mut label = format!("{}  {}x{}", monitor.label, monitor.width, monitor.height);
     if monitor.primary {
         label.push_str("  primary");
@@ -109,7 +109,7 @@ pub fn anchor_index(ids: &[String], stored: &str) -> i32 {
 }
 
 /// The id the screen combo's current row addresses, empty for automatic.
-pub fn anchor_at(ids: &[String], index: i32) -> String {
+fn anchor_at(ids: &[String], index: i32) -> String {
     usize::try_from(index)
         .ok()
         .and_then(|index| ids.get(index))
@@ -118,7 +118,7 @@ pub fn anchor_at(ids: &[String], index: i32) -> String {
 }
 
 /// The layout as the diagram draws it.
-pub struct Diagram {
+struct Diagram {
     /// One tile per monitor with pixels, normalized to the bounding box.
     pub tiles: Vec<MonitorTile>,
     /// Width over height of that bounding box, so the board keeps its shape
@@ -133,7 +133,7 @@ pub struct Diagram {
 /// own position counted from one, so the diagram and the screen combo above it
 /// name the same screen the same way.
 #[allow(clippy::cast_precision_loss)]
-pub fn diagram(monitors: &[Monitor], anchor: Option<usize>) -> Diagram {
+fn diagram(monitors: &[Monitor], anchor: Option<usize>) -> Diagram {
     let Some(bounds) = bounds_of(monitors) else {
         return Diagram {
             tiles: Vec::new(),

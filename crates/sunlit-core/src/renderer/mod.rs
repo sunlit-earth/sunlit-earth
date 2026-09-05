@@ -10,7 +10,7 @@ mod gpu_setup;
 mod render_pass;
 mod texture_routing;
 mod textures;
-pub(crate) mod uniforms;
+pub mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
 

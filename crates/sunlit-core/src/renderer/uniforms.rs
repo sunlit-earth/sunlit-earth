@@ -1,9 +1,19 @@
+//! The CPU side of the shader's uniform block.
+//!
+//! Public so `tests/render_pipeline.rs` can read this struct's field offsets
+//! back out of the shader that consumes them. A copy of it in the test would
+//! only prove the copy right.
+
 /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
 ///
 /// Total: 544 bytes (must be a multiple of 16 for uniform alignment).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct Uniforms {
+#[expect(
+    clippy::pub_underscore_fields,
+    reason = "the padding fields carry the names the WGSL struct gives them"
+)]
+pub struct Uniforms {
     pub mvp: [f32; 16],               // 64 bytes
     pub sun_dir: [f32; 3],            // 12 bytes
     pub terminator_width: f32,        // 4 bytes

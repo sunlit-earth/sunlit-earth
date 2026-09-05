@@ -9,137 +9,8 @@ use std::sync::{LazyLock, Mutex};
 
 use wgpu::util::DeviceExt;
 
-// ---------------------------------------------------------------------------
-// Local copies of production types (integration tests can't import from a bin crate)
-// ---------------------------------------------------------------------------
-
-/// Matches the production `Uniforms` struct in `renderer/uniforms.rs`.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    mvp: [f32; 16],
-    sun_dir: [f32; 3],
-    terminator_width: f32,
-    flags: u32,
-    diffuse_floor: f32,
-    diffuse_ramp: f32,
-    _pad: f32,
-    eye_pos: [f32; 3],
-    _pad2: f32,
-    spec_shininess: f32,
-    spec_intensity: f32,
-    fresnel_mix: f32,
-    fresnel_exp: f32,
-    day_gamma: f32,
-    day_saturation: f32,
-    night_gamma: f32,
-    night_saturation: f32,
-    cloud_sphere_radius: f32,
-    cloud_opacity: f32,
-    cloud_floor: f32,
-    cloud_gamma: f32,
-    rayleigh_intensity: f32,
-    rayleigh_sharpness: f32,
-    nightglow_intensity: f32,
-    nightglow_falloff: f32,
-    nightglow_balance: f32,
-    rayleigh_radius: f32,
-    nightglow_orange_radius: f32,
-    nightglow_green_radius: f32,
-    rayleigh_haze: f32,
-    cloud_night: f32,
-    cloud_terminator: f32,
-    _pad5: f32,
-    sky_view: [f32; 16],
-    world_from_eqj: [[f32; 4]; 3],
-    viewport_size: [f32; 2],
-    screen_offset: [f32; 2],
-    star_intensity: f32,
-    star_mag_limit: f32,
-    star_size: f32,
-    star_glow_strength: f32,
-    star_glow_radius: f32,
-    star_contrast: f32,
-    sky_fov: f32,
-    sun_glow: f32,
-    sun_rays: f32,
-    sun_flare: f32,
-    sun_visible: f32,
-    sun_size: f32,
-    sun_view_dir: [f32; 3],
-    sun_disk_radius: f32,
-    moon_model: [f32; 16],
-    moon_brightness: f32,
-    moon_earthshine: f32,
-    milky_way_intensity: f32,
-    cloud_opacity_night: f32,
-    sun_glare_tint: [f32; 3],
-    sun_horizon_gain: f32,
-    sun_globe_center: [f32; 2],
-    sun_globe_radius: f32,
-    sun_zone_width: f32,
-    sun_squash: f32,
-    sun_halo_radius: f32,
-    sun_reddening: f32,
-    atmo_sunrise_glow: f32,
-    atmo_sunrise_g: f32,
-    sun_flux: f32,
-    _pad7: f32,
-    _pad8: f32,
-}
-
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);
-
-/// Matches the production `Vertex` struct in `sphere.rs`.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    uv: [f32; 2],
-}
-
-/// Generate a UV sphere mesh (simplified version of production code).
-#[allow(clippy::cast_precision_loss, clippy::many_single_char_names)]
-fn generate_uv_sphere(stacks: u32, sectors: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let stacks_f = stacks as f32;
-    let sectors_f = sectors as f32;
-
-    for i in 0..=stacks {
-        let stack_angle =
-            std::f32::consts::FRAC_PI_2 - (i as f32) * std::f32::consts::PI / stacks_f;
-        let xy = stack_angle.cos();
-        let y = stack_angle.sin();
-
-        for j in 0..=sectors {
-            let sector_angle = (j as f32) * 2.0 * std::f32::consts::PI / sectors_f;
-            let x = xy * sector_angle.cos();
-            let z = xy * sector_angle.sin();
-            let u = j as f32 / sectors_f;
-            let v = i as f32 / stacks_f;
-            vertices.push(Vertex {
-                position: [x, y, z],
-                uv: [u, v],
-            });
-        }
-    }
-
-    for i in 0..stacks {
-        for j in 0..sectors {
-            let first = i * (sectors + 1) + j;
-            let second = first + sectors + 1;
-            indices.push(first);
-            indices.push(first + 1);
-            indices.push(second);
-            indices.push(first + 1);
-            indices.push(second + 1);
-            indices.push(second);
-        }
-    }
-
-    (vertices, indices)
-}
+use sunlit_core::geometry::sphere::{Vertex, generate_uv_sphere};
+use sunlit_core::renderer::uniforms::Uniforms;
 
 /// Build a perspective MVP matrix looking at the origin from distance 3.5.
 fn test_mvp(width: u32, height: u32) -> [f32; 16] {
@@ -179,17 +50,17 @@ fn create_render_context() -> RenderContext {
     let device = ctx.device;
     let queue = ctx.queue;
 
-    let (vertices, indices) = generate_uv_sphere(32, 32);
+    let mesh = generate_uv_sphere(32, 32);
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("test_vertices"),
-        contents: bytemuck::cast_slice(&vertices),
+        contents: bytemuck::cast_slice(&mesh.vertices),
         usage: wgpu::BufferUsages::VERTEX,
     });
 
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("test_indices"),
-        contents: bytemuck::cast_slice(&indices),
+        contents: bytemuck::cast_slice(&mesh.indices),
         usage: wgpu::BufferUsages::INDEX,
     });
 
@@ -274,22 +145,7 @@ fn create_render_context() -> RenderContext {
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: 0,
-                        format: wgpu::VertexFormat::Float32x3,
-                    },
-                    wgpu::VertexAttribute {
-                        offset: 12,
-                        shader_location: 1,
-                        format: wgpu::VertexFormat::Float32x2,
-                    },
-                ],
-            }],
+            buffers: &[Vertex::buffer_layout()],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -325,7 +181,7 @@ fn create_render_context() -> RenderContext {
     });
 
     #[allow(clippy::cast_possible_truncation)]
-    let index_count = indices.len() as u32;
+    let index_count = mesh.indices.len() as u32;
 
     RenderContext {
         device,
@@ -732,84 +588,13 @@ fn single_texture_mode_ignores_night() {
 // Uniform buffer field offset test (Step 4.3)
 // ---------------------------------------------------------------------------
 
-const UNIFORM_READBACK_SHADER: &str = r"
-struct Uniforms {
-    mvp: mat4x4<f32>,
-    sun_dir: vec3<f32>,
-    terminator_width: f32,
-    flags: u32,
-    diffuse_floor: f32,
-    diffuse_ramp: f32,
-    _pad: f32,
-    eye_pos: vec3<f32>,
-    _pad2: f32,
-    spec_shininess: f32,
-    spec_intensity: f32,
-    fresnel_mix: f32,
-    fresnel_exp: f32,
-    day_gamma: f32,
-    day_saturation: f32,
-    night_gamma: f32,
-    night_saturation: f32,
-    cloud_sphere_radius: f32,
-    cloud_opacity: f32,
-    cloud_floor: f32,
-    cloud_gamma: f32,
-    rayleigh_intensity: f32,
-    rayleigh_sharpness: f32,
-    nightglow_intensity: f32,
-    nightglow_falloff: f32,
-    nightglow_balance: f32,
-    rayleigh_radius: f32,
-    nightglow_orange_radius: f32,
-    nightglow_green_radius: f32,
-    rayleigh_haze: f32,
-    cloud_night: f32,
-    cloud_terminator: f32,
-    _pad5: f32,
-    sky_view: mat4x4<f32>,
-    world_from_eqj: mat3x3<f32>,
-    viewport_size: vec2<f32>,
-    screen_offset: vec2<f32>,
-    star_intensity: f32,
-    star_mag_limit: f32,
-    star_size: f32,
-    star_glow_strength: f32,
-    star_glow_radius: f32,
-    star_contrast: f32,
-    sky_fov: f32,
-    sun_glow: f32,
-    sun_rays: f32,
-    sun_flare: f32,
-    sun_visible: f32,
-    sun_size: f32,
-    sun_view_dir: vec3<f32>,
-    sun_disk_radius: f32,
-    moon_model: mat4x4<f32>,
-    moon_brightness: f32,
-    moon_earthshine: f32,
-    milky_way_intensity: f32,
-    cloud_opacity_night: f32,
-    sun_glare_tint: vec3<f32>,
-    sun_horizon_gain: f32,
-    sun_globe_center: vec2<f32>,
-    sun_globe_radius: f32,
-    sun_zone_width: f32,
-    sun_squash: f32,
-    sun_halo_radius: f32,
-    sun_reddening: f32,
-    atmo_sunrise_glow: f32,
-    atmo_sunrise_g: f32,
-    sun_flux: f32,
-    _pad7: f32,
-    _pad8: f32,
-};
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+/// A compute entry point appended to the production shaders, so the offsets it
+/// reads back are the ones `sphere.wgsl` declares rather than a copy of them.
+const UNIFORM_READBACK_PROBE: &str = r"
+@group(1) @binding(0) var<storage, read_write> output: array<f32>;
 
 @compute @workgroup_size(1)
-fn main() {
+fn uniform_readback() {
     // Read MVP diagonal
     output[0] = uniforms.mvp[0][0];
     output[1] = uniforms.mvp[1][1];
@@ -913,11 +698,17 @@ fn main() {
 fn uniform_buffer_field_offsets_match_wgsl() {
     let ctx = RENDER_CTX.lock().unwrap();
 
+    let wgsl_source = format!(
+        "{}\n{}\n{}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+        UNIFORM_READBACK_PROBE,
+    );
     let shader = ctx
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("uniform_readback_shader"),
-            source: wgpu::ShaderSource::Wgsl(UNIFORM_READBACK_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
         });
 
     let pipeline = ctx
@@ -926,7 +717,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             label: Some("uniform_readback_pipeline"),
             layout: None,
             module: &shader,
-            entry_point: Some("main"),
+            entry_point: Some("uniform_readback"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
@@ -1035,19 +826,21 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         mapped_at_creation: false,
     });
 
-    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let uniform_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &pipeline.get_bind_group_layout(0),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output_buf.as_entire_binding(),
-            },
-        ],
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+    });
+    let output_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: output_buf.as_entire_binding(),
+        }],
     });
 
     let mut encoder = ctx
@@ -1059,7 +852,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             timestamp_writes: None,
         });
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, &uniform_group, &[]);
+        pass.set_bind_group(1, &output_group, &[]);
         pass.dispatch_workgroups(1, 1, 1);
     }
     ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -2073,22 +1867,7 @@ fn cloud_pipeline_renders_with_alpha() {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_cloud"),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x2,
-                        },
-                    ],
-                }],
+                buffers: &[Vertex::buffer_layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {

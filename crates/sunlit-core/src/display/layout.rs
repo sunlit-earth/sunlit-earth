@@ -712,6 +712,9 @@ mod tests {
             camera_scale(settings().camera_fov, anchor.height),
             max_relative = 1e-5
         );
+        // These two screens are the same height, so the canvas height cancels
+        // and the identity above reduces to the lens being left alone outright.
+        assert_relative_eq!(derived.framing.camera_fov, settings().camera_fov);
 
         // The anchor's center lands where its crop's center is.
         assert_relative_eq!(derived.framing.offset_x, 0.5, epsilon = 1e-6);

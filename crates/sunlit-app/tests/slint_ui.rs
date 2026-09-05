@@ -186,8 +186,12 @@ fn test_celestial_properties_apply_from_scene_params() {
 }
 
 /// How close a hand-written literal in `main.slint` has to be to the config
-/// default it mirrors. The `.slint` side is written to three or four decimals,
-/// so `zoom` reads 0.421 where the config computes 0.42096078.
+/// default it mirrors, for the one property that needs any slack at all.
+///
+/// `zoom` reads 0.421 in the `.slint` file where the config computes it as
+/// 0.42096078 through `distance_to_zoom`, a relative difference of 9.3e-5.
+/// Every other property agrees exactly and is compared at `f32::EPSILON`, so a
+/// literal that drifted in the fourth decimal is still a failure.
 const SLINT_LITERAL_PRECISION: f32 = 1.0e-3;
 
 /// The window and the config have to start from the same numbers, or the first
@@ -195,11 +199,11 @@ const SLINT_LITERAL_PRECISION: f32 = 1.0e-3;
 /// happened to say.
 #[test]
 fn test_the_window_and_the_config_start_from_the_same_defaults() {
-    /// One row per property: the `AppConfig` field and the window getter that
-    /// mirrors it.
+    /// One row per property: the `AppConfig` field, the window getter that
+    /// mirrors it, and the tolerance the pair is compared at.
     macro_rules! rows {
         ($w:ident, $c:ident, $($field:ident from $getter:ident),* $(,)?) => {
-            vec![$((stringify!($field), $w.$getter(), $c.$field)),*]
+            vec![$((stringify!($field), $w.$getter(), $c.$field, f32::EPSILON)),*]
         };
     }
 
@@ -209,7 +213,6 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
         window, config,
         longitude from get_camera_longitude,
         latitude from get_camera_latitude,
-        zoom from get_camera_zoom,
         offset_x from get_camera_offset_x,
         offset_y from get_camera_offset_y,
         tilt from get_camera_tilt,
@@ -271,16 +274,20 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
             name,
             from_window,
             sunlit_core::params::gamma_value_to_slider(gamma),
+            f32::EPSILON,
         ));
     }
+    // The one property the `.slint` file rounds; see SLINT_LITERAL_PRECISION.
+    rows.push((
+        "zoom",
+        window.get_camera_zoom(),
+        config.zoom,
+        SLINT_LITERAL_PRECISION,
+    ));
 
-    for (name, from_window, from_config) in rows {
+    for (name, from_window, from_config, tolerance) in rows {
         assert!(
-            approx::relative_eq!(
-                from_window,
-                from_config,
-                max_relative = SLINT_LITERAL_PRECISION
-            ),
+            approx::relative_eq!(from_window, from_config, max_relative = tolerance),
             "{name}: the window starts at {from_window} and the config at {from_config}"
         );
     }

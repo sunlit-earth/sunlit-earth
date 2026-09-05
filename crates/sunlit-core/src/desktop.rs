@@ -925,7 +925,11 @@ mod tests {
         // The style comes first, so the write carrying the image is the one that
         // makes xfdesktop repaint.
         assert!(cmds[0].args[3].ends_with("image-style"), "{cmds:?}");
-        assert_eq!(cmds[0].args[5], XFCE_ZOOMED, "zoomed, which is what fills");
+        // Written out rather than read from XFCE_ZOOMED: the enumerant is
+        // xfdesktop's, not ours, so this literal is the only thing in the tree
+        // recording what the outside world expects. 3 is stretched, 4 is
+        // scaled, 5 is zoomed, and only 5 fills without letterboxing.
+        assert_eq!(cmds[0].args[5], "5", "zoomed, which is what fills");
         assert_eq!(
             cmds[1].args[3],
             "/backdrop/screen0/monitorVirtual-1/workspace0/last-image"

@@ -959,6 +959,13 @@ sky_fov = 111.0
         let scratch = ScratchDir::new("config_roundtrip");
         let path = scratch.join("config.toml");
 
+        // A tier this build does not default to, so a repair that reset the
+        // field could not pass by accident.
+        let tier = if QualityTier::default_for_build() == QualityTier::High {
+            QualityTier::Low
+        } else {
+            QualityTier::High
+        };
         let config = AppConfig {
             longitude: 99.0,
             latitude: -45.0,
@@ -972,7 +979,7 @@ sky_fov = 111.0
             texture_index: 2,
             texture_resolution: 2048,
             sample_count: 4,
-            quality_tier: QualityTier::Low,
+            quality_tier: tier,
             terminator_width: 0.15,
             diffuse_shading: false,
             diffuse_floor: 0.8,

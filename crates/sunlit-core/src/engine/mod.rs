@@ -1487,14 +1487,21 @@ mod tests {
         );
     }
 
-    /// The cap is the tier's own, and the height follows the width the source
-    /// aspect ratio asks for, quantized down.
+    /// A source wider than the tier's cap comes back under the cap and already
+    /// quantized. The exact granularity is `quantize_to_granularity`'s own
+    /// business and has its own tests; what matters here is that this path goes
+    /// through it, and that the tier's cap rather than a written-down width is
+    /// what bounds the result.
     #[test]
     fn preview_size_is_capped_at_the_tiers_own_width() {
         let (w, h) = preview_target_size((3840, 2160), QualityTier::Low);
         let cap = QualityTier::Low.max_preview_width();
         assert!(w <= cap, "{w} is above the tier's cap of {cap}");
-        assert_eq!((w, h), quantize_to_granularity(cap, cap * 2160 / 3840));
+        assert_eq!(
+            (w, h),
+            quantize_to_granularity(w, h),
+            "a preview size that is not already quantized never reached the quantizer"
+        );
     }
 
     #[test]

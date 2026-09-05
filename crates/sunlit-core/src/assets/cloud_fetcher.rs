@@ -713,6 +713,23 @@ mod tests {
         assert_eq!(dir, PathBuf::from("C:/tmp/sunlit"));
     }
 
+    /// The cloud cache lives under the one app folder, beside the config file
+    /// and the wallpaper output. Asserted here as well as there because a
+    /// divergence of this path alone would leave a second cache directory
+    /// nothing ever sweeps.
+    #[test]
+    fn the_cache_dir_without_an_override_is_the_app_folder() {
+        let Some(dir) = resolve_cache_dir(None) else {
+            println!("skipping: this system has no local data directory");
+            return;
+        };
+        assert!(
+            dir.ends_with("SunlitEarth"),
+            "unexpected cache dir: {}",
+            dir.display()
+        );
+    }
+
     #[test]
     fn decode_cloud_jpeg_invalid_bytes() {
         let result = decode_cloud_jpeg(&[0, 1, 2, 3]);

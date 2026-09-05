@@ -365,10 +365,10 @@ mod tests {
     /// The direction from the Moon to the Earth, expressed in the Moon's own
     /// body-fixed frame. Tidal lock puts it near the prime meridian at the
     /// equator, and the libration is how far it wanders.
-    fn sub_earth_point(state: &SkyState) -> (f32, f32) {
-        let eqj_from_body = state.world_from_eqj.transpose() * state.moon_rotation;
+    fn sub_earth_point(state: &MoonState) -> (f32, f32) {
+        let eqj_from_body = state.world_from_eqj.transpose() * state.rotation;
         let toward_earth = eqj_from_body.transpose()
-            * (state.world_from_eqj.transpose() * -state.moon_position).normalize();
+            * (state.world_from_eqj.transpose() * -state.position).normalize();
         (
             toward_earth.y.atan2(toward_earth.x).to_degrees(),
             toward_earth.z.asin().to_degrees(),
@@ -385,12 +385,32 @@ mod tests {
         }
     }
 
-    /// Every six hours over four years, which covers about fifty lunations.
+    /// The three quantities the Moon cases read, and none of the eleven
+    /// ephemeris calls per sample `compute_sky_state_from_time` spends on the
+    /// Sun and the five planets, which no case below looks at.
+    struct MoonState {
+        world_from_eqj: Mat3,
+        position: Vec3,
+        rotation: Mat3,
+    }
+
+    fn moon_state_from_time(mut time: astro_time_t) -> MoonState {
+        let world_from_eqj = rotation_world_from_eqj(&mut time);
+        MoonState {
+            world_from_eqj,
+            position: moon_position(time, world_from_eqj),
+            rotation: moon_rotation(&mut time, world_from_eqj),
+        }
+    }
+
+    /// Twice a day over four years, which is about fifty lunations sampled at
+    /// every phase. Libration and lunar distance run on that cycle, so a finer
+    /// grid buys none of the cases below anything.
     fn four_years_of_times() -> impl Iterator<Item = astro_time_t> {
         (2026..2030).flat_map(|year| {
             (1..=365).flat_map(move |doy| {
                 let (month, day) = super::super::datetime::day_of_year_to_month_day(doy, year);
-                [0, 6, 12, 18].into_iter().map(move |hour| {
+                [0, 12].into_iter().map(move |hour| {
                     make_time(year, i32::from(month), i32::from(day), hour, 0, 0.0)
                 })
             })
@@ -399,11 +419,10 @@ mod tests {
 
     /// Perigee and apogee bound the orbit, so a scale error in the AU
     /// conversion or a direction taken for a position lands outside them.
-    /// Measured over these four years: 55.918 to 63.758.
     #[test]
     fn the_moon_orbits_between_fifty_five_and_sixty_four_earth_radii() {
         for time in four_years_of_times() {
-            let distance = compute_sky_state_from_time(time).moon_position.length();
+            let distance = moon_state_from_time(time).position.length();
             assert!(
                 (55.0..64.0).contains(&distance),
                 "{distance} Earth radii at {}",
@@ -417,7 +436,7 @@ mod tests {
     #[test]
     fn the_moon_distance_agrees_with_the_librarys_kilometers() {
         for time in four_years_of_times().step_by(37) {
-            let distance = compute_sky_state_from_time(time).moon_position.length();
+            let distance = moon_state_from_time(time).position.length();
             let km = f64::from(distance) * 6378.137;
             assert_relative_eq!(km, libration(time).dist_km, max_relative = 1.0e-5);
         }
@@ -444,7 +463,7 @@ mod tests {
     #[test]
     fn the_sub_earth_point_stays_inside_the_libration_bounds() {
         for time in four_years_of_times() {
-            let (longitude, latitude) = sub_earth_point(&compute_sky_state_from_time(time));
+            let (longitude, latitude) = sub_earth_point(&moon_state_from_time(time));
             assert!(
                 longitude.abs() < 8.5 && latitude.abs() < 7.5,
                 "sub-Earth point at ({longitude}, {latitude}) at {}",
@@ -455,11 +474,10 @@ mod tests {
 
     /// The same rotation against the library's own libration model, which is a
     /// second implementation of the same quantity rather than a bound on it.
-    /// Worst disagreement over these four years: 0.0276 degrees.
     #[test]
     fn the_sub_earth_point_agrees_with_the_library_libration() {
         for time in four_years_of_times().step_by(37) {
-            let (longitude, latitude) = sub_earth_point(&compute_sky_state_from_time(time));
+            let (longitude, latitude) = sub_earth_point(&moon_state_from_time(time));
             let libration = libration(time);
             #[allow(clippy::cast_possible_truncation)]
             let (elon, elat) = (libration.elon as f32, libration.elat as f32);
@@ -480,8 +498,8 @@ mod tests {
         let obliquity = 23.439_291_f32.to_radians();
         let ecliptic_north = Vec3::new(0.0, -obliquity.sin(), obliquity.cos());
         for time in four_years_of_times().step_by(37) {
-            let state = compute_sky_state_from_time(time);
-            let eqj_from_body = state.world_from_eqj.transpose() * state.moon_rotation;
+            let state = moon_state_from_time(time);
+            let eqj_from_body = state.world_from_eqj.transpose() * state.rotation;
             let tilt = eqj_from_body
                 .z_axis
                 .angle_between(ecliptic_north)

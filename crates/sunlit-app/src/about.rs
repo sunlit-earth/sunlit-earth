@@ -96,11 +96,11 @@ impl AboutController {
 }
 
 /// `AboutBlock::kind` for a paragraph, the one kind that carries no depth.
-pub const PARAGRAPH: i32 = 0;
+const PARAGRAPH: i32 = 0;
 /// `AboutBlock::kind` for a heading, whose depth is its level, 1 through 6.
-pub const HEADING: i32 = 1;
+const HEADING: i32 = 1;
 /// `AboutBlock::kind` for a list item, whose depth is its nesting.
-pub const LIST_ITEM: i32 = 2;
+const LIST_ITEM: i32 = 2;
 
 /// The deepest nesting a list item is laid out at.
 ///

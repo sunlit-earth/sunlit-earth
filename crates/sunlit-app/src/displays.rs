@@ -74,7 +74,7 @@ fn screen_label(monitor: &Monitor) -> String {
 }
 
 /// The screen combo's rows, the automatic one first.
-pub fn screen_options(monitors: &[Monitor]) -> Vec<String> {
+fn screen_options(monitors: &[Monitor]) -> Vec<String> {
     std::iter::once(AUTOMATIC_SCREEN.to_owned())
         .chain(monitors.iter().map(screen_label))
         .collect()

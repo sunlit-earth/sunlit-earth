@@ -581,7 +581,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// `scene::sky::SkyState` once per frame, which is where the sun direction,
 /// the sky rotation and the planets all come from.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
+fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
     DateTimeInput {
         use_custom: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
@@ -654,7 +654,7 @@ pub fn read_config_from_window_onto(
 /// Update the hour label, day label, and max-day-of-year on the window
 /// based on the current datetime slider values.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn update_datetime_labels(window: &MainWindow, base_year: i32) {
+fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     let h = window.get_custom_hour();
     window.set_hour_label(datetime::hour_label(h).into());
 

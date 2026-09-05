@@ -41,14 +41,17 @@ impl Where {
 
 /// How long the suite may take inside a guest.
 ///
-/// The desktop run is well under a minute; a guest renders on a CPU rasterizer
-/// with a fraction of the memory, and the Windows one boots a scheduled task to
-/// get there. These are deliberately generous: the cost of a timeout that is
-/// too short is a false failure, and the cost of one too long is waiting.
+/// Above the suite's own budget, which is what makes a stuck case report the
+/// signal it was waiting for rather than the job reporting that it ran out of
+/// time. Adding up every wait in `tests/e2e.rs` at its full budget comes to
+/// about 67 minutes on Linux and 45 on Windows, against a real Windows guest
+/// run of 97 seconds: the sum is an upper bound no run approaches, and the
+/// margin over it is deliberate, because the cost of a timeout that is too
+/// short is a false failure and the cost of one too long is waiting.
 pub fn job_timeout(target: Target) -> Duration {
     match target {
-        Target::Windows => Duration::from_mins(45),
-        Target::Linux => Duration::from_mins(30),
+        Target::Windows => Duration::from_mins(60),
+        Target::Linux => Duration::from_mins(75),
     }
 }
 
@@ -408,9 +411,11 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_guest_gets_more_time_than_the_linux_one() {
-        assert!(job_timeout(Target::Windows) > job_timeout(Target::Linux));
-        assert!(job_timeout(Target::Linux) >= Duration::from_mins(10));
+    fn the_linux_guest_gets_at_least_as_much_time_as_the_windows_one() {
+        // The Linux guest runs the two cases the Windows one gates itself out
+        // of, so the suite's own budget is the larger of the two there.
+        assert!(job_timeout(Target::Linux) >= job_timeout(Target::Windows));
+        assert!(job_timeout(Target::Windows) >= Duration::from_mins(10));
     }
 
     #[test]

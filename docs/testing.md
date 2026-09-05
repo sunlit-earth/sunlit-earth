@@ -67,6 +67,19 @@ clears it by 633, so a cold-start figure set too low fails at the two lower widt
 3 GiB total is anchored, still passes. The narrow end is the binding case rather than a restatement of the wide one: it
 gets the smallest resident allowance and has the same decode to pay for.
 
+**The e2e render case's thresholds and its budget.** `test_render_and_exit` gives itself an empty cache directory so
+that it pays the surface texture decode instead of inheriting a warm cache from whichever case ran first. Measured in
+the Linux guest on 2026-09-01, the same 800x800 render peaked at 2088 MB and settled to 444 MB with a cold cache, and
+sat flat at 381 MB with a warm one, where the peak is the last sample and "settled" means nothing. Its one-minute budget
+comes from the same date on the development host, debug build, empty cache: 5.9 s on the GPU and 8.0 s on the software
+adapter, against 2.5 s warm. A guest is a software rasterizer on a slower CPU and has never been timed, which is what
+the margin is for.
+
+**The e2e suite's own budget**, defined as every wait consuming its full timeout and then succeeding, is about 67
+minutes on Linux and 45 on Windows, dominated by the two cases that publish a wallpaper five and six times. A real
+Windows guest run is about 97 seconds. `xtask`'s `job_timeout` sits above the budget rather than near the real runtime,
+so that a stuck case reports the signal it was waiting for instead of the job reporting that it ran out of time.
+
 ## CI/CD
 
 Three GitHub Actions workflows in `.github/workflows/`:

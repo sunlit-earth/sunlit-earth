@@ -138,11 +138,11 @@ pub trait WallpaperSink: Send + Sync {
     /// Whether this sink can accept a wallpaper at all.
     ///
     /// Checked before anything is rendered. Producing a wallpaper is the most
-    /// expensive thing the engine does (a render at the display's native
-    /// resolution, then a readback of that whole image: about 14 MB at 2560x1440,
-    /// on a CPU rasterizer where there is no hardware to help), so a sink that
-    /// is going to refuse the work has to say so before it happens rather than
-    /// after. Sinks that always accept keep the default.
+    /// expensive thing the engine does, a render at the display's native
+    /// resolution and then a readback of that whole image, so a sink that is
+    /// going to refuse the work has to say so before it happens rather than
+    /// after; `docs/rendering.md` carries what that costs. Sinks that always
+    /// accept keep the default.
     fn check_supported(&self) -> Result<(), String> {
         Ok(())
     }
@@ -643,8 +643,7 @@ mod tests {
     }
 
     /// A monitor with a zero dimension is skipped everywhere else a layout is
-    /// walked, so it is skipped here too. Refusing it made one screen with no
-    /// pixels the end of the whole publish, and only in the spanned mode.
+    /// walked, so it is skipped here too.
     #[test]
     fn a_screen_with_no_pixels_is_passed_over_rather_than_refused() {
         let mut job = canvas_job(DisplayMode::AcrossScreens);

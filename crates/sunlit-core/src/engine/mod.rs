@@ -195,11 +195,9 @@ pub struct EngineConfig {
     /// The mailbox decoded textures are parked in, with one slot per texture
     /// (`texture_paths.len() + 2`). `None` builds one.
     ///
-    /// Injectable for the same reason the clock and the cloud source are. A
+    /// Injectable for the same reason the clock and the cloud source are: a
     /// caller holding the same mailbox the engine drains can produce an arrival
-    /// order that otherwise needs a decode still running when the resolution
-    /// changes, which is the ordering the generation stamp exists for and the
-    /// one no amount of waiting makes reliable.
+    /// order that no amount of waiting makes reliable.
     pub mailbox: Option<TextureMailbox>,
 }
 
@@ -209,8 +207,7 @@ impl EngineConfig {
     ///
     /// The software adapter is the default here so the test suite behaves the
     /// same on a developer machine with a discrete GPU as it does on CI, where
-    /// WARP is all there is. A test that passes only on one of the two is worse
-    /// than no test.
+    /// WARP is all there is.
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
             force_software: true,
@@ -376,8 +373,7 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle, String> {
     //
     // - The consumer is unconditional. The engine loop drains this channel dry
     //   on every iteration and iterations are at most `TICK` (50 ms) apart. It
-    //   is not gated on a window, a client, or visibility, which is exactly the
-    //   property the Phase 0 leak lacked.
+    //   is not gated on a window, a client, or visibility.
     // - The producers are human-rate: UI callbacks during a drag (about 60/s),
     //   the viewport poll (5/s), the cloud worker (a few per hour), IPC (rare).
     // - The payloads are small and carry no pixel data. `EngineCommand` is a
@@ -387,12 +383,6 @@ pub fn start(config: EngineConfig) -> Result<EngineHandle, String> {
     // - The worst case is therefore a backlog for as long as one blocking
     //   operation takes: a 4K wallpaper export or an 8K mip upload, one to two
     //   seconds, so a couple of hundred entries and single-digit kilobytes.
-    //
-    // A bound was considered and rejected: a blocking `send` from the UI thread
-    // would deadlock against an engine that is mid-export, and a non-blocking
-    // `try_send` that drops `UpdateParams` can drop the *last* one, leaving the
-    // window and the engine permanently disagreeing. Neither failure is better
-    // than the bounded growth above.
     let (tx, rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
 
@@ -581,18 +571,14 @@ impl Engine {
             mailbox,
         } = config;
 
-        // One slot per texture: the grid, one per path, and the cloud overlay.
-        //
         // Checked rather than trusted, and before the device exists, because
-        // both ways of getting it wrong are bad and neither is visible where it
-        // happens. A mailbox with too few slots drops the posts for the high
-        // ones, leaving those slots waiting for a load that was thrown away; one
-        // with too many hands the consumer a slot index its own array does not
-        // have, which is a panic in the middle of a session. Both were
-        // impossible by construction until the mailbox could be injected.
-        // Failing here means failing before `ready` is sent, so `start` reports
-        // a thread that never got as far as its adapter rather than handing back
-        // a handle to a thread that quietly died.
+        // neither way of getting it wrong is visible where it happens. Too few
+        // slots drops the posts for the high ones, leaving those slots waiting
+        // for a load that was thrown away; too many hands the consumer a slot
+        // index its own array does not have, which is a panic in the middle of a
+        // session. Failing here means failing before `ready` is sent, so `start`
+        // reports a thread that never got as far as its adapter rather than
+        // handing back a handle to a thread that quietly died.
         let slots = SlotLayout::new(texture_paths.len());
         if let Some(mailbox) = &mailbox {
             assert_eq!(
@@ -1045,11 +1031,10 @@ impl Engine {
     /// renderer falls back to the procedural grid while a slot is empty, which
     /// is fine for a preview and not fine for someone's desktop, and a
     /// resolution switch empties one for as long as the reload takes. Every
-    /// caller that publishes arrives here, so this covers all of them: the "Set
-    /// as Wallpaper" button, the tray's "Refresh Now", the IPC `set-wallpaper`
-    /// command, and the auto-refresh schedule. `RenderToFile` and
-    /// `ExportPixels` are deliberately not covered; they answer a caller
-    /// holding a reply channel, which decides for itself what it will wait for.
+    /// caller that publishes arrives here, so this covers all of them.
+    /// `RenderToFile` and `ExportPixels` are deliberately not covered; they
+    /// answer a caller holding a reply channel, which decides for itself what it
+    /// will wait for.
     ///
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
@@ -1107,13 +1092,9 @@ impl Engine {
     /// scaling change and a color depth change, each of which costs one
     /// enumeration and an equal comparison.
     ///
-    /// The rule for the wallpaper is one sentence. The desk holds a picture
-    /// this process made for a layout that is gone, so make one for the layout
-    /// that is here. Its two edges are deliberate: somebody who opened the
-    /// settings window to look and never asked for a wallpaper does not get one
-    /// because they moved a screen, and a sink that refuses is never asked
-    /// unprompted, so a layout change cannot put an error in the status line
-    /// out of nowhere.
+    /// A republish follows only where `published` says the desk is holding a
+    /// picture this process made; `docs/architecture.md` has the argument for
+    /// both edges of that rule.
     fn recheck_displays(&mut self) {
         let monitors = match self.wallpaper.monitors() {
             Ok(monitors) => monitors,

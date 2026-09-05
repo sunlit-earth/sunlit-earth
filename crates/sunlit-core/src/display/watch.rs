@@ -534,14 +534,44 @@ mod windows_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW};
+
+    /// How long the watcher's thread has to answer before this test gives up.
+    ///
+    /// The bare `SendMessageW` has no timeout, and a window whose thread has
+    /// stopped pumping would block `cargo unit` itself rather than fail.
+    const ANSWER_TIMEOUT_MS: u32 = 5_000;
+
+    /// Deliver `message` to the watcher's window and wait, with a bound, for
+    /// its window procedure to run.
+    fn send_and_wait(hwnd: isize, message: u32) {
+        let mut answer = 0_usize;
+        // SAFETY: a window this test installed, a documented message with null
+        // parameters, and an out parameter owned by this frame.
+        #[allow(unsafe_code)]
+        let delivered = unsafe {
+            SendMessageTimeoutW(
+                hwnd as _,
+                message,
+                0,
+                0,
+                SMTO_ABORTIFHUNG,
+                ANSWER_TIMEOUT_MS,
+                &raw mut answer,
+            )
+        };
+        assert!(
+            delivered != 0,
+            "the watcher window did not answer {message:#x} within {ANSWER_TIMEOUT_MS} ms"
+        );
+    }
 
     /// The message the guest cannot produce, delivered the way Windows does.
     ///
     /// The Windows guest's video is a single fixed mode, so no automated case
-    /// can make it send a real `WM_DISPLAYCHANGE`; `SendMessageW` runs the
-    /// window procedure synchronously, which is the same path and needs no
-    /// waiting. This is the `session_end` test's pattern for the same reason.
+    /// can make it send a real `WM_DISPLAYCHANGE`; sending it runs the window
+    /// procedure synchronously, which is the same path and needs no waiting.
+    /// This is the `session_end` test's pattern for the same reason.
     #[test]
     fn the_display_message_reaches_the_callback_once_per_message() {
         const WM_DISPLAYCHANGE: u32 = 0x007E;
@@ -558,23 +588,13 @@ mod windows_tests {
         };
         let hwnd = watcher.hwnd();
 
-        // SAFETY: a window this test installed, and a documented message.
-        // `SendMessageW` returns once the window procedure has run.
-        #[allow(unsafe_code)]
-        unsafe {
-            SendMessageW(hwnd as _, WM_DISPLAYCHANGE, 0, 0);
-        }
+        send_and_wait(hwnd, WM_DISPLAYCHANGE);
         assert_eq!(hints.load(Ordering::SeqCst), 1);
 
         // A message the watcher does not answer must not become a hint.
-        //
-        // SAFETY: the same window this test installed, still alive, and
-        // `WM_SETTINGCHANGE` with null parameters, which the window procedure
-        // passes to `DefWindowProcW` unread.
-        #[allow(unsafe_code)]
-        unsafe {
-            SendMessageW(hwnd as _, 0x001A, 0, 0);
-        }
+        // `WM_SETTINGCHANGE` with null parameters is passed to `DefWindowProcW`
+        // unread.
+        send_and_wait(hwnd, 0x001A);
         assert_eq!(
             hints.load(Ordering::SeqCst),
             1,

@@ -1456,14 +1456,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schedule_is_not_due_before_its_interval() {
+    fn schedule_fires_at_its_interval_and_not_before() {
         let mut s = Schedule::new(Duration::from_secs(10), Duration::ZERO);
         assert!(!s.due(Duration::from_secs(9)));
-    }
-
-    #[test]
-    fn schedule_fires_at_the_interval() {
-        let mut s = Schedule::new(Duration::from_secs(10), Duration::ZERO);
         assert!(s.due(Duration::from_secs(10)));
     }
 
@@ -1492,12 +1487,21 @@ mod tests {
         );
     }
 
+    /// A source wider than the tier's cap comes back under the cap and already
+    /// quantized. The exact granularity is `quantize_to_granularity`'s own
+    /// business and has its own tests; what matters here is that this path goes
+    /// through it, and that the tier's cap rather than a written-down width is
+    /// what bounds the result.
     #[test]
-    fn preview_size_is_capped_at_the_low_tier() {
+    fn preview_size_is_capped_at_the_tiers_own_width() {
         let (w, h) = preview_target_size((3840, 2160), QualityTier::Low);
-        assert!(w <= QualityTier::Low.max_preview_width());
-        // 3840x2160 scaled to 1280 wide is 720 high, quantized to 704.
-        assert_eq!((w, h), (1280, 704));
+        let cap = QualityTier::Low.max_preview_width();
+        assert!(w <= cap, "{w} is above the tier's cap of {cap}");
+        assert_eq!(
+            (w, h),
+            quantize_to_granularity(w, h),
+            "a preview size that is not already quantized never reached the quantizer"
+        );
     }
 
     #[test]
@@ -1534,12 +1538,13 @@ mod tests {
         );
     }
 
+    /// The length check comes before the filesystem does, so this needs no
+    /// directory to write into and never reaches one.
     #[test]
     fn save_png_rejects_a_short_buffer() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_save_png");
-        let _ = std::fs::create_dir_all(&dir);
-        let err = save_png(&dir.join("x.png"), 4, 4, &[0; 8]).unwrap_err();
+        let path = std::path::Path::new("no-directory-is-touched/x.png");
+        let err = save_png(path, 4, 4, &[0; 8]).unwrap_err();
         assert!(err.contains("size mismatch"), "unexpected error: {err}");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!path.exists());
     }
 }

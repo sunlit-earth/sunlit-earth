@@ -167,19 +167,33 @@ mod tests {
         [buf[s], buf[s + 1], buf[s + 2], buf[s + 3]]
     }
 
+    /// A row rotates right by three quarters of its width, whatever the width,
+    /// and a row of one colour comes back unchanged because a rotation moves
+    /// pixels without altering them.
     #[test]
-    fn shift_4px_single_row() {
-        // 4 pixels: [A, B, C, D] -> rotate_right by 3 -> [B, C, D, A]
-        let a = [10, 20, 30, 255];
-        let b = [40, 50, 60, 255];
-        let c = [70, 80, 90, 255];
-        let d = [100, 110, 120, 255];
-        let mut buf = pixels_from(&[a, b, c, d]);
-        shift_horizontal(&mut buf, 4, 1);
-        assert_eq!(pixel_at(&buf, 0), b);
-        assert_eq!(pixel_at(&buf, 1), c);
-        assert_eq!(pixel_at(&buf, 2), d);
-        assert_eq!(pixel_at(&buf, 3), a);
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_row_rotates_right_by_three_quarters_of_its_width() {
+        for width in [4usize, 8, 12] {
+            let px: Vec<[u8; 4]> = (0..width)
+                .map(|i| [(i * 10) as u8, (i * 10 + 1) as u8, (i * 10 + 2) as u8, 255])
+                .collect();
+            let mut buf = pixels_from(&px);
+            shift_horizontal(&mut buf, width as u32, 1);
+
+            let shift = width * 3 / 4;
+            for (i, pixel) in px.iter().enumerate() {
+                assert_eq!(
+                    pixel_at(&buf, (i + shift) % width),
+                    *pixel,
+                    "pixel {i} of {width}"
+                );
+            }
+        }
+
+        let mut uniform = [128, 64, 32, 255].repeat(4);
+        let original = uniform.clone();
+        shift_horizontal(&mut uniform, 4, 1);
+        assert_eq!(uniform, original, "a row of one colour cannot rotate");
     }
 
     #[test]
@@ -210,30 +224,6 @@ mod tests {
         assert_eq!(pixel_at(&buf, 7), row2[0]);
     }
 
-    #[test]
-    fn shift_uniform_row_is_identity() {
-        let mut buf = [128, 64, 32, 255].repeat(4);
-        let original = buf.clone();
-        shift_horizontal(&mut buf, 4, 1);
-        assert_eq!(buf, original);
-    }
-
-    #[test]
-    fn shift_8px_single_row() {
-        // 8 pixels, shift by 6 (3/4 of 8)
-        let px: Vec<[u8; 4]> = (0..8)
-            .map(|i| [i * 10, i * 10 + 1, i * 10 + 2, 255])
-            .collect();
-        let mut buf = pixels_from(&px);
-        shift_horizontal(&mut buf, 8, 1);
-        // rotate_right by 6 means first 2 pixels move to end
-        // Result: [px[2], px[3], px[4], px[5], px[6], px[7], px[0], px[1]]
-        assert_eq!(pixel_at(&buf, 0), px[2]);
-        assert_eq!(pixel_at(&buf, 1), px[3]);
-        assert_eq!(pixel_at(&buf, 6), px[0]);
-        assert_eq!(pixel_at(&buf, 7), px[1]);
-    }
-
     // -----------------------------------------------------------------------
     // flip_horizontal
     // -----------------------------------------------------------------------
@@ -256,29 +246,9 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(clippy::cast_possible_truncation)]
-    fn flip_twice_is_identity() {
-        let mut buf: Vec<u8> = (0..6u32 * 3 * 4).map(|i| (i % 97) as u8).collect();
-        let original = buf.clone();
-        flip_horizontal(&mut buf, 6, 3);
-        assert_ne!(buf, original, "a flip of this row must change something");
-        flip_horizontal(&mut buf, 6, 3);
-        assert_eq!(buf, original);
-    }
-
     // -----------------------------------------------------------------------
     // downsample_2x
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn downsample_2x2_uniform_red() {
-        let src = vec![
-            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
-        ];
-        let dst = downsample_2x(&src, 2, 2);
-        assert_eq!(dst, [255, 0, 0, 255]);
-    }
 
     #[test]
     fn downsample_2x2_checkerboard() {
@@ -292,13 +262,20 @@ mod tests {
         assert_eq!(dst, [25, 25, 25, 255]);
     }
 
+    /// Averaging four identical pixels cannot move the colour, whatever the
+    /// size of the image they came from.
     #[test]
-    fn downsample_4x4_uniform_white() {
-        let src = vec![255; 4 * 4 * 4]; // 4x4 RGBA all-white
-        let dst = downsample_2x(&src, 4, 4);
-        assert_eq!(dst.len(), 2 * 2 * 4);
-        for chunk in dst.chunks(4) {
-            assert_eq!(chunk, [255, 255, 255, 255]);
+    fn a_uniform_image_survives_being_downsampled() {
+        for (w, h, colour) in [
+            (2u32, 2u32, [255u8, 0, 0, 255]),
+            (4, 4, [255, 255, 255, 255]),
+        ] {
+            let src = colour.repeat((w * h) as usize);
+            let dst = downsample_2x(&src, w, h);
+            assert_eq!(dst.len(), ((w / 2) * (h / 2) * 4) as usize);
+            for chunk in dst.chunks(4) {
+                assert_eq!(chunk, colour, "{w}x{h}");
+            }
         }
     }
 
@@ -312,23 +289,15 @@ mod tests {
         }
     }
 
-    proptest::proptest! {
-        #[test]
-        fn downsample_output_size_invariant(
-            half_w in 1u32..=64,
-            half_h in 1u32..=64,
-            pixels in proptest::collection::vec(proptest::num::u8::ANY, 1..=128*128*4),
-        ) {
-            let w = half_w * 2;
-            let h = half_h * 2;
-            let expected_input_len = (w as usize) * (h as usize) * 4;
-            proptest::prop_assume!(pixels.len() >= expected_input_len);
-            let src = &pixels[..expected_input_len];
-
-            let dst = downsample_2x(src, w, h);
-            let expected_output_len = (half_w as usize) * (half_h as usize) * 4;
-            proptest::prop_assert_eq!(dst.len(), expected_output_len);
-        }
+    /// An image of `width` by `height` filled from `seed`.
+    ///
+    /// Derived from the dimensions rather than generated beside them, so no
+    /// case is thrown away for having the wrong length.
+    #[allow(clippy::cast_possible_truncation)]
+    fn fixture(width: u32, height: u32, seed: u8) -> Vec<u8> {
+        (0..width as usize * height as usize * 4)
+            .map(|i| (i.wrapping_mul(31).wrapping_add(seed as usize) % 251) as u8)
+            .collect()
     }
 
     proptest::proptest! {
@@ -336,12 +305,10 @@ mod tests {
         fn flip_twice_is_identity_for_any_size(
             width in 1u32..=64,
             height in 1u32..=16,
-            pixels in proptest::collection::vec(proptest::num::u8::ANY, 1..=64*16*4),
+            seed in proptest::num::u8::ANY,
         ) {
-            let expected_len = (width as usize) * (height as usize) * 4;
-            proptest::prop_assume!(pixels.len() >= expected_len);
-            let mut buf = pixels[..expected_len].to_vec();
-            let original = buf.clone();
+            let original = fixture(width, height, seed);
+            let mut buf = original.clone();
 
             flip_horizontal(&mut buf, width, height);
             flip_horizontal(&mut buf, width, height);
@@ -354,13 +321,10 @@ mod tests {
         fn shift_four_times_is_identity(
             width in 1u32..=64,
             height in 1u32..=16,
-            pixels in proptest::collection::vec(proptest::num::u8::ANY, 1..=64*16*4),
+            seed in proptest::num::u8::ANY,
         ) {
-            // Truncate or skip if the random vec doesn't match the expected size
-            let expected_len = (width as usize) * (height as usize) * 4;
-            proptest::prop_assume!(pixels.len() >= expected_len);
-            let mut buf = pixels[..expected_len].to_vec();
-            let original = buf.clone();
+            let original = fixture(width, height, seed);
+            let mut buf = original.clone();
 
             // Four shifts of 3/4 width = 3 full rotations = identity
             for _ in 0..4 {

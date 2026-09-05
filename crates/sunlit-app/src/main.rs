@@ -1033,9 +1033,19 @@ fn main() -> ExitCode {
     }
 }
 
+/// The scratch-directory helper, shared with `sunlit-core`'s own unit tests.
+///
+/// `sunlit_core::test_support` is `#[cfg(test)]`, so it is not on the library's
+/// public surface; the file is taken by path the same way the integration
+/// targets take it.
+#[cfg(test)]
+#[path = "../../sunlit-core/src/test_support.rs"]
+mod test_support;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScratchDir;
 
     /// A pointer file exists, so `exists()` is not the question to ask.
     ///
@@ -1046,8 +1056,7 @@ mod tests {
     /// draws the same picture.
     #[test]
     fn a_git_lfs_pointer_is_not_a_texture_path() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_texture_pointers");
-        std::fs::create_dir_all(&dir).expect("create the fixture directory");
+        let dir = ScratchDir::new("texture_pointers");
         std::fs::write(
             dir.join("world.topo.200405.jxl"),
             vec![0_u8; usize::try_from(TEXTURE_MIN_BYTES).expect("a small threshold")],
@@ -1059,12 +1068,11 @@ mod tests {
         )
         .expect("write the pointer stand-in");
 
-        let paths = resolve_texture_paths(Some(&dir));
+        let paths = resolve_texture_paths(Some(dir.path()));
         assert!(paths[0].is_some(), "the day map is the asset here");
         assert_eq!(paths[1], None, "the night map is not in the directory");
         assert_eq!(paths[2], None, "the moon map is a pointer");
         assert_eq!(paths[3], None, "the panorama is not in the directory");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An overlay is not something to wait for.

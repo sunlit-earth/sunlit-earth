@@ -15,6 +15,8 @@ pub mod memory_report;
 pub mod params;
 pub mod renderer;
 pub mod scene;
+#[cfg(test)]
+mod test_support;
 pub mod wallpaper;
 pub mod wgpu_init;
 

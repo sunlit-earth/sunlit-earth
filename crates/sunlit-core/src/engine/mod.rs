@@ -906,12 +906,11 @@ impl Engine {
         if self.preview.enabled && self.preview.owed {
             if emitted {
                 self.preview.owed = false;
-            } else if self.renderer.has_frame() {
+            } else if self.renderer.has_frame() && self.emit_preview() {
                 // Nothing changed while the preview was off, so re-send the
                 // frame that is already in the texture. A window that was
                 // hidden and shown again would otherwise show nothing until
                 // the user touched a control.
-                self.emit_preview();
                 self.preview.owed = false;
             }
             // If no frame exists yet the debt stands: the first render will
@@ -986,8 +985,7 @@ impl Engine {
         }
 
         if matches!(outcome, RenderOutcome::Rendered { .. }) && self.preview.enabled {
-            self.emit_preview();
-            return true;
+            return self.emit_preview();
         }
         false
     }
@@ -1006,18 +1004,20 @@ impl Engine {
         debug!("\n{}", self.renderer.memory_report(&self.adapter_key));
     }
 
-    /// Read the preview target back and hand the pixels to the client.
+    /// Read the preview target back and hand the pixels to the client, saying
+    /// whether one got there.
     ///
-    /// A readback that fails costs this frame and nothing more: the next tick
-    /// tries again, and a device that is gone for good will say so on the paths
-    /// that have somewhere to report it.
-    fn emit_preview(&self) {
+    /// A readback that fails costs this frame and nothing more, and the caller
+    /// keeps whatever debt it was paying, so the next tick tries again. A device
+    /// that is gone for good says so on the paths that have somewhere to report
+    /// it.
+    fn emit_preview(&self) -> bool {
         let (width, height) = self.renderer.size();
         let rgba = match self.renderer.read_preview_pixels() {
             Ok(rgba) => rgba,
             Err(e) => {
                 warn!(error = %e, "the preview frame could not be read back");
-                return;
+                return false;
             }
         };
         self.emit(EngineEvent::PreviewFrame {
@@ -1025,6 +1025,7 @@ impl Engine {
             width,
             height,
         });
+        true
     }
 
     /// Render at the sink's native resolution and hand the pixels over.

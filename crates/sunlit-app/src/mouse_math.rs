@@ -239,53 +239,23 @@ mod tests {
 
     // --- wrap_longitude ---
 
+    /// The half-open range is what makes the wrap a normal form: 180 comes back
+    /// as -180 so that one angle has one spelling. `wrap_angle_180` answers the
+    /// same question and has to agree everywhere.
     #[test]
-    fn wrap_longitude_identity_at_zero() {
-        assert_relative_eq!(wrap_longitude(0.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_longitude_identity_at_negative_90() {
-        assert_relative_eq!(wrap_longitude(-90.0), -90.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_positive_360() {
-        assert_relative_eq!(wrap_longitude(360.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_negative_360() {
-        assert_relative_eq!(wrap_longitude(-360.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_540() {
-        assert_relative_eq!(wrap_longitude(540.0), -180.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_minus_180() {
-        // -180 is the boundary; the modular wrap puts it at -180
-        assert_relative_eq!(wrap_longitude(-180.0), -180.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_180() {
-        // 180 wraps to -180
-        assert_relative_eq!(wrap_longitude(180.0), -180.0);
-    }
-
-    // --- wrap_angle_180 ---
-
-    #[test]
-    fn wrap_angle_180_identity_at_zero() {
-        assert_relative_eq!(wrap_angle_180(0.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_angle_180_wraps_360() {
-        assert_relative_eq!(wrap_angle_180(360.0), 0.0);
+    fn an_angle_wraps_into_the_half_open_range_around_zero() {
+        for (angle, wrapped) in [
+            (0.0, 0.0),
+            (-90.0, -90.0),
+            (360.0, 0.0),
+            (-360.0, 0.0),
+            (540.0, -180.0),
+            (-180.0, -180.0),
+            (180.0, -180.0),
+        ] {
+            assert_relative_eq!(wrap_longitude(angle), wrapped);
+            assert_relative_eq!(wrap_angle_180(angle), wrapped);
+        }
     }
 
     // --- apply_globe_drag ---
@@ -311,27 +281,15 @@ mod tests {
         assert!(lat < 0.0, "dragging up should decrease latitude");
     }
 
+    /// A drag that would take the camera over a pole stops just short of it,
+    /// at either end. That the whole range is respected for any drag is
+    /// `globe_drag_latitude_always_in_range`.
     #[test]
-    fn globe_drag_latitude_clamped_at_89() {
-        let (_lon, lat) = apply_globe_drag(0.0, 88.0, 0.0, 0.5, 0.0, 1000.0);
-        assert_relative_eq!(lat, 89.0);
-    }
-
-    #[test]
-    fn globe_drag_latitude_clamped_at_minus_89() {
-        let (_lon, lat) = apply_globe_drag(0.0, -88.0, 0.0, 0.5, 0.0, -1000.0);
-        assert_relative_eq!(lat, -89.0);
-    }
-
-    #[test]
-    fn globe_drag_longitude_wraps() {
-        // Start near 180, drag to push past it
-        let (lon, _lat) = apply_globe_drag(179.0, 0.0, 0.0, 0.5, -100.0, 0.0);
-        // Should wrap around to negative side
-        assert!(
-            (-180.0..180.0).contains(&lon),
-            "longitude should be in [-180, 180), got {lon}"
-        );
+    fn globe_drag_latitude_stops_at_both_poles() {
+        let (_lon, north) = apply_globe_drag(0.0, 88.0, 0.0, 0.5, 0.0, 1000.0);
+        assert_relative_eq!(north, 89.0);
+        let (_lon, south) = apply_globe_drag(0.0, -88.0, 0.0, 0.5, 0.0, -1000.0);
+        assert_relative_eq!(south, -89.0);
     }
 
     #[test]
@@ -502,15 +460,12 @@ mod tests {
         assert_relative_eq!(y, 1.0);
     }
 
+    /// Both ends of the pan clamp. The range itself is `frame_drag_always_in_range`.
     #[test]
-    fn frame_drag_clamped_at_positive_3() {
+    fn frame_drag_clamps_at_both_ends() {
         let (x, y) = apply_frame_drag(2.9, 2.9, 0.5, -10000.0, 10000.0);
         assert_relative_eq!(x, 3.0);
         assert_relative_eq!(y, 3.0);
-    }
-
-    #[test]
-    fn frame_drag_clamped_at_negative_3() {
         let (x, y) = apply_frame_drag(-2.9, -2.9, 0.5, 10000.0, -10000.0);
         assert_relative_eq!(x, -3.0);
         assert_relative_eq!(y, -3.0);
@@ -535,15 +490,13 @@ mod tests {
         assert_relative_eq!(pitch, 20.0);
     }
 
+    /// Both ends of the orientation clamp. The range itself is
+    /// `orient_drag_always_in_range`.
     #[test]
-    fn orient_drag_clamped_at_90() {
+    fn orient_drag_clamps_at_both_ends() {
         let (yaw, pitch) = apply_orient_drag(89.0, 89.0, 100.0, -100.0);
         assert_relative_eq!(yaw, 90.0);
         assert_relative_eq!(pitch, 90.0);
-    }
-
-    #[test]
-    fn orient_drag_clamped_at_minus_90() {
         let (yaw, pitch) = apply_orient_drag(-89.0, -89.0, -100.0, 100.0);
         assert_relative_eq!(yaw, -90.0);
         assert_relative_eq!(pitch, -90.0);
@@ -577,13 +530,11 @@ mod tests {
         assert_relative_eq!(apply_zoom_scroll(0.5, 0.0), 0.5);
     }
 
+    /// Both ends of the zoom clamp. The range itself is
+    /// `zoom_scroll_always_in_unit_range`.
     #[test]
-    fn zoom_scroll_clamped_at_zero() {
+    fn zoom_scroll_clamps_at_both_ends() {
         assert_relative_eq!(apply_zoom_scroll(0.01, 10000.0), 0.0);
-    }
-
-    #[test]
-    fn zoom_scroll_clamped_at_one() {
         assert_relative_eq!(apply_zoom_scroll(0.99, -10000.0), 1.0);
     }
 

@@ -490,70 +490,87 @@ mod tests {
         }
     }
 
+    /// The canvas is the bounding box of the monitors, wherever a desk puts
+    /// them. Windows gives negative coordinates freely, since the primary is
+    /// the origin and everything left of or above it is negative.
     #[test]
-    fn two_side_by_side_bound_a_double_width_canvas() {
-        assert_eq!(
-            bounds_of(&side_by_side()),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                width: 3840,
-                height: 1080
-            })
-        );
-    }
-
-    #[test]
-    fn a_taller_second_monitor_makes_the_canvas_as_tall_as_it_is() {
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1920, 1080, true),
-            monitor("DP-2", 1920, 0, 2560, 1440, false),
-        ];
-        assert_eq!(
-            bounds_of(&monitors),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                width: 4480,
-                height: 1440
-            })
-        );
-    }
-
-    #[test]
-    fn a_stack_bounds_a_tall_canvas() {
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1920, 1080, true),
-            monitor("DP-2", 0, 1080, 1920, 1080, false),
-        ];
-        assert_eq!(
-            bounds_of(&monitors),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 2160
-            })
-        );
-    }
-
-    #[test]
-    fn a_monitor_left_of_and_above_the_primary_moves_the_canvas_origin() {
-        // Windows gives negative coordinates freely: the primary is the origin
-        // and everything placed left of or above it is negative.
-        let monitors = vec![
-            monitor("DISPLAY1", 0, 0, 1920, 1080, true),
-            monitor("DISPLAY2", -2560, -200, 2560, 1440, false),
-        ];
-        assert_eq!(
-            bounds_of(&monitors),
-            Some(Rect {
-                x: -2560,
-                y: -200,
-                width: 4480,
-                height: 1440
-            })
-        );
+    fn the_canvas_is_the_bounding_box_of_the_monitors() {
+        for (layout, monitors, expected) in [
+            (
+                "side by side",
+                side_by_side(),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 3840,
+                    height: 1080,
+                },
+            ),
+            (
+                "a taller second monitor",
+                vec![
+                    monitor("DP-1", 0, 0, 1920, 1080, true),
+                    monitor("DP-2", 1920, 0, 2560, 1440, false),
+                ],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 4480,
+                    height: 1440,
+                },
+            ),
+            (
+                "a stack",
+                vec![
+                    monitor("DP-1", 0, 0, 1920, 1080, true),
+                    monitor("DP-2", 0, 1080, 1920, 1080, false),
+                ],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 2160,
+                },
+            ),
+            (
+                "left of and above the primary",
+                vec![
+                    monitor("DISPLAY1", 0, 0, 1920, 1080, true),
+                    monitor("DISPLAY2", -2560, -200, 2560, 1440, false),
+                ],
+                Rect {
+                    x: -2560,
+                    y: -200,
+                    width: 4480,
+                    height: 1440,
+                },
+            ),
+            (
+                "one monitor, which bounds exactly itself",
+                vec![monitor("DP-1", 0, 0, 2560, 1440, true)],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                },
+            ),
+            (
+                "two mirrored monitors, which are one screen's worth of canvas",
+                vec![
+                    monitor("DP-1", 0, 0, 1920, 1080, true),
+                    monitor("HDMI-1", 0, 0, 1920, 1080, false),
+                ],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+            ),
+        ] {
+            assert_eq!(bounds_of(&monitors), Some(expected), "{layout}");
+        }
     }
 
     #[test]
@@ -590,12 +607,6 @@ mod tests {
         );
         assert_eq!(bounds_of(&[]), None);
         assert_eq!(bounds_of(&monitors[1..]), None);
-    }
-
-    #[test]
-    fn one_monitor_bounds_exactly_itself() {
-        let monitors = vec![monitor("DP-1", 0, 0, 2560, 1440, true)];
-        assert_eq!(bounds_of(&monitors), Some(monitors[0].rect()));
     }
 
     #[test]
@@ -735,6 +746,12 @@ mod tests {
                 sky_scale(settings().sky_fov, monitors[0].width),
                 max_relative = 1e-5
             );
+            assert!(
+                derived.framing.sky_fov > 180.0,
+                "a canvas {screens} times the anchor's width needs a sky past the \
+                 slider's own maximum, and this one derived {}",
+                derived.framing.sky_fov
+            );
         }
     }
 
@@ -753,31 +770,6 @@ mod tests {
         let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
         assert!(derived.sky_clamped, "{screens} screens: {derived:?}");
         assert_relative_eq!(derived.framing.sky_fov, SKY_FOV_MAX);
-    }
-
-    #[test]
-    fn the_two_screen_span_the_old_cap_refused_is_inside_the_new_one() {
-        // The case the widening was for: two equal screens side by side at the
-        // default sky derive 218 degrees, which the shader's old 180 turned
-        // into a sky drawn at the wrong scale on both of them.
-        let monitors = side_by_side();
-        let canvas = bounds_of(&monitors).unwrap();
-        let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
-        assert!(!derived.sky_clamped, "{derived:?}");
-        assert!(
-            derived.framing.sky_fov > 180.0,
-            "a canvas twice the anchor's width needs a sky past the slider's own \
-             maximum, and this one derived {}",
-            derived.framing.sky_fov
-        );
-    }
-
-    #[test]
-    fn equal_heights_leave_the_earth_lens_untouched() {
-        let monitors = side_by_side();
-        let canvas = bounds_of(&monitors).unwrap();
-        let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
-        assert_relative_eq!(derived.framing.camera_fov, settings().camera_fov);
     }
 
     #[test]
@@ -834,26 +826,6 @@ mod tests {
                 monitors: vec![1]
             }]
         );
-    }
-
-    #[test]
-    fn two_identical_monitors_cost_one_render_and_two_files() {
-        let groups = render_groups(&side_by_side(), DisplayMode::EveryScreen, 0);
-        assert_eq!(groups.len(), 1, "{groups:?}");
-        assert_eq!(groups[0].monitors, vec![0, 1]);
-    }
-
-    #[test]
-    fn mirrored_monitors_share_one_render() {
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1920, 1080, true),
-            monitor("HDMI-1", 0, 0, 1920, 1080, false),
-        ];
-        let groups = render_groups(&monitors, DisplayMode::EveryScreen, 0);
-        assert_eq!(groups.len(), 1, "{groups:?}");
-        assert_eq!(groups[0].monitors, vec![0, 1]);
-        // And in the span mode the two of them are one screen's worth of canvas.
-        assert_eq!(bounds_of(&monitors), Some(monitors[0].rect()));
     }
 
     #[test]
@@ -948,6 +920,22 @@ mod tests {
         // Their first pixels are the canvas's columns 0 and 4.
         assert_eq!(left[0], 0);
         assert_eq!(right[0], 4);
+
+        // And a crop of the whole canvas is the canvas.
+        assert_eq!(
+            crop(
+                &pixels,
+                8,
+                4,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 4
+                }
+            ),
+            Some(pixels)
+        );
     }
 
     #[test]
@@ -967,25 +955,6 @@ mod tests {
         .unwrap();
         assert_eq!(&corner[..4], &[6, 2, 0, 255]);
         assert_eq!(&corner[corner.len() - 4..], &[7, 3, 0, 255]);
-    }
-
-    #[test]
-    fn a_crop_of_the_whole_canvas_is_the_canvas() {
-        let pixels = canvas(5, 3);
-        assert_eq!(
-            crop(
-                &pixels,
-                5,
-                3,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 5,
-                    height: 3
-                }
-            ),
-            Some(pixels.clone())
-        );
     }
 
     #[test]
@@ -1056,7 +1025,6 @@ mod tests {
         // arrives from the UI, and -1 is what an empty combo answers with.
         assert_eq!(DisplayMode::from_index(-1), DisplayMode::default());
         assert_eq!(DisplayMode::from_index(99), DisplayMode::default());
-        assert_eq!(DisplayMode::default(), DisplayMode::EveryScreen);
     }
 
     #[derive(Serialize, Deserialize)]

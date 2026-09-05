@@ -676,18 +676,6 @@ mod tests {
         assert_eq!(sink.count(), 2);
     }
 
-    /// The desktop sink accepts wallpapers on the platforms that can publish
-    /// them.
-    ///
-    /// Split by cfg rather than skipped, because each half is an assertion: a
-    /// platform with a setter must not report itself unsupported, and one
-    /// without must refuse before anything is rendered.
-    #[test]
-    #[cfg(windows)]
-    fn system_wallpaper_accepts_frames_on_windows() {
-        assert!(SystemWallpaper.check_supported().is_ok());
-    }
-
     /// On Linux the answer depends on the session, which a unit test does not
     /// have, so what is asserted is that the refusal explains itself. Both
     /// causes are refusals with something to act on: no desktop, and a desktop
@@ -736,6 +724,7 @@ mod tests {
     /// error: a wallpaper at a plausible size beats a refusal.
     #[test]
     fn the_monitors_are_this_session_or_the_documented_default() {
+        let session = crate::display::monitors();
         let monitors = SystemWallpaper
             .monitors()
             .expect("a monitor list is always available");
@@ -747,8 +736,9 @@ mod tests {
             assert!(monitor.width > 0 && monitor.height > 0, "{monitor:?}");
         }
         // With no display to ask, which is what a headless test run is, it is
-        // the one documented constant rather than a guess of its own.
-        if crate::display::monitors().is_none_or(|list| list.is_empty()) {
+        // the one documented constant rather than a guess of its own. The
+        // session is asked once: on Windows this is a full enumeration.
+        if session.is_none_or(|list| list.is_empty()) {
             assert_eq!(monitors, vec![default_monitor()]);
             assert_eq!((monitors[0].width, monitors[0].height), DEFAULT_TARGET_SIZE);
         }

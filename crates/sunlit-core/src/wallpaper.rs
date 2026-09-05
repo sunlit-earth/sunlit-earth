@@ -1112,7 +1112,7 @@ mod tests {
     /// what serializes the publishing tests.
     struct Scratch {
         _serial: MutexGuard<'static, ()>,
-        dir: PathBuf,
+        dir: crate::test_support::ScratchDir,
     }
 
     impl Scratch {
@@ -1120,13 +1120,8 @@ mod tests {
             let serial = SERIAL
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let dir = std::env::temp_dir().join(format!(
-                "sunlit_earth_wallpaper_{name}_{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("create the scratch wallpaper directory");
-            SCRATCH_DIR.with(|slot| *slot.borrow_mut() = Some(dir.clone()));
+            let dir = crate::test_support::ScratchDir::new(&format!("wallpaper_{name}"));
+            SCRATCH_DIR.with(|slot| *slot.borrow_mut() = Some(dir.path().to_path_buf()));
             reset_published();
             Self {
                 _serial: serial,
@@ -1135,7 +1130,7 @@ mod tests {
         }
 
         fn dir(&self) -> &Path {
-            &self.dir
+            self.dir.path()
         }
     }
 
@@ -1143,7 +1138,6 @@ mod tests {
         fn drop(&mut self) {
             SCRATCH_DIR.with(|slot| *slot.borrow_mut() = None);
             reset_published();
-            let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
@@ -1236,17 +1230,14 @@ mod tests {
         }
     }
 
-    #[test]
-    #[cfg(windows)]
-    fn primary_resolution_is_nonzero() {
-        let (w, h) = get_primary_monitor_resolution().expect("should detect primary monitor");
-        assert!(w > 0, "width should be > 0");
-        assert!(h > 0, "height should be > 0");
-    }
-
     /// The Windows half of the platform seam, asserted against whatever this
     /// machine has: shape rather than values, because the values are the
     /// machine's.
+    ///
+    /// One enumeration, not three. Each of these assertions used to be its own
+    /// test, and on Windows an enumeration is `EnumDisplayMonitors`, a
+    /// `GetMonitorInfoW` per monitor, and a COM object opened for the device
+    /// paths.
     #[test]
     #[cfg(windows)]
     fn every_monitor_is_enumerated_with_a_rectangle_and_one_of_them_is_primary() {
@@ -1271,6 +1262,10 @@ mod tests {
         assert_eq!(
             get_primary_monitor_resolution().unwrap(),
             (primary.width, primary.height)
+        );
+        assert!(
+            primary.width >= 640 && primary.height >= 480,
+            "a desktop nobody could use: {primary:?}"
         );
     }
 
@@ -1312,30 +1307,19 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn primary_resolution_is_reasonable() {
-        let (w, h) = get_primary_monitor_resolution().expect("should detect primary monitor");
-        assert!(w >= 640, "width should be >= 640, got {w}");
-        assert!(h >= 480, "height should be >= 480, got {h}");
-    }
+    fn set_wallpaper_rejects_a_file_it_cannot_hand_over() {
+        assert!(
+            set_wallpaper(Path::new(r"C:\nonexistent\fake_wallpaper.png")).is_err(),
+            "a file that is not there is not a wallpaper"
+        );
 
-    #[test]
-    #[cfg(windows)]
-    fn set_wallpaper_rejects_missing_file() {
-        let result = set_wallpaper(Path::new(r"C:\nonexistent\fake_wallpaper.png"));
-        assert!(result.is_err(), "should reject missing file");
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn set_wallpaper_rejects_empty_file() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let empty_file = dir.join("empty.png");
+        let scratch = crate::test_support::ScratchDir::new("wallpaper_empty_file");
+        let empty_file = scratch.join("empty.png");
         std::fs::write(&empty_file, b"").unwrap();
-        let result = set_wallpaper(&empty_file);
-        assert!(result.is_err(), "should reject empty file");
-        // Cleanup
-        let _ = std::fs::remove_file(&empty_file);
+        assert!(
+            set_wallpaper(&empty_file).is_err(),
+            "an empty file is not a wallpaper"
+        );
     }
 
     /// The destination of a write is whole or absent, never a truncated file a

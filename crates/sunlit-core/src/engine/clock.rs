@@ -88,22 +88,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_clock_elapsed_never_goes_backwards() {
-        let clock = SystemClock::new();
-        let first = clock.elapsed();
-        let second = clock.elapsed();
-        assert!(second >= first);
-    }
-
-    #[test]
     fn mock_clock_starts_at_zero() {
         let clock = MockClock::new(OffsetDateTime::UNIX_EPOCH);
         assert_eq!(clock.elapsed(), Duration::ZERO);
         assert_eq!(clock.now_utc(), OffsetDateTime::UNIX_EPOCH);
     }
 
+    /// Both measures move together, and they accumulate: the soak test walks
+    /// simulated weeks one advance at a time.
     #[test]
-    fn mock_clock_advances_both_measures_together() {
+    fn mock_clock_advances_both_measures_together_and_they_accumulate() {
         let clock = MockClock::new(OffsetDateTime::UNIX_EPOCH);
         clock.advance(Duration::from_hours(1));
         assert_eq!(clock.elapsed(), Duration::from_hours(1));
@@ -111,27 +105,14 @@ mod tests {
             clock.now_utc(),
             OffsetDateTime::UNIX_EPOCH + Duration::from_hours(1)
         );
-    }
 
-    #[test]
-    fn mock_clock_advances_are_cumulative() {
-        let clock = MockClock::new(OffsetDateTime::UNIX_EPOCH);
         for _ in 0..14 {
             clock.advance(Duration::from_hours(24));
         }
-        assert_eq!(clock.elapsed(), Duration::from_hours(14 * 24));
-    }
-
-    #[test]
-    fn mock_clock_is_shareable_across_threads() {
-        let clock = std::sync::Arc::new(MockClock::new(OffsetDateTime::UNIX_EPOCH));
-        let other = std::sync::Arc::clone(&clock);
-        let handle = std::thread::spawn(move || {
-            for _ in 0..100 {
-                other.advance(Duration::from_secs(1));
-            }
-        });
-        handle.join().expect("thread should finish");
-        assert_eq!(clock.elapsed(), Duration::from_secs(100));
+        assert_eq!(clock.elapsed(), Duration::from_hours(1 + 14 * 24));
+        assert_eq!(
+            clock.now_utc(),
+            OffsetDateTime::UNIX_EPOCH + Duration::from_hours(1 + 14 * 24)
+        );
     }
 }

@@ -280,7 +280,7 @@ impl Publication {
     /// Fast compression (`CompressionType::Fast`), because the user waits for
     /// the "Set as Wallpaper" operation to complete and a larger file is the
     /// cheaper half of that trade. Windows preserves PNG wallpapers losslessly
-    /// (no JPEG transcode), which avoids the banding artifacts TIFF produced.
+    /// (no JPEG transcode).
     pub(crate) fn write(
         &mut self,
         suffix: &str,
@@ -502,8 +502,6 @@ pub(crate) fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, Strin
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 
-    // Callback invoked by EnumDisplayMonitors for each monitor.
-    // Pushes each HMONITOR handle into the Vec pointed to by lparam.
     #[allow(unsafe_code)]
     unsafe extern "system" fn enum_callback(
         hmonitor: HMONITOR,
@@ -1031,22 +1029,18 @@ fn ensure_fill_style() -> Result<(), String> {
 pub(crate) fn set_wallpaper(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
-    // Verify the file exists and is non-empty
     let metadata = std::fs::metadata(path).map_err(|e| format!("Wallpaper file not found: {e}"))?;
     if metadata.len() == 0 {
         return Err("Wallpaper file is empty".to_owned());
     }
 
-    // Canonicalize to absolute path
     let abs_path =
         std::fs::canonicalize(path).map_err(|e| format!("Failed to canonicalize path: {e}"))?;
 
-    // Set "Fill" wallpaper style before applying
     ensure_fill_style()?;
 
     info!(path = %abs_path.display(), "applying wallpaper via SystemParametersInfoW");
 
-    // Encode path as null-terminated UTF-16
     let mut wide_path: Vec<u16> = abs_path.as_os_str().encode_wide().collect();
     // Strip the \\?\ prefix that canonicalize adds on Windows
     let unc_prefix: [u16; 4] = [
@@ -1209,9 +1203,6 @@ mod tests {
         (0..width * height).flat_map(|_| channels).collect()
     }
 
-    /// Each publish gets its own directory, `gen-*` under the wallpaper
-    /// directory, and no two are the same. This is what a path the desktop has
-    /// not seen is built out of.
     #[test]
     fn each_publish_gets_its_own_generation_directory() {
         let scratch = Scratch::new("generation_names");
@@ -1234,10 +1225,9 @@ mod tests {
     /// machine has: shape rather than values, because the values are the
     /// machine's.
     ///
-    /// One enumeration, not three. Each of these assertions used to be its own
-    /// test, and on Windows an enumeration is `EnumDisplayMonitors`, a
-    /// `GetMonitorInfoW` per monitor, and a COM object opened for the device
-    /// paths.
+    /// One enumeration, not three: on Windows an enumeration is
+    /// `EnumDisplayMonitors`, a `GetMonitorInfoW` per monitor, and a COM object
+    /// opened for the device paths.
     #[test]
     #[cfg(windows)]
     fn every_monitor_is_enumerated_with_a_rectangle_and_one_of_them_is_primary() {
@@ -1279,11 +1269,6 @@ mod tests {
         assert_eq!(display_label(r"\\.\WEIRD", 0), "Display 1");
     }
 
-    /// The mapping that gives a screen an addressable id can miss, and what a
-    /// miss leaves behind is the display device name it came in with. That name
-    /// is not empty, which is what this used to be checked for, so nothing was
-    /// ever recognized as unaddressable and a screen with no device path was
-    /// handed to `SetWallpaper` anyway.
     #[test]
     #[cfg(windows)]
     fn a_display_device_name_is_not_something_the_shell_can_be_given() {
@@ -1322,9 +1307,6 @@ mod tests {
         );
     }
 
-    /// The destination of a write is whole or absent, never a truncated file a
-    /// reader could catch mid-encode, and a successful write leaves no temporary
-    /// behind.
     #[test]
     fn a_written_wallpaper_is_whole_and_leaves_no_temporary() {
         let _scratch = Scratch::new("atomic_write");
@@ -1343,10 +1325,6 @@ mod tests {
         );
     }
 
-    /// A write that cannot be put in place removes its temporary and does not
-    /// clobber the destination with a partial file, so a failed publish cannot
-    /// hand a reader a broken image. The failure is forced by making the
-    /// destination path something the rename cannot replace.
     #[test]
     fn a_write_that_cannot_be_placed_leaves_no_temporary_or_partial_file() {
         let _scratch = Scratch::new("failed_write");
@@ -1372,9 +1350,6 @@ mod tests {
         );
     }
 
-    /// No path any publish wrote is ever written or handed out again. Three
-    /// publishes in a row write three disjoint sets of paths; this is the
-    /// assertion the in-place rewrite that crashed plasmashell would have failed.
     #[test]
     fn no_path_is_ever_reused_across_publishes() {
         let _scratch = Scratch::new("no_reuse");
@@ -1403,9 +1378,6 @@ mod tests {
         }
     }
 
-    /// The sweep keeps the generation just published and the one before it, and
-    /// removes everything older, along with the flat files earlier versions
-    /// wrote into the wallpaper directory.
     #[test]
     fn the_sweep_keeps_the_last_two_generations_and_clears_the_legacy_files() {
         let scratch = Scratch::new("sweep");
@@ -1450,10 +1422,6 @@ mod tests {
         }
     }
 
-    /// The first generation publish keeps the legacy flat files, because a
-    /// desktop upgraded from the old scheme is still showing one of them until
-    /// this publish's setter switches it onto a generation. The second publish,
-    /// by which point a generation has been set, sweeps them.
     #[test]
     fn the_first_publish_keeps_the_legacy_files_the_desktop_may_still_show() {
         let scratch = Scratch::new("legacy_first_publish");
@@ -1488,10 +1456,6 @@ mod tests {
         }
     }
 
-    /// A screen the current publish left alone in one-screen mode still holds its
-    /// file, because the sweep keeps the immediately previous generation. So a
-    /// publish that paints only the anchor does not delete the file another
-    /// screen is showing and watching.
     #[test]
     fn a_screen_left_alone_keeps_the_generation_it_still_references() {
         let _scratch = Scratch::new("one_screen_kept");
@@ -1518,9 +1482,6 @@ mod tests {
         );
     }
 
-    /// With no in-process record, which is a fresh process, the read-back names
-    /// the newest generation on disk, so the next publish is one the desktop is
-    /// not already showing.
     #[test]
     fn the_read_back_names_the_newest_generation_across_a_restart() {
         let _scratch = Scratch::new("read_back");

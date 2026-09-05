@@ -1,19 +1,17 @@
 //! What the displays are, on the platforms that answer with a program rather
 //! than with an API.
 //!
-//! Two questions need the same answer and used to have two placeholders for it:
-//! how large to render a wallpaper, and whether a saved window position is still
-//! somewhere a person can reach. On Windows both come from Win32 monitor
-//! enumeration. On Linux the query is `xrandr --query`, whose output is parsed
-//! here.
+//! Two questions need the same answer: how large to render a wallpaper, and
+//! whether a saved window position is still somewhere a person can reach. On
+//! Windows both come from Win32 monitor enumeration. On Linux the query is
+//! `xrandr --query`, whose output is parsed here.
 //!
 //! xrandr rather than a windowing dependency. `sunlit-core` owns no window, and
 //! Slint's public `Window` API reports the window's own size and nothing about
 //! the display behind it, so there is no API here to ask. Under a Wayland
-//! session the answer comes through `XWayland`, which is usable and has one known
-//! distortion: display scaling can make the reported size differ from the
-//! compositor's own idea of it. A native per-desktop D-Bus query is the fix and
-//! is a roadmap item rather than phase work.
+//! session the answer comes through `XWayland`, whose one known distortion is
+//! that display scaling can make the reported size differ from the compositor's
+//! own idea of it; `docs/platforms.md` has the rest.
 //!
 //! The parser is separate from the process, so it is tested on every platform
 //! against real xrandr output rather than only where xrandr exists.
@@ -284,9 +282,7 @@ Virtual-2 disconnected (normal left inverted right x axis y axis)
     /// connected output with no mode assigned.
     ///
     /// The primary is deliberately not the first output listed, and the
-    /// disconnected `DP-3` deliberately still carries geometry: an output that
-    /// was configured and then unplugged with its CRTC still assigned prints
-    /// exactly that, and it is the one line the connected check alone keeps out.
+    /// disconnected `DP-3` deliberately still carries geometry.
     const DESK: &str = "\
 Screen 0: minimum 8 x 8, current 5120 x 1440, maximum 32767 x 32767
 DP-1 connected 3440x1440+1680+0 (normal left inverted right x axis y axis) 800mm x 335mm

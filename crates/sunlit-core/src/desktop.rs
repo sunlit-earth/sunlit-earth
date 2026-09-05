@@ -7,10 +7,8 @@
 //! its Wayland one, because neither the shell nor the setting knows or cares which
 //! is running.
 //!
-//! Not the XDG desktop portal, which is the other candidate and the one an
-//! application would normally reach for. It targets sandboxed applications and
-//! puts a confirmation dialog in front of every set; this wallpaper refreshes on a
-//! schedule, and a dialog per refresh is not something to ship.
+//! Not the XDG desktop portal: it puts a confirmation dialog in front of every
+//! set, and this wallpaper refreshes on a schedule.
 //!
 //! Everything here is a pure function over an environment and a path. Only the
 //! sink runs the commands, so the table is tested on every platform against
@@ -79,14 +77,11 @@ enum Kind {
     /// A plasmashell script over `dbus-send`, which is the only way to reach one
     /// screen at a time.
     ///
-    /// `plasma-apply-wallpaperimage` is Plasma's own tool for this and writes
-    /// every containment, so it can neither give two screens two pictures nor
-    /// leave one alone. The scripting API behind it can do both:
-    /// `org.kde.PlasmaShell.evaluateScript` runs JavaScript in the shell, where
-    /// `desktops()` lists the containments, each carries the `screen` it is on,
-    /// and `screenGeometry` says where that screen sits. Plasma has no span
-    /// mode, which costs nothing here, because a view across the screens is
-    /// already cut into one image per screen before it arrives.
+    /// `plasma-apply-wallpaperimage` writes every containment, so it can neither
+    /// give two screens two pictures nor leave one alone; the scripting API
+    /// behind it can do both. Plasma has no span mode, which costs nothing here,
+    /// because a view across the screens is already cut into one image per
+    /// screen before it arrives.
     Kde,
     /// `xfconf-query`, once per backdrop property that holds an image.
     ///
@@ -219,9 +214,7 @@ const XFCE_WORKSPACE: &str = "workspace0";
 /// nobody has ever changed the wallpaper has none of them, and the ones its
 /// channel file does ship (`/backdrop/screen0/monitor0/...`, from a much older
 /// xfdesktop) it does not read. Writing only what the listing offers is
-/// therefore a set that reports success and changes nothing, which is what the
-/// XFCE guest did: `last-image` held the right path under `monitor0` and the
-/// desktop went on showing xfdesktop's built-in default.
+/// therefore a set that reports success and changes nothing.
 fn xfce_live_property(monitor: &str, suffix: &str) -> String {
     format!("/backdrop/screen0/monitor{monitor}/{XFCE_WORKSPACE}/{suffix}")
 }
@@ -474,9 +467,9 @@ fn plasma_command(placement: &Placement) -> Invocation {
 /// is dropped before the sort; a screen whose entry is null is one this publish
 /// left alone and is stepped over, which is what keeps the rest aligned.
 ///
-/// `wallpaperPlugin` is written every time rather than only when it differs,
-/// because a screen left on a colour or a slideshow would otherwise take the
-/// image into a plugin that does not read it and show nothing.
+/// `wallpaperPlugin` is written every time because a screen left on a colour or
+/// a slideshow would otherwise take the image into a plugin that does not read
+/// it.
 fn plasma_script(placement: &Placement) -> String {
     let images = placement
         .by_position
@@ -539,11 +532,8 @@ fn file_uri(path: &Path) -> String {
 /// [`DESKTOP_ENV`], which is how one row covers the several spellings a desktop
 /// has had: `X-Cinnamon` and `Cinnamon`, `KDE` and `plasma`.
 ///
-/// Four of these are verified live, one boot per desktop in the Linux test guest
-/// (phase 5 decision 9): KDE, GNOME, XFCE and Cinnamon. MATE, `LXQt` and Budgie
-/// are in the table because their setters are documented and their rows cost one
-/// line each, and they ship reviewed rather than exercised. `docs/roadmap.md`
-/// says so rather than the docs claiming support that never ran.
+/// Not every row has been run against its desktop; `docs/roadmap.md` names the
+/// ones that have not.
 const BACKENDS: &[(&[&str], Backend)] = &[
     (
         &["kde", "plasma"],
@@ -629,10 +619,9 @@ const GNOME_BACKGROUND: Kind = Kind::Gsettings {
 
 /// The backend for a desktop, from the value of [`DESKTOP_ENV`].
 ///
-/// The list is walked in the order the desktop wrote it, and the first token
-/// that names a backend wins, so `Budgie:GNOME` is Budgie and `ubuntu:GNOME` is
-/// GNOME. Matching the table in its own order instead would make the first row
-/// win regardless of what the session said it was.
+/// The list is walked in the order the desktop wrote it and the first token that
+/// names a backend wins. Matching the table in its own order instead would make
+/// the first row win regardless of what the session said it was.
 fn detect(current_desktop: &str) -> Option<Backend> {
     current_desktop
         .split(':')
@@ -722,10 +711,6 @@ mod tests {
         }
     }
 
-    /// Setting only `picture-uri` leaves the dark theme showing the previous
-    /// wallpaper, and which one is showing depends on a setting this app has no
-    /// business reading. Cinnamon's schema has only the one key, so this is per
-    /// row rather than a rule.
     #[test]
     fn gnome_sets_both_keys_as_uris() {
         let cmds = commands("GNOME", "/home/tester/w.png", "");
@@ -754,9 +739,6 @@ mod tests {
         );
     }
 
-    /// The frame is rendered at the display's exact resolution, so a desktop set
-    /// to centre or tile it shows it at the wrong size on a background of its
-    /// own. The Windows sink writes `WallpaperStyle=10` for the same reason.
     #[test]
     fn the_image_is_made_to_fill_the_screen_before_it_is_set() {
         for desktop in ["GNOME", "X-Cinnamon", "MATE", "Budgie"] {
@@ -943,11 +925,6 @@ mod tests {
         }
     }
 
-    /// The XFCE guest set its wallpaper, reported success, and went on showing
-    /// xfdesktop's own default. Its listing had `last-image` only under
-    /// `/backdrop/screen0/monitor0`, which is a much older xfdesktop's property
-    /// and one this one does not read; the property it does read is named after
-    /// the connected monitor and does not exist until something creates it.
     #[test]
     fn xfce_creates_the_property_its_own_monitor_is_named_after() {
         let listing = "\

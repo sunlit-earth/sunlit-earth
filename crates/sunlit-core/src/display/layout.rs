@@ -253,10 +253,8 @@ pub struct Framing {
 /// derives from it, and what bounds that is the stereographic lens going
 /// singular at 360 rather than anything happening at 180. What is linear in
 /// canvas pixels is `tan(sky_fov / 4)`, so the derived angle self-limits as
-/// screens are added: eight equal screens at the widest slider position come to
-/// 331 degrees and a thousand to 359.7. 330 clears a seven-wide span at that
-/// position and about eleven at the default, and leaves the frame corner 13
-/// degrees clear of the antipode.
+/// screens are added, and 330 clears a seven-wide span at the widest slider
+/// position. `docs/rendering.md` carries the measured widths.
 pub(crate) const SKY_FOV_MIN: f32 = 60.0;
 pub(crate) const SKY_FOV_MAX: f32 = 330.0;
 
@@ -268,10 +266,8 @@ pub(crate) const SKY_FOV_MAX: f32 = 330.0;
 /// the rule is to contain: below square, the lens is scaled until the horizontal
 /// extent is what the vertical extent would have been.
 ///
-/// Only the Earth lens. The sky lens is anchored to the horizontal axis, where a
-/// portrait screen is the case that already fits and nothing runs off, so
-/// applying the same correction to it would move a sky that was never in
-/// trouble.
+/// Only the Earth lens: the sky lens is anchored to the horizontal axis, where a
+/// portrait screen is the case that already fits.
 #[allow(clippy::cast_precision_loss)]
 pub fn contain_camera_fov(camera_fov: f32, width: u32, height: u32) -> f32 {
     if width == 0 || height == 0 || width >= height {
@@ -298,8 +294,7 @@ pub struct CanvasFraming {
     ///
     /// The globe still continues exactly across the seam; the sky is drawn at a
     /// smaller scale than the anchor alone would have drawn it. No layout built
-    /// out of screens that fit on a desk reaches it: at the default sky the
-    /// canvas has to be about eleven times the anchor's width first.
+    /// out of screens that fit on a desk reaches it.
     pub sky_clamped: bool,
 }
 

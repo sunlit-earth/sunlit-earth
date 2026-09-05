@@ -9,11 +9,7 @@ use tracing::{info, warn};
 /// one `dlclose`s the Vulkan loader. Mesa registers pthread TLS destructors
 /// that outlive that unload, so the next thread to exit calls a destructor
 /// pointer into an unmapped page and the process dies with SIGSEGV inside
-/// `__nptl_deallocate_tsd`. On lavapipe that killed the engine integration
-/// tests at the moment the engine thread was joined: every time under
-/// `cargo test`, and intermittently when a single test was run on its own,
-/// which is the signature of a destructor list that only sometimes has an
-/// entry to walk.
+/// `__nptl_deallocate_tsd`.
 ///
 /// Keeping the instance in a `static` fixes it by construction: the loader is
 /// never unloaded, because the instance is never dropped. It also stops the
@@ -40,11 +36,8 @@ pub fn instance() -> &'static wgpu::Instance {
 
 /// Result of initializing wgpu manually.
 ///
-/// The adapter is not returned. It used to be, so the Slint shell could
-/// assemble a `WGPUConfiguration::Manual` and share this device; nothing does
-/// that any more, and the engine owns the device outright. The device keeps
-/// alive whatever it needs from the adapter, and the instance behind both is
-/// the process-wide `INSTANCE` above.
+/// The adapter is not returned: the device keeps alive whatever it needs from
+/// it, and the instance behind both is the process-wide `INSTANCE` above.
 pub(crate) struct WgpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -117,21 +110,13 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
 /// Short, filesystem-safe slug naming the implementation behind an adapter.
 ///
 /// Golden references live one directory per adapter, and this names the
-/// directory. The reason is margin, not raw incompatibility. Measured on the
-/// four reference scenes, each against WARP, with a tolerance of mean 2.0 and
-/// 1% outliers: lavapipe agrees to a mean channel difference of 0.19 to 0.86
-/// with 0.001% to 0.42% outliers, and the paravirtual Metal device on a
-/// `macos-latest` runner to 0.008 to 0.18 with at most 0.008% outliers. One
-/// shared set would therefore pass on all three today, but it would spend up to
-/// 43% of the mean budget on the difference between two correct
-/// implementations, leaving a regression that large able to hide on one
-/// platform while failing on another. Per-adapter references give each platform
-/// the whole tolerance to spend on detecting real change.
-///
-/// The ordering in those numbers was not the expected one: the two CPU
-/// rasterizers are the pair that disagree most, and Metal, which is both a
-/// different shader translation target and an actual GPU, lands about five
-/// times closer to WARP than lavapipe does.
+/// directory. The reason is margin, not raw incompatibility: one shared set
+/// would pass on every adapter the project generates for, but a large part of
+/// the mean budget would go on the difference between two correct
+/// implementations, leaving a regression that size able to hide on one platform
+/// while failing on another. Per-adapter references give each platform the whole
+/// tolerance to spend on detecting real change. The measured per-adapter
+/// differences are tabulated in `docs/testing.md`.
 ///
 /// Software rasterizers are keyed by name rather than by backend, because the
 /// backend is the wrong granularity for them: two CPU implementations can sit
@@ -215,8 +200,6 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> Option<&w
 mod tests {
     use super::*;
 
-    /// A machine with nothing to render on is `init`'s error rather than its
-    /// panic, and this is the branch that decides it without a GPU to run on.
     #[test]
     fn no_adapter_is_an_answer_rather_than_a_panic() {
         assert!(select_adapter(&[], false).is_none());
@@ -240,8 +223,6 @@ mod tests {
         );
     }
 
-    /// Two software rasterizers on one backend must not share a key, or one of
-    /// them would be compared against the other's references.
     #[test]
     fn two_software_rasterizers_on_one_backend_differ() {
         assert_ne!(
@@ -268,7 +249,6 @@ mod tests {
         );
     }
 
-    /// The key names a directory, so it has to survive being one.
     #[test]
     fn keys_are_filesystem_safe() {
         for (name, backend) in [
@@ -342,7 +322,6 @@ mod tests {
         .iter()
         .map(|&dt| adapter_type_rank(dt))
         .collect();
-        // Each rank should be strictly less than the next
         for w in ranks.windows(2) {
             assert!(w[0] < w[1], "Expected {}<{}", w[0], w[1]);
         }

@@ -894,8 +894,7 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
 /// Pixels the Sun added more than four levels to, and the whole of the light
 /// it added.
 ///
-/// The total rather than the brightest pixel, which is what the amendment's
-/// criterion 4 asks for and cannot have: the disk is drawn clipped white
+/// The total rather than the brightest pixel: the disk is drawn clipped white
 /// wherever it is drawn at all, so a framing that carries any of it at all has
 /// a brightest gain of 254 whatever the exposure does, and the two framings
 /// below would compare equal at every setting. The gain multiplies the glare's
@@ -1028,8 +1027,8 @@ fn sunrise_excess(harness: &Harness, longitude: f32) -> i64 {
 /// fires where the Sun is drawn. Measured at 512 by 256 with the lobe in the
 /// true scattering angle instead, the framing with no Sun to see adds 1287
 /// against the 12222 of the framing whose image stands on the limb, a ninth of
-/// it: a glow that arrives well before the Sun, which is what the user saw.
-/// Through the sky lens the same two are 381 and 31221, an eighty-second.
+/// it, which is a glow that arrives well before the Sun. Through the sky lens
+/// the same two are 381 and 31221, an eighty-second.
 #[test]
 fn the_sunrise_band_arrives_with_the_suns_image() {
     let gpu = gpu();
@@ -1595,14 +1594,11 @@ fn two_screens() -> Vec<Monitor> {
 }
 
 /// The single-monitor identity: what every existing config describes, and what
-/// must come out of this feature unchanged.
+/// the multi-monitor path must leave unchanged.
 ///
-/// Byte for byte rather than by size, because a size is the one thing the
-/// framing this feature derives cannot move. `ExportPixels` is the path this
-/// feature replaced, unaltered: `prepare_export` and then `export_image` with
-/// the scene's own parameters, which is what `render_wallpaper_pixels` was. So
-/// what the comparison holds the publish against is the wallpaper the build
-/// before this one would have written for the same screen.
+/// Byte for byte rather than by size, because a size is the one thing a derived
+/// framing cannot move. The publish is held against `ExportPixels`, which is
+/// `prepare_export` and then `export_image` with the scene's own parameters.
 #[test]
 fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
     let gpu = gpu();
@@ -1624,7 +1620,7 @@ fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
 }
 
 /// The one thing a single monitor does *not* come out of this unchanged, and it
-/// is on purpose: departure 9 in the plan.
+/// is on purpose.
 ///
 /// A portrait screen is what the contain rule exists for, and containing is
 /// exactly what byte-identity forbids. The rule wins, so the exception is pinned
@@ -1973,11 +1969,10 @@ fn switching_texture_mode_produces_a_new_frame() {
 /// there at startup or arrives later.
 ///
 /// A saved config, or a combo box index built against a different adapter, can
-/// ask for one. Before the engine resolved it against the adapter, that reached
-/// `create_render_textures` and killed the engine thread with a wgpu validation
-/// error: the window came up, IPC answered, and no frame ever arrived. The
-/// startup half is why this has an engine of its own: the count has to be in
-/// the configuration the renderer is built from.
+/// ask for one, and a count that reached `create_render_textures` unresolved
+/// would kill the engine thread with a wgpu validation error. The startup half
+/// is why this has an engine of its own: the count has to be in the
+/// configuration the renderer is built from.
 #[test]
 fn an_unsupported_sample_count_still_renders() {
     let _gpu = gpu();
@@ -3787,7 +3782,7 @@ fn a_panorama_fills_the_sky_and_zero_intensity_empties_it() {
 /// The strongest statement available about the direction-to-texel map, and the
 /// one the round-trip probe cannot make: the probe holds the reconstruction to
 /// the projection, and this holds the panorama's own texel layout to the
-/// catalog path phase A checked against ephemerides. A landmark painted at
+/// catalog path checked against ephemerides. A landmark painted at
 /// Sirius's coordinates has to land on Sirius's sprite.
 ///
 /// Sirius because it is the only catalog entry brighter than magnitude -1, so a
@@ -4242,7 +4237,7 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
 ///
 /// The `milkyway_2020` layer is the SVS map with the Hipparcos and Tycho stars
 /// taken out, which is what keeps a bright star from being drawn twice: once as
-/// phase A's sprite and once as a blob under it. That is a property of the file
+/// its own sprite and once as a blob under it. That is a property of the file
 /// that shipped rather than of the description it came with, and it is a
 /// property a re-bake from the source could lose without anything else moving.
 ///
@@ -4255,19 +4250,14 @@ fn the_real_panorama_has_the_galactic_plane_where_the_plane_is() {
 /// The bound is what separates the two answers, and the numbers on both sides
 /// of it are measured. Across the 21 records inside the limit the ratio runs
 /// from 0.73 to 1.26, which is bright stars sitting in bright parts of the Milky
-/// Way and nothing more; the brightest is Antares at 1.26. A star baked into the
-/// layer saturates the texels it covers, so a core at 765 of 765 reads 2.32
-/// against the brightest surround in the set and 5 or more against a typical
-/// one, and the wrong SVS layer would do that to most of the 21 at once. Two
-/// sits between the two, with the clean maximum well clear of it.
+/// Way and nothing more. A star baked into the layer saturates the texels it
+/// covers, and such a core reads 2.32 against the brightest surround in the set
+/// and 5 or more against a typical one; the wrong SVS layer would do that to
+/// most of the 21 at once. Two sits between the two.
 ///
 /// What this window cannot see is a star confined to a single texel in the
-/// brightest part of the plane: raising one texel of the nine to 765 where the
-/// sky already reads 363, which is the brightest core in the set, takes the core
-/// to 408 and the ratio to 1.26, inside the bound. The peak texel of the core
-/// rather than its mean does not fix that and was measured: the map's own grain
-/// already puts single texels at 2.08 times the local mean, so a peak metric has
-/// no separation left to spend.
+/// brightest part of the plane, which stays inside the bound;
+/// `docs/rendering.md` records why the peak texel does not fix that.
 ///
 /// Skips with a printed reason where `textures/**` is still Git LFS pointers.
 #[test]
@@ -4503,13 +4493,10 @@ fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> ScenePara
 const NIGHT_HOUR: f32 = 12.0;
 const DAY_HOUR: f32 = 0.0;
 
-/// The defect this change is about, in one assertion: a cloud on the night side
-/// has to be brighter than the ground it covers.
+/// A cloud on the night side has to be brighter than the ground it covers.
 ///
 /// The fixture's unlit base is what `BlackMarble_2016.jxl` reads over unlit
-/// land, and at the old hardcoded 0.05 the deck comes out darker than it, 13.0
-/// against 42.0 in the units this prints, so this fails on the code before this
-/// change rather than merely measuring something. The deck reads its own value
+/// land, which is 42.0 in the units this prints. The deck reads its own value
 /// almost exactly, because the fixture's cloud is 255 or nothing and the night
 /// opacity covers the ground completely at any density of one.
 #[test]
@@ -4544,11 +4531,10 @@ fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
 /// one whose terminator uniform is real.
 ///
 /// `write_uniforms` puts -1.0 in `terminator_width` outside blend mode, as the
-/// sentinel that tells `fs_sphere` to ignore the sun, and `fs_cloud` used to
-/// read the same uniform: its ramp became `smoothstep(1.0, -1.0, n_dot_l)`,
+/// sentinel that tells `fs_sphere` to ignore the sun. `fs_cloud` must not read
+/// that same uniform: its ramp would become `smoothstep(1.0, -1.0, n_dot_l)`,
 /// which the specification calls indeterminate and which the standard formula
-/// inverts, so clouds were bright at local midnight and dark at noon. The three
-/// single-texture modes are the ones that carry it.
+/// inverts. The three single-texture modes are the ones that carry it.
 ///
 /// The camera does not move between the two readings and the mode ignores the
 /// sun, so the ground under the window is the same texels in both: the whole
@@ -4623,12 +4609,9 @@ fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
 /// through below.
 ///
 /// The camera sits over the night map's city with the deck at one mid density
-/// over all of it, which is the framing the defect was reported in: the ground
-/// under the deck is display white and the deck itself is `cloud_night`, so what
-/// the blend does with the two is visible in one number. The old straight
-/// multiply could not reach the deck's own value from a density of 0.45 however
-/// far the slider went, which is what "one hundred percent still lets it
-/// through" meant.
+/// over all of it: the ground under the deck is display white and the deck
+/// itself is `cloud_night`, so what the blend does with the two is visible in
+/// one number.
 ///
 /// The three readings also have to be ordered, or a mapping that covered the
 /// ground by ignoring the slider would pass the first assertion alone.

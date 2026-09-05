@@ -10,8 +10,8 @@
 //! Two things happen here and not in the shader. The model matrix is assembled,
 //! so the vertex shader reads one transform and knows nothing about lunar
 //! coordinates; and the disk is floored to the same
-//! [`super::sun_occlusion::MIN_BODY_DISK_RADIUS_PIXELS`] the Sun takes, so the
-//! two bodies that subtend the same half degree are the same size on screen.
+//! `sun_occlusion::MIN_BODY_DISK_RADIUS_PIXELS` the Sun takes, so the two
+//! bodies that subtend the same half degree are the same size on screen.
 //! The constant and the [`super::sun_occlusion::pixel_scale`] ramp are what the
 //! two share; the flooring itself is not. `place_sun` clamps the projected
 //! radius directly, which leaves a disc that is no longer the image of any

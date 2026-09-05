@@ -171,8 +171,8 @@ pub struct AppConfig {
     pub offset_x: f32,
     pub offset_y: f32,
     /// Vertical field of view of the Earth lens, in degrees, between
-    /// [`CAMERA_FOV_MIN`] and [`CAMERA_FOV_MAX`]. The sky has its own lens and
-    /// its own `sky_fov`; this one frames the globe.
+    /// `CAMERA_FOV_MIN` and `CAMERA_FOV_MAX`. The sky has its own lens and its
+    /// own `sky_fov`; this one frames the globe.
     pub camera_fov: f32,
 
     // Rendering
@@ -502,7 +502,7 @@ pub fn load_config_from(path: &std::path::Path) -> AppConfig {
 ///
 /// Uses an atomic write strategy: writes to a temporary file with a `~`
 /// suffix, then renames it to the final path. Creates the parent directory
-/// if it does not exist. Errors are logged to stderr but never propagated.
+/// if it does not exist. Errors are logged at `warn` and never propagated.
 pub fn save_config(config: &AppConfig) {
     let Some(path) = config_path() else {
         warn!("could not determine config directory; config not saved");
@@ -588,18 +588,15 @@ fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
 ///
 /// On Linux `display::outputs` parses `xrandr --query`, which gives the same
 /// shape of answer Win32 gives: a set of rectangles in one coordinate space, so
-/// the title bar can be tested against each. That is the precise check the
-/// roadmap paired with the wallpaper work, and it arrives with it.
+/// the title bar can be tested against each.
 ///
-/// The coarse half remains, and not only for the platforms with no query. A run
-/// with no display at all still loads a config, and refusing every saved position
-/// there would move a window on the next run that has one. So what is left is a
-/// sanity range: X11's core protocol carries window coordinates as `INT16`, so on
-/// that display server -32768..=32767 is the whole of what a position can
-/// express; Wayland and macOS impose no such limit, but a coordinate outside it is
-/// far outside any desktop either way. The bound is chosen for being the one
-/// platform-defined number in the neighbourhood, not because every platform
-/// enforces it.
+/// The coarse half remains for the platforms with no query, and for a run with
+/// no display at all. X11's core protocol carries window coordinates as
+/// `INT16`, so on that display server -32768..=32767 is the whole of what a
+/// position can express; Wayland and macOS impose no such limit, but a
+/// coordinate outside it is far outside any desktop either way. The bound is
+/// chosen for being the one platform-defined number in the neighbourhood, not
+/// because every platform enforces it.
 #[cfg(not(windows))]
 #[allow(clippy::cast_possible_truncation)]
 fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
@@ -755,8 +752,6 @@ mod tests {
         );
     }
 
-    /// A file is a text file, and camera mode above one draws a flare the
-    /// slider cannot bring back.
     #[test]
     fn a_lens_flare_past_the_sliders_end_loads_clamped() {
         let scratch = ScratchDir::new("config_clamp_sun_flare");
@@ -773,8 +768,6 @@ mod tests {
         assert_relative_eq!(AppConfig::default().camera_fov, DEFAULT_CAMERA_FOV);
     }
 
-    /// Zero and 180 are the two lenses the perspective projection has no answer
-    /// for, so the loader is the guard: a hand-edited file is a text file.
     #[test]
     fn loading_a_config_with_a_degenerate_lens_repairs_it() {
         let scratch = ScratchDir::new("config_bad_fov");
@@ -904,11 +897,6 @@ mod tests {
         assert_eq!(config.custom_year, 0);
     }
 
-    /// A display mode nothing answers to costs the default, not the file.
-    ///
-    /// Same reasoning `sanitize` applies to a number out of range: a config
-    /// written by a newer build, or edited by hand, must not cost a person every
-    /// other setting they have.
     #[test]
     fn a_display_mode_this_build_does_not_have_loads_as_the_default() {
         let config: AppConfig = toml::from_str(
@@ -1312,8 +1300,6 @@ sky_fov = 111.0
         }
     }
 
-    /// A config file is a text file, so the loader has to be the guard rather
-    /// than serde.
     #[test]
     fn loading_a_config_with_an_impossible_resolution_repairs_it() {
         let scratch = ScratchDir::new("config_bad_resolution");
@@ -1350,8 +1336,6 @@ sky_fov = 111.0
 
     // --- find_sample_count_index ---
 
-    /// A count the adapter offers indexes itself; anything else lands on the
-    /// last entry, which is the strongest the adapter has.
     #[test]
     fn a_sample_count_indexes_itself_or_the_strongest_on_offer() {
         for (offered, requested, expected) in [

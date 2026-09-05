@@ -24,11 +24,9 @@ pub struct DecodedTextureMessage {
 /// Latest-value mailbox carrying decoded textures from background threads to
 /// the renderer, one slot per texture.
 ///
-/// This replaces the unbounded channel that used to hold decoded pixel buffers:
-/// only the most recent frame per slot is ever useful, so `post` overwrites the
+/// Only the most recent frame per slot is ever useful, so `post` overwrites the
 /// parked message instead of queueing behind it. Parked memory is therefore
-/// capped at one decoded frame per slot no matter how long the consumer stalls,
-/// which is exactly what hiding the window to the tray used to do to it.
+/// capped at one decoded frame per slot no matter how long the consumer stalls.
 #[derive(Clone)]
 pub struct TextureMailbox {
     slots: Arc<Mutex<Vec<Option<DecodedTextureMessage>>>>,
@@ -66,12 +64,9 @@ impl TextureMailbox {
     /// in the consumer when it indexes its own slot array.
     ///
     /// The generation guard is what makes "latest value" mean the newest thing
-    /// anyone still wants rather than the last thing to arrive. A decode of a
-    /// superseded texture resolution can finish after its own replacement has
-    /// already been parked, and overwriting it there would lose the only copy of
-    /// a texture the consumer wants: it discards the stale one on arrival and
-    /// the fresh one no longer exists. Within one generation the newest arrival
-    /// still wins, which is what the cloud fetcher relies on.
+    /// anyone still wants rather than the last thing to arrive: a stale decode
+    /// landing on a fresh one would leave no copy the consumer will take. Within
+    /// one generation the newest arrival still wins.
     pub fn post(&self, msg: DecodedTextureMessage) {
         let index = msg.slot_index;
         let mut slots = self.slots.lock().expect("texture mailbox lock poisoned");
@@ -188,10 +183,6 @@ mod tests {
         assert_eq!(tag(&taken[0]), 5, "the newest frame must win");
     }
 
-    /// The failure this guard exists for: a decode of a superseded resolution
-    /// finishing after its own replacement is already parked. Overwriting it
-    /// would lose the only copy of the texture anyone wants, since the consumer
-    /// discards the stale one on sight.
     #[test]
     fn mailbox_keeps_the_newer_generation_whichever_order_the_two_arrive_in() {
         let mailbox = TextureMailbox::new(4);
@@ -208,8 +199,6 @@ mod tests {
         assert_eq!(parked_generation(&mailbox, 1), Some(2));
     }
 
-    /// Within one generation nothing is ordered and the newest arrival wins,
-    /// which is the plain latest-value behavior the cloud fetcher depends on.
     #[test]
     fn mailbox_still_takes_the_newest_message_of_the_same_generation() {
         let mailbox = TextureMailbox::new(4);
@@ -223,12 +212,10 @@ mod tests {
     #[test]
     fn mailbox_never_holds_back_an_unstamped_producer() {
         let mailbox = TextureMailbox::new(4);
-        // An unstamped arrival replaces a stamped parked message,
         mailbox.post(stamped(3, 1, 9));
         mailbox.post(message(3, 2));
         assert_eq!(parked_generation(&mailbox, 3), None);
 
-        // and a stamped arrival replaces an unstamped parked message.
         mailbox.post(message(3, 3));
         mailbox.post(stamped(3, 4, 1));
         assert_eq!(parked_generation(&mailbox, 3), Some(1));

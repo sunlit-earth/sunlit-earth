@@ -1,6 +1,6 @@
 //! Cloud texture caching, decoding, and polling.
 //!
-//! A [`CloudUpdater`] owns the on-disk cache and turns a [`CloudSource`] into
+//! A `CloudUpdater` owns the on-disk cache and turns a [`CloudSource`] into
 //! decoded frames parked in the texture mailbox. The engine drives it from its
 //! own worker thread on its own schedule.
 //!
@@ -46,9 +46,6 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(15);
 const MAX_RETRY_DELAY: Duration = Duration::from_mins(5);
 
 /// Exponential backoff for failed cloud polls.
-///
-/// Split out from the worker loop so the schedule can be tested without
-/// actually sleeping through it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetryBackoff {
     delay: Duration,
@@ -311,10 +308,7 @@ pub(crate) struct CloudUpdater {
 ///
 /// `SUNLIT_EARTH_CLOUD_URL` wins over the variant, and what it serves has no
 /// variant at all, so its bytes get an entry of their own rather than a name
-/// claiming a size nobody checked. Without that, a run with the override would
-/// leave an image of any size in `clouds_cache_4096x2048.jpg`, and the next run
-/// without the override would put that image on screen and keep it there until
-/// its first poll returned.
+/// claiming a size nobody checked.
 fn cache_stem(variant: (u32, u32), overridden: bool) -> String {
     if overridden {
         return "clouds_cache_override".to_owned();
@@ -336,9 +330,7 @@ impl CloudUpdater {
     /// `resolution` and caching into `cache_dir` (skipped entirely when `None`).
     ///
     /// The source is pointed at the URL the cache entry is named after, so the
-    /// name and the bytes behind it cannot disagree. In production that is the
-    /// URL the caller already built from the same resolution; the point is that
-    /// this function, not the caller, is what decides what the entry holds.
+    /// name and the bytes behind it cannot disagree.
     pub fn new(
         source: Arc<dyn CloudSource>,
         mailbox: TextureMailbox,
@@ -374,17 +366,9 @@ impl CloudUpdater {
     ///
     /// Retargets the source, moves to that variant's cache entry, picks up
     /// whatever freshness metadata was left there, and posts whatever image was
-    /// left there. That last step is what makes the switch visible: the poll
-    /// that follows sends the new entry's `ETag` to the new entry's URL, and a
-    /// switch back inside the upstream refresh window is answered with a 304,
-    /// which posts nothing. Without posting the bytes already on disk the globe
-    /// would keep the previous variant's overlay until upstream published
-    /// again, which can be hours.
-    ///
-    /// Nothing is thrown away, and a variant with nothing on disk posts nothing:
-    /// the image already on the GPU stays until a poll delivers the new one, so
-    /// a switch made offline keeps showing the old clouds rather than none, for
-    /// as long as the network stays down.
+    /// left there so the switch is visible immediately. A variant with nothing
+    /// on disk posts nothing, which leaves the previous overlay up while the
+    /// download runs. `docs/architecture.md` has the argument for both.
     ///
     /// A resolution that maps to the variant already in force is a no-op, which
     /// is what lets the worker call this before every poll.
@@ -498,13 +482,8 @@ impl CloudUpdater {
             last_modified: fetched.last_modified,
         };
         if let Some(path) = self.meta_path.as_deref() {
-            // The sidecar goes only where its image went. A present sidecar is
-            // read as "the image for this ETag is on disk": `set_resolution`
-            // adopts the entry and posts what it finds, and the poll that
-            // follows sends that ETag and is answered with a 304, which posts
-            // nothing. One without an image is therefore a switch that silently
-            // does nothing, and on a fresh process, no clouds at all until
-            // upstream publishes. An entry with neither costs one download.
+            // The sidecar goes only where its image went; `discard_cache_meta`
+            // says why an entry must not keep one without the other.
             if cached {
                 save_cache_meta(&meta, path);
             } else {
@@ -524,11 +503,8 @@ impl CloudUpdater {
         self.mailbox.post(DecodedTextureMessage {
             slot_index: self.slot,
             result: Ok(img),
-            // The texture resolution does govern which variant this is, but the
-            // cloud slot is never purged, so there is nothing for a stamp to
-            // protect. A fetch of the old variant landing after a switch is one
-            // poll of exactly the picture the switch deliberately leaves up,
-            // and the next poll replaces it.
+            // The cloud slot is never purged, so there is nothing for a stamp
+            // to protect.
             generation: None,
         });
         (self.notify)();
@@ -579,9 +555,6 @@ mod tests {
         }
     }
 
-    /// An offered width downloads a cloud image of exactly that width, which is
-    /// also what makes the mapping injective: lowering the resolution has to
-    /// lower the download.
     #[test]
     fn an_offered_width_is_its_own_variant() {
         for &width in &TEXTURE_RESOLUTIONS {
@@ -589,7 +562,6 @@ mod tests {
         }
     }
 
-    /// Every variant is 2:1, which is what an equirectangular projection is.
     #[test]
     fn every_variant_is_two_to_one() {
         for &width in &TEXTURE_RESOLUTIONS {
@@ -598,9 +570,6 @@ mod tests {
         }
     }
 
-    /// The renderer takes any width as a cap, so a width from outside the
-    /// offered set still has to land on a variant that exists, and never on a
-    /// sharper one than the surface it sits over.
     #[test]
     fn a_width_the_set_does_not_offer_takes_the_widest_that_fits() {
         let mut offered = TEXTURE_RESOLUTIONS;
@@ -647,8 +616,6 @@ mod tests {
         }
     }
 
-    /// Two variants must not share a cache entry, or a switch could be answered
-    /// with the previous variant's bytes.
     #[test]
     fn each_variant_has_its_own_cache_entry() {
         let dir = PathBuf::from("C:/tmp/sunlit");
@@ -663,9 +630,6 @@ mod tests {
         }
     }
 
-    /// What the override serves has no variant, so it must not be filed under a
-    /// name that claims one: the next run without the override would read that
-    /// entry and show whatever the override was pointed at.
     #[test]
     fn the_environment_override_gets_a_cache_entry_of_its_own() {
         let overridden = cache_stem(cloud_variant(4096), true);
@@ -713,10 +677,6 @@ mod tests {
         assert_eq!(dir, PathBuf::from("C:/tmp/sunlit"));
     }
 
-    /// The cloud cache lives under the one app folder, beside the config file
-    /// and the wallpaper output. Asserted here as well as there because a
-    /// divergence of this path alone would leave a second cache directory
-    /// nothing ever sweeps.
     #[test]
     fn the_cache_dir_without_an_override_is_the_app_folder() {
         let Some(dir) = resolve_cache_dir(None) else {
@@ -738,7 +698,6 @@ mod tests {
 
     #[test]
     fn decode_cloud_jpeg_valid_minimal() {
-        // Create a minimal 2x2 JPEG in memory using the image crate
         let mut buf = std::io::Cursor::new(Vec::new());
         let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([128, 64, 32, 255]));
         let rgb_img = image::DynamicImage::ImageRgba8(img).into_rgb8();
@@ -1054,9 +1013,6 @@ mod tests {
     // Following the texture resolution
     // -----------------------------------------------------------------------
 
-    /// Construction points the source at the URL the cache entry is named
-    /// after, so the two cannot disagree whatever the caller built the source
-    /// with.
     #[test]
     fn construction_points_the_source_at_the_variant_it_will_cache_under() {
         let source = Arc::new(ScriptedSource::new());
@@ -1131,12 +1087,6 @@ mod tests {
     /// An image that could not be cached must leave no freshness claim behind,
     /// including one an earlier poll left there.
     ///
-    /// The switch path reads a present sidecar as "the image for this `ETag` is
-    /// on disk": it adopts the entry, posts what it finds, and the poll that
-    /// follows sends that `ETag` and is answered with a 304. A sidecar with no
-    /// image behind it is therefore a switch that does nothing, and a fresh
-    /// process with no clouds at all until upstream publishes.
-    ///
     /// The write is made to fail by putting a directory where the JPEG goes,
     /// which fails on both platforms and, unlike an unwritable parent, leaves
     /// the sidecar beside it perfectly writable. That is what makes the two
@@ -1182,14 +1132,6 @@ mod tests {
         assert_eq!(source.fetches(), 3);
     }
 
-    /// The same rule one door further in: a body that downloads but does not
-    /// decode must leave no freshness claim behind, on disk or in memory.
-    ///
-    /// The in-memory half is what keeps the retry alive: recording the bad
-    /// body's `ETag` would turn the backoff's next poll into a 304 with
-    /// nothing to post, and the session would have no clouds until upstream
-    /// published. The disk half keeps the last good entry intact, so a
-    /// restart or a switch still shows the newest image that ever decoded.
     #[test]
     fn an_undecodable_body_leaves_no_freshness_claim() {
         let scratch = ScratchDir::new("cloud_undecodable_body");
@@ -1233,8 +1175,6 @@ mod tests {
         assert_eq!(source.fetches(), 3);
     }
 
-    /// The other half of the same rule: with no cache entry and no network,
-    /// a switch posts nothing rather than blanking the overlay.
     #[test]
     fn a_switch_with_nothing_cached_and_no_network_posts_nothing() {
         let scratch = ScratchDir::new("cloud_switch_offline");
@@ -1254,16 +1194,6 @@ mod tests {
         );
     }
 
-    /// A switch must not be answered out of the previous variant's cache, and a
-    /// switch back must put what it left behind on screen.
-    ///
-    /// The poll that follows a switch back sends the entry's own `ETag` to the
-    /// entry's own URL and is answered with a 304, which posts nothing at all.
-    /// The slot is never purged either, so without the switch itself posting
-    /// what is on disk the overlay would stay at the previous variant until
-    /// upstream published again, which can be hours. Nothing in production
-    /// calls `post_cached` after startup, so the switch is the only place this
-    /// can happen.
     #[test]
     fn each_variant_keeps_its_own_cached_image_and_a_switch_back_shows_it() {
         let scratch = ScratchDir::new("cloud_variant_cache");

@@ -27,9 +27,6 @@ use glam::Vec3;
 /// East) for a specific `astro_time_t`.
 #[cfg(test)]
 pub(crate) fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
-    // The sun's equatorial coordinates (right ascension and declination)
-    // referred to the equator of date, with aberration correction.
-    //
     // The observer is a surface point at 0N 0E, not the geocenter: that is a
     // topocentric answer, and for the sun it differs from the geocentric one
     // by at most 8.8 arcseconds. Production takes the geocentric vector

@@ -6,11 +6,6 @@
 //! PNG next to the cloud cache and every later run decodes that instead. PNG
 //! because the `image` crate encodes it losslessly and decodes it in a fraction
 //! of the time JPEG XL takes; the file is disposable either way.
-//!
-//! A cached file is a plain downscale of its source, in the source's own
-//! orientation, so reading one back goes through the same
-//! [`texture_loader::load`] a source does. Whether it still matches the source
-//! is decided by a sidecar recording the source's size and modification time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -142,10 +137,8 @@ pub fn load_at_resolution(
         }
     }
 
-    // Stamped before the decode rather than after it. A decode of an 8K source
-    // takes seconds, and a source replaced during those seconds would otherwise
-    // be recorded as what the old pixels came from: an entry that validates
-    // forever and holds the wrong image, with nothing left to invalidate it.
+    // Stamped before the decode rather than after it, so a source replaced
+    // during it is not recorded as where the old pixels came from.
     let before = SourceStamp::of(source);
     let (mut decoded, halved) = load_and_halve(source, target_width)?;
     // Written before the orientation fixes, so what lands on disk is a plain
@@ -480,9 +473,6 @@ mod tests {
         );
     }
 
-    /// A unique temporary name per writer means nothing reuses it, so a write
-    /// that was killed leaves a file behind. The next successful write of the
-    /// same entry is what clears it.
     #[test]
     fn a_write_sweeps_unfinished_files_an_earlier_one_left() {
         let dir = temp_dir("sweep");
@@ -520,8 +510,6 @@ mod tests {
         );
     }
 
-    /// Two writers of the same entry must not share a temporary name, or the
-    /// second `File::create` truncates the first one's PNG mid-write.
     #[test]
     fn each_unfinished_name_is_the_writers_own() {
         let target = Path::new("C:/data/texture_cache/day.2048.png");
@@ -558,8 +546,6 @@ mod tests {
         );
     }
 
-    /// The cache is keyed on the source, so replacing the asset must not leave
-    /// the old downscale in use.
     #[test]
     fn a_changed_source_invalidates_the_cache() {
         let dir = temp_dir("invalidate");
@@ -614,10 +600,6 @@ mod tests {
         assert_eq!(uncached.pixels, read_back.pixels);
     }
 
-    /// A source replaced while it was being decoded must not be recorded as
-    /// where the old pixels came from. That entry would validate on every later
-    /// run and hold the wrong image, and since the source is not going to change
-    /// again there would be nothing left to invalidate it.
     #[test]
     fn a_source_that_changed_during_the_decode_is_not_cached() {
         let dir = temp_dir("changed_mid_decode");

@@ -129,11 +129,6 @@ mod tests {
 
     #[test]
     fn minor_grid_line_is_white() {
-        // 15-degree minor line: lon_deg=15 -> x=15 in a 360-wide texture
-        // At y=45 (lat_deg=45), which is also a 15-degree grid line
-        // But lat_deg=45 is not 90 (equator), not 0 or 180 (pm), so it's minor.
-        // Actually lat_deg=45 is a minor grid line too. We just need lon or lat
-        // on a 15-degree multiple that isn't major.
         let pixels = generate(360, 180);
         // x=15 -> lon_deg=15 (minor), y=60 -> lat_deg=60 (minor)
         // This pixel is at a grid line intersection.

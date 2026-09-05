@@ -86,7 +86,6 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 // replacement is allocated.
                 slot.texture = Some(tex);
 
-                // Store texture views for composite/cloud bind group creation
                 if msg.slot_index == super::DAY_SLOT {
                     res.day_texture_view = Some(tex_view);
                     maybe_create_composite_bind_group(res);
@@ -203,7 +202,6 @@ pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
 pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: usize) {
     let slot = &res.texture_slots[slot_index];
 
-    // Already loaded, already loading, or no source path — nothing to do
     if slot.bind_group.is_some() || slot.loading || slot.source_path.is_none() {
         return;
     }
@@ -290,7 +288,6 @@ pub(super) fn create_mipmapped_texture(
         view_formats: &[],
     });
 
-    // Upload mip level 0
     upload_mip(queue, &texture, 0, width, height, &rgba_pixels);
     crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
@@ -312,8 +309,9 @@ pub(super) fn create_mipmapped_texture(
 
 /// Create a bind group with a uniform buffer, day texture, sampler, and night texture.
 ///
-/// For single-texture modes (Grid, Day, Night), pass the dummy 1x1 texture
-/// as `night_texture_view`. For blend mode, pass the actual night texture.
+/// For every group that reads one texture, the Grid, Day and Night modes and
+/// the cloud overlay alike, pass the dummy 1x1 texture as `night_texture_view`.
+/// For blend mode, pass the actual night texture.
 pub(super) fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,

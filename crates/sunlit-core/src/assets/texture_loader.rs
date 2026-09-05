@@ -109,7 +109,6 @@ pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
         for x in 0..dst_w {
             let sx = x * 2;
             let sy = y * 2;
-            // Clamp neighbor coordinates to stay within source bounds
             let sx1 = (sx + 1).min(sw - 1);
             let sy1 = (sy + 1).min(sh - 1);
             for c in 0..4 {
@@ -141,7 +140,6 @@ pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
         return Some(dir);
     }
 
-    // Walk up from the executable's directory to find a `textures/` folder.
     let mut dir = std::env::current_exe().ok()?;
     while dir.pop() {
         let candidate = dir.join("textures");

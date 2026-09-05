@@ -236,7 +236,8 @@ pub(crate) fn resolve_sample_count(requested: u32, supported: &[u32], max_sample
 
 /// Quantize width and height down to a multiple of `SIZE_GRANULARITY`, never
 /// below one granularity unit in either dimension. Down rather than to the
-/// nearest, so a render target is never larger than what was asked for.
+/// nearest, so a render target above that floor is never larger than what was
+/// asked for; below it, one granularity unit is the smallest target there is.
 pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
     let qw = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
     let qh = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;

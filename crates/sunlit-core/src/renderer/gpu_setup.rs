@@ -11,7 +11,9 @@ use super::{Renderer, RendererConfig, SLOT_LABELS};
 
 /// Usage flags for the offscreen preview target. `COPY_SRC` is what the engine
 /// reads the frame back through; no client binds the texture itself, because
-/// preview frames cross to the UI as pixel buffers.
+/// preview frames cross to the UI as pixel buffers. `TEXTURE_BINDING` therefore
+/// has no reader today and is still here as an open question rather than a
+/// decision: no test in the suite would show that dropping it is safe.
 const PREVIEW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
     .union(wgpu::TextureUsages::TEXTURE_BINDING)
     .union(wgpu::TextureUsages::COPY_SRC);

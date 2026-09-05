@@ -847,7 +847,12 @@ fn query_memory(socket_name: &str, watcher: &StdoutWatcher) -> MemorySignal {
     let from = watcher.line_count();
     send_ipc_command(socket_name, "query-memory");
     let line = watcher.wait_for_signal_line_from("memory ", from, SIGNAL_REPLY);
-    MemorySignal::parse(&line).unwrap_or_else(|| panic!("not a memory signal line: {line}"))
+    MemorySignal::parse(&line).unwrap_or_else(|| {
+        panic!(
+            "missing '{}' in memory signal line: {line}",
+            MemorySignal::missing_field(&line).unwrap_or("a field")
+        )
+    })
 }
 
 /// Convert a byte count to MiB for readable log output.
@@ -1350,13 +1355,20 @@ fn find_session_listener(pid: u32, timeout: Duration) -> isize {
 fn test_session_end_shuts_down_promptly() {
     use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
 
+    /// How long the listener window has to appear once the app is up.
+    ///
+    /// Not an IPC reply and so not `SIGNAL_REPLY`: `find_session_listener`
+    /// polls `FindWindowW` for a window `session_end` creates on a thread of
+    /// its own, which the app signals nothing about.
+    const LISTENER_WINDOW: Duration = Duration::from_secs(30);
+
     let socket_name = unique_socket_name();
     let (mut guard, _stdout_watcher, stderr_watcher) = Spawn::new(&socket_name)
         .args(["--tray-start", "hidden"])
         .ready(Ready::HiddenWindow)
         .start();
 
-    let hwnd = find_session_listener(guard.pid(), SIGNAL_REPLY);
+    let hwnd = find_session_listener(guard.pid(), LISTENER_WINDOW);
 
     // SAFETY: a window handle whose owning process this test just verified, and
     // two documented messages. `SendMessageW` returns once it has been handled.
@@ -2051,8 +2063,12 @@ fn test_displays_reports_the_session_layout() {
     send_ipc_command(&socket_name, "displays");
     let line = stdout_watcher.wait_for_signal_line_from("displays ", from, SIGNAL_REPLY);
     println!("the session reports: {line}");
-    let plan =
-        DisplaysSignal::parse(&line).unwrap_or_else(|| panic!("not a displays line: {line}"));
+    let plan = DisplaysSignal::parse(&line).unwrap_or_else(|| {
+        panic!(
+            "missing '{}' in the displays line: {line}",
+            DisplaysSignal::missing_field(&line).unwrap_or("a field")
+        )
+    });
 
     assert!(
         plan.monitors >= 1,

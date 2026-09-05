@@ -272,13 +272,30 @@ impl MemorySignal {
     /// Read the counters back out of a `SIGNAL:memory ...` line.
     ///
     /// `None` where a field is missing or is not a number, which is a line this
-    /// program did not write.
+    /// program did not write. [`MemorySignal::missing_field`] says which one.
     #[must_use]
     pub fn parse(line: &str) -> Option<Self> {
-        Some(Self {
-            rss_bytes: signal_field(line, "rss_bytes")?.parse().ok()?,
-            peak_rss_bytes: signal_field(line, "peak_rss_bytes")?.parse().ok()?,
-            private_bytes: signal_field(line, "private_bytes")?.parse().ok()?,
+        Self::read(line).ok()
+    }
+
+    /// The first field this line does not carry as a number, or `None` where it
+    /// parses.
+    ///
+    /// What a caller prints when [`MemorySignal::parse`] answers `None`. The
+    /// line on its own leaves whoever is reading a guest's log counting fields
+    /// by eye.
+    #[must_use]
+    pub fn missing_field(line: &str) -> Option<&'static str> {
+        Self::read(line).err()
+    }
+
+    /// One reader behind both, so the name in the error is the field that
+    /// actually failed rather than a second list that can drift from this one.
+    fn read(line: &str) -> Result<Self, &'static str> {
+        Ok(Self {
+            rss_bytes: signal_number(line, "rss_bytes")?,
+            peak_rss_bytes: signal_number(line, "peak_rss_bytes")?,
+            private_bytes: signal_number(line, "private_bytes")?,
         })
     }
 }
@@ -315,15 +332,28 @@ impl DisplaysSignal {
     /// Read the plan back out of a `SIGNAL:displays ...` line.
     ///
     /// `None` where a field is missing or is not the shape it is written in.
+    /// [`DisplaysSignal::missing_field`] says which one.
     #[must_use]
     pub fn parse(line: &str) -> Option<Self> {
-        Some(Self {
-            monitors: signal_field(line, "monitors")?.parse().ok()?,
-            mode: signal_field(line, "mode")?.to_owned(),
-            anchor: signal_field(line, "anchor")?.parse().ok()?,
-            fell_back: signal_field(line, "fell_back")? != "0",
-            rects: signal_list(line, "rects")?,
-            images: signal_list(line, "images")?,
+        Self::read(line).ok()
+    }
+
+    /// The first field this line does not carry in the shape the producer
+    /// writes it, or `None` where it parses.
+    #[must_use]
+    pub fn missing_field(line: &str) -> Option<&'static str> {
+        Self::read(line).err()
+    }
+
+    /// One reader behind both, for the reason [`MemorySignal::read`] has.
+    fn read(line: &str) -> Result<Self, &'static str> {
+        Ok(Self {
+            monitors: signal_number(line, "monitors")?,
+            mode: signal_field(line, "mode").ok_or("mode")?.to_owned(),
+            anchor: signal_number(line, "anchor")?,
+            fell_back: signal_field(line, "fell_back").ok_or("fell_back")? != "0",
+            rects: signal_list(line, "rects").ok_or("rects")?,
+            images: signal_list(line, "images").ok_or("images")?,
         })
     }
 }
@@ -333,10 +363,20 @@ impl DisplaysSignal {
 /// Every signal line is key=value pairs with no spaces in any value, which is
 /// the shape `query-memory` established and the reason a field can be found by
 /// splitting on whitespace.
+/// A whole token and not a substring: `peak_rss_bytes=` ends with `rss_bytes=`,
+/// so a reader that searched the line would answer the wrong field.
 fn signal_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("{key}=");
     line.split_whitespace()
         .find_map(|token| token.strip_prefix(prefix.as_str()))
+}
+
+/// A `key=<number>` field, or the key's own name where it is missing or is not
+/// a number.
+fn signal_number<T: std::str::FromStr>(line: &str, key: &'static str) -> Result<T, &'static str> {
+    signal_field(line, key)
+        .and_then(|value| value.parse().ok())
+        .ok_or(key)
 }
 
 /// The value of one `key=` field that carries a `;`-separated list.
@@ -399,20 +439,48 @@ mod tests {
     }
 
     /// A field whose name is the tail of another's must not be found by it.
+    ///
+    /// The producer writes `rss_bytes` first, so a reader that searched the
+    /// line for a substring would still answer correctly on a real line, by
+    /// luck. This one puts `peak_rss_bytes` first, where that luck runs out:
+    /// the first `rss_bytes=` in it belongs to another field.
     #[test]
     fn peak_rss_is_not_read_as_rss() {
-        let counters = MemorySignal {
-            rss_bytes: 1,
-            peak_rss_bytes: 2,
-            private_bytes: 3,
-        };
-        let parsed = MemorySignal::parse(&counters.line()).expect("the line it just wrote");
-        assert_eq!(parsed, counters);
+        let line = "SIGNAL:memory peak_rss_bytes=222 private_bytes=333 rss_bytes=111";
+        assert_eq!(
+            MemorySignal::parse(line),
+            Some(MemorySignal {
+                rss_bytes: 111,
+                peak_rss_bytes: 222,
+                private_bytes: 333,
+            })
+        );
     }
 
     #[test]
     fn a_line_without_the_fields_is_not_a_memory_signal() {
         assert_eq!(MemorySignal::parse("SIGNAL:memory_unavailable"), None);
+    }
+
+    /// A failed parse names the field, because the line alone is what a reader
+    /// in a guest has to count through by eye.
+    #[test]
+    fn a_failed_parse_names_the_field_that_failed() {
+        assert_eq!(
+            MemorySignal::missing_field("SIGNAL:memory rss_bytes=1 private_bytes=3"),
+            Some("peak_rss_bytes")
+        );
+        assert_eq!(
+            MemorySignal::missing_field(
+                "SIGNAL:memory rss_bytes=1 peak_rss_bytes=x private_bytes=3"
+            ),
+            Some("peak_rss_bytes"),
+            "a field that is there but is not a number is the same answer"
+        );
+        assert_eq!(
+            DisplaysSignal::missing_field("SIGNAL:displays monitors=1 mode=one-screen anchor=0"),
+            Some("fell_back")
+        );
     }
 
     /// The display plan survives the line it is written on, which is what ties

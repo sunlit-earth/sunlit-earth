@@ -79,6 +79,10 @@ The layer's slot is the fourth file-backed one and the only texture whose source
 
 Two goldens pin it, `panorama_behind_the_stars` and `panorama_at_a_narrow_sky`, the same night-side camera at the two ends of the field-of-view slider, both with the banded fixture rather than the real asset. `base_params` switches the layer off for every other case: it covers the whole frame, so leaving it on would move all eleven other references and bury what each of them is for. What a fixture cannot show is the asset's own layout, and `the_real_panorama_has_the_galactic_plane_where_the_plane_is` in `tests/engine.rs` is where that lives, sampling the rendered sky at the galactic center, both galactic poles and two stretches of the plane and asserting the ordering a mirrored reading inverts. Its sibling `no_bright_star_is_baked_into_the_real_panorama` holds the other property of the file itself, that the layer excludes the bright stars the sprites draw: on the asset as it sits on disk, at the position of every catalog record inside magnitude 1.3, a 3x3 texel core against the 41x41 window around it reads 1.26 at worst against a bound of two, where a star baked into the layer would saturate its texels and read 2.3 to 5. Both skip with a printed reason without the Git LFS object.
 
+### What the panorama test can and cannot see
+
+`no_bright_star_is_baked_into_the_real_panorama` compares the mean of a 3x3 texel window at a catalog star's own position against the mean of the 41x41 window around it and bounds the ratio at 2. What that window cannot see is a star confined to a single texel in the brightest part of the plane: raising one texel of the nine to 765 where the sky already reads 363, which is the brightest core in the set, takes the core to 408 and the ratio to 1.26, inside the bound. Taking the peak texel of the core rather than its mean does not fix that, and was measured: the map's own grain already puts single texels at 2.08 times the local mean, so a peak metric has no separation left to spend.
+
 ## Clouds on the night side
 
 `fs_cloud` shades the shell rather than the ground, and the difference is three things. Its
@@ -130,6 +134,8 @@ those decodes until a case asks for the mode, and the first one to do so exporte
 the fallback draws.
 
 ## One view across several screens
+
+Producing a wallpaper is the most expensive thing the engine does: a render at the display's native resolution, then a readback of that whole image, which is about 14 MB at 2560x1440 on a CPU rasterizer where there is no hardware to help. That is why `check_supported` is asked before anything is rendered rather than after: a sink that is going to refuse the work has to say so before the cost is paid.
 
 `display::layout` turns a list of monitors into the renders a wallpaper publish makes. Everything in it is a pure function of rectangles, so the whole model is exercised on a machine with one screen; what the sections below record is the geometry, and [architecture.md](architecture.md) has the publish path around it.
 

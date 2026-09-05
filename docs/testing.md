@@ -34,11 +34,38 @@ The two-head guest is `cargo xtask e2e --target linux --screens 2`, and what it 
 - **GPU tests assert invariants** (monotonicity, bounds, visibility), not exact pixels, because of cross-adapter float variance.
 - **One GPU device at a time.** Per-test device creation crashes on Windows. Shader tests share a device through `LazyLock<Mutex<GpuContext>>`; the engine and soak targets each hold a `GPU_SERIAL` mutex for the lifetime of their engine, and the golden target serializes on the `LazyLock<Mutex<EngineHandle>>` it shares one engine through.
 - **One wgpu instance per process, ever.** `wgpu_init::instance()` holds it in a `OnceLock` and nothing else may call `wgpu::Instance::new`; `clippy.toml` enforces that through `disallowed-methods`, so a second call site has to allow the lint by name. An instance owns the loaded driver libraries, and dropping the last one `dlclose`s the Vulkan loader while Mesa's pthread TLS destructors still point into it, so the next thread to exit dies in `__nptl_deallocate_tsd`. That is not theoretical: it killed all 14 engine tests on lavapipe.
-- **Golden images** force the software adapter where the platform has one, so a developer machine and a CI runner compare against the same references. References are per adapter (`tests/golden/warp/`, `lavapipe/`, `metal/`), keyed by `wgpu_init::adapter_key`; the reasoning and the measured cross-adapter deltas are on that function. Which adapters have a set is listed in the test's `GENERATED_ADAPTERS`, not inferred from the filesystem: an adapter on the list whose directory is missing fails, and only an adapter that has genuinely never been generated skips. A missing single case fails every run, with its render written under `CARGO_TARGET_TMPDIR` for review rather than into the tracked tree. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
+- **Golden images** force the software adapter where the platform has one, so a developer machine and a CI runner compare against the same references. References are per adapter (`tests/golden/warp/`, `lavapipe/`, `metal/`), keyed by `wgpu_init::adapter_key`, which carries the rule; the measured cross-adapter deltas that justify the split are under "Measurements behind the thresholds" below. Which adapters have a set is listed in the test's `GENERATED_ADAPTERS`, not inferred from the filesystem: an adapter on the list whose directory is missing fails, and only an adapter that has genuinely never been generated skips. A missing single case fails every run, with its render written under `CARGO_TARGET_TMPDIR` for review rather than into the tracked tree. Tolerance: mean channel difference under 2/255 and at most 1% of pixels differing by more than 24. A companion test asserts every pair of references is distinguishable, which is what stops the others from becoming vacuous.
 - **Every committed bake is compared against a fresh one.** `the_committed_bake_matches_a_fresh_one` in `bake_icon` and `bake_licenses`, and `the_committed_fixture_matches_a_fresh_bake` in `bake_stars`: the outputs of `cargo xtask bake ...` are data in the tree rather than something a build produces, so a source edited without rerunning the bake has to fail the suite. The licence one is the only bake test that can skip: it needs `cargo metadata`, `cargo tree` and the unpacked registry sources the manifests point at, so on a checkout that cannot resolve the tree it prints why and returns, the way the tests that need the real 8K assets do.
 - **Scratch directories come from `ScratchDir`** in `crates/sunlit-core/src/test_support.rs`: the name carries the process id and a counter, and `Drop` removes the tree, so two `cargo test` runs over one checkout never share a directory and a test that panics leaves nothing behind. The library reaches it as a `cfg(test)` module; the integration targets take the same file by `#[path]`, which keeps `tests/common`'s GPU context out of a binary that must not create a second device. It roots under `CARGO_TARGET_TMPDIR` where cargo sets one, which is every integration target, and under the system temporary directory for a library's own unit tests. Note that it creates its directory, so a test asserting that production code creates a parent must name a path below the scratch root that does not exist yet, or the assertion is vacuous.
 - **Soak measurements** take their baseline after warm-up (the first cloud texture and wgpu's allocator pools are a one-off ~85 MiB); the assertion is on the remaining simulated days.
 - **A test that needs the real 8K assets skips with a printed reason without them**, rather than failing or passing vacuously: `textures/**` is Git LFS, and a checkout without the objects holds pointer files that exist as far as anything that only asks about existence is concerned, so the check is on size. `lowering_the_resolution_lowers_the_process_footprint` in `tests/engine.rs` is the one such case, and it costs about 25 seconds where the assets are present. Everything else that needs a texture, including every Moon case, the golden suite's Moon and every panorama case but the two that are about the real asset, uses a generated fixture instead.
+
+## Measurements behind the thresholds
+
+Numbers that justify a tolerance or a budget live here rather than in the source, so that they can be compared and so
+that the code says what it does instead of how it was tuned. Each one names the test or the constant it stands behind.
+
+**The cross-adapter deltas behind the per-adapter golden sets.** Measured on the four reference scenes, each against
+WARP, at the tolerance above: lavapipe agrees to a mean channel difference of 0.19 to 0.86 with 0.001% to 0.42%
+outliers, and the paravirtual Metal device on a `macos-latest` runner to 0.008 to 0.18 with at most 0.008% outliers. One
+shared reference set would therefore pass on all three today, but it would spend up to 43% of the mean budget on the
+difference between two correct implementations, leaving a regression that size able to hide on one platform while
+failing on another. The ordering in those numbers is not the expected one: the two CPU rasterizers are the pair that
+disagree most, and Metal, which is both a different shader translation target and an actual GPU, lands about five times
+closer to WARP than lavapipe does.
+
+**The memory budget's cold-start figure.** `MEASURED_COLD_START_PEAK` in `memory.rs`'s test module is 2488 MiB, the one
+cold-cache startup peak anyone has measured: private bytes, at 8192, in a release build. Every resolution is held to
+that one figure rather than to a smaller one derived from it, and that is the point. The peak is dominated by the two 8K
+JXL decodes, which a cold downscale cache performs whatever width it was asked for; how much of the resident saving at a
+lower width also shows up in the peak is exactly what nobody has measured. Deriving a per-resolution peak from the
+budget's own decomposition would make the two move together and assert nothing, and it would let the budget rest on a
+saving that may not be there.
+
+The two bounding tests clear it from both sides, and by these margins: 2048 clears the measurement by 121 MiB where 8192
+clears it by 633, so a cold-start figure set too low fails at the two lower widths while the widest, which is where the
+3 GiB total is anchored, still passes. The narrow end is the binding case rather than a restatement of the wide one: it
+gets the smallest resident allowance and has the same decode to pay for.
 
 ## CI/CD
 

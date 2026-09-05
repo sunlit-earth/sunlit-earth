@@ -315,6 +315,28 @@ carried forward rather than declined, and each has a stated reason and a destina
 - `config.rs:319`'s `#[serde(default = "default_custom_year")]` is redundant under the struct-level `#[serde(default)]`.
   It is neither a `pub` item nor dead code in the compiler's sense, so it is left to the run that owns that file's tests.
 
+## Run 1 gate record
+
+Run on the merged run branch in `pool-0`, with the adapter to itself.
+
+- `cargo fmt --check` clean. `cargo clippy --all-targets` clean, all three crates rechecked, zero warnings.
+- `cargo test` green across the workspace: core lib 536, engine 78 in 173.49 s, golden 20 in 3.23 s, render_pipeline 21
+  in 0.78 s, shading 12, soak 1 in 66.28 s, app 82 + 2, e2e 15 ignored and compiling, slint_ui 53, xtask 633.
+- `git status --short crates/sunlit-core/tests/golden/` empty, and the whole worktree clean.
+- `cargo run -- render --output <tmp>/r.png --width 640 --height 360` exit 0, a 460 KB PNG written.
+- `sunlit-earth.exe --ipc-socket 'bad
+ame'` exit 0 with no panic: the app came up, loaded the cached cloud image, set
+  the wallpaper, ran its event loop and shut down through `event loop exited`. On this run's parent commit the same
+  command panicked at `tray.rs:48` with `failed to create single-instance mutex: MutexError(3)` and exit 101.
+  What was observed is the absence of the panic and a complete clean run; the warning line itself was filtered out of
+  the captured tail and was not read. The warning path is covered headlessly by
+  `ipc::tests::a_name_something_else_holds_is_an_error_rather_than_a_panic` and
+  `tray::tests::a_mutex_name_windows_refuses_leaves_the_app_running_alone`, both confirmed by the validator to fail if
+  the panics return.
+- The separate "once normally" start was skipped by the maintainer's decision: the invalid-socket run exercises the same
+  startup path end to end apart from the socket name, and the baseline run before any change had already been observed.
+- The e2e suite in the Windows guest is **not** done. It remains run 1's one outstanding gate.
+
 ## Open items
 
 - **The offset guard's real reach.** `uniform_buffer_field_offsets_match_wgsl` catches any change that moves an existing

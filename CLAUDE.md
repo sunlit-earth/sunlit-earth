@@ -117,7 +117,7 @@ docs/                 see the table above
 - `unsafe_code = "deny"` workspace-wide. FFI call sites carry a scoped `#[allow(unsafe_code)]` and a `// SAFETY:` comment; follow that pattern for any new FFI.
 - Slint is `~1.17` with no wgpu feature.
 - One wgpu instance per process, ever: `wgpu_init::instance()`, enforced by `clippy.toml`'s `disallowed-methods`. Dropping the last instance `dlclose`s the Vulkan loader under Mesa's TLS destructors and kills the next thread to exit.
-- One GPU device at a time in tests: shader tests share a `LazyLock<Mutex<GpuContext>>`, and the engine, soak and golden tests hold `GPU_SERIAL` for the lifetime of their engine. Per-test device creation crashes on Windows.
+- One GPU device at a time in tests: shader tests share a `LazyLock<Mutex<GpuContext>>`, the engine and soak targets hold `GPU_SERIAL` for the lifetime of their engine, and the golden target serializes on its own shared `EngineHandle` mutex. Per-test device creation crashes on Windows.
 - WGSL `vec3<f32>` is 16-byte aligned: every `[f32; 3]` in `Uniforms` is followed by `_pad: f32`, and `uniforms.rs` asserts the struct size at compile time.
 - Render texture size is quantized to 64 px and capped by the quality tier. Zoom is normalized 0 to 1 through `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
 - Every `SUNLIT_EARTH_*` variable that carries a value goes through `sunlit_core::env_override`, which treats blank as unset. The xtask and the e2e harness read theirs directly under the same rule. The tables are in README.

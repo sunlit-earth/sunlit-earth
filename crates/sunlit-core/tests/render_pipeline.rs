@@ -32,9 +32,22 @@ fn test_mvp_with_eye(width: u32, height: u32, eye: glam::Vec3) -> [f32; 16] {
 // Shared render pipeline context
 // ---------------------------------------------------------------------------
 
+/// The two shader files the renderer concatenates, with a probe appended.
+///
+/// Every entry point a test compiles reads production's own declarations, so a
+/// field or a function it names is the one `sphere.wgsl` declares.
+fn production_shaders(probe: &str) -> String {
+    format!(
+        "{}\n{}\n{probe}",
+        include_str!("../shaders/blend.wgsl"),
+        include_str!("../shaders/sphere.wgsl"),
+    )
+}
+
 struct RenderContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    shader: wgpu::ShaderModule,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     vertex_buffer: wgpu::Buffer,
@@ -129,14 +142,9 @@ fn create_render_context() -> RenderContext {
         immediate_size: 0,
     });
 
-    let wgsl_source = format!(
-        "{}\n{}",
-        include_str!("../shaders/blend.wgsl"),
-        include_str!("../shaders/sphere.wgsl"),
-    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("test_sphere_shader"),
-        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        source: wgpu::ShaderSource::Wgsl(production_shaders("").into()),
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -186,6 +194,7 @@ fn create_render_context() -> RenderContext {
     RenderContext {
         device,
         queue,
+        shader,
         pipeline,
         bind_group_layout,
         vertex_buffer,
@@ -556,31 +565,30 @@ fn day_side_brighter_than_night_side() {
 }
 
 #[test]
-fn single_texture_mode_ignores_night() {
+fn single_texture_mode_ignores_the_night_side() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 128;
 
-    // Red day texture, green night texture
     let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
     let green = create_solid_texture(&ctx.device, &ctx.queue, [0, 255, 0, 255]);
+    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
+    // A negative terminator width is single-texture mode, where the fragment
+    // shader returns before it reaches the night binding.
     let uniforms = default_test_uniforms(size);
+    let pixels_green_night = render_frame(&ctx, &uniforms, &red, &green, size, size);
 
-    let pixels = render_frame(&ctx, &uniforms, &red, &green, size, size);
-
-    // Check all non-clear pixels: none should have green > 0
-    let mut green_pixels = 0;
-    for px in pixels.chunks(4) {
-        // Skip clear-color pixels
-        let is_clear = px[0] <= 6 && px[1] <= 6 && px[2] <= 14;
-        if !is_clear && px[1] > 10 {
-            green_pixels += 1;
-        }
-    }
+    let extreme = Uniforms {
+        night_gamma: 0.3,
+        night_saturation: 0.0,
+        ..uniforms
+    };
+    let pixels_black_night = render_frame(&ctx, &extreme, &red, &black, size, size);
 
     assert_eq!(
-        green_pixels, 0,
-        "Single-texture mode should not sample the night texture, but found {green_pixels} green pixels"
+        pixels_green_night, pixels_black_night,
+        "neither the night texture nor its color correction may reach the frame \
+         in single-texture mode"
     );
 }
 
@@ -691,24 +699,99 @@ fn uniform_readback() {
 }
 ";
 
-// One assertion per uniform field: splitting it would only hide which field
-// moved.
+/// What the probe writes into each slot, in the order it writes them: the
+/// value the Rust struct below carries in that field, and the field's name.
+///
+/// One row per value rather than one per field, so a field that moves is named
+/// by the row that fails instead of hiding inside a wider assertion.
+const PROBED_FIELDS: [(f32, &str); 75] = [
+    (1.0, "mvp[0][0]"),
+    (2.0, "mvp[1][1]"),
+    (3.0, "mvp[2][2]"),
+    (4.0, "mvp[3][3]"),
+    (0.0, "sun_dir.x"),
+    (1.0, "sun_dir.y"),
+    (0.0, "sun_dir.z"),
+    (0.15, "terminator_width"),
+    (1.0, "flags"),
+    (0.5, "diffuse_floor"),
+    (0.25, "diffuse_ramp"),
+    (1.0, "eye_pos.x"),
+    (2.0, "eye_pos.y"),
+    (3.0, "eye_pos.z"),
+    (150.0, "spec_shininess"),
+    (0.75, "spec_intensity"),
+    (0.5, "fresnel_mix"),
+    (3.0, "fresnel_exp"),
+    (1.5, "day_gamma"),
+    (0.8, "day_saturation"),
+    (2.0, "night_gamma"),
+    (0.6, "night_saturation"),
+    (1.0015, "cloud_sphere_radius"),
+    (0.9, "cloud_opacity"),
+    (0.25, "cloud_floor"),
+    (0.65, "cloud_gamma"),
+    (0.5, "rayleigh_intensity"),
+    (50.0, "rayleigh_sharpness"),
+    (0.25, "nightglow_intensity"),
+    (15.0, "nightglow_falloff"),
+    (0.37, "nightglow_balance"),
+    (1.003, "rayleigh_radius"),
+    (1.014, "nightglow_orange_radius"),
+    (1.015, "nightglow_green_radius"),
+    (0.55, "rayleigh_haze"),
+    (1.0, "star_intensity"),
+    (6.5, "star_mag_limit"),
+    (1.25, "star_size"),
+    (0.35, "star_glow_strength"),
+    (6.0, "star_glow_radius"),
+    (0.4, "star_contrast"),
+    (123.0, "sky_fov"),
+    (1.75, "sun_glow"),
+    (0.45, "sun_rays"),
+    (0.8, "sun_flare"),
+    (0.6, "sun_visible"),
+    (2.75, "sun_size"),
+    (0.0, "sun_view_dir.x"),
+    (0.6, "sun_view_dir.y"),
+    (-0.8, "sun_view_dir.z"),
+    (7.5, "sun_disk_radius"),
+    (0.25, "moon_model[0][0]"),
+    (0.5, "moon_model[1][1]"),
+    (0.75, "moon_model[2][2]"),
+    (12.5, "moon_model[3][0]"),
+    (1.25, "moon_brightness"),
+    (0.35, "moon_earthshine"),
+    (0.65, "milky_way_intensity"),
+    (0.31, "cloud_night"),
+    (0.19, "cloud_terminator"),
+    (0.61, "cloud_opacity_night"),
+    (0.95, "sun_glare_tint.r"),
+    (0.55, "sun_glare_tint.g"),
+    (0.15, "sun_glare_tint.b"),
+    (2.25, "sun_horizon_gain"),
+    (64.5, "sun_globe_center.x"),
+    (33.25, "sun_globe_center.y"),
+    (41.5, "sun_globe_radius"),
+    (6.25, "sun_zone_width"),
+    (0.45, "sun_squash"),
+    (4.25, "sun_halo_radius"),
+    (1.35, "sun_reddening"),
+    (1.85, "atmo_sunrise_glow"),
+    (0.62, "atmo_sunrise_g"),
+    (0.72, "sun_flux"),
+];
+
 #[allow(clippy::too_many_lines)]
 #[test]
 fn uniform_buffer_field_offsets_match_wgsl() {
     let ctx = RENDER_CTX.lock().unwrap();
 
-    let wgsl_source = format!(
-        "{}\n{}\n{}",
-        include_str!("../shaders/blend.wgsl"),
-        include_str!("../shaders/sphere.wgsl"),
-        UNIFORM_READBACK_PROBE,
-    );
     let shader = ctx
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("uniform_readback_shader"),
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+            source: wgpu::ShaderSource::Wgsl(production_shaders(UNIFORM_READBACK_PROBE).into()),
         });
 
     let pipeline = ctx
@@ -817,8 +900,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-    // Output buffer: 75 floats
-    let output_size = (75 * std::mem::size_of::<f32>()) as u64;
+    let output_size = (PROBED_FIELDS.len() * std::mem::size_of::<f32>()) as u64;
     let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("uniform_test_output"),
         size: output_size,
@@ -861,308 +943,9 @@ fn uniform_buffer_field_offsets_match_wgsl() {
     let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
     let values: &[f32] = bytemuck::cast_slice(&data);
 
-    let eps = 1e-6;
-    assert!(
-        (values[0] - 1.0).abs() < eps,
-        "MVP[0][0]: got {}, expected 1.0",
-        values[0]
-    );
-    assert!(
-        (values[1] - 2.0).abs() < eps,
-        "MVP[1][1]: got {}, expected 2.0",
-        values[1]
-    );
-    assert!(
-        (values[2] - 3.0).abs() < eps,
-        "MVP[2][2]: got {}, expected 3.0",
-        values[2]
-    );
-    assert!(
-        (values[3] - 4.0).abs() < eps,
-        "MVP[3][3]: got {}, expected 4.0",
-        values[3]
-    );
-    assert!(
-        (values[4] - 0.0).abs() < eps,
-        "sun_dir.x: got {}, expected 0.0",
-        values[4]
-    );
-    assert!(
-        (values[5] - 1.0).abs() < eps,
-        "sun_dir.y: got {}, expected 1.0",
-        values[5]
-    );
-    assert!(
-        (values[6] - 0.0).abs() < eps,
-        "sun_dir.z: got {}, expected 0.0",
-        values[6]
-    );
-    assert!(
-        (values[7] - 0.15).abs() < eps,
-        "terminator_width: got {}, expected 0.15",
-        values[7]
-    );
-    assert!(
-        (values[8] - 1.0).abs() < eps,
-        "flags: got {}, expected 1.0",
-        values[8]
-    );
-    assert!(
-        (values[9] - 0.5).abs() < eps,
-        "diffuse_floor: got {}, expected 0.5",
-        values[9]
-    );
-    assert!(
-        (values[10] - 0.25).abs() < eps,
-        "diffuse_ramp: got {}, expected 0.25",
-        values[10]
-    );
-    assert!(
-        (values[11] - 1.0).abs() < eps,
-        "eye_pos.x: got {}, expected 1.0",
-        values[11]
-    );
-    assert!(
-        (values[12] - 2.0).abs() < eps,
-        "eye_pos.y: got {}, expected 2.0",
-        values[12]
-    );
-    assert!(
-        (values[13] - 3.0).abs() < eps,
-        "eye_pos.z: got {}, expected 3.0",
-        values[13]
-    );
-    assert!(
-        (values[14] - 150.0).abs() < eps,
-        "spec_shininess: got {}, expected 150.0",
-        values[14]
-    );
-    assert!(
-        (values[15] - 0.75).abs() < eps,
-        "spec_intensity: got {}, expected 0.75",
-        values[15]
-    );
-    assert!(
-        (values[16] - 0.5).abs() < eps,
-        "fresnel_mix: got {}, expected 0.5",
-        values[16]
-    );
-    assert!(
-        (values[17] - 3.0).abs() < eps,
-        "fresnel_exp: got {}, expected 3.0",
-        values[17]
-    );
-    assert!(
-        (values[18] - 1.5).abs() < eps,
-        "day_gamma: got {}, expected 1.5",
-        values[18]
-    );
-    assert!(
-        (values[19] - 0.8).abs() < eps,
-        "day_saturation: got {}, expected 0.8",
-        values[19]
-    );
-    assert!(
-        (values[20] - 2.0).abs() < eps,
-        "night_gamma: got {}, expected 2.0",
-        values[20]
-    );
-    assert!(
-        (values[21] - 0.6).abs() < eps,
-        "night_saturation: got {}, expected 0.6",
-        values[21]
-    );
-    assert!(
-        (values[22] - 1.0015).abs() < eps,
-        "cloud_sphere_radius: got {}, expected 1.0015",
-        values[22]
-    );
-    assert!(
-        (values[23] - 0.9).abs() < eps,
-        "cloud_opacity: got {}, expected 0.9",
-        values[23]
-    );
-    assert!(
-        (values[24] - 0.25).abs() < eps,
-        "cloud_floor: got {}, expected 0.25",
-        values[24]
-    );
-    assert!(
-        (values[25] - 0.65).abs() < eps,
-        "cloud_gamma: got {}, expected 0.65",
-        values[25]
-    );
-    assert!(
-        (values[26] - 0.5).abs() < eps,
-        "rayleigh_intensity: got {}, expected 0.5",
-        values[26]
-    );
-    assert!(
-        (values[27] - 50.0).abs() < eps,
-        "rayleigh_sharpness: got {}, expected 50.0",
-        values[27]
-    );
-    assert!(
-        (values[28] - 0.25).abs() < eps,
-        "nightglow_intensity: got {}, expected 0.25",
-        values[28]
-    );
-    assert!(
-        (values[29] - 15.0).abs() < eps,
-        "nightglow_falloff: got {}, expected 15.0",
-        values[29]
-    );
-    assert!(
-        (values[30] - 0.37).abs() < eps,
-        "nightglow_balance: got {}, expected 0.37",
-        values[30]
-    );
-    assert!(
-        (values[31] - 1.003).abs() < eps,
-        "rayleigh_radius: got {}, expected 1.003",
-        values[31]
-    );
-    assert!(
-        (values[32] - 1.014).abs() < eps,
-        "nightglow_orange_radius: got {}, expected 1.014",
-        values[32]
-    );
-    assert!(
-        (values[33] - 1.015).abs() < eps,
-        "nightglow_green_radius: got {}, expected 1.015",
-        values[33]
-    );
-    assert!(
-        (values[34] - 0.55).abs() < eps,
-        "rayleigh_haze: got {}, expected 0.55",
-        values[34]
-    );
-    assert!(
-        (values[35] - 1.0).abs() < eps,
-        "star_intensity: got {}, expected 1.0",
-        values[35]
-    );
-    assert!(
-        (values[36] - 6.5).abs() < eps,
-        "star_mag_limit: got {}, expected 6.5",
-        values[36]
-    );
-    assert!(
-        (values[37] - 1.25).abs() < eps,
-        "star_size: got {}, expected 1.25",
-        values[37]
-    );
-    assert!(
-        (values[38] - 0.35).abs() < eps,
-        "star_glow_strength: got {}, expected 0.35",
-        values[38]
-    );
-    assert!(
-        (values[39] - 6.0).abs() < eps,
-        "star_glow_radius: got {}, expected 6.0",
-        values[39]
-    );
-    assert!(
-        (values[40] - 0.4).abs() < eps,
-        "star_contrast: got {}, expected 0.4",
-        values[40]
-    );
-    assert!(
-        (values[41] - 123.0).abs() < eps,
-        "sky_fov: got {}, expected 123.0",
-        values[41]
-    );
-    assert!(
-        (values[42] - 1.75).abs() < eps,
-        "sun_glow: got {}, expected 1.75",
-        values[42]
-    );
-    assert!(
-        (values[43] - 0.45).abs() < eps,
-        "sun_rays: got {}, expected 0.45",
-        values[43]
-    );
-    assert!(
-        (values[44] - 0.8).abs() < eps,
-        "sun_flare: got {}, expected 0.8",
-        values[44]
-    );
-    assert!(
-        (values[45] - 0.6).abs() < eps,
-        "sun_visible: got {}, expected 0.6",
-        values[45]
-    );
-    assert!(
-        (values[46] - 2.75).abs() < eps,
-        "sun_size: got {}, expected 2.75",
-        values[46]
-    );
-    assert!(
-        values[47].abs() < eps && (values[48] - 0.6).abs() < eps && (values[49] + 0.8).abs() < eps,
-        "sun_view_dir: got {:?}, expected [0.0, 0.6, -0.8]",
-        [values[47], values[48], values[49]]
-    );
-    assert!(
-        (values[50] - 7.5).abs() < eps,
-        "sun_disk_radius: got {}, expected 7.5",
-        values[50]
-    );
-    assert!(
-        (values[51] - 0.25).abs() < eps
-            && (values[52] - 0.5).abs() < eps
-            && (values[53] - 0.75).abs() < eps
-            && (values[54] - 12.5).abs() < eps,
-        "moon_model: got {:?}, expected [0.25, 0.5, 0.75, 12.5]",
-        [values[51], values[52], values[53], values[54]]
-    );
-    assert!(
-        (values[55] - 1.25).abs() < eps,
-        "moon_brightness: got {}, expected 1.25",
-        values[55]
-    );
-    assert!(
-        (values[56] - 0.35).abs() < eps,
-        "moon_earthshine: got {}, expected 0.35",
-        values[56]
-    );
-    assert!(
-        (values[57] - 0.65).abs() < eps,
-        "milky_way_intensity: got {}, expected 0.65",
-        values[57]
-    );
-    assert!(
-        (values[58] - 0.31).abs() < eps,
-        "cloud_night: got {}, expected 0.31",
-        values[58]
-    );
-    assert!(
-        (values[59] - 0.19).abs() < eps,
-        "cloud_terminator: got {}, expected 0.19",
-        values[59]
-    );
-    assert!(
-        (values[60] - 0.61).abs() < eps,
-        "cloud_opacity_night: got {}, expected 0.61",
-        values[60]
-    );
-    for (index, expected, name) in [
-        (61, 0.95, "sun_glare_tint.r"),
-        (62, 0.55, "sun_glare_tint.g"),
-        (63, 0.15, "sun_glare_tint.b"),
-        (64, 2.25, "sun_horizon_gain"),
-        (65, 64.5, "sun_globe_center.x"),
-        (66, 33.25, "sun_globe_center.y"),
-        (67, 41.5, "sun_globe_radius"),
-        (68, 6.25, "sun_zone_width"),
-        (69, 0.45, "sun_squash"),
-        (70, 4.25, "sun_halo_radius"),
-        (71, 1.35, "sun_reddening"),
-        (72, 1.85, "atmo_sunrise_glow"),
-        (73, 0.62, "atmo_sunrise_g"),
-        (74, 0.72, "sun_flux"),
-    ] {
+    for (index, (expected, name)) in PROBED_FIELDS.iter().enumerate() {
         assert!(
-            (values[index] - expected).abs() < eps,
+            (values[index] - expected).abs() < 1e-6,
             "{name}: got {}, expected {expected}",
             values[index]
         );
@@ -1198,6 +981,18 @@ fn shared_rule_probe() {
 /// and the top of the band where the path takes nothing.
 const RULE_HEIGHTS_KM: [f32; 9] = [0.0, 2.0, 5.0, 8.0, 13.0, 20.0, 27.0, 50.0, 95.565];
 
+/// Below the density ramp's knee, on it, three points up it, and past the
+/// ceiling.
+const RULE_VIEWPORT_HEIGHTS: [f32; 6] = [540.0, 1080.0, 1350.0, 1620.0, 2160.0, 3240.0];
+
+/// Under the lens's lower clamp, both ends of the slider's range, two widths
+/// only a spanned canvas derives, and over the upper clamp.
+const RULE_SKY_FOVS: [f32; 8] = [30.0, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 400.0];
+
+/// Both ends of the reddening slider and the measured atmosphere in between;
+/// zero is the white Sun and has to stay exactly white.
+const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
+
 /// Three rules exist once in WGSL and once in `scene::sun_occlusion`, and every
 /// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
 /// ramp and the shader draws that disk's antialiased edge with it; the CPU
@@ -1214,17 +1009,11 @@ const RULE_HEIGHTS_KM: [f32; 9] = [0.0, 2.0, 5.0, 8.0, 13.0, 20.0, 27.0, 50.0, 9
 fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
     let ctx = RENDER_CTX.lock().unwrap();
 
-    let wgsl_source = format!(
-        "{}\n{}\n{}",
-        include_str!("../shaders/blend.wgsl"),
-        include_str!("../shaders/sphere.wgsl"),
-        SHARED_RULE_PROBE,
-    );
     let shader = ctx
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shared_rule_probe_shader"),
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+            source: wgpu::ShaderSource::Wgsl(production_shaders(SHARED_RULE_PROBE).into()),
         });
     let pipeline = ctx
         .device
@@ -1307,53 +1096,50 @@ fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
         bytemuck::cast_slice::<u8, f32>(&data).to_vec()
     };
 
-    // Below the knee, on it, three points up the ramp, and past the ceiling.
-    for &height in &[540.0_f32, 1080.0, 1350.0, 1620.0, 2160.0, 3240.0] {
-        // Under the lower clamp, both ends of the slider's range, two widths
-        // only a spanned canvas derives, and over the upper clamp.
-        for &sky_fov in &[30.0_f32, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 400.0] {
-            // Both ends of the reddening slider and the measured atmosphere in
-            // between; zero is the white Sun and has to stay exactly white.
-            for &reddening in &[0.0_f32, 1.0, 2.0] {
-                let values = probe(height, sky_fov, reddening);
-                let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
-                let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
-                assert!(
-                    (values[0] - cpu_scale).abs() < 1e-6,
-                    "the density ramp at {height} pixels: the shader says {}, \
-                     scene::sun_occlusion::pixel_scale says {cpu_scale}",
-                    values[0]
-                );
-                assert!(
-                    (values[1] - cpu_edge).abs() < 2e-5 * cpu_edge,
-                    "the sky lens edge radius at {sky_fov} degrees: the shader says {}, \
-                     scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}",
-                    values[1]
-                );
-                for (index, km) in RULE_HEIGHTS_KM.iter().enumerate() {
-                    let cpu = sunlit_core::scene::sun_occlusion::limb_transmission(*km, reddening);
-                    let shader = glam::Vec3::new(
-                        values[2 + index * 4],
-                        values[3 + index * 4],
-                        values[4 + index * 4],
-                    );
-                    // Relative, because the band runs over ten decades and an
-                    // absolute bound would say nothing at the bottom of it.
-                    let apart = (shader - cpu).abs() / cpu.abs().max(glam::Vec3::splat(1e-30));
-                    assert!(
-                        apart.max_element() < 2e-3,
-                        "the light path at {km} km and reddening {reddening}: the shader says \
-                         {shader}, scene::sun_occlusion::limb_transmission says {cpu}"
-                    );
-                    let cpu_fade = sunlit_core::scene::sun_occlusion::limb_disk_amplitude(cpu.y);
-                    assert!(
-                        (values[5 + index * 4] - cpu_fade).abs() < 1e-3,
-                        "the disk's fade at {km} km: the shader says {}, \
-                         scene::sun_occlusion::limb_disk_amplitude says {cpu_fade}",
-                        values[5 + index * 4]
-                    );
-                }
-            }
+    // Each of the three rules reads one uniform and nothing else, so walking
+    // the three axes together covers every value a cross product would.
+    for step in 0..RULE_SKY_FOVS.len() {
+        let height = RULE_VIEWPORT_HEIGHTS[step % RULE_VIEWPORT_HEIGHTS.len()];
+        let sky_fov = RULE_SKY_FOVS[step];
+        let reddening = RULE_REDDENINGS[step % RULE_REDDENINGS.len()];
+
+        let values = probe(height, sky_fov, reddening);
+        let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
+        let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
+        assert!(
+            (values[0] - cpu_scale).abs() < 1e-6,
+            "the density ramp at {height} pixels: the shader says {}, \
+             scene::sun_occlusion::pixel_scale says {cpu_scale}",
+            values[0]
+        );
+        assert!(
+            (values[1] - cpu_edge).abs() < 2e-5 * cpu_edge,
+            "the sky lens edge radius at {sky_fov} degrees: the shader says {}, \
+             scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}",
+            values[1]
+        );
+        for (index, km) in RULE_HEIGHTS_KM.iter().enumerate() {
+            let cpu = sunlit_core::scene::sun_occlusion::limb_transmission(*km, reddening);
+            let shader = glam::Vec3::new(
+                values[2 + index * 4],
+                values[3 + index * 4],
+                values[4 + index * 4],
+            );
+            // Relative, because the band runs over ten decades and an
+            // absolute bound would say nothing at the bottom of it.
+            let apart = (shader - cpu).abs() / cpu.abs().max(glam::Vec3::splat(1e-30));
+            assert!(
+                apart.max_element() < 2e-3,
+                "the light path at {km} km and reddening {reddening}: the shader says \
+                 {shader}, scene::sun_occlusion::limb_transmission says {cpu}"
+            );
+            let cpu_fade = sunlit_core::scene::sun_occlusion::limb_disk_amplitude(cpu.y);
+            assert!(
+                (values[5 + index * 4] - cpu_fade).abs() < 1e-3,
+                "the disk's fade at {km} km: the shader says {}, \
+                 scene::sun_occlusion::limb_disk_amplitude says {cpu_fade}",
+                values[5 + index * 4]
+            );
         }
     }
 }
@@ -1404,17 +1190,11 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
 
     let ctx = RENDER_CTX.lock().unwrap();
 
-    let wgsl_source = format!(
-        "{}\n{}\n{}",
-        include_str!("../shaders/blend.wgsl"),
-        include_str!("../shaders/sphere.wgsl"),
-        ROUND_TRIP_PROBE,
-    );
     let shader = ctx
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("round_trip_probe_shader"),
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+            source: wgpu::ShaderSource::Wgsl(production_shaders(ROUND_TRIP_PROBE).into()),
         });
     let pipeline = ctx
         .device
@@ -1621,7 +1401,7 @@ fn avg_luminance_non_clear(pixels: &[u8]) -> f64 {
 }
 
 #[test]
-fn fresnel_specular_zero_intensity_unchanged() {
+fn the_water_effects_are_inert_while_their_gates_are_zero() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 128;
 
@@ -1629,22 +1409,37 @@ fn fresnel_specular_zero_intensity_unchanged() {
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
     let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
 
-    // With spec_intensity=0.0, Fresnel has nothing to multiply — output
-    // should be identical regardless of Fresnel.
-    let uniforms = Uniforms {
+    // Both gates are zero here, so neither the glint's exponent nor the
+    // diffuse shift's Fresnel exponent may reach the frame.
+    let closed = Uniforms {
         terminator_width: 0.15,
         flags: 1,
         ..default_test_uniforms(size)
     };
+    let varied = Uniforms {
+        spec_shininess: 8.0,
+        fresnel_exp: 1.0,
+        ..closed
+    };
+    let pixels_closed = render_frame(&ctx, &closed, &water, &night, size, size);
+    let pixels_varied = render_frame(&ctx, &varied, &water, &night, size, size);
+    assert_eq!(
+        pixels_closed, pixels_varied,
+        "spec_intensity and fresnel_mix at zero should skip both blocks, \
+         so the parameters they read cannot change a pixel"
+    );
 
-    let pixels = render_frame(&ctx, &uniforms, &water, &night, size, size);
-    let lum = avg_luminance_non_clear(&pixels);
-
-    // With both specular and Fresnel mix at zero, luminance should be
-    // modest (just diffuse-lit ocean color). Sanity check.
-    assert!(
-        lum < 100.0,
-        "With spec_intensity=0 and fresnel_mix=0, luminance should be modest, got {lum:.1}"
+    // The same two parameters through open gates, so the equality above is a
+    // property of the gates rather than of parameters nothing reads.
+    let open = Uniforms {
+        spec_intensity: 0.5,
+        fresnel_mix: 0.5,
+        ..varied
+    };
+    let pixels_open = render_frame(&ctx, &open, &water, &night, size, size);
+    assert_ne!(
+        pixels_closed, pixels_open,
+        "opening both gates should change the frame"
     );
 }
 
@@ -1657,69 +1452,56 @@ fn fresnel_specular_brighter_at_grazing() {
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
     let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
 
-    // Head-on: eye at (0, 0, 3.5), sun at (0, 0, 1)
-    let eye_head_on = glam::Vec3::new(0.0, 0.0, 3.5);
-    let uniforms_head_on = Uniforms {
-        mvp: test_mvp_with_eye(size, size, eye_head_on),
-        terminator_width: 0.15,
-        flags: 1,
-        eye_pos: eye_head_on.into(),
-        spec_intensity: 0.5,
-        ..default_test_uniforms(size)
+    // The brightest pixel the glint adds, which is the highlight itself: the
+    // two cameras see different amounts of the night side, so an average over
+    // the frame would compare how much ocean is lit rather than how bright the
+    // reflection is. An intensity of 0.1 keeps both highlights under the clip.
+    let peak_glint = |eye: glam::Vec3| {
+        let dark = Uniforms {
+            mvp: test_mvp_with_eye(size, size, eye),
+            terminator_width: 0.15,
+            flags: 1,
+            eye_pos: eye.into(),
+            ..default_test_uniforms(size)
+        };
+        let lit = Uniforms {
+            spec_intensity: 0.1,
+            ..dark
+        };
+        let pixels_dark = render_frame(&ctx, &dark, &water, &night, size, size);
+        let pixels_lit = render_frame(&ctx, &lit, &water, &night, size, size);
+        let luminance = |px: &[u8]| {
+            0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2])
+        };
+        pixels_dark
+            .chunks(4)
+            .zip(pixels_lit.chunks(4))
+            .map(|(before, after)| luminance(after) - luminance(before))
+            .fold(f64::MIN, f64::max)
     };
-    let pixels_head_on = render_frame(&ctx, &uniforms_head_on, &water, &night, size, size);
-    let lum_head_on = avg_luminance_non_clear(&pixels_head_on);
 
-    // Grazing: eye at (2.5, 0, 2.5), sun still at (0, 0, 1)
-    // The limb pixels face the camera at a grazing angle where Fresnel is high
-    let eye_grazing = glam::Vec3::new(2.5, 0.0, 2.5);
-    let uniforms_grazing = Uniforms {
-        mvp: test_mvp_with_eye(size, size, eye_grazing),
-        eye_pos: eye_grazing.into(),
-        ..uniforms_head_on
+    // Head-on the reflection sits where the water faces the camera and the
+    // Schlick term is at its 0.02 floor. Swing the camera past the terminator
+    // and the same highlight lands on water that turns away, where the term is
+    // several times larger. Both cameras sit far enough back for the whole
+    // globe to be in frame, because the grazing highlight is near the limb.
+    let eye_at = |degrees: f32| {
+        let angle = degrees.to_radians();
+        glam::Vec3::new(12.0 * angle.sin(), 0.0, 12.0 * angle.cos())
     };
-    let pixels_grazing = render_frame(&ctx, &uniforms_grazing, &water, &night, size, size);
-    let lum_grazing = avg_luminance_non_clear(&pixels_grazing);
+    let head_on = peak_glint(eye_at(0.0));
+    let grazing = peak_glint(eye_at(140.0));
 
-    // At a grazing angle, Fresnel increases specular intensity.
-    // The visible portion of the sphere has more glancing normals,
-    // so overall average luminance should be higher.
     assert!(
-        lum_grazing > lum_head_on * 0.8,
-        "Grazing-angle specular luminance ({lum_grazing:.1}) should be comparable to or \
-         brighter than head-on ({lum_head_on:.1}) due to Fresnel"
+        grazing > head_on,
+        "the highlight should be brighter where the water grazes the camera \
+         ({grazing:.1}) than where it faces it ({head_on:.1})"
     );
 }
 
 // ---------------------------------------------------------------------------
 // Fresnel diffuse shift tests (Step 2.2)
 // ---------------------------------------------------------------------------
-
-#[test]
-fn fresnel_diffuse_shift_zero_is_noop() {
-    let ctx = RENDER_CTX.lock().unwrap();
-    let size = 128;
-
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
-
-    // Baseline: fresnel_mix=0
-    let uniforms_base = Uniforms {
-        terminator_width: 0.15,
-        flags: 1,
-        ..default_test_uniforms(size)
-    };
-    let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
-
-    // With fresnel_mix=0, the diffuse shift block is skipped entirely
-    // (the `if uniforms.fresnel_mix > 0.0` guard).
-    // So the output should be identical to spec_intensity=0, fresnel_mix=0.
-    let lum_base = avg_luminance_non_clear(&pixels_base);
-    assert!(
-        lum_base > 0.0,
-        "Baseline should have visible pixels, got luminance {lum_base:.1}"
-    );
-}
 
 #[test]
 fn fresnel_diffuse_shift_brightens_grazing_water() {
@@ -1838,19 +1620,6 @@ fn cloud_pipeline_renders_with_alpha() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 64;
 
-    // Create a cloud pipeline using vs_cloud / fs_cloud entry points
-    let wgsl_source = format!(
-        "{}\n{}",
-        include_str!("../shaders/blend.wgsl"),
-        include_str!("../shaders/sphere.wgsl"),
-    );
-    let shader = ctx
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test_cloud_shader"),
-            source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-        });
-
     let pipeline_layout = ctx
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1865,13 +1634,13 @@ fn cloud_pipeline_renders_with_alpha() {
             label: Some("test_cloud_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &ctx.shader,
                 entry_point: Some("vs_cloud"),
                 buffers: &[Vertex::buffer_layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &ctx.shader,
                 entry_point: Some("fs_cloud"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
@@ -2020,7 +1789,7 @@ fn cloud_pipeline_renders_with_alpha() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn gamma_above_one_brightens() {
+fn gamma_moves_midtones_in_both_directions() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 128;
 
@@ -2038,24 +1807,6 @@ fn gamma_above_one_brightens() {
     let pixels_bright = render_frame(&ctx, &uniforms_bright, &mid_gray, &black, size, size);
     let lum_bright = avg_luminance_non_clear(&pixels_bright);
 
-    assert!(
-        lum_bright > lum_base,
-        "Gamma > 1.0 should brighten midtones: gamma_2.0={lum_bright:.1}, gamma_1.0={lum_base:.1}"
-    );
-}
-
-#[test]
-fn gamma_below_one_darkens() {
-    let ctx = RENDER_CTX.lock().unwrap();
-    let size = 128;
-
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
-
-    let uniforms_base = default_test_uniforms(size);
-    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
-    let lum_base = avg_luminance_non_clear(&pixels_base);
-
     let uniforms_dark = Uniforms {
         day_gamma: 0.5,
         ..uniforms_base
@@ -2064,28 +1815,32 @@ fn gamma_below_one_darkens() {
     let lum_dark = avg_luminance_non_clear(&pixels_dark);
 
     assert!(
+        lum_bright > lum_base,
+        "Gamma > 1.0 should brighten midtones: gamma_2.0={lum_bright:.1}, gamma_1.0={lum_base:.1}"
+    );
+    assert!(
         lum_dark < lum_base,
         "Gamma < 1.0 should darken midtones: gamma_0.5={lum_dark:.1}, gamma_1.0={lum_base:.1}"
     );
 }
 
 #[test]
-fn gamma_identity_unchanged() {
+fn consecutive_renders_are_identical() {
     let ctx = RENDER_CTX.lock().unwrap();
     let size = 128;
 
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
+    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
     let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
     let uniforms = default_test_uniforms(size);
 
-    // Render twice with identical identity settings
-    let pixels_a = render_frame(&ctx, &uniforms, &mid_gray, &black, size, size);
-    let pixels_b = render_frame(&ctx, &uniforms, &mid_gray, &black, size, size);
+    let pixels_a = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
+    let pixels_b = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
 
     assert_eq!(
         pixels_a, pixels_b,
-        "Gamma 1.0 (identity) should produce identical output on consecutive renders"
+        "the same uniforms and the same textures should give the same pixels, \
+         which is what every pixel-equality case in this file rests on"
     );
 }
 
@@ -2134,25 +1889,6 @@ fn saturation_zero_produces_greyscale() {
     assert_eq!(
         non_grey_count, 0,
         "Saturation 0.0 should produce greyscale: found {non_grey_count} non-grey pixels"
-    );
-}
-
-#[test]
-fn saturation_identity_unchanged() {
-    let ctx = RENDER_CTX.lock().unwrap();
-    let size = 128;
-
-    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
-
-    let uniforms = default_test_uniforms(size);
-
-    let pixels_a = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
-    let pixels_b = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
-
-    assert_eq!(
-        pixels_a, pixels_b,
-        "Saturation 1.0 (identity) should produce identical output on consecutive renders"
     );
 }
 
@@ -2216,30 +1952,6 @@ fn saturation_above_one_increases_chroma() {
 // ---------------------------------------------------------------------------
 // Color correction: independence tests (Step 3.4)
 // ---------------------------------------------------------------------------
-
-#[test]
-fn night_gamma_does_not_affect_single_texture_mode() {
-    let ctx = RENDER_CTX.lock().unwrap();
-    let size = 128;
-
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
-
-    let uniforms_base = default_test_uniforms(size);
-    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
-
-    let uniforms_night_extreme = Uniforms {
-        night_gamma: 0.3,
-        ..uniforms_base
-    };
-    let pixels_night_extreme =
-        render_frame(&ctx, &uniforms_night_extreme, &mid_gray, &black, size, size);
-
-    assert_eq!(
-        pixels_base, pixels_night_extreme,
-        "Night gamma should have no effect in single-texture mode"
-    );
-}
 
 #[test]
 fn day_and_night_corrections_independent() {

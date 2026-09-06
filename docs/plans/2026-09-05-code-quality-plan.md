@@ -502,6 +502,71 @@ All three handovers numbered from 55. Renumbered into the one sequence: package 
     restructured `wallpaper.rs` including the Linux publish path, and moved `SystemWallpaper::publish` from two arms to
     one, which is precisely what that suite exercises and what no headless test reaches.
 
+### Run 5
+
+Package 5.1 supplied 73 to 79 and package 5.2 supplied 80 to 88, each already numbered from the running sequence, so
+no renumbering was needed for the first time in the plan.
+
+73. **The `xtask` test that pins `resolve_texture_paths` to a path was fixed in package 5.1's branch, not handed
+    over.** `guest::artifacts::tests::the_staged_textures_are_the_ones_the_app_asks_for` reads
+    `crates/sunlit-app/src/main.rs` and splits on the function's name, so moving that function into `startup.rs`, which
+    is what `app.md` B1 asks for, broke it. `crates/xtask/**` is reserved to stop packages colliding in it, and 5.1 was
+    the only implementer running, so there was nothing to collide with; against that, a worktree carrying one known-red
+    test is where a second red hides. **This is the third instance of one pattern**, after departures 53 and 71: a
+    symbol's location pinned from somewhere the moving package does not own, expressed as text rather than as a type,
+    so nothing checks it until something moves.
+74. **`run_app` was broken into five helpers, which the plan's item list does not name.** The review's 4.2 row asks for
+    it and the plan's item stopped at "`main.rs` into the library". Granted mid-run on one condition: the extraction
+    must make the ordering more obvious rather than less, since `run_app` is ordering-sensitive in ways no headless
+    test reaches. Each helper states what it cannot be moved ahead of. 196 lines to 95, and `too_many_lines` deleted
+    after reading the count it carried, 134 against a threshold of 100.
+75. **The gamma display values are `in property`, not the `out property` the plan names.** Slint generates a private
+    setter taking `()` for an `out property`, confirmed by reading the generated bindings, so Rust cannot write one.
+    **The plan's wording conflated "a property a test reads" with "a property Rust writes"**; the three properties that
+    did ship as `out` are the ones the `.slint` owns and Rust only reads.
+76. **`tests/slint_ui.rs` reports 36 tests, not the 35 the brief fixes it at.** Item 4 requires a test through
+    `register_action_callbacks`, so the count had to move. Nothing was deleted or renamed.
+77. **`MemoryEntry` and `parse_memory_entries` went to `common/process.rs`**, where `tests-app.md` B-1's table puts
+    them in `pixels.rs`. They parse a process's memory report, not pixels.
+78. **`common/desktop_linux.rs` is not a `cfg`-gated module.** Only four of its items were Linux-only before the split
+    and they keep their own gates; the other ten compile everywhere and use nothing but `std::process::Command`.
+79. **The two gamma labels update on the parameter push rather than on the slider binding.** The risk was a
+    user-visible regression no headless test could catch. Discharged by tracing the path into Slint's own
+    `slider-base.slint`, where `set-value` assigns and calls `changed` in the same function, and out through the fluent
+    theme, `SettingRow` and `sliders-changed` to `on_sliders_changed`: no timer, no debounce, no coalescing. The labels
+    are also written before the send, so a full command channel cannot stall them.
+80. **`crates/sunlit-core/src/lib.rs` was edited, which the plan reserves to the orchestrator.** Review D1 puts
+    `app_data_dir` there by name, package 5.2 was alone and last, and the reservation exists to stop packages
+    colliding. Accepted.
+81. **The plan's acceptance line for item 1 asks for something that does not exist.** It requires a `params.rs` test
+    that fails "when a field is added to the macro list without a WGSL counterpart". `params.rs` has never referenced
+    WGSL, `sphere.wgsl` or `Uniforms`, at any commit in the repository's history. The criterion conflated two guards
+    that live in two files. Both halves are demonstrated separately, and the `SceneParams`-to-digest half is a
+    **compile** error rather than a test failure, which is stronger.
+82. **The `#[cfg(not(windows))]` allow was deleted on evidence from a probe, not from a Linux build.** Validation read
+    the function instead and found it contains no `as` cast at all, so `cast_possible_truncation` had nothing to fire
+    on, on any platform. The blast radius was also smaller than assumed: `cast_possible_truncation` is a clippy lint,
+    and CI's `-D warnings` is a rustc flag that does not evaluate tool lints.
+83. **The 49 `#[allow(unsafe_code)]` were not converted**, so `#[expect]` is the convention for clippy lints only.
+    `CLAUDE.md` names that spelling for FFI call sites and `CLAUDE.md` is reserved, so converting them is a
+    `CLAUDE.md` change first. Worth knowing for whoever revisits it: `unsafe_code` is a rustc lint, so unlike the
+    clippy ones an `#[expect]` there would be evaluated by a plain build.
+84. **A seventh cast helper, `slider_u16`.** The review names six.
+85. **The three PNG encoders were unified as one function taking the settings as parameters**, not as one shared
+    setting, so no file this app writes changes by a byte. Corrected during the run: see departure 88.
+86. **Item 4's `params.rs` copy of the checklist was already gone**, so what landed there is a pointer.
+87. **`slider_index` removes its casts rather than suppressing them.** `usize::try_from(value).unwrap_or(usize::MAX)`
+    answers `None` for every negative input at both call sites, as `as usize` did.
+88. **`engine::save_png` shipped `CompressionType::Default` for one validation round and now passes `Fast`.** The
+    export path had always encoded at `Fast`/`Adaptive`, because `ImageBuffer::save` reaches `PngEncoder::new`, which
+    takes `CompressionType::default()`. **`CompressionType` has a variant named `Default`, and `#[default]` sits on
+    `Fast`**, so `CompressionType::default()` is not `CompressionType::Default`. The implementer, the validator and the
+    orchestrator all read it the same wrong way; the implementer then went to the crate source and found the
+    inversion. Every `render --output` and `displays --out` would have re-encoded at a different DEFLATE level, with a
+    doc comment presenting it as a deliberate trade nobody had made. Two doc sentences made false by the same
+    misreading were corrected with it, one of which claimed `Fast` was chosen "rather than the default" when `Fast`
+    **is** the default.
+
 ## Validation record
 
 One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.
@@ -528,6 +593,9 @@ into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3
 | 4 | 4.2 the renderer | 1 | 2026-09-06 | 0 | 2 | Both fixed in `b6221f4`, both in the new `slots.rs`: a module doc claiming "nothing else in the crate restates it" when two pre-existing `gpu_setup.rs` comments restate parts of the slot order, and a `SLOT_LABELS` doc link that stopped resolving once the constant moved away from `Renderer`. The validator compared all ten pipeline descriptors field by field between the trees, traced the preview and export paths end to end, checked the four `shell_vertex` bodies statement by statement, and re-derived `close_camera`'s three figures from `zoom_to_distance` and `globe_screen_circle` rather than from the handover. It judged all four behavior-change commits behavior-neutral on inspection rather than on green goldens, and named the one place the goldens do not look: every case runs at `sample_count: 1`, so the MSAA rebuild path is proven by construction through the shared `Pipelines::build` and not by a pixel. |
 | 4 | 4.3 scene, config, display, desktop, memory | 1 | 2026-09-06 | 0 | 5 | Two fixed in `f105795`, one was a handover correction, two were the orchestrator's. Fixed: a stray `///` separator, and `#[track_caller]` on `sky.rs`'s `checked`, which the FFI dedup had silently cost a panic location; the implementer took it rather than declining, on the ground that a dedup should be behavior-neutral rather than behavior-neutral-except-for-a-panic-location. The handover correction: its bridge line inventory listed eight `engine.rs` call sites where there are nine, which stayed cheap only because the **symbol table** was complete and the orchestrator substitutes by symbol. The orchestrator's two: three stale cross-references in `sphere.wgsl` and two in `docs/rendering.md`. The validator overrode the `desktop` dead-code allow with `cargo rustc -- --force-warn dead_code` rather than trusting the implementer's probe and got exactly the three claimed items; reproduced both `--color-moved` percentages by counting ANSI colour codes; compared each base file's whitespace-stripped sorted line multiset against its split parts; and read `place_sun` argument by argument, including confirming `disc` and `globe` are not swapped where a swap would compile silently. |
 
+| 5 | 5.1 the app crate | 1 | 2026-09-06 | 0 | 2 | Both fixed in `3481727`, both documentation. The validator's work on departure 79 is the standard for this class of question: rather than reasoning about intent it traced the drag path into Slint's own `slider-base.slint`, through the fluent theme's `changed <=> base.changed`, `SettingRow` and `sliders-changed` to `on_sliders_changed`, and established there is no timer, debounce or coalescing anywhere on it; then checked two things nobody had asked for, that `push_params` writes both labels before `self.send` and that the declared defaults are self-consistent because `gamma_slider_to_value(0.5) == 1.0`. It confirmed departure 75 by reading the generated bindings rather than believing either party. The two MINORs: a helper whose doc justified the ordering of two of its three steps, and an accounting line whose reflow repaints an adjacent `#[cfg]` so a reader could think the split added a gate. |
+| 5 | 5.2 cross-cutting | 1 | 2026-09-06 | 0 | 5 | Three fixed and two recorded in `e81d09c`. The validator reconstructed the generated digest from the macro and the seven-group list and compared it to the hand-written original extracted from `aab8c0b`: 49 fields against 49, **zero expression differences**, `q` and `quantize_direction` byte-identical, all seven group assignments correct, `datetime` still excluded. For the offset guard it traced every degenerate parse path and established the new tests cannot be false-green, and confirmed the existing offset test was untouched. **One MINOR inverted on investigation and became a real defect**: see departure 88. |
+
 ## Budget record
 
 | Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
@@ -538,6 +606,8 @@ into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3
 | 3 | 3, rising to about 60 by the merge | to be filled at wrap-up | 3 | The window rolled over between runs 2 and 3, so run 3 started almost empty. Three implementers, three validators, three fix rounds and the orchestrator's own merges, docs work and gates. The maintainer raised the controlled-pause threshold from 90 to 95 percent for this session and asked for run 4 to follow run 3 without the plan's "below 50 percent" start condition (departure 51). |
 
 | 4 | 53, crossing a window rollover partway | to be filled at wrap-up | 3 | The largest run in the plan by lines moved. Started at 53 percent of the old window and crossed the reset at about 85, with the orchestrator deliberately holding the last two validators until the far side rather than risking a spawn refusal mid-round. Departure 51's raised ceiling was therefore never approached. |
+
+| 5 | 13 | to be filled at wrap-up | 2, in sequence | The last run, and the only one whose packages ran one after the other rather than in parallel, because package 5.2 touches every directory. Package 5.1 was gated and guest-tested in isolation before 5.2 merged, deliberately: the two carry different risks and the e2e suite is the only thing that watches `run_app`'s ordering, so a failure after both merged would have had two candidate causes. |
 
 ## Declined findings
 
@@ -685,6 +755,18 @@ on Linux. **macOS remains uncompiled**, by the maintainer's decision rather than
 
 ## Open items
 
+**The plan is complete: all five runs shipped, and every item in the review's section 5 is discharged or recorded
+below.** What follows is what the plan leaves owed, with no run left to carry it.
+
+- **`engine::save_png` no longer picks the encoder from the file extension.** `render --output out.jpg` used to fail
+  with "The image format Jpeg does not support the color type Rgba8" and now succeeds, writing PNG bytes into a file
+  named `.jpg`. The `.png` path is byte-identical. Declared as departure 85's third named change rather than fixed,
+  because making the CLI refuse a non-`.png` extension is a new decision and run 5 was the last run.
+- **`crates/sunlit-core/tests/engine/main.rs` names a `harness_of_its_own` helper that exists nowhere in the tree.**
+  Inherited drift from run 2's rebuild that run 3's comment pass missed and run 4 found. The plan gave it to "run 5"
+  without naming a package, and 5.2 was the last package, so nobody picked it up. One line.
+- **Review 4.4's "Linux backend lookup" row should be struck rather than left open.** Run 4 established that the
+  second `detect_current()` is deliberate.
 - **`Renderer`'s remaining fields are not grouped** into `targets`, `textures` and `last` (review B3). `pipelines`
   is done and delivered most of the benefit; what is left is the other three groups and about thirty field accesses
   across six files. Package 4.2 offered to do it and the orchestrator declined, to avoid landing further structure

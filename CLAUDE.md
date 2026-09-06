@@ -4,7 +4,7 @@ Guidance for Claude Code in this repository. This file is the map and the rules;
 
 ## Project status
 
-Early stage with frequent breaking changes. Windows is the platform that ships; Linux builds, tests, renders and sets a wallpaper per desktop; macOS builds, tests and renders headlessly and cannot set a wallpaper. Keep the docs current as the code changes, `docs/roadmap.md` included.
+Early stage with frequent breaking changes. Windows is the platform that ships; Linux builds, tests, renders and sets a wallpaper per desktop; macOS has the same platform code and has never run on a Mac, so `docs/platforms.md` gives every macOS row the tier of evidence it is at and nothing there claims more. Keep the docs current as the code changes, `docs/roadmap.md` included.
 
 ## Where to read
 

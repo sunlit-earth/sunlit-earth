@@ -22,7 +22,7 @@
 //!
 //! [`Publication::write_job`]: super::Publication::write_job
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -96,13 +96,14 @@ pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
             })
         })
         .collect();
+    let anchor = written.anchor.clone();
     publication.commit();
 
     if assignments.is_empty() {
         return Err("this publish has no image for any screen".to_owned());
     }
 
-    let painted = on_main_thread(assignments)?;
+    let painted = on_main_thread(assignments, anchor)?;
     info!(screens = painted.painted, "set a wallpaper per screen");
     Ok(painted.note())
 }
@@ -115,11 +116,19 @@ struct Painted {
     unmatched: Vec<String>,
     /// Screens AppKit refused, with the reason it gave.
     refused: Vec<String>,
+    /// Whether every screen got the anchor's picture because none of them
+    /// could be addressed by name.
+    fell_back: bool,
 }
 
 impl Painted {
     /// The line the status area shows, empty where everything was painted.
     fn note(&self) -> String {
+        if self.fell_back {
+            return "macOS named no screen this publish knows about, so every screen \
+                    got the anchor's picture the way they all did before"
+                .to_owned();
+        }
         let mut notes = Vec::new();
         if !self.unmatched.is_empty() {
             notes.push(format!(
@@ -143,10 +152,13 @@ impl Painted {
 /// into a refusal rather than a hang. A publish that times out has already
 /// written and committed its files, so the desktop is on the previous
 /// generation and the next publish will try again.
-fn on_main_thread(assignments: Vec<Assignment>) -> Result<Painted, String> {
+fn on_main_thread(
+    assignments: Vec<Assignment>,
+    anchor: Option<PathBuf>,
+) -> Result<Painted, String> {
     let (tx, rx) = mpsc::channel();
     DispatchQueue::main().exec_async(move || {
-        let _ = tx.send(paint(&assignments));
+        let _ = tx.send(paint(&assignments, anchor.as_deref()));
     });
     match rx.recv_timeout(MAIN_THREAD_TIMEOUT) {
         Ok(painted) => painted,
@@ -167,7 +179,12 @@ fn timeout_refusal() -> String {
 }
 
 /// The AppKit half, which runs on the main thread and nowhere else.
-fn paint(assignments: &[Assignment]) -> Result<Painted, String> {
+///
+/// `anchor` is the fallback the Windows setter has for the same situation: if
+/// AppKit names no screen this publish knows about, every screen gets the
+/// anchor's picture rather than nobody getting anything, which is what all of
+/// them did before there was a plan at all.
+fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, String> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err(
             "the wallpaper reached AppKit off the main thread, which cannot happen \
@@ -236,11 +253,50 @@ fn paint(assignments: &[Assignment]) -> Result<Painted, String> {
         }
     }
     if painted.painted == 0 {
-        return Err(format!(
-            "AppKit took no screen's wallpaper: {}",
-            painted.note()
-        ));
+        let Some(anchor) = anchor else {
+            return Err(format!(
+                "AppKit took no screen's wallpaper: {}",
+                painted.note()
+            ));
+        };
+        return every_screen(&workspace, mtm, &options, anchor);
     }
+    Ok(painted)
+}
+
+/// Paint every screen with one picture, which is what a session macOS named no
+/// screen of this publish for gets instead of nothing.
+fn every_screen(
+    workspace: &NSWorkspace,
+    mtm: MainThreadMarker,
+    options: &NSDictionary<NSString, AnyObject>,
+    path: &Path,
+) -> Result<Painted, String> {
+    let Some(url) = NSURL::from_file_path(path) else {
+        return Err(format!("{} is not a path AppKit takes", path.display()));
+    };
+    let mut painted = Painted::default();
+    for screen in NSScreen::screens(mtm) {
+        // SAFETY: as above; the options are the same dictionary.
+        #[allow(unsafe_code)]
+        let outcome =
+            unsafe { workspace.setDesktopImageURL_forScreen_options_error(&url, &screen, options) };
+        match outcome {
+            Ok(()) => painted.painted += 1,
+            Err(error) => {
+                let reason = error.localizedDescription().to_string();
+                warn!(error = %reason, "AppKit would not take the anchor's wallpaper either");
+            }
+        }
+    }
+    if painted.painted == 0 {
+        return Err(
+            "AppKit named no screen this publish knows about and would not \
+                    take the anchor's picture for any screen either"
+                .to_owned(),
+        );
+    }
+    painted.fell_back = true;
     Ok(painted)
 }
 
@@ -307,10 +363,27 @@ mod tests {
         };
         assert_eq!(painted.note(), "");
 
+        // The fallback says one thing and says it instead of the rest: every
+        // screen got the same picture, so naming which ones were unmatched
+        // would be a list of all of them.
+        let painted = Painted {
+            painted: 2,
+            fell_back: true,
+            unmatched: vec!["Display 1".to_owned(), "Display 2".to_owned()],
+            refused: Vec::new(),
+        };
+        assert!(
+            painted.note().contains("the anchor's picture"),
+            "{}",
+            painted.note()
+        );
+        assert!(!painted.note().contains("Display 1"), "{}", painted.note());
+
         let painted = Painted {
             painted: 1,
             unmatched: vec!["Display 2".to_owned()],
             refused: Vec::new(),
+            fell_back: false,
         };
         assert!(painted.note().contains("named no screen for Display 2"));
         assert!(painted.note().contains("kept the wallpaper they had"));
@@ -319,6 +392,7 @@ mod tests {
             painted: 1,
             unmatched: Vec::new(),
             refused: vec!["Display 1 (built-in)".to_owned()],
+            fell_back: false,
         };
         assert!(
             painted
@@ -330,6 +404,7 @@ mod tests {
             painted: 1,
             unmatched: vec!["Display 2".to_owned()],
             refused: vec!["Display 3".to_owned()],
+            fell_back: false,
         };
         assert!(painted.note().contains("; "), "{}", painted.note());
     }

@@ -20,8 +20,8 @@
 //! either way.
 
 use objc2_core_graphics::{
-    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayIsMain,
-    CGDisplayModeGetPixelHeight, CGDisplayModeGetPixelWidth, CGError, CGGetActiveDisplayList,
+    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayIsMain, CGDisplayMode,
+    CGError, CGGetActiveDisplayList,
 };
 
 use super::{Monitor, Output};
@@ -84,8 +84,8 @@ pub(crate) fn describe(id: u32) -> Display {
     let mode = CGDisplayCopyDisplayMode(id);
     let (pixel_width, pixel_height) = mode.as_deref().map_or((0, 0), |mode| {
         (
-            CGDisplayModeGetPixelWidth(Some(mode)),
-            CGDisplayModeGetPixelHeight(Some(mode)),
+            CGDisplayMode::pixel_width(Some(mode)),
+            CGDisplayMode::pixel_height(Some(mode)),
         )
     });
     Display {

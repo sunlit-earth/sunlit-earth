@@ -1266,8 +1266,8 @@ fn architectures(runner: &dyn Runner, platform: Platform, exe: &Path) -> Vec<Str
 /// The architectures out of `lipo -info`, whichever of its two sentences it
 /// answered with.
 ///
-/// "Non-fat file: <path> is architecture: arm64" for one slice, and
-/// "Architectures in the fat file: <path> are: x86_64 arm64" for several. Both
+/// `Non-fat file: <path> is architecture: arm64` for one slice, and
+/// `Architectures in the fat file: <path> are: x86_64 arm64` for several. Both
 /// put the list after the last colon, and a path with a colon in it is not
 /// something this build produces. Anything that is neither of those two
 /// sentences answers with nothing: the alternative is a record naming an

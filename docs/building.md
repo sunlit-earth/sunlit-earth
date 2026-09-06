@@ -64,6 +64,9 @@ cargo xtask vm setup
 cargo xtask vm build-image <image>
 cargo xtask e2e --target <host|windows|linux> [--keep] [--desktop <kde|gnome|xfce|cinnamon>] [--screens <n>]
 cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cache] [--allow-expired-image] [--allow-dirty]
+cargo xtask bundle --platform <windows|linux|macos> --exe <path> [--out <dir>] [--verify]
 ```
+
+`bundle` is the half of `dist` that wraps a binary somebody already built in the archive its platform's users open, without a VM and without a hypervisor, which is what the release runners call. It is also the only route to a macOS archive, since there is no macOS guest: on a Mac it assembles `Sunlit Earth.app`, ad-hoc signs it with `codesign` and zips it with `ditto`, plus a plain tarball beside it; on any other host it writes the tarball and says which of Apple's tools it wanted. `--verify` unpacks each archive and renders from it twice, so it needs a host of the platform being bundled.
 
 `vm doctor` inspects the host without changing it. `vm setup` prepares the host and requires elevation on Windows. Image names are `windows`, `linux`, `windows-builder`, and `linux-builder`. The VM lifecycle commands include `up`, `ssh`, `view`, `smoke`, `status`, `down`, and `purge`; use the [VM guide](vm-setup.md) for setup, operation, and cleanup. [vm-internals.md](vm-internals.md) explains the implementation.

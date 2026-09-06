@@ -323,6 +323,12 @@ mod core_graphics {
     /// about to happen, and the layout still reads as it did: acting on it
     /// would re-query the arrangement that is being replaced and then act again
     /// on the real notification. Everything else is a hint.
+    // SAFETY: this is a declaration rather than a call, and what makes it
+    // sound is that it is only ever installed through
+    // `CGDisplayRegisterReconfigurationCallback`, whose contract is exactly
+    // this signature. It touches neither of its pointers, reads no state but a
+    // mutex, and returns normally on every path, so it cannot unwind into C.
+    #[allow(unsafe_code)]
     unsafe extern "C-unwind" fn reconfigured(
         _display: CGDirectDisplayID,
         flags: CGDisplayChangeSummaryFlags,

@@ -209,7 +209,10 @@ The e2e harness and the xtask read six more. They do not go through `env_overrid
 - `interprocess`: local socket IPC. `single-instance`: the OS mutex (app only)
 - `windows-sys`: Win32 FFI, `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo` in core; `AttachConsole` in the app
 - `mach2`: Mach FFI on macOS, for `task_info(TASK_VM_INFO)` in `memory.rs` and nothing else. Declarations only; the `unsafe` call site is ours
-- `signal-hook`: Linux only, and only for `session_end`. A signal handler may call almost nothing and quitting a Slint event loop is not on the list, so the delivery has to reach an ordinary thread first; this crate does that with a self-pipe, which is why it is a dependency rather than a scoped `unsafe` around `libc::signal`
+- `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-core-foundation`, `objc2-core-graphics`, `dispatch2`: macOS only, for the display query, the display watcher and the wallpaper setter. All but one were already in the tree through Slint's winit backend, which is why the macOS arms cost one new download rather than six. Declarations only, as `mach2` is; every `unsafe` call site is ours and carries its own argument
+- `objc2-color-sync`: macOS only, and only for `CGDisplayCreateUUIDFromDisplayID`, which is the one display id that survives a reboot and which CoreGraphics does not export
+- `icns`: the macOS icon bake (xtask only). Pure Rust, so the `.icns` a release ships is produced by whichever host runs the bake rather than by Apple's `iconutil`
+- `signal-hook`: both Unixes, and only for `session_end`. A signal handler may call almost nothing and quitting a Slint event loop is not on the list, so the delivery has to reach an ordinary thread first; this crate does that with a self-pipe, which is why it is a dependency rather than a scoped `unsafe` around `libc::signal`
 
 ## Resource-flow rules (from the retrospective, section 8.2)
 

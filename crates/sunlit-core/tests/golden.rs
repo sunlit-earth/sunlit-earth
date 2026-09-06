@@ -653,11 +653,11 @@ fn golden_sunrise_band() {
 /// at rather than the 60 degrees the four cases above are framed in.
 ///
 /// This is where the two lenses disagree most. The globe subtends 15.68
-/// degrees from here, so the painted limb is 204 pixels out, while the sky lens
-/// puts a direction there only when it is 57 degrees off the view axis. A lobe
-/// in the true scattering angle therefore peaks with the Sun's image still 152
-/// pixels inside the painted disc, and is a quarter of its peak by the time the
-/// image reaches the limb.
+/// degrees from here, so the painted limb is 203.8 pixels out, while the sky
+/// lens puts a direction there only when it is 58.3 degrees off the view axis.
+/// A lobe in the true scattering angle therefore peaks with the Sun's image
+/// still 153.4 pixels inside the painted disc, and is a quarter of its peak by
+/// the time the image reaches the limb.
 fn close_camera(longitude: f32) -> CameraParams {
     CameraParams {
         longitude,

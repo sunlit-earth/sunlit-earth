@@ -13,6 +13,8 @@ use std::sync::Mutex;
 
 use tracing::debug;
 
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod linux;
 #[cfg(windows)]
 mod windows;
 

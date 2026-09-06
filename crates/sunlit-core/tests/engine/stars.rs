@@ -3,15 +3,26 @@
 use crate::groups::{FRAME, plain};
 use crate::harness::{gpu, test_params};
 
+/// How many disagreeing pixels the failure below lists before it stops.
+const LISTED: usize = 8;
+
 #[test]
 fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
-    // With the atmosphere off, the only thing outside the globe is stars, so
-    // every pixel the two frames disagree about is one a star painted. That is
-    // what lets this assert what its name says rather than the much weaker "one
-    // pixel changed": at intensity zero each of those pixels is still exactly
-    // the clear color, not a dimmed star.
+    // With the atmosphere off, the only thing outside the globe is stars, and
+    // the globe itself is opaque and drawn after them, so every pixel the two
+    // frames disagree about is one a star painted. That is what lets this
+    // assert what its name says rather than the much weaker "one pixel
+    // changed": at intensity zero each of those pixels is still exactly the
+    // clear color, not a dimmed star.
+    //
+    // The inference has one premise beyond the draw order, which is that the
+    // renderer repeats itself: a pixel that comes back differently from one
+    // render of a scene to the next is evidence about the adapter and none at
+    // all about the stars. Rendering the stars-off frame a second time is what
+    // separates the two, and it is only paid for when there is something to
+    // separate, which on a reproducible adapter is never.
     let gpu = gpu();
     let harness = plain(&gpu);
     let mut params = test_params();
@@ -21,24 +32,89 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     params.star_intensity = 1.5;
     let stars_on = harness.picture(&params, FRAME);
 
-    let mut star_pixels = 0_usize;
+    let mut lit_background = 0_usize;
+    let mut over_the_globe = Vec::new();
     for (index, (off, on)) in stars_off
         .chunks_exact(4)
         .zip(stars_on.chunks_exact(4))
         .enumerate()
     {
-        if off != on {
-            star_pixels += 1;
-            assert_eq!(
-                off, CLEAR,
-                "pixel {index} carries {off:?} with stars disabled, not the clear color"
-            );
+        if off == on {
+            continue;
+        }
+        if off == CLEAR {
+            lit_background += 1;
+        } else {
+            over_the_globe.push(index);
         }
     }
+
+    if !over_the_globe.is_empty() {
+        params.star_intensity = 0.0;
+        let stars_off_again = harness.picture(&params, FRAME);
+        let (reproducible, not): (Vec<usize>, Vec<usize>) = over_the_globe
+            .iter()
+            .partition(|&&index| pixel(&stars_off, index) == pixel(&stars_off_again, index));
+        assert!(
+            reproducible.is_empty(),
+            "{} pixel(s) this adapter renders reproducibly changed when the stars came on, \
+             so a star reached the globe:\n{}",
+            reproducible.len(),
+            report(&reproducible, &stars_off, &stars_on, &stars_off_again)
+        );
+        println!(
+            "{} pixel(s) differ between two renders of the same scene and carry no evidence \
+             about the stars; they were left out:\n{}",
+            not.len(),
+            report(&not, &stars_off, &stars_on, &stars_off_again)
+        );
+    }
     assert!(
-        star_pixels > 0,
+        lit_background > 0,
         "enabling stars should alter a clear background pixel"
     );
+}
+
+/// One pixel of an RGBA frame.
+fn pixel(frame: &[u8], index: usize) -> [u8; 4] {
+    let mut rgba = [0_u8; 4];
+    rgba.copy_from_slice(&frame[index * 4..index * 4 + 4]);
+    rgba
+}
+
+/// Where the listed pixels are and what all three renders made of them.
+///
+/// Enough for one CI run on an adapter nobody here has to answer the question
+/// the case cannot answer itself: whether the frame is the size the case
+/// assumed, whether the pixel sits on the globe's silhouette or well inside it,
+/// and by how much the two stars-off renders disagree.
+fn report(indices: &[usize], off: &[u8], on: &[u8], again: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let width = FRAME.0 as usize;
+    let mut lines = String::new();
+    let _ = writeln!(
+        lines,
+        "  frame {}x{}, {} pixels",
+        FRAME.0,
+        FRAME.1,
+        off.len() / 4
+    );
+    for &index in indices.iter().take(LISTED) {
+        let _ = writeln!(
+            lines,
+            "  ({}, {}) off {:?} on {:?} off again {:?}",
+            index % width,
+            index / width,
+            pixel(off, index),
+            pixel(on, index),
+            pixel(again, index)
+        );
+    }
+    if indices.len() > LISTED {
+        let _ = writeln!(lines, "  and {} more", indices.len() - LISTED);
+    }
+    lines
 }
 
 #[test]

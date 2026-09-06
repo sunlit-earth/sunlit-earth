@@ -25,6 +25,8 @@ A row moves up only when the evidence exists. That is the retrospective's rule a
 | Release bundle | zip, verified on its own runner | tarball, verified on its own runner | ad-hoc signed `.app` zip and a tarball, both verified on the runner |
 | Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 15 cases) or in a local VM (13 of 15; the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, neither of which the Windows guest is) | yes, in a local VM (all 14 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiles, unrun |
 
+The macOS CI job is not green. As of 2026-09-07 one engine case fails there, `stars::zero_star_intensity_leaves_catalog_pixels_at_the_clear_color`, on a single pixel the paravirtual Metal device does not reproduce when the star draw enters the pass; `testing.md` has the measurement and the revision written for it, which no macOS run has seen. Every other target passes. Nothing in the table below rests on that case, but a reader should not take "compiled" to mean the job came back green.
+
 The `render` row is the one at the middle tier, and what put it there is the smoke step of <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063631672>: the binary the suite built, run on a `macos-latest` runner with no textures and no clouds, wrote a 640x360 PNG whose IHDR the step reads back. It is the first image this project has produced on a Mac. The release bundles are verified the same way and by the same two renders, on the runner that built them, in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063658604>.
 
 Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:

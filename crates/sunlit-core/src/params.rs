@@ -4,6 +4,8 @@
 //! every layer, so there are exactly two translation points for it:
 //! `ui_callbacks::read_params_from_window` and `apply_params_to_window` in
 //! `sunlit-app`, and `renderer::render_pass::write_uniforms` here.
+//!
+//! `docs/rendering.md` lists every file a new parameter touches.
 
 use crate::config::AppConfig;
 use crate::scene::camera::CameraParams;

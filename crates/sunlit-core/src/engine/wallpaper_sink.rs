@@ -13,8 +13,6 @@ use std::sync::Arc;
 
 use crate::display::Monitor;
 use crate::display::layout::{DisplayMode, Rect, crop};
-#[cfg(target_os = "linux")]
-use crate::wallpaper::linux::{run, which, write_placement};
 
 /// One finished image, as tightly packed RGBA8.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,27 +207,9 @@ fn default_monitor() -> Monitor {
 pub struct SystemWallpaper;
 
 impl WallpaperSink for SystemWallpaper {
-    /// Whether this desktop has a setter, asked before anything is rendered.
-    ///
-    /// On Linux both halves of the answer are cheap and both matter: which
-    /// desktop this is, and whether its setter is installed. Finding out after a
-    /// full-resolution render and readback is what this exists to avoid.
     #[cfg(target_os = "linux")]
     fn check_supported(&self) -> Result<(), String> {
-        let backend = crate::desktop::detect_current().ok_or_else(|| {
-            crate::desktop::no_backend_message(
-                &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
-            )
-        })?;
-        if which(backend.program).is_none() {
-            return Err(format!(
-                "this is {desktop}, whose wallpaper is set with `{program}`, and \
-                 that program is not on PATH",
-                desktop = backend.desktop,
-                program = backend.program,
-            ));
-        }
-        Ok(())
+        crate::wallpaper::check_supported()
     }
 
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -267,50 +247,11 @@ impl WallpaperSink for SystemWallpaper {
         Ok(monitors)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
         let note = crate::wallpaper::set_wallpaper_job(job)?;
         crate::memory::log_memory_usage("after wallpaper set");
         Ok(note)
-    }
-
-    /// Write the PNGs and run the desktop's own setter.
-    ///
-    /// The backend is looked up again rather than cached from `check_supported`:
-    /// the sink outlives a session change, and running the previous desktop's
-    /// setter would fail in a way that named the wrong desktop.
-    #[cfg(target_os = "linux")]
-    fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
-        let backend = crate::desktop::detect_current().ok_or_else(|| {
-            crate::desktop::no_backend_message(
-                &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
-            )
-        })?;
-        let placement = write_placement(job, backend.reach())?;
-
-        let discovered = match backend.discovery() {
-            Some(query) => run(&query)?,
-            None => String::new(),
-        };
-        let commands = backend.commands(&placement, &discovered);
-        if commands.is_empty() {
-            return Err(backend.nothing_to_run());
-        }
-        for command in &commands {
-            run(command)?;
-        }
-
-        tracing::info!(
-            path = %placement.single.display(),
-            desktop = backend.desktop,
-            commands = commands.len(),
-            screens = job.monitors.len(),
-            "wallpaper set successfully"
-        );
-        crate::memory::log_memory_usage("after wallpaper set");
-        Ok(backend
-            .degradation(job.mode, job.monitors.len())
-            .unwrap_or_default())
     }
 
     #[cfg(not(any(windows, target_os = "linux")))]

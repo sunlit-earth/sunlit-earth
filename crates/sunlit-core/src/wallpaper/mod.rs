@@ -14,10 +14,12 @@ use std::sync::Mutex;
 use tracing::debug;
 
 #[cfg(any(target_os = "linux", test))]
-pub(crate) mod linux;
+mod linux;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{check_supported, set_wallpaper_job};
 #[cfg(windows)]
 pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
 

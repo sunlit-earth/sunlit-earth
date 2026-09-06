@@ -5,7 +5,8 @@ use astronomy_engine_bindings::{
     Astronomy_RotationAxis, Astronomy_SiderealTime, astro_aberration_t_ABERRATION, astro_body_t,
     astro_body_t_BODY_JUPITER, astro_body_t_BODY_MARS, astro_body_t_BODY_MERCURY,
     astro_body_t_BODY_MOON, astro_body_t_BODY_SATURN, astro_body_t_BODY_SUN,
-    astro_body_t_BODY_VENUS, astro_status_t_ASTRO_SUCCESS, astro_time_t,
+    astro_body_t_BODY_VENUS, astro_status_t, astro_status_t_ASTRO_SUCCESS, astro_time_t,
+    astro_vector_t,
 };
 use glam::{Mat3, Vec3};
 
@@ -95,19 +96,41 @@ pub(crate) fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
 /// is 1 AU expressed in those.
 const EARTH_RADII_PER_AU: f32 = 23_454.8;
 
-/// The Moon's geocentric position in world space, in Earth radii.
+/// Fail with the entry point's own name when a call reports one.
+///
+/// Every function below can only report a failure for a body it was not given
+/// one of, and every body here is a compile-time constant, so this is
+/// unreachable in practice. Naming the call is what would make it findable.
+fn checked(status: astro_status_t, what: &str) {
+    assert_eq!(status, astro_status_t_ASTRO_SUCCESS, "{what} failed");
+}
+
+/// The library computes in f64 and the renderer draws in f32. Every narrowing
+/// of a returned value goes through here, which is what keeps the suppression
+/// to one site instead of one per entry point.
 #[allow(clippy::cast_possible_truncation)]
+fn f32_of(value: f64) -> f32 {
+    value as f32
+}
+
+/// A returned vector in the renderer's precision.
+fn vec3_of(v: astro_vector_t) -> Vec3 {
+    Vec3::new(f32_of(v.x), f32_of(v.y), f32_of(v.z))
+}
+
+/// One row of a returned rotation matrix, likewise.
+fn vec3_of_row(row: [f64; 3]) -> Vec3 {
+    Vec3::new(f32_of(row[0]), f32_of(row[1]), f32_of(row[2]))
+}
+
+/// The Moon's geocentric position in world space, in Earth radii.
 fn moon_position(time: astro_time_t, rotation: Mat3) -> Vec3 {
     // SAFETY: Astronomy_GeoMoon is a pure C function. The time value is valid
     // and the function returns a value type with no retained references.
     #[allow(unsafe_code)]
     let vector = unsafe { Astronomy_GeoMoon(time) };
-    assert_eq!(
-        vector.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_GeoMoon failed"
-    );
-    let eqj = Vec3::new(vector.x as f32, vector.y as f32, vector.z as f32);
-    rotation * (eqj * EARTH_RADII_PER_AU)
+    checked(vector.status, "Astronomy_GeoMoon");
+    rotation * (vec3_of(vector) * EARTH_RADII_PER_AU)
 }
 
 /// The rotation that takes the Moon's body-fixed frame into world space.
@@ -117,22 +140,13 @@ fn moon_position(time: astro_time_t, rotation: Mat3) -> Vec3 {
 /// equator on the J2000 equator. So the node is the zero of longitude before
 /// the spin is applied, the spin carries the prime meridian to where it
 /// actually points, and the body's own axes follow from the two.
-#[allow(clippy::cast_possible_truncation)]
 fn moon_rotation(time: &mut astro_time_t, world_from_eqj: Mat3) -> Mat3 {
     // SAFETY: Astronomy_RotationAxis only reads and updates the valid time
     // value passed by pointer, and returns a value type.
     #[allow(unsafe_code)]
     let axis = unsafe { Astronomy_RotationAxis(astro_body_t_BODY_MOON, std::ptr::from_mut(time)) };
-    assert_eq!(
-        axis.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_RotationAxis failed"
-    );
-    let pole = Vec3::new(
-        axis.north.x as f32,
-        axis.north.y as f32,
-        axis.north.z as f32,
-    )
-    .normalize();
+    checked(axis.status, "Astronomy_RotationAxis");
+    let pole = vec3_of(axis.north).normalize();
     let node = Vec3::Z.cross(pole);
     // A pole on the J2000 pole itself leaves the node undefined; the Moon's is
     // 66 degrees away from it and the fallback is never taken.
@@ -141,13 +155,12 @@ fn moon_rotation(time: &mut astro_time_t, world_from_eqj: Mat3) -> Mat3 {
     } else {
         Vec3::X
     };
-    let spin = (axis.spin as f32).to_radians();
+    let spin = f32_of(axis.spin).to_radians();
     let prime_meridian = node * spin.cos() + pole.cross(node) * spin.sin();
     let eqj_from_body = Mat3::from_cols(prime_meridian, pole.cross(prime_meridian), pole);
     world_from_eqj * eqj_from_body
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn rotation_world_from_eqj(time: &mut astro_time_t) -> Mat3 {
     // SAFETY: Both functions only read or update the valid time value passed
     // by pointer and return value types with no retained references.
@@ -158,59 +171,35 @@ fn rotation_world_from_eqj(time: &mut astro_time_t) -> Mat3 {
             Astronomy_SiderealTime(std::ptr::from_mut(time)),
         )
     };
-    assert_eq!(
-        rotation.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_Rotation_EQJ_EQD failed"
-    );
+    checked(rotation.status, "Astronomy_Rotation_EQJ_EQD");
 
     let eqd_from_eqj = Mat3::from_cols(
-        Vec3::new(
-            rotation.rot[0][0] as f32,
-            rotation.rot[0][1] as f32,
-            rotation.rot[0][2] as f32,
-        ),
-        Vec3::new(
-            rotation.rot[1][0] as f32,
-            rotation.rot[1][1] as f32,
-            rotation.rot[1][2] as f32,
-        ),
-        Vec3::new(
-            rotation.rot[2][0] as f32,
-            rotation.rot[2][1] as f32,
-            rotation.rot[2][2] as f32,
-        ),
+        vec3_of_row(rotation.rot[0]),
+        vec3_of_row(rotation.rot[1]),
+        vec3_of_row(rotation.rot[2]),
     );
-    let earth_fixed_from_eqd = Mat3::from_rotation_z(-(gast_hours as f32 * 15.0).to_radians());
+    let earth_fixed_from_eqd = Mat3::from_rotation_z(-(f32_of(gast_hours) * 15.0).to_radians());
     let world_from_earth_fixed = Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y);
 
     world_from_earth_fixed * earth_fixed_from_eqd * eqd_from_eqj
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn body_direction(body: astro_body_t, time: astro_time_t, rotation: Mat3) -> Vec3 {
     // SAFETY: Astronomy_GeoVector is a pure C function. The body constants and
     // time value are valid, and the function returns a value type.
     #[allow(unsafe_code)]
     let vector = unsafe { Astronomy_GeoVector(body, time, astro_aberration_t_ABERRATION) };
-    assert_eq!(
-        vector.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_GeoVector failed"
-    );
-    let eqj = Vec3::new(vector.x as f32, vector.y as f32, vector.z as f32).normalize();
-    (rotation * eqj).normalize()
+    checked(vector.status, "Astronomy_GeoVector");
+    (rotation * vec3_of(vector).normalize()).normalize()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
     // SAFETY: Astronomy_Illumination is a pure C function. The body constants
     // and time value are valid, and the function returns a value type.
     #[allow(unsafe_code)]
     let illumination = unsafe { Astronomy_Illumination(body, time) };
-    assert_eq!(
-        illumination.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_Illumination failed"
-    );
-    illumination.mag as f32
+    checked(illumination.status, "Astronomy_Illumination");
+    f32_of(illumination.mag)
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

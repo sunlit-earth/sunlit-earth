@@ -28,19 +28,19 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 ## Features
 
-- Custom camera controls and presets let you choose your view of Earth.
-- Sunlight and city lights reflect the current date and time, with automatic wallpaper updates throughout the day.
-- Recent satellite cloud imagery shows changing weather patterns on top of detailed NASA surface textures.
-- The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
-- Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
-- Everything is adjustable: camera position, lighting, atmospheric effects, apparent size and brightness of celestial objects, etc.
+- 📸 Custom camera controls and presets let you choose your view of Earth.
+- 🌍 Sunlight and city lights reflect the current date and time, with automatic wallpaper updates throughout the day.
+- ⛅️ Recent satellite cloud imagery shows changing weather patterns on top of detailed NASA surface textures.
+- 🌌 The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
+- 🖥 Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
+- ⚙️ Everything is adjustable: camera position, lighting, atmospheric effects, apparent size and brightness of celestial objects, etc.
 
 Planned features:
 
-- Support for macOS (Apple makes it really hard to test stuff if you don't own Apple hardware...)
-- More setup options and autostart.
-- Seasonal surface textures for Earth.
-- Eclipse rendering (see the moon's shadow moving over the surface of Earth).
+- 🍎 Support for macOS (Apple makes it really hard to test stuff if you don't own Apple hardware...)
+- 🔧 More setup options and autostart.
+- ❄️ Seasonal surface textures for Earth.
+- 🌑 Eclipse rendering (see the moon's shadow moving over the surface of Earth).
 
 ## Downloads
 

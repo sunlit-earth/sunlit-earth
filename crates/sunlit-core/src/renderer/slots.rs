@@ -1,7 +1,6 @@
 //! Where each texture sits, and which slot a texture mode draws the globe from.
 //!
-//! [`SlotLayout`] is where that order is stated; nothing else in the crate
-//! restates it.
+//! [`SlotLayout`] is where that order is decided.
 
 /// Texture slot index for the day texture (JXL).
 pub(super) const DAY_SLOT: usize = 1;
@@ -133,8 +132,8 @@ impl SlotLayout {
 }
 
 /// What each file-backed slot's GPU texture is called. The cloud overlay is
-/// named by [`Renderer::slot_label`] instead, because its slot is wherever the
-/// layout puts it.
+/// named by [`super::Renderer::slot_label`] instead, because its slot is
+/// wherever the layout puts it.
 ///
 /// The allocator report the memory report is built from names allocations by
 /// their GPU label, so a row that reads `day_texture` is worth more than one

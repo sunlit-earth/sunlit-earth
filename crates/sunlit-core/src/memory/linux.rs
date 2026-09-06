@@ -1,5 +1,9 @@
 //! The Linux arm of `snapshot` and the two `/proc` parsers behind it. The
 //! counter table the three arms share is in the parent module's doc.
+//!
+//! The module is compiled on Linux and in every test build, so the parsing is
+//! covered by the unit tests on the development machine rather than only on
+//! the Linux runner. Only `snapshot` itself is gated to Linux.
 
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -58,9 +62,6 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 /// reported one of them in anything else, the alternative to failing here is
 /// silently multiplying it by 1024.
 ///
-/// Compiled on Linux and in every test build, so the parsing is covered by the
-/// unit tests on the development machine rather than only on the Linux runner.
-#[cfg(any(target_os = "linux", test))]
 fn parse_status_bytes(text: &str, key: &str) -> Option<u64> {
     for line in text.lines() {
         let Some(rest) = line.strip_prefix(key) else {
@@ -85,7 +86,6 @@ fn parse_status_bytes(text: &str, key: &str) -> Option<u64> {
 /// Clean plus dirty, which is what the rollup offers as "not shared with
 /// anyone else". Swapped-out private pages are not included; a runner that is
 /// swapping has bigger problems than this counter.
-#[cfg(any(target_os = "linux", test))]
 fn parse_private_bytes(rollup: &str) -> Option<u64> {
     let clean = parse_status_bytes(rollup, "Private_Clean")?;
     let dirty = parse_status_bytes(rollup, "Private_Dirty")?;

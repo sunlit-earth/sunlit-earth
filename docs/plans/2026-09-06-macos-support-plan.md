@@ -184,6 +184,28 @@ Two things about dispatching are now known rather than assumed, and both were fr
 
 `ci.yml`'s `os` input could not be implemented as the plan imagined it. A job-level `if` cannot read the `matrix` context, so the matrix is chosen by a `plan` job that emits the entries as JSON and the test job reads back through `fromJSON`. That costs a few seconds of a 1x runner per dispatch and keeps a macOS-only dispatch to one macOS job, which was the point. Verified on <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34056754143>, where `os: ubuntu-latest` produced exactly the Linux entry.
 
+### Steps 3 and 4: the macOS core and the app crate (2026-09-06)
+
+Written blind against the crate sources in the local registry, which is the closest thing to a compiler this host has for the platform, and then compiled for the first time by the second `golden.yml` dispatch, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34059328165>. It failed in about four minutes with six errors and not one of them a type error, which says the survey the research document did was accurate: the callback's declaration is what `unsafe_code = "deny"` fires on rather than any call inside it; `CGDisplayModeGetPixelWidth` and its height twin are deprecated in `objc2-core-graphics` 0.3.2 in favour of methods on `CGDisplayMode`; and `WrittenImages.anchor` was read by nobody on macOS.
+
+The third of those is a departure in behaviour rather than a fix. Gating the field would have been the smaller change; using it is the better one, and the Windows setter had already settled what it should mean. If AppKit names no `NSScreen` this publish knows about, every screen now gets the anchor's picture, which is what every screen got before there was a display plan at all, and the note says so in the Windows setter's voice. The alternative was a publish that refused because the ids did not line up, which on a platform whose ids nobody here has ever seen is the wrong way to fail.
+
+One decision the plan made that the code did not keep: a monitor's size does not come from scaling its point bounds. `CGDisplayBounds` is in points and the current mode's pixel count is the same number by another route, so the size is the mode's and only the origin is scaled. That also settled what was otherwise a dead field.
+
+### Steps 5 and 6: the bundle assets and the release matrix (2026-09-06)
+
+The `.icns` is ten entries, five logical sizes at 1x and 2x, 283 KiB, and the bake is deterministic enough that `the_committed_bake_matches_a_fresh_one` passes over it unchanged. `bundle.rs` gained `Package` rather than a third `Format`, because what the `.app` needs is a different root directory and a different archiver, not a different extension; `Item::source` became an enum so the `Info.plist` can be made rather than copied, and `BuildInfo.bundle` became `bundles`, because one macOS job writes two archives and each is verified on its own.
+
+`cargo xtask dist` behaves exactly as before, which the two runs under step 1 show, and its own tests prove it calls the same functions: `the_bundles_binary_is_the_one_dist_names` still holds and every layout test now walks three platforms instead of two.
+
+### Step 7: blocked (2026-09-06)
+
+The probe cannot run from this branch. `gh workflow run macos-build.yml --ref feat/macos` answers `HTTP 404: workflow macos-build.yml not found on the default branch`, and there is no way round it that does not add a trigger the plan deliberately did not want. So the probe, and with it the second tier of evidence for every macOS row, waits for this branch to merge. Nothing was spent finding this out.
+
+### Step 9: the docs (2026-09-06)
+
+`platforms.md` carries decision 1's three tiers and gives every macOS row the one it is at, which today is "compiled" for all of them, and a macOS section beside the Linux one. `roadmap.md` closes the wallpaper and the release items with what was measured, and opens three: the tester round, and the three things that need Slint's `unstable-winit-030`. `testing.md` has four workflows now and says what a dispatch-only workflow costs. `README.md` says in the downloads section that the macOS build has never run on a Mac, and walks a tester through Gatekeeper both ways round, including why the tarball and `curl` avoid it and Safari plus Archive Utility do not. `building.md`, `architecture.md`, `app-icon.md`, `vm-setup.md` and `CLAUDE.md` each took the paragraph that was theirs.
+
 ### Finding: the Linux CI job was red too (2026-09-06)
 
 The `os: ubuntu-latest` dispatch that proved the matrix input, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34056754143>, failed at compile time under `RUSTFLAGS: -D warnings` for the same class of reason the macOS one did, and equally not because of anything this branch wrote. The e2e target imports `Instant` and defines `ProcessGuard::pid`, and both are reached only from `test_session_end_shuts_down_promptly`, whose body is Win32 and is already `cfg`-gated, so off Windows they are dead code and dead code is an error there. The fix is the same gate on the import and the method, in commit `d8aa519`; an `allow` would have hidden the next one.

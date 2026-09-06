@@ -34,6 +34,7 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 - 🌌 The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
 - 🖥 Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
 - ⚙️ Everything is adjustable: camera position, lighting, atmospheric effects, apparent size and brightness of celestial objects, etc.
+- 🖥️ Windows, Linux and macOS, with the same settings, the same command line and the same wallpaper behaviour on each. See the note under Downloads about what "macOS" is worth today.
 
 Planned features:
 

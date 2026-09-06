@@ -34,7 +34,7 @@ pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
 /// In a unit-test build this refuses to resolve to that live directory: a publish
 /// under test writes real PNGs and sweeps what is there, so a test that reached
 /// the real directory would overwrite the developer's own wallpaper. The tests
-/// point it at a scratch directory through [`tests::Scratch`], and a resolution
+/// point it at a scratch directory through `tests::Scratch`, and a resolution
 /// with no scratch set panics rather than falling back to the live directory, so
 /// a test that forgets the isolation fails loudly in CI instead of quietly on a
 /// desktop.

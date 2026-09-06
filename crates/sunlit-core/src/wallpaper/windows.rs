@@ -1,5 +1,5 @@
 //! The Win32 and COM half of the wallpaper path: the monitor query, the device
-//! paths [`IDesktopWallpaper`] addresses a screen by, and the
+//! paths `IDesktopWallpaper` addresses a screen by, and the
 //! `SystemParametersInfoW` call that makes a file the desktop.
 //!
 //! Every item here was gated on `cfg(windows)` one by one while it lived beside
@@ -66,7 +66,7 @@ pub(crate) fn ensure_dpi_awareness() {
 /// coordinates, which are physical pixels for a per-monitor DPI aware process;
 /// see `docs/platforms.md` for what makes this one aware.
 ///
-/// The `id` is `szDevice` (`\\.\DISPLAY1`) until [`desktop_wallpaper`] can
+/// The `id` is `szDevice` (`\\.\DISPLAY1`) until [`adopt_device_paths`] can
 /// improve on it: `IDesktopWallpaper` addresses a monitor by a device path that
 /// survives a reboot, and `szDevice` does not. Off Windows the same question is
 /// answered by [`crate::display`], which parses `xrandr --query`: there is no

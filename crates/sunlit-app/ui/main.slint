@@ -68,6 +68,11 @@ export component MainWindow inherits Window {
     in-out property <float> atmo-sunrise-glow: 1.0;
     in-out property <float> atmo-sunrise-width: 20.0;
     in-out property <float> sky-fov: 140.0;
+    // The sky slider's own range. A hemisphere is as much sky as one screen
+    // can mean, and the shader's clamp is wider, so the two numbers live here
+    // rather than in the row and a test can read what the row is built from.
+    out property <float> sky-fov-minimum: 60.0;
+    out property <float> sky-fov-maximum: 180.0;
     in-out property <float> star-intensity: 2.0;
     in-out property <float> star-size: 1.0;
     in-out property <float> star-glow-strength: 0.5;
@@ -89,7 +94,13 @@ export component MainWindow inherits Window {
     in-out property <float> moon-earthshine: 0.15;
     in-out property <float> milky-way-intensity: 0.2;
 
+    // What a slider's number means, derived in Rust and written here rather
+    // than worked out again in this file: the camera's distance behind the
+    // zoom slider, and the gamma each gamma slider stands for. The curves are
+    // in `params.rs`, so a label cannot drift from the value the renderer gets.
     in property <float> zoom-display-distance: 8.0;
+    in property <float> day-gamma-value: 1.0;
+    in property <float> night-gamma-value: 1.0;
     callback sliders-changed();
     callback msaa-changed();
     callback texture-changed();
@@ -141,11 +152,13 @@ export component MainWindow inherits Window {
 
     in-out property <bool> advanced-open: false;
 
-    // The widest the panel's content insists on being, and where that content
-    // actually starts. The sidebar derives its width from the first of these;
-    // both are exposed so a test can hold them to it.
+    // The widest the panel's content insists on being, where that content
+    // actually starts, and the window's own floor. The sidebar derives its
+    // width from the first of these; all three are exposed so a test can hold
+    // them to it without restating a number this file already carries.
     out property <length> panel-min-width: panel.min-width;
     out property <length> panel-x: panel.x;
+    out property <length> window-min-width: root.min-width;
 
     // What the splitter drag stores, and what the window opens at. The
     // sidebar's real width is this held between the panel's own floor and
@@ -732,8 +745,8 @@ export component MainWindow inherits Window {
                                     label: "Field of view";
                                     hint: "How much sky the background lens covers, which is what sets the scale of the constellations and the Milky Way.";
                                     indent: 8px;
-                                    minimum: 60.0;
-                                    maximum: 180.0;
+                                    minimum: root.sky-fov-minimum;
+                                    maximum: root.sky-fov-maximum;
                                     value <=> root.sky-fov;
                                     value-text: round(root.sky-fov) + "°";
                                     changed => { root.sliders-changed(); }
@@ -1197,7 +1210,7 @@ export component MainWindow inherits Window {
                                     minimum: 0.0;
                                     maximum: 1.0;
                                     value <=> root.day-gamma;
-                                    value-text: round((root.day-gamma <= 0.5 ? 0.2 + 1.6 * root.day-gamma : 1.0 + 4.0 * (root.day-gamma - 0.5)) * 100) / 100;
+                                    value-text: round(root.day-gamma-value * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1223,7 +1236,7 @@ export component MainWindow inherits Window {
                                     minimum: 0.0;
                                     maximum: 1.0;
                                     value <=> root.night-gamma;
-                                    value-text: round((root.night-gamma <= 0.5 ? 0.2 + 1.6 * root.night-gamma : 1.0 + 4.0 * (root.night-gamma - 0.5)) * 100) / 100;
+                                    value-text: round(root.night-gamma-value * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }

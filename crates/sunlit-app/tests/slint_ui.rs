@@ -556,21 +556,10 @@ fn test_save_preserves_settings_without_a_widget() {
 /// double-counts on several.
 #[test]
 fn test_the_sky_slider_stops_where_one_screen_stops() {
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/main.slint"),
-    )
-    .expect("read ui/main.slint");
-    let row = source
-        .split_once("sky-fov-slider := SettingRow {")
-        .expect("the sky field-of-view row")
-        .1
-        .split_once('}')
-        .expect("the end of that row")
-        .0;
-    assert!(
-        row.contains("minimum: 60.0;") && row.contains("maximum: 180.0;"),
-        "the sky field-of-view row reads:\n{row}"
-    );
+    let window = create_window();
+
+    approx::assert_relative_eq!(window.get_sky_fov_minimum(), 60.0);
+    approx::assert_relative_eq!(window.get_sky_fov_maximum(), 180.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -820,9 +809,6 @@ fn test_a_replaced_layout_highlights_the_stored_anchor() {
 /// panel's 8px + 22px of padding.
 const PANEL_FLOOR: f32 = 262.0;
 
-/// `MainWindow`'s own `min-width` in `main.slint`.
-const WINDOW_MIN_WIDTH: u32 = 520;
-
 /// A layout counts an `if`-gated subtree towards its minimum width only once
 /// that repeater has been walked. A running app's layout pass does it; a test
 /// has to ask for the elements, or `panel-min-width` reads back the minimum of
@@ -887,9 +873,10 @@ fn test_the_panel_starts_at_the_left_edge_in_both_advanced_states() {
 fn test_the_narrowest_window_holds_the_panel_and_the_globe() {
     let window = create_window();
     widest_panel_state(&window);
-    window
-        .window()
-        .set_size(slint::PhysicalSize::new(WINDOW_MIN_WIDTH, 900));
+    window.window().set_size(slint::LogicalSize::new(
+        window.get_window_min_width(),
+        900.0,
+    ));
     materialize(&window);
 
     approx::assert_relative_eq!(window.get_panel_x(), 0.0);

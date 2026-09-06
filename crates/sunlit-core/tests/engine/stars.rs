@@ -10,19 +10,21 @@ const LISTED: usize = 8;
 fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     const CLEAR: [u8; 4] = [1, 1, 3, 255];
 
-    // With the atmosphere off, the only thing outside the globe is stars, and
-    // the globe itself is opaque and drawn after them, so every pixel the two
-    // frames disagree about is one a star painted. That is what lets this
-    // assert what its name says rather than the much weaker "one pixel
-    // changed": at intensity zero each of those pixels is still exactly the
-    // clear color, not a dimmed star.
+    // With the atmosphere off, the only thing outside the globe is stars, so a
+    // background pixel the two frames disagree about is one a star painted.
+    // That is what lets this assert what its name says rather than the much
+    // weaker "one pixel changed": at intensity zero each of those pixels is
+    // still exactly the clear color, not a dimmed star.
     //
-    // The inference has one premise beyond the draw order, which is that the
-    // renderer repeats itself: a pixel that comes back differently from one
-    // render of a scene to the next is evidence about the adapter and none at
-    // all about the stars. Rendering the stars-off frame a second time is what
-    // separates the two, and it is only paid for when there is something to
-    // separate, which on a reproducible adapter is never.
+    // A pixel the globe covers is a separate question. The globe is opaque and
+    // drawn after the stars, so nothing of a star survives there, and yet such
+    // a pixel can still move: on the paravirtual Metal device of a
+    // `macos-latest` runner, seven pixels near the limb come back one 8-bit
+    // step away when the star draw puts ten thousand more sprites in the pass,
+    // three of them darker, which an additive draw cannot do. That is where a
+    // tile-based renderer rounds to eight bits, not a star. So a covered pixel
+    // is held to one step, and a star that really did reach the globe would be
+    // brighter than that and fails here.
     let gpu = gpu();
     let harness = plain(&gpu);
     let mut params = test_params();
@@ -33,7 +35,7 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     let stars_on = harness.picture(&params, FRAME);
 
     let mut lit_background = 0_usize;
-    let mut over_the_globe = Vec::new();
+    let mut moved_under_the_globe = Vec::new();
     for (index, (off, on)) in stars_off
         .chunks_exact(4)
         .zip(stars_on.chunks_exact(4))
@@ -44,31 +46,17 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
         }
         if off == CLEAR {
             lit_background += 1;
-        } else {
-            over_the_globe.push(index);
+        } else if off.iter().zip(on).any(|(a, b)| a.abs_diff(*b) > 1) {
+            moved_under_the_globe.push(index);
         }
     }
-
-    if !over_the_globe.is_empty() {
-        params.star_intensity = 0.0;
-        let stars_off_again = harness.picture(&params, FRAME);
-        let (reproducible, not): (Vec<usize>, Vec<usize>) = over_the_globe
-            .iter()
-            .partition(|&&index| pixel(&stars_off, index) == pixel(&stars_off_again, index));
-        assert!(
-            reproducible.is_empty(),
-            "{} pixel(s) this adapter renders reproducibly changed when the stars came on, \
-             so a star reached the globe:\n{}",
-            reproducible.len(),
-            report(&reproducible, &stars_off, &stars_on, &stars_off_again)
-        );
-        println!(
-            "{} pixel(s) differ between two renders of the same scene and carry no evidence \
-             about the stars; they were left out:\n{}",
-            not.len(),
-            report(&not, &stars_off, &stars_on, &stars_off_again)
-        );
-    }
+    assert!(
+        moved_under_the_globe.is_empty(),
+        "{} covered pixel(s) moved by more than a rounding step when the stars          came on, so a star reached the globe:
+{}",
+        moved_under_the_globe.len(),
+        report(&moved_under_the_globe, &stars_off, &stars_on)
+    );
     assert!(
         lit_background > 0,
         "enabling stars should alter a clear background pixel"
@@ -82,13 +70,12 @@ fn pixel(frame: &[u8], index: usize) -> [u8; 4] {
     rgba
 }
 
-/// Where the listed pixels are and what all three renders made of them.
+/// Where the listed pixels are and what the two renders made of them.
 ///
-/// Enough for one CI run on an adapter nobody here has to answer the question
-/// the case cannot answer itself: whether the frame is the size the case
-/// assumed, whether the pixel sits on the globe's silhouette or well inside it,
-/// and by how much the two stars-off renders disagree.
-fn report(indices: &[usize], off: &[u8], on: &[u8], again: &[u8]) -> String {
+/// Enough for one CI run on an adapter nobody here has to answer what the case
+/// cannot: whether the frame is the size the case assumed, where on the globe
+/// the pixel sits, and which way each channel went.
+fn report(indices: &[usize], off: &[u8], on: &[u8]) -> String {
     use std::fmt::Write;
 
     let width = FRAME.0 as usize;
@@ -103,12 +90,11 @@ fn report(indices: &[usize], off: &[u8], on: &[u8], again: &[u8]) -> String {
     for &index in indices.iter().take(LISTED) {
         let _ = writeln!(
             lines,
-            "  ({}, {}) off {:?} on {:?} off again {:?}",
+            "  ({}, {}) off {:?} on {:?}",
             index % width,
             index / width,
             pixel(off, index),
-            pixel(on, index),
-            pixel(again, index)
+            pixel(on, index)
         );
     }
     if indices.len() > LISTED {

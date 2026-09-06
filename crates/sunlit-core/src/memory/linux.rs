@@ -61,7 +61,6 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 /// documented in kibibytes, so the check should never fire; if a kernel ever
 /// reported one of them in anything else, the alternative to failing here is
 /// silently multiplying it by 1024.
-///
 fn parse_status_bytes(text: &str, key: &str) -> Option<u64> {
     for line in text.lines() {
         let Some(rest) = line.strip_prefix(key) else {

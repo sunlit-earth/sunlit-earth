@@ -101,6 +101,11 @@ const EARTH_RADII_PER_AU: f32 = 23_454.8;
 /// Every function below can only report a failure for a body it was not given
 /// one of, and every body here is a compile-time constant, so this is
 /// unreachable in practice. Naming the call is what would make it findable.
+///
+/// `#[track_caller]` so the panic points at the entry point rather than at
+/// this line, which is where it pointed when each of them carried its own
+/// assert.
+#[track_caller]
 fn checked(status: astro_status_t, what: &str) {
     assert_eq!(status, astro_status_t_ASTRO_SUCCESS, "{what} failed");
 }

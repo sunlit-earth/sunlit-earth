@@ -28,12 +28,12 @@ on:
 
 # Read-only. The references leave as an artifact and are committed by a human;
 # nothing here pushes to the repository.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: read
 
 env:
   CARGO_TERM_COLOR: always

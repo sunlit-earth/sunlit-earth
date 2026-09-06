@@ -5,9 +5,10 @@ use crate::assets::stars;
 use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 
+use super::slots::SLOT_LABELS;
 use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
 use super::uniforms::Uniforms;
-use super::{Renderer, RendererConfig, SLOT_LABELS};
+use super::{Renderer, RendererConfig};
 
 /// Usage flags for the offscreen preview target. `COPY_SRC` is what the engine
 /// reads the frame back through; no client binds the texture itself, because

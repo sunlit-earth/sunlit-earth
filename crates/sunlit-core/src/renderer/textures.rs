@@ -86,10 +86,10 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 // replacement is allocated.
                 slot.texture = Some(tex);
 
-                if msg.slot_index == super::DAY_SLOT {
+                if msg.slot_index == super::slots::DAY_SLOT {
                     res.day_texture_view = Some(tex_view);
                     maybe_create_composite_bind_group(res);
-                } else if msg.slot_index == super::NIGHT_SLOT {
+                } else if msg.slot_index == super::slots::NIGHT_SLOT {
                     res.night_texture_view = Some(tex_view);
                     maybe_create_composite_bind_group(res);
                 } else if msg.slot_index == res.layout().clouds() {

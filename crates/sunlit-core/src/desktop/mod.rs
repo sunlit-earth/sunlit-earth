@@ -23,6 +23,11 @@ use std::path::{Path, PathBuf};
 
 use crate::display::layout::DisplayMode;
 
+mod kde;
+mod xfce;
+
+use xfce::{XFCE_CHANNEL, XFCE_IMAGE_PROPERTY};
+
 /// The variable that says which desktop this is.
 ///
 /// A colon-separated list, most specific first, which is what makes the order
@@ -180,45 +185,6 @@ pub struct Backend {
     kind: Kind,
 }
 
-/// The XFCE backdrop property that holds an image path.
-///
-/// `last-image` is the one xfdesktop reads. The listing also contains
-/// `image-style`, `color-style` and per-workspace colours, so the suffix is what
-/// picks the right ones out.
-const XFCE_IMAGE_PROPERTY: &str = "last-image";
-
-/// The one beside it that says how to fit the image, and the value that fills.
-///
-/// xfdesktop's enum, in which 0 is None and shows no image at all.
-const XFCE_STYLE_PROPERTY: &str = "image-style";
-const XFCE_ZOOMED: &str = "5";
-
-/// The channel those properties live in.
-const XFCE_CHANNEL: &str = "xfce4-desktop";
-
-/// The workspace whose backdrop the properties below belong to.
-///
-/// xfdesktop can give every workspace its own background, and by default does
-/// not: `/backdrop/single-workspace-mode` is true out of the box and
-/// `/backdrop/single-workspace-number` is 0, so workspace 0 is the one backdrop
-/// the whole session shows. A session that turned that off and is sitting on
-/// another workspace is the case this does not cover, and it is also a session
-/// whose own listing already has the per-workspace properties, which the write
-/// below covers because it writes every one of them.
-const XFCE_WORKSPACE: &str = "workspace0";
-
-/// The property xfdesktop reads for one monitor, by the monitor's own name.
-///
-/// This has to be built rather than only read out of the listing, and that is
-/// the whole reason it exists. xfdesktop creates these lazily: a session where
-/// nobody has ever changed the wallpaper has none of them, and the ones its
-/// channel file does ship (`/backdrop/screen0/monitor0/...`, from a much older
-/// xfdesktop) it does not read. Writing only what the listing offers is
-/// therefore a set that reports success and changes nothing.
-fn xfce_live_property(monitor: &str, suffix: &str) -> String {
-    format!("/backdrop/screen0/monitor{monitor}/{XFCE_WORKSPACE}/{suffix}")
-}
-
 impl Backend {
     /// The command whose output the commands need, if this backend asks
     /// anything first.
@@ -316,84 +282,8 @@ impl Backend {
                     .chain(keys.iter().map(|key| set(key, &value)))
                     .collect()
             }
-            Kind::Kde => vec![plasma_command(placement)],
-            Kind::Xfce => {
-                let write = |property: String, create: Option<&str>, value: String| {
-                    let mut args = vec![
-                        "-c".to_owned(),
-                        XFCE_CHANNEL.to_owned(),
-                        "-p".to_owned(),
-                        property,
-                    ];
-                    // `-n` creates a property and fails on one that exists, so
-                    // the two cases cannot share one command line.
-                    if let Some(kind) = create {
-                        args.push("-n".to_owned());
-                        args.push("-t".to_owned());
-                        args.push(kind.to_owned());
-                    }
-                    args.push("-s".to_owned());
-                    args.push(value);
-                    Invocation::new("xfconf-query", args)
-                };
-                // Every property of each kind that has to end up carrying a
-                // value: the ones the session already has, plus the one
-                // xfdesktop reads for each connected monitor, which a session
-                // that has never had its wallpaper changed does not have yet.
-                let plan = |suffix: &str, create_kind: &'static str| {
-                    // A property naming a screen this publish left alone is not
-                    // written at all, which is the only way to leave it alone.
-                    let listed: Vec<String> = xfce_properties(discovered, suffix)
-                        .filter(|property| {
-                            xfce_monitor_of(property).is_none_or(|monitor| {
-                                !placement.untouched.iter().any(|name| name == monitor)
-                            })
-                        })
-                        .collect();
-                    let missing: Vec<String> = placement
-                        .per_monitor
-                        .iter()
-                        .map(|(monitor, _)| xfce_live_property(monitor, suffix))
-                        .filter(|property| !listed.contains(property))
-                        .collect();
-                    listed
-                        .into_iter()
-                        .map(|property| (property, None))
-                        .chain(
-                            missing
-                                .into_iter()
-                                .map(move |property| (property, Some(create_kind))),
-                        )
-                        .collect::<Vec<_>>()
-                };
-                let images = plan(XFCE_IMAGE_PROPERTY, "string");
-                // A set with nowhere to put the image would report a wallpaper
-                // nothing is showing, so it is a refusal rather than a success.
-                // Reachable only where the session lists no image property and
-                // named no monitor, which is a session with no display to ask.
-                if images.is_empty() {
-                    return Vec::new();
-                }
-                // The style first, so the write that makes xfdesktop repaint is
-                // the one carrying the new picture.
-                plan(XFCE_STYLE_PROPERTY, "int")
-                    .into_iter()
-                    .map(|(property, create)| write(property, create, XFCE_ZOOMED.to_owned()))
-                    .chain(images.into_iter().map(|(property, create)| {
-                        // A property carries the picture of the monitor it is
-                        // named after; one that names no monitor this session
-                        // has takes the single image, which is what it held
-                        // before there was more than one.
-                        let image = xfce_monitor_of(&property)
-                            .map_or(placement.single.as_path(), |monitor| {
-                                placement.for_monitor(monitor)
-                            })
-                            .to_string_lossy()
-                            .into_owned();
-                        write(property, create, image)
-                    }))
-                    .collect()
-            }
+            Kind::Kde => vec![kde::plasma_command(placement)],
+            Kind::Xfce => xfce::commands(placement, discovered),
             Kind::Lxqt => vec![Invocation::new(
                 "pcmanfm-qt",
                 ["--set-wallpaper".to_owned(), single],
@@ -416,91 +306,6 @@ impl Backend {
             self.desktop
         )
     }
-}
-
-/// The monitor a backdrop property is named after, where it names one.
-///
-/// `/backdrop/screen0/monitorDP-1/workspace0/last-image` is `DP-1`. A property
-/// from a much older xfdesktop names a screen index instead
-/// (`/backdrop/screen0/monitor0/...`), which matches no connected monitor and so
-/// falls back to the single image, which is what it held before this.
-fn xfce_monitor_of(property: &str) -> Option<&str> {
-    property
-        .split('/')
-        .find_map(|segment| segment.strip_prefix("monitor"))
-        .filter(|monitor| !monitor.is_empty())
-}
-
-/// The backdrop properties in `xfconf-query -c xfce4-desktop -l` with one suffix.
-fn xfce_properties<'a>(
-    listing: &'a str,
-    suffix: &'a str,
-) -> impl Iterator<Item = String> + use<'a> {
-    listing
-        .lines()
-        .map(str::trim)
-        .filter(move |line| line.starts_with("/backdrop/") && line.ends_with(suffix))
-        .map(ToOwned::to_owned)
-}
-
-/// The one call that puts this publish on Plasma's screens.
-fn plasma_command(placement: &Placement) -> Invocation {
-    Invocation::new(
-        "dbus-send",
-        [
-            "--session".to_owned(),
-            "--dest=org.kde.plasmashell".to_owned(),
-            "--type=method_call".to_owned(),
-            "/PlasmaShell".to_owned(),
-            "org.kde.PlasmaShell.evaluateScript".to_owned(),
-            format!("string:{}", plasma_script(placement)),
-        ],
-    )
-}
-
-/// The JavaScript `evaluateScript` runs to put one image on each screen.
-///
-/// Plasma orders its containments however it likes and renumbers them when the
-/// layout changes, so the script sorts them by where their screens sit and
-/// matches that against `by_position`, which is sorted the same way. A
-/// containment on no screen (`screen` is -1) is not a desktop anyone can see and
-/// is dropped before the sort; a screen whose entry is null is one this publish
-/// left alone and is stepped over, which is what keeps the rest aligned.
-///
-/// `wallpaperPlugin` is written every time because a screen left on a colour or
-/// a slideshow would otherwise take the image into a plugin that does not read
-/// it.
-fn plasma_script(placement: &Placement) -> String {
-    let images = placement
-        .by_position
-        .iter()
-        .map(|slot| slot.as_deref().map_or_else(|| "null".to_owned(), js_string))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "var images=[{images}];\
-         var screens=desktops().filter(function(d){{return d.screen!=-1;}});\
-         screens.sort(function(a,b){{\
-         var x=screenGeometry(a.screen),y=screenGeometry(b.screen);\
-         return x.left-y.left||x.top-y.top;}});\
-         for(var i=0;i<screens.length&&i<images.length;i++){{\
-         if(images[i]===null){{continue;}}\
-         var d=screens[i];\
-         d.wallpaperPlugin=\"org.kde.image\";\
-         d.currentConfigGroup=[\"Wallpaper\",\"org.kde.image\",\"General\"];\
-         d.writeConfig(\"Image\",images[i]);}}"
-    )
-}
-
-/// One path as a JavaScript string literal, as a `file:` URI.
-///
-/// Plasma stores the key as a URL and hands back what it was given, so a bare
-/// path round-trips through the config and then fails to load. The escaping is
-/// belt and braces over `file_uri`, which already percent-encodes everything
-/// outside an unreserved set and so can produce neither a quote nor a backslash.
-fn js_string(path: &Path) -> String {
-    let escaped = file_uri(path).replace('\\', r"\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
 }
 
 /// A `file://` URI for a local path, which is what the gsettings keys want.
@@ -666,13 +471,13 @@ pub(crate) fn no_backend_message(current_desktop: &str) -> String {
 mod tests {
     use super::*;
 
-    fn commands(desktop: &str, path: &str, discovered: &str) -> Vec<Invocation> {
+    pub(super) fn commands(desktop: &str, path: &str, discovered: &str) -> Vec<Invocation> {
         commands_on(desktop, path, discovered, &[])
     }
 
     /// One image, shown on every monitor named, which is what a single-screen
     /// session and every reach short of per-monitor come down to.
-    fn commands_on(
+    pub(super) fn commands_on(
         desktop: &str,
         path: &str,
         discovered: &str,
@@ -695,7 +500,7 @@ mod tests {
     }
 
     /// A two-monitor session where each screen has its own picture.
-    fn two_screens() -> Placement {
+    pub(super) fn two_screens() -> Placement {
         Placement {
             per_monitor: vec![
                 ("Virtual-1".to_owned(), PathBuf::from("/w-0.png")),
@@ -798,67 +603,6 @@ mod tests {
         assert!(!unset.contains("not supported on"), "{unset}");
     }
 
-    /// The script is one `dbus-send` call whatever the screen count, and the
-    /// path reaches Plasma as a URI because that is what it stores.
-    #[test]
-    fn kde_runs_one_plasmashell_script() {
-        let cmds = commands("KDE", "/home/tester/w.png", "");
-        let [only] = cmds.as_slice() else {
-            panic!("one command, not {cmds:?}")
-        };
-        assert_eq!(only.program, "dbus-send");
-        assert_eq!(only.args[3], "/PlasmaShell");
-        assert_eq!(only.args[4], "org.kde.PlasmaShell.evaluateScript");
-        let script = &only.args[5];
-        assert!(script.starts_with("string:"), "{script}");
-        assert!(
-            script.contains(r#"["file:///home/tester/w.png"]"#),
-            "{script}"
-        );
-        assert!(
-            script.contains(r#"d.writeConfig("Image",images[i])"#),
-            "{script}"
-        );
-    }
-
-    /// Two screens, two pictures, in the order a person sees them rather than
-    /// the order the query answered in.
-    #[test]
-    fn kde_gives_each_screen_its_own_picture() {
-        let cmds = detect("KDE")
-            .expect("a backend")
-            .commands(&two_screens(), "");
-        let script = &cmds[0].args[5];
-        assert!(
-            script.contains(r#"["file:///w-0.png","file:///w-1.png"]"#),
-            "{script}"
-        );
-        // Plasma renumbers its containments when the layout changes, so the
-        // script has to put them in order itself rather than trust the index.
-        assert!(script.contains("screens.sort("), "{script}");
-        assert!(script.contains("d.screen!=-1"), "{script}");
-    }
-
-    /// One-screen mode on a two-screen session: the other screen keeps what it
-    /// had, and the hole is what keeps the painted one addressed correctly.
-    #[test]
-    fn kde_steps_over_a_screen_the_publish_left_alone() {
-        let placement = Placement {
-            per_monitor: vec![("Virtual-2".to_owned(), PathBuf::from("/w-1.png"))],
-            untouched: vec!["Virtual-1".to_owned()],
-            by_position: vec![None, Some(PathBuf::from("/w-1.png"))],
-            single: PathBuf::from("/w-1.png"),
-            spanned: false,
-        };
-        let cmds = detect("KDE").expect("a backend").commands(&placement, "");
-        let script = &cmds[0].args[5];
-        assert!(script.contains(r#"[null,"file:///w-1.png"]"#), "{script}");
-        assert!(
-            script.contains("if(images[i]===null){continue;}"),
-            "{script}"
-        );
-    }
-
     #[test]
     fn mate_takes_a_path_where_the_others_take_a_uri() {
         // The key is `picture-filename`, and a URI in it leaves the desktop with
@@ -868,144 +612,6 @@ mod tests {
         assert_eq!(image.args[2], "picture-filename");
         assert_eq!(image.args[3], "/home/tester/w.png");
         assert!(!image.args[3].contains("file://"));
-    }
-
-    #[test]
-    fn xfce_asks_which_backdrops_exist_before_setting_any() {
-        let backend = detect("XFCE").expect("a backend");
-        let discovery = backend.discovery().expect("XFCE asks first");
-        assert_eq!(discovery.program, "xfconf-query");
-        assert_eq!(discovery.args, vec!["-c", "xfce4-desktop", "-l"]);
-        // Nothing else asks anything.
-        for desktop in ["GNOME", "KDE", "X-Cinnamon", "MATE", "LXQt", "Budgie"] {
-            assert!(
-                detect(desktop).expect(desktop).discovery().is_none(),
-                "{desktop}"
-            );
-        }
-    }
-
-    #[test]
-    fn xfce_sets_every_backdrop_that_holds_an_image_and_nothing_else() {
-        // Real `xfconf-query -c xfce4-desktop -l` output: two workspaces on one
-        // monitor, and the properties that are not images.
-        let listing = "\
-/backdrop/screen0/monitorVirtual-1/workspace0/color-style
-/backdrop/screen0/monitorVirtual-1/workspace0/image-style
-/backdrop/screen0/monitorVirtual-1/workspace0/last-image
-/backdrop/screen0/monitorVirtual-1/workspace1/last-image
-/backdrop/single-workspace-mode
-";
-        let cmds = commands("XFCE", "/home/tester/w.png", listing);
-        // One style property in the listing, two image ones, and nothing for the
-        // colours or the workspace-mode flag.
-        assert_eq!(cmds.len(), 3, "{cmds:?}");
-        for cmd in &cmds {
-            assert_eq!(cmd.program, "xfconf-query");
-            assert!(cmd.args[3].starts_with("/backdrop/"), "{cmd:?}");
-        }
-        // The style comes first, so the write carrying the image is the one that
-        // makes xfdesktop repaint.
-        assert!(cmds[0].args[3].ends_with("image-style"), "{cmds:?}");
-        // Written out rather than read from XFCE_ZOOMED: the enumerant is
-        // xfdesktop's, not ours, so this literal is the only thing in the tree
-        // recording what the outside world expects. 3 is stretched, 4 is
-        // scaled, 5 is zoomed, and only 5 fills without letterboxing.
-        assert_eq!(cmds[0].args[5], "5", "zoomed, which is what fills");
-        assert_eq!(
-            cmds[1].args[3],
-            "/backdrop/screen0/monitorVirtual-1/workspace0/last-image"
-        );
-        assert_eq!(
-            cmds[2].args[3],
-            "/backdrop/screen0/monitorVirtual-1/workspace1/last-image"
-        );
-        for cmd in &cmds[1..] {
-            assert_eq!(cmd.args[5], "/home/tester/w.png");
-        }
-    }
-
-    #[test]
-    fn xfce_creates_the_property_its_own_monitor_is_named_after() {
-        let listing = "\
-/backdrop/screen0/monitor0/image-path
-/backdrop/screen0/monitor0/last-image
-/backdrop/single-workspace-mode
-";
-        let cmds = commands_on("XFCE", "/home/tester/w.png", listing, &["Virtual-1"]);
-        let line = |cmd: &Invocation| cmd.args.join(" ");
-        let all: Vec<String> = cmds.iter().map(line).collect();
-        // The live image property is created, with a type, because a property
-        // that does not exist cannot be set.
-        assert!(
-            all.contains(
-                &"-c xfce4-desktop -p /backdrop/screen0/monitorVirtual-1/workspace0/last-image \
-                  -n -t string -s /home/tester/w.png"
-                    .replace("  ", " ")
-            ),
-            "{all:?}"
-        );
-        // So is its fill mode, since the session has none for that monitor.
-        assert!(
-            all.contains(
-                &"-c xfce4-desktop -p /backdrop/screen0/monitorVirtual-1/workspace0/image-style \
-                  -n -t int -s 5"
-                    .replace("  ", " ")
-            ),
-            "{all:?}"
-        );
-        // The legacy property is still written, since a session that reads it is
-        // a session this would otherwise stop working on.
-        assert!(
-            all.contains(
-                &"-c xfce4-desktop -p /backdrop/screen0/monitor0/last-image -s /home/tester/w.png"
-                    .to_owned()
-            ),
-            "{all:?}"
-        );
-        // Fill mode before image, still.
-        assert!(cmds[0].args[3].ends_with(XFCE_STYLE_PROPERTY), "{all:?}");
-        assert!(
-            cmds.last().expect("a command").args[3].ends_with(XFCE_IMAGE_PROPERTY),
-            "{all:?}"
-        );
-    }
-
-    /// A property the session already has must not be created again: `-n` fails
-    /// on one that exists, and xfconf-query's failure would fail the publish.
-    #[test]
-    fn xfce_does_not_create_a_property_the_session_already_has() {
-        let listing = "\
-/backdrop/screen0/monitorVirtual-1/workspace0/image-style
-/backdrop/screen0/monitorVirtual-1/workspace0/last-image
-";
-        let cmds = commands_on("XFCE", "/w.png", listing, &["Virtual-1"]);
-        assert_eq!(cmds.len(), 2, "{cmds:?}");
-        for cmd in &cmds {
-            assert!(!cmd.args.contains(&"-n".to_owned()), "{cmd:?}");
-        }
-    }
-
-    /// A listing with nowhere to put the image is a refusal, whatever else is
-    /// in it. Setting a fill mode on such a desktop, or running nothing at all,
-    /// would report a wallpaper nothing is showing.
-    #[test]
-    fn an_xfce_listing_with_no_image_property_is_a_refusal_not_a_success() {
-        let backend = detect("XFCE").expect("a backend");
-        let placement = Placement::single(PathBuf::from("/w.png"));
-        for listing in [
-            "/backdrop/screen0/monitor0/workspace0/image-style\n",
-            "/backdrop/single-workspace-mode\n",
-            "",
-        ] {
-            assert!(
-                backend.commands(&placement, listing).is_empty(),
-                "{listing:?}"
-            );
-        }
-        let message = backend.nothing_to_run();
-        assert!(message.contains("XFCE"), "{message}");
-        assert!(message.contains("last-image"), "{message}");
     }
 
     #[test]
@@ -1042,73 +648,6 @@ mod tests {
                 assert_eq!(discovery.program, backend.program, "{desktop}");
             }
         }
-    }
-
-    /// The one row that can address a screen, doing it.
-    #[test]
-    fn xfce_gives_each_monitor_the_picture_that_monitor_is_named_after() {
-        let listing = "\
-/backdrop/screen0/monitorVirtual-1/workspace0/last-image
-/backdrop/screen0/monitorVirtual-2/workspace0/last-image
-";
-        let cmds = detect("XFCE")
-            .expect("a backend")
-            .commands(&two_screens(), listing);
-        let images: Vec<&String> = cmds
-            .iter()
-            .filter(|c| c.args[3].ends_with(XFCE_IMAGE_PROPERTY))
-            .map(|c| &c.args[5])
-            .collect();
-        assert_eq!(images, vec!["/w-0.png", "/w-1.png"], "{cmds:?}");
-    }
-
-    /// A property naming a monitor this session does not have is the legacy
-    /// `monitor0` shape, and it keeps holding the one image it always held.
-    #[test]
-    fn an_xfce_property_naming_no_connected_monitor_takes_the_single_image() {
-        let listing = "/backdrop/screen0/monitor0/workspace0/last-image\n";
-        let cmds = detect("XFCE")
-            .expect("a backend")
-            .commands(&two_screens(), listing);
-        let legacy = cmds
-            .iter()
-            .find(|c| c.args[3] == "/backdrop/screen0/monitor0/workspace0/last-image")
-            .expect("the legacy property is still written");
-        assert_eq!(legacy.args[5], "/w-0.png");
-        assert_eq!(
-            xfce_monitor_of("/backdrop/screen0/monitorDP-1/w0/x"),
-            Some("DP-1")
-        );
-        assert_eq!(xfce_monitor_of("/backdrop/single-workspace-mode"), None);
-    }
-
-    /// A screen the mode does not paint keeps whatever it was showing, which is
-    /// what makes one-screen mode an escape hatch rather than a narrower version
-    /// of the same thing.
-    #[test]
-    fn xfce_does_not_write_the_property_of_a_screen_the_publish_left_alone() {
-        let listing = "\
-/backdrop/screen0/monitorVirtual-1/workspace0/last-image
-/backdrop/screen0/monitorVirtual-2/workspace0/last-image
-";
-        let placement = Placement {
-            per_monitor: vec![("Virtual-1".to_owned(), PathBuf::from("/w-0.png"))],
-            untouched: vec!["Virtual-2".to_owned()],
-            by_position: vec![Some(PathBuf::from("/w-0.png")), None],
-            single: PathBuf::from("/w-0.png"),
-            spanned: false,
-        };
-        let cmds = detect("XFCE")
-            .expect("a backend")
-            .commands(&placement, listing);
-        assert!(
-            cmds.iter().all(|c| !c.args[3].contains("Virtual-2")),
-            "{cmds:?}"
-        );
-        assert!(
-            cmds.iter().any(|c| c.args[3].contains("Virtual-1")),
-            "{cmds:?}"
-        );
     }
 
     /// The gsettings schemas have one wallpaper and a fit mode, and `spanned` is

@@ -473,11 +473,7 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
     match env_path {
         Some(path) => Some(PathBuf::from(path)),
-        None => Some(
-            dirs::data_local_dir()?
-                .join("SunlitEarth")
-                .join("config.toml"),
-        ),
+        None => Some(crate::app_data_dir()?.join("config.toml")),
     }
 }
 
@@ -540,30 +536,7 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
             earth: config.clone(),
         },
     };
-    let toml_str = match toml::to_string_pretty(&file) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "could not serialize config");
-            return;
-        }
-    };
-
-    if let Some(parent) = path.parent()
-        && let Err(e) = fs::create_dir_all(parent)
-    {
-        warn!(path = %parent.display(), error = %e, "could not create config directory");
-        return;
-    }
-
-    let tmp_path = path.with_extension("toml~");
-    if let Err(e) = fs::write(&tmp_path, &toml_str) {
-        warn!(path = %tmp_path.display(), error = %e, "could not write temporary config file");
-        return;
-    }
-
-    if let Err(e) = fs::rename(&tmp_path, path) {
-        warn!(path = %path.display(), error = %e, "could not rename config file");
-    }
+    crate::files::write_toml(&file, path, "config");
 }
 
 /// Find the index of `desired` sample count in `aa_counts`, or fall back

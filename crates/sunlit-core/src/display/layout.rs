@@ -242,6 +242,22 @@ pub struct Framing {
     pub offset_y: f32,
 }
 
+impl From<&crate::params::SceneParams> for Framing {
+    /// The four values a render takes from the settings, read in one place.
+    ///
+    /// `sunlit-earth displays` prints the plan this leads to and the engine
+    /// renders it. Two readings of `SceneParams` would let the printed plan and
+    /// the drawn one drift the moment a fifth field is added here.
+    fn from(params: &crate::params::SceneParams) -> Self {
+        Self {
+            camera_fov: params.camera.fov_deg,
+            sky_fov: params.sky_fov,
+            offset_x: params.camera.offset_x,
+            offset_y: params.camera.offset_y,
+        }
+    }
+}
+
 /// The widest sky the shader will accept, and the narrowest.
 ///
 /// `sphere.wgsl` clamps `sky_fov` to this range before taking the lens radius,

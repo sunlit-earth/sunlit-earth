@@ -213,11 +213,7 @@ fn metrics_path() -> Option<PathBuf> {
 fn metrics_path_from(env_dir: Option<&str>) -> Option<PathBuf> {
     match env_dir {
         Some(dir) => Some(PathBuf::from(dir).join(METRICS_FILE_NAME)),
-        None => Some(
-            dirs::data_local_dir()?
-                .join("SunlitEarth")
-                .join(METRICS_FILE_NAME),
-        ),
+        None => Some(crate::app_data_dir()?.join(METRICS_FILE_NAME)),
     }
 }
 

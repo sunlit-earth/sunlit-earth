@@ -25,11 +25,8 @@ pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
 
 /// Return the wallpaper output directory, creating it if it does not exist.
 ///
-/// `%LOCALAPPDATA%\SunlitEarth` on Windows and `~/.local/share/SunlitEarth` on
-/// Linux, which is what `dirs::data_local_dir` answers on each and the same
-/// directory the config file and the texture cache already live in. Asked through
-/// `dirs` rather than through `LOCALAPPDATA` directly so that the three agree
-/// wherever the app runs.
+/// [`crate::app_data_dir`], which is where the config file and the cloud cache
+/// already are.
 ///
 /// In a unit-test build this refuses to resolve to that live directory: a publish
 /// under test writes real PNGs and sweeps what is there, so a test that reached
@@ -57,9 +54,7 @@ pub(crate) fn wallpaper_dir() -> Result<PathBuf, String> {
 /// redirect the latter without losing a way to check this one, and so nothing in
 /// a test ever creates it by accident.
 fn data_dir_wallpaper_path() -> Result<PathBuf, String> {
-    Ok(dirs::data_local_dir()
-        .ok_or_else(|| "no local data directory on this system".to_owned())?
-        .join("SunlitEarth"))
+    crate::app_data_dir().ok_or_else(|| "no local data directory on this system".to_owned())
 }
 
 /// The scratch directory the current test thread publishes into, if any.
@@ -467,29 +462,24 @@ fn sweep_legacy_files(root: &Path) {
 
 /// A name for the not-yet-finished version of `path`, unique to this writer.
 ///
-/// The process id and a counter keep two writers from sharing a temporary name,
-/// so neither truncates the other's file mid-encode, following
-/// [`crate::assets::texture_cache`].
+/// A name for the not-yet-finished version of `path`, unique to this writer.
 fn unfinished(path: &Path) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{}.{nonce}.tmp", std::process::id()));
-    PathBuf::from(name)
+    crate::files::unfinished(path, ".tmp")
 }
 
 /// Encode one RGBA8 image as a PNG at `path`.
+///
+/// Fast compression and the cheapest filter: see [`Publication::write`] for
+/// what the user is waiting on while this runs.
 fn encode_png(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
-    use image::ImageEncoder;
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-
-    let file =
-        std::fs::File::create(path).map_err(|e| format!("Failed to create PNG file: {e}"))?;
-    let writer = std::io::BufWriter::new(file);
-    let encoder = PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub);
-    encoder
-        .write_image(pixels, width, height, image::ColorType::Rgba8.into())
-        .map_err(|e| format!("Failed to encode PNG: {e}"))
+    crate::files::write_png(
+        path,
+        pixels,
+        width,
+        height,
+        crate::files::CompressionType::Fast,
+        crate::files::FilterType::Sub,
+    )
 }
 
 #[cfg(test)]

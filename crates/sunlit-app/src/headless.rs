@@ -42,12 +42,7 @@ pub(crate) fn run_displays(
         }
     };
     let params = SceneParams::from_config(config);
-    let settings = sunlit_core::display::layout::Framing {
-        camera_fov: params.camera.fov_deg,
-        sky_fov: params.sky_fov,
-        offset_x: params.camera.offset_x,
-        offset_y: params.camera.offset_y,
-    };
+    let settings = sunlit_core::display::layout::Framing::from(&params);
     print!(
         "{}",
         displays::report(

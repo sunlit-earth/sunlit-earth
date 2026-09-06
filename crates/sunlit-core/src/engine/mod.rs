@@ -719,17 +719,24 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 }
 
 /// Encode RGBA8 pixels as PNG and write them to `path`.
+///
+/// Default compression rather than the fast setting the cache and the wallpaper
+/// use: an export is written once and kept, so the smaller file is worth the
+/// wait.
 pub fn save_png(
     path: &std::path::Path,
     width: u32,
     height: u32,
     pixels: &[u8],
 ) -> Result<(), String> {
-    use image::{ImageBuffer, Rgba};
-    let img: ImageBuffer<Rgba<u8>, _> = ImageBuffer::from_raw(width, height, pixels.to_vec())
-        .ok_or_else(|| "pixel buffer size mismatch".to_owned())?;
-    img.save(path)
-        .map_err(|e| format!("failed to save PNG: {e}"))
+    crate::files::write_png(
+        path,
+        pixels,
+        width,
+        height,
+        crate::files::CompressionType::Default,
+        crate::files::FilterType::Adaptive,
+    )
 }
 
 #[cfg(test)]

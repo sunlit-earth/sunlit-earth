@@ -215,19 +215,12 @@ impl Engine {
         });
 
         let requested_sample_count = params.sample_count;
-        params.sample_count = resolve_sample_count(
+        params.sample_count = resolve_and_warn(
             requested_sample_count,
             &gpu.supported_sample_counts,
             quality.max_sample_count(),
+            None,
         );
-        if params.sample_count != requested_sample_count {
-            warn!(
-                requested = requested_sample_count,
-                using = params.sample_count,
-                supported = ?gpu.supported_sample_counts,
-                "MSAA sample count is not available, falling back"
-            );
-        }
         info!(texture_resolution, "surface texture resolution");
         let (width, height) = preview_target_size(preview_size, quality);
         let renderer = Renderer::new(
@@ -522,28 +515,16 @@ impl Engine {
         }
     }
 
-    /// Replace the requested MSAA count with one the adapter and the tier both
-    /// allow, warning once per distinct request.
-    ///
-    /// This is the single place a sample count becomes real: a config file, a
-    /// combo box built against a different adapter, or a stale saved setting
-    /// all funnel through here rather than into `create_render_textures`, where
-    /// an unsupported count is a wgpu validation error that kills this thread.
+    /// Replace the requested MSAA count with one [`resolve_and_warn`] allows,
+    /// remembering the request so the same one is reported only once.
     fn resolve_requested_sample_count(&mut self) {
         let requested = self.params.sample_count;
-        let resolved = resolve_sample_count(
+        let resolved = resolve_and_warn(
             requested,
             &self.supported_sample_counts,
             self.quality.max_sample_count(),
+            Some(self.requested_sample_count),
         );
-        if resolved != requested && requested != self.requested_sample_count {
-            warn!(
-                requested,
-                using = resolved,
-                supported = ?self.supported_sample_counts,
-                "MSAA sample count is not available, falling back"
-            );
-        }
         self.requested_sample_count = requested;
         self.params.sample_count = resolved;
     }
@@ -658,6 +639,30 @@ impl Engine {
     fn emit(&self, event: EngineEvent) {
         (self.on_event)(event);
     }
+}
+
+/// Resolve a requested MSAA count against the adapter and the tier, saying so
+/// when the answer is not what was asked for.
+///
+/// The single place a sample count becomes real: a config file, a combo box
+/// built against a different adapter, or a stale saved setting all funnel
+/// through here rather than into `create_render_textures`, where an unsupported
+/// count is a wgpu validation error that kills the engine thread.
+///
+/// `announced` is the request that has already been reported, so a setting the
+/// user pushes again is logged once rather than on every arrival. `None` where
+/// nothing has been reported yet, which is the engine's own construction.
+fn resolve_and_warn(requested: u32, supported: &[u32], max: u32, announced: Option<u32>) -> u32 {
+    let resolved = resolve_sample_count(requested, supported, max);
+    if resolved != requested && announced != Some(requested) {
+        warn!(
+            requested,
+            using = resolved,
+            supported = ?supported,
+            "MSAA sample count is not available, falling back"
+        );
+    }
+    resolved
 }
 
 /// Two sentences for the status line, where either may be empty.

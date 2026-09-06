@@ -10,6 +10,12 @@ on:
         type: choice
         options:
           - check
+          - build
+          - build-and-e2e
+      universal:
+        description: "Build the binary for Intel as well as Apple Silicon."
+        type: boolean
+        default: false
 
 concurrency:
   group: macos-build-${{ github.ref }}
@@ -29,6 +35,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: ${{ inputs.mode != 'check' }}
 
       - name: Install the pinned toolchain
         run: |
@@ -61,3 +69,87 @@ jobs:
         if: inputs.mode == 'check'
         run: cargo test --workspace --lib --bins --locked -- --show-output
         shell: bash
+
+      - name: Build
+        if: inputs.mode != 'check'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euo pipefail
+          build() {
+            cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$1"
+          }
+          build aarch64-apple-darwin
+          mkdir -p dist-bin
+          if [ "${{ inputs.universal }}" = "true" ]; then
+            rustup target add x86_64-apple-darwin
+            build x86_64-apple-darwin
+            lipo -create -output dist-bin/sunlit-earth target/aarch64-apple-darwin/release/sunlit-earth target/x86_64-apple-darwin/release/sunlit-earth
+          else
+            cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
+          fi
+          lipo -info dist-bin/sunlit-earth
+        shell: bash
+
+      - name: Bundle and verify
+        if: inputs.mode != 'check'
+        env:
+          SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/bundle-config.toml
+          SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/bundle-metrics
+          SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/bundle-cache
+          SUNLIT_EARTH_NO_CLOUDS: "1"
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo xtask bundle --platform macos \
+            --exe dist-bin/sunlit-earth --out "${{ github.workspace }}/dist" --verify
+          echo "bundle step took $(( $(date +%s) - start )) s, xtask compile included"
+          ls -l "${{ github.workspace }}/dist"
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode != 'check'
+        with:
+          name: bundle-macos
+          path: dist/
+          if-no-files-found: error
+
+      - name: What this session has
+        if: inputs.mode == 'build-and-e2e'
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-out
+          system_profiler SPDisplaysDataType | tee e2e-out/displays-system-profiler.txt
+          "$(pwd)/dist-bin/sunlit-earth" displays | tee e2e-out/displays.txt
+          screencapture -x e2e-out/desktop-before.png || echo "screencapture refused; the suite is the test, this is only evidence"
+        shell: bash
+
+      - name: Desktop e2e suite
+        if: inputs.mode == 'build-and-e2e'
+        env:
+          SUNLIT_EARTH_E2E_WALLPAPER: "1"
+          SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/e2e-config.toml
+          SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/e2e-metrics
+          SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/e2e-cache
+          SUNLIT_EARTH_NO_CLOUDS: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-out
+          cargo e2e 2>&1 | tee e2e-out/e2e.log
+        shell: bash
+
+      - name: What the desktop looks like now
+        if: ${{ inputs.mode == 'build-and-e2e' && !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p e2e-out
+          screencapture -x e2e-out/desktop-after.png || echo "screencapture refused; the suite is the test, this is only evidence"
+          ls -l e2e-out
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode == 'build-and-e2e' && !cancelled() }}
+        with:
+          name: e2e-macos
+          path: e2e-out/
+          if-no-files-found: warn

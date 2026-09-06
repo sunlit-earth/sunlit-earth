@@ -222,26 +222,6 @@ mod x11 {
     }
 }
 
-/// `WM_DISPLAYCHANGE`, on an invisible top-level window of this module's own.
-///
-/// A message-only window will not do: it receives no broadcast messages, and
-/// `WM_DISPLAYCHANGE` is a broadcast to top-level windows. So this is an
-/// ordinary top-level window that is never shown, pumping its own messages on
-/// its own thread.
-///
-/// Not a second use of the app's `session_end` window, and not Slint's. The two
-/// listeners are the same dozen lines of Win32 and nothing else: different
-/// messages, different consumers, different lifetimes, and their Linux halves
-/// have nothing in common, so a shared module would be shared on one platform
-/// only. Slint's window is winit's, it is hidden in tray mode, and the message
-/// would have to be caught in a procedure this program does not own.
-///
-/// `WM_DEVICECHANGE` and `WM_SETTINGCHANGE` are deliberately not taken.
-/// `EnumDisplayMonitors` lists the active monitors, and that set moves only
-/// through an applied display configuration change, which is what
-/// `WM_DISPLAYCHANGE` announces; a monitor Windows has not activated is absent
-/// from the list either way. Adding a second message here is one line, and the
-/// rest of the path takes a redundant hint at the cost of one comparison.
 /// `CGDisplayRegisterReconfigurationCallback`, on the thread that registers it.
 ///
 /// No thread of its own, unlike the other two: CoreGraphics delivers on the run
@@ -360,6 +340,26 @@ mod core_graphics {
     }
 }
 
+/// `WM_DISPLAYCHANGE`, on an invisible top-level window of this module's own.
+///
+/// A message-only window will not do: it receives no broadcast messages, and
+/// `WM_DISPLAYCHANGE` is a broadcast to top-level windows. So this is an
+/// ordinary top-level window that is never shown, pumping its own messages on
+/// its own thread.
+///
+/// Not a second use of the app's `session_end` window, and not Slint's. The two
+/// listeners are the same dozen lines of Win32 and nothing else: different
+/// messages, different consumers, different lifetimes, and their Linux halves
+/// have nothing in common, so a shared module would be shared on one platform
+/// only. Slint's window is winit's, it is hidden in tray mode, and the message
+/// would have to be caught in a procedure this program does not own.
+///
+/// `WM_DEVICECHANGE` and `WM_SETTINGCHANGE` are deliberately not taken.
+/// `EnumDisplayMonitors` lists the active monitors, and that set moves only
+/// through an applied display configuration change, which is what
+/// `WM_DISPLAYCHANGE` announces; a monitor Windows has not activated is absent
+/// from the list either way. Adding a second message here is one line, and the
+/// rest of the path takes a redundant hint at the cost of one comparison.
 #[cfg(windows)]
 mod win32 {
     use std::sync::{Mutex, OnceLock};

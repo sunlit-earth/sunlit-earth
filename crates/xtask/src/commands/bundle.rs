@@ -737,19 +737,22 @@ fn list(prefix: &str, items: &[&str]) -> String {
 /// the archive like any other run, and the one thing that separates it from a
 /// verified one is a sentence somebody has to still be reading to see.
 pub fn summary(archive: &Path, verified: bool) -> String {
-    let mut text = format!(
-        "  and {}, which holds the binary with its textures beside it, the record and the licence",
-        archive.display()
-    );
+    let mut text = format!("  and {}, which holds {HOLDS}", archive.display());
     if !verified {
-        text.push_str(
-            "\n  nothing has run this bundle: --no-verify skipped the boot that renders \
-             from it, so nothing has shown that its textures are found where it puts them, \
-             and its record says so with a null verified_in",
-        );
+        text.push('\n');
+        text.push_str(UNVERIFIED);
     }
     text
 }
+
+/// What every archive holds, wherever it is said.
+const HOLDS: &str = "the binary with its textures beside it, the record and the licence";
+
+/// What a run that skipped the verification has to say about the bundle it
+/// therefore never ran.
+const UNVERIFIED: &str = "  nothing has run this bundle: --no-verify skipped the boot that \
+                          renders from it, so nothing has shown that its textures are found \
+                          where it puts them, and its record says so with a null verified_in";
 
 /// Why there is no bundle, when the host holds Git LFS pointers rather than the
 /// assets.
@@ -899,11 +902,10 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     println!();
     for bundle in &record.bundles {
         let archive = out.join(&bundle.archive);
-        println!("{platform}: {}", archive.display());
-        println!(
-            "{}",
-            summary(&archive, bundle.texture_lookup_delta.is_some())
-        );
+        println!("{platform}: {}, which holds {HOLDS}", archive.display());
+        if bundle.texture_lookup_delta.is_none() {
+            println!("{UNVERIFIED}");
+        }
     }
     Ok(0)
 }

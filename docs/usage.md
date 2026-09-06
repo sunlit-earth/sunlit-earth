@@ -68,6 +68,6 @@ By default, `config.toml`, the cloud cache, downscaled textures in `texture_cach
 
 Each wallpaper publish writes images into a fresh `gen-<id>/` directory, with one image per monitor and a canvas where required. Fresh paths let desktop shells notice updates without reading a partially rewritten image. The app manages retention and cleanup; [platforms.md](platforms.md) explains the lifecycle and the older alternating file scheme it replaced.
 
-Started from a terminal, the app writes its log there and nowhere else. Started any other way, which is a launcher, a shortcut, or a macOS app bundle, it also writes `sunlit-earth.log` into the directory above, rotating daily and keeping a week. That file is what to attach to a bug report.
+Started from a terminal, the app writes its log there and nowhere else. Started any other way, which is a launcher, a shortcut, or a macOS app bundle, it also writes `sunlit-earth.<date>.log` into the directory above: one file per day and a week of them kept. The newest is what to attach to a bug report, and the app's own first log line names the file it is writing.
 
 The [environment variable reference](architecture.md#environment-knobs) covers config, textures, caches, metrics, cloud polling, and test and VM overrides. Variables that carry values generally treat blank as unset; switches documented as presence only are enabled by being present, regardless of their value.

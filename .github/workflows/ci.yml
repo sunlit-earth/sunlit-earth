@@ -21,6 +21,10 @@ on:
           - windows-latest
           - macos-latest
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only. Nothing here writes to the repository, so nothing here needs to be
 # able to; `release.yml` is the one workflow that does, and it asks for itself.
 permissions:

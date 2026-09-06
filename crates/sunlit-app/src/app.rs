@@ -454,8 +454,8 @@ fn start_engine(
 
     // The display watcher's one consumer is the engine, and its condition is
     // "always": it runs from here until the teardown, whether or not a window
-    // is shown. A hint is a nudge and nothing more, so a platform that cannot
-    // watch (macOS, a session with no `DISPLAY`) leaves the app exactly as it
+    // is shown. A hint is a nudge and nothing more, so a session that cannot be
+    // watched, one with no `DISPLAY` among them, leaves the app exactly as it
     // was, with the monitor list re-queried on every publish.
     let hint_tx = engine.sender();
     let display_watch = display::watch::start(Arc::new(move || {

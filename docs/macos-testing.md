@@ -34,7 +34,7 @@ Which of the two routes worked, and what each one said, is itself a result worth
 
 ## What to send back
 
-- The log file. Started from a terminal the log goes there; started from Finder or the Dock it goes to `~/Library/Application Support/SunlitEarth/sunlit-earth.log`, rotating daily and keeping a week.
+- The log file. Started from a terminal the log goes there and nowhere else; started from Finder or the Dock it also goes to `~/Library/Application Support/SunlitEarth/sunlit-earth.<date>.log`. The date is the rotation's: there is a file per day and a week of them, so send the newest, and the app's own first log line names the one it is writing.
 - The output of `sunlit-earth displays`.
 - The macOS version and the machine, from the Apple menu, About This Mac.
 - Screenshots of anything that looks wrong. A screenshot is worth more than a description.

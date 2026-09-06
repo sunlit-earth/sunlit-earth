@@ -102,7 +102,9 @@ struct Painted {
     painted: usize,
     /// Screens the job named that AppKit has no `NSScreen` for.
     unmatched: Vec<String>,
-    /// Screens AppKit refused, with the reason it gave.
+    /// Screens AppKit refused, each with the reason it gave, because a
+    /// refusal a person can act on is the difference between "it did not
+    /// work" and a permission or a path.
     refused: Vec<String>,
     /// Whether every screen got the anchor's picture because none of them
     /// could be addressed by name.
@@ -127,7 +129,7 @@ impl Painted {
         if !self.refused.is_empty() {
             notes.push(format!(
                 "macOS would not take a wallpaper for {}",
-                self.refused.join(", ")
+                self.refused.join("; ")
             ));
         }
         notes.join("; ")
@@ -197,7 +199,11 @@ fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, S
         matched[index] = true;
         let assignment = &assignments[index];
         let Some(url) = NSURL::from_file_path(&assignment.path) else {
-            painted.refused.push(assignment.label.clone());
+            painted.refused.push(format!(
+                "{} ({} is not a file URL)",
+                assignment.label,
+                assignment.path.display()
+            ));
             continue;
         };
         // SAFETY: `options` holds the two documented keys of
@@ -226,7 +232,9 @@ fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, S
                     error = %reason,
                     "AppKit would not take this screen's wallpaper"
                 );
-                painted.refused.push(assignment.label.clone());
+                painted
+                    .refused
+                    .push(format!("{} ({reason})", assignment.label));
             }
         }
     }
@@ -236,10 +244,19 @@ fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, S
             painted.unmatched.push(assignment.label.clone());
         }
     }
-    if painted.painted == 0 {
+    // A screen AppKit refused is not a screen it could not name, and only
+    // the second is what the anchor exists for. Painting every screen over
+    // a refusal would throw the reason away and try the same call again.
+    if !painted.refused.is_empty() && painted.painted == 0 {
+        return Err(format!(
+            "AppKit refused every screen it was given: {}",
+            painted.refused.join("; ")
+        ));
+    }
+    if painted.painted == 0 && painted.refused.is_empty() {
         let Some(anchor) = anchor else {
             return Err(format!(
-                "AppKit took no screen's wallpaper: {}",
+                "AppKit named no screen this publish knows about: {}",
                 painted.note()
             ));
         };

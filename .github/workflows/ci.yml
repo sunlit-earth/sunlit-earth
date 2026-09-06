@@ -7,8 +7,25 @@ name: CI
 # machine. What is lost is the other two operating systems, so run this before
 # anything that has to hold on all three. Windows minutes bill at 2x and macOS
 # at 10x, which is most of the cost of a full matrix run.
+#
+# The `os` input narrows the run to one runner, which is what makes a macOS
+# check affordable: one job at 10x rather than a matrix of three. The matrix is
+# chosen by the `plan` job below rather than filtered by a job-level `if`,
+# because `matrix` is not a context a job-level `if` can read; `plan` is a few
+# seconds of a 1x runner and it names what it did in its own log.
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Which runner to test on"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
 
 # Read-only. Nothing here writes to the repository, so nothing here needs to be
 # able to; `release.yml` is the one workflow that does, and it asks for itself.
@@ -23,9 +40,52 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # Formatting is OS-independent, so it runs once rather than per matrix entry.
+  # Which matrix entries this dispatch asked for.
+  #
+  # The three entries live here as one JSON document rather than in the
+  # strategy, because that is the only place an input can reach them. `cache` is
+  # spelled out rather than derived from `os` so the Windows job keeps the key
+  # it had before the matrix and stays warm. `wrap` is `xvfb-run -a` on Linux:
+  # nothing in the suite opens a window today (the Slint UI tests use the
+  # testing backend and the desktop e2e suite is #[ignore]d), and the display is
+  # here so the first windowed test to arrive runs without a CI change.
+  # `xvfb-run -a` does propagate the exit status (verified), so a failing suite
+  # still fails the job.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          all='[
+            {"name":"Linux","os":"ubuntu-latest","cache":"linux","wrap":"xvfb-run -a"},
+            {"name":"Windows","os":"windows-latest","cache":"windows","wrap":""},
+            {"name":"macOS","os":"macos-latest","cache":"macos","wrap":""}
+          ]'
+          asked='${{ inputs.os }}'
+          if [ "$asked" = "all" ]; then
+            include=$(echo "$all" | jq -c .)
+          else
+            include=$(echo "$all" | jq -c --arg os "$asked" '[.[] | select(.os == $os)]')
+          fi
+          if [ "$(echo "$include" | jq length)" = "0" ]; then
+            echo "no matrix entry runs on $asked"
+            exit 1
+          fi
+          echo "testing on: $(echo "$include" | jq -r '[.[].name] | join(", ")')"
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+  # Formatting is OS-independent, so it runs once rather than per matrix entry,
+  # and it goes with the Linux entry rather than beside every dispatch: a macOS
+  # check has nothing to say about formatting.
   fmt:
     name: Format
+    needs: plan
+    if: ${{ contains(fromJSON(needs.plan.outputs.include).*.os, 'ubuntu-latest') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,32 +97,14 @@ jobs:
 
   test:
     name: Test (${{ matrix.name }})
+    needs: plan
     runs-on: ${{ matrix.os }}
     strategy:
       # Every OS reports. A Linux failure that cancels the macOS job costs a
       # whole round trip to learn something the same run already knew.
       fail-fast: false
       matrix:
-        include:
-          # `cache` is spelled out rather than derived from `os` so the Windows
-          # job keeps the key it had before the matrix and stays warm.
-          - name: Linux
-            os: ubuntu-latest
-            cache: linux
-            # Nothing in the suite opens a window today: the Slint UI tests use
-            # the testing backend and the desktop e2e suite is #[ignore]d. The
-            # display is here so that the first windowed test to arrive runs
-            # without a CI change. `xvfb-run -a` does propagate the exit status
-            # (verified), so a failing suite still fails the job.
-            wrap: xvfb-run -a
-          - name: Windows
-            os: windows-latest
-            cache: windows
-            wrap: ""
-          - name: macOS
-            os: macos-latest
-            cache: macos
-            wrap: ""
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -1,4 +1,4 @@
-[<img src="docs/images/header-image.webp" width="100%" alt="Sunrise over Earth, with city lights beneath a starry sky">](docs/images/header-image.webp?raw=true)
+<img src="docs/images/header-image.webp" width="100%" alt="Sunrise over Earth, with city lights beneath a starry sky">
 
 # Sunlit Earth
 
@@ -14,16 +14,16 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 ## Screenshots
 
-[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](docs/images/wallpaper-day.webp?raw=true)
+[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](docs/images/wallpaper-day.webp)
 
 <p>
-  <a href="docs/images/wallpaper-night.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>
-  <a href="docs/images/wallpaper-sunrise.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-sunrise.webp" width="13%" alt="Sunrise over Earth" title="Sunrise over Earth"></a>
-  <a href="docs/images/wallpaper-weather.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-weather.webp" width="13%" alt="Clouds and weather" title="Clouds and weather"></a>
-  <a href="docs/images/wallpaper-ultrawide.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-ultrawide.webp" width="13%" alt="Wide view for multi monitor setups" title="Wide view for multi monitor setups"></a>
-  <a href="docs/images/wallpaper-earthrise-photo.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-earthrise-photo.webp" width="13%" alt="Earthrise" title="Earthrise"></a>
-  <a href="docs/images/screenshot-windows.webp?raw=true"><img src="docs/images/thumbnails/screenshot-windows.webp" width="13%" alt="Sunlit Earth on Windows" title="Sunlit Earth on Windows"></a>
-  <a href="docs/images/screenshot-linux.webp?raw=true"><img src="docs/images/thumbnails/screenshot-linux.webp" width="13%" alt="Sunlit Earth on Linux" title="Sunlit Earth on Linux"></a>
+  <a href="docs/images/wallpaper-night.webp"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>
+  <a href="docs/images/wallpaper-sunrise.webp"><img src="docs/images/thumbnails/wallpaper-sunrise.webp" width="13%" alt="Sunrise over Earth" title="Sunrise over Earth"></a>
+  <a href="docs/images/wallpaper-weather.webp"><img src="docs/images/thumbnails/wallpaper-weather.webp" width="13%" alt="Clouds and weather" title="Clouds and weather"></a>
+  <a href="docs/images/wallpaper-ultrawide.webp"><img src="docs/images/thumbnails/wallpaper-ultrawide.webp" width="13%" alt="Wide view for multi monitor setups" title="Wide view for multi monitor setups"></a>
+  <a href="docs/images/wallpaper-earthrise-photo.webp"><img src="docs/images/thumbnails/wallpaper-earthrise-photo.webp" width="13%" alt="Earthrise" title="Earthrise"></a>
+  <a href="docs/images/screenshot-windows.webp"><img src="docs/images/thumbnails/screenshot-windows.webp" width="13%" alt="Sunlit Earth on Windows" title="Sunlit Earth on Windows"></a>
+  <a href="docs/images/screenshot-linux.webp"><img src="docs/images/thumbnails/screenshot-linux.webp" width="13%" alt="Sunlit Earth on Linux" title="Sunlit Earth on Linux"></a>
 </p>
 
 ## Features

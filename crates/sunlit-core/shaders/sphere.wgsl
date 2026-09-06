@@ -126,7 +126,7 @@ fn output_pixel_scale() -> f32 {
 /// The horizontal half-extent of the sky lens in projected-plane units. A
 /// direction `theta` from the view axis lands at `tan(theta / 2)`, and this is
 /// what puts the frame's horizontal edge at NDC 1. Mirrored by
-/// `sky_lens_edge_radius` in `scene::sun_occlusion`.
+/// `sky_lens_edge_radius` in `scene::sky_lens`.
 ///
 /// The upper end of the clamp is not the slider's 180. A spanned canvas derives
 /// a sky wider than the anchor screen's own, and the lens only goes singular at
@@ -462,7 +462,7 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
 // forward lobe: how much of the light survives a path whose lowest point is a
 // given height above the surface, and what color it is by the time it arrives.
 // Mirrored by `limb_air_mass`, `limb_transmission` and `limb_disk_amplitude`
-// in `scene::sun_occlusion`, which is what integrates it over the visible disk.
+// in `scene::limb_extinction`, which is what integrates it over the visible disk.
 // It takes a height or a framebuffer position and nothing about the Sun, so
 // the Moon can be given the same limb without moving anything here.
 // ---------------------------------------------------------------------------
@@ -750,7 +750,7 @@ fn sky_corner_angle() -> f32 {
 /// along the radial direction are the images of `theta - half_angle` and
 /// `theta + half_angle`. Keeping the first signed is what lets a cone that
 /// contains the view axis straddle the origin with no special case. Mirrors
-/// `sky_lens_disc` in `scene::sun_occlusion`.
+/// `sky_lens_disc` in `scene::sky_lens`.
 fn sun_disc(half_angle: f32) -> SunDisc {
     let direction = normalize(uniforms.sun_view_dir);
     let theta = acos(clamp(-direction.z, -1.0, 1.0));

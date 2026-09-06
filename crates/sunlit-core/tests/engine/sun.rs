@@ -377,7 +377,7 @@ fn an_enlarged_disk_reaching_the_frame_corner_is_drawn() {
 /// panned frame is the unpanned one moved by the pan and nothing else.
 ///
 /// The pan reaches the Sun through four places that each carry a sign:
-/// `scene::sun_occlusion::sky_lens_disc`, which is where the CPU decides what
+/// `scene::sky_lens::sky_lens_disc`, which is where the CPU decides what
 /// the globe hides, and `sun_disc`, `sky_corner_angle` and `sky_lens_direction`
 /// in the shader. Any one of them disagreeing with the pan the globe got leaves
 /// the composite sheared rather than moved, which no other case in the suite

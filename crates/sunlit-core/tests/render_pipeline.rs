@@ -990,7 +990,8 @@ const RULE_SKY_FOVS: [f32; 8] = [30.0, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 4
 /// zero is the white Sun and has to stay exactly white.
 const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
 
-/// Three rules exist once in WGSL and once in `scene::sun_occlusion`, and every
+/// Three rules exist once in WGSL and once on the CPU, in `scene::sky_lens` and
+/// `scene::limb_extinction`, and every
 /// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
 /// ramp and the shader draws that disk's antialiased edge with it; the CPU
 /// measures occlusion at a screen position the shader has to draw the Sun at;
@@ -1101,22 +1102,22 @@ fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
         let reddening = RULE_REDDENINGS[step % RULE_REDDENINGS.len()];
 
         let values = probe(height, sky_fov, reddening);
-        let cpu_scale = sunlit_core::scene::sun_occlusion::pixel_scale(height);
-        let cpu_edge = sunlit_core::scene::sun_occlusion::sky_lens_edge_radius(sky_fov);
+        let cpu_scale = sunlit_core::scene::sky_lens::pixel_scale(height);
+        let cpu_edge = sunlit_core::scene::sky_lens::sky_lens_edge_radius(sky_fov);
         assert!(
             (values[0] - cpu_scale).abs() < 1e-6,
             "the density ramp at {height} pixels: the shader says {}, \
-             scene::sun_occlusion::pixel_scale says {cpu_scale}",
+             scene::sky_lens::pixel_scale says {cpu_scale}",
             values[0]
         );
         assert!(
             (values[1] - cpu_edge).abs() < 2e-5 * cpu_edge,
             "the sky lens edge radius at {sky_fov} degrees: the shader says {}, \
-             scene::sun_occlusion::sky_lens_edge_radius says {cpu_edge}",
+             scene::sky_lens::sky_lens_edge_radius says {cpu_edge}",
             values[1]
         );
         for (index, km) in RULE_HEIGHTS_KM.iter().enumerate() {
-            let cpu = sunlit_core::scene::sun_occlusion::limb_transmission(*km, reddening);
+            let cpu = sunlit_core::scene::limb_extinction::limb_transmission(*km, reddening);
             let shader = glam::Vec3::new(
                 values[2 + index * 4],
                 values[3 + index * 4],
@@ -1128,13 +1129,13 @@ fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
             assert!(
                 apart.max_element() < 2e-3,
                 "the light path at {km} km and reddening {reddening}: the shader says \
-                 {shader}, scene::sun_occlusion::limb_transmission says {cpu}"
+                 {shader}, scene::limb_extinction::limb_transmission says {cpu}"
             );
-            let cpu_fade = sunlit_core::scene::sun_occlusion::limb_disk_amplitude(cpu.y);
+            let cpu_fade = sunlit_core::scene::limb_extinction::limb_disk_amplitude(cpu.y);
             assert!(
                 (values[5 + index * 4] - cpu_fade).abs() < 1e-3,
                 "the disk's fade at {km} km: the shader says {}, \
-                 scene::sun_occlusion::limb_disk_amplitude says {cpu_fade}",
+                 scene::limb_extinction::limb_disk_amplitude says {cpu_fade}",
                 values[5 + index * 4]
             );
         }

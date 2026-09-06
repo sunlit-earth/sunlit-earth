@@ -43,14 +43,14 @@ fn camera_showing(
             sunlit_core::scene::camera::zoom_to_distance(params.camera.zoom),
         );
         let view_direction = (camera.view_matrix() * world.extend(0.0)).truncate();
-        let circle = sunlit_core::scene::sun_occlusion::sky_lens_disc(
+        let circle = sunlit_core::scene::sky_lens::sky_lens_disc(
             view_direction,
             0.0,
             params.sky_fov,
             glam::Vec2::ZERO,
             viewport,
         )?;
-        let globe = sunlit_core::scene::sun_occlusion::globe_screen_circle(
+        let globe = sunlit_core::scene::sky_lens::globe_screen_circle(
             camera.mvp_matrix(viewport.x / viewport.y),
             camera.distance,
             1.0,
@@ -131,7 +131,7 @@ fn eqj_direction(right_ascension: f32, declination: f32) -> glam::Vec3 {
 
 /// Where the sky lens puts an equatorial J2000 direction, in pixels.
 ///
-/// `scene::sun_occlusion::sky_lens_disc` of a zero-width cone, which is the
+/// `scene::sky_lens::sky_lens_disc` of a zero-width cone, which is the
 /// CPU's own spelling of the projection the shader inverts rather than a new
 /// one.
 fn eqj_screen_position(
@@ -142,7 +142,7 @@ fn eqj_screen_position(
     let sky = sky_for(params);
     let view = camera_for(params).view_matrix();
     let view_direction = (view * (sky.world_from_eqj * eqj).extend(0.0)).truncate();
-    sunlit_core::scene::sun_occlusion::sky_lens_disc(
+    sunlit_core::scene::sky_lens::sky_lens_disc(
         view_direction,
         0.0,
         params.sky_fov,
@@ -156,9 +156,9 @@ fn eqj_screen_position(
 fn globe_circle(
     params: &SceneParams,
     viewport: glam::Vec2,
-) -> sunlit_core::scene::sun_occlusion::ScreenCircle {
+) -> sunlit_core::scene::sky_lens::ScreenCircle {
     let camera = camera_for(params);
-    sunlit_core::scene::sun_occlusion::globe_screen_circle(
+    sunlit_core::scene::sky_lens::globe_screen_circle(
         camera.mvp_matrix(viewport.x / viewport.y),
         camera.distance,
         1.0,
@@ -500,7 +500,7 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
         let view_direction = (camera_for(&framing).view_matrix()
             * (sky.world_from_eqj * eqj_direction(LANDMARK.0, LANDMARK.1)).extend(0.0))
         .truncate();
-        let disc = sunlit_core::scene::sun_occlusion::sky_lens_disc(
+        let disc = sunlit_core::scene::sky_lens::sky_lens_disc(
             view_direction,
             LANDMARK_RADIUS_DEGREES.to_radians(),
             sky_fov,

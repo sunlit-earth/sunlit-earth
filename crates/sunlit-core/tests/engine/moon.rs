@@ -242,7 +242,7 @@ fn moon_placement(
 fn moon_disc(
     params: &SceneParams,
     viewport: glam::Vec2,
-) -> sunlit_core::scene::sun_occlusion::ScreenCircle {
+) -> sunlit_core::scene::sky_lens::ScreenCircle {
     moon_placement(params, viewport)
         .disc
         .expect("the moon is on screen at these framings")
@@ -255,7 +255,7 @@ fn sun_screen_position(params: &SceneParams, viewport: glam::Vec2) -> glam::Vec2
     let view_direction = (camera.view_matrix() * sky.sun_direction.extend(0.0))
         .truncate()
         .normalize();
-    sunlit_core::scene::sun_occlusion::sky_lens_disc(
+    sunlit_core::scene::sky_lens::sky_lens_disc(
         view_direction,
         0.0,
         params.sky_fov,
@@ -277,7 +277,7 @@ fn sun_screen_position(params: &SceneParams, viewport: glam::Vec2) -> glam::Vec2
 fn disc_pixels(
     pixels: &[u8],
     width: u32,
-    disc: sunlit_core::scene::sun_occlusion::ScreenCircle,
+    disc: sunlit_core::scene::sky_lens::ScreenCircle,
 ) -> Vec<(glam::Vec2, u8)> {
     let reach = disc.radius * 1.1;
     let mut out = Vec::new();

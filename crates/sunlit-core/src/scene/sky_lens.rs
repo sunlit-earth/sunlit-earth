@@ -15,6 +15,8 @@ use std::f32::consts::PI;
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
+use crate::display::layout::{SKY_FOV_MAX, SKY_FOV_MIN};
+
 /// Smallest radius either half-degree body is drawn at, in pixels at 1080p.
 ///
 /// At the default sky field of view the true disk is about 13 pixels across on
@@ -45,10 +47,10 @@ pub struct ScreenCircle {
 /// frame's horizontal edge is `sky_fov / 2` from the axis, so this is the
 /// divisor that puts that edge at NDC 1. Mirrors `sky_lens_edge_radius` in
 /// `sphere.wgsl`, clamp included. The upper end is the widest sky a spanned
-/// canvas may derive, not the slider's 180; `display::layout::SKY_FOV_MAX` is
-/// the same number.
+/// canvas may derive, not the slider's 180, which is why the bounds are the
+/// layout's own.
 pub fn sky_lens_edge_radius(sky_fov_deg: f32) -> f32 {
-    (sky_fov_deg.clamp(60.0, 330.0) * PI / 720.0).tan()
+    (sky_fov_deg.clamp(SKY_FOV_MIN, SKY_FOV_MAX) * PI / 720.0).tan()
 }
 
 /// The image of a cone of half-angle `half_angle` about `view_dir`, in pixels.

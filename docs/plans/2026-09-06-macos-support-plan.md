@@ -164,8 +164,12 @@ Settled on 2026-09-06 after the first draft: the identifier is `earth.sunlit.Sun
 
 ## Departures
 
-None yet.
+1. **Step 0 moves after step 3, because the macOS build does not compile.** The first `golden.yml` dispatch on `macos-latest` (run 34055254636, 4 minutes, failed) never reached a test: `sunlit-core` does not build on macOS under `RUSTFLAGS: -D warnings`, with eleven dead-code errors in `wallpaper/mod.rs`. `Publication` and its `write` and `commit`, `begin_publication`, `generation_name`, `GENERATION_COUNTER`, `newest_generation_other_than`, `sweep_generations`, `sweep_legacy_files`, `unfinished` and `encode_png` are reached only from `write_job`, which is `cfg(any(windows, target_os = "linux"))`, so on the one platform with no setter the whole file lifecycle is unused code. This predates the branch: the ref was `f4068dc`, which differs from `main` only in the two plan documents, so macOS CI has been red on `main` since the wallpaper file lifecycle change of 2026-09-03 and nothing dispatched it after. The fix is the setter, not an `allow`: step 3's `wallpaper/macos.rs` calls `write_job`, and widening the two `cfg`s in `mod.rs` is already in that step's list. So step 0 runs after step 3 rather than before it, and the two macOS dispatches step 3 was budgeted for do both jobs: `golden.yml` first, which compiles `sunlit-core` and regenerates the `metal` set in one job, then the macOS-only `ci.yml` run for the whole suite. Decision 15's argument survives the reordering, since what it wanted was that every later macOS CI run means something, and the first one that can run at all is the one after step 3.
 
 ## Validation record
 
 Filled in as steps land.
+
+### Step 0, first attempt (2026-09-06)
+
+`gh workflow run golden.yml --ref feat/macos -f os=macos-latest` at commit f4068dc. Run <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34055254636>, 4 minutes, failed in the `Regenerate` step with the eleven dead-code errors departure 1 records. macOS job 1 of the 6 this branch is allowed. No references were produced; the `metal` set is still fourteen short and three stale.

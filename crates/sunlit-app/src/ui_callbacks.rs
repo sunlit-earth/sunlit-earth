@@ -239,32 +239,7 @@ pub fn register_action_callbacks(
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let defaults = AppConfig::default();
-        apply_config_to_window(&win, &defaults);
-
-        defer_combobox_indices(
-            &win.as_weak(),
-            ComboIndices::of(
-                &defaults,
-                engine.aa_counts(),
-                defaults.texture_resolution,
-                &displays::screen_ids_of_window(&win),
-            ),
-        );
-        displays::apply_diagram_to_window(
-            &win,
-            &displays::monitors_of(&for_defaults),
-            defaults.anchor().as_deref(),
-        );
-        engine.set_resolution_is_one_run_only(false);
-        engine.send(EngineCommand::SetTextureResolution(
-            defaults.texture_resolution,
-        ));
-        engine.send(EngineCommand::SetDisplayPlan {
-            mode: defaults.display_mode,
-            anchor: defaults.anchor(),
-        });
-        engine.push_params(&win);
+        apply_whole_config(&win, &engine, &for_defaults, &AppConfig::default());
     });
 
     let window_weak = window.as_weak();
@@ -274,33 +249,47 @@ pub fn register_action_callbacks(
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let loaded = config::load_config();
-        apply_config_to_window(&win, &loaded);
-
-        defer_combobox_indices(
-            &win.as_weak(),
-            ComboIndices::of(
-                &loaded,
-                engine.aa_counts(),
-                loaded.texture_resolution,
-                &displays::screen_ids_of_window(&win),
-            ),
-        );
-        displays::apply_diagram_to_window(
-            &win,
-            &displays::monitors_of(&for_reset),
-            loaded.anchor().as_deref(),
-        );
-        engine.set_resolution_is_one_run_only(false);
-        engine.send(EngineCommand::SetTextureResolution(
-            loaded.texture_resolution,
-        ));
-        engine.send(EngineCommand::SetDisplayPlan {
-            mode: loaded.display_mode,
-            anchor: loaded.anchor(),
-        });
-        engine.push_params(&win);
+        apply_whole_config(&win, &engine, &for_reset, &config::load_config());
     });
+}
+
+/// Put a whole config into the window, the engine and the diagram at once.
+///
+/// Load-defaults and reset differ only in where the config comes from. Both
+/// replace every setting rather than one, which is why the texture resolution
+/// and the display plan are sent explicitly: neither travels in `SceneParams`,
+/// and the engine holds its own copy of each.
+fn apply_whole_config(
+    window: &MainWindow,
+    engine: &EngineLink,
+    screens: &displays::SharedMonitors,
+    config: &AppConfig,
+) {
+    apply_config_to_window(window, config);
+
+    defer_combobox_indices(
+        &window.as_weak(),
+        ComboIndices::of(
+            config,
+            engine.aa_counts(),
+            config.texture_resolution,
+            &displays::screen_ids_of_window(window),
+        ),
+    );
+    displays::apply_diagram_to_window(
+        window,
+        &displays::monitors_of(screens),
+        config.anchor().as_deref(),
+    );
+    engine.set_resolution_is_one_run_only(false);
+    engine.send(EngineCommand::SetTextureResolution(
+        config.texture_resolution,
+    ));
+    engine.send(EngineCommand::SetDisplayPlan {
+        mode: config.display_mode,
+        anchor: config.anchor(),
+    });
+    engine.push_params(window);
 }
 
 /// Wire the Displays group: the mode, the anchor screen, and the diagram.

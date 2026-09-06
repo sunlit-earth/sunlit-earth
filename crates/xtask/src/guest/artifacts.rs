@@ -1198,15 +1198,15 @@ mod tests {
     /// guest that was told it had textures.
     #[test]
     fn the_staged_textures_are_the_ones_the_app_asks_for() {
-        let main = std::fs::read_to_string(
+        let startup = std::fs::read_to_string(
             store::repo_root()
                 .join("crates")
                 .join("sunlit-app")
                 .join("src")
-                .join("main.rs"),
+                .join("startup.rs"),
         )
-        .expect("the app's main.rs");
-        let resolver = main
+        .expect("the app's startup.rs");
+        let resolver = startup
             .split("fn resolve_texture_paths")
             .nth(1)
             .expect("resolve_texture_paths is where the app names its textures");

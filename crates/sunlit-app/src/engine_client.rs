@@ -128,12 +128,16 @@ impl EngineLink {
     /// Read the window into `SceneParams` and push it to the engine.
     ///
     /// This is the only path by which UI changes reach the renderer, so every
-    /// change callback ends here instead of poking a redraw.
+    /// change callback ends here instead of poking a redraw. The sliders whose
+    /// number is not their own value read it back from here, which is what
+    /// keeps a label and the renderer on one curve.
     pub fn push_params(&self, window: &MainWindow) {
         let params = crate::ui_callbacks::read_params_from_window(window, &self.aa_counts);
         window.set_zoom_display_distance(sunlit_core::scene::camera::zoom_to_distance(
             params.camera.zoom,
         ));
+        window.set_day_gamma_value(params.day_gamma);
+        window.set_night_gamma_value(params.night_gamma);
         self.send(EngineCommand::UpdateParams(Box::new(params)));
     }
 }

@@ -1,0 +1,55 @@
+// System tray entry. A SystemTrayIcon is a top-level component with no window
+// of its own, so it is instantiated alongside MainWindow rather than inside it.
+// The `icon` is fed from Rust because it is generated procedurally rather than
+// shipped as an asset.
+export component TrayIcon inherits SystemTrayIcon {
+    tooltip: "Sunlit Earth";
+    title: "Sunlit Earth";
+    // Only properties declared here are exposed to Rust, so the inherited
+    // `icon` is fed through one of our own.
+    icon: root.tray-image;
+
+    in property <image> tray-image;
+    in-out property <bool> auto-refresh-enabled: false;
+
+    callback open-window();
+    callback toggle-window();
+    callback refresh-now();
+    callback auto-refresh-toggled(bool);
+    callback show-about();
+    callback exit-app();
+
+    // Left-click on the icon toggles the settings window (Windows and Linux;
+    // on macOS the attached menu takes precedence, which is why "Open" also
+    // exists as a menu entry).
+    clicked => { root.toggle-window(); }
+
+    Menu {
+        MenuItem {
+            title: "Open";
+            activated => { root.open-window(); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Refresh Now";
+            activated => { root.refresh-now(); }
+        }
+        MenuItem {
+            title: "Auto-refresh";
+            checkable: true;
+            checked <=> root.auto-refresh-enabled;
+            // `checked` is toggled by Slint before this fires, so it already
+            // holds the new state.
+            activated => { root.auto-refresh-toggled(root.auto-refresh-enabled); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "About";
+            activated => { root.show-about(); }
+        }
+        MenuItem {
+            title: "Exit";
+            activated => { root.exit-app(); }
+        }
+    }
+}

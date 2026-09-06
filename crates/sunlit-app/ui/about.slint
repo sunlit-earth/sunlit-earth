@@ -1,0 +1,248 @@
+import { Palette, ScrollView, TabWidget } from "std-widgets.slint";
+import { AboutBlock } from "widgets.slint";
+
+export component AboutWindow inherits Window {
+    title: "About Sunlit Earth";
+    // The same SVG master the settings window takes, for the same reason:
+    // Slint rasterizes at whatever size the surface asks for, and here the
+    // header mark is one of those surfaces.
+    icon: @image-url("../../../assets/icon/sunlit-earth.svg");
+    preferred-width: 580px;
+    preferred-height: 520px;
+    min-width: 360px;
+    min-height: 300px;
+
+    in property <string> version;
+    // A model rather than one `styled-text`: the tab lays the document
+    // out block by block. `about::document_model` builds it.
+    in property <[AboutBlock]> attributions;
+    in property <[AboutBlock]> third-party;
+    // Plain text rather than markdown: the GPLv3 is hard-wrapped at 76
+    // columns with indentation that carries meaning, and every markdown path
+    // through Slint reflows it.
+    in property <string> license-text;
+    // Fed from Rust, because `font-family` takes one real family name and
+    // Slint resolves no generic: "monospace" lands on the proportional
+    // default with no error. `about::MONO_FAMILY` picks the platform's.
+    in property <string> mono-family;
+
+    // Opened through the platform's own handler in `about.rs`. Every tab and
+    // the header link go through this one callback.
+    callback open-url(url: string);
+
+    out property <length> version-y: version-line.absolute-position.y;
+
+    property <string> repository: "https://github.com/klamann/sunlit-earth";
+    // The fluent ScrollView draws its bar over the flickable rather than
+    // beside it, so a tab reserves the width whether the bar is showing.
+    property <length> scrollbar-width: 14px;
+    // The attributions tab's two indents: what one level of nesting moves a
+    // list item by, and the column its bullet hangs in.
+    property <length> nesting-step: 14px;
+    property <length> bullet-column: 11px;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        // Fixed: the version, the copyright and the repository stay on screen
+        // at any window size, and only the tab below scrolls.
+        HorizontalLayout {
+            spacing: 16px;
+            vertical-stretch: 0;
+
+            Image {
+                source: @image-url("../../../assets/icon/sunlit-earth.svg");
+                width: 72px;
+                height: 72px;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: "Sunlit Earth";
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                version-line := Text {
+                    text: "Version " + root.version;
+                }
+
+                Text {
+                    text: "© 2026 Sebastian Straub";
+                }
+
+                Text {
+                    text: root.repository;
+                    color: Palette.accent-background;
+
+                    repository-link := TouchArea {
+                        mouse-cursor: pointer;
+
+                        clicked => {
+                            root.open-url(root.repository);
+                        }
+                    }
+                }
+            }
+        }
+
+        TabWidget {
+            vertical-stretch: 1;
+
+            Tab {
+                title: "Attributions";
+
+                // One element per block rather than one `StyledText` for the
+                // document, because `StyledText` cannot lay a document out:
+                // it stacks paragraphs with no gap between them, it has no
+                // font size to give a heading, and its list bullet is literal
+                // text glued to the paragraph, so a wrapped line gets no
+                // hanging indent. `about::parse_blocks` cuts the document into
+                // blocks and each block's inline markdown is parsed on its
+                // own, which is also why no block can hold a construct Slint's
+                // subset rejects.
+                ScrollView {
+                    VerticalLayout {
+                        width: 100%;
+                        padding: 12px;
+                        padding-right: 12px + root.scrollbar-width;
+                        alignment: start;
+                        spacing: 8px;
+
+                        for block in root.attributions : VerticalLayout {
+                            // A section break reads heavier than the gap
+                            // between two lines of the same section.
+                            padding-top: block.kind == 1 ? 8px : 0px;
+                            // The item's text keeps the whole column, so every
+                            // wrapped line of it starts under the first.
+                            padding-left: block.kind == 2
+                                ? block.depth * root.nesting-step + root.bullet-column
+                                : 0px;
+
+                            if block.kind == 1 : attributions-heading := Text {
+                                text: block.heading;
+                                font-weight: 700;
+                                font-size: block.depth == 1 ? 18px : 16px;
+                            }
+
+                            if block.kind == 0 : attributions-paragraph := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+                            }
+
+                            if block.kind == 2 : attributions-item := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+
+                                // Drawn into the margin the padding leaves
+                                // rather than laid out beside the text: a
+                                // `StyledText` reports the height of one line
+                                // unless it is a layout's own child, so a
+                                // bullet in a `HorizontalLayout` next to it
+                                // would leave every wrapped item one line tall
+                                // and spilling over the block below.
+                                attributions-bullet := Text {
+                                    x: -root.bullet-column;
+                                    // Beside the first line: a child of a
+                                    // non-layout element is centered in it
+                                    // otherwise, which for a wrapped item is
+                                    // the middle of the paragraph.
+                                    y: 0px;
+                                    text: "\u{2022}";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "License";
+
+                ScrollView {
+                    horizontal-scrollbar-policy: as-needed;
+
+                    // No `width: 100%`: the viewport takes the layout's own
+                    // preferred width, which is the longest unwrapped line,
+                    // and that is what gives the tab something to scroll.
+                    VerticalLayout {
+                        padding: 12px;
+                        alignment: start;
+
+                        license-body := Text {
+                            text: root.license-text;
+                            wrap: no-wrap;
+                            font-family: root.mono-family;
+                            font-size: 12px;
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Third-party";
+
+                // The same block layout the attributions get, spelled out
+                // again rather than shared: element ids are static, so one
+                // component used by both tabs would leave a test unable to
+                // say which tab's rows it found.
+                ScrollView {
+                    VerticalLayout {
+                        width: 100%;
+                        padding: 12px;
+                        padding-right: 12px + root.scrollbar-width;
+                        alignment: start;
+                        spacing: 8px;
+
+                        for block in root.third-party : VerticalLayout {
+                            padding-top: block.kind == 1 ? 8px : 0px;
+                            padding-left: block.kind == 2
+                                ? block.depth * root.nesting-step + root.bullet-column
+                                : 0px;
+
+                            if block.kind == 1 : third-party-heading := Text {
+                                text: block.heading;
+                                font-weight: 700;
+                                font-size: block.depth == 1 ? 18px : 16px;
+                            }
+
+                            if block.kind == 0 : third-party-paragraph := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+                            }
+
+                            if block.kind == 2 : third-party-body := StyledText {
+                                text: block.body;
+
+                                link-clicked(link) => {
+                                    root.open-url(link);
+                                }
+
+                                third-party-bullet := Text {
+                                    x: -root.bullet-column;
+                                    y: 0px;
+                                    text: "\u{2022}";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

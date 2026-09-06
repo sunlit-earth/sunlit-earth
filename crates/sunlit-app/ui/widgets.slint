@@ -1,0 +1,210 @@
+import { Slider, ComboBox, CheckBox, Palette } from "std-widgets.slint";
+
+// One monitor's place in the layout diagram.
+//
+// The rectangle is already normalized to the bounding box of every monitor, so
+// the diagram multiplies by the board's size and does nothing else; the
+// arithmetic that decides it is in `displays.rs`, where it is tested.
+export struct MonitorTile {
+    label: string,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    anchor: bool,
+}
+
+// One block of the attributions document, cut out of the markdown by
+// `about::parse_blocks`.
+//
+// `kind` is 0 for a paragraph, 1 for a heading and 2 for a list item; `depth`
+// is a heading's level or a list item's nesting. A heading renders as a plain
+// `Text`, since `StyledText` has no font weight or size of its own, and so it
+// carries its text in `heading`; every other kind carries inline markdown in
+// `body`.
+export struct AboutBlock {
+    kind: int,
+    depth: int,
+    heading: string,
+    body: styled-text,
+}
+
+export component Splitter inherits Rectangle {
+    callback moved(length);
+
+    width: 4px;
+    background: touch.has-hover || touch.pressed ? Palette.accent-background : transparent;
+
+    touch := TouchArea {
+        width: 10px;
+        x: -3px;
+        mouse-cursor: ew-resize;
+
+        moved => {
+            root.moved(self.mouse-x - self.pressed-x);
+        }
+    }
+}
+
+// The hover text's own popup.
+//
+// `Tooltip { text: ... }` would be one line, but the built-in content does not
+// wrap and a sentence is wider than any screen, so this is the custom-content
+// form. The compiler still wraps it in the built-in `ToolTipImpl`, which is
+// where the background and the border come from, and which sizes the popup
+// from its children's preferred width. A `Text` reports the width it would
+// take unwrapped however narrow the element around it is, so the width here is
+// declared as a constraint and not only as a size; the height then follows
+// from the wrap at that width.
+export component Hint inherits Rectangle {
+    in property <string> text;
+
+    min-width: 300px;
+    max-width: 300px;
+    preferred-width: 300px;
+    height: body.preferred-height;
+
+    body := VerticalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        padding-bottom: 6px;
+
+        Text {
+            text: root.text;
+            color: Palette.foreground;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// One row of the settings panel: a label, a control, and the value it reads.
+//
+// The root is a Rectangle rather than the layout itself because the hover text
+// covers the whole row: a `Tooltip` lowers to a full-size child area, which
+// inside a layout would claim a cell of its own.
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <string> value-text;
+    // A sub-row shifts its label right and gives up the same width, so the
+    // sliders of a group stay in one column whatever the nesting is.
+    in property <length> indent: 0px;
+    in property <length> label-width: 88px;
+    in property <length> value-width: 45px;
+    in property <float> minimum;
+    in property <float> maximum;
+    in-out property <float> value;
+    callback changed();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 4px;
+        padding-left: root.indent;
+
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            min-width: root.label-width - root.indent;
+        }
+        Slider {
+            minimum: root.minimum;
+            maximum: root.maximum;
+            value <=> root.value;
+            changed => { root.changed(); }
+        }
+        Text {
+            text: root.value-text;
+            vertical-alignment: center;
+            min-width: root.value-width;
+        }
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+// A checkbox row. The checkbox carries its own wording, so there is no label
+// column to align it against.
+//
+// A CheckBox reports the width of that wording as its minimum, which would
+// make one long label the floor of the whole sidebar, so it is pinned here.
+export component SettingCheck inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <length> indent: 0px;
+    in-out property <bool> checked;
+    callback toggled();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: root.indent;
+
+        CheckBox {
+            text: root.text;
+            min-width: 0;
+            checked <=> root.checked;
+            toggled => { root.toggled(); }
+        }
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+// A combo box row, on the same label column as SettingRow.
+export component SettingCombo inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <length> indent: 0px;
+    in property <length> label-width: 88px;
+    in property <[string]> model;
+    in-out property <int> current-index;
+    callback selected();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 4px;
+        padding-left: root.indent;
+
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            min-width: root.label-width - root.indent;
+        }
+        ComboBox {
+            // The fluent ComboBox asks for 160px flat, which would set the
+            // sidebar's floor. 140 fits the longest value the fixed models
+            // carry, at 93px of text inside 42px of padding, spacing and
+            // chevron, with slack for another platform's font. A screen label
+            // is longer than that and elides, as it did at 160.
+            min-width: 140px;
+            model: root.model;
+            current-index <=> root.current-index;
+            max-height: 24px;
+            selected => { root.selected(); }
+        }
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+// The heading above a run of related rows inside a GroupBox.
+export component SettingHeading inherits Text {
+    font-weight: 700;
+}

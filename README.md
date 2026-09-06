@@ -34,10 +34,10 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 - 🌌 The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
 - 🖥 Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
 - ⚙️ Everything is adjustable: camera position, lighting, atmospheric effects, apparent size and brightness of celestial objects, etc.
-- 🖥️ Windows, Linux and macOS, with the same settings, the same command line and the same wallpaper behaviour on each. See the note under Downloads about what "macOS" is worth today.
 
 Planned features:
 
+- 🍎 Support for macOS (Apple makes it really hard to test stuff if you don't own Apple hardware...)
 - 🔧 More setup options and autostart.
 - ❄️ Seasonal surface textures for Earth.
 - 🌑 Eclipse rendering (see the moon's shadow moving over the surface of Earth).
@@ -46,36 +46,17 @@ Planned features:
 
 > Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and so far it hasn't caused any damage to my devices, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
 
-Portable binary releases, Linux and Windows on x86-64 and macOS on Apple Silicon:
+At the moment we only have portable binary releases for Linux and Windows on x86-64:
 
 - Linux: sunlit-earth-0.1.0-linux.tar.gz
 - Windows: sunlit-earth-0.1.0-windows.zip
-- macOS: sunlit-earth-0.1.0-macos.zip (the app bundle) or sunlit-earth-0.1.0-macos.tar.gz (a plain binary for Terminal)
+- macOS: coming soon
 
-Intel Mac support and more installation options are on the roadmap.
+A macOS release, ARM64 support, and more installation options are all on the roadmap.
 
-The Linux version was tested on KDE, GNOME, Xfce, Cinnamon, and should work on many other desktop environments. The Windows version was tested on a recent version of Windows 11; it'll probably run on older Windows versions, but no guarantees. **The macOS version has never been run on a Mac.** Nobody working on this project owns Apple hardware, so it is written against Apple's documentation, compiled and unit-tested on a hosted macOS runner, and that is the whole of the evidence behind it. If you have a Mac and are willing to try it, the reports section below says what would help.
+The Linux version was tested on KDE, GNOME, Xfce, Cinnamon, and should work on many other desktop environments. The Windows version was tested on a recent version of Windows 11; it'll probably run on older Windows versions, but no guarantees.
 
 On Windows, unpack the zip file and launch `sunlit-earth.exe`. On Linux, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`.
-
-### macOS: Gatekeeper, and the two downloads
-
-The macOS build is signed, but only ad-hoc: proper notarization needs an Apple Developer Program membership, which this project does not have. Gatekeeper treats an ad-hoc signed download as unverified, and since macOS 15.1 there is no Control-click "Open" shortcut around it.
-
-**The app bundle.** Unzip `sunlit-earth-<version>-macos.zip` and move `Sunlit Earth.app` to Applications. Double-clicking it the first time gives a dialog saying macOS could not verify that the app is free of malware. Open System Settings, go to Privacy & Security, scroll to the bottom, and choose Open Anyway for Sunlit Earth; on macOS 26 that step asks for an administrator password. If you would rather do it in one line, `xattr -dr com.apple.quarantine "/Applications/Sunlit Earth.app"` removes the quarantine attribute the browser set.
-
-**The plain binary.** Downloading the tarball with `curl` and unpacking it with `tar` in Terminal avoids Gatekeeper entirely, because quarantine is an extended attribute that browsers and Archive Utility set and `tar` does not:
-
-```bash
-curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/sunlit-earth-0.1.0-macos.tar.gz
-tar xzf sunlit-earth-0.1.0-macos.tar.gz
-cd sunlit-earth-0.1.0-macos
-./sunlit-earth
-```
-
-Started this way the app prints its log to the terminal it came from, which is the shape a bug report wants. Downloading that same tarball in Safari and unpacking it by double-clicking does not avoid Gatekeeper: Archive Utility propagates the quarantine attribute to what it extracts.
-
-**Reports.** What would help most is whether the wallpaper actually changes, on each screen, in each of the three display modes; whether the status item in the menu bar is legible against a light and a dark menu bar and whether its Open entry brings the window forward; what `sunlit-earth displays` prints in Terminal; and the log file (see below). A screenshot of anything that looks wrong is worth more than a description.
 
 If you know your way around the Rust toolchain, you can [build Sunlit Earth from source](#build-from-source) instead.
 
@@ -119,8 +100,6 @@ Configuration, caches, and generated wallpapers live under these directories:
 
 The settings file is `config.toml`. Back it up if you want to keep a configuration before experimenting.
 
-When Sunlit Earth is started from a terminal it writes its log there and nowhere else. When it is not, which is a launcher, a shortcut, or a macOS app bundle, it also writes `sunlit-earth.log` into the directory above, rotating daily and keeping a week. That file is what to attach to a bug report.
-
 ### Export an image
 
 Render a PNG without opening the settings window:
@@ -129,7 +108,7 @@ Render a PNG without opening the settings window:
 sunlit-earth render --output earth.png --width 3840 --height 2160
 ```
 
-This uses your saved configuration. On Windows, use `sunlit-earth.exe`; on Linux and macOS, use `./sunlit-earth` when running from its folder, or `"/Applications/Sunlit Earth.app/Contents/MacOS/sunlit-earth"` for the macOS bundle. Run `sunlit-earth --help` or `sunlit-earth render --help` for available options. Note that the exported image will not necessarily match your preview exactly, because it will be rendered at your specified resolution and not the preview window's resolution.
+This uses your saved configuration. On Windows, use `sunlit-earth.exe`; on Linux, use `./sunlit-earth` when running from its folder. Run `sunlit-earth --help` or `sunlit-earth render --help` for available options. Note that the exported image will not necessarily match your preview exactly, because it will be rendered at your specified resolution and not the preview window's resolution.
 
 ## Troubleshooting
 

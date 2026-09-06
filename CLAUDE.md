@@ -139,5 +139,6 @@ docs/                 see the table above
 
 - Run `cargo test` and `cargo clippy --all-targets` after making changes.
 - Do not commit or push without explicit user approval, and wait for confirmation that a change works before committing.
+- `README.md` is edited only with the user's explicit permission. Anything that would have gone there goes in `docs/` instead.
 - Git worktrees go in `.worktrees/` at the repo root.
 - When implementing a feature, update `docs/roadmap.md` and whichever of the documents above describes the area; measurements and reasoning go there, not here.

@@ -5,6 +5,7 @@
 - [building.md](building.md) covers native dependencies, WSL builds, launch examples, and developer tooling.
 - [usage.md](usage.md) covers command line options, display modes and diagnostics, app data, and environment overrides.
 - [assets.md](assets.md) covers Git LFS textures, asset discovery and caching, preparation tools, and license notices.
+- [macos-testing.md](macos-testing.md) is the checklist for a tester with a Mac: getting past Gatekeeper, what to look at, and what to send back.
 
 ## How the code works
 

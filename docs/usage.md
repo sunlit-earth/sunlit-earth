@@ -2,6 +2,27 @@
 
 The [README](../README.md#using-the-app) covers everyday use. This reference contains additional launch options, display diagnostics, and file locations.
 
+## Installing on macOS
+
+The macOS build has never been run on a Mac. Nobody working on this project owns Apple hardware, so it is written against Apple's documentation, compiled and unit-tested on a hosted macOS runner, and that is the whole of the evidence behind it. [macos-testing.md](macos-testing.md) says what a tester with a Mac could report back.
+
+Two archives are published for macOS on Apple Silicon: `sunlit-earth-<version>-macos.zip` holds `Sunlit Earth.app`, and `sunlit-earth-<version>-macos.tar.gz` holds the same binary with its textures and no bundle. Both are signed ad-hoc, because notarization needs an Apple Developer Program membership this project does not have, and Gatekeeper treats an ad-hoc signed download as unverified. Since macOS 15.1 there is no Control-click "Open" shortcut around that.
+
+**The app bundle.** Unzip the archive and move `Sunlit Earth.app` to Applications. Double-clicking it the first time gives a dialog saying macOS could not verify that the app is free of malware. Open System Settings, go to Privacy & Security, scroll to the bottom, and choose Open Anyway for Sunlit Earth; on macOS 26 that step asks for an administrator password. `xattr -dr com.apple.quarantine "/Applications/Sunlit Earth.app"` does the same thing in one line, by removing the quarantine attribute the browser set.
+
+**The plain binary.** Downloading the tarball with `curl` and unpacking it with `tar` in Terminal avoids Gatekeeper entirely, because quarantine is an extended attribute that browsers and Archive Utility set and `tar` does not:
+
+```bash
+curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/sunlit-earth-0.1.0-macos.tar.gz
+tar xzf sunlit-earth-0.1.0-macos.tar.gz
+cd sunlit-earth-0.1.0-macos
+./sunlit-earth
+```
+
+Started this way the app prints its log to the terminal it came from, which is the shape a bug report wants. Downloading that same tarball in Safari and unpacking it by double-clicking does not avoid Gatekeeper: Archive Utility propagates the quarantine attribute to what it extracts.
+
+To render an image from the bundle, the executable is at `"/Applications/Sunlit Earth.app/Contents/MacOS/sunlit-earth"`.
+
 ## Launch options
 
 The main options are:
@@ -46,5 +67,7 @@ By default, `config.toml`, the cloud cache, downscaled textures in `texture_cach
 - macOS uses `~/Library/Application Support/SunlitEarth`.
 
 Each wallpaper publish writes images into a fresh `gen-<id>/` directory, with one image per monitor and a canvas where required. Fresh paths let desktop shells notice updates without reading a partially rewritten image. The app manages retention and cleanup; [platforms.md](platforms.md) explains the lifecycle and the older alternating file scheme it replaced.
+
+Started from a terminal, the app writes its log there and nowhere else. Started any other way, which is a launcher, a shortcut, or a macOS app bundle, it also writes `sunlit-earth.log` into the directory above, rotating daily and keeping a week. That file is what to attach to a bug report.
 
 The [environment variable reference](architecture.md#environment-knobs) covers config, textures, caches, metrics, cloud polling, and test and VM overrides. Variables that carry values generally treat blank as unset; switches documented as presence only are enabled by being present, regardless of their value.

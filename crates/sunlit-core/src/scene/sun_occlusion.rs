@@ -26,10 +26,16 @@ use std::f32::consts::PI;
 
 use glam::{Mat4, Vec2, Vec3};
 
-use super::limb_extinction::{EARTH_RADIUS_KM, limb_disk_amplitude, limb_transmission};
-use super::sky_lens::{
-    MIN_BODY_DISK_RADIUS_PIXELS, ScreenCircle, globe_screen_circle, pixel_scale,
-    sky_lens_direction, sky_lens_disc,
+use super::limb_extinction::EARTH_RADIUS_KM;
+use super::sky_lens::{MIN_BODY_DISK_RADIUS_PIXELS, sky_lens_direction};
+
+/// Kept only so `tests/engine.rs` and `tests/render_pipeline.rs` still
+/// resolve these through the old path while their own splits are in flight.
+/// Both targets are to name `scene::sky_lens` and `scene::limb_extinction`
+/// directly, and this block goes when they do.
+pub use super::limb_extinction::{limb_disk_amplitude, limb_transmission};
+pub use super::sky_lens::{
+    ScreenCircle, globe_screen_circle, pixel_scale, sky_lens_disc, sky_lens_edge_radius,
 };
 
 /// Angular radius of the Sun's disk seen from Earth, in degrees. The seasonal

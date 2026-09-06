@@ -7,22 +7,21 @@
 //! half-suspend the machinery.
 
 pub mod clock;
+mod cloud_worker;
+mod handle;
+mod protocol;
+mod publish;
+mod schedule;
 pub mod wallpaper_sink;
 
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
-use tracing::{debug, error, info, warn};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use tracing::{debug, info, warn};
 
-use crate::assets::cloud_fetcher::{CloudUpdater, PollOutcome, RetryBackoff};
-use crate::assets::cloud_source::CloudSource;
 use crate::assets::mailbox::TextureMailbox;
 use crate::config::QualityTier;
-use crate::memory_report::MemoryReport;
 use crate::params::SceneParams;
 use crate::renderer::{
     RenderOutcome, Renderer, RendererConfig, SlotLayout, quantize_to_granularity,
@@ -30,8 +29,13 @@ use crate::renderer::{
 };
 use crate::scene::sky::{self, SkyState};
 
-use clock::{Clock, SystemClock};
-use wallpaper_sink::{Frame, JobImages, WallpaperJob, WallpaperSink};
+use clock::Clock;
+use cloud_worker::{CloudWorker, spawn_cloud_worker};
+use handle::AdapterReport;
+pub use handle::{EngineConfig, EngineHandle, start};
+pub use protocol::{EngineCommand, EngineEvent};
+use schedule::Schedule;
+use wallpaper_sink::WallpaperSink;
 
 /// How long the loop blocks on the command channel before re-checking the
 /// schedule. Short enough that a real-clock deadline is never missed by more
@@ -64,397 +68,6 @@ const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 /// number itself would still pass when this one moved, having quietly stopped
 /// stepping over anything.
 pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
-
-/// Things a client asks the engine to do.
-pub enum EngineCommand {
-    /// Replace the scene parameters. Coalesced: only the newest survives a
-    /// backlog, because intermediate drag positions are not worth rendering.
-    UpdateParams(Box<SceneParams>),
-    /// Resize the preview target. Quantized by the engine.
-    SetPreviewSize(u32, u32),
-    /// Turn preview frames on or off. Off saves the readback when nothing is
-    /// looking (the window is hidden, or the client is the render subcommand).
-    SetPreviewEnabled(bool),
-    /// Render at the sink's native resolution and publish it now.
-    RenderWallpaperNow,
-    /// Render to a PNG file at an explicit size and report back.
-    RenderToFile {
-        path: PathBuf,
-        width: u32,
-        height: u32,
-        reply: Sender<Result<(), String>>,
-    },
-    /// Render at an explicit size and hand the raw pixels back. Used by the
-    /// e2e `export-test` probe, which checks that the GPU path still works
-    /// while the window is hidden.
-    ExportPixels {
-        width: u32,
-        height: u32,
-        reply: Sender<Result<Vec<u8>, String>>,
-    },
-    /// Reload the file-backed textures at a different width.
-    ///
-    /// Not part of `UpdateParams`: the width does not describe what to draw, it
-    /// decides which pixels to load, and acting on it means freeing GPU
-    /// textures and re-reading files, which a parameter push cannot express.
-    SetTextureResolution(u32),
-    /// Assemble a memory report and hand it back.
-    ///
-    /// Answered on the engine thread because the device is owned there, in the
-    /// same reply-channel shape as `ExportPixels`.
-    ReportMemory { reply: Sender<Box<MemoryReport>> },
-    /// Turn the unattended wallpaper refresh on or off.
-    SetAutoRefresh { enabled: bool, interval: Duration },
-    /// Replace the mode and the anchor a wallpaper is planned with.
-    ///
-    /// Not part of `UpdateParams` for the same reason `SetTextureResolution` is
-    /// not: neither field describes what to draw, so neither belongs in
-    /// `SceneParams` or in the digest that decides whether a frame is worth
-    /// rendering. Both are read only when a wallpaper is published.
-    SetDisplayPlan {
-        mode: crate::display::layout::DisplayMode,
-        anchor: Option<String>,
-    },
-    /// The display layout may have moved. A hint and nothing more: it carries
-    /// no list, because the watcher that sends it has no opinion about what
-    /// changed and the engine asks the sink itself once the burst has settled.
-    DisplaysChanged,
-    /// Re-evaluate the schedule now. Tests send this after advancing a mock
-    /// clock; production uses it as a "something happened" nudge.
-    Poke,
-    /// Finish the current iteration and stop.
-    Shutdown,
-}
-
-/// Things the engine tells its clients about.
-pub enum EngineEvent {
-    /// A freshly rendered preview frame, as tightly packed RGBA8.
-    PreviewFrame {
-        rgba: Vec<u8>,
-        width: u32,
-        height: u32,
-    },
-    /// Every texture the current mode needs has finished loading. Fires once
-    /// per set of textures, so again after a resolution change has reloaded
-    /// them.
-    TexturesReady,
-    /// A wallpaper publish attempt finished.
-    ///
-    /// `Ok` carries what the desktop could not do, and is empty where it did
-    /// exactly what the mode asked. A desktop with one wallpaper for every
-    /// screen has not failed by giving them all the same image, but somebody
-    /// looking at three identical screens deserves the sentence that says why.
-    WallpaperSet(Result<String, String>),
-    /// The monitors this session has, after a hint turned out to be a real
-    /// change. Carries the list the engine will plan its next wallpaper with,
-    /// so a client showing the layout does not have to query for itself.
-    MonitorsChanged(Vec<crate::display::Monitor>),
-    /// Loading-indicator text; empty when nothing is loading.
-    Status(String),
-}
-
-/// Everything the engine needs to start.
-pub struct EngineConfig {
-    /// Force the CPU adapter.
-    pub force_software: bool,
-    /// One entry per file-backed texture slot, in slot order after the grid.
-    pub texture_paths: Vec<Option<PathBuf>>,
-    /// Initial preview size; quantized by the engine.
-    pub preview_size: (u32, u32),
-    /// Whether to produce preview frames at all.
-    pub preview_enabled: bool,
-    /// Initial scene parameters.
-    pub params: SceneParams,
-    /// Caps the preview size and the MSAA sample count.
-    pub quality: QualityTier,
-    /// Width the file-backed surface textures are loaded at, and the cloud
-    /// image variant that goes with it. Independent of the quality tier, which
-    /// governs how much work a frame is allowed to be rather than how much
-    /// texture memory the app holds.
-    pub texture_resolution: u32,
-    pub clock: Arc<dyn Clock>,
-    /// `None` disables cloud fetching entirely (the `SUNLIT_EARTH_NO_CLOUDS`
-    /// case, and the default for tests that do not care about clouds).
-    pub cloud: Option<Arc<dyn CloudSource>>,
-    pub cloud_poll_interval: Duration,
-    /// The app's data directory, holding both the cloud image cache and the
-    /// downscaled copies of the surface textures. `None` disables both caches.
-    pub cache_dir: Option<PathBuf>,
-    /// Unattended wallpaper refresh interval; `None` disables it.
-    pub auto_refresh: Option<Duration>,
-    pub wallpaper: Arc<dyn WallpaperSink>,
-    /// How this session's monitors relate to each other.
-    pub display_mode: crate::display::layout::DisplayMode,
-    /// The monitor the plan is anchored to; `None` follows the system primary.
-    pub anchor_monitor: Option<String>,
-    /// Called on the engine thread for every event. Clients that need to be on
-    /// another thread (the UI) forward from here.
-    pub on_event: Arc<dyn Fn(EngineEvent) + Send + Sync>,
-    /// Write periodic memory samples to the metrics CSV.
-    pub record_metrics: bool,
-    /// The mailbox decoded textures are parked in, with one slot per texture
-    /// (`texture_paths.len() + 2`). `None` builds one.
-    ///
-    /// Injectable for the same reason the clock and the cloud source are: a
-    /// caller holding the same mailbox the engine drains can produce an arrival
-    /// order that no amount of waiting makes reliable.
-    pub mailbox: Option<TextureMailbox>,
-}
-
-impl EngineConfig {
-    /// A minimal headless configuration: software adapter, system clock, no
-    /// clouds, no auto-refresh, events dropped on the floor.
-    ///
-    /// The software adapter is the default here so the test suite behaves the
-    /// same on a developer machine with a discrete GPU as it does on CI, where
-    /// WARP is all there is.
-    pub fn headless(preview_size: (u32, u32)) -> Self {
-        Self {
-            force_software: true,
-            // Four file-backed slots (day, night, moon, Milky Way) so the slot
-            // layout matches production even when no texture files are present.
-            texture_paths: vec![None, None, None, None],
-            preview_size,
-            preview_enabled: true,
-            params: SceneParams::default(),
-            // Tests always run at the cheap tier, whatever the build profile.
-            quality: QualityTier::Low,
-            texture_resolution: crate::config::DEFAULT_TEXTURE_RESOLUTION,
-            clock: Arc::new(SystemClock::new()),
-            cloud: None,
-            cloud_poll_interval: Duration::from_hours(1),
-            cache_dir: None,
-            auto_refresh: None,
-            wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
-            display_mode: crate::display::layout::DisplayMode::default(),
-            anchor_monitor: None,
-            on_event: Arc::new(|_| {}),
-            record_metrics: false,
-            mailbox: None,
-        }
-    }
-}
-
-/// Client-side handle to a running engine.
-pub struct EngineHandle {
-    tx: Sender<EngineCommand>,
-    thread: Option<JoinHandle<()>>,
-    adapter: AdapterReport,
-}
-
-/// What the engine thread reports back about the GPU it opened.
-///
-/// Sent once, before the loop starts, so `start` can return a handle that
-/// already knows what it is running on.
-struct AdapterReport {
-    info: String,
-    key: String,
-    supported_sample_counts: Vec<u32>,
-}
-
-impl EngineHandle {
-    /// Send a command.
-    ///
-    /// A dead channel means the engine thread is gone, which during normal
-    /// operation only happens after `Shutdown`. Anywhere else it means the
-    /// thread died, and the app would otherwise sit there with a window that
-    /// never updates and no explanation, so this is logged at error level.
-    pub fn send(&self, cmd: EngineCommand) {
-        if self.tx.send(cmd).is_err() {
-            error!("engine command dropped: the engine thread is no longer running");
-        }
-    }
-
-    /// Sender for callers that need to enqueue from another thread.
-    pub fn sender(&self) -> Sender<EngineCommand> {
-        self.tx.clone()
-    }
-
-    /// Description of the selected GPU adapter, for the UI's renderer label.
-    pub fn adapter_info(&self) -> &str {
-        &self.adapter.info
-    }
-
-    /// Slug naming the adapter's implementation, for per-adapter golden
-    /// references. See `wgpu_init::adapter_key`.
-    pub fn adapter_key(&self) -> &str {
-        &self.adapter.key
-    }
-
-    /// MSAA sample counts the adapter supports for the render format.
-    pub fn supported_sample_counts(&self) -> &[u32] {
-        &self.adapter.supported_sample_counts
-    }
-
-    /// Render `width` x `height` pixels and block until they are ready.
-    pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, String> {
-        let (reply, replies) = bounded(1);
-        self.tx
-            .send(EngineCommand::ExportPixels {
-                width,
-                height,
-                reply,
-            })
-            .map_err(|_| "engine has stopped".to_owned())?;
-        replies
-            .recv()
-            .map_err(|_| "engine stopped before answering".to_owned())?
-    }
-
-    /// Ask the engine thread for a memory report and block until it answers.
-    pub fn memory_report(&self) -> Result<Box<MemoryReport>, String> {
-        let (reply, replies) = bounded(1);
-        self.tx
-            .send(EngineCommand::ReportMemory { reply })
-            .map_err(|_| "engine has stopped".to_owned())?;
-        replies
-            .recv()
-            .map_err(|_| "engine stopped before answering".to_owned())
-    }
-
-    /// Render a PNG at `width` x `height` and block until it is written.
-    pub fn render_to_file(&self, path: PathBuf, width: u32, height: u32) -> Result<(), String> {
-        let (reply, replies) = bounded(1);
-        self.tx
-            .send(EngineCommand::RenderToFile {
-                path,
-                width,
-                height,
-                reply,
-            })
-            .map_err(|_| "engine has stopped".to_owned())?;
-        replies
-            .recv()
-            .map_err(|_| "engine stopped before answering".to_owned())?
-    }
-
-    /// Stop the engine and wait for its thread.
-    pub fn shutdown(mut self) {
-        let _ = self.tx.send(EngineCommand::Shutdown);
-        join_engine(self.thread.take());
-    }
-}
-
-impl Drop for EngineHandle {
-    fn drop(&mut self) {
-        let _ = self.tx.send(EngineCommand::Shutdown);
-        join_engine(self.thread.take());
-    }
-}
-
-/// Join the engine thread, reporting a panic rather than swallowing it.
-///
-/// A panicking engine thread is the one failure that leaves the app looking
-/// alive (the window is up, IPC answers) while nothing renders, so it must not
-/// be silent.
-fn join_engine(thread: Option<JoinHandle<()>>) {
-    let Some(thread) = thread else {
-        return;
-    };
-    if let Err(payload) = thread.join() {
-        let reason = payload
-            .downcast_ref::<&str>()
-            .map(|s| (*s).to_owned())
-            .or_else(|| payload.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "unknown panic payload".to_owned());
-        error!(reason, "the engine thread panicked");
-    }
-}
-
-/// Start the engine on its own thread.
-///
-/// Blocks until the GPU device exists, so the returned handle can report the
-/// adapter and the supported sample counts without another round trip. That is
-/// also the step most likely to fail on a machine with no working graphics
-/// driver, and it fails as an error the caller can put in front of the user.
-pub fn start(config: EngineConfig) -> Result<EngineHandle, String> {
-    // Unbounded, deliberately, and this is the reasoning the resource-flow rule
-    // asks for at the declaration site:
-    //
-    // - The consumer is unconditional. The engine loop drains this channel dry
-    //   on every iteration and iterations are at most `TICK` (50 ms) apart. It
-    //   is not gated on a window, a client, or visibility.
-    // - The producers are human-rate: UI callbacks during a drag (about 60/s),
-    //   the viewport poll (5/s), the cloud worker (a few per hour), IPC (rare).
-    // - The payloads are small and carry no pixel data. `EngineCommand` is a
-    //   few dozen bytes (`command_payload_is_small` pins this), because
-    //   `UpdateParams` boxes its `SceneParams` and the frame-carrying direction
-    //   is the other way, through the event callback.
-    // - The worst case is therefore a backlog for as long as one blocking
-    //   operation takes: a 4K wallpaper export or an 8K mip upload, one to two
-    //   seconds, so a couple of hundred entries and single-digit kilobytes.
-    //
-    // A bound was considered and rejected: a blocking `send` from the UI thread
-    // would deadlock against an engine that is mid-export, and a non-blocking
-    // `try_send` that drops `UpdateParams` can drop the *last* one, leaving the
-    // window and the engine permanently disagreeing. Neither failure is better
-    // than the bounded growth above.
-    let (tx, rx) = unbounded();
-    let (ready_tx, ready_rx) = bounded(1);
-
-    let command_tx = tx.clone();
-    let thread = std::thread::Builder::new()
-        .name("sunlit-engine".into())
-        .spawn(move || {
-            // `Engine::new` reports its own failure through `ready`, so there is
-            // nothing left to say here; the loop simply never runs.
-            if let Ok(mut engine) = Engine::new(config, rx, &command_tx, &ready_tx) {
-                drop(ready_tx);
-                engine.run();
-            }
-        })
-        .map_err(|e| format!("the engine thread could not be started: {e}"))?;
-
-    match ready_rx.recv() {
-        Ok(Ok(adapter)) => Ok(EngineHandle {
-            tx,
-            thread: Some(thread),
-            adapter,
-        }),
-        Ok(Err(reason)) => {
-            join_engine(Some(thread));
-            Err(reason)
-        }
-        Err(_) => {
-            join_engine(Some(thread));
-            Err("the engine thread stopped before it could report its adapter".to_owned())
-        }
-    }
-}
-
-/// Deadline bookkeeping for one periodic job.
-struct Schedule {
-    interval: Duration,
-    next: Duration,
-}
-
-impl Schedule {
-    fn new(interval: Duration, now: Duration) -> Self {
-        Self {
-            interval,
-            next: now + interval,
-        }
-    }
-
-    /// Whether the job is due, rolling the deadline forward if so.
-    ///
-    /// The deadline is recomputed from `now` rather than accumulated, so a long
-    /// stall (a sleeping laptop, a mock clock jumping a day) produces one run
-    /// rather than a burst of catch-up runs.
-    fn due(&mut self, now: Duration) -> bool {
-        if now >= self.next {
-            self.next = now + self.interval;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn set_interval(&mut self, interval: Duration, now: Duration) {
-        self.interval = interval;
-        self.next = now + interval;
-    }
-}
 
 /// The engine's own state, private to its thread.
 ///
@@ -529,27 +142,7 @@ struct PreviewState {
     readback_failed: bool,
 }
 
-/// The cloud fetch thread and the flag that keeps requests from piling up.
-struct CloudWorker {
-    tx: Sender<()>,
-    busy: Arc<AtomicBool>,
-    /// The texture resolution the worker should be fetching the variant of.
-    ///
-    /// Read by the worker before every poll rather than sent as a message, so a
-    /// switch that lands while a fetch is in flight (or while a failed poll is
-    /// backing off) takes effect on the next attempt instead of queueing behind
-    /// one that may be minutes from finishing.
-    target: Arc<AtomicU32>,
-    schedule: Schedule,
-    /// A poll came due but the worker was busy, so it still owes one. Kept
-    /// separate from the schedule so a busy worker does not drag the deadline
-    /// backwards and forwards on every tick.
-    owed: bool,
-    _thread: JoinHandle<()>,
-}
-
 impl Engine {
-    #[allow(clippy::too_many_lines)]
     fn new(
         config: EngineConfig,
         rx: Receiver<EngineCommand>,
@@ -577,40 +170,9 @@ impl Engine {
             mailbox,
         } = config;
 
-        // Checked rather than trusted, and before the device exists, because
-        // neither way of getting it wrong is visible where it happens. Too few
-        // slots drops the posts for the high ones, leaving those slots waiting
-        // for a load that was thrown away; too many hands the consumer a slot
-        // index its own array does not have, which is a panic in the middle of a
-        // session. Failing here means failing before `ready` is sent, so `start`
-        // reports a thread that never got as far as its adapter rather than
-        // handing back a handle to a thread that quietly died.
         let slots = SlotLayout::new(texture_paths.len());
-        if let Some(mailbox) = &mailbox {
-            assert_eq!(
-                mailbox.slot_count(),
-                slots.count(),
-                "the texture mailbox must have one slot per texture: the grid, \
-                 {} file-backed, and the cloud overlay",
-                texture_paths.len()
-            );
-        }
-
-        let gpu = match crate::wgpu_init::init(force_software) {
-            Ok(gpu) => gpu,
-            Err(reason) => {
-                let _ = ready.send(Err(reason.clone()));
-                return Err(reason);
-            }
-        };
-        let _ = ready.send(Ok(AdapterReport {
-            info: gpu.adapter_info.clone(),
-            key: gpu.adapter_key.clone(),
-            supported_sample_counts: gpu.supported_sample_counts.clone(),
-        }));
-        crate::memory::log_memory_usage("engine: after wgpu init");
-
-        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()));
+        let mailbox = checked_mailbox(mailbox, slots, texture_paths.len());
+        let gpu = open_gpu(force_software, ready)?;
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
@@ -621,19 +183,12 @@ impl Engine {
         });
 
         let requested_sample_count = params.sample_count;
-        params.sample_count = resolve_sample_count(
+        params.sample_count = resolve_and_warn(
             requested_sample_count,
             &gpu.supported_sample_counts,
             quality.max_sample_count(),
+            None,
         );
-        if params.sample_count != requested_sample_count {
-            warn!(
-                requested = requested_sample_count,
-                using = params.sample_count,
-                supported = ?gpu.supported_sample_counts,
-                "MSAA sample count is not available, falling back"
-            );
-        }
         info!(texture_resolution, "surface texture resolution");
         let (width, height) = preview_target_size(preview_size, quality);
         let renderer = Renderer::new(
@@ -787,46 +342,12 @@ impl Engine {
                 self.prepare_export();
                 let _ = reply.send(self.renderer.export_image(width, height));
             }
-            EngineCommand::SetTextureResolution(width) => {
-                if self.renderer.set_texture_resolution(width) {
-                    info!(texture_resolution = width, "surface texture resolution");
-                    // The textures the current mode needs are gone until the
-                    // reload lands, so the readiness latch has to reopen or
-                    // clients would never hear about the new ones.
-                    self.textures_ready = false;
-                    self.dirty = true;
-                    // The cloud variant follows the same setting, but its slot
-                    // is deliberately not purged: the switch must not depend on
-                    // the network, and a cloudless gap while a download runs
-                    // would be a worse picture than a cloud layer at the
-                    // previous variant. Asking for a poll now is the whole of
-                    // the change; the existing update path replaces texture,
-                    // view, and bind group together when it lands.
-                    if let Some(cloud) = &mut self.cloud
-                        && cloud.retarget(width)
-                    {
-                        cloud.owed = true;
-                    }
-                }
-            }
+            EngineCommand::SetTextureResolution(width) => self.set_texture_resolution(width),
             EngineCommand::ReportMemory { reply } => {
                 let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
             }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
-                let now = self.clock.elapsed();
-                if enabled {
-                    match &mut self.auto_refresh {
-                        Some(schedule) => schedule.set_interval(interval, now),
-                        None => self.auto_refresh = Some(Schedule::new(interval, now)),
-                    }
-                } else {
-                    self.auto_refresh = None;
-                }
-                debug!(
-                    enabled,
-                    interval_secs = interval.as_secs(),
-                    "auto-refresh changed"
-                );
+                self.set_auto_refresh(enabled, interval);
             }
             EngineCommand::DisplaysChanged => {
                 // Trailing rather than leading: every hint pushes the deadline
@@ -854,6 +375,48 @@ impl Engine {
             }
         }
         true
+    }
+
+    /// Point the renderer at another texture resolution's set of assets.
+    fn set_texture_resolution(&mut self, width: u32) {
+        if self.renderer.set_texture_resolution(width) {
+            info!(texture_resolution = width, "surface texture resolution");
+            // The textures the current mode needs are gone until the
+            // reload lands, so the readiness latch has to reopen or
+            // clients would never hear about the new ones.
+            self.textures_ready = false;
+            self.dirty = true;
+            // The cloud variant follows the same setting, but its slot
+            // is deliberately not purged: the switch must not depend on
+            // the network, and a cloudless gap while a download runs
+            // would be a worse picture than a cloud layer at the
+            // previous variant. Asking for a poll now is the whole of
+            // the change; the existing update path replaces texture,
+            // view, and bind group together when it lands.
+            if let Some(cloud) = &mut self.cloud
+                && cloud.retarget(width)
+            {
+                cloud.owed = true;
+            }
+        }
+    }
+
+    /// Start, restart or stop the auto-refresh schedule.
+    fn set_auto_refresh(&mut self, enabled: bool, interval: Duration) {
+        let now = self.clock.elapsed();
+        if enabled {
+            match &mut self.auto_refresh {
+                Some(schedule) => schedule.set_interval(interval, now),
+                None => self.auto_refresh = Some(Schedule::new(interval, now)),
+            }
+        } else {
+            self.auto_refresh = None;
+        }
+        debug!(
+            enabled,
+            interval_secs = interval.as_secs(),
+            "auto-refresh changed"
+        );
     }
 
     /// Run everything the schedule says is due, then render if anything changed.
@@ -928,28 +491,16 @@ impl Engine {
         }
     }
 
-    /// Replace the requested MSAA count with one the adapter and the tier both
-    /// allow, warning once per distinct request.
-    ///
-    /// This is the single place a sample count becomes real: a config file, a
-    /// combo box built against a different adapter, or a stale saved setting
-    /// all funnel through here rather than into `create_render_textures`, where
-    /// an unsupported count is a wgpu validation error that kills this thread.
+    /// Replace the requested MSAA count with one [`resolve_and_warn`] allows,
+    /// remembering the request so the same one is reported only once.
     fn resolve_requested_sample_count(&mut self) {
         let requested = self.params.sample_count;
-        let resolved = resolve_sample_count(
+        let resolved = resolve_and_warn(
             requested,
             &self.supported_sample_counts,
             self.quality.max_sample_count(),
+            Some(self.requested_sample_count),
         );
-        if resolved != requested && requested != self.requested_sample_count {
-            warn!(
-                requested,
-                using = resolved,
-                supported = ?self.supported_sample_counts,
-                "MSAA sample count is not available, falling back"
-            );
-        }
         self.requested_sample_count = requested;
         self.params.sample_count = resolved;
     }
@@ -1031,230 +582,6 @@ impl Engine {
         true
     }
 
-    /// Render at the sink's native resolution and hand the pixels over.
-    ///
-    /// Held back while a texture the current mode needs is on its way. The
-    /// renderer falls back to the procedural grid while a slot is empty, which
-    /// is fine for a preview and not fine for someone's desktop, and a
-    /// resolution switch empties one for as long as the reload takes. Every
-    /// caller that publishes arrives here, so this covers all of them.
-    /// `RenderToFile` and `ExportPixels` are deliberately not covered; they
-    /// answer a caller holding a reply channel, which decides for itself what it
-    /// will wait for.
-    ///
-    /// One request is remembered, not a queue of them: two wallpaper updates
-    /// asked for during one reload are the same wallpaper.
-    fn publish_wallpaper(&mut self) {
-        // A debt that already stands has had its support answer, and the only
-        // thing left that can change is whether the textures have landed. `tick`
-        // comes back here every 50 ms until it is paid, and on Linux
-        // `check_supported` walks `PATH` with a stat per directory.
-        if self.wallpaper_owed && self.renderer.textures_pending(self.params.texture_index) {
-            return;
-        }
-
-        // Support first, before the size query, the render, and the wait below.
-        // Off Windows this is the whole answer, and everything after it is
-        // something to pay for on the way to a refusal that was already known:
-        // a native-resolution render and its readback, or seconds of waiting for
-        // textures that will not change it.
-        if let Err(e) = self.wallpaper.check_supported() {
-            self.report_wallpaper(Err(e));
-            return;
-        }
-
-        if self.renderer.textures_pending(self.params.texture_index) {
-            if !self.wallpaper_owed {
-                info!("wallpaper update deferred until the textures have loaded");
-            }
-            self.wallpaper_owed = true;
-            return;
-        }
-
-        let result = self
-            .build_wallpaper_job()
-            .and_then(|(job, note)| Ok(join_notes(note, self.wallpaper.publish(&job)?)));
-        self.report_wallpaper(result);
-    }
-
-    /// Report a finished publish attempt and settle the debt for it.
-    fn report_wallpaper(&mut self, result: Result<String, String>) {
-        self.wallpaper_owed = false;
-        self.published |= result.is_ok();
-        match &result {
-            Err(e) => error!(error = %e, "wallpaper update failed"),
-            Ok(note) if !note.is_empty() => {
-                info!(note, "the wallpaper is not quite what was asked");
-            }
-            Ok(_) => {}
-        }
-        self.emit(EngineEvent::WallpaperSet(result));
-    }
-
-    /// Ask what the monitors are now, and act if they are not what they were.
-    ///
-    /// One query per settled burst, whatever the burst was made of: the hints
-    /// this design pays for and discards on purpose are a resume from sleep, a
-    /// scaling change and a color depth change, each of which costs one
-    /// enumeration and an equal comparison.
-    ///
-    /// A republish follows only where `published` says the desk is holding a
-    /// picture this process made; `docs/architecture.md` has the argument for
-    /// both edges of that rule.
-    fn recheck_displays(&mut self) {
-        let monitors = match self.wallpaper.monitors() {
-            Ok(monitors) => monitors,
-            Err(e) => {
-                warn!(error = %e, "the monitors could not be listed after a display change");
-                return;
-            }
-        };
-        if self.known_monitors.as_ref() == Some(&monitors) {
-            debug!(
-                screens = monitors.len(),
-                "the display layout is the one already known"
-            );
-            return;
-        }
-        info!(screens = monitors.len(), "the display layout changed");
-        self.known_monitors = Some(monitors.clone());
-        self.emit(EngineEvent::MonitorsChanged(monitors));
-        if self.published {
-            self.publish_wallpaper();
-        }
-    }
-
-    /// Render everything this session's monitors need, and say what was odd.
-    ///
-    /// The monitor list is asked for on every publish rather than cached: the
-    /// layout changes without telling anybody, and the auto-refresh means a
-    /// stale one would be on the screen for as long as the interval.
-    fn build_wallpaper_job(&mut self) -> Result<(WallpaperJob, String), String> {
-        use crate::display::layout;
-
-        let monitors = self.wallpaper.monitors()?;
-        // The list a publish planned with is the one a later hint is compared
-        // against, so a layout that kept moving is published again only if it
-        // is different again.
-        self.known_monitors = Some(monitors.clone());
-        let anchor = layout::resolve_anchor(&monitors, self.anchor_monitor.as_deref())
-            .ok_or_else(|| "this session has no monitor to put a wallpaper on".to_owned())?;
-        let mut note = String::new();
-        if anchor.fell_back {
-            note = format!(
-                "the screen this was set to draw on is not connected, so {} is standing in for it",
-                monitors[anchor.index].label
-            );
-            warn!(note, "the stored anchor monitor is gone");
-        }
-
-        let settings = layout::Framing {
-            camera_fov: self.params.camera.fov_deg,
-            sky_fov: self.params.sky_fov,
-            offset_x: self.params.camera.offset_x,
-            offset_y: self.params.camera.offset_y,
-        };
-        let groups = layout::render_groups(&monitors, self.display_mode, anchor.index);
-        if groups.is_empty() {
-            return Err("this session has no screen with any pixels on it".to_owned());
-        }
-        for group in &groups {
-            self.check_export_fits(group.width, group.height)?;
-        }
-        self.prepare_export();
-
-        if self.display_mode == layout::DisplayMode::AcrossScreens {
-            let bounds = layout::bounds_of(&monitors)
-                .ok_or_else(|| "this session has no screen with any pixels on it".to_owned())?;
-            let derived = layout::canvas_framing(settings, monitors[anchor.index].rect(), bounds);
-            if derived.sky_clamped {
-                let clamped = "the sky is as wide as it goes, so it does not continue \
-                               across the screens as exactly as the globe does";
-                info!(clamped, "the derived sky lens hit the shader's limit");
-                note = join_notes(note, clamped.to_owned());
-            }
-            let pixels = self.export_framed(&derived.framing, bounds.width, bounds.height)?;
-            return Ok((
-                WallpaperJob {
-                    mode: self.display_mode,
-                    monitors,
-                    anchor: anchor.index,
-                    images: JobImages::Spanned {
-                        canvas: Arc::new(Frame::new(pixels, bounds.width, bounds.height)),
-                        bounds,
-                    },
-                },
-                note,
-            ));
-        }
-
-        // One render per distinct size, shared by every screen of that size.
-        // A screen with no group is one this mode does not paint, and the sink
-        // leaves it alone where the desktop lets it.
-        let mut images: Vec<Option<Arc<Frame>>> = vec![None; monitors.len()];
-        for group in &groups {
-            let framing = layout::screen_framing(settings, group.width, group.height);
-            let pixels = self.export_framed(&framing, group.width, group.height)?;
-            let frame = Arc::new(Frame::new(pixels, group.width, group.height));
-            for index in &group.monitors {
-                images[*index] = Some(Arc::clone(&frame));
-            }
-        }
-        Ok((
-            WallpaperJob {
-                mode: self.display_mode,
-                monitors,
-                anchor: anchor.index,
-                images: JobImages::PerMonitor(images),
-            },
-            note,
-        ))
-    }
-
-    /// Refuse a render this device cannot make, before it is attempted.
-    ///
-    /// Both limits are reachable in the span mode and neither fails in a way
-    /// anybody could read: past the texture dimension wgpu refuses the texture,
-    /// and past the buffer size it panics in the readback.
-    fn check_export_fits(&self, width: u32, height: u32) -> Result<(), String> {
-        let (max_dimension, max_buffer) = self.renderer.export_limits();
-        if width > max_dimension || height > max_dimension {
-            return Err(format!(
-                "a {width}x{height} wallpaper is larger than this GPU renders \
-                 ({max_dimension} pixels on a side); one screen at a time will still work"
-            ));
-        }
-        // The readback buffer, not the image: `read_texture_rgba8` pads every
-        // row out to 256 bytes, so a width that is not a multiple of 64 pixels
-        // costs more than four bytes each. The guard exists to turn an
-        // oversized readback into a sentence instead of a panic, which it can
-        // only do if it counts the same bytes the allocation does.
-        let bytes = (u64::from(width) * 4).next_multiple_of(256) * u64::from(height);
-        if bytes > max_buffer {
-            return Err(format!(
-                "a {width}x{height} wallpaper reads back {bytes} bytes, and this GPU \
-                 takes {max_buffer} at once"
-            ));
-        }
-        debug!(width, height, bytes, "wallpaper export budget");
-        Ok(())
-    }
-
-    /// Replay the current scene with one screen's framing.
-    fn export_framed(
-        &mut self,
-        framing: &crate::display::layout::Framing,
-        width: u32,
-        height: u32,
-    ) -> Result<Vec<u8>, String> {
-        let mut params = self.params;
-        params.camera.fov_deg = framing.camera_fov;
-        params.sky_fov = framing.sky_fov;
-        params.camera.offset_x = framing.offset_x;
-        params.camera.offset_y = framing.offset_y;
-        self.renderer.export_image_with(&params, width, height)
-    }
-
     /// Make sure a frame exists to replay, with a current sun direction.
     ///
     /// Nothing may have been rendered yet when the window started hidden, and
@@ -1290,119 +617,79 @@ impl Engine {
     }
 }
 
-impl CloudWorker {
-    /// Point the worker at a different texture resolution's cloud variant.
-    ///
-    /// Returns whether that changed anything, so the caller can decide whether
-    /// a poll is worth asking for.
-    fn retarget(&self, resolution: u32) -> bool {
-        self.target.swap(resolution, Ordering::SeqCst) != resolution
+/// The mailbox the engine will use, with its slot count checked against the
+/// textures this engine was configured with.
+///
+/// Checked rather than trusted, and before the device exists, because neither
+/// way of getting it wrong is visible where it happens. Too few slots drops the
+/// posts for the high ones, leaving those slots waiting for a load that was
+/// thrown away; too many hands the consumer a slot index its own array does not
+/// have, which is a panic in the middle of a session. Failing here means failing
+/// before `ready` is sent, so `start` reports a thread that never got as far as
+/// its adapter rather than handing back a handle to a thread that quietly died.
+fn checked_mailbox(
+    mailbox: Option<TextureMailbox>,
+    slots: SlotLayout,
+    paths: usize,
+) -> TextureMailbox {
+    if let Some(mailbox) = &mailbox {
+        assert_eq!(
+            mailbox.slot_count(),
+            slots.count(),
+            "the texture mailbox must have one slot per texture: the grid, \
+             {paths} file-backed, and the cloud overlay"
+        );
     }
-
-    /// Ask the worker for one poll. Returns `false` when the worker is still
-    /// busy with the previous one, so the caller can retry soon.
-    fn request(&self) -> bool {
-        if self.busy.swap(true, Ordering::SeqCst) {
-            return false;
-        }
-        if self.tx.send(()).is_err() {
-            self.busy.store(false, Ordering::SeqCst);
-            return false;
-        }
-        true
-    }
+    mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))
 }
 
-/// Spawn the thread that does cloud network I/O and JPEG decoding.
+/// Open the GPU and tell `start` what was opened, or why nothing was.
 ///
-/// It never touches the GPU: it parks decoded frames in the mailbox and pokes
-/// the engine, which uploads them on its own schedule.
-#[allow(clippy::too_many_arguments)]
-fn spawn_cloud_worker(
-    source: Arc<dyn CloudSource>,
-    mailbox: TextureMailbox,
-    notify: crate::assets::cloud_fetcher::NotifyFn,
-    cache_dir: Option<PathBuf>,
-    interval: Duration,
-    now: Duration,
-    texture_resolution: u32,
-    clouds_slot: usize,
-) -> CloudWorker {
-    info!(source = %source.describe(), poll_secs = interval.as_secs(), "cloud source configured");
+/// One report either way, before anything else can fail: a caller blocked on
+/// `ready` gets an adapter it can name or an error it can put in front of the
+/// user, and never silence.
+fn open_gpu(
+    force_software: bool,
+    ready: &Sender<Result<AdapterReport, String>>,
+) -> Result<crate::wgpu_init::WgpuContext, String> {
+    let gpu = match crate::wgpu_init::init(force_software) {
+        Ok(gpu) => gpu,
+        Err(reason) => {
+            let _ = ready.send(Err(reason.clone()));
+            return Err(reason);
+        }
+    };
+    let _ = ready.send(Ok(AdapterReport {
+        info: gpu.adapter_info.clone(),
+        key: gpu.adapter_key.clone(),
+        supported_sample_counts: gpu.supported_sample_counts.clone(),
+    }));
+    crate::memory::log_memory_usage("engine: after wgpu init");
+    Ok(gpu)
+}
 
-    let (tx, rx) = bounded::<()>(1);
-    let busy = Arc::new(AtomicBool::new(false));
-    let worker_busy = Arc::clone(&busy);
-    let target = Arc::new(AtomicU32::new(texture_resolution));
-    let worker_target = Arc::clone(&target);
-
-    let thread = std::thread::Builder::new()
-        .name("sunlit-cloud".into())
-        .spawn(move || {
-            let mut updater = CloudUpdater::new(
-                source,
-                mailbox,
-                notify,
-                clouds_slot,
-                cache_dir,
-                texture_resolution,
-            );
-            let mut backoff = RetryBackoff::new();
-            // Show whatever is on disk before touching the network.
-            updater.post_cached();
-            while rx.recv().is_ok() {
-                // Retry a failed poll with exponential backoff rather than
-                // waiting out the whole poll interval, which in production is
-                // an hour: a thirty-second outage should not cost an hour of
-                // stale clouds. The engine's own requests are dropped while
-                // this runs (the worker is busy) and retried on the next tick.
-                loop {
-                    // Inside the retry loop, not outside it: an outage can hold
-                    // this thread for minutes at a time, and a resolution
-                    // switch made during one should change what the next
-                    // attempt asks for rather than wait its turn.
-                    updater.set_resolution(worker_target.load(Ordering::SeqCst));
-                    match updater.poll_once() {
-                        PollOutcome::Updated => {
-                            debug!("cloud frame updated");
-                            backoff.reset();
-                            break;
-                        }
-                        PollOutcome::Unchanged => {
-                            backoff.reset();
-                            break;
-                        }
-                        PollOutcome::Failed => {
-                            let delay = backoff.fail();
-                            warn!(
-                                retry_delay_secs = delay.as_secs(),
-                                "cloud poll failed, retrying"
-                            );
-                            std::thread::sleep(delay);
-                            // Give up if the engine went away while we slept.
-                            if matches!(rx.try_recv(), Err(TryRecvError::Disconnected)) {
-                                return;
-                            }
-                        }
-                    }
-                }
-                worker_busy.store(false, Ordering::SeqCst);
-            }
-        })
-        .expect("failed to spawn cloud worker thread");
-
-    CloudWorker {
-        tx,
-        busy,
-        target,
-        // Poll immediately on the first tick, then on the configured interval.
-        schedule: Schedule {
-            interval,
-            next: now,
-        },
-        owed: false,
-        _thread: thread,
+/// Resolve a requested MSAA count against the adapter and the tier, saying so
+/// when the answer is not what was asked for.
+///
+/// The single place a sample count becomes real: a config file, a combo box
+/// built against a different adapter, or a stale saved setting all funnel
+/// through here rather than into `create_render_textures`, where an unsupported
+/// count is a wgpu validation error that kills the engine thread.
+///
+/// `announced` is the request that has already been reported, so a setting the
+/// user pushes again is logged once rather than on every arrival. `None` where
+/// nothing has been reported yet, which is the engine's own construction.
+fn resolve_and_warn(requested: u32, supported: &[u32], max: u32, announced: Option<u32>) -> u32 {
+    let resolved = resolve_sample_count(requested, supported, max);
+    if resolved != requested && announced != Some(requested) {
+        warn!(
+            requested,
+            using = resolved,
+            supported = ?supported,
+            "MSAA sample count is not available, falling back"
+        );
     }
+    resolved
 }
 
 /// Two sentences for the status line, where either may be empty.
@@ -1447,30 +734,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schedule_fires_at_its_interval_and_not_before() {
-        let mut s = Schedule::new(Duration::from_secs(10), Duration::ZERO);
-        assert!(!s.due(Duration::from_secs(9)));
-        assert!(s.due(Duration::from_secs(10)));
-    }
-
-    #[test]
-    fn schedule_does_not_burst_after_a_long_stall() {
-        let mut s = Schedule::new(Duration::from_secs(10), Duration::ZERO);
-        // One jump of a simulated day must produce one run, not 8640.
-        assert!(s.due(Duration::from_hours(24)));
-        assert!(!s.due(Duration::from_hours(24)));
-        assert!(s.due(Duration::from_secs(86_410)));
-    }
-
-    #[test]
-    fn schedule_interval_change_restarts_the_countdown() {
-        let mut s = Schedule::new(Duration::from_mins(10), Duration::ZERO);
-        s.set_interval(Duration::from_mins(1), Duration::from_secs(30));
-        assert!(!s.due(Duration::from_secs(89)));
-        assert!(s.due(Duration::from_secs(90)));
-    }
-
-    #[test]
     fn preview_size_passes_through_below_the_cap() {
         assert_eq!(
             preview_target_size((1024, 640), QualityTier::Low),
@@ -1511,22 +774,6 @@ mod tests {
         #[allow(clippy::cast_precision_loss)]
         let ratio = f64::from(w) / f64::from(h);
         assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
-    }
-
-    /// The unbounded-channel justification at the `start` declaration rests on
-    /// commands being small. This pin catches inline-size regressions such as
-    /// un-boxing `SceneParams` (about 200 bytes). It cannot catch a variant
-    /// that carries a heap buffer (`Vec<u8>` is 24 bytes inline), so a command
-    /// that transported pixels would pass; the review guard for that is the
-    /// justification comment itself, which any such variant must update.
-    #[test]
-    fn command_payload_is_small() {
-        let size = std::mem::size_of::<EngineCommand>();
-        assert!(
-            size <= 64,
-            "EngineCommand grew to {size} bytes inline; revisit the unbounded \
-             channel justification in `start`"
-        );
     }
 
     /// The length check comes before the filesystem does, so this needs no

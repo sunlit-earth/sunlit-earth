@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod datetime;
+pub mod limb_extinction;
 pub mod moon;
 pub mod sky;
 pub mod sky_lens;

@@ -1048,10 +1048,15 @@ pub struct BuildInfo {
     /// the fact rather than a claim in a document.
     #[serde(default)]
     pub cache: Vec<cache::Report>,
-    /// The release bundle written beside the loose binary, when the host held
-    /// the texture assets rather than Git LFS pointers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bundle: Option<BundleInfo>,
+    /// The release bundles this run wrote, empty where the host held Git LFS
+    /// pointers rather than the texture assets.
+    ///
+    /// A list rather than one, because macOS ships two archives of the same
+    /// binary: the `.app` a person double-clicks and the tarball a tester
+    /// unpacks in Terminal. Each is verified on its own, so each carries its
+    /// own measurement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bundles: Vec<BundleInfo>,
     /// The desktop image the binary was run in, or `null` where `--no-verify`
     /// skipped that boot.
     ///
@@ -1110,6 +1115,13 @@ pub struct HostedInfo {
     /// What the runner says it is: the image label on GitHub's runners, and
     /// the operating system and architecture otherwise.
     pub runner_image: String,
+    /// The architectures inside the binary that was bundled, where the host
+    /// has a tool that can say. macOS only, because it is the only platform
+    /// here that ships one file holding more than one: decision 9 leaves the
+    /// second slice off by default and this is what says which way a given
+    /// release went.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub architectures: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1287,7 +1299,7 @@ fn one_target(
         builder: Builder::Vm(builder_info),
         linkage: Some(linkage),
         cache: product.cache,
-        bundle: None,
+        bundles: Vec::new(),
         verified_in: None,
         xtask_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
@@ -1316,7 +1328,7 @@ fn one_target(
         };
 
         info.verified_in = verified.as_ref().map(|_| desktop.slug().to_owned());
-        if let (Some(bundle), Some(verified)) = (info.bundle.as_mut(), verified.as_ref()) {
+        if let (Some(bundle), Some(verified)) = (info.bundles.first_mut(), verified.as_ref()) {
             bundle.texture_lookup_delta = verified.delta;
         }
         info.duration_secs = started.elapsed().as_secs();
@@ -1396,12 +1408,12 @@ fn assemble_bundle(
         },
     );
     let root = bundle::assemble(scratch, &name, &items)?;
-    info.bundle = Some(BundleInfo {
+    info.bundles = vec![BundleInfo {
         name: name.clone(),
         archive: bundle::archive_name(version, platform),
         entries: items.len(),
         texture_lookup_delta: None,
-    });
+    }];
     println!("  bundle:  {name}/, {}", util::count(items.len(), "file"));
     Ok(Some(Bundled { name, root, items }))
 }
@@ -3020,12 +3032,12 @@ mod tests {
                 imports: Vec::new(),
                 crt_static: None,
             }),
-            bundle: Some(BundleInfo {
+            bundles: vec![BundleInfo {
                 name: "sunlit-earth-0.1.0-linux".to_owned(),
                 archive: "sunlit-earth-0.1.0-linux.tar.gz".to_owned(),
                 entries: 17,
                 texture_lookup_delta: Some(31.75),
-            }),
+            }],
             verified_in: Some(Image::Linux.slug().to_owned()),
             xtask_version: "0.1.0".to_owned(),
         };
@@ -3048,7 +3060,7 @@ mod tests {
         // A run with no bundle carries no bundle section at all, the way a
         // Linux record carries no Windows fields.
         let mut bare = info.clone();
-        bare.bundle = None;
+        bare.bundles.clear();
         assert!(!bare.to_json().contains("bundle"), "{}", bare.to_json());
 
         // The two verification fields are the exception, and they are the
@@ -3057,7 +3069,7 @@ mod tests {
         // release from one nobody wrote the field for.
         let mut unverified = info.clone();
         unverified.verified_in = None;
-        if let Some(bundle) = unverified.bundle.as_mut() {
+        if let Some(bundle) = unverified.bundles.first_mut() {
             bundle.texture_lookup_delta = None;
         }
         let json = unverified.to_json();
@@ -3072,6 +3084,7 @@ mod tests {
         let mut hosted = info.clone();
         hosted.builder = Builder::Hosted(HostedInfo {
             runner_image: "macOS 26.0.20250901".to_owned(),
+            architectures: vec!["arm64".to_owned()],
             run_id: Some("34055254636".to_owned()),
             run_url: Some(
                 "https://github.com/sunlit-earth/sunlit-earth/actions/runs/34055254636".to_owned(),

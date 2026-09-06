@@ -56,6 +56,14 @@ pub enum Platform {
 }
 
 impl Platform {
+    /// What this platform ships, in the order a run writes them.
+    pub fn packages(self) -> &'static [Package] {
+        match self {
+            Self::Windows | Self::Linux => &[Package::Plain],
+            Self::MacOs => &[Package::Plain, Package::App],
+        }
+    }
+
     /// All three, in the order reports list them.
     ///
     /// Only the tests walk the set today: production code is handed one
@@ -111,8 +119,37 @@ pub const PACKAGE: &str = "sunlit-earth";
 /// The licence the workspace declares, as a file at the repository root.
 pub const LICENSE: &str = "LICENSE";
 
-/// The record, written beside the archive and not inside it.
+/// The record, written beside the archives and not inside them.
 pub const RECORD: &str = "build-info.json";
+
+/// The macOS bundle's own directory name, which is what a user sees in Finder
+/// and double-clicks, and the one top-level entry its zip holds.
+pub const APP_DIR: &str = "Sunlit Earth.app";
+
+/// The `Info.plist` the bundle is assembled from, relative to the repository
+/// root. Every value in it is fixed but the version.
+pub const INFO_PLIST: &str = "assets/macos/Info.plist";
+
+/// What the template carries where the workspace version goes.
+pub const VERSION_PLACEHOLDER: &str = "@VERSION@";
+
+/// What a bundle is shaped like, which is not the same question as which
+/// platform it is for.
+///
+/// macOS ships both: the `.app` a person double-clicks, and the plain layout in
+/// a tarball. Decision 16 is why the second one exists. Quarantine is an
+/// extended attribute that browsers and Archive Utility set and `tar` in
+/// Terminal does not, so a tester who unpacks the tarball meets no Gatekeeper
+/// dialog and gets the log on the terminal they started it from. It is the same
+/// binary in both, so the linker's ad-hoc signature travels inside the Mach-O
+/// either way and nothing is signed twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Package {
+    /// One directory holding the executable with its textures beside it.
+    Plain,
+    /// `Sunlit Earth.app`, ad-hoc signed and zipped by Apple's own `ditto`.
+    App,
+}
 
 /// The two archive formats, one per target.
 ///
@@ -145,6 +182,18 @@ impl Format {
     }
 }
 
+/// Where one file's bytes come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// A file on the host: the binary this run built, or something the
+    /// repository ships.
+    File(PathBuf),
+    /// Bytes this run made, which is the macOS `Info.plist` and nothing else:
+    /// the template in the tree carries a placeholder where the version goes,
+    /// and the version is not known until the manifest is read.
+    Made(Vec<u8>),
+}
+
 /// One file in the bundle: where it sits, and what it is made of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
@@ -152,12 +201,30 @@ pub struct Item {
     /// Both archive formats want them that way, and it is what the read-back
     /// comparison is made in.
     pub path: String,
-    /// Where its bytes come from on the host: the binary this run built, or
-    /// something the repository ships.
-    pub source: PathBuf,
+    pub source: Source,
     /// Whether the tarball's header says 0755. Without it the first thing a
     /// Linux user does is `chmod +x`.
     pub executable: bool,
+}
+
+impl Item {
+    /// A file copied from the host.
+    fn file(path: impl Into<String>, source: impl Into<PathBuf>, executable: bool) -> Self {
+        Self {
+            path: path.into(),
+            source: Source::File(source.into()),
+            executable,
+        }
+    }
+
+    /// A file this run wrote the bytes of.
+    fn made(path: impl Into<String>, bytes: Vec<u8>) -> Self {
+        Self {
+            path: path.into(),
+            source: Source::Made(bytes),
+            executable: false,
+        }
+    }
 }
 
 /// A bundle assembled on disk, waiting to be staged and archived.
@@ -190,6 +257,84 @@ pub struct Sources<'a> {
 /// in the record.
 pub fn bundle_name(version: &str, platform: Platform) -> String {
     format!("{PACKAGE}-{version}-{}", platform.slug())
+}
+
+/// Which writer and reader one package of one platform uses.
+///
+/// The `.app` is always a zip, because `ditto` writes one and because that is
+/// what macOS itself hands round; the plain layout takes whatever its platform's
+/// users open without a tool.
+pub fn archive_format(platform: Platform, package: Package) -> Format {
+    match package {
+        Package::Plain => Format::of(platform),
+        Package::App => Format::Zip,
+    }
+}
+
+/// The macOS bundle's archive, which is named for the release rather than for
+/// the `.app` inside it: a download called `Sunlit Earth.app.zip` says nothing
+/// about which version it is.
+pub fn app_archive_name(version: &str) -> String {
+    format!("{PACKAGE}-{version}-{}.zip", Platform::MacOs.slug())
+}
+
+/// What the `.app` holds, in the order it is assembled.
+///
+/// The layout Apple's bundle format fixes: the executable at `Contents/MacOS/`,
+/// everything it reads at `Contents/Resources/`, and the property list that
+/// names them both at `Contents/`. `resolve_textures_dir` finds
+/// `Contents/Resources/textures` by walking up from the executable, which is
+/// the one candidate this layout needed adding.
+///
+/// The version is substituted rather than left to a build step, because
+/// `CFBundleShortVersionString` is what a user is shown and what an updater
+/// would compare: a bundle whose plist said `@VERSION@` would be a release
+/// nobody could name. The prerelease suffix goes in as it is; the App Store
+/// would object to it, and this is not going there.
+pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String> {
+    let template_path = sources.repo.join(INFO_PLIST);
+    let template = std::fs::read_to_string(&template_path)
+        .map_err(|e| format!("cannot read {}: {e}", template_path.display()))?;
+    if !template.contains(VERSION_PLACEHOLDER) {
+        return Err(format!(
+            "{} carries no {VERSION_PLACEHOLDER}, so the bundle would be named after \
+             no version at all",
+            template_path.display()
+        ));
+    }
+    let plist = template.replace(VERSION_PLACEHOLDER, version);
+
+    let resources = "Contents/Resources";
+    let mut items = vec![
+        Item::made("Contents/Info.plist", plist.into_bytes()),
+        Item::file(format!("Contents/MacOS/{PACKAGE}"), sources.exe, true),
+        Item::file(
+            format!("{resources}/{}", bake_icon::ICNS_FILE),
+            sources
+                .repo
+                .join(bake_icon::BAKED_DIR)
+                .join(bake_icon::ICNS_FILE),
+            false,
+        ),
+    ];
+    for name in TEXTURE_FILES {
+        items.push(Item::file(
+            format!("{resources}/textures/{name}"),
+            sources.textures.join(name),
+            false,
+        ));
+    }
+    items.push(Item::file(
+        format!("{resources}/{LICENSE}"),
+        sources.repo.join(LICENSE),
+        false,
+    ));
+    items.push(Item::file(
+        format!("{resources}/{}", bake_licenses::NOTICES_NAME),
+        sources.repo.join(bake_licenses::NOTICES_PATH),
+        false,
+    ));
+    Ok(items)
 }
 
 /// The archive's file name, which is the bundle's name plus its format.
@@ -237,63 +382,63 @@ pub fn version(repo: &Path) -> Result<String, String> {
 /// and the icons by a path relative to itself, so the three keep the layout the
 /// repository gives them.
 pub fn layout(platform: Platform, sources: &Sources) -> Vec<Item> {
-    let mut items = vec![Item {
-        path: exe_name(platform).to_owned(),
-        source: sources.exe.to_path_buf(),
-        executable: true,
-    }];
+    let mut items = vec![Item::file(
+        exe_name(platform).to_owned(),
+        sources.exe.to_path_buf(),
+        true,
+    )];
 
     for name in TEXTURE_FILES {
-        items.push(Item {
-            path: format!("textures/{name}"),
-            source: sources.textures.join(name),
-            executable: false,
-        });
+        items.push(Item::file(
+            format!("textures/{name}"),
+            sources.textures.join(name),
+            false,
+        ));
     }
 
-    items.push(Item {
-        path: LICENSE.to_owned(),
-        source: sources.repo.join(LICENSE),
-        executable: false,
-    });
-    items.push(Item {
-        path: bake_licenses::NOTICES_NAME.to_owned(),
-        source: sources.repo.join(bake_licenses::NOTICES_PATH),
-        executable: false,
-    });
+    items.push(Item::file(
+        LICENSE.to_owned(),
+        sources.repo.join(LICENSE),
+        false,
+    ));
+    items.push(Item::file(
+        bake_licenses::NOTICES_NAME.to_owned(),
+        sources.repo.join(bake_licenses::NOTICES_PATH),
+        false,
+    ));
 
     if platform == Platform::Linux {
         let linux = sources.repo.join("assets").join("linux");
         let icon = sources.repo.join("assets").join("icon");
-        items.push(Item {
-            path: "assets/linux/install-user.sh".to_owned(),
-            source: linux.join("install-user.sh"),
-            executable: true,
-        });
-        items.push(Item {
-            path: "assets/linux/sunlit-earth.desktop".to_owned(),
-            source: linux.join("sunlit-earth.desktop"),
-            executable: false,
-        });
-        items.push(Item {
-            path: format!("assets/icon/{}.svg", bake_icon::ICON_NAME),
-            source: icon.join(format!("{}.svg", bake_icon::ICON_NAME)),
-            executable: false,
-        });
+        items.push(Item::file(
+            "assets/linux/install-user.sh".to_owned(),
+            linux.join("install-user.sh"),
+            true,
+        ));
+        items.push(Item::file(
+            "assets/linux/sunlit-earth.desktop".to_owned(),
+            linux.join("sunlit-earth.desktop"),
+            false,
+        ));
+        items.push(Item::file(
+            format!("assets/icon/{}.svg", bake_icon::ICON_NAME),
+            icon.join(format!("{}.svg", bake_icon::ICON_NAME)),
+            false,
+        ));
         // Named through the bake's own list rather than by walking the baked
         // directory, so a bundle carries exactly what the bake writes and a
         // size that appeared on one side and not the other fails a test here.
         let baked = sources.repo.join(bake_icon::BAKED_DIR);
         for size in bake_icon::HICOLOR_SIZES {
             let relative = bake_icon::hicolor_path(size);
-            items.push(Item {
-                path: format!(
+            items.push(Item::file(
+                format!(
                     "assets/icon/baked/{}",
                     relative.to_string_lossy().replace('\\', "/")
                 ),
-                source: baked.join(relative),
-                executable: false,
-            });
+                baked.join(relative),
+                false,
+            ));
         }
     }
 
@@ -335,12 +480,20 @@ pub fn assemble(parent: &Path, name: &str, items: &[Item]) -> Result<PathBuf, St
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         }
-        std::fs::copy(&item.source, &target).map_err(|e| {
-            format!(
-                "the bundle needs {} and cannot copy it: {e}",
-                item.source.display()
-            )
-        })?;
+        match &item.source {
+            Source::File(source) => {
+                std::fs::copy(source, &target).map_err(|e| {
+                    format!(
+                        "the bundle needs {} and cannot copy it: {e}",
+                        source.display()
+                    )
+                })?;
+            }
+            Source::Made(bytes) => {
+                std::fs::write(&target, bytes)
+                    .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+            }
+        }
     }
     Ok(root)
 }
@@ -644,25 +797,47 @@ pub struct Options {
     /// The release binary to put in it. Not built here.
     #[arg(long, value_name = "PATH")]
     pub exe: PathBuf,
-    /// Where the archive and its record go. The dist directory by default, so
-    /// a bundle written by hand lands where `dist` puts one.
+    /// Where the archives and their record go. The dist directory by default,
+    /// so a bundle written by hand lands where `dist` puts one.
     #[arg(long, value_name = "DIR")]
     pub out: Option<PathBuf>,
-    /// Unpack the archive and render from it twice, which is what proves the
+    /// Unpack each archive and render from it twice, which is what proves the
     /// binary finds the textures beside it. This host's own platform only.
     #[arg(long)]
     pub verify: bool,
 }
 
-/// Where the bundle is assembled before it is archived, under the output
+/// Where a bundle is assembled before it is archived, under the output
 /// directory and removed when the run ends.
 const STAGE_DIR: &str = ".stage";
 
-/// Where the archive is unpacked to be rendered from.
+/// Where an archive is unpacked to be rendered from.
 const VERIFY_DIR: &str = ".verify";
 
-/// Assemble, archive, read back, optionally render from it, and write the
-/// record beside it.
+/// Everything one package of one run needs.
+struct Run<'a> {
+    runner: &'a dyn Runner,
+    repo: &'a Path,
+    exe: &'a Path,
+    textures: &'a Path,
+    out: &'a Path,
+    version: &'a str,
+    platform: Platform,
+    verify: bool,
+}
+
+impl Run<'_> {
+    fn sources(&self) -> Sources<'_> {
+        Sources {
+            repo: self.repo,
+            exe: self.exe,
+            textures: self.textures,
+        }
+    }
+}
+
+/// Assemble every package this platform ships, archive each, read each back,
+/// optionally render from each, and write one record beside them.
 ///
 /// The verification is the same two renders `dist` runs in a desktop guest and
 /// for the same reason: a binary that did not find its textures still writes a
@@ -693,10 +868,10 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
         )
     })?;
 
-    // Absolute before anything is written into it, because `--verify` runs the
-    // binary from a working directory of its own choosing: a relative `--out`
-    // would reach the child as a path relative to that instead, and every one
-    // of the paths derived from it here is handed to the child.
+    // Absolute before anything is derived from it, because `--verify` runs the
+    // binary from a working directory of its own: a relative `--out` would
+    // reach the child as a path relative to that instead, and every one of the
+    // paths derived from it here is handed to the child.
     let out = std::path::absolute(
         options
             .out
@@ -706,69 +881,183 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     .map_err(|e| format!("cannot resolve the output directory: {e}"))?;
     std::fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
 
-    let name = bundle_name(&version, platform);
-    let items = layout(
+    let run = Run {
+        runner,
+        repo: &repo,
+        exe: &options.exe,
+        textures: &textures,
+        out: &out,
+        version: &version,
         platform,
-        &Sources {
-            repo: &repo,
-            exe: &options.exe,
-            textures: &textures,
-        },
-    );
-    let stage = out.join(STAGE_DIR);
-    let root = assemble(&stage, &name, &items)?;
-    println!("bundle: {name}/, {}", util::count(items.len(), "file"));
+        verify: options.verify,
+    };
 
-    let format = Format::of(platform);
-    let archive = out.join(archive_name(&version, platform));
-    let bytes = write(format, &root, &name, &items, &archive)?;
+    let mut bundles = Vec::new();
+    let outcome = (|| -> Result<(), String> {
+        for package in platform.packages() {
+            if *package == Package::App && Platform::host() != Some(Platform::MacOs) {
+                println!(
+                    "  no {APP_DIR}: `codesign` and `ditto` are macOS's own tools and \
+                     this host is not one, so only the tarball was written. Its binary \
+                     is the same one the bundle would hold."
+                );
+                continue;
+            }
+            bundles.push(one_package(&run, *package)?);
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(out.join(STAGE_DIR));
+    outcome?;
+
+    let record = record(runner, &repo, platform, &options.exe, bundles, started)?;
+    std::fs::write(out.join(RECORD), record.to_json())
+        .map_err(|e| format!("cannot write {}: {e}", out.join(RECORD).display()))?;
+
+    println!();
+    for bundle in &record.bundles {
+        let archive = out.join(&bundle.archive);
+        println!("{platform}: {}", archive.display());
+        println!(
+            "{}",
+            summary(&archive, bundle.texture_lookup_delta.is_some())
+        );
+    }
+    Ok(0)
+}
+
+/// Assemble, archive, read back and verify one package.
+fn one_package(run: &Run, package: Package) -> Result<BundleInfo, String> {
+    let (name, archive_file) = match package {
+        Package::Plain => (
+            bundle_name(run.version, run.platform),
+            archive_name(run.version, run.platform),
+        ),
+        Package::App => (APP_DIR.to_owned(), app_archive_name(run.version)),
+    };
+    let items = match package {
+        Package::Plain => layout(run.platform, &run.sources()),
+        Package::App => app_layout(&run.sources(), run.version)?,
+    };
+    let stage = run.out.join(STAGE_DIR);
+    let root = assemble(&stage, &name, &items)?;
+    println!("bundle: {name}, {}", util::count(items.len(), "file"));
+
+    let archive = run.out.join(&archive_file);
+    let bytes = match package {
+        Package::Plain => write(
+            archive_format(run.platform, package),
+            &root,
+            &name,
+            &items,
+            &archive,
+        )?,
+        Package::App => {
+            // The linker's ad-hoc seal covers the raw executable only, and a
+            // bundle around it reports itself damaged until the bundle too is
+            // sealed. No `--deep`: it is deprecated, and there is no nested
+            // code here for it to reach.
+            sign(run.runner, &root)?;
+            ditto_pack(run.runner, &root, &archive)?
+        }
+    };
+
+    // Walked after signing, because `codesign` writes `_CodeSignature` into the
+    // bundle and that is part of what the archive has to carry.
     let assembled = walk(&root)?;
-    let archived = read_back(format, &archive)?;
+    let archived: Vec<Archived> = read_back(archive_format(run.platform, package), &archive)?
+        .into_iter()
+        .filter(|entry| !is_apple_metadata(&entry.path))
+        .collect();
     verify(&name, &assembled, &archived)?;
     println!(
-        "  {} ({}), {} read back and matched",
-        archive_name(&version, platform),
+        "  {archive_file} ({}), {} read back and matched",
         util::format_bytes(bytes),
         util::count(archived.len(), "file")
     );
 
-    let outcome = verify_here(
-        runner,
-        &out,
-        &archive,
-        format,
-        &name,
-        platform,
-        options.verify,
-    );
-    let delta = match outcome {
-        Ok(delta) => delta,
-        Err(why) => {
-            let _ = std::fs::remove_dir_all(&stage);
-            return Err(why);
-        }
-    };
+    let delta = verify_here(run, package, &archive, &name)?;
+    Ok(BundleInfo {
+        name,
+        archive: archive_file,
+        entries: assembled.len(),
+        texture_lookup_delta: delta,
+    })
+}
 
-    let record = record(
-        runner,
-        &repo,
-        platform,
-        BundleInfo {
-            name: name.clone(),
-            archive: archive_name(&version, platform),
-            entries: items.len(),
-            texture_lookup_delta: delta,
-        },
-        started,
-    )?;
-    std::fs::write(out.join(RECORD), record.to_json())
-        .map_err(|e| format!("cannot write {}: {e}", out.join(RECORD).display()))?;
-    let _ = std::fs::remove_dir_all(&stage);
+/// Whether an archive entry is metadata the archiver added rather than a file
+/// the bundle holds.
+///
+/// `ditto` stores extended attributes and resource forks alongside the files
+/// they belong to, under `__MACOSX/` and as `._`-prefixed siblings. They are
+/// not part of the layout and no comparison against the assembled directory can
+/// account for them, so they are dropped from the read-back rather than made
+/// into a reason the check has to be loosened.
+fn is_apple_metadata(path: &str) -> bool {
+    path.starts_with("__MACOSX/")
+        || Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("._"))
+}
 
-    println!();
-    println!("{platform}: {}", archive.display());
-    println!("{}", summary(&archive, delta.is_some()));
-    Ok(0)
+/// Ad-hoc sign the assembled bundle in place.
+fn sign(runner: &dyn Runner, app: &Path) -> Result<(), String> {
+    let cmd = Cmd::new("codesign").args([
+        "--force".to_owned(),
+        "--sign".to_owned(),
+        "-".to_owned(),
+        app.to_string_lossy().into_owned(),
+    ]);
+    tool(runner, &cmd).map(|_| ())
+}
+
+/// Zip the bundle with Apple's own archiver, which is what preserves the
+/// signature, the permissions and the symlinks a `.app` may hold.
+fn ditto_pack(runner: &dyn Runner, app: &Path, archive: &Path) -> Result<u64, String> {
+    let _ = std::fs::remove_file(archive);
+    let cmd = Cmd::new("ditto").args([
+        "-c".to_owned(),
+        "-k".to_owned(),
+        // The bundle itself is the one top-level entry an unpack produces,
+        // rather than its contents scattered into the download folder.
+        "--keepParent".to_owned(),
+        app.to_string_lossy().into_owned(),
+        archive.to_string_lossy().into_owned(),
+    ]);
+    tool(runner, &cmd)?;
+    std::fs::metadata(archive)
+        .map(|meta| meta.len())
+        .map_err(|e| format!("ditto left no {}: {e}", archive.display()))
+}
+
+/// Unpack a `.app` zip with the tool that wrote it.
+fn ditto_unpack(runner: &dyn Runner, archive: &Path, into: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(into).map_err(|e| format!("cannot create {}: {e}", into.display()))?;
+    let cmd = Cmd::new("ditto").args([
+        "-x".to_owned(),
+        "-k".to_owned(),
+        archive.to_string_lossy().into_owned(),
+        into.to_string_lossy().into_owned(),
+    ]);
+    tool(runner, &cmd).map(|_| ())
+}
+
+/// Run one of Apple's tools and answer with its output.
+fn tool(runner: &dyn Runner, cmd: &Cmd) -> Result<String, String> {
+    let shown = cmd.display();
+    let out = runner
+        .capture(cmd)
+        .map_err(|e| format!("cannot run `{shown}`: {e}"))?;
+    if out.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!(
+            "`{shown}` failed: {} {}",
+            out.stderr.trim(),
+            out.stdout.trim()
+        ))
+    }
 }
 
 /// Unpack an archive into a directory, with the crate that wrote it.
@@ -804,28 +1093,29 @@ pub fn unpack(format: Format, archive: &Path, into: &Path) -> Result<(), String>
 /// a bundle was run is a property of the bundle, and the one function that can
 /// say so is the one that would have run it.
 fn verify_here(
-    runner: &dyn Runner,
-    out: &Path,
+    run: &Run,
+    package: Package,
     archive: &Path,
-    format: Format,
     name: &str,
-    platform: Platform,
-    asked: bool,
 ) -> Result<Option<f64>, String> {
-    if !asked {
+    if !run.verify {
         println!("  nothing has run this bundle: --verify was not given");
         return Ok(None);
     }
-    if Platform::host() != Some(platform) {
+    if Platform::host() != Some(run.platform) {
         return Err(format!(
-            "--verify runs the bundle, and this host is not {platform}: a {platform} \
-             bundle is verified on a {platform} machine, which for the release \
-             pipeline is the runner that built it"
+            "--verify runs the bundle, and this host is not {}: a {} bundle is \
+             verified on a {} machine, which for the release pipeline is the \
+             runner that built it",
+            run.platform, run.platform, run.platform
         ));
     }
-    let work = out.join(VERIFY_DIR);
+    let work = run.out.join(VERIFY_DIR);
     let _ = std::fs::remove_dir_all(&work);
-    unpack(format, archive, &work)?;
+    match package {
+        Package::Plain => unpack(archive_format(run.platform, package), archive, &work)?,
+        Package::App => ditto_unpack(run.runner, archive, &work)?,
+    }
     let root = work.join(name);
     if !root.is_dir() {
         return Err(format!(
@@ -834,6 +1124,20 @@ fn verify_here(
             root.display()
         ));
     }
+    if package == Package::App {
+        // Acceptance criterion 3: the seal survived the archive and the
+        // unpack, which is the whole reason this format is `ditto`'s and not
+        // the zip crate's.
+        tool(
+            run.runner,
+            &Cmd::new("codesign").args([
+                "--verify".to_owned(),
+                "--strict".to_owned(),
+                root.to_string_lossy().into_owned(),
+            ]),
+        )?;
+        println!("  codesign --verify --strict passed on the unpacked bundle");
+    }
 
     // The empty directory is what makes the grid render a grid: the loader takes
     // the variable's directory when it is one and finds no files in it.
@@ -841,22 +1145,11 @@ fn verify_here(
     std::fs::create_dir_all(&empty)
         .map_err(|e| format!("cannot create {}: {e}", empty.display()))?;
 
-    let exe = root.join(exe_name(platform));
-    let at = |cmd: Cmd| -> Result<(), String> {
-        let shown = cmd.display();
-        let output = runner
-            .capture(&cmd)
-            .map_err(|e| format!("cannot run the bundled binary: {e}"))?;
-        if output.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "`{shown}` failed: {} {}",
-                output.stderr.trim(),
-                output.stdout.trim()
-            ))
-        }
+    let exe = match package {
+        Package::Plain => root.join(exe_name(run.platform)),
+        Package::App => root.join("Contents").join("MacOS").join(PACKAGE),
     };
+    let at = |cmd: Cmd| -> Result<(), String> { tool(run.runner, &cmd).map(|_| ()) };
 
     // The working directory is outside the bundle on purpose, and it is
     // load-bearing rather than tidiness: `resolve_textures_dir` tries a
@@ -906,24 +1199,28 @@ fn verify_here(
     }
     // The render the bundle made travels with it, the way `dist` publishes one,
     // and the unpacked copy does not: a runner uploads this directory whole.
-    std::fs::copy(&smoke, out.join(SMOKE_FILE))
+    std::fs::copy(&smoke, run.out.join(SMOKE_FILE))
         .map_err(|e| format!("cannot keep the bundle's own render: {e}"))?;
     let _ = std::fs::remove_dir_all(&work);
     println!("  verified here: the two renders differ by {delta:.2} of a channel step");
     Ok(Some(delta))
 }
 
-/// The record written beside the archive.
+/// The record written beside the archives.
 fn record(
     runner: &dyn Runner,
     repo: &Path,
     platform: Platform,
-    bundle: BundleInfo,
+    exe: &Path,
+    bundles: Vec<BundleInfo>,
     started: std::time::Instant,
 ) -> Result<BuildInfo, String> {
     let git = dist::git_facts(runner, repo)?;
-    let hosted = hosted_info();
-    let verified = bundle.texture_lookup_delta.is_some();
+    let mut hosted = hosted_info();
+    hosted.architectures = architectures(runner, platform, exe);
+    let verified = bundles
+        .iter()
+        .any(|bundle| bundle.texture_lookup_delta.is_some());
     Ok(BuildInfo {
         format_version: BUILD_INFO_VERSION,
         target: platform.slug().to_owned(),
@@ -938,9 +1235,54 @@ fn record(
         builder: Builder::Hosted(hosted),
         linkage: None,
         cache: Vec::new(),
-        bundle: Some(bundle),
+        bundles,
         xtask_version: env!("CARGO_PKG_VERSION").to_owned(),
     })
+}
+
+/// The architectures inside the binary, where the host has a tool that can say.
+///
+/// `lipo -info`, which exists on macOS and nowhere else, and macOS is the only
+/// platform here whose one file can hold two. Empty rather than an error when
+/// the tool is absent or answers something unexpected: the record says less
+/// than it might, and a bundle is not worth refusing over a description of
+/// itself.
+fn architectures(runner: &dyn Runner, platform: Platform, exe: &Path) -> Vec<String> {
+    if platform != Platform::MacOs || Platform::host() != Some(Platform::MacOs) {
+        return Vec::new();
+    }
+    let cmd = Cmd::new("lipo")
+        .arg("-info")
+        .arg(exe.to_string_lossy().into_owned());
+    let Ok(out) = runner.capture(&cmd) else {
+        return Vec::new();
+    };
+    if !out.success() {
+        return Vec::new();
+    }
+    parse_lipo(out.trimmed())
+}
+
+/// The architectures out of `lipo -info`, whichever of its two sentences it
+/// answered with.
+///
+/// "Non-fat file: <path> is architecture: arm64" for one slice, and
+/// "Architectures in the fat file: <path> are: x86_64 arm64" for several. Both
+/// put the list after the last colon, and a path with a colon in it is not
+/// something this build produces. Anything that is neither of those two
+/// sentences answers with nothing: the alternative is a record naming an
+/// architecture that came out of an error message.
+fn parse_lipo(text: &str) -> Vec<String> {
+    if !text.starts_with("Non-fat file:") && !text.starts_with("Architectures in the fat file:") {
+        return Vec::new();
+    }
+    text.rsplit_once(':')
+        .map(|(_, list)| {
+            list.split_whitespace()
+                .map(std::borrow::ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// What the runner this ran on is, and where its log is.
@@ -967,6 +1309,7 @@ pub fn hosted_info() -> HostedInfo {
     };
     HostedInfo {
         runner_image,
+        architectures: Vec::new(),
         run_id,
         run_url,
     }
@@ -1030,6 +1373,11 @@ mod tests {
                 b"PNG",
             );
         }
+        write(INFO_PLIST, real_plist().as_bytes());
+        write(
+            &format!("{}/{}", bake_icon::BAKED_DIR, bake_icon::ICNS_FILE),
+            b"icns",
+        );
         for name in TEXTURE_FILES {
             // Deliberately compressible bytes, so a writer that deflated a JXL
             // rather than storing it would be visible in the size.
@@ -1038,6 +1386,13 @@ mod tests {
         write("bin/sunlit-earth", &vec![b'x'; 8192]);
         write("bin/sunlit-earth.exe", &vec![b'x'; 8192]);
         repo
+    }
+
+    /// The committed template, so a fabricated repository's plist is the one
+    /// the release really uses rather than a stand-in that could drift from it.
+    fn real_plist() -> String {
+        std::fs::read_to_string(crate::store::repo_root().join(INFO_PLIST))
+            .expect("the committed Info.plist template")
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -1467,5 +1822,174 @@ mod tests {
             hosted.run_url.is_none() || hosted.run_id.is_some(),
             "{hosted:?}"
         );
+    }
+
+    /// Decision 8, and the layout Apple's bundle format fixes: the executable
+    /// at `Contents/MacOS/`, everything it reads at `Contents/Resources/`, and
+    /// the plist that names them both at `Contents/`.
+    ///
+    /// The one that matters beyond tidiness is `Contents/Resources/textures`,
+    /// which is the candidate `resolve_textures_dir` gained: from
+    /// `Contents/MacOS/sunlit-earth` the walk up reaches `Contents/` and finds
+    /// it there, and no other layout on any platform puts a `Resources` beside
+    /// a binary.
+    #[test]
+    fn the_app_bundle_puts_each_file_where_macos_looks_for_it() {
+        let dir = scratch("app_layout");
+        let repo = fabricate(&dir);
+        let exe = repo.join("bin").join("sunlit-earth");
+        let items = app_layout(&sources(&repo, &exe, &repo.join("textures")), "1.2.3")
+            .expect("the app layout");
+        let paths: Vec<&str> = items.iter().map(|i| i.path.as_str()).collect();
+
+        assert!(paths.contains(&"Contents/Info.plist"), "{paths:?}");
+        assert!(paths.contains(&"Contents/MacOS/sunlit-earth"), "{paths:?}");
+        assert!(
+            paths.contains(&"Contents/Resources/sunlit-earth.icns"),
+            "{paths:?}"
+        );
+        for name in TEXTURE_FILES {
+            assert!(
+                paths.contains(&format!("Contents/Resources/textures/{name}").as_str()),
+                "{paths:?}"
+            );
+        }
+        assert!(paths.contains(&"Contents/Resources/LICENSE"), "{paths:?}");
+        assert!(
+            paths.contains(&format!("Contents/Resources/{}", bake_licenses::NOTICES_NAME).as_str()),
+            "{paths:?}"
+        );
+
+        // Nothing at the top of the bundle but `Contents`, which is what makes
+        // it a bundle rather than a folder macOS opens.
+        for item in &items {
+            assert!(item.path.starts_with("Contents/"), "{}", item.path);
+            assert!(!item.path.contains(".."), "{}", item.path);
+        }
+        // The binary is the one thing that has to stay executable.
+        assert!(
+            items
+                .iter()
+                .find(|i| i.path == "Contents/MacOS/sunlit-earth")
+                .is_some_and(|i| i.executable)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `CFBundleShortVersionString` is what a user is shown and what an updater
+    /// would compare, so a bundle whose plist still said `@VERSION@` would be a
+    /// release nobody could name.
+    #[test]
+    fn the_plist_carries_the_version_and_the_identity_that_never_changes() {
+        let dir = scratch("app_plist");
+        let repo = fabricate(&dir);
+        let exe = repo.join("bin").join("sunlit-earth");
+        let items = app_layout(
+            &sources(&repo, &exe, &repo.join("textures")),
+            "0.1.0-beta.4",
+        )
+        .expect("the app layout");
+        let plist = items
+            .iter()
+            .find(|i| i.path == "Contents/Info.plist")
+            .expect("the plist");
+        let Source::Made(bytes) = &plist.source else {
+            panic!(
+                "the plist is made, not copied: its version is not known until the manifest is read"
+            );
+        };
+        let text = String::from_utf8(bytes.clone()).expect("the plist is text");
+        assert!(text.contains("0.1.0-beta.4"), "{text}");
+        assert!(!text.contains(VERSION_PLACEHOLDER), "{text}");
+
+        // The real template, not the fabricated one: these are the strings the
+        // bundle's identity is, and the identifier in particular can never
+        // change once chosen, because preferences and TCC grants key on it.
+        let real = std::fs::read_to_string(crate::store::repo_root().join(INFO_PLIST))
+            .expect("the committed template");
+        for value in [
+            "earth.sunlit.SunlitEarth",
+            "sunlit-earth",
+            "Sunlit Earth",
+            "11.0",
+            "NSHighResolutionCapable",
+            VERSION_PLACEHOLDER,
+        ] {
+            assert!(real.contains(value), "the template has no {value}");
+        }
+        // `LSUIElement` would do nothing: winit sets the regular activation
+        // policy at startup whatever the plist says. The comment that explains
+        // that is welcome; the key is not.
+        assert!(!real.contains("<key>LSUIElement</key>"), "{real}");
+
+        // A template with the placeholder taken out is a refusal, not a bundle
+        // named after nothing.
+        std::fs::write(repo.join(INFO_PLIST), "<plist/>").expect("write");
+        let err = app_layout(&sources(&repo, &exe, &repo.join("textures")), "1.0.0").unwrap_err();
+        assert!(err.contains(VERSION_PLACEHOLDER), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// macOS ships two archives of one binary and the other platforms one, and
+    /// the two macOS names have to differ or the second would overwrite the
+    /// first in the release.
+    #[test]
+    fn macos_ships_two_archives_and_everyone_else_one() {
+        assert_eq!(Platform::Windows.packages(), &[Package::Plain]);
+        assert_eq!(Platform::Linux.packages(), &[Package::Plain]);
+        assert_eq!(Platform::MacOs.packages(), &[Package::Plain, Package::App]);
+
+        let tarball = archive_name("0.1.0", Platform::MacOs);
+        let app = app_archive_name("0.1.0");
+        assert_eq!(tarball, "sunlit-earth-0.1.0-macos.tar.gz");
+        assert_eq!(app, "sunlit-earth-0.1.0-macos.zip");
+        assert_ne!(tarball, app);
+        // The `.app` is a zip whatever the platform's plain format is, because
+        // `ditto` writes one.
+        assert_eq!(archive_format(Platform::MacOs, Package::App), Format::Zip);
+        assert_eq!(
+            archive_format(Platform::MacOs, Package::Plain),
+            Format::TarGz
+        );
+    }
+
+    /// `lipo -info` answers with one of two sentences and the architectures are
+    /// after the last colon in both, which is what a universal release has to
+    /// be able to say about itself.
+    #[test]
+    fn the_architectures_come_out_of_either_thing_lipo_says() {
+        assert_eq!(
+            parse_lipo("Non-fat file: dist-bin/sunlit-earth is architecture: arm64"),
+            vec!["arm64".to_owned()]
+        );
+        assert_eq!(
+            parse_lipo("Architectures in the fat file: dist-bin/sunlit-earth are: x86_64 arm64"),
+            vec!["x86_64".to_owned(), "arm64".to_owned()]
+        );
+        // Anything else says nothing rather than inventing an architecture.
+        assert!(parse_lipo("").is_empty());
+        assert!(parse_lipo("lipo: can't figure out the architecture").is_empty());
+    }
+
+    /// `ditto` stores extended attributes beside the files they belong to, and
+    /// no comparison against an assembled directory can account for them. What
+    /// must not happen is the filter swallowing a real file.
+    #[test]
+    fn only_the_archivers_own_metadata_is_dropped_from_the_read_back() {
+        assert!(is_apple_metadata(
+            "__MACOSX/Sunlit Earth.app/Contents/._Info.plist"
+        ));
+        assert!(is_apple_metadata("Sunlit Earth.app/Contents/._Info.plist"));
+        assert!(!is_apple_metadata("Sunlit Earth.app/Contents/Info.plist"));
+        assert!(!is_apple_metadata(
+            "Sunlit Earth.app/Contents/MacOS/sunlit-earth"
+        ));
+        assert!(!is_apple_metadata("sunlit-earth-0.1.0-macos/sunlit-earth"));
+        // A file whose own name merely starts with an underscore is not one.
+        assert!(!is_apple_metadata(
+            "Sunlit Earth.app/Contents/_CodeSignature/CodeResources"
+        ));
     }
 }

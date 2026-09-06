@@ -28,6 +28,9 @@ csv = "1"
 dirs = "6"
 resvg = { version = "0.48", default-features = false }
 ico = "0.5"
+# pngio, which is what encodes the 256 px entries and larger; not jp2io, which
+# decodes the JPEG 2000 entries of icons this project never reads.
+icns = { version = "0.4", default-features = false, features = ["pngio"] }
 zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 flate2 = "1"

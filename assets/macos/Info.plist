@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The template `cargo xtask bundle --platform macos` copies into
+  `Sunlit Earth.app/Contents/Info.plist`, with @VERSION@ replaced by the
+  workspace version. Everything else is fixed, and each fixed value is here
+  rather than in the xtask so that the bundle's identity is a file somebody can
+  read.
+
+  CFBundleIdentifier never changes once chosen: preferences and TCC grants key
+  on it, so a new one is a new application as far as macOS is concerned.
+
+  LSUIElement is deliberately absent. winit sets the regular activation policy
+  at startup whatever this file says, so the key would do nothing; the app has a
+  Dock icon while it runs and closing its window hides it to the status item, as
+  on the other two platforms.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Sunlit Earth</string>
+	<key>CFBundleExecutable</key>
+	<string>sunlit-earth</string>
+	<key>CFBundleIconFile</key>
+	<string>sunlit-earth</string>
+	<key>CFBundleIdentifier</key>
+	<string>earth.sunlit.SunlitEarth</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Sunlit Earth</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>

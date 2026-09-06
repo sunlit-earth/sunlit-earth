@@ -170,6 +170,26 @@ Settled on 2026-09-06 after the first draft: the identifier is `earth.sunlit.Sun
 
 Filled in as steps land.
 
+### Step 1: `bundle::Platform` and `cargo xtask bundle` (2026-09-06)
+
+`cargo fmt --check`, `cargo clippy --all-targets` and `cargo test` all clean on the Windows host: 405 unit tests in `sunlit-core`, 638 in the xtask, and every integration target green. `cargo xtask bundle --platform windows --exe target/debug/sunlit-earth.exe --out target/bundle-smoke --verify` wrote a 20.8 MiB zip, read it back, unpacked it and rendered from it twice, and the two renders were 36.77 of a channel step apart against a floor of 8.0. `cargo xtask dist --target linux` finished in 4m47s with a delta of 18.6 over 17 files, and `--target windows` in 7m10s with a delta of 20.3 over 7 files, both on this host's VM infrastructure and both with `vm down all` afterwards, which is acceptance criterion 2.
+
+One bug the plan did not foresee: `--out` has to be made absolute before anything is derived from it. `--verify` runs the bundled binary from a working directory of its own, so a relative output directory reached the child as a path relative to *that*, the grid render's `SUNLIT_EARTH_TEXTURES` pointed nowhere, and the render wrote its PNG into a directory that did not exist. `std::path::absolute` at the top of the run is the fix.
+
+### Step 2: the release pipeline (2026-09-06)
+
+A `publish`-false dispatch of `release.yml` on `feat/macos`, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34056755615>, succeeded on both platforms with the release job skipped as asked. Windows took 31 minutes and Linux 17, both cold: no `release-<platform>` cache existed before this run. The bundle step itself, which is the xtask's own compile plus the assemble, the archive, the unpack and the two renders, took 298 s on Windows and 155 s on Linux, and the two renders came out 21.23 and 21.02 of a channel step from their grids. That is open question 3's measurement, cold; the same dispatch saved a cache, so the number to compare it against is the warm one from step 6.
+
+Two things about dispatching are now known rather than assumed, and both were free to learn. `gh workflow run` takes the trigger *and* the inputs from the ref's own copy of the file, not from the default branch's: `ci.yml -f os=ubuntu-latest` was accepted although `main`'s `ci.yml` has no inputs at all, and `release.yml -f publish=false` was accepted although `main`'s `release.yml` has no `workflow_dispatch` trigger at all. What is read from the default branch is the *existence* of the workflow: `gh workflow run macos-build.yml --ref feat/macos` answers `HTTP 404: workflow macos-build.yml not found on the default branch`. So step 2's "`macos-build.yml` `check` is green" and step 7's probe both wait for this branch to merge, and the macOS compile check for this run is `ci.yml` dispatched with `os: macos-latest`.
+
+`ci.yml`'s `os` input could not be implemented as the plan imagined it. A job-level `if` cannot read the `matrix` context, so the matrix is chosen by a `plan` job that emits the entries as JSON and the test job reads back through `fromJSON`. That costs a few seconds of a 1x runner per dispatch and keeps a macOS-only dispatch to one macOS job, which was the point. Verified on <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34056754143>, where `os: ubuntu-latest` produced exactly the Linux entry.
+
+### Finding: the Linux CI job was red too (2026-09-06)
+
+The `os: ubuntu-latest` dispatch that proved the matrix input, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34056754143>, failed at compile time under `RUSTFLAGS: -D warnings` for the same class of reason the macOS one did, and equally not because of anything this branch wrote. The e2e target imports `Instant` and defines `ProcessGuard::pid`, and both are reached only from `test_session_end_shuts_down_promptly`, whose body is Win32 and is already `cfg`-gated, so off Windows they are dead code and dead code is an error there. The fix is the same gate on the import and the method, in commit `d8aa519`; an `allow` would have hidden the next one.
+
+Both findings have the same cause: `ci.yml` is dispatch-only, so nothing runs it unless somebody asks, and nobody asked between the change that broke each job and this branch. Two of the three CI jobs were red on `main` and no document said so. Whatever `testing.md` and `roadmap.md` say about CI has to be true of the last dispatch rather than of the intention, and step 9 says so.
+
 ### Step 0, first attempt (2026-09-06)
 
 `gh workflow run golden.yml --ref feat/macos -f os=macos-latest` at commit f4068dc. Run <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34055254636>, 4 minutes, failed in the `Regenerate` step with the eleven dead-code errors departure 1 records. macOS job 1 of the 6 this branch is allowed. No references were produced; the `metal` set is still fourteen short and three stale.

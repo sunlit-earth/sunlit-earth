@@ -20,6 +20,10 @@ on:
         description: "Create the GitHub release. Off means build and verify only."
         type: boolean
         default: false
+      universal:
+        description: "Build the macOS binary for Intel as well as Apple Silicon."
+        type: boolean
+        default: false
 
 # The release job asks for this; nothing else in this repository writes.
 permissions:
@@ -54,6 +58,12 @@ jobs:
           - platform: linux
             os: ubuntu-22.04
             exe: target/release/sunlit-earth
+          # The binary is put where the build step leaves it rather than where
+          # cargo does, because the macOS build takes an explicit --target and
+          # may end in a `lipo` of two of them.
+          - platform: macos
+            os: macos-latest
+            exe: dist-bin/sunlit-earth
     steps:
       # The four JXL textures go inside the bundle, and without them
       # `cargo xtask bundle` refuses rather than shipping a procedural grid
@@ -96,6 +106,15 @@ jobs:
         run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
         shell: bash
 
+      - name: Point bindgen at Xcode's libclang
+        if: matrix.platform == 'macos'
+        run: |
+          LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if [ -f "$LIB/libclang.dylib" ]; then
+            echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
       # One key per profile and platform. Release and test artifacts share
       # nothing, so a mixed cache would evict itself.
       #
@@ -131,7 +150,36 @@ jobs:
       # One thing, not the workspace: no tests, no other members, no xtask in
       # the release profile.
       - name: Build
+        if: matrix.platform != 'macos'
         run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth
+        shell: bash
+
+      # Apple Silicon by default, and the Intel slice only when a release asks
+      # for it: the second one doubles the compile on the runner whose minutes
+      # cost ten times the others, and no tester with an Intel Mac exists yet.
+      # MACOSX_DEPLOYMENT_TARGET is set for both slices so the halves agree with
+      # each other and with LSMinimumSystemVersion in Info.plist.
+      - name: Build (macOS)
+        if: matrix.platform == 'macos'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euo pipefail
+          build() {
+            cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$1"
+          }
+          build aarch64-apple-darwin
+          mkdir -p dist-bin
+          if [ "${{ inputs.universal }}" = "true" ]; then
+            rustup target add x86_64-apple-darwin
+            build x86_64-apple-darwin
+            lipo -create -output dist-bin/sunlit-earth               target/aarch64-apple-darwin/release/sunlit-earth               target/x86_64-apple-darwin/release/sunlit-earth
+          else
+            cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
+          fi
+          # Also read back into build-info.json by the bundle step, so a release
+          # says which way it went rather than leaving it to this log.
+          lipo -info dist-bin/sunlit-earth
         shell: bash
 
       # Assemble, archive, read the archive back, unpack it and render from it
@@ -196,8 +244,10 @@ jobs:
               cp "$archive" release/
             done
             if [ -f "$dir/build-info.json" ]; then
-              name=$(ls "$dir" | grep -E '\.(zip|tar\.gz)$' | head -1)
-              cp "$dir/build-info.json" "release/${name}.build-info.json"
+              # One record per job, named for the platform: macOS writes two
+              # archives and three files called build-info.json cannot be three
+              # release assets.
+              cp "$dir/build-info.json" "release/build-info-${platform}.json"
             else
               echo "the $platform bundle wrote no record"
               exit 1

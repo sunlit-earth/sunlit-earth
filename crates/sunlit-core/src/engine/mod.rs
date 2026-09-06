@@ -143,7 +143,6 @@ struct PreviewState {
 }
 
 impl Engine {
-    #[allow(clippy::too_many_lines)]
     fn new(
         config: EngineConfig,
         rx: Receiver<EngineCommand>,
@@ -171,40 +170,9 @@ impl Engine {
             mailbox,
         } = config;
 
-        // Checked rather than trusted, and before the device exists, because
-        // neither way of getting it wrong is visible where it happens. Too few
-        // slots drops the posts for the high ones, leaving those slots waiting
-        // for a load that was thrown away; too many hands the consumer a slot
-        // index its own array does not have, which is a panic in the middle of a
-        // session. Failing here means failing before `ready` is sent, so `start`
-        // reports a thread that never got as far as its adapter rather than
-        // handing back a handle to a thread that quietly died.
         let slots = SlotLayout::new(texture_paths.len());
-        if let Some(mailbox) = &mailbox {
-            assert_eq!(
-                mailbox.slot_count(),
-                slots.count(),
-                "the texture mailbox must have one slot per texture: the grid, \
-                 {} file-backed, and the cloud overlay",
-                texture_paths.len()
-            );
-        }
-
-        let gpu = match crate::wgpu_init::init(force_software) {
-            Ok(gpu) => gpu,
-            Err(reason) => {
-                let _ = ready.send(Err(reason.clone()));
-                return Err(reason);
-            }
-        };
-        let _ = ready.send(Ok(AdapterReport {
-            info: gpu.adapter_info.clone(),
-            key: gpu.adapter_key.clone(),
-            supported_sample_counts: gpu.supported_sample_counts.clone(),
-        }));
-        crate::memory::log_memory_usage("engine: after wgpu init");
-
-        let mailbox = mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()));
+        let mailbox = checked_mailbox(mailbox, slots, texture_paths.len());
+        let gpu = open_gpu(force_software, ready)?;
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
@@ -639,6 +607,57 @@ impl Engine {
     fn emit(&self, event: EngineEvent) {
         (self.on_event)(event);
     }
+}
+
+/// The mailbox the engine will use, with its slot count checked against the
+/// textures this engine was configured with.
+///
+/// Checked rather than trusted, and before the device exists, because neither
+/// way of getting it wrong is visible where it happens. Too few slots drops the
+/// posts for the high ones, leaving those slots waiting for a load that was
+/// thrown away; too many hands the consumer a slot index its own array does not
+/// have, which is a panic in the middle of a session. Failing here means failing
+/// before `ready` is sent, so `start` reports a thread that never got as far as
+/// its adapter rather than handing back a handle to a thread that quietly died.
+fn checked_mailbox(
+    mailbox: Option<TextureMailbox>,
+    slots: SlotLayout,
+    paths: usize,
+) -> TextureMailbox {
+    if let Some(mailbox) = &mailbox {
+        assert_eq!(
+            mailbox.slot_count(),
+            slots.count(),
+            "the texture mailbox must have one slot per texture: the grid, \
+             {paths} file-backed, and the cloud overlay"
+        );
+    }
+    mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))
+}
+
+/// Open the GPU and tell `start` what was opened, or why nothing was.
+///
+/// One report either way, before anything else can fail: a caller blocked on
+/// `ready` gets an adapter it can name or an error it can put in front of the
+/// user, and never silence.
+fn open_gpu(
+    force_software: bool,
+    ready: &Sender<Result<AdapterReport, String>>,
+) -> Result<crate::wgpu_init::WgpuContext, String> {
+    let gpu = match crate::wgpu_init::init(force_software) {
+        Ok(gpu) => gpu,
+        Err(reason) => {
+            let _ = ready.send(Err(reason.clone()));
+            return Err(reason);
+        }
+    };
+    let _ = ready.send(Ok(AdapterReport {
+        info: gpu.adapter_info.clone(),
+        key: gpu.adapter_key.clone(),
+        supported_sample_counts: gpu.supported_sample_counts.clone(),
+    }));
+    crate::memory::log_memory_usage("engine: after wgpu init");
+    Ok(gpu)
 }
 
 /// Resolve a requested MSAA count against the adapter and the tier, saying so

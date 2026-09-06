@@ -297,29 +297,29 @@ mod tests {
     /// at half resolution on the screen that most needs the other half.
     #[test]
     fn a_monitor_is_its_display_in_physical_pixels() {
-        let monitor = monitor(&retina(), 0);
-        assert_eq!((monitor.width, monitor.height), (3024, 1964));
-        assert_eq!((monitor.x, monitor.y), (0, 0));
-        assert!(monitor.primary);
+        let laptop = monitor(&retina(), 0);
+        assert_eq!((laptop.width, laptop.height), (3024, 1964));
+        assert_eq!((laptop.x, laptop.y), (0, 0));
+        assert!(laptop.primary);
 
         // And a 1x screen is the same number twice, so the scaling cannot be a
         // constant somebody has to remember to turn off.
-        let monitor = monitor(&external(), 1);
-        assert_eq!((monitor.width, monitor.height), (1920, 1080));
-        assert_eq!((monitor.x, monitor.y), (1512, 0));
-        assert!(!monitor.primary);
+        let beside_it = monitor(&external(), 1);
+        assert_eq!((beside_it.width, beside_it.height), (1920, 1080));
+        assert_eq!((beside_it.x, beside_it.y), (1512, 0));
+        assert!(!beside_it.primary);
     }
 
     /// The window-position check reads points, because that is the space winit
     /// reports a window position in.
     #[test]
     fn an_output_is_its_display_in_points() {
-        let output = output(&retina(), 0);
-        assert_eq!((output.width, output.height), (1512, 982));
-        assert_eq!((output.x, output.y), (0, 0));
+        let laptop = output(&retina(), 0);
+        assert_eq!((laptop.width, laptop.height), (1512, 982));
+        assert_eq!((laptop.x, laptop.y), (0, 0));
         // Which is exactly what the shared overlap check then answers over.
-        assert!(output.overlaps(100, 100, 800, 30));
-        assert!(!output.overlaps(1512, 100, 800, 30));
+        assert!(laptop.overlaps(100, 100, 800, 30));
+        assert!(!laptop.overlaps(1512, 100, 800, 30));
     }
 
     /// A display being reconfigured under the query answers with no mode, and
@@ -330,14 +330,14 @@ mod tests {
         display.pixel_width = 0;
         display.pixel_height = 0;
         assert!((scale(&display) - 1.0).abs() < f64::EPSILON);
-        let monitor = monitor(&display, 0);
-        assert_eq!((monitor.width, monitor.height), (1512, 982));
+        let in_points = monitor(&display, 0);
+        assert_eq!((in_points.width, in_points.height), (1512, 982));
         // And a display with no points either is still a monitor with an area,
         // because a zero-sized render target is not something to hand a GPU.
         display.point_width = 0.0;
         display.point_height = 0.0;
-        let monitor = monitor(&display, 0);
-        assert_eq!((monitor.width, monitor.height), (1, 1));
+        let empty = monitor(&display, 0);
+        assert_eq!((empty.width, empty.height), (1, 1));
     }
 
     /// The label is the Windows one plus the one thing a laptop user needs: a

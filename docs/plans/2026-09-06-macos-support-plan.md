@@ -184,6 +184,12 @@ Two things about dispatching are now known rather than assumed, and both were fr
 
 `ci.yml`'s `os` input could not be implemented as the plan imagined it. A job-level `if` cannot read the `matrix` context, so the matrix is chosen by a `plan` job that emits the entries as JSON and the test job reads back through `fromJSON`. That costs a few seconds of a 1x runner per dispatch and keeps a macOS-only dispatch to one macOS job, which was the point. Verified on <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34056754143>, where `os: ubuntu-latest` produced exactly the Linux entry.
 
+### Step 0: the `metal` goldens, on the third attempt (2026-09-06)
+
+<https://github.com/sunlit-earth/sunlit-earth/actions/runs/34059784024> at commit `8b6ef87`, green, 24 minutes, macOS job 3 of the 6 this branch is allowed. It regenerated all eighteen references and then ran the suite again without `SUNLIT_EARTH_UPDATE_GOLDEN`, which is what makes the job verify its own output rather than assert whatever the code currently does.
+
+All eighteen were looked at before committing. Each shows what its case name says, and two were compared against their `warp` counterparts, `default` and `panorama_at_a_wide_sky`, which agree to the eye. One detail worth recording because it is a consistency check nobody arranged: `close_up.png` came back byte for byte identical to the reference already committed, which is exactly what the roadmap entry predicted, since the globe fills that frame and the stars change that made the other three stale could not reach it.
+
 ### Steps 3 and 4: the macOS core and the app crate (2026-09-06)
 
 Written blind against the crate sources in the local registry, which is the closest thing to a compiler this host has for the platform, and then compiled for the first time by the second `golden.yml` dispatch, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34059328165>. It failed in about four minutes with six errors and not one of them a type error, which says the survey the research document did was accurate: the callback's declaration is what `unsafe_code = "deny"` fires on rather than any call inside it; `CGDisplayModeGetPixelWidth` and its height twin are deprecated in `objc2-core-graphics` 0.3.2 in favour of methods on `CGDisplayMode`; and `WrittenImages.anchor` was read by nobody on macOS.

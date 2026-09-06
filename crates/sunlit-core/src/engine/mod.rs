@@ -342,46 +342,12 @@ impl Engine {
                 self.prepare_export();
                 let _ = reply.send(self.renderer.export_image(width, height));
             }
-            EngineCommand::SetTextureResolution(width) => {
-                if self.renderer.set_texture_resolution(width) {
-                    info!(texture_resolution = width, "surface texture resolution");
-                    // The textures the current mode needs are gone until the
-                    // reload lands, so the readiness latch has to reopen or
-                    // clients would never hear about the new ones.
-                    self.textures_ready = false;
-                    self.dirty = true;
-                    // The cloud variant follows the same setting, but its slot
-                    // is deliberately not purged: the switch must not depend on
-                    // the network, and a cloudless gap while a download runs
-                    // would be a worse picture than a cloud layer at the
-                    // previous variant. Asking for a poll now is the whole of
-                    // the change; the existing update path replaces texture,
-                    // view, and bind group together when it lands.
-                    if let Some(cloud) = &mut self.cloud
-                        && cloud.retarget(width)
-                    {
-                        cloud.owed = true;
-                    }
-                }
-            }
+            EngineCommand::SetTextureResolution(width) => self.set_texture_resolution(width),
             EngineCommand::ReportMemory { reply } => {
                 let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
             }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
-                let now = self.clock.elapsed();
-                if enabled {
-                    match &mut self.auto_refresh {
-                        Some(schedule) => schedule.set_interval(interval, now),
-                        None => self.auto_refresh = Some(Schedule::new(interval, now)),
-                    }
-                } else {
-                    self.auto_refresh = None;
-                }
-                debug!(
-                    enabled,
-                    interval_secs = interval.as_secs(),
-                    "auto-refresh changed"
-                );
+                self.set_auto_refresh(enabled, interval);
             }
             EngineCommand::DisplaysChanged => {
                 // Trailing rather than leading: every hint pushes the deadline
@@ -409,6 +375,48 @@ impl Engine {
             }
         }
         true
+    }
+
+    /// Point the renderer at another texture resolution's set of assets.
+    fn set_texture_resolution(&mut self, width: u32) {
+        if self.renderer.set_texture_resolution(width) {
+            info!(texture_resolution = width, "surface texture resolution");
+            // The textures the current mode needs are gone until the
+            // reload lands, so the readiness latch has to reopen or
+            // clients would never hear about the new ones.
+            self.textures_ready = false;
+            self.dirty = true;
+            // The cloud variant follows the same setting, but its slot
+            // is deliberately not purged: the switch must not depend on
+            // the network, and a cloudless gap while a download runs
+            // would be a worse picture than a cloud layer at the
+            // previous variant. Asking for a poll now is the whole of
+            // the change; the existing update path replaces texture,
+            // view, and bind group together when it lands.
+            if let Some(cloud) = &mut self.cloud
+                && cloud.retarget(width)
+            {
+                cloud.owed = true;
+            }
+        }
+    }
+
+    /// Start, restart or stop the auto-refresh schedule.
+    fn set_auto_refresh(&mut self, enabled: bool, interval: Duration) {
+        let now = self.clock.elapsed();
+        if enabled {
+            match &mut self.auto_refresh {
+                Some(schedule) => schedule.set_interval(interval, now),
+                None => self.auto_refresh = Some(Schedule::new(interval, now)),
+            }
+        } else {
+            self.auto_refresh = None;
+        }
+        debug!(
+            enabled,
+            interval_secs = interval.as_secs(),
+            "auto-refresh changed"
+        );
     }
 
     /// Run everything the schedule says is due, then render if anything changed.

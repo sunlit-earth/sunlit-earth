@@ -753,6 +753,45 @@ Linux half of the item runs 1 and 2 left open is now discharged: everything thos
 `desktop.rs`, `memory.rs` and `wallpaper.rs`, including run 1's five new `cfg` gates, compiles and passes its own suite
 on Linux. **macOS remains uncompiled**, by the maintainer's decision rather than by oversight.
 
+## Run 5 gate record
+
+Run on the merged run branch in `pool-0`, adapter to itself. **This is the last run of the plan.**
+
+- `cargo fmt --check` clean. `cargo clippy --all-targets` clean, zero warnings, and clean again after a forced
+  recompile rather than a replayed cache.
+- `cargo test` green across the workspace: core lib 403 in 0.13 s, engine 71 in 60.04 s, golden 20 in 3.04 s,
+  render_pipeline 17 in 0.60 s, shading 7 in 0.76 s, soak 1 in 32.87 s, app lib 78, app bin 0, e2e 15 ignored and
+  compiling, slint_ui 36, xtask 633.
+- `cargo doc --no-deps` zero warnings on both crates, and zero under `--document-private-items`.
+- `cargo build --all-targets` clean, which is the case `cargo test` cannot reach because the two compile different
+  `cfg` sets.
+- `git status --short crates/sunlit-core/tests/golden/` empty; no golden regenerated anywhere in the plan.
+
+**The e2e suite in both guests, twice.** Package 5.1 was gated and guest-tested **in isolation** before 5.2 merged,
+which is worth repeating in a run of this shape. 5.1 moved the whole app program into the library and rewrote
+`run_app`'s body; 5.2 changed the digest, the cast allows and five shared helpers. Those are different risks and the
+e2e suite is the only thing that watches `run_app`'s ordering, so a failure after both merged would have had two
+candidate causes and no way to separate them without re-running anyway.
+
+| | Windows guest | Linux guest (KDE) |
+|---|---|---|
+| package 5.1 alone, `aab8c0b` | 15 passed in 88.64 s | 14 passed in 75.11 s |
+| the whole run, `b57590c` | 15 passed in 102.19 s | 14 passed in 74.93 s |
+
+No ERROR line and no panic in any of the four runs; every guest destroyed afterwards. The one case fewer on Linux is
+the Win32-only session-end case.
+
+The Linux runs also discharge a reservation package 5.1's validator stated plainly and could not close: it had no way
+to compile for Linux on this host. `cargo xtask e2e --target linux` builds the suite in WSL against the Linux
+toolchain before booting, so the Linux compile happens as a side effect of the run.
+
+**The two demonstrations the plan's acceptance lines ask for.** The digest guard: a `SceneParams` field in no
+`scene_digest!` group does not compile, which is stronger than the test failure the plan asked for. The offset guard:
+replacing `_pad8` with a real Rust field, with `sphere.wgsl` untouched, leaves all 17 `render_pipeline` tests green
+including `uniform_buffer_field_offsets_match_wgsl`, and fails the new test with `field 68: the shader and the Rust
+block disagree`. **That closes the open item run 1 left**, and it is the one thing in the plan that four runs could not
+reach.
+
 ## Open items
 
 **The plan is complete: all five runs shipped, and every item in the review's section 5 is discharged or recorded

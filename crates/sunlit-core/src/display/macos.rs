@@ -10,14 +10,14 @@
 //! thread for exactly that.
 //!
 //! Two coordinate spaces meet here. `CGDisplayBounds` answers in points with a
-//! top-left origin in the global display space, which is already the sense
-//! [`Monitor`] is in and is also the space winit reports a window position in,
-//! so [`outputs`] hands the points straight through. [`monitors`] wants
-//! physical pixels, so each display's own scale, its mode's pixel width over
-//! its bounds' point width, multiplies its rectangle. That is exact for one
-//! screen and for several at one scale; a layout that mixes scales puts the
-//! span canvas's geometry in the state Windows already has open on the roadmap,
-//! and per-monitor mode is exact either way.
+//! top-left origin in the global display space, which is the space winit
+//! reports a window position in, so [`outputs`] hands the points straight
+//! through. [`monitors`] wants physical pixels: a screen's own size is its
+//! current mode's pixel count, which is exact, and where it sits is its point
+//! origin times its own scale, which is exact for one screen and for several at
+//! one scale. A layout that mixes scales puts the span canvas's geometry in the
+//! state Windows already has open on the roadmap, and per-monitor mode is exact
+//! either way.
 
 use objc2_core_graphics::{
     CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayIsMain,
@@ -125,7 +125,7 @@ pub(crate) fn display_key(id: u32) -> String {
         objc2_color_sync::CGDisplayCreateUUIDFromDisplayID(id)
     });
     match uuid {
-        Ok(uuid) => objc2_core_foundation::CFUUID::new_string(None, Some(&uuid))
+        Ok(uuid) => objc2_core_foundation::CFUUID::new_string(None, Some(&*uuid))
             .map(|text| text.to_string())
             .unwrap_or_else(|| format!("display-{id}")),
         Err(_) => {
@@ -182,15 +182,31 @@ fn to_pixels_u32(points: f64, scale: f64) -> u32 {
 }
 
 /// One display as a [`Monitor`]: its rectangle in physical pixels.
+///
+/// The extent comes from the mode rather than from the scaled bounds, because
+/// the mode is the pixel count itself and the multiplication is only ever an
+/// arithmetic route to the same number. The origin has no such shortcut: the
+/// global display space is in points, so where a screen sits in pixels is its
+/// point origin times its own scale, which is exact for one screen and for
+/// several at one scale.
 fn monitor(display: &Display, index: usize) -> Monitor {
     let scale = scale(display);
+    let (width, height) = if display.pixel_width > 0 && display.pixel_height > 0 {
+        (display.pixel_width, display.pixel_height)
+    } else {
+        // A display being reconfigured under the query answers with no mode.
+        (
+            to_pixels_u32(display.point_width, scale),
+            to_pixels_u32(display.point_height, scale),
+        )
+    };
     Monitor {
         id: display_key(display.id),
         label: display_label(display, index),
         x: to_pixels_i32(display.point_x, scale),
         y: to_pixels_i32(display.point_y, scale),
-        width: to_pixels_u32(display.point_width, scale),
-        height: to_pixels_u32(display.point_height, scale),
+        width,
+        height,
         primary: display.main,
     }
 }

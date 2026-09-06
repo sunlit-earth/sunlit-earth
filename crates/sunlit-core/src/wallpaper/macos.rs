@@ -219,9 +219,10 @@ fn paint(assignments: &[Assignment]) -> Result<Painted, String> {
                 );
             }
             Err(error) => {
+                let reason = error.localizedDescription().to_string();
                 warn!(
                     screen = %assignment.label,
-                    error = error.localizedDescription().to_string(),
+                    error = %reason,
                     "AppKit would not take this screen's wallpaper"
                 );
                 painted.refused.push(assignment.label.clone());
@@ -262,9 +263,8 @@ fn fill_options() -> objc2::rc::Retained<NSDictionary<NSString, AnyObject>> {
     let scaling =
         NSNumber::numberWithUnsignedInteger(NSImageScaling::ScaleProportionallyUpOrDown.0);
     let clipping = NSNumber::numberWithBool(true);
-    let scaling: &AnyObject = &scaling;
-    let clipping: &AnyObject = &clipping;
-    NSDictionary::from_slices(&[scaling_key, clipping_key], &[scaling, clipping])
+    let values: [&AnyObject; 2] = [&scaling, &clipping];
+    NSDictionary::from_slices(&[scaling_key, clipping_key], &values)
 }
 
 /// The `CGDirectDisplayID` behind an `NSScreen`.

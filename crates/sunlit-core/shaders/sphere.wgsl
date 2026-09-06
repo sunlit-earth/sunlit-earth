@@ -399,15 +399,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
 }
 
-@vertex
-fn vs_cloud(in: VertexInput) -> VertexOutput {
+/// A concentric shell around the globe: the same mesh, scaled to `radius`.
+///
+/// The four shells (clouds, Rayleigh, and the two nightglow layers) differ only
+/// in which radius uniform they pass in. The normal is the unscaled unit-sphere
+/// direction, which the scale leaves untouched.
+fn shell_vertex(in: VertexInput, radius: f32) -> VertexOutput {
     var out: VertexOutput;
-    let scaled = in.position * uniforms.cloud_sphere_radius;
+    let scaled = in.position * radius;
     out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
     out.uv = in.uv;
-    // Normal is the unscaled unit-sphere direction
     out.world_normal = in.position;
     return out;
+}
+
+@vertex
+fn vs_cloud(in: VertexInput) -> VertexOutput {
+    return shell_vertex(in, uniforms.cloud_sphere_radius);
 }
 
 // Smallest transmittance the night opacity slider can ask for, which is what
@@ -512,12 +520,7 @@ fn limb_transmission(position: vec2<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_rayleigh(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    let scaled = in.position * uniforms.rayleigh_radius;
-    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
-    out.uv = in.uv;
-    out.world_normal = in.position;
-    return out;
+    return shell_vertex(in, uniforms.rayleigh_radius);
 }
 
 @fragment
@@ -595,12 +598,7 @@ fn dither(pos: vec4<f32>) -> f32 {
 
 @vertex
 fn vs_nightglow_orange(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    let scaled = in.position * uniforms.nightglow_orange_radius;
-    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
-    out.uv = in.uv;
-    out.world_normal = in.position;
-    return out;
+    return shell_vertex(in, uniforms.nightglow_orange_radius);
 }
 
 @fragment
@@ -635,12 +633,7 @@ fn fs_nightglow_orange(in: VertexOutput) -> @location(0) vec4<f32> {
 
 @vertex
 fn vs_nightglow_green(in: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
-    let scaled = in.position * uniforms.nightglow_green_radius;
-    out.clip_position = uniforms.mvp * vec4<f32>(scaled, 1.0);
-    out.uv = in.uv;
-    out.world_normal = in.position;
-    return out;
+    return shell_vertex(in, uniforms.nightglow_green_radius);
 }
 
 @fragment

@@ -1,3 +1,12 @@
+//! The Win32 and COM half of the wallpaper path: the monitor query, the device
+//! paths [`IDesktopWallpaper`] addresses a screen by, and the
+//! `SystemParametersInfoW` call that makes a file the desktop.
+//!
+//! Every item here was gated on `cfg(windows)` one by one while it lived beside
+//! the portable half; the gate is now on the module declaration in
+//! [`super`], which is the pattern `display::watch` and `display::session_end`
+//! already follow.
+
 use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
@@ -26,7 +35,6 @@ use super::begin_publication;
 /// the call with `ERROR_ACCESS_DENIED`, which is the case where winit got here
 /// first and is the outcome this wants either way, so the return value is not an
 /// error to report.
-#[cfg(windows)]
 pub(crate) fn ensure_dpi_awareness() {
     use std::sync::Once;
 
@@ -63,7 +71,6 @@ pub(crate) fn ensure_dpi_awareness() {
 /// survives a reboot, and `szDevice` does not. Off Windows the same question is
 /// answered by [`crate::display`], which parses `xrandr --query`: there is no
 /// API in this crate to ask, so it asks a program.
-#[cfg(windows)]
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub(crate) fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
     use std::ptr;
@@ -157,7 +164,6 @@ pub(crate) fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, Strin
 /// A failure anywhere leaves `szDevice` in place. That is a name the shell will
 /// not take, so a publish that needs to address a monitor says so rather than
 /// setting the wrong screen's wallpaper.
-#[cfg(windows)]
 fn adopt_device_paths(monitors: &mut [crate::display::Monitor]) {
     let api = match shell::DesktopWallpaperApi::open() {
         Ok(api) => api,
@@ -193,7 +199,6 @@ fn adopt_device_paths(monitors: &mut [crate::display::Monitor]) {
 }
 
 /// A null-terminated fixed-width UTF-16 field as a `String`.
-#[cfg(windows)]
 fn wide_to_string(field: &[u16]) -> String {
     let end = field.iter().position(|&c| c == 0).unwrap_or(field.len());
     String::from_utf16_lossy(&field[..end])
@@ -204,7 +209,6 @@ fn wide_to_string(field: &[u16]) -> String {
 /// `\\.\DISPLAY2` is what Windows answers with and is not what its own display
 /// settings show anybody, so the digit is lifted out of it and the position in
 /// the enumeration stands in where there is no digit to lift.
-#[cfg(windows)]
 fn display_label(device: &str, index: usize) -> String {
     let number = device
         .rsplit('\\')
@@ -227,7 +231,6 @@ fn display_label(device: &str, index: usize) -> String {
 /// Every call is `unsafe` in the generated bindings and every one of them is
 /// wrapped here, so the rest of the module never writes `unsafe` and the
 /// invariants are argued once each rather than at every call site.
-#[cfg(windows)]
 mod shell {
     use std::path::Path;
 
@@ -420,7 +423,6 @@ mod shell {
 /// what every session did before this feature, and losing the primary's
 /// wallpaper on a configuration nobody has verified is the worst outcome
 /// available.
-#[cfg(windows)]
 pub(crate) fn set_wallpaper_job(
     job: &crate::engine::wallpaper_sink::WallpaperJob,
 ) -> Result<String, String> {
@@ -547,7 +549,6 @@ pub(crate) fn set_wallpaper_job(
 /// `\\.\` shape is one the mapping did not reach, and giving it to
 /// `SetWallpaper` addresses nothing at all: the interface takes the path, and a
 /// display device name is not one.
-#[cfg(windows)]
 fn is_device_path(id: &str) -> bool {
     !id.is_empty() && !id.starts_with(r"\\.\")
 }
@@ -555,7 +556,6 @@ fn is_device_path(id: &str) -> bool {
 /// Set the wallpaper display style to "Fill" (style 10, tile 0) via the
 /// registry keys `HKCU\Control Panel\Desktop\WallpaperStyle` and
 /// `HKCU\Control Panel\Desktop\TileWallpaper`.
-#[cfg(windows)]
 fn ensure_fill_style() -> Result<(), String> {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
@@ -579,7 +579,6 @@ fn ensure_fill_style() -> Result<(), String> {
 ///
 /// Verifies the file exists and is non-empty, sets "Fill" display style,
 /// then calls `SystemParametersInfoW` with `SPI_SETDESKWALLPAPER`.
-#[cfg(windows)]
 pub(crate) fn set_wallpaper(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -645,7 +644,6 @@ mod tests {
     /// `EnumDisplayMonitors`, a `GetMonitorInfoW` per monitor, and a COM object
     /// opened for the device paths.
     #[test]
-    #[cfg(windows)]
     fn every_monitor_is_enumerated_with_a_rectangle_and_one_of_them_is_primary() {
         let monitors = enumerate_monitors().expect("Windows can enumerate its monitors");
         assert!(!monitors.is_empty(), "a desktop session has a monitor");
@@ -670,7 +668,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn a_display_device_is_labeled_by_its_own_number() {
         assert_eq!(display_label(r"\\.\DISPLAY2", 0), "Display 2");
         // A device path with no number to lift falls back to where it came in
@@ -680,7 +677,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn a_display_device_name_is_not_something_the_shell_can_be_given() {
         assert!(!is_device_path(r"\\.\DISPLAY1"));
         assert!(!is_device_path(""));
@@ -690,7 +686,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn a_fixed_width_device_field_stops_at_its_terminator() {
         let mut field = [0u16; 32];
         for (slot, c) in field.iter_mut().zip("ok".encode_utf16()) {
@@ -701,7 +696,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn set_wallpaper_rejects_a_file_it_cannot_hand_over() {
         assert!(
             set_wallpaper(Path::new(r"C:\nonexistent\fake_wallpaper.png")).is_err(),

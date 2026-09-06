@@ -31,10 +31,23 @@ pub fn shared_monitors() -> SharedMonitors {
 
 /// The list as it stands, copied out from under the lock.
 pub fn monitors_of(screens: &SharedMonitors) -> Vec<Monitor> {
+    lock(screens).clone()
+}
+
+/// Put the session's monitors in the shared list.
+pub fn set_monitors(screens: &SharedMonitors, monitors: Vec<Monitor>) {
+    *lock(screens) = monitors;
+}
+
+/// The list, whether or not a panic elsewhere left the lock poisoned.
+///
+/// A `Vec<Monitor>` is replaced whole and has no invariant a half-finished
+/// write could break, so reading through the poison is better than turning one
+/// panic into a second one on the UI thread.
+fn lock(screens: &SharedMonitors) -> std::sync::MutexGuard<'_, Vec<Monitor>> {
     screens
         .lock()
-        .expect("the monitor list lock is poisoned")
-        .clone()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The first row of the screen combo: follow whatever the system calls primary.
@@ -52,7 +65,7 @@ pub fn mode_options() -> Vec<String> {
 ///
 /// `Monitor::label` is what a person recognizes the screen by and is never used
 /// to address it: the connector name on Linux, `Display 2` on Windows.
-pub fn screen_label(monitor: &Monitor) -> String {
+fn screen_label(monitor: &Monitor) -> String {
     let mut label = format!("{}  {}x{}", monitor.label, monitor.width, monitor.height);
     if monitor.primary {
         label.push_str("  primary");
@@ -61,14 +74,14 @@ pub fn screen_label(monitor: &Monitor) -> String {
 }
 
 /// The screen combo's rows, the automatic one first.
-pub fn screen_options(monitors: &[Monitor]) -> Vec<String> {
+fn screen_options(monitors: &[Monitor]) -> Vec<String> {
     std::iter::once(AUTOMATIC_SCREEN.to_owned())
         .chain(monitors.iter().map(screen_label))
         .collect()
 }
 
 /// The id each row of the screen combo addresses, parallel to
-/// [`screen_options`]. The automatic row addresses none, and its id is empty.
+/// `screen_options`. The automatic row addresses none, and its id is empty.
 ///
 /// The window carries this list, which is what lets a save read an anchor id
 /// out of a combo index without the monitor list being passed around with it.
@@ -96,7 +109,7 @@ pub fn anchor_index(ids: &[String], stored: &str) -> i32 {
 }
 
 /// The id the screen combo's current row addresses, empty for automatic.
-pub fn anchor_at(ids: &[String], index: i32) -> String {
+fn anchor_at(ids: &[String], index: i32) -> String {
     usize::try_from(index)
         .ok()
         .and_then(|index| ids.get(index))
@@ -105,7 +118,7 @@ pub fn anchor_at(ids: &[String], index: i32) -> String {
 }
 
 /// The layout as the diagram draws it.
-pub struct Diagram {
+struct Diagram {
     /// One tile per monitor with pixels, normalized to the bounding box.
     pub tiles: Vec<MonitorTile>,
     /// Width over height of that bounding box, so the board keeps its shape
@@ -119,8 +132,11 @@ pub struct Diagram {
 /// answers, and the tile it names is drawn highlighted. A label is the monitor's
 /// own position counted from one, so the diagram and the screen combo above it
 /// name the same screen the same way.
-#[allow(clippy::cast_precision_loss)]
-pub fn diagram(monitors: &[Monitor], anchor: Option<usize>) -> Diagram {
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a desktop bounding box in pixels is far inside the f32 mantissa"
+)]
+fn diagram(monitors: &[Monitor], anchor: Option<usize>) -> Diagram {
     let Some(bounds) = bounds_of(monitors) else {
         return Diagram {
             tiles: Vec::new(),
@@ -201,7 +217,7 @@ pub fn replace_monitors(
     crate::ui_callbacks::defer_combobox_indices(&window.as_weak(), indices);
     let stored = (!stored_anchor.trim().is_empty()).then_some(stored_anchor);
     apply_diagram_to_window(window, &monitors, stored);
-    *screens.lock().expect("the monitor list lock is poisoned") = monitors;
+    set_monitors(screens, monitors);
     row
 }
 

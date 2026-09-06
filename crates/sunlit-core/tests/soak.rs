@@ -1,9 +1,9 @@
 //! Mock-clock soak test.
 //!
-//! Fourteen simulated days of cloud updates and unattended wallpaper exports,
+//! Seven simulated days of cloud updates and unattended wallpaper exports,
 //! compressed into a few seconds by advancing an injected clock instead of
-//! waiting. This is the permanent guard for the Phase 0 leak class: a
-//! background producer whose consumer only runs under some condition.
+//! waiting. This is the permanent guard against a background producer whose
+//! consumer only runs under some condition.
 //!
 //! Nothing here touches the network, the desktop, or the real clock.
 
@@ -30,29 +30,41 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 
 /// One simulated step. Auto-refresh fires once per step.
 ///
-/// One hour rather than 30 minutes: halving the step count keeps all 112
-/// cloud publications (where the memory assertion's power comes from) while
-/// shaving wall-clock time. Measured effect was modest (about 10%), because
-/// the per-step cost is dominated by the render and the engine wake-up, not
-/// the export itself.
+/// One hour rather than 30 minutes: the per-step cost is the render and the
+/// engine wake-up rather than the export, so what the step size buys is the
+/// number of steps, and the number of steps is what the wall time is.
 const STEP: Duration = Duration::from_hours(1);
-/// 14 simulated days at one step per hour.
-const STEPS: u64 = 14 * 24;
+/// Seven simulated days at one step per hour.
+///
+/// What the assertion needs is enough cloud updates behind it for a per-update
+/// leak to be unmissable, and 56 of them at one decoded frame each would be
+/// 450 MiB against `GROWTH_LIMIT`'s 8.
+const STEPS: u64 = 7 * 24;
 /// The upstream cloud service publishes every three hours.
 const STEPS_PER_CLOUD_UPDATE: u64 = 3;
 /// Fixture cloud image size: large enough that a leaked frame (8 MiB decoded)
 /// would dominate the noise, small enough to decode hundreds of times.
 const CLOUD_WIDTH: u32 = 2048;
 const CLOUD_HEIGHT: u32 = 1024;
-/// Wallpaper export size. Small: the test is about the schedule and the
-/// memory, not the picture.
-const EXPORT_SIZE: (u32, u32) = (320, 192);
+/// Wallpaper export size.
+///
+/// Small on purpose, and the test is about the schedule and the memory rather
+/// than the picture: what the export has to do here is go through the publish
+/// path once per simulated hour, which it does at any size. Most of a step is
+/// the round trip rather than the render, so this buys less than it looks like
+/// it should; the measurements are in docs/testing.md.
+const EXPORT_SIZE: (u32, u32) = (160, 96);
 
 /// How long to wait for the engine to catch up with one simulated step.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Growth allowed after warm-up: two decoded 2048x1024 frames.
-const GROWTH_LIMIT: u64 = 16 * 1024 * 1024;
+/// Growth allowed after warm-up: one decoded 2048x1024 frame.
+///
+/// Sized with `STEPS` so the sensitivity per update is fixed, at 49
+/// publications against 8 MiB. Measured growth on the development desktop is
+/// 2.0 MiB with about 2.5 MiB of sample-to-sample noise, so the headroom is
+/// fourfold.
+const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
 /// Allocation allowed during warm-up: the first cloud texture, its mip chain,
 /// and wgpu's allocator pools.
 const WARMUP_LIMIT: u64 = 192 * 1024 * 1024;
@@ -155,7 +167,7 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
+fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     let _guard = gpu_lock();
 
     let cloud = Arc::new(FixtureCloud::new(CLOUD_WIDTH, CLOUD_HEIGHT));
@@ -173,8 +185,7 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
 
     let mut config = EngineConfig::headless((512, 288));
     config.params = params;
-    // Nothing is looking at the preview: this is the hidden-window scenario,
-    // which is exactly the one the old architecture stopped servicing.
+    // Nothing is looking at the preview: this is the hidden-window scenario.
     config.preview_enabled = false;
     config.clock = clock.clone();
     config.cloud = Some(cloud.clone());
@@ -183,12 +194,22 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
     config.auto_refresh = Some(STEP);
     config.wallpaper = sink.clone();
 
-    let engine = sunlit_core::engine::start(config);
+    let engine = sunlit_core::engine::start(config).expect("the soak test needs a working adapter");
 
-    // Let the first cloud fetch and the first render settle before measuring.
+    // The fetch is not the thing to measure from: the decoded image is parked
+    // in the mailbox and reaches the GPU on a later tick, so the baseline has to
+    // be taken after the first cloud texture exists or the warm-up it is
+    // compared against would include that upload.
     wait_until("the first cloud fetch", || cloud.fetches() >= 1);
-    engine.send(EngineCommand::Poke);
-    std::thread::sleep(Duration::from_millis(500));
+    wait_until("the first cloud texture", || {
+        engine.send(EngineCommand::Poke);
+        engine.memory_report().is_ok_and(|report| {
+            report
+                .expected
+                .iter()
+                .any(|texture| texture.label == "cloud_texture")
+        })
+    });
 
     let startup = private_bytes();
     let started = Instant::now();
@@ -238,8 +259,9 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
 
     let expected_publications = STEPS / STEPS_PER_CLOUD_UPDATE;
     let expected_fetches = expected_publications + 1;
+    let simulated_days = STEPS / 24;
     println!(
-        "14 simulated days in {:.1}s: {exports} exports, {fetches} cloud fetches \
+        "{simulated_days} simulated days in {:.1}s: {exports} exports, {fetches} cloud fetches \
          (of {expected_publications} publications)",
         elapsed.as_secs_f64()
     );
@@ -253,33 +275,28 @@ fn fourteen_simulated_days_of_clouds_and_exports_stay_bounded() {
         fetches >= expected_fetches,
         "expected at least {expected_fetches} cloud downloads, got {fetches}"
     );
-    // The point is compression, not a benchmark: 14 days in two minutes is
-    // still a ratio of about 10 000 to 1. Measured on the development desktop
-    // on the software adapter (which is what this test uses, so that it
-    // behaves the same here as on CI): 49.8 s at the original 30-minute step,
-    // 44.6 s at the hourly step used now, so the margin to the bound is about
-    // 2.7x. The per-step cost is dominated by the render and the engine
-    // wake-up rather than the export. If a slower runner trips this, reduce
-    // STEPS (fewer simulated days, proportionally fewer publications) or
-    // shrink the render sizes; do not raise the bound.
+    // The point is compression, not a benchmark: seven days in two minutes is
+    // still a ratio of about 8 000 to 1, and the bound is there to catch a
+    // change that makes a step cost an order of magnitude more rather than to
+    // measure the machine. The measurements are in docs/testing.md. If a slower
+    // runner trips this, reduce STEPS (fewer simulated days, proportionally
+    // fewer publications) or shrink the render sizes; do not raise the bound.
     assert!(
         elapsed < Duration::from_mins(2),
-        "14 simulated days took {:.1}s, which defeats the purpose",
+        "{simulated_days} simulated days took {:.1}s, which defeats the purpose",
         elapsed.as_secs_f64()
     );
 
-    // Memory: the whole point. Before Phase 0 the hidden path parked one
-    // decoded frame per update, which over these 112 updates would be about
-    // 900 MiB; the architecture here should add nothing per update at all.
+    // Memory: the whole point. A hidden path that parked one decoded frame per
+    // update would cost hundreds of megabytes over these updates; this
+    // architecture should add nothing per update at all.
     for (step, bytes) in &samples {
         println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
     }
 
     let (startup, baseline, end) = match (startup, baseline, end) {
         (Some(startup), Some(baseline), Some(end)) => (startup, baseline, end),
-        // Three independent reads feed this, and any one of them coming back
-        // empty used to disable the assertion for the whole run while every
-        // other assertion stayed green. On a platform `memory::snapshot`
+        // Three independent reads feed this. On a platform `memory::snapshot`
         // implements, a missing sample is a broken counter and not a reason to
         // stop testing: it fails here, the way the software-adapter test fails
         // when the adapter it queried for should have been there.

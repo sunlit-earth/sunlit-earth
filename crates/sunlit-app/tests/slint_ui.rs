@@ -12,7 +12,7 @@ use slint::ComponentHandle;
 use sunlit_earth::MainWindow;
 
 // ---------------------------------------------------------------------------
-// Initialization boilerplate (Step 2.1)
+// Initialization boilerplate
 // ---------------------------------------------------------------------------
 
 /// Initialize the Slint testing backend for the current thread.
@@ -55,29 +55,8 @@ fn test_window_creates_successfully() {
 }
 
 // ---------------------------------------------------------------------------
-// Property round-trip tests (Step 2.2)
+// Property round-trip tests
 // ---------------------------------------------------------------------------
-
-#[test]
-fn test_camera_longitude_roundtrip() {
-    let window = create_window();
-    window.set_camera_longitude(42.5);
-    approx::assert_relative_eq!(window.get_camera_longitude(), 42.5);
-}
-
-#[test]
-fn test_camera_latitude_roundtrip() {
-    let window = create_window();
-    window.set_camera_latitude(-30.0);
-    approx::assert_relative_eq!(window.get_camera_latitude(), -30.0);
-}
-
-#[test]
-fn test_camera_zoom_roundtrip() {
-    let window = create_window();
-    window.set_camera_zoom(0.75);
-    approx::assert_relative_eq!(window.get_camera_zoom(), 0.75);
-}
 
 /// The Earth lens travels with the rest of the camera, so a round trip is the
 /// whole of its bridge: nothing derives it and nothing else writes it.
@@ -97,25 +76,6 @@ fn test_camera_fov_roundtrips_through_scene_params() {
     };
     sunlit_earth::ui_callbacks::apply_params_to_window(&window, &restored);
     approx::assert_relative_eq!(window.get_camera_fov(), 42.0);
-}
-
-#[test]
-fn test_bool_property_roundtrip() {
-    let window = create_window();
-
-    // diffuse-shading defaults to true; toggle to false and back
-    window.set_diffuse_shading(false);
-    assert!(!window.get_diffuse_shading());
-
-    window.set_diffuse_shading(true);
-    assert!(window.get_diffuse_shading());
-}
-
-#[test]
-fn test_int_property_roundtrip() {
-    let window = create_window();
-    window.set_texture_index(2);
-    assert_eq!(window.get_texture_index(), 2);
 }
 
 #[test]
@@ -225,190 +185,132 @@ fn test_celestial_properties_apply_from_scene_params() {
     approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.35);
 }
 
-#[test]
-fn test_default_star_tuning_uses_balanced_profile() {
-    let window = create_window();
-    approx::assert_relative_eq!(window.get_sky_fov(), 140.0);
-    approx::assert_relative_eq!(window.get_star_intensity(), 2.0);
-    approx::assert_relative_eq!(window.get_star_size(), 1.0);
-    approx::assert_relative_eq!(window.get_star_glow_strength(), 0.5);
-    approx::assert_relative_eq!(window.get_star_glow_radius(), 8.0);
-    approx::assert_relative_eq!(window.get_star_contrast(), 0.3);
-    approx::assert_relative_eq!(window.get_star_mag_limit(), 6.5);
-}
+/// How close a hand-written literal in `main.slint` has to be to the config
+/// default it mirrors, for the one property that needs any slack at all.
+///
+/// `zoom` reads 0.421 in the `.slint` file where the config computes it as
+/// 0.42096078 through `distance_to_zoom`, a relative difference of 9.3e-5.
+/// Every other property agrees exactly and is compared at `f32::EPSILON`, so a
+/// literal that drifted in the fourth decimal is still a failure.
+const SLINT_LITERAL_PRECISION: f32 = 1.0e-3;
 
+/// The window and the config have to start from the same numbers, or the first
+/// slider a user touches pushes all the others to whatever the `.slint` file
+/// happened to say.
 #[test]
-fn test_default_sun_shows_the_glare_and_a_trace_of_the_camera() {
-    let window = create_window();
-    approx::assert_relative_eq!(window.get_sun_glow(), 1.2);
-    approx::assert_relative_eq!(window.get_sun_rays(), 0.75);
-    approx::assert_relative_eq!(window.get_sun_flare(), 0.15);
-    approx::assert_relative_eq!(window.get_sun_size(), 1.0);
-    approx::assert_relative_eq!(window.get_sun_halo_radius(), 3.0);
-}
+fn test_the_window_and_the_config_start_from_the_same_defaults() {
+    /// One row per property: the `AppConfig` field, the window getter that
+    /// mirrors it, and the tolerance the pair is compared at.
+    macro_rules! rows {
+        ($w:ident, $c:ident, $($field:ident from $getter:ident),* $(,)?) => {
+            vec![$((stringify!($field), $w.$getter(), $c.$field, f32::EPSILON)),*]
+        };
+    }
 
-/// The window and the config have to start from the same horizon, or the first
-/// slider a user touches pushes the other seven of them at whatever the
-/// `.slint` file happened to say.
-#[test]
-fn test_default_horizon_matches_the_config() {
     let window = create_window();
     let config = sunlit_core::config::AppConfig::default();
-    approx::assert_relative_eq!(window.get_sun_horizon_boost(), config.sun_horizon_boost);
-    approx::assert_relative_eq!(window.get_sun_horizon_reach(), config.sun_horizon_reach);
-    approx::assert_relative_eq!(window.get_sun_horizon_depth(), config.sun_horizon_depth);
-    approx::assert_relative_eq!(window.get_sun_reddening(), config.sun_reddening);
-    approx::assert_relative_eq!(window.get_sun_refraction(), config.sun_refraction);
-    approx::assert_relative_eq!(window.get_atmo_sunrise_glow(), config.atmo_sunrise_glow);
-    approx::assert_relative_eq!(window.get_atmo_sunrise_width(), config.atmo_sunrise_width);
-}
+    let mut rows = rows![
+        window, config,
+        longitude from get_camera_longitude,
+        latitude from get_camera_latitude,
+        offset_x from get_camera_offset_x,
+        offset_y from get_camera_offset_y,
+        tilt from get_camera_tilt,
+        yaw from get_camera_yaw,
+        pitch from get_camera_pitch,
+        camera_fov from get_camera_fov,
+        sky_fov from get_sky_fov,
+        star_intensity from get_star_intensity,
+        star_size from get_star_size,
+        star_glow_strength from get_star_glow_strength,
+        star_glow_radius from get_star_glow_radius,
+        star_contrast from get_star_contrast,
+        star_mag_limit from get_star_mag_limit,
+        sun_glow from get_sun_glow,
+        sun_rays from get_sun_rays,
+        sun_flare from get_sun_flare,
+        sun_size from get_sun_size,
+        sun_halo_radius from get_sun_halo_radius,
+        sun_horizon_boost from get_sun_horizon_boost,
+        sun_horizon_reach from get_sun_horizon_reach,
+        sun_horizon_depth from get_sun_horizon_depth,
+        sun_reddening from get_sun_reddening,
+        sun_refraction from get_sun_refraction,
+        atmo_sunrise_glow from get_atmo_sunrise_glow,
+        atmo_sunrise_width from get_atmo_sunrise_width,
+        moon_brightness from get_moon_brightness,
+        moon_size from get_moon_size,
+        moon_earthshine from get_moon_earthshine,
+        milky_way_intensity from get_milky_way_intensity,
+        terminator_width from get_terminator_width,
+        diffuse_floor from get_diffuse_floor,
+        diffuse_ramp from get_diffuse_ramp,
+        spec_shininess from get_spec_shininess,
+        spec_intensity from get_spec_intensity,
+        fresnel_mix from get_fresnel_mix,
+        fresnel_exp from get_fresnel_exp,
+        cloud_opacity from get_cloud_opacity,
+        cloud_opacity_night from get_cloud_opacity_night,
+        cloud_floor from get_cloud_floor,
+        cloud_gamma from get_cloud_gamma,
+        cloud_night from get_cloud_night,
+        rayleigh_intensity from get_rayleigh_intensity,
+        rayleigh_sharpness from get_rayleigh_sharpness,
+        rayleigh_haze from get_rayleigh_haze,
+        nightglow_intensity from get_nightglow_intensity,
+        nightglow_falloff from get_nightglow_falloff,
+        nightglow_balance from get_nightglow_balance,
+        day_saturation from get_day_saturation,
+        night_saturation from get_night_saturation,
+    ];
 
-#[test]
-fn test_default_moon_is_enlarged_two_and_a_half_times() {
-    let window = create_window();
-    approx::assert_relative_eq!(window.get_moon_brightness(), 1.0);
-    approx::assert_relative_eq!(window.get_moon_size(), 2.5);
-    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.15);
-}
+    // The two gamma sliders carry a position on the curve rather than the value
+    // itself, so what has to agree is the mapped default.
+    for (name, from_window, gamma) in [
+        ("day_gamma", window.get_day_gamma(), config.day_gamma),
+        ("night_gamma", window.get_night_gamma(), config.night_gamma),
+    ] {
+        rows.push((
+            name,
+            from_window,
+            sunlit_core::params::gamma_value_to_slider(gamma),
+            f32::EPSILON,
+        ));
+    }
+    // The one property the `.slint` file rounds; see SLINT_LITERAL_PRECISION.
+    rows.push((
+        "zoom",
+        window.get_camera_zoom(),
+        config.zoom,
+        SLINT_LITERAL_PRECISION,
+    ));
 
-#[test]
-fn test_default_milky_way_is_on_at_a_fifth_of_full_strength() {
-    let window = create_window();
-    approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.2);
-}
-
-// ---------------------------------------------------------------------------
-// Preset callback wiring tests (Step 2.3)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_preset_europe_fires_callback() {
-    let window = create_window();
-
-    let received_index: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
-    let captured = Rc::clone(&received_index);
-    window.on_apply_preset(move |index| {
-        *captured.borrow_mut() = Some(index);
-    });
-
-    let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Europe").collect();
-    assert_eq!(buttons.len(), 1, "expected exactly one 'Europe' button");
-    buttons[0].invoke_accessible_default_action();
-
-    assert_eq!(*received_index.borrow(), Some(0));
-}
-
-#[test]
-fn test_preset_earthrise_fires_callback() {
-    let window = create_window();
-
-    let received_index: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
-    let captured = Rc::clone(&received_index);
-    window.on_apply_preset(move |index| {
-        *captured.borrow_mut() = Some(index);
-    });
-
-    let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Earthrise").collect();
-    assert_eq!(buttons.len(), 1, "expected exactly one 'Earthrise' button");
-    buttons[0].invoke_accessible_default_action();
-
-    assert_eq!(*received_index.borrow(), Some(8));
-}
-
-#[test]
-fn test_preset_changes_camera_properties() {
-    let window = create_window();
-
-    // Register a callback that applies the Europe preset values (PRESETS[0]).
-    // These values are read from scene/camera.rs — the test verifies that
-    // clicking the button fires the callback which sets properties, not that
-    // any particular constant has a specific value.
-    let window_weak = window.as_weak();
-    window.on_apply_preset(move |index| {
-        let Some(win) = window_weak.upgrade() else {
-            return;
-        };
-        if index == 0 {
-            // Europe preset values from PRESETS[0] in scene/camera.rs
-            win.set_camera_longitude(11.0);
-            win.set_camera_latitude(24.0);
-            win.set_camera_zoom(0.19);
-            win.set_camera_offset_x(0.0);
-            win.set_camera_offset_y(0.0);
-            win.set_camera_tilt(0.0);
-            win.set_camera_yaw(0.0);
-            win.set_camera_pitch(30.0);
-        }
-    });
-
-    // Set initial values that differ from the Europe preset
-    window.set_camera_longitude(0.0);
-    window.set_camera_latitude(0.0);
-
-    // Click the Europe preset button
-    let buttons: Vec<_> = ElementHandle::find_by_accessible_label(&window, "Europe").collect();
-    assert_eq!(buttons.len(), 1);
-    buttons[0].invoke_accessible_default_action();
-
-    // Verify the callback applied the preset values
-    approx::assert_relative_eq!(window.get_camera_longitude(), 11.0);
-    approx::assert_relative_eq!(window.get_camera_latitude(), 24.0);
-    approx::assert_relative_eq!(window.get_camera_zoom(), 0.19);
-    approx::assert_relative_eq!(window.get_camera_pitch(), 30.0);
-}
-
-// ---------------------------------------------------------------------------
-// Load-defaults callback tests (Step 2.4)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_load_defaults_fires_callback() {
-    let window = create_window();
-
-    // Register a handler that applies default values (mimics main.rs behavior).
-    // We read AppConfig::default() to get the canonical defaults so this test
-    // does not hard-code constants.
-    let window_weak = window.as_weak();
-    window.on_load_defaults(move || {
-        let Some(win) = window_weak.upgrade() else {
-            return;
-        };
-        let defaults = sunlit_core::config::AppConfig::default();
-        win.set_camera_longitude(defaults.longitude);
-        win.set_camera_latitude(defaults.latitude);
-        win.set_camera_zoom(defaults.zoom);
-        win.set_camera_offset_x(defaults.offset_x);
-        win.set_camera_offset_y(defaults.offset_y);
-        win.set_camera_tilt(defaults.tilt);
-        win.set_camera_yaw(defaults.yaw);
-        win.set_camera_pitch(defaults.pitch);
-        win.set_diffuse_shading(defaults.diffuse_shading);
-    });
-
-    // Set a non-default value
-    window.set_camera_longitude(123.0);
-    assert!(
-        (window.get_camera_longitude() - 123.0).abs() < 0.01,
-        "precondition: longitude should be 123.0 before load-defaults"
-    );
-
-    // Click "Load Defaults"
-    let buttons: Vec<_> =
-        ElementHandle::find_by_accessible_label(&window, "Load Defaults").collect();
+    for (name, from_window, from_config, tolerance) in rows {
+        assert!(
+            approx::relative_eq!(from_window, from_config, max_relative = tolerance),
+            "{name}: the window starts at {from_window} and the config at {from_config}"
+        );
+    }
     assert_eq!(
-        buttons.len(),
-        1,
-        "expected exactly one 'Load Defaults' button"
+        window.get_diffuse_shading(),
+        config.diffuse_shading,
+        "diffuse_shading"
     );
-    buttons[0].invoke_accessible_default_action();
-
-    // Verify the callback restored the default longitude
-    let defaults = sunlit_core::config::AppConfig::default();
-    approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
+    assert_eq!(
+        window.get_atmo_enabled(),
+        config.atmo_enabled,
+        "atmo_enabled"
+    );
 }
 
+// ---------------------------------------------------------------------------
+// Load-defaults callback tests
+// ---------------------------------------------------------------------------
+
+/// The button exists, is unique, and invokes its callback. What the app's own
+/// callback then does is the test below this one.
 #[test]
-fn test_load_defaults_resets_multiple_properties() {
+fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
     let window = create_window();
 
     let window_weak = window.as_weak();
@@ -428,116 +330,144 @@ fn test_load_defaults_resets_multiple_properties() {
         win.set_diffuse_shading(defaults.diffuse_shading);
     });
 
-    // Set several non-default values
     window.set_camera_longitude(123.0);
     window.set_camera_zoom(0.99);
     window.set_diffuse_shading(false);
 
-    // Click "Load Defaults"
     let buttons: Vec<_> =
         ElementHandle::find_by_accessible_label(&window, "Load Defaults").collect();
     assert_eq!(buttons.len(), 1);
     buttons[0].invoke_accessible_default_action();
 
-    // Verify all properties reset to defaults
     let defaults = sunlit_core::config::AppConfig::default();
     approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
     approx::assert_relative_eq!(window.get_camera_zoom(), defaults.zoom);
     assert_eq!(window.get_diffuse_shading(), defaults.diffuse_shading);
 }
 
-// ---------------------------------------------------------------------------
-// Advanced section visibility toggle tests (Step 2.5)
-// ---------------------------------------------------------------------------
-
+/// Load-defaults through the callback the app registers, rather than one this
+/// test writes.
+///
+/// `apply_whole_config` is what load-defaults and reset both run, and it is
+/// four things at once: the window, the diagram, the two settings the engine
+/// holds itself because they are not in `SceneParams`, and the push. The combo
+/// indices are the one part left out, since `defer_combobox_indices` lands on
+/// an event loop this backend does not run.
 #[test]
-fn test_advanced_section_starts_closed() {
-    let window = create_window();
+fn test_load_defaults_applies_the_whole_config_the_app_would() {
+    use slint::Model;
+    use sunlit_core::engine::EngineCommand;
 
+    let window = create_window();
+    let (sender, sent) = crossbeam_channel::unbounded();
+    let link = sunlit_earth::engine_client::EngineLink::new(
+        sender,
+        vec!["None".to_owned(), "MSAA".to_owned()],
+        vec![1, 8],
+    );
+    let screens = sunlit_earth::displays::shared_monitors();
+    sunlit_earth::displays::set_monitors(&screens, fabricated_monitors());
+    sunlit_earth::ui_callbacks::register_action_callbacks(&window, &link, &screens);
+
+    let defaults = sunlit_core::config::AppConfig::default();
+    let wanted = sunlit_core::params::SceneParams::from_config(&defaults);
+    window.set_camera_longitude(wanted.camera.longitude + 47.0);
+    window.set_sky_fov(wanted.sky_fov - 11.0);
+    window.set_auto_refresh_enabled(!defaults.auto_refresh_enabled);
+    link.set_resolution_is_one_run_only(true);
+
+    window.invoke_load_defaults();
+
+    approx::assert_relative_eq!(window.get_camera_longitude(), wanted.camera.longitude);
+    approx::assert_relative_eq!(window.get_sky_fov(), wanted.sky_fov);
+    assert_eq!(
+        window.get_auto_refresh_enabled(),
+        defaults.auto_refresh_enabled,
+        "a setting outside SceneParams is put back too"
+    );
+    assert_eq!(
+        window.get_display_tiles().iter().count(),
+        fabricated_monitors().len(),
+        "the diagram is rebuilt from the shared monitor list"
+    );
+    assert!(
+        !link.resolution_is_one_run_only(),
+        "the texture resolution is the user's again once they ask for defaults"
+    );
+
+    let sent: Vec<EngineCommand> = sent.try_iter().collect();
+    let resolution = sent.iter().find_map(|command| match command {
+        EngineCommand::SetTextureResolution(width) => Some(*width),
+        _ => None,
+    });
+    assert_eq!(resolution, Some(defaults.texture_resolution));
+
+    let plan = sent.iter().find_map(|command| match command {
+        EngineCommand::SetDisplayPlan { mode, anchor } => Some((*mode, anchor.clone())),
+        _ => None,
+    });
+    assert_eq!(plan, Some((defaults.display_mode, defaults.anchor())));
+
+    let pushed = sent
+        .iter()
+        .find_map(|command| match command {
+            EngineCommand::UpdateParams(params) => Some(params),
+            _ => None,
+        })
+        .expect("the scene the window now holds reaches the engine");
+    approx::assert_relative_eq!(pushed.camera.longitude, wanted.camera.longitude);
+}
+
+// ---------------------------------------------------------------------------
+// Advanced section visibility toggle tests
+// ---------------------------------------------------------------------------
+
+/// The advanced section's controls are in the element tree only while it is
+/// open, which is what an `if`-gated subtree means. It starts closed.
+#[test]
+fn test_the_advanced_controls_are_in_the_tree_only_while_it_is_open() {
+    let window = create_window();
     assert!(
         !window.get_advanced_open(),
-        "advanced section should start closed"
+        "the advanced section starts closed"
     );
 
-    // The longitude slider is inside `if root.advanced-open:` so it should
-    // not appear in the element tree when advanced is closed.
-    let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
-    assert!(
-        sliders.is_empty(),
-        "longitude slider should not be in the tree when advanced is closed"
-    );
-}
-
-#[test]
-fn test_advanced_section_opens() {
-    let window = create_window();
-
-    window.set_advanced_open(true);
-
-    let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
-    assert!(
-        !sliders.is_empty(),
-        "longitude slider should be in the tree when advanced is open"
-    );
-}
-
-#[test]
-fn test_advanced_section_closes() {
-    let window = create_window();
-
-    // Open then close
-    window.set_advanced_open(true);
-    window.set_advanced_open(false);
-
-    let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
-    assert!(
-        sliders.is_empty(),
-        "longitude slider should disappear when advanced is closed again"
-    );
+    for open in [None, Some(true), Some(false)] {
+        if let Some(open) = open {
+            window.set_advanced_open(open);
+        }
+        let sliders: Vec<_> =
+            ElementHandle::find_by_element_id(&window, "MainWindow::longitude-slider").collect();
+        assert_eq!(
+            !sliders.is_empty(),
+            window.get_advanced_open(),
+            "advanced-open is {}",
+            window.get_advanced_open()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Conditional visibility tests for atmosphere (Step 2.6)
+// Conditional visibility for the atmosphere
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_atmosphere_sliders_hidden_when_disabled() {
+fn test_the_atmosphere_sliders_follow_the_atmosphere_switch() {
     let window = create_window();
-
-    // Open advanced but disable atmosphere
     window.set_advanced_open(true);
-    window.set_atmo_enabled(false);
 
-    let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::rayleigh-intensity-slider")
-            .collect();
-    assert!(
-        sliders.is_empty(),
-        "rayleigh intensity slider should not be in the tree when atmosphere is disabled"
-    );
-}
-
-#[test]
-fn test_atmosphere_sliders_visible_when_enabled() {
-    let window = create_window();
-
-    // Open advanced section; atmo-enabled defaults to true.
-    window.set_advanced_open(true);
-    assert!(
-        window.get_atmo_enabled(),
-        "precondition: atmo-enabled should default to true"
-    );
-
-    let sliders: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::rayleigh-intensity-slider")
-            .collect();
-    assert!(
-        !sliders.is_empty(),
-        "rayleigh intensity slider should be in the tree when atmosphere is enabled"
-    );
+    for enabled in [true, false, true] {
+        window.set_atmo_enabled(enabled);
+        let sliders: Vec<_> =
+            ElementHandle::find_by_element_id(&window, "MainWindow::rayleigh-intensity-slider")
+                .collect();
+        assert_eq!(
+            !sliders.is_empty(),
+            enabled,
+            "the rayleigh slider with the atmosphere {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +566,7 @@ fn test_save_keeps_the_stored_resolution_while_the_cli_owns_the_combo_box() {
         "a one-run override must not be written to the config"
     );
     // Everything else still comes from the window.
-    assert!((saved.longitude - 42.0).abs() < f32::EPSILON);
+    approx::assert_relative_eq!(saved.longitude, 42.0);
 
     let chosen = sunlit_earth::ui_callbacks::read_config_from_window_onto(
         &window,
@@ -680,8 +610,8 @@ fn test_save_preserves_settings_without_a_widget() {
             "a save must not rewrite the stored quality tier"
         );
         // The UI-managed fields must still be taken from the window.
-        assert!((saved.longitude - 42.0).abs() < f32::EPSILON);
-        assert!((saved.cloud_opacity - 0.25).abs() < f32::EPSILON);
+        approx::assert_relative_eq!(saved.longitude, 42.0);
+        approx::assert_relative_eq!(saved.cloud_opacity, 0.25);
     }
 }
 
@@ -698,21 +628,10 @@ fn test_save_preserves_settings_without_a_widget() {
 /// double-counts on several.
 #[test]
 fn test_the_sky_slider_stops_where_one_screen_stops() {
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/main.slint"),
-    )
-    .expect("read ui/main.slint");
-    let row = source
-        .split_once("sky-fov-slider := SettingRow {")
-        .expect("the sky field-of-view row")
-        .1
-        .split_once('}')
-        .expect("the end of that row")
-        .0;
-    assert!(
-        row.contains("minimum: 60.0;") && row.contains("maximum: 180.0;"),
-        "the sky field-of-view row reads:\n{row}"
-    );
+    let window = create_window();
+
+    approx::assert_relative_eq!(window.get_sky_fov_minimum(), 60.0);
+    approx::assert_relative_eq!(window.get_sky_fov_maximum(), 180.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -879,43 +798,7 @@ fn test_the_diagram_marks_the_screen_the_plan_will_use() {
     assert!(tiles[0].anchor && !tiles[1].anchor);
 }
 
-/// Three modes that all mean the same thing are noise on one screen, so the
-/// group is not there at all. The setting still persists.
-#[test]
-fn test_the_displays_group_is_absent_on_a_single_screen() {
-    let window = create_window();
-    sunlit_earth::displays::apply_diagram_to_window(&window, &fabricated_monitors()[..1], None);
-
-    let combos: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
-    assert!(
-        combos.is_empty(),
-        "the Displays group has nothing to say about one screen"
-    );
-}
-
-#[test]
-fn test_the_displays_group_is_there_on_two_screens() {
-    let window = create_window();
-    sunlit_earth::displays::apply_models_to_window(&window, &fabricated_monitors());
-    sunlit_earth::displays::apply_diagram_to_window(&window, &fabricated_monitors(), None);
-
-    for id in [
-        "MainWindow::display-mode-combo",
-        "MainWindow::display-screen-combo",
-    ] {
-        let found: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
-        assert!(!found.is_empty(), "{id} should be in the tree");
-    }
-}
-
 /// A layout that moved while the window was open.
-///
-/// The whole reaction, in the order a person sees it: the combo rows become the
-/// screens that are there, the group disappears when one is left and comes back
-/// when the second returns, and the anchor lands on its own row again rather
-/// than on the automatic one, because the stored id was kept while its screen
-/// was gone.
 ///
 /// The anchor row is the return value rather than a property read, because
 /// setting it goes through `defer_combobox_indices`, which needs an event loop
@@ -950,9 +833,13 @@ fn test_a_layout_that_changed_rebuilds_the_displays_group() {
         "a screen this session no longer has shows as the automatic row"
     );
     assert_eq!(window.get_display_tiles().iter().count(), 1);
-    let combos: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
-    assert!(combos.is_empty(), "one screen hides the group");
+    for id in [
+        "MainWindow::display-mode-combo",
+        "MainWindow::display-screen-combo",
+    ] {
+        let found: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+        assert!(found.is_empty(), "one screen hides {id}");
+    }
     assert_eq!(sunlit_earth::displays::monitors_of(&screens), alone);
 
     // Plugged back in: the setting that named it was never overwritten, so the
@@ -960,9 +847,13 @@ fn test_a_layout_that_changed_rebuilds_the_displays_group() {
     let row = sunlit_earth::displays::replace_monitors(&window, &screens, both.clone(), "DP-2");
     assert_eq!(row, 2, "the anchor follows its screen back");
     assert_eq!(window.get_display_tiles().iter().count(), 2);
-    let combos: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "MainWindow::display-mode-combo").collect();
-    assert!(!combos.is_empty(), "a second screen brings the group back");
+    for id in [
+        "MainWindow::display-mode-combo",
+        "MainWindow::display-screen-combo",
+    ] {
+        let found: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+        assert!(!found.is_empty(), "a second screen brings {id} back");
+    }
 }
 
 /// The diagram highlights the screen the plan will use, which for a stored id
@@ -989,9 +880,6 @@ fn test_a_replaced_layout_highlights_the_stored_anchor() {
 /// `SettingCombo` row: an 88px label, 4px of spacing, the 140px combo, and the
 /// panel's 8px + 22px of padding.
 const PANEL_FLOOR: f32 = 262.0;
-
-/// `MainWindow`'s own `min-width` in `main.slint`.
-const WINDOW_MIN_WIDTH: u32 = 520;
 
 /// A layout counts an `if`-gated subtree towards its minimum width only once
 /// that repeater has been walked. A running app's layout pass does it; a test
@@ -1057,9 +945,10 @@ fn test_the_panel_starts_at_the_left_edge_in_both_advanced_states() {
 fn test_the_narrowest_window_holds_the_panel_and_the_globe() {
     let window = create_window();
     widest_panel_state(&window);
-    window
-        .window()
-        .set_size(slint::PhysicalSize::new(WINDOW_MIN_WIDTH, 900));
+    window.window().set_size(slint::LogicalSize::new(
+        window.get_window_min_width(),
+        900.0,
+    ));
     materialize(&window);
 
     approx::assert_relative_eq!(window.get_panel_x(), 0.0);
@@ -1094,12 +983,27 @@ fn test_about_is_reachable_without_opening_advanced() {
 /// cell's index is checked by hand.
 #[test]
 fn test_every_preset_button_fires_the_index_it_is_named_for() {
+    use sunlit_core::scene::camera::PRESETS;
+
     let window = create_window();
 
     let received: Rc<RefCell<Option<i32>>> = Rc::new(RefCell::new(None));
     let captured = Rc::clone(&received);
+    let window_weak = window.as_weak();
     window.on_apply_preset(move |index| {
         *captured.borrow_mut() = Some(index);
+        // The body `ui_callbacks::register_action_callbacks` installs, minus
+        // the engine push it cannot do without an `EngineLink`.
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let Some(preset) = usize::try_from(index).ok().and_then(|i| PRESETS.get(i)) else {
+            return;
+        };
+        win.set_camera_longitude(preset.longitude);
+        win.set_camera_latitude(preset.latitude);
+        win.set_camera_zoom(preset.zoom);
+        win.set_camera_pitch(preset.pitch_deg);
     });
 
     for (label, index) in [
@@ -1121,6 +1025,15 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
             Some(index),
             "'{label}' fired the wrong preset"
         );
+
+        // And the index reached that entry of PRESETS rather than some other
+        // one: a button wired to the wrong index, or a handler that ignored the
+        // index, would leave the window on a different continent.
+        let expected = &PRESETS[usize::try_from(index).expect("a preset index")];
+        approx::assert_relative_eq!(window.get_camera_longitude(), expected.longitude);
+        approx::assert_relative_eq!(window.get_camera_latitude(), expected.latitude);
+        approx::assert_relative_eq!(window.get_camera_zoom(), expected.zoom);
+        approx::assert_relative_eq!(window.get_camera_pitch(), expected.pitch_deg);
     }
 }
 

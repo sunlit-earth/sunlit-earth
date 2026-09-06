@@ -2,17 +2,22 @@
 //!
 //! `Renderer` owns every GPU object and renders offscreen into its own texture.
 //! It knows nothing about windows, event loops, or Slint: callers hand it a
-//! `SceneParams` plus a sky state and either read the preview texture back
-//! or bind it directly.
+//! `SceneParams` plus a sky state and read the frame back as pixels.
 
 mod frame;
 mod gpu_setup;
 mod render_pass;
+mod sizing;
+mod slots;
 mod texture_routing;
 mod textures;
-pub(crate) mod uniforms;
+pub mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
+pub use sizing::build_aa_options;
+pub use slots::{SlotLayout, TEXTURE_LABELS};
+
+pub(crate) use sizing::{quantize_to_granularity, resolve_sample_count};
 
 use std::path::PathBuf;
 
@@ -26,226 +31,15 @@ use crate::scene::sky::{PlanetKind, SkyState};
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
-    COLOR_FORMAT, DEPTH_FORMAT, create_render_textures, rebuild_msaa_resources,
+    COLOR_FORMAT, DEPTH_FORMAT, Pipelines, create_render_textures, rebuild_msaa_resources,
     rebuild_render_textures,
 };
+use slots::{SLOT_LABELS, TextureMode};
 use textures::{TextureSlot, maybe_spawn_texture_load, process_decoded_textures};
-
-/// Render dimensions are rounded to this granularity to avoid
-/// creating new GPU textures on every pixel change during resize.
-const SIZE_GRANULARITY: u32 = 64;
-
-/// Texture slot index for the day texture (JXL).
-const DAY_SLOT: usize = 1;
-/// Texture slot index for the night texture (JXL).
-const NIGHT_SLOT: usize = 2;
-/// Texture slot index for the Moon's surface (JXL).
-const MOON_SLOT: usize = 3;
-/// Texture slot index for the Milky Way panorama (JXL).
-const MILKY_WAY_SLOT: usize = 4;
-
-/// Display names of the texture modes, in combo box order. The index into this
-/// array is `SceneParams::texture_index`.
-pub const TEXTURE_LABELS: [&str; 4] = ["Grid", "Day", "Night", "Day/Night Blend"];
-
-/// The texture mode a combo box index names.
-///
-/// A mode is not a slot. The first three modes each draw the globe from one
-/// file-backed slot, `Blend` binds two of them together and has no slot of its
-/// own, and the cloud overlay has a slot but no mode. Those facts agreed
-/// numerically while the day/night blend index and the cloud slot were both
-/// three, which is what let one integer stand for both.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextureMode {
-    Grid,
-    Day,
-    Night,
-    Blend,
-}
-
-impl TextureMode {
-    /// The mode a combo box index names, with anything outside the four the
-    /// grid.
-    ///
-    /// A `texture_index` is a persisted integer that nothing repairs on load,
-    /// so a hand-edited config can name a mode that does not exist. The grid
-    /// is the answer because it is the one slot that is always loaded.
-    fn from_index(index: i32) -> Self {
-        match index {
-            1 => Self::Day,
-            2 => Self::Night,
-            3 => Self::Blend,
-            _ => Self::Grid,
-        }
-    }
-
-    /// The combo box's own name for this mode, for the loading indicator.
-    fn label(self) -> &'static str {
-        match self {
-            Self::Grid => TEXTURE_LABELS[0],
-            Self::Day => TEXTURE_LABELS[1],
-            Self::Night => TEXTURE_LABELS[2],
-            Self::Blend => TEXTURE_LABELS[3],
-        }
-    }
-}
-
-/// Where each texture sits in `texture_slots`.
-///
-/// Slot 0 is the procedural grid, always loaded; then one slot per file-backed
-/// path, in the order the paths arrive; then the cloud overlay, which comes
-/// from the fetcher rather than from a file and is therefore last. Deriving the
-/// cloud slot from the number of paths rather than naming a constant is what
-/// lets a file-backed texture be added without moving it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SlotLayout {
-    file_backed: usize,
-}
-
-impl SlotLayout {
-    pub fn new(file_backed: usize) -> Self {
-        Self { file_backed }
-    }
-
-    /// How many slots there are, which is also the mailbox's slot count.
-    pub fn count(self) -> usize {
-        self.file_backed + 2
-    }
-
-    /// The cloud overlay's slot.
-    pub fn clouds(self) -> usize {
-        self.file_backed + 1
-    }
-
-    /// The Moon's slot, in a layout that has one.
-    pub fn moon(self) -> Option<usize> {
-        self.overlay(MOON_SLOT)
-    }
-
-    /// The Milky Way panorama's slot, in a layout that has one.
-    pub fn milky_way(self) -> Option<usize> {
-        self.overlay(MILKY_WAY_SLOT)
-    }
-
-    /// Whether `slot` holds one of the globe's own maps.
-    ///
-    /// This is the question [`Renderer::textures_ready`] answers, from the other
-    /// side: the globe is what readiness is about, and the overlays are excluded
-    /// from it, so a configuration whose only file is an overlay's has nothing to
-    /// wait for. Slot 0 is the procedural grid, which needs no file at all.
-    pub fn is_globe(self, slot: usize) -> bool {
-        slot > 0
-            && [TextureMode::Day, TextureMode::Night]
-                .into_iter()
-                .any(|mode| self.globe(mode) == slot)
-    }
-
-    /// An overlay's own file-backed slot, when this layout reaches that far.
-    ///
-    /// A configuration with fewer file-backed paths than production's is a
-    /// configuration missing that overlay, which is a picture without it rather
-    /// than anything to repair.
-    fn overlay(self, slot: usize) -> Option<usize> {
-        (self.file_backed >= slot).then_some(slot)
-    }
-
-    /// The slot the globe is drawn from in `mode`.
-    ///
-    /// `Blend` reports the day slot, which is both the fallback it renders from
-    /// until the composite bind group exists and the first of the two slots its
-    /// readiness depends on. Clamped to a slot this layout has a file for, so a
-    /// configuration with fewer paths than production's cannot reach past its
-    /// own file-backed range into the cloud slot.
-    fn globe(self, mode: TextureMode) -> usize {
-        let slot = match mode {
-            TextureMode::Grid => 0,
-            TextureMode::Day | TextureMode::Blend => DAY_SLOT,
-            TextureMode::Night => NIGHT_SLOT,
-        };
-        slot.min(self.file_backed)
-    }
-}
-
-/// What each file-backed slot's GPU texture is called. The cloud overlay is
-/// named by [`Renderer::slot_label`] instead, because its slot is wherever the
-/// layout puts it.
-///
-/// The allocator report the memory report is built from names allocations by
-/// their GPU label, so a row that reads `day_texture` is worth more than one
-/// that reads `texture_slot_1`.
-const SLOT_LABELS: [&str; 5] = [
-    "grid_texture",
-    "day_texture",
-    "night_texture",
-    "moon_texture",
-    "milky_way_texture",
-];
-
-/// Build the anti-aliasing option labels and find the default index
-/// (preferring 8x MSAA).
-///
-/// `max_samples` is the quality tier's cap. Filtering here rather than
-/// clamping inside the renderer keeps the combo box honest: it never offers a
-/// setting the tier would silently ignore.
-pub fn build_aa_options(supported: &[u32], max_samples: u32) -> (Vec<String>, Vec<u32>, i32) {
-    let mut labels = vec!["None".to_owned()];
-    let mut counts = vec![1];
-
-    for &sc in supported {
-        if sc > 1 && sc <= max_samples {
-            labels.push(format!("MSAA {sc}\u{d7}"));
-            counts.push(sc);
-        }
-    }
-
-    // Default to 8x if available, otherwise the highest available option
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let default_index = counts
-        .iter()
-        .position(|&c| c == 8)
-        .unwrap_or(counts.len() - 1) as i32;
-
-    (labels, counts, default_index)
-}
-
-/// Resolve a requested MSAA sample count against what the adapter supports and
-/// what the quality tier allows.
-///
-/// A sample count the adapter does not support is not a warning inside wgpu, it
-/// is a validation error that kills whichever thread creates the texture, so
-/// this has to happen before any render target is built. The rule mirrors the
-/// combo box: take the highest supported count that is at most the requested
-/// one, and if the request is below everything on offer, take the lowest thing
-/// on offer instead. `1` is always a valid answer.
-pub fn resolve_sample_count(requested: u32, supported: &[u32], max_samples: u32) -> u32 {
-    let allowed: Vec<u32> = supported
-        .iter()
-        .copied()
-        .filter(|&c| c >= 1 && c <= max_samples)
-        .collect();
-    if allowed.is_empty() {
-        return 1;
-    }
-    allowed
-        .iter()
-        .copied()
-        .filter(|&c| c <= requested)
-        .max()
-        .or_else(|| allowed.iter().copied().min())
-        .unwrap_or(1)
-}
-
-/// Quantize width and height to the nearest multiple of `SIZE_GRANULARITY`,
-/// with a minimum of one granularity unit in each dimension.
-pub fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
-    let qw = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
-    let qh = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
-    (qw, qh)
-}
 
 /// What a call to [`Renderer::render`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RenderOutcome {
+pub(crate) enum RenderOutcome {
     /// Nothing changed since the last frame; the preview texture still holds it.
     Skipped,
     /// A new frame was drawn into the preview texture.
@@ -253,7 +47,7 @@ pub enum RenderOutcome {
 }
 
 /// Everything needed to build a [`Renderer`] beyond the device and queue.
-pub struct RendererConfig {
+pub(crate) struct RendererConfig {
     pub sample_count: u32,
     pub width: u32,
     pub height: u32,
@@ -272,17 +66,8 @@ pub struct RendererConfig {
 }
 
 /// The GPU pipeline and every resource it owns.
-pub struct Renderer {
-    pipeline: wgpu::RenderPipeline,
-    star_pipeline: wgpu::RenderPipeline,
-    /// The diffuse Milky Way, the pass's first draw.
-    milky_way_pipeline: wgpu::RenderPipeline,
-    /// The Sun's body, drawn with the sky so the painted globe covers it.
-    sun_disk_pipeline: wgpu::RenderPipeline,
-    /// The observer's glare, drawn last over everything in the scene.
-    sun_glare_pipeline: wgpu::RenderPipeline,
-    /// The Moon, drawn with the sky and opaque.
-    moon_pipeline: wgpu::RenderPipeline,
+pub(crate) struct Renderer {
+    pipelines: Pipelines,
     star_buffer: wgpu::Buffer,
     planet_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -337,8 +122,8 @@ pub struct Renderer {
     /// Called from decode threads after posting to the mailbox, so a client
     /// that only renders on demand knows there is work waiting.
     notify: NotifyFn,
-    /// 1x1 black texture used as the night texture placeholder in single-texture
-    /// bind groups (Grid, Day, Night modes).
+    /// 1x1 black texture standing in at binding 3 for every bind group that
+    /// reads one texture: the Grid, Day and Night modes, and the cloud overlay.
     dummy_texture_view: wgpu::TextureView,
     /// Bind group containing both day and night textures, used in blend mode.
     /// Created once both day and night texture slots have loaded.
@@ -349,14 +134,6 @@ pub struct Renderer {
     /// Stored texture view for the night texture, needed to build the composite
     /// bind group when both become available.
     night_texture_view: Option<wgpu::TextureView>,
-    /// Render pipeline for the Rayleigh scattering atmosphere shell.
-    rayleigh_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline for the orange nightglow atmosphere shell.
-    nightglow_orange_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline for the green nightglow atmosphere shell.
-    nightglow_green_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline for the cloud overlay sphere.
-    cloud_pipeline: wgpu::RenderPipeline,
     /// Bind group for the cloud texture (populated after async load completes).
     cloud_bind_group: Option<wgpu::BindGroup>,
     /// Stored texture view for the cloud texture, used to rebuild the bind group.
@@ -366,27 +143,22 @@ pub struct Renderer {
 impl Renderer {
     /// Create the pipeline, the sphere mesh, the grid texture, and the
     /// offscreen render targets.
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue, config: RendererConfig) -> Self {
+    pub(crate) fn new(device: wgpu::Device, queue: wgpu::Queue, config: RendererConfig) -> Self {
         gpu_setup::create_renderer(device, queue, config)
     }
 
-    /// The offscreen color target holding the most recent frame.
-    pub fn preview_texture(&self) -> &wgpu::Texture {
-        &self.render_texture
-    }
-
-    pub fn size(&self) -> (u32, u32) {
+    pub(crate) fn size(&self) -> (u32, u32) {
         (self.render_width, self.render_height)
     }
 
     /// Whether a frame has ever been drawn into the preview texture.
-    pub fn has_frame(&self) -> bool {
+    pub(crate) fn has_frame(&self) -> bool {
         self.last_state.is_some()
     }
 
     /// Resize the offscreen targets. The caller is expected to have quantized
     /// the size already; identical sizes are a no-op.
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn resize(&mut self, width: u32, height: u32) {
         if width == self.render_width && height == self.render_height {
             return;
         }
@@ -405,7 +177,7 @@ impl Renderer {
     /// Any width is accepted and acts as a cap. Which widths a user may choose
     /// between is a question for the config and the combo box, not for the
     /// renderer.
-    pub fn set_texture_resolution(&mut self, width: u32) -> bool {
+    pub(crate) fn set_texture_resolution(&mut self, width: u32) -> bool {
         if width == self.texture_resolution {
             return false;
         }
@@ -421,7 +193,7 @@ impl Renderer {
     }
 
     /// The width the file-backed textures are loaded at.
-    pub fn texture_resolution(&self) -> u32 {
+    pub(crate) fn texture_resolution(&self) -> u32 {
         self.texture_resolution
     }
 
@@ -430,7 +202,7 @@ impl Renderer {
     ///
     /// `adapter` is the slug from `wgpu_init::adapter_key`, which the renderer
     /// is not told and the engine is.
-    pub fn memory_report(&self, adapter: &str) -> MemoryReport {
+    pub(crate) fn memory_report(&self, adapter: &str) -> MemoryReport {
         crate::memory_report::collect(&self.device, adapter, self.expected_textures())
     }
 
@@ -501,7 +273,7 @@ impl Renderer {
     /// Deliberately independent of whether anything is being displayed: this is
     /// what keeps cloud updates flowing to the GPU while the window is hidden.
     /// Returns `true` if at least one texture was uploaded.
-    pub fn drain_texture_updates(&mut self) -> bool {
+    pub(crate) fn drain_texture_updates(&mut self) -> bool {
         process_decoded_textures(self)
     }
 
@@ -535,14 +307,14 @@ impl Renderer {
 
     /// The loading indicator text for the current texture selection, empty when
     /// nothing is loading.
-    pub fn loading_text(&self, texture_index: i32) -> String {
+    pub(crate) fn loading_text(&self, texture_index: i32) -> String {
         texture_routing::loading_text(self, TextureMode::from_index(texture_index))
     }
 
     /// Whether every texture the current mode needs has finished loading.
     /// The clouds, the Moon and the Milky Way are excluded: they are overlays,
     /// not requirements.
-    pub fn textures_ready(&self, texture_index: i32) -> bool {
+    pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
         if mode == TextureMode::Blend {
@@ -565,10 +337,8 @@ impl Renderer {
     /// lands, and from startup until the first load does. Deliberately not the
     /// negation of `textures_ready`: a slot with no file behind it, and one
     /// whose decode failed and had its path cleared, are both terminal states
-    /// where nothing further is coming, so there is nothing to wait for. The
-    /// question this answers is "will this get better on its own", which is the
-    /// only sound reason to hold something back.
-    pub fn textures_pending(&self, texture_index: i32) -> bool {
+    /// where nothing further is coming, so there is nothing to wait for.
+    pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
         if mode == TextureMode::Blend {
@@ -589,7 +359,7 @@ impl Renderer {
     /// The scheduler calls this before an unattended wallpaper export so the
     /// image reflects the current time even when no frame has been drawn since
     /// the window was hidden.
-    pub fn set_sky_state(&mut self, sky: SkyState) {
+    pub(crate) fn set_sky_state(&mut self, sky: SkyState) {
         self.update_planets(&sky);
         if let Some(inputs) = &mut self.last_inputs {
             inputs.sky = sky;
@@ -600,7 +370,7 @@ impl Renderer {
     ///
     /// Kicks off background texture loads for the selected mode whether or not
     /// the frame is skipped, so a mode switch starts loading immediately.
-    pub fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
+    pub(crate) fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
         if params.sample_count != self.sample_count {
             debug!(
                 sample_count = params.sample_count,
@@ -677,7 +447,7 @@ impl Renderer {
     ///
     /// Only valid when the renderer was built with `COPY_SRC` on its preview
     /// texture (see [`RendererConfig`] users that need readback).
-    pub fn read_preview_pixels(&self) -> Vec<u8> {
+    pub(crate) fn read_preview_pixels(&self) -> Result<Vec<u8>, String> {
         read_texture_rgba8(
             &self.device,
             &self.queue,
@@ -696,7 +466,11 @@ impl Renderer {
     ///
     /// Returns `Err` when no frame has been rendered yet, since there is then
     /// no resolved texture binding to replay.
-    pub fn export_image(&self, target_width: u32, target_height: u32) -> Result<Vec<u8>, String> {
+    pub(crate) fn export_image(
+        &self,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<Vec<u8>, String> {
         let params = self.last_params.ok_or("No frame rendered yet")?;
         self.export_image_with(&params, target_width, target_height)
     }
@@ -709,7 +483,7 @@ impl Renderer {
     /// copies the resolution limits from the adapter and leaves the buffer size
     /// at the downlevel default, so the two are not the same number and neither
     /// is worth guessing.
-    pub fn export_limits(&self) -> (u32, u64) {
+    pub(crate) fn export_limits(&self) -> (u32, u64) {
         let limits = self.device.limits();
         (limits.max_texture_dimension_2d, limits.max_buffer_size)
     }
@@ -721,8 +495,7 @@ impl Renderer {
     /// so `params` may differ from it only in what `write_uniforms` reads. That
     /// is what the wallpaper path changes: the fields of view and the pan, all
     /// of which are derived per screen.
-    #[allow(clippy::cast_precision_loss)]
-    pub fn export_image_with(
+    pub(crate) fn export_image_with(
         &self,
         params: &SceneParams,
         target_width: u32,
@@ -730,7 +503,6 @@ impl Renderer {
     ) -> Result<Vec<u8>, String> {
         let inputs = self.last_inputs.as_ref().ok_or("No frame rendered yet")?;
 
-        // Look up the bind group that was used for the last rendered frame
         let bind_group = match self.last_resolved.as_ref().ok_or("No frame rendered yet")? {
             texture_routing::ResolvedTexture::Composite => self
                 .composite_bind_group
@@ -742,7 +514,6 @@ impl Renderer {
                 .ok_or("No bind group available")?,
         };
 
-        // Create temporary render textures with COPY_SRC for readback
         let (export_texture, export_depth, msaa_color_view, msaa_depth_view) =
             create_render_textures(
                 &self.device,
@@ -752,16 +523,6 @@ impl Renderer {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
 
-        let moon = render_pass::write_uniforms(
-            &self.queue,
-            &self.uniform_buffer,
-            params,
-            target_width,
-            target_height,
-            inputs,
-            render_pass::Moon::select(self, params),
-        );
-
         let resolve_view = export_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let target = render_pass::RenderTarget::new(
             &resolve_view,
@@ -770,33 +531,15 @@ impl Renderer {
             msaa_depth_view.as_ref(),
         );
 
-        let overlays = render_pass::Overlays::select(self, params, bind_group);
-        let milky_way = render_pass::MilkyWay::select(self, params);
-        let stars = render_pass::Stars::select(self, params, bind_group);
-        let sun = render_pass::Sun::select(self, params, bind_group);
-
         crate::memory::log_memory_usage("wallpaper: before render");
-        render_pass::encode_and_submit(
-            &self.device,
-            &self.queue,
-            &target,
-            milky_way,
-            stars,
-            sun,
-            moon,
-            &self.pipeline,
+        render_pass::draw_scene(
+            self,
+            params,
             bind_group,
-            &self.vertex_buffer,
-            &self.index_buffer,
-            self.index_count,
-            overlays.rayleigh.0,
-            overlays.rayleigh.1,
-            overlays.nightglow_orange.0,
-            overlays.nightglow_orange.1,
-            overlays.nightglow_green.0,
-            overlays.nightglow_green.1,
-            overlays.cloud.0,
-            overlays.cloud.1,
+            inputs,
+            target_width,
+            target_height,
+            &target,
         );
 
         crate::memory::log_memory_usage("wallpaper: before pixel readback");
@@ -806,13 +549,17 @@ impl Renderer {
             &export_texture,
             target_width,
             target_height,
-        );
+        )?;
         crate::memory::log_memory_usage("wallpaper: after pixel readback");
         Ok(pixels)
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the clamp and the scale put a magnitude in a byte before the rounding"
+)]
 fn planet_instance_bytes(sky: &SkyState) -> [u8; 5 * crate::assets::stars::RECORD_SIZE] {
     let mut bytes = [0; 5 * crate::assets::stars::RECORD_SIZE];
     let eqj_from_world = sky.world_from_eqj.transpose();
@@ -842,283 +589,6 @@ mod tests {
     use crate::scene::sky::PlanetState;
 
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // build_aa_options
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn aa_options_single_sample() {
-        let (labels, counts, default) = build_aa_options(&[1], u32::MAX);
-        assert_eq!(labels, ["None"]);
-        assert_eq!(counts, [1]);
-        assert_eq!(default, 0);
-    }
-
-    #[test]
-    fn aa_options_full_range() {
-        let (labels, counts, default) = build_aa_options(&[1, 2, 4, 8], u32::MAX);
-        assert_eq!(
-            labels,
-            ["None", "MSAA 2\u{d7}", "MSAA 4\u{d7}", "MSAA 8\u{d7}"]
-        );
-        assert_eq!(counts, [1, 2, 4, 8]);
-        assert_eq!(default, 3); // index of 8x
-    }
-
-    #[test]
-    fn aa_options_no_8x_falls_back_to_highest() {
-        let (labels, counts, default) = build_aa_options(&[1, 2, 4], u32::MAX);
-        assert_eq!(labels, ["None", "MSAA 2\u{d7}", "MSAA 4\u{d7}"]);
-        assert_eq!(counts, [1, 2, 4]);
-        assert_eq!(default, 2); // last entry
-    }
-
-    #[test]
-    fn aa_options_skip_intermediates() {
-        let (labels, counts, default) = build_aa_options(&[1, 8], u32::MAX);
-        assert_eq!(labels, ["None", "MSAA 8\u{d7}"]);
-        assert_eq!(counts, [1, 8]);
-        assert_eq!(default, 1); // index of 8x
-    }
-
-    #[test]
-    fn aa_options_empty_input() {
-        let (labels, counts, default) = build_aa_options(&[], u32::MAX);
-        assert_eq!(labels, ["None"]);
-        assert_eq!(counts, [1]);
-        assert_eq!(default, 0);
-    }
-
-    #[test]
-    fn aa_options_respect_the_tier_cap() {
-        let (labels, counts, default) = build_aa_options(&[1, 2, 4, 8], 1);
-        assert_eq!(labels, ["None"], "the low tier offers no multisampling");
-        assert_eq!(counts, [1]);
-        assert_eq!(default, 0);
-
-        let (_, counts, _) = build_aa_options(&[1, 2, 4, 8], 4);
-        assert_eq!(counts, [1, 2, 4], "the medium tier stops at 4x");
-    }
-
-    // -----------------------------------------------------------------------
-    // resolve_sample_count
-    // -----------------------------------------------------------------------
-
-    /// What a typical desktop adapter reports for `Rgba8Unorm`.
-    const FULL: [u32; 4] = [1, 2, 4, 8];
-
-    #[test]
-    fn supported_request_is_honored() {
-        assert_eq!(resolve_sample_count(4, &FULL, u32::MAX), 4);
-        assert_eq!(resolve_sample_count(8, &FULL, u32::MAX), 8);
-        assert_eq!(resolve_sample_count(1, &FULL, u32::MAX), 1);
-    }
-
-    #[test]
-    fn unsupported_request_falls_back_to_the_next_lower_option() {
-        // The config asking for something absurd must not reach wgpu.
-        assert_eq!(resolve_sample_count(64, &FULL, u32::MAX), 8);
-        assert_eq!(resolve_sample_count(3, &FULL, u32::MAX), 2);
-        assert_eq!(resolve_sample_count(0, &FULL, u32::MAX), 1);
-    }
-
-    #[test]
-    fn adapter_without_8x_never_yields_8x() {
-        assert_eq!(resolve_sample_count(8, &[1, 2, 4], u32::MAX), 4);
-        assert_eq!(resolve_sample_count(8, &[1], u32::MAX), 1);
-    }
-
-    #[test]
-    fn tier_cap_applies_on_top_of_adapter_support() {
-        assert_eq!(resolve_sample_count(8, &FULL, 1), 1);
-        assert_eq!(resolve_sample_count(8, &FULL, 4), 4);
-        assert_eq!(resolve_sample_count(2, &FULL, 4), 2);
-    }
-
-    #[test]
-    fn a_request_below_everything_offered_takes_the_lowest_option() {
-        // An adapter that does not list 1x is not something we have seen, but
-        // returning 0 or the request unchanged would be a validation error.
-        assert_eq!(resolve_sample_count(1, &[4, 8], u32::MAX), 4);
-    }
-
-    #[test]
-    fn an_empty_or_fully_filtered_list_still_yields_a_valid_count() {
-        assert_eq!(resolve_sample_count(8, &[], u32::MAX), 1);
-        assert_eq!(resolve_sample_count(8, &[4, 8], 2), 1);
-    }
-
-    #[test]
-    fn every_resolution_is_actually_supported() {
-        for supported in [vec![1], vec![1, 4], FULL.to_vec(), vec![1, 2, 4, 8, 16]] {
-            for requested in [0, 1, 2, 3, 4, 7, 8, 16, 64, u32::MAX] {
-                for cap in [1, 4, u32::MAX] {
-                    let resolved = resolve_sample_count(requested, &supported, cap);
-                    assert!(
-                        supported.contains(&resolved) || resolved == 1,
-                        "resolved {resolved} is not in {supported:?} \
-                         (requested {requested}, cap {cap})"
-                    );
-                }
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // quantize_to_granularity
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn quantize_zero_gives_one_granularity() {
-        assert_eq!(quantize_to_granularity(0, 0), (64, 64));
-    }
-
-    #[test]
-    fn quantize_below_granularity() {
-        assert_eq!(quantize_to_granularity(63, 63), (64, 64));
-    }
-
-    #[test]
-    fn quantize_exact_boundary() {
-        assert_eq!(quantize_to_granularity(64, 64), (64, 64));
-    }
-
-    #[test]
-    fn quantize_just_above_boundary() {
-        assert_eq!(quantize_to_granularity(65, 65), (64, 64));
-    }
-
-    #[test]
-    fn quantize_double_boundary() {
-        assert_eq!(quantize_to_granularity(128, 128), (128, 128));
-    }
-
-    #[test]
-    fn quantize_mixed_dimensions() {
-        assert_eq!(quantize_to_granularity(129, 200), (128, 192));
-    }
-
-    #[test]
-    fn quantize_typical_display() {
-        assert_eq!(quantize_to_granularity(1920, 1080), (1920, 1024));
-    }
-
-    // -----------------------------------------------------------------------
-    // the slot layout
-    // -----------------------------------------------------------------------
-
-    /// Every mode the combo box can name, with the index it is named by.
-    const MODES: [(i32, TextureMode); 4] = [
-        (0, TextureMode::Grid),
-        (1, TextureMode::Day),
-        (2, TextureMode::Night),
-        (3, TextureMode::Blend),
-    ];
-
-    #[test]
-    fn every_combo_box_index_names_its_mode() {
-        for (index, mode) in MODES {
-            assert_eq!(TextureMode::from_index(index), mode, "index {index}");
-        }
-    }
-
-    #[test]
-    fn an_index_outside_the_modes_is_the_grid() {
-        for index in [-2, -1, 4, 7, i32::MIN, i32::MAX] {
-            assert_eq!(
-                TextureMode::from_index(index),
-                TextureMode::Grid,
-                "index {index}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_mode_has_a_label() {
-        for (index, mode) in MODES {
-            #[allow(clippy::cast_sign_loss)]
-            let expected = TEXTURE_LABELS[index as usize];
-            assert_eq!(mode.label(), expected, "index {index}");
-        }
-    }
-
-    /// Production's layout: the grid, the day and night surfaces, the Moon, the
-    /// Milky Way, and the cloud overlay last.
-    #[test]
-    fn the_production_layout_puts_the_clouds_after_the_overlays() {
-        let layout = SlotLayout::new(4);
-        assert_eq!(layout.count(), 6);
-        assert_eq!(layout.clouds(), 5);
-        assert_eq!(layout.moon(), Some(MOON_SLOT));
-        assert_eq!(layout.milky_way(), Some(MILKY_WAY_SLOT));
-        assert_eq!(layout.globe(TextureMode::Grid), 0);
-        assert_eq!(layout.globe(TextureMode::Day), DAY_SLOT);
-        assert_eq!(layout.globe(TextureMode::Night), NIGHT_SLOT);
-        assert_eq!(layout.globe(TextureMode::Blend), DAY_SLOT);
-        for slot in 0..layout.count() {
-            assert_eq!(
-                layout.is_globe(slot),
-                slot == DAY_SLOT || slot == NIGHT_SLOT,
-                "slot {slot}"
-            );
-        }
-    }
-
-    /// The cloud overlay is always the last slot, whatever comes before it, and
-    /// the mailbox has one slot per texture.
-    /// A layout too short for an overlay reports no slot for it rather than one
-    /// that belongs to something else, which is what keeps the cloud slot from
-    /// being read as a panorama in a shorter configuration.
-    #[test]
-    fn a_layout_without_an_overlay_says_so() {
-        assert_eq!(SlotLayout::new(3).milky_way(), None);
-        assert!(
-            !SlotLayout::new(1).is_globe(NIGHT_SLOT),
-            "a layout with one path has no night map, and clamping is not a second globe slot"
-        );
-        assert_eq!(SlotLayout::new(3).moon(), Some(MOON_SLOT));
-        assert_eq!(SlotLayout::new(2).moon(), None);
-        for file_backed in 0..7 {
-            let layout = SlotLayout::new(file_backed);
-            for slot in [layout.moon(), layout.milky_way()].into_iter().flatten() {
-                assert!(
-                    slot < layout.clouds(),
-                    "{file_backed} paths: overlay slot {slot} is the cloud slot"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_clouds_are_last_at_every_size() {
-        for file_backed in 0..6 {
-            let layout = SlotLayout::new(file_backed);
-            assert_eq!(layout.count(), file_backed + 2, "{file_backed} paths");
-            assert_eq!(layout.clouds(), layout.count() - 1, "{file_backed} paths");
-        }
-    }
-
-    /// No mode ever indexes past the file-backed slots, which is what kept the
-    /// old identity mapping from landing on the cloud slot.
-    #[test]
-    fn no_mode_reaches_the_cloud_slot() {
-        for file_backed in 0..6 {
-            let layout = SlotLayout::new(file_backed);
-            for (index, mode) in MODES {
-                let slot = layout.globe(mode);
-                assert!(
-                    slot < layout.clouds(),
-                    "{file_backed} paths, index {index}: slot {slot} is the cloud slot {}",
-                    layout.clouds()
-                );
-                assert!(
-                    slot <= file_backed,
-                    "{file_backed} paths, index {index}: slot {slot} has no file behind it"
-                );
-            }
-        }
-    }
 
     #[test]
     fn planet_instances_are_stored_in_eqj_coordinates() {

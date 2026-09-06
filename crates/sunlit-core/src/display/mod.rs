@@ -1,19 +1,17 @@
 //! What the displays are, on the platforms that answer with a program rather
 //! than with an API.
 //!
-//! Two questions need the same answer and used to have two placeholders for it:
-//! how large to render a wallpaper, and whether a saved window position is still
-//! somewhere a person can reach. On Windows both come from Win32 monitor
-//! enumeration. On Linux the query is `xrandr --query`, whose output is parsed
-//! here.
+//! Two questions need the same answer: how large to render a wallpaper, and
+//! whether a saved window position is still somewhere a person can reach. On
+//! Windows both come from Win32 monitor enumeration. On Linux the query is
+//! `xrandr --query`, whose output is parsed here.
 //!
 //! xrandr rather than a windowing dependency. `sunlit-core` owns no window, and
 //! Slint's public `Window` API reports the window's own size and nothing about
 //! the display behind it, so there is no API here to ask. Under a Wayland
-//! session the answer comes through `XWayland`, which is usable and has one known
-//! distortion: display scaling can make the reported size differ from the
-//! compositor's own idea of it. A native per-desktop D-Bus query is the fix and
-//! is a roadmap item rather than phase work.
+//! session the answer comes through `XWayland`, whose one known distortion is
+//! that display scaling can make the reported size differ from the compositor's
+//! own idea of it; `docs/platforms.md` has the rest.
 //!
 //! The parser is separate from the process, so it is tested on every platform
 //! against real xrandr output rather than only where xrandr exists.
@@ -44,7 +42,8 @@ impl Output {
     ///
     /// Half-open on the far edges, so a window whose left edge is exactly the
     /// output's right edge is on the next one and not on this.
-    pub fn overlaps(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
+    #[cfg(any(not(windows), test))]
+    pub(crate) fn overlaps(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
         let right = self
             .x
             .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX));
@@ -65,7 +64,8 @@ impl Output {
 /// why this compares tokens rather than searching the line. A connected output
 /// with no mode assigned carries no geometry token and is skipped, because an
 /// output nothing is displayed on is not somewhere to put a window.
-pub fn parse_outputs(text: &str) -> Vec<Output> {
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_outputs(text: &str) -> Vec<Output> {
     let mut outputs = Vec::new();
     for line in text.lines() {
         // The mode list under each output is indented; the output's own line is
@@ -108,6 +108,7 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
 /// Rejecting anything else matters more than it looks: the rest of an output's
 /// line is free text ("normal left inverted right x axis y axis", "0mm x 0mm"),
 /// and the first token that happens to parse is taken as the geometry.
+#[cfg(any(target_os = "linux", test))]
 fn parse_geometry(token: &str) -> Option<(u32, u32, i32, i32)> {
     let (size, offsets) = token.split_once('+')?;
     let (width, height) = size.split_once('x')?;
@@ -120,6 +121,7 @@ fn parse_geometry(token: &str) -> Option<(u32, u32, i32, i32)> {
 }
 
 /// The two offsets out of what follows the first `+`.
+#[cfg(any(target_os = "linux", test))]
 fn split_offsets(text: &str) -> Option<(i32, i32)> {
     let at = text
         .char_indices()
@@ -189,17 +191,6 @@ impl From<Output> for Monitor {
             primary: output.primary,
         }
     }
-}
-
-/// The monitor a wallpaper is anchored to by default: the primary, or the first.
-///
-/// The same fallback [`primary_of`] makes, and for the same reason: a session
-/// that marks nothing primary is common and is not a session to refuse.
-pub fn primary_monitor_of(monitors: &[Monitor]) -> Option<&Monitor> {
-    monitors
-        .iter()
-        .find(|monitor| monitor.primary)
-        .or_else(|| monitors.first())
 }
 
 /// Every monitor this session has, in the order the platform lists them.
@@ -279,9 +270,7 @@ Virtual-2 disconnected (normal left inverted right x axis y axis)
     /// connected output with no mode assigned.
     ///
     /// The primary is deliberately not the first output listed, and the
-    /// disconnected `DP-3` deliberately still carries geometry: an output that
-    /// was configured and then unplugged with its CRTC still assigned prints
-    /// exactly that, and it is the one line the connected check alone keeps out.
+    /// disconnected `DP-3` deliberately still carries geometry.
     const DESK: &str = "\
 Screen 0: minimum 8 x 8, current 5120 x 1440, maximum 32767 x 32767
 DP-1 connected 3440x1440+1680+0 (normal left inverted right x axis y axis) 800mm x 335mm
@@ -293,6 +282,11 @@ DP-3 disconnected 1920x1080+5120+0 (normal left inverted right x axis y axis) 0m
 eDP-1 disconnected (normal left inverted right x axis y axis)
 ";
 
+    /// The guest's one output, read whole.
+    ///
+    /// "0mm x 0mm" and "normal left inverted right x axis y axis" sit on the
+    /// same line and both contain an `x`, so a parser that searched for one
+    /// would find more geometry than there is.
     #[test]
     fn the_guests_single_output_is_read_with_its_mode() {
         let outputs = parse_outputs(GUEST);
@@ -313,41 +307,38 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         );
     }
 
+    /// The desk's five outputs come to exactly two, with their signs intact.
+    ///
+    /// Each of the three the parser drops is dropped for its own reason.
+    /// "disconnected" contains "connected", which is why whole tokens are
+    /// compared rather than the line searched. `DP-3` is disconnected and still
+    /// holding a mode, which is what xrandr prints for an output that was
+    /// configured and then unplugged, so the geometry filter alone would let it
+    /// through. `DP-2` is connected with nothing displayed on it, so a window
+    /// placed there would be on a black screen. `eDP-1` is neither.
     #[test]
-    fn a_disconnected_output_is_not_a_connected_one() {
-        // "disconnected" contains "connected", which is why the parser compares
-        // whole tokens; searching the line would find every unplugged port.
-        let outputs = parse_outputs(DESK);
-        let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(names, vec!["DP-1", "HDMI-1"]);
-        // DP-3 is the one only this excludes: disconnected and still holding a
-        // mode, which is what xrandr prints for an output that was configured
-        // and then unplugged. The geometry filter lets it through, and a monitor
-        // nobody can see is neither somewhere to put a window nor something to
-        // size a wallpaper for.
-        assert!(!outputs.iter().any(|o| o.name == "DP-3"), "{outputs:?}");
-    }
-
-    #[test]
-    fn an_output_with_no_mode_assigned_is_not_somewhere_to_put_a_window() {
-        // DP-2 is connected with nothing displayed on it, so it has no geometry
-        // and a window placed there would be on a black screen.
-        assert!(!parse_outputs(DESK).iter().any(|o| o.name == "DP-2"));
-    }
-
-    #[test]
-    fn negative_offsets_keep_their_sign() {
-        let outputs = parse_outputs(DESK);
-        let hdmi = outputs
-            .iter()
-            .find(|o| o.name == "HDMI-1")
-            .expect("the second monitor");
-        assert_eq!((hdmi.x, hdmi.y), (0, -200));
-        let dp = outputs
-            .iter()
-            .find(|o| o.name == "DP-1")
-            .expect("the first");
-        assert_eq!((dp.x, dp.y), (1680, 0));
+    fn the_desk_parses_to_the_outputs_a_window_could_go_on() {
+        assert_eq!(
+            parse_outputs(DESK),
+            vec![
+                Output {
+                    name: "DP-1".to_owned(),
+                    primary: false,
+                    width: 3440,
+                    height: 1440,
+                    x: 1680,
+                    y: 0,
+                },
+                Output {
+                    name: "HDMI-1".to_owned(),
+                    primary: true,
+                    width: 1680,
+                    height: 1050,
+                    x: 0,
+                    y: -200,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -382,14 +373,6 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
     }
 
     #[test]
-    fn the_free_text_after_the_geometry_is_not_mistaken_for_more_of_it() {
-        // "0mm x 0mm" and "normal left inverted right x axis y axis" both sit on
-        // the same line and both contain an `x`.
-        let outputs = parse_outputs(GUEST);
-        assert_eq!(outputs.len(), 1, "{outputs:?}");
-    }
-
-    #[test]
     fn nothing_at_all_is_no_outputs_rather_than_a_guess() {
         assert!(parse_outputs("").is_empty());
         assert!(parse_outputs("xrandr: Can't open display\n").is_empty());
@@ -409,16 +392,6 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         assert!(!monitors[0].primary);
         assert_eq!((monitors[1].x, monitors[1].y), (0, -200));
         assert!(monitors[1].primary);
-        assert_eq!(
-            primary_monitor_of(&monitors).map(|m| m.id.as_str()),
-            Some("HDMI-1"),
-            "the marked one, not the first listed"
-        );
-    }
-
-    #[test]
-    fn the_monitor_rectangle_is_the_outputs_own_geometry() {
-        let monitors: Vec<Monitor> = parse_outputs(DESK).into_iter().map(Monitor::from).collect();
         assert_eq!(
             monitors[0].rect(),
             layout::Rect {

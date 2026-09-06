@@ -1,5 +1,6 @@
+use super::Renderer;
+use super::slots::TextureMode;
 use super::textures::{maybe_spawn_texture_load, resolve_render_index};
-use super::{Renderer, TextureMode};
 
 /// Result of texture resolution: identifies which bind group to use.
 pub(super) enum ResolvedTexture {

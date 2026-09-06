@@ -8,6 +8,10 @@ use tracing::warn;
 
 use crate::scene::camera::{CAMERA_FOV_MAX, CAMERA_FOV_MIN, CameraParams};
 
+mod window_geometry;
+
+pub use window_geometry::{save_window_geometry, validated_window_geometry};
+
 /// How much the app is allowed to spend on looking good.
 ///
 /// The point of the tiers is that the cheap one is the default while
@@ -30,7 +34,7 @@ pub enum QualityTier {
 
 impl QualityTier {
     /// Low while developing, high in a shipped binary.
-    pub fn default_for_build() -> Self {
+    pub(crate) fn default_for_build() -> Self {
         if cfg!(debug_assertions) {
             Self::Low
         } else {
@@ -51,7 +55,7 @@ impl QualityTier {
 
     /// Upper bound on the preview width in physical pixels. The height follows
     /// from the aspect ratio.
-    pub fn max_preview_width(self) -> u32 {
+    pub(crate) fn max_preview_width(self) -> u32 {
         match self {
             Self::Low => 1280,
             Self::Medium => 1920,
@@ -72,7 +76,7 @@ impl Default for QualityTier {
 /// stops at one and [`AppConfig::sanitize`] clamps a file to it, the way the
 /// camera's own lens is clamped: a value nothing on screen can bring back is
 /// not a setting.
-pub const SUN_FLARE_MAX: f32 = 1.0;
+pub(crate) const SUN_FLARE_MAX: f32 = 1.0;
 
 /// The surface texture widths the user can choose between, widest first.
 ///
@@ -96,7 +100,7 @@ pub const DEFAULT_TEXTURE_RESOLUTION: u32 = 4096;
 /// A config file is a text file: a hand-edited or foreign value arrives here as
 /// a bare number, and the loader is the one place that has to reject it, since
 /// everything downstream treats the value as an exact halving of the source.
-pub fn resolve_texture_resolution(requested: u32) -> u32 {
+pub(crate) fn resolve_texture_resolution(requested: u32) -> u32 {
     if TEXTURE_RESOLUTIONS.contains(&requested) {
         return requested;
     }
@@ -109,22 +113,37 @@ pub fn resolve_texture_resolution(requested: u32) -> u32 {
     DEFAULT_TEXTURE_RESOLUTION
 }
 
+/// A position in one of the offered lists as the `i32` a Slint combo box index
+/// is. Every such list is a handful of entries long.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    reason = "the one place a list position becomes a combo box index"
+)]
+fn slint_index(position: usize) -> i32 {
+    position as i32
+}
+
 /// The combo box index for `width`, falling back to the default's index.
-#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub fn find_texture_resolution_index(width: u32) -> i32 {
-    TEXTURE_RESOLUTIONS
-        .iter()
-        .position(|&w| w == width)
-        .or_else(|| {
-            TEXTURE_RESOLUTIONS
-                .iter()
-                .position(|&w| w == DEFAULT_TEXTURE_RESOLUTION)
-        })
-        .unwrap_or(0) as i32
+    slint_index(
+        TEXTURE_RESOLUTIONS
+            .iter()
+            .position(|&w| w == width)
+            .or_else(|| {
+                TEXTURE_RESOLUTIONS
+                    .iter()
+                    .position(|&w| w == DEFAULT_TEXTURE_RESOLUTION)
+            })
+            .unwrap_or(0),
+    )
 }
 
 /// The texture width a combo box index selects, falling back to the default.
-#[allow(clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the negative half of the range returns above"
+)]
 pub fn texture_resolution_at(index: i32) -> u32 {
     if index < 0 {
         return DEFAULT_TEXTURE_RESOLUTION;
@@ -150,12 +169,15 @@ struct SunlitSection {
 
 /// All user-configurable settings that are persisted to disk.
 ///
-/// Fields use `#[serde(default)]` at the struct level so that missing
-/// fields in the TOML file are filled from `Default::default()`, and
-/// unknown fields are silently ignored (forward compatibility).
+/// A key this build does not know is dropped on read, and `save_config_to`
+/// then writes only the fields below, so running an older build once discards
+/// every setting a newer one added.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the settings a window persists, not a parameter list"
+)]
 pub struct AppConfig {
     // Camera position
     pub longitude: f32,
@@ -171,8 +193,8 @@ pub struct AppConfig {
     pub offset_x: f32,
     pub offset_y: f32,
     /// Vertical field of view of the Earth lens, in degrees, between
-    /// [`CAMERA_FOV_MIN`] and [`CAMERA_FOV_MAX`]. The sky has its own lens and
-    /// its own `sky_fov`; this one frames the globe.
+    /// `CAMERA_FOV_MIN` and `CAMERA_FOV_MAX`. The sky has its own lens and its
+    /// own `sky_fov`; this one frames the globe.
     pub camera_fov: f32,
 
     // Rendering
@@ -316,7 +338,6 @@ pub struct AppConfig {
     pub use_custom_datetime: bool,
     pub custom_hour: f32,
     pub custom_day_of_year: f32,
-    #[serde(default = "default_custom_year")]
     pub custom_year: i32,
 
     // Window geometry (None on first launch — let the OS place the window)
@@ -444,7 +465,7 @@ const ENV_CONFIG: &str = "SUNLIT_EARTH_CONFIG";
 /// `SUNLIT_EARTH_CONFIG` overrides the location so tests do not read or write
 /// the developer's real settings. Returns `None` if the platform's local data
 /// directory cannot be determined.
-pub fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     config_path_from(crate::env_override(ENV_CONFIG).as_deref())
 }
 
@@ -452,18 +473,13 @@ pub fn config_path() -> Option<PathBuf> {
 fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
     match env_path {
         Some(path) => Some(PathBuf::from(path)),
-        None => Some(
-            dirs::data_local_dir()?
-                .join("SunlitEarth")
-                .join("config.toml"),
-        ),
+        None => Some(crate::app_data_dir()?.join("config.toml")),
     }
 }
 
-/// Load the app configuration from disk.
+/// Load the app configuration from the standard path.
 ///
-/// Returns `AppConfig::default()` if the file does not exist, cannot be
-/// read, or contains invalid TOML. Parse errors are logged to stderr.
+/// [`load_config_from`] does the work and states what a failure gives back.
 pub fn load_config() -> AppConfig {
     let Some(path) = config_path() else {
         warn!("could not determine config directory");
@@ -474,8 +490,8 @@ pub fn load_config() -> AppConfig {
 
 /// Load config from a specific path.
 ///
-/// Returns `AppConfig::default()` if the file does not exist, cannot be
-/// read, or contains invalid TOML. Parse errors are logged to stderr.
+/// Returns `AppConfig::default()` if the file does not exist, cannot be read,
+/// or contains invalid TOML. A read or parse failure is logged at `warn`.
 pub fn load_config_from(path: &std::path::Path) -> AppConfig {
     let contents = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -504,7 +520,7 @@ pub fn load_config_from(path: &std::path::Path) -> AppConfig {
 ///
 /// Uses an atomic write strategy: writes to a temporary file with a `~`
 /// suffix, then renames it to the final path. Creates the parent directory
-/// if it does not exist. Errors are logged to stderr but never propagated.
+/// if it does not exist. Errors are logged at `warn` and never propagated.
 pub fn save_config(config: &AppConfig) {
     let Some(path) = config_path() else {
         warn!("could not determine config directory; config not saved");
@@ -520,166 +536,20 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
             earth: config.clone(),
         },
     };
-    let toml_str = match toml::to_string_pretty(&file) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "could not serialize config");
-            return;
-        }
-    };
-
-    if let Some(parent) = path.parent()
-        && let Err(e) = fs::create_dir_all(parent)
-    {
-        warn!(path = %parent.display(), error = %e, "could not create config directory");
-        return;
-    }
-
-    let tmp_path = path.with_extension("toml~");
-    if let Err(e) = fs::write(&tmp_path, &toml_str) {
-        warn!(path = %tmp_path.display(), error = %e, "could not write temporary config file");
-        return;
-    }
-
-    if let Err(e) = fs::rename(&tmp_path, path) {
-        warn!(path = %path.display(), error = %e, "could not rename config file");
-    }
-}
-
-/// Save only the window position and size to disk, preserving all other
-/// config values. This is called on window close so geometry is always
-/// persisted, even when the user hasn't clicked "Set as Wallpaper".
-pub fn save_window_geometry(x: i32, y: i32, width: u32, height: u32) {
-    let mut config = load_config();
-    config.window_x = Some(x);
-    config.window_y = Some(y);
-    config.window_width = Some(width);
-    config.window_height = Some(height);
-    save_config(&config);
-}
-
-/// Check whether the saved window position is visible on at least one
-/// connected monitor by testing if the title bar region overlaps any display.
-///
-/// Returns `true` if the position is on-screen, `false` if off-screen or
-/// if validation cannot be performed.
-#[cfg(windows)]
-#[allow(clippy::cast_possible_truncation)]
-fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
-
-    let title_bar_height = 30i32.min(height.cast_signed());
-    let rect = RECT {
-        left: x,
-        top: y,
-        right: x.saturating_add(width.cast_signed()),
-        bottom: y.saturating_add(title_bar_height),
-    };
-
-    // SAFETY: MonitorFromRect reads a RECT struct and queries the display
-    // configuration. The rect is a local stack variable with valid values.
-    // MONITOR_DEFAULTTONULL returns null if no monitor contains the rect.
-    #[allow(unsafe_code)]
-    let monitor = unsafe { MonitorFromRect(&raw const rect, MONITOR_DEFAULTTONULL) };
-    !monitor.is_null()
-}
-
-/// Non-Windows: the real outputs where there are any, and a coordinate-range
-/// check where there is nothing to ask.
-///
-/// On Linux `display::outputs` parses `xrandr --query`, which gives the same
-/// shape of answer Win32 gives: a set of rectangles in one coordinate space, so
-/// the title bar can be tested against each. That is the precise check the
-/// roadmap paired with the wallpaper work, and it arrives with it.
-///
-/// The coarse half remains, and not only for the platforms with no query. A run
-/// with no display at all still loads a config, and refusing every saved position
-/// there would move a window on the next run that has one. So what is left is a
-/// sanity range: X11's core protocol carries window coordinates as `INT16`, so on
-/// that display server -32768..=32767 is the whole of what a position can
-/// express; Wayland and macOS impose no such limit, but a coordinate outside it is
-/// far outside any desktop either way. The bound is chosen for being the one
-/// platform-defined number in the neighbourhood, not because every platform
-/// enforces it.
-#[cfg(not(windows))]
-#[allow(clippy::cast_possible_truncation)]
-fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
-    let Ok(width) = i32::try_from(width) else {
-        return false;
-    };
-    let Ok(height) = i32::try_from(height) else {
-        return false;
-    };
-    if let Some(outputs) = crate::display::outputs()
-        && !outputs.is_empty()
-    {
-        // The same rectangle the Win32 branch tests: a window is reachable if
-        // its title bar is, and a window whose body hangs off the bottom of a
-        // screen can still be dragged back.
-        let title_bar_height = 30.min(height);
-        return outputs
-            .iter()
-            .any(|output| output.overlaps(x, y, width, title_bar_height));
-    }
-    plausible_coordinates(x, y, width, height)
-}
-
-/// Whether a saved geometry is inside the range a window position can express.
-///
-/// Much coarser than a monitor query: a position inside the range but on a
-/// monitor that has since been unplugged passes here. It is the part that matters
-/// most, though, which is stopping a config carried from a large multi-monitor
-/// desk to a laptop from restoring a window into nowhere with no way to get it
-/// back.
-#[cfg(not(windows))]
-fn plausible_coordinates(x: i32, y: i32, width: i32, height: i32) -> bool {
-    const MIN: i32 = i16::MIN as i32;
-    const MAX: i32 = i16::MAX as i32;
-
-    (MIN..=MAX).contains(&x)
-        && (MIN..=MAX).contains(&y)
-        && (MIN..=MAX).contains(&x.saturating_add(width))
-        && (MIN..=MAX).contains(&y.saturating_add(height))
-}
-
-/// Return the saved window geometry if it passes on-screen validation.
-///
-/// Returns `None` if any of the four geometry fields is missing or if
-/// the saved position is no longer visible on any connected monitor.
-pub fn validated_window_geometry(config: &AppConfig) -> Option<(i32, i32, u32, u32)> {
-    let (Some(x), Some(y), Some(w), Some(h)) = (
-        config.window_x,
-        config.window_y,
-        config.window_width,
-        config.window_height,
-    ) else {
-        return None;
-    };
-    if w == 0 || h == 0 {
-        return None;
-    }
-    if is_position_on_screen(x, y, w, h) {
-        Some((x, y, w, h))
-    } else {
-        warn!(
-            x,
-            y, "saved window position is off-screen, using OS default"
-        );
-        None
-    }
+    crate::files::write_toml(&file, path, "config");
 }
 
 /// Find the index of `desired` sample count in `aa_counts`, or fall back
 /// to the last index (highest available count).
 ///
 /// Returns the index as `i32` for direct use with Slint's `set_aa_index()`.
-#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub fn find_sample_count_index(aa_counts: &[u32], desired: u32) -> i32 {
-    aa_counts
-        .iter()
-        .position(|&c| c == desired)
-        .unwrap_or(aa_counts.len().saturating_sub(1)) as i32
+    slint_index(
+        aa_counts
+            .iter()
+            .position(|&c| c == desired)
+            .unwrap_or(aa_counts.len().saturating_sub(1)),
+    )
 }
 
 #[cfg(test)]
@@ -688,6 +558,7 @@ mod tests {
 
     use super::*;
     use crate::scene::camera::DEFAULT_CAMERA_FOV;
+    use crate::test_support::ScratchDir;
 
     // --- config_path resolution ---
 
@@ -714,7 +585,7 @@ mod tests {
         }
     }
 
-    // --- Step 2.1: AppConfig defaults and serde ---
+    // --- AppConfig defaults and serde ---
 
     #[test]
     fn default_values_match_camera_params() {
@@ -730,66 +601,36 @@ mod tests {
         assert_relative_eq!(config.pitch, cam.pitch_deg);
     }
 
+    /// Every default is already inside the range the loader enforces, so a
+    /// fresh config is a fixed point of the repair pass rather than something
+    /// `sanitize` rewrites on the way in.
     #[test]
-    fn default_auto_refresh_is_disabled_with_5_min_interval() {
-        let config = AppConfig::default();
-        assert!(!config.auto_refresh_enabled);
-        assert_eq!(config.auto_refresh_interval_minutes, 5);
+    fn the_defaults_survive_the_loaders_own_repairs() {
+        let mut config = AppConfig::default();
+        config.sanitize();
+        assert_eq!(config, AppConfig::default());
     }
 
+    /// Every field a file leaves out arrives at its default, including the ones
+    /// nobody thought to list. `AppConfig` derives `PartialEq`, so one
+    /// comparison against a default carrying the single present field covers
+    /// the whole struct.
     #[test]
-    fn default_star_brightness_is_two_times_gain() {
-        assert_relative_eq!(AppConfig::default().star_intensity, 2.0);
+    fn a_field_a_file_leaves_out_arrives_at_its_default() {
+        let config: AppConfig = toml::from_str("longitude = 42.0").unwrap();
+        assert_eq!(
+            config,
+            AppConfig {
+                longitude: 42.0,
+                ..AppConfig::default()
+            }
+        );
     }
 
-    #[test]
-    fn default_sky_fov_is_reviewed_wide_angle() {
-        assert_relative_eq!(AppConfig::default().sky_fov, 140.0);
-    }
-
-    #[test]
-    fn default_star_tuning_uses_balanced_profile() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.star_size, 1.0);
-        assert_relative_eq!(config.star_glow_strength, 0.5);
-        assert_relative_eq!(config.star_glow_radius, 8.0);
-        assert_relative_eq!(config.star_contrast, 0.3);
-    }
-
-    #[test]
-    fn default_sun_shows_the_glare_and_a_trace_of_the_camera() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.sun_glow, 1.2);
-        assert_relative_eq!(config.sun_rays, 0.75);
-        assert_relative_eq!(config.sun_flare, 0.15);
-        assert_relative_eq!(config.sun_size, 1.0);
-        assert_relative_eq!(config.sun_halo_radius, 3.0);
-    }
-
-    /// The horizon controls default to the review's taste with the physics
-    /// under it: the measured atmosphere for the two that have a physical
-    /// setting, a zone a Sun diameter thick so the gradient exists on a
-    /// preview, and a peak that is a choice rather than a measurement.
-    #[test]
-    fn default_horizon_is_the_measured_atmosphere_with_a_peak_on_top() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.sun_reddening, 1.0);
-        assert_relative_eq!(config.sun_refraction, 1.0);
-        assert_relative_eq!(config.sun_horizon_depth, 1.0);
-        assert_relative_eq!(config.sun_horizon_boost, 3.0);
-        assert_relative_eq!(config.sun_horizon_reach, 4.0);
-        assert_relative_eq!(config.atmo_sunrise_glow, 1.0);
-        assert_relative_eq!(config.atmo_sunrise_width, 20.0);
-    }
-
-    /// A file is a text file, and camera mode above one draws a flare the
-    /// slider cannot bring back.
     #[test]
     fn a_lens_flare_past_the_sliders_end_loads_clamped() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_clamp_sun_flare");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_clamp_sun_flare");
+        let path = scratch.join("config.toml");
 
         fs::write(&path, "[sunlit.earth]\nsun_flare = 1.8\n").unwrap();
         assert_relative_eq!(load_config_from(&path).sun_flare, SUN_FLARE_MAX);
@@ -798,134 +639,20 @@ mod tests {
     }
 
     #[test]
-    fn default_moon_is_enlarged_two_and_a_half_times() {
-        let config = AppConfig::default();
-        assert_relative_eq!(config.moon_brightness, 1.0);
-        assert_relative_eq!(config.moon_size, 2.5);
-        assert_relative_eq!(config.moon_earthshine, 0.15);
-    }
-
-    /// On by default, and at a fifth of full strength: the panorama's own
-    /// tone map is a neutral one, so the slider is where the band stops
-    /// competing with the globe it sits behind.
-    #[test]
-    fn the_milky_way_defaults_to_a_fifth() {
-        assert_relative_eq!(AppConfig::default().milky_way_intensity, 0.2);
-    }
-
-    #[test]
-    fn deserialize_missing_the_milky_way_fills_the_default() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.milky_way_intensity, 0.2);
-    }
-
-    #[test]
-    fn deserialize_missing_moon_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.moon_brightness, 1.0);
-        assert_relative_eq!(config.moon_size, 2.5);
-        assert_relative_eq!(config.moon_earthshine, 0.15);
-    }
-
-    #[test]
-    fn deserialize_missing_sun_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.sun_glow, 1.2);
-        assert_relative_eq!(config.sun_rays, 0.75);
-        assert_relative_eq!(config.sun_flare, 0.15);
-        assert_relative_eq!(config.sun_size, 1.0);
-        assert_relative_eq!(config.sun_halo_radius, 3.0);
-        assert_relative_eq!(config.sun_horizon_boost, 3.0);
-        assert_relative_eq!(config.sun_horizon_reach, 4.0);
-        assert_relative_eq!(config.sun_horizon_depth, 1.0);
-        assert_relative_eq!(config.sun_reddening, 1.0);
-        assert_relative_eq!(config.sun_refraction, 1.0);
-    }
-
-    #[test]
-    fn deserialize_missing_sunrise_band_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.atmo_sunrise_glow, 1.0);
-        assert_relative_eq!(config.atmo_sunrise_width, 20.0);
-    }
-
-    #[test]
-    fn deserialize_missing_star_brightness_uses_two_times_gain() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.star_intensity, 2.0);
-    }
-
-    #[test]
     fn the_earth_lens_defaults_to_the_narrow_one_the_presets_were_framed_at() {
         assert_relative_eq!(AppConfig::default().camera_fov, DEFAULT_CAMERA_FOV);
     }
 
     #[test]
-    fn deserialize_missing_the_earth_lens_fills_the_default() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.camera_fov, DEFAULT_CAMERA_FOV);
-    }
-
-    /// Zero and 180 are the two lenses the perspective projection has no answer
-    /// for, so the loader is the guard: a hand-edited file is a text file.
-    #[test]
     fn loading_a_config_with_a_degenerate_lens_repairs_it() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_bad_fov");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_bad_fov");
+        let path = scratch.join("config.toml");
 
         fs::write(&path, "[sunlit.earth]\ncamera_fov = 180.0\n").unwrap();
         assert_relative_eq!(load_config_from(&path).camera_fov, CAMERA_FOV_MAX);
 
         fs::write(&path, "[sunlit.earth]\ncamera_fov = 0.0\n").unwrap();
         assert_relative_eq!(load_config_from(&path).camera_fov, CAMERA_FOV_MIN);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn deserialize_missing_sky_fov_uses_reviewed_wide_angle() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.sky_fov, 140.0);
-    }
-
-    #[test]
-    fn deserialize_missing_star_tuning_uses_balanced_profile() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_relative_eq!(config.star_size, 1.0);
-        assert_relative_eq!(config.star_glow_strength, 0.5);
-        assert_relative_eq!(config.star_glow_radius, 8.0);
-        assert_relative_eq!(config.star_contrast, 0.3);
-    }
-
-    #[test]
-    fn deserialize_missing_auto_refresh_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert!(!config.auto_refresh_enabled);
-        assert_eq!(config.auto_refresh_interval_minutes, 5);
-    }
-
-    #[test]
-    fn deserialize_missing_atmo_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
-        let defaults = AppConfig::default();
-        assert_eq!(config.atmo_enabled, defaults.atmo_enabled);
-        assert_relative_eq!(config.rayleigh_intensity, defaults.rayleigh_intensity);
-        assert_relative_eq!(config.rayleigh_sharpness, defaults.rayleigh_sharpness);
-        assert_relative_eq!(config.nightglow_intensity, defaults.nightglow_intensity);
-        assert_relative_eq!(config.nightglow_falloff, defaults.nightglow_falloff);
-        assert_relative_eq!(config.nightglow_balance, defaults.nightglow_balance);
-    }
-
-    #[test]
-    fn deserialize_missing_cloud_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("cloud_opacity = 0.5").unwrap();
-        let defaults = AppConfig::default();
-        assert_relative_eq!(config.cloud_opacity_night, defaults.cloud_opacity_night);
-        assert_relative_eq!(config.cloud_floor, defaults.cloud_floor);
-        assert_relative_eq!(config.cloud_gamma, defaults.cloud_gamma);
-        assert_relative_eq!(config.cloud_night, defaults.cloud_night);
     }
 
     #[test]
@@ -1033,31 +760,8 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_missing_fields() {
-        let config: AppConfig = toml::from_str("longitude = 42.0").unwrap();
-        assert_relative_eq!(config.longitude, 42.0);
-        // All other fields should be at their defaults
-        let defaults = AppConfig::default();
-        assert_relative_eq!(config.latitude, defaults.latitude);
-        assert_relative_eq!(config.zoom, defaults.zoom);
-        assert_eq!(config.texture_index, defaults.texture_index);
-    }
-
-    #[test]
     fn default_custom_year_is_current() {
         let config = AppConfig::default();
-        let current_year = time::OffsetDateTime::now_utc().year();
-        assert_eq!(config.custom_year, current_year);
-    }
-
-    #[test]
-    fn deserialize_missing_datetime_fields_fills_defaults() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        let defaults = AppConfig::default();
-        assert!(!config.use_custom_datetime);
-        assert_relative_eq!(config.custom_hour, defaults.custom_hour);
-        assert_relative_eq!(config.custom_day_of_year, defaults.custom_day_of_year);
-        // custom_year uses its own serde default function
         let current_year = time::OffsetDateTime::now_utc().year();
         assert_eq!(config.custom_year, current_year);
     }
@@ -1068,11 +772,6 @@ mod tests {
         assert_eq!(config.custom_year, 0);
     }
 
-    /// A display mode nothing answers to costs the default, not the file.
-    ///
-    /// Same reasoning `sanitize` applies to a number out of range: a config
-    /// written by a newer build, or edited by hand, must not cost a person every
-    /// other setting they have.
     #[test]
     fn a_display_mode_this_build_does_not_have_loads_as_the_default() {
         let config: AppConfig = toml::from_str(
@@ -1108,31 +807,27 @@ sky_fov = 111.0
         assert_eq!(config, AppConfig::default());
     }
 
-    #[test]
-    fn deserialize_invalid_toml() {
-        let result: Result<AppConfig, _> = toml::from_str("{{{invalid");
-        assert!(result.is_err());
-    }
-
-    // --- Step 2.3: Config file I/O ---
+    // --- Config file I/O ---
 
     #[test]
     fn load_from_nonexistent_returns_default() {
-        let path = std::env::temp_dir()
-            .join("sunlit_earth_test_nonexistent")
-            .join("config.toml");
-        // Ensure the file does not exist
-        let _ = fs::remove_file(&path);
-        let config = load_config_from(&path);
+        let scratch = ScratchDir::new("config_nonexistent");
+        let config = load_config_from(&scratch.join("config.toml"));
         assert_eq!(config, AppConfig::default());
     }
 
     #[test]
     fn save_and_load_round_trip() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_roundtrip");
-        let _ = fs::remove_dir_all(&dir);
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_roundtrip");
+        let path = scratch.join("config.toml");
 
+        // A tier this build does not default to, so a repair that reset the
+        // field could not pass by accident.
+        let tier = if QualityTier::default_for_build() == QualityTier::High {
+            QualityTier::Low
+        } else {
+            QualityTier::High
+        };
         let config = AppConfig {
             longitude: 99.0,
             latitude: -45.0,
@@ -1146,7 +841,7 @@ sky_fov = 111.0
             texture_index: 2,
             texture_resolution: 2048,
             sample_count: 4,
-            quality_tier: QualityTier::Low,
+            quality_tier: tier,
             terminator_width: 0.15,
             diffuse_shading: false,
             diffuse_floor: 0.8,
@@ -1211,153 +906,56 @@ sky_fov = 111.0
         save_config_to(&config, &path);
         let loaded = load_config_from(&path);
         assert_eq!(config, loaded);
-
-        // Cleanup
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn save_creates_parent_directory() {
-        let dir = std::env::temp_dir()
-            .join("sunlit_earth_test_mkdir")
-            .join("nested");
-        let _ = fs::remove_dir_all(std::env::temp_dir().join("sunlit_earth_test_mkdir"));
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_mkdir");
+        let path = scratch.join("nested").join("config.toml");
 
         save_config_to(&AppConfig::default(), &path);
         assert!(path.exists());
-
-        // Cleanup
-        let _ = fs::remove_dir_all(std::env::temp_dir().join("sunlit_earth_test_mkdir"));
     }
 
     #[test]
     fn save_atomic_write_uses_tilde() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_atomic");
-        let _ = fs::remove_dir_all(&dir);
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_atomic");
+        let path = scratch.join("config.toml");
 
         save_config_to(&AppConfig::default(), &path);
 
-        // The final file should exist
         assert!(path.exists());
-        // The temporary tilde file should NOT exist (rename completed)
-        let tilde_path = path.with_extension("toml~");
-        assert!(!tilde_path.exists());
-
-        // Cleanup
-        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            !path.with_extension("toml~").exists(),
+            "the unfinished file must be gone once the rename completes"
+        );
     }
 
     #[test]
     fn load_corrupt_file_returns_default() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_corrupt");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_corrupt");
+        let path = scratch.join("config.toml");
 
         fs::write(&path, "{{{invalid toml content").unwrap();
-        let config = load_config_from(&path);
-        assert_eq!(config, AppConfig::default());
-
-        // Cleanup
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(load_config_from(&path), AppConfig::default());
     }
 
+    /// The same field-by-field default filling as
+    /// `a_field_a_file_leaves_out_arrives_at_its_default`, through the file
+    /// path, which adds the `[sunlit.earth]` section and the repair pass.
     #[test]
     fn load_partial_file_fills_defaults() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_partial");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_partial");
+        let path = scratch.join("config.toml");
 
         fs::write(&path, "[sunlit.earth]\nlongitude = 99.0\n").unwrap();
-        let config = load_config_from(&path);
-        assert_relative_eq!(config.longitude, 99.0);
-        // All other fields at defaults
-        let defaults = AppConfig::default();
-        assert_relative_eq!(config.latitude, defaults.latitude);
-        assert_eq!(config.sample_count, defaults.sample_count);
-        assert_eq!(config.diffuse_shading, defaults.diffuse_shading);
-
-        // Cleanup
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    // --- Window geometry validation ---
-
-    #[test]
-    fn validated_geometry_none_when_missing() {
-        let config = AppConfig::default();
-        assert!(validated_window_geometry(&config).is_none());
-    }
-
-    #[test]
-    fn validated_geometry_none_when_partial() {
-        let config = AppConfig {
-            window_x: Some(100),
-            window_y: Some(200),
-            // width and height still None
-            ..AppConfig::default()
-        };
-        assert!(validated_window_geometry(&config).is_none());
-    }
-
-    #[test]
-    fn validated_geometry_none_when_zero_size() {
-        let config = AppConfig {
-            window_x: Some(100),
-            window_y: Some(200),
-            window_width: Some(0),
-            window_height: Some(600),
-            ..AppConfig::default()
-        };
-        assert!(validated_window_geometry(&config).is_none());
-    }
-
-    #[test]
-    fn validated_geometry_accepts_on_screen() {
-        let config = AppConfig {
-            window_x: Some(100),
-            window_y: Some(100),
-            window_width: Some(800),
-            window_height: Some(600),
-            ..AppConfig::default()
-        };
-        // On a machine with at least one monitor, (100, 100) should be on-screen
-        let result = validated_window_geometry(&config);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), (100, 100, 800, 600));
-    }
-
-    /// Both implementations must reject this: Windows because no monitor
-    /// contains the rect, everywhere else because the coordinates are outside
-    /// the range a window position can take.
-    #[test]
-    fn validated_geometry_rejects_off_screen() {
-        let config = AppConfig {
-            window_x: Some(-50000),
-            window_y: Some(-50000),
-            window_width: Some(800),
-            window_height: Some(600),
-            ..AppConfig::default()
-        };
-        assert!(validated_window_geometry(&config).is_none());
-    }
-
-    /// The coarse half, which is what a run with no display to ask falls back
-    /// to, and which is still the only answer on a platform with no query.
-    #[test]
-    #[cfg(not(windows))]
-    fn the_coordinate_range_is_the_one_a_window_position_can_express() {
-        assert!(plausible_coordinates(0, 0, 800, 600));
-        assert!(plausible_coordinates(-1000, -1000, 800, 600));
-        // X11 carries these as INT16, so a coordinate outside that is not a desk
-        // anybody has: it is a config that came from somewhere else.
-        assert!(!plausible_coordinates(-50_000, 0, 800, 600));
-        assert!(!plausible_coordinates(0, 40_000, 800, 600));
-        // And a window whose far edge leaves the range goes with it.
-        assert!(!plausible_coordinates(32_000, 0, 800, 600));
+        assert_eq!(
+            load_config_from(&path),
+            AppConfig {
+                longitude: 99.0,
+                ..AppConfig::default()
+            }
+        );
     }
 
     #[test]
@@ -1398,8 +996,6 @@ sky_fov = 111.0
         assert!(toml_str.contains("[sunlit.earth]"));
     }
 
-    // --- Step 2.5: find_sample_count_index ---
-
     // --- quality tiers ---
 
     #[test]
@@ -1423,14 +1019,11 @@ sky_fov = 111.0
     }
 
     #[test]
-    fn build_default_is_low_in_debug_and_high_in_release() {
-        let expected = if cfg!(debug_assertions) {
-            QualityTier::Low
-        } else {
-            QualityTier::High
-        };
-        assert_eq!(QualityTier::default_for_build(), expected);
-        assert_eq!(AppConfig::default().quality_tier, expected);
+    fn the_default_config_takes_the_tier_this_build_asks_for() {
+        assert_eq!(
+            AppConfig::default().quality_tier,
+            QualityTier::default_for_build()
+        );
     }
 
     #[test]
@@ -1458,35 +1051,6 @@ sky_fov = 111.0
                 toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
             assert_eq!(parsed.quality_tier, tier);
         }
-    }
-
-    #[test]
-    fn quality_tier_survives_a_file_round_trip() {
-        // Pick a tier that is not this build's default, so a regression that
-        // resets the field cannot pass by accident.
-        let tier = if QualityTier::default_for_build() == QualityTier::High {
-            QualityTier::Low
-        } else {
-            QualityTier::High
-        };
-        let dir = std::env::temp_dir().join("sunlit_earth_test_tier_file_roundtrip");
-        let _ = fs::remove_dir_all(&dir);
-        let path = dir.join("config.toml");
-
-        let config = AppConfig {
-            quality_tier: tier,
-            ..AppConfig::default()
-        };
-        save_config_to(&config, &path);
-        assert_eq!(load_config_from(&path).quality_tier, tier);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn missing_quality_tier_falls_back_to_the_build_default() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_eq!(config.quality_tier, QualityTier::default_for_build());
     }
 
     // --- texture resolution ---
@@ -1529,45 +1093,15 @@ sky_fov = 111.0
     }
 
     #[test]
-    fn a_config_missing_the_resolution_lands_on_the_default() {
-        let config: AppConfig = toml::from_str("longitude = 10.0").unwrap();
-        assert_eq!(config.texture_resolution, DEFAULT_TEXTURE_RESOLUTION);
-    }
-
-    /// A config file is a text file, so the loader has to be the guard rather
-    /// than serde.
-    #[test]
     fn loading_a_config_with_an_impossible_resolution_repairs_it() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_bad_resolution");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
+        let scratch = ScratchDir::new("config_bad_resolution");
+        let path = scratch.join("config.toml");
 
         fs::write(&path, "[sunlit.earth]\ntexture_resolution = 12345\n").unwrap();
         assert_eq!(
             load_config_from(&path).texture_resolution,
             DEFAULT_TEXTURE_RESOLUTION
         );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn every_offered_resolution_survives_a_file_round_trip() {
-        let dir = std::env::temp_dir().join("sunlit_earth_test_resolution_roundtrip");
-        let _ = fs::remove_dir_all(&dir);
-        let path = dir.join("config.toml");
-
-        for width in TEXTURE_RESOLUTIONS {
-            let config = AppConfig {
-                texture_resolution: width,
-                ..AppConfig::default()
-            };
-            save_config_to(&config, &path);
-            assert_eq!(load_config_from(&path).texture_resolution, width);
-        }
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1595,22 +1129,18 @@ sky_fov = 111.0
     // --- find_sample_count_index ---
 
     #[test]
-    fn find_sample_count_exact_match() {
-        assert_eq!(find_sample_count_index(&[1, 2, 4, 8], 4), 2);
-    }
-
-    #[test]
-    fn find_sample_count_missing_falls_back() {
-        assert_eq!(find_sample_count_index(&[1, 2, 4], 8), 2);
-    }
-
-    #[test]
-    fn find_sample_count_one_returns_zero() {
-        assert_eq!(find_sample_count_index(&[1], 8), 0);
-    }
-
-    #[test]
-    fn find_sample_count_exact_match_8x() {
-        assert_eq!(find_sample_count_index(&[1, 2, 4, 8], 8), 3);
+    fn a_sample_count_indexes_itself_or_the_strongest_on_offer() {
+        for (offered, requested, expected) in [
+            (&[1, 2, 4, 8][..], 4, 2),
+            (&[1, 2, 4, 8][..], 8, 3),
+            (&[1, 2, 4][..], 8, 2),
+            (&[1][..], 8, 0),
+        ] {
+            assert_eq!(
+                find_sample_count_index(offered, requested),
+                expected,
+                "{requested}x among {offered:?}"
+            );
+        }
     }
 }

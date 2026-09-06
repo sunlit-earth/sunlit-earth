@@ -122,3 +122,11 @@ pub fn read_buffer(
 
 #[allow(unused_imports)]
 pub use sunlit_core::renderer::read_texture_rgba8;
+
+/// The scratch-directory helper, shared with the library's own unit tests.
+///
+/// A target that wants only this and not the GPU context above can take the
+/// same file directly with `#[path = "../src/test_support.rs"] mod
+/// test_support;` rather than declaring `mod common`.
+#[path = "../../src/test_support.rs"]
+pub mod test_support;

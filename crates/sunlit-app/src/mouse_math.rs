@@ -1,24 +1,28 @@
 //! Pure math functions for mouse interaction with the globe.
 //!
-//! These functions are extracted from the mouse callback closures in `main.rs`
-//! so they can be unit-tested independently of the Slint UI.
+//! They are the arithmetic behind the callbacks `ui_callbacks` registers, kept
+//! apart from the Slint window so they can be tested without one.
 
 use sunlit_core::scene::camera::zoom_to_distance;
-use sunlit_core::scene::sun_occlusion;
+use sunlit_core::scene::sky_lens;
 
 /// Wrap a longitude value into the `[-180, 180)` range.
 #[must_use]
-pub fn wrap_longitude(lon: f32) -> f32 {
+fn wrap_longitude(lon: f32) -> f32 {
     ((lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 }
 
 /// Wrap a tilt value into the `[-180, 180)` range.
 #[must_use]
-pub fn wrap_angle_180(angle: f32) -> f32 {
+fn wrap_angle_180(angle: f32) -> f32 {
     ((angle + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 }
 
-/// Apply tilt-corrected globe rotation from a mouse drag.
+/// Apply tilt-corrected globe rotation from a mouse drag, at the gain the
+/// zoom implies.
+///
+/// A test convenience: the callbacks pass a gain of their own through
+/// [`apply_globe_drag_at`], which is what the drag actually uses.
 ///
 /// :param lon: current longitude in degrees
 /// :param lat: current latitude in degrees
@@ -27,15 +31,9 @@ pub fn wrap_angle_180(angle: f32) -> f32 {
 /// :param dx: horizontal mouse delta in pixels
 /// :param dy: vertical mouse delta in pixels
 /// :returns: new `(longitude, latitude)` tuple
+#[cfg(test)]
 #[must_use]
-pub fn apply_globe_drag(
-    lon: f32,
-    lat: f32,
-    tilt_deg: f32,
-    zoom: f32,
-    dx: f32,
-    dy: f32,
-) -> (f32, f32) {
+fn apply_globe_drag(lon: f32, lat: f32, tilt_deg: f32, zoom: f32, dx: f32, dy: f32) -> (f32, f32) {
     apply_globe_drag_at(lon, lat, tilt_deg, dx, dy, coarse_drag_gain(zoom))
 }
 
@@ -73,18 +71,18 @@ pub fn apply_globe_drag_at(
 /// Cursor speed at and below which the drag turns the globe at the fine gain,
 /// in logical pixels per second: a pixel every 16 milliseconds, a hand placing
 /// the cursor rather than moving it.
-pub const FINE_DRAG_SPEED: f32 = 60.0;
+const FINE_DRAG_SPEED: f32 = 60.0;
 
 /// Cursor speed at and above which it turns at the coarse gain: an ordinary
 /// sweep across the globe.
-pub const COARSE_DRAG_SPEED: f32 = 600.0;
+const COARSE_DRAG_SPEED: f32 = 600.0;
 
 /// How long the speed estimate takes to follow the hand, in seconds.
 ///
 /// Deltas arrive as whole pixels at whatever rate the mouse reports, so a raw
 /// per-event speed is noisy by a factor of two and the gain would flicker
 /// between the two ends over one slow drag.
-pub const DRAG_SPEED_TIME_CONSTANT: f32 = 0.06;
+const DRAG_SPEED_TIME_CONSTANT: f32 = 0.06;
 
 /// Longest interval between two moves that still counts as one drag, in
 /// seconds. A pause reads as a slow start rather than as a jump.
@@ -110,17 +108,14 @@ pub fn coarse_drag_gain(zoom: f32) -> f32 {
 ///
 /// Half the angle one pixel spans at the center of the sky lens, so the Sun's
 /// image moves half a pixel per pixel of cursor near the frame's center and
-/// about one at its edge. Neither side of that ratio depends on the camera's
-/// distance, which is the point: the sunrise is drawn through the sky lens and
-/// the sky lens has no zoom, so a gain that follows the camera is fine at one
-/// distance and coarse at another.
+/// about one at its edge, at every camera distance.
 ///
 /// :param `sky_fov_deg`: the sky lens's field of view in degrees
 /// :param `preview_width_px`: the preview's width in logical pixels
 /// :returns: degrees per pixel
 #[must_use]
 pub fn fine_drag_gain(sky_fov_deg: f32, preview_width_px: f32) -> f32 {
-    let edge = sun_occlusion::sky_lens_edge_radius(sky_fov_deg);
+    let edge = sky_lens::sky_lens_edge_radius(sky_fov_deg);
     (2.0 * edge / preview_width_px.max(1.0)).to_degrees()
 }
 
@@ -175,12 +170,6 @@ impl DragSpeed {
         let instant = delta_px.abs() / interval;
         let alpha = 1.0 - (-interval / DRAG_SPEED_TIME_CONSTANT).exp();
         self.speed += alpha * (instant - self.speed);
-        self.speed
-    }
-
-    /// The estimate as it stands, without folding anything in.
-    #[must_use]
-    pub fn speed(self) -> f32 {
         self.speed
     }
 }
@@ -247,53 +236,23 @@ mod tests {
 
     // --- wrap_longitude ---
 
+    /// The half-open range is what makes the wrap a normal form: 180 comes back
+    /// as -180 so that one angle has one spelling. `wrap_angle_180` answers the
+    /// same question and has to agree everywhere.
     #[test]
-    fn wrap_longitude_identity_at_zero() {
-        assert_relative_eq!(wrap_longitude(0.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_longitude_identity_at_negative_90() {
-        assert_relative_eq!(wrap_longitude(-90.0), -90.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_positive_360() {
-        assert_relative_eq!(wrap_longitude(360.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_negative_360() {
-        assert_relative_eq!(wrap_longitude(-360.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_540() {
-        assert_relative_eq!(wrap_longitude(540.0), -180.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_minus_180() {
-        // -180 is the boundary; the modular wrap puts it at -180
-        assert_relative_eq!(wrap_longitude(-180.0), -180.0);
-    }
-
-    #[test]
-    fn wrap_longitude_wraps_180() {
-        // 180 wraps to -180
-        assert_relative_eq!(wrap_longitude(180.0), -180.0);
-    }
-
-    // --- wrap_angle_180 ---
-
-    #[test]
-    fn wrap_angle_180_identity_at_zero() {
-        assert_relative_eq!(wrap_angle_180(0.0), 0.0);
-    }
-
-    #[test]
-    fn wrap_angle_180_wraps_360() {
-        assert_relative_eq!(wrap_angle_180(360.0), 0.0);
+    fn an_angle_wraps_into_the_half_open_range_around_zero() {
+        for (angle, wrapped) in [
+            (0.0, 0.0),
+            (-90.0, -90.0),
+            (360.0, 0.0),
+            (-360.0, 0.0),
+            (540.0, -180.0),
+            (-180.0, -180.0),
+            (180.0, -180.0),
+        ] {
+            assert_relative_eq!(wrap_longitude(angle), wrapped);
+            assert_relative_eq!(wrap_angle_180(angle), wrapped);
+        }
     }
 
     // --- apply_globe_drag ---
@@ -307,49 +266,32 @@ mod tests {
 
     #[test]
     fn globe_drag_horizontal_without_tilt() {
-        // Dragging right should decrease longitude (globe rotates left)
         let (lon, _lat) = apply_globe_drag(0.0, 0.0, 0.0, 0.5, 10.0, 0.0);
         assert!(lon < 0.0, "dragging right should decrease longitude");
     }
 
     #[test]
     fn globe_drag_vertical_without_tilt() {
-        // Dragging up (negative dy) should decrease latitude
         let (_lon, lat) = apply_globe_drag(0.0, 0.0, 0.0, 0.5, 0.0, -10.0);
         assert!(lat < 0.0, "dragging up should decrease latitude");
     }
 
+    /// A drag that would take the camera over a pole stops just short of it,
+    /// at either end. That the whole range is respected for any drag is
+    /// `globe_drag_latitude_always_in_range`.
     #[test]
-    fn globe_drag_latitude_clamped_at_89() {
-        let (_lon, lat) = apply_globe_drag(0.0, 88.0, 0.0, 0.5, 0.0, 1000.0);
-        assert_relative_eq!(lat, 89.0);
-    }
-
-    #[test]
-    fn globe_drag_latitude_clamped_at_minus_89() {
-        let (_lon, lat) = apply_globe_drag(0.0, -88.0, 0.0, 0.5, 0.0, -1000.0);
-        assert_relative_eq!(lat, -89.0);
-    }
-
-    #[test]
-    fn globe_drag_longitude_wraps() {
-        // Start near 180, drag to push past it
-        let (lon, _lat) = apply_globe_drag(179.0, 0.0, 0.0, 0.5, -100.0, 0.0);
-        // Should wrap around to negative side
-        assert!(
-            (-180.0..180.0).contains(&lon),
-            "longitude should be in [-180, 180), got {lon}"
-        );
+    fn globe_drag_latitude_stops_at_both_poles() {
+        let (_lon, north) = apply_globe_drag(0.0, 88.0, 0.0, 0.5, 0.0, 1000.0);
+        assert_relative_eq!(north, 89.0);
+        let (_lon, south) = apply_globe_drag(0.0, -88.0, 0.0, 0.5, 0.0, -1000.0);
+        assert_relative_eq!(south, -89.0);
     }
 
     #[test]
     fn globe_drag_tilt_correction_rotates_deltas() {
-        // With 90-degree tilt, horizontal drag should affect latitude
-        // and vertical drag should affect longitude
         let (_lon_tilted, lat_tilted) = apply_globe_drag(0.0, 0.0, 90.0, 0.5, 10.0, 0.0);
         let (_lon_normal, lat_normal) = apply_globe_drag(0.0, 0.0, 0.0, 0.5, 10.0, 0.0);
 
-        // With 90-degree tilt, the horizontal drag component should mostly affect latitude
         assert!(
             lat_tilted.abs() > lat_normal.abs(),
             "90-degree tilt should redirect horizontal drag to latitude"
@@ -358,7 +300,6 @@ mod tests {
 
     #[test]
     fn globe_drag_zoom_sensitivity() {
-        // At zoom=0 (closest), movement should be smaller than at zoom=1 (farthest)
         let (lon_close, _) = apply_globe_drag(0.0, 0.0, 0.0, 0.0, 10.0, 0.0);
         let (lon_far, _) = apply_globe_drag(0.0, 0.0, 0.0, 1.0, 10.0, 0.0);
         assert!(
@@ -379,7 +320,7 @@ mod tests {
         let viewport = glam::Vec2::new(width, width * 9.0 / 16.0);
         let theta = theta_deg.to_radians();
         let direction = glam::Vec3::new(theta.sin(), 0.0, -theta.cos());
-        let disc = sun_occlusion::sky_lens_disc(
+        let disc = sky_lens::sky_lens_disc(
             direction,
             0.001_f32.to_radians(),
             sky_fov_deg,
@@ -412,9 +353,7 @@ mod tests {
         // The fine gain is a property of the sky lens rather than of the
         // camera, so the only thing that can make a slow drag differ between
         // two zooms is the cap against the coarse gain. Walking the whole
-        // slider is what says where that is: at 140 degrees of sky it is never
-        // active and the rate is one number from end to end, and at 180 it is
-        // active at the nearest zooms and nowhere else.
+        // slider is what says where that cap is active.
         for (sky_fov, capped_somewhere) in [(140.0_f32, false), (180.0, true)] {
             let fine = fine_drag_gain(sky_fov, 1920.0);
             let mut capped = 0;
@@ -438,10 +377,9 @@ mod tests {
 
     #[test]
     fn the_fine_gain_never_exceeds_the_coarse_one() {
-        // At the nearest zoom the coarse gain is 0.056 degrees per pixel and
-        // the fine one at the widest sky is 0.060, which is the one framing
-        // where a deliberate hand would otherwise turn the globe faster than a
-        // sweeping one.
+        // The nearest zoom against the widest sky is the one framing where a
+        // deliberate hand would otherwise turn the globe faster than a sweeping
+        // one.
         let coarse = coarse_drag_gain(0.0);
         let fine = fine_drag_gain(180.0, 1920.0);
         assert!(fine > coarse, "the two no longer cross at the nearest zoom");
@@ -462,8 +400,8 @@ mod tests {
     fn a_sweep_turns_the_globe_exactly_as_it_always_did() {
         // Every zoom the slider reaches, because the blend's own arithmetic is
         // where this could fail: `fine + (coarse - fine)` rounds away from
-        // `coarse` at 62 of these 1001 zooms, which is why the sweeping end
-        // returns the coarse gain itself.
+        // `coarse` at some of them, which is why the sweeping end returns the
+        // coarse gain itself.
         let fine = fine_drag_gain(140.0, 1920.0);
         for step in 0..=1000_u16 {
             let zoom = f32::from(step) / 1000.0;
@@ -510,15 +448,12 @@ mod tests {
         assert_relative_eq!(y, 1.0);
     }
 
+    /// Both ends of the pan clamp. The range itself is `frame_drag_always_in_range`.
     #[test]
-    fn frame_drag_clamped_at_positive_3() {
+    fn frame_drag_clamps_at_both_ends() {
         let (x, y) = apply_frame_drag(2.9, 2.9, 0.5, -10000.0, 10000.0);
         assert_relative_eq!(x, 3.0);
         assert_relative_eq!(y, 3.0);
-    }
-
-    #[test]
-    fn frame_drag_clamped_at_negative_3() {
         let (x, y) = apply_frame_drag(-2.9, -2.9, 0.5, 10000.0, -10000.0);
         assert_relative_eq!(x, -3.0);
         assert_relative_eq!(y, -3.0);
@@ -543,15 +478,13 @@ mod tests {
         assert_relative_eq!(pitch, 20.0);
     }
 
+    /// Both ends of the orientation clamp. The range itself is
+    /// `orient_drag_always_in_range`.
     #[test]
-    fn orient_drag_clamped_at_90() {
+    fn orient_drag_clamps_at_both_ends() {
         let (yaw, pitch) = apply_orient_drag(89.0, 89.0, 100.0, -100.0);
         assert_relative_eq!(yaw, 90.0);
         assert_relative_eq!(pitch, 90.0);
-    }
-
-    #[test]
-    fn orient_drag_clamped_at_minus_90() {
         let (yaw, pitch) = apply_orient_drag(-89.0, -89.0, -100.0, 100.0);
         assert_relative_eq!(yaw, -90.0);
         assert_relative_eq!(pitch, -90.0);
@@ -585,13 +518,11 @@ mod tests {
         assert_relative_eq!(apply_zoom_scroll(0.5, 0.0), 0.5);
     }
 
+    /// Both ends of the zoom clamp. The range itself is
+    /// `zoom_scroll_always_in_unit_range`.
     #[test]
-    fn zoom_scroll_clamped_at_zero() {
+    fn zoom_scroll_clamps_at_both_ends() {
         assert_relative_eq!(apply_zoom_scroll(0.01, 10000.0), 0.0);
-    }
-
-    #[test]
-    fn zoom_scroll_clamped_at_one() {
         assert_relative_eq!(apply_zoom_scroll(0.99, -10000.0), 1.0);
     }
 

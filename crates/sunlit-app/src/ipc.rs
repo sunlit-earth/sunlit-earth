@@ -26,51 +26,89 @@ use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
+use sunlit_core::memory::MemorySnapshot;
 use tracing::{debug, info, warn};
 
-/// Spawn a background thread that listens for IPC commands on a local socket.
+/// A socket that is bound and not yet being served.
 ///
-/// Commands are dispatched directly via `invoke_from_event_loop` to the Slint
-/// event loop thread. Returns a `JoinHandle` for the listener thread.
-pub fn spawn_ipc_listener(
-    socket_name: &str,
-    window_weak: slint::Weak<crate::MainWindow>,
-    engine: EngineLink,
-) -> std::thread::JoinHandle<()> {
+/// Binding and serving are two steps because the name can only be taken once:
+/// a name the platform refuses, or one another instance already holds, is an
+/// answer the caller wants before it selects an adapter and builds every
+/// texture, not after.
+pub struct IpcListener {
+    listener: interprocess::local_socket::Listener,
+    socket_name: String,
+}
+
+/// Take the local socket `socket_name` names.
+///
+/// The error is a sentence for the log: an app that cannot be reached over IPC
+/// still draws the globe, so the caller is expected to carry on without it.
+///
+/// :param `socket_name`: the name from `--ipc-socket`
+/// :returns: the bound socket, or why it could not be taken
+pub fn bind(socket_name: &str) -> Result<IpcListener, String> {
     let name = socket_name
         .to_ns_name::<GenericNamespaced>()
-        .expect("failed to convert IPC socket name");
-
+        .map_err(|e| format!("`{socket_name}` is not a usable socket name: {e}"))?;
     let listener = ListenerOptions::new()
         .name(name)
         .create_sync()
-        .expect("failed to create IPC listener");
+        .map_err(|e| format!("the socket `{socket_name}` could not be opened: {e}"))?;
+    Ok(IpcListener {
+        listener,
+        socket_name: socket_name.to_owned(),
+    })
+}
 
-    info!("ipc listener ready on {socket_name}");
-    println!("SIGNAL:ipc_listener_ready");
-
-    std::thread::Builder::new()
-        .name("ipc-listener".into())
-        .spawn(move || {
-            for conn in listener.incoming() {
-                match conn {
-                    Ok(stream) => {
-                        let mut reader = BufReader::new(stream);
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                            continue;
+impl IpcListener {
+    /// Spawn a background thread that dispatches the commands this socket
+    /// receives.
+    ///
+    /// Commands are dispatched directly via `invoke_from_event_loop` to the
+    /// Slint event loop thread. The readiness signal is written once the
+    /// accepting thread exists, rather than at the bind, so a client that waits
+    /// for it finds a socket somebody is answering on.
+    ///
+    /// :param `window_weak`: the window the window commands reach
+    /// :param engine: the engine the rest reach
+    /// :returns: the listener thread, or why it could not be started
+    pub fn serve(
+        self,
+        window_weak: slint::Weak<crate::MainWindow>,
+        engine: EngineLink,
+    ) -> Result<std::thread::JoinHandle<()>, String> {
+        let Self {
+            listener,
+            socket_name,
+        } = self;
+        let thread = std::thread::Builder::new()
+            .name("ipc-listener".into())
+            .spawn(move || {
+                for conn in listener.incoming() {
+                    match conn {
+                        Ok(stream) => {
+                            let mut reader = BufReader::new(stream);
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                continue;
+                            }
+                            let cmd = line.trim().to_owned();
+                            drop(reader);
+                            dispatch_command(&cmd, &window_weak, &engine);
                         }
-                        let cmd = line.trim().to_owned();
-                        drop(reader);
-                        dispatch_command(&cmd, &window_weak, &engine);
-                    }
-                    Err(e) => {
-                        warn!("ipc accept error: {e}");
+                        Err(e) => {
+                            warn!("ipc accept error: {e}");
+                        }
                     }
                 }
-            }
-        })
-        .expect("failed to spawn ipc-listener thread")
+            })
+            .map_err(|e| format!("the ipc listener thread could not be started: {e}"))?;
+
+        info!("ipc listener ready on {socket_name}");
+        println!("SIGNAL:ipc_listener_ready");
+        Ok(thread)
+    }
 }
 
 /// Parse and dispatch a single IPC command via `invoke_from_event_loop`.
@@ -146,10 +184,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             // Answered on this thread: GetProcessMemoryInfo is process-wide,
             // so the reply is correct even when the event loop is idle or busy.
             match sunlit_core::memory::snapshot() {
-                Some(snap) => signal(&format!(
-                    "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
-                    snap.rss_bytes, snap.peak_rss_bytes, snap.private_bytes
-                )),
+                Some(snap) => signal(&MemorySignal::from(&snap).line()),
                 None => signal("memory_unavailable"),
             }
         }
@@ -210,10 +245,306 @@ fn report_displays() {
     }
 }
 
+/// The counters `query-memory` answers with.
+///
+/// Both halves of that contract in one place. The e2e suite reads the line back
+/// through [`MemorySignal::parse`], so a field renamed here is a compile error
+/// in the suite rather than a panic in a guest half an hour later. What the line
+/// looks like on the wire does not change: `CLAUDE.md` calls it a parsing
+/// contract and this makes it one the compiler can see.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemorySignal {
+    pub rss_bytes: u64,
+    pub peak_rss_bytes: u64,
+    pub private_bytes: u64,
+}
+
+impl MemorySignal {
+    /// The signal body, without the `SIGNAL:` prefix.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
+            self.rss_bytes, self.peak_rss_bytes, self.private_bytes
+        )
+    }
+
+    /// Read the counters back out of a `SIGNAL:memory ...` line.
+    ///
+    /// `None` where a field is missing or is not a number, which is a line this
+    /// program did not write. [`MemorySignal::missing_field`] says which one.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        Self::read(line).ok()
+    }
+
+    /// The first field this line does not carry as a number, or `None` where it
+    /// parses.
+    ///
+    /// What a caller prints when [`MemorySignal::parse`] answers `None`. The
+    /// line on its own leaves whoever is reading a guest's log counting fields
+    /// by eye.
+    #[must_use]
+    pub fn missing_field(line: &str) -> Option<&'static str> {
+        Self::read(line).err()
+    }
+
+    /// One reader behind both, so the name in the error is the field that
+    /// actually failed rather than a second list that can drift from this one.
+    fn read(line: &str) -> Result<Self, &'static str> {
+        Ok(Self {
+            rss_bytes: signal_number(line, "rss_bytes")?,
+            peak_rss_bytes: signal_number(line, "peak_rss_bytes")?,
+            private_bytes: signal_number(line, "private_bytes")?,
+        })
+    }
+}
+
+impl From<&MemorySnapshot> for MemorySignal {
+    fn from(snapshot: &MemorySnapshot) -> Self {
+        Self {
+            rss_bytes: snapshot.rss_bytes,
+            peak_rss_bytes: snapshot.peak_rss_bytes,
+            private_bytes: snapshot.private_bytes,
+        }
+    }
+}
+
+/// The plan `displays` answers with, read back off the line.
+///
+/// The other side of [`crate::displays::signal_line`], which builds it. The
+/// producer stays where the plan is computed; this is the one reader, and the
+/// round trip is unit-tested below, so a renamed field fails in `cargo unit`
+/// rather than in a guest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplaysSignal {
+    pub monitors: usize,
+    pub mode: String,
+    pub anchor: i32,
+    pub fell_back: bool,
+    /// One `x,y,width,height` per monitor, in the session's own order.
+    pub rects: Vec<String>,
+    /// One `width x height` per image the plan would export.
+    pub images: Vec<String>,
+}
+
+impl DisplaysSignal {
+    /// Read the plan back out of a `SIGNAL:displays ...` line.
+    ///
+    /// `None` where a field is missing or is not the shape it is written in.
+    /// [`DisplaysSignal::missing_field`] says which one.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        Self::read(line).ok()
+    }
+
+    /// The first field this line does not carry in the shape the producer
+    /// writes it, or `None` where it parses.
+    #[must_use]
+    pub fn missing_field(line: &str) -> Option<&'static str> {
+        Self::read(line).err()
+    }
+
+    /// One reader behind both, for the reason [`MemorySignal::read`] has.
+    fn read(line: &str) -> Result<Self, &'static str> {
+        Ok(Self {
+            monitors: signal_number(line, "monitors")?,
+            mode: signal_field(line, "mode").ok_or("mode")?.to_owned(),
+            anchor: signal_number(line, "anchor")?,
+            fell_back: signal_field(line, "fell_back").ok_or("fell_back")? != "0",
+            rects: signal_list(line, "rects").ok_or("rects")?,
+            images: signal_list(line, "images").ok_or("images")?,
+        })
+    }
+}
+
+/// The value of one `key=` field of a signal line.
+///
+/// Every signal line is key=value pairs with no spaces in any value, which is
+/// the shape `query-memory` established and the reason a field can be found by
+/// splitting on whitespace.
+/// A whole token and not a substring: `peak_rss_bytes=` ends with `rss_bytes=`,
+/// so a reader that searched the line would answer the wrong field.
+fn signal_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix(prefix.as_str()))
+}
+
+/// A `key=<number>` field, or the key's own name where it is missing or is not
+/// a number.
+fn signal_number<T: std::str::FromStr>(line: &str, key: &'static str) -> Result<T, &'static str> {
+    signal_field(line, key)
+        .and_then(|value| value.parse().ok())
+        .ok_or(key)
+}
+
+/// The value of one `key=` field that carries a `;`-separated list.
+///
+/// An empty field is an empty list rather than a list holding one empty entry.
+fn signal_list(line: &str, key: &str) -> Option<Vec<String>> {
+    let value = signal_field(line, key)?;
+    if value.is_empty() {
+        return Some(Vec::new());
+    }
+    Some(value.split(';').map(str::to_owned).collect())
+}
+
 pub(crate) fn signal(name: &str) {
     let msg = format!("SIGNAL:{name}\n");
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
     let _ = lock.write_all(msg.as_bytes());
     let _ = lock.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two screens side by side, the second of them primary.
+    fn two_screens() -> Vec<sunlit_core::display::Monitor> {
+        use sunlit_core::display::Monitor;
+        vec![
+            Monitor {
+                id: "DP-1".to_owned(),
+                label: "DP-1".to_owned(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                primary: false,
+            },
+            Monitor {
+                id: "DP-2".to_owned(),
+                label: "DP-2".to_owned(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                primary: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_memory_counters_survive_the_line_they_are_written_on() {
+        let counters = MemorySignal {
+            rss_bytes: 123_456,
+            peak_rss_bytes: 234_567,
+            private_bytes: 345_678,
+        };
+        let line = format!("SIGNAL:{}", counters.line());
+        assert_eq!(MemorySignal::parse(&line), Some(counters));
+    }
+
+    /// A field whose name is the tail of another's must not be found by it.
+    ///
+    /// The producer writes `rss_bytes` first, so a reader that searched the
+    /// line for a substring would still answer correctly on a real line, by
+    /// luck. This one puts `peak_rss_bytes` first, where that luck runs out:
+    /// the first `rss_bytes=` in it belongs to another field.
+    #[test]
+    fn peak_rss_is_not_read_as_rss() {
+        let line = "SIGNAL:memory peak_rss_bytes=222 private_bytes=333 rss_bytes=111";
+        assert_eq!(
+            MemorySignal::parse(line),
+            Some(MemorySignal {
+                rss_bytes: 111,
+                peak_rss_bytes: 222,
+                private_bytes: 333,
+            })
+        );
+    }
+
+    #[test]
+    fn a_line_without_the_fields_is_not_a_memory_signal() {
+        assert_eq!(MemorySignal::parse("SIGNAL:memory_unavailable"), None);
+    }
+
+    /// A failed parse names the field, because the line alone is what a reader
+    /// in a guest has to count through by eye.
+    #[test]
+    fn a_failed_parse_names_the_field_that_failed() {
+        assert_eq!(
+            MemorySignal::missing_field("SIGNAL:memory rss_bytes=1 private_bytes=3"),
+            Some("peak_rss_bytes")
+        );
+        assert_eq!(
+            MemorySignal::missing_field(
+                "SIGNAL:memory rss_bytes=1 peak_rss_bytes=x private_bytes=3"
+            ),
+            Some("peak_rss_bytes"),
+            "a field that is there but is not a number is the same answer"
+        );
+        assert_eq!(
+            DisplaysSignal::missing_field("SIGNAL:displays monitors=1 mode=one-screen anchor=0"),
+            Some("fell_back")
+        );
+    }
+
+    /// The display plan survives the line it is written on, which is what ties
+    /// `displays::signal_line` to the only thing that reads it.
+    #[test]
+    fn the_display_plan_survives_the_line_it_is_written_on() {
+        use sunlit_core::display::layout::DisplayMode;
+
+        let monitors = two_screens();
+        let line = format!(
+            "SIGNAL:displays {}",
+            crate::displays::signal_line(&monitors, DisplayMode::EveryScreen, Some("DP-1"))
+        );
+        let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
+        assert_eq!(plan.monitors, monitors.len());
+        assert_eq!(plan.mode, DisplayMode::EveryScreen.name());
+        assert_eq!(plan.anchor, 0, "the stored id names the first screen");
+        assert!(!plan.fell_back);
+        assert_eq!(plan.rects, vec!["0,0,1920,1080", "1920,0,2560,1440"]);
+        assert_eq!(
+            plan.images.len(),
+            monitors.len(),
+            "every-screen exports one image per screen: {plan:?}"
+        );
+    }
+
+    /// An anchor this session does not have falls back, and says so.
+    #[test]
+    fn a_stored_screen_the_session_lost_is_reported_as_a_fallback() {
+        use sunlit_core::display::layout::DisplayMode;
+
+        let line = crate::displays::signal_line(
+            &two_screens(),
+            DisplayMode::OneScreen,
+            Some("a-screen-that-is-not-here"),
+        );
+        let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
+        assert!(plan.fell_back);
+        assert_eq!(plan.images.len(), 1, "one screen takes one image: {plan:?}");
+    }
+
+    /// A session with no screens has empty lists rather than lists holding one
+    /// empty entry, which is what a naive split would produce.
+    #[test]
+    fn a_session_with_no_screens_parses_to_empty_lists() {
+        use sunlit_core::display::layout::DisplayMode;
+
+        let line = crate::displays::signal_line(&[], DisplayMode::OneScreen, None);
+        let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
+        assert_eq!(plan.monitors, 0);
+        assert_eq!(plan.anchor, -1);
+        assert!(plan.rects.is_empty());
+        assert!(plan.images.is_empty());
+    }
+
+    #[test]
+    fn a_name_something_else_holds_is_an_error_rather_than_a_panic() {
+        let name = format!("sunlit-earth-ipc-test-{}", std::process::id());
+        let held = bind(&name).expect("the first listener takes the name");
+        let second = bind(&name);
+        drop(held);
+        assert!(
+            second.is_err(),
+            "a name already taken has to be refused, not shared"
+        );
+    }
 }

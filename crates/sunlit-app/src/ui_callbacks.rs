@@ -1,7 +1,4 @@
 //! UI callback registration and config-to-window bridge functions.
-//!
-//! Groups all Slint callback registrations by category and provides helper
-//! functions for applying/reading config to/from the window.
 
 use slint::ComponentHandle;
 
@@ -15,6 +12,37 @@ use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_sli
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
 use sunlit_core::scene::sun::DateTimeInput;
+
+/// A Slint index as a position in the list it selects from.
+///
+/// A negative index is one no list has, which is what `get` already answers
+/// `None` to, so the conversion needs no separate guard.
+pub(crate) fn slider_index(value: i32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+/// A slider's float as the whole number a setting stores.
+///
+/// Rust's float-to-integer casts saturate, so a value outside the range lands
+/// on an end of it rather than wrapping.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the one place a slider value becomes a count"
+)]
+pub(crate) fn slider_u32(value: f32) -> u32 {
+    value as u32
+}
+
+/// The same for the one setting that is stored narrower, the day of the year.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the one place a slider value becomes a day of the year"
+)]
+pub(crate) fn slider_u16(value: f32) -> u16 {
+    value as u16
+}
 
 /// Register the left-drag: rotate the globe, tilt-corrected, at a gain that
 /// follows the hand.
@@ -70,12 +98,12 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
     });
 }
 
-/// Register mouse interaction callbacks: globe drag, frame drag, orient drag,
-/// tilt drag, scroll zoom, and preset application.
+/// Register mouse interaction callbacks: globe drag (left), frame drag
+/// (right), orient drag (middle), tilt drag (left and right together), scroll
+/// zoom, and preset application.
 pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
     register_globe_drag(window, link);
 
-    // Right-drag callback: adjust framing (offset X/Y)
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_drag_frame(move |dx, dy| {
@@ -94,7 +122,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Middle-drag callback: adjust pitch and yaw
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_drag_orient(move |dx, dy| {
@@ -108,7 +135,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Left+right drag callback: adjust tilt (horizontal only)
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_drag_tilt(move |dx, _dy| {
@@ -119,7 +145,6 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Mouse scroll callback: zoom in/out
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_mouse_scroll(move |delta| {
@@ -130,15 +155,13 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         engine.push_params(&win);
     });
 
-    // Apply-preset callback: set camera parameters from the PRESETS array
     let window_weak = window.as_weak();
     let engine = link.clone();
-    #[allow(clippy::cast_sign_loss)]
     window.on_apply_preset(move |index| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let Some(preset) = PRESETS.get(index as usize) else {
+        let Some(preset) = PRESETS.get(slider_index(index)) else {
             return;
         };
         win.set_camera_longitude(preset.longitude);
@@ -166,7 +189,6 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
         }
     });
 
-    // When "Override date/time" is toggled on, initialize sliders to current UTC time
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_datetime_override_toggled(move || {
@@ -227,7 +249,6 @@ pub fn register_action_callbacks(
     link: &EngineLink,
     screens: &displays::SharedMonitors,
 ) {
-    // "Set as Wallpaper" button: save config, then ask the engine to export.
     {
         let window_weak = window.as_weak();
         let engine = link.clone();
@@ -241,7 +262,6 @@ pub fn register_action_callbacks(
         });
     }
 
-    // Load-defaults callback: restore all settings to AppConfig::default() without saving
     let window_weak = window.as_weak();
     let engine = link.clone();
     let for_defaults = std::sync::Arc::clone(screens);
@@ -249,35 +269,9 @@ pub fn register_action_callbacks(
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let defaults = AppConfig::default();
-        apply_config_to_window(&win, &defaults);
-
-        defer_combobox_indices(
-            &win.as_weak(),
-            ComboIndices::of(
-                &defaults,
-                engine.aa_counts(),
-                defaults.texture_resolution,
-                &displays::screen_ids_of_window(&win),
-            ),
-        );
-        displays::apply_diagram_to_window(
-            &win,
-            &displays::monitors_of(&for_defaults),
-            defaults.anchor().as_deref(),
-        );
-        engine.set_resolution_is_one_run_only(false);
-        engine.send(EngineCommand::SetTextureResolution(
-            defaults.texture_resolution,
-        ));
-        engine.send(EngineCommand::SetDisplayPlan {
-            mode: defaults.display_mode,
-            anchor: defaults.anchor(),
-        });
-        engine.push_params(&win);
+        apply_whole_config(&win, &engine, &for_defaults, &AppConfig::default());
     });
 
-    // Reset callback: reload config from disk and restore UI to last-saved state
     let window_weak = window.as_weak();
     let engine = link.clone();
     let for_reset = std::sync::Arc::clone(screens);
@@ -285,40 +279,54 @@ pub fn register_action_callbacks(
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let loaded = config::load_config();
-        apply_config_to_window(&win, &loaded);
-
-        defer_combobox_indices(
-            &win.as_weak(),
-            ComboIndices::of(
-                &loaded,
-                engine.aa_counts(),
-                loaded.texture_resolution,
-                &displays::screen_ids_of_window(&win),
-            ),
-        );
-        displays::apply_diagram_to_window(
-            &win,
-            &displays::monitors_of(&for_reset),
-            loaded.anchor().as_deref(),
-        );
-        engine.set_resolution_is_one_run_only(false);
-        engine.send(EngineCommand::SetTextureResolution(
-            loaded.texture_resolution,
-        ));
-        engine.send(EngineCommand::SetDisplayPlan {
-            mode: loaded.display_mode,
-            anchor: loaded.anchor(),
-        });
-        engine.push_params(&win);
+        apply_whole_config(&win, &engine, &for_reset, &config::load_config());
     });
+}
+
+/// Put a whole config into the window, the engine and the diagram at once.
+///
+/// Load-defaults and reset differ only in where the config comes from. Both
+/// replace every setting rather than one, which is why the texture resolution
+/// and the display plan are sent explicitly: neither travels in `SceneParams`,
+/// and the engine holds its own copy of each.
+fn apply_whole_config(
+    window: &MainWindow,
+    engine: &EngineLink,
+    screens: &displays::SharedMonitors,
+    config: &AppConfig,
+) {
+    apply_config_to_window(window, config);
+
+    defer_combobox_indices(
+        &window.as_weak(),
+        ComboIndices::of(
+            config,
+            engine.aa_counts(),
+            config.texture_resolution,
+            &displays::screen_ids_of_window(window),
+        ),
+    );
+    displays::apply_diagram_to_window(
+        window,
+        &displays::monitors_of(screens),
+        config.anchor().as_deref(),
+    );
+    engine.set_resolution_is_one_run_only(false);
+    engine.send(EngineCommand::SetTextureResolution(
+        config.texture_resolution,
+    ));
+    engine.send(EngineCommand::SetDisplayPlan {
+        mode: config.display_mode,
+        anchor: config.anchor(),
+    });
+    engine.push_params(window);
 }
 
 /// Wire the Displays group: the mode, the anchor screen, and the diagram.
 ///
 /// The monitor list is the one the group's rows were built from rather than a
 /// fresh query, so a row and a rectangle never name different screens. A change
-/// is persisted at once, the way the auto-refresh controls are: it is a setting
+/// is persisted at once, the way the auto-refresh checkbox is: it is a setting
 /// somebody chose rather than a slider they are still moving.
 pub fn register_display_callbacks(
     window: &MainWindow,
@@ -421,12 +429,13 @@ pub fn defer_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Co
 pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     apply_params_to_window(window, &SceneParams::from_config(config));
 
-    // Auto-refresh
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
-    #[allow(clippy::cast_precision_loss)] // interval_minutes fits in f32 mantissa
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an interval in minutes is far inside the f32 mantissa"
+    )]
     window.set_auto_refresh_interval(config.auto_refresh_interval_minutes as f32);
 
-    // Update display labels
     update_datetime_labels(window, datetime::base_year());
 }
 
@@ -506,9 +515,8 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
 /// This is one of the two translation points for `SceneParams` (the other is
 /// the uniform encoder in the renderer). `aa_counts` maps the AA combo box
 /// index to an MSAA sample count.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneParams {
-    let aa_index = window.get_aa_index().max(0) as usize;
+    let aa_index = slider_index(window.get_aa_index().max(0));
     SceneParams {
         camera: CameraParams {
             longitude: window.get_camera_longitude(),
@@ -580,12 +588,11 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// This is the thin UI-reading layer; the engine turns the result into a
 /// `scene::sky::SkyState` once per frame, which is where the sun direction,
 /// the sky rotation and the planets all come from.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
+fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
     DateTimeInput {
         use_custom: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
-        custom_day_of_year: window.get_custom_day_of_year() as u16,
+        custom_day_of_year: slider_u16(window.get_custom_day_of_year()),
         custom_year: window.get_custom_year_index() + datetime::base_year(),
     }
 }
@@ -604,7 +611,6 @@ pub fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
 /// Reading from disk also means a `--quality` override is not persisted, which
 /// is the intended behavior for a per-run flag. `--texture-resolution` does
 /// have a widget, so keeping it out of the file takes the flag `link` carries.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window(window: &MainWindow, link: &EngineLink) -> AppConfig {
     read_config_from_window_onto(
         window,
@@ -619,7 +625,6 @@ pub fn read_config_from_window(window: &MainWindow, link: &EngineLink) -> AppCon
 ///
 /// `keep_stored_resolution` is the one exception to reading the window: with it
 /// set, the width in the window is a one-run override and the stored one wins.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window_onto(
     window: &MainWindow,
     aa_counts: &[u32],
@@ -637,7 +642,7 @@ pub fn read_config_from_window_onto(
 
     let mut config = AppConfig {
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
-        auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
+        auto_refresh_interval_minutes: slider_u32(window.get_auto_refresh_interval()),
         texture_resolution,
         display_mode: displays::mode_from_window(window),
         anchor_monitor: displays::anchor_to_store(window, &stored.anchor_monitor),
@@ -653,8 +658,7 @@ pub fn read_config_from_window_onto(
 
 /// Update the hour label, day label, and max-day-of-year on the window
 /// based on the current datetime slider values.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn update_datetime_labels(window: &MainWindow, base_year: i32) {
+fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     let h = window.get_custom_hour();
     window.set_hour_label(datetime::hour_label(h).into());
 
@@ -668,7 +672,7 @@ pub fn update_datetime_labels(window: &MainWindow, base_year: i32) {
         window.set_custom_day_of_year(f32::from(max_doy));
     }
 
-    let doy = window.get_custom_day_of_year() as u16;
+    let doy = slider_u16(window.get_custom_day_of_year());
     let doy = doy.max(1);
     window.set_day_label(datetime::month_day_label(doy, year).into());
 }

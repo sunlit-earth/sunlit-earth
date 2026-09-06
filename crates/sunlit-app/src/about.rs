@@ -11,9 +11,9 @@
 //! than of how it is used. It rejects a heading outright and has no font size
 //! to give one, it stacks paragraphs with no gap and no spacing property, and
 //! its list bullet is literal text glued to the paragraph, so a wrapped line
-//! gets no hanging indent. So [`parse_blocks`] cuts the file into blocks, the
+//! gets no hanging indent. So `parse_blocks` cuts the file into blocks, the
 //! tab renders one element per block, and only a block's own inline markdown
-//! goes through [`StyledText::from_markdown`]. A block is one paragraph by
+//! goes through `StyledText::from_markdown`. A block is one paragraph by
 //! construction, which is also why none of them can hold a construct the
 //! subset rejects.
 //!
@@ -96,11 +96,11 @@ impl AboutController {
 }
 
 /// `AboutBlock::kind` for a paragraph, the one kind that carries no depth.
-pub const PARAGRAPH: i32 = 0;
+const PARAGRAPH: i32 = 0;
 /// `AboutBlock::kind` for a heading, whose depth is its level, 1 through 6.
-pub const HEADING: i32 = 1;
+const HEADING: i32 = 1;
 /// `AboutBlock::kind` for a list item, whose depth is its nesting.
-pub const LIST_ITEM: i32 = 2;
+const LIST_ITEM: i32 = 2;
 
 /// The deepest nesting a list item is laid out at.
 ///
@@ -441,6 +441,22 @@ mod tests {
 
     use super::*;
 
+    /// Install the testing backend for this thread, once.
+    ///
+    /// `set_platform` panics on a second call, and the platform is
+    /// thread-local, so the flag is too. `tests/slint_ui.rs` guards its own
+    /// windows the same way; the two targets are separate processes.
+    fn init() {
+        thread_local! {
+            static INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        INITIALIZED.with(|flag| {
+            if !flag.replace(true) {
+                i_slint_backend_testing::init_no_event_loop();
+            }
+        });
+    }
+
     /// Every document the window renders through the markdown parser, and the
     /// tab it lands in.
     const RENDERED: [(&str, &str); 2] = [
@@ -681,7 +697,7 @@ mod tests {
 
     #[test]
     fn settings_callback_shows_the_version_and_all_three_documents() {
-        i_slint_backend_testing::init_no_event_loop();
+        init();
         let main_window = MainWindow::new().expect("main window");
         let controller = AboutController::default();
         controller.register_settings_callback(&main_window);

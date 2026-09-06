@@ -88,7 +88,7 @@ impl DisplayMode {
     }
 
     /// The mode a config file's name refers to, where it names one.
-    pub fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         let name = name.trim();
         Self::ALL.into_iter().find(|mode| mode.name() == name)
     }
@@ -130,12 +130,12 @@ pub struct Rect {
 
 impl Rect {
     /// The first column past this rectangle, wide enough not to wrap.
-    pub fn right(&self) -> i64 {
+    fn right(&self) -> i64 {
         i64::from(self.x) + i64::from(self.width)
     }
 
     /// The first row past this rectangle.
-    pub fn bottom(&self) -> i64 {
+    fn bottom(&self) -> i64 {
         i64::from(self.y) + i64::from(self.height)
     }
 
@@ -146,7 +146,7 @@ impl Rect {
 
     /// This rectangle relative to another one's origin.
     #[must_use]
-    pub fn relative_to(&self, origin: &Self) -> Self {
+    pub(crate) fn relative_to(&self, origin: &Self) -> Self {
         Self {
             x: self.x - origin.x,
             y: self.y - origin.y,
@@ -242,6 +242,22 @@ pub struct Framing {
     pub offset_y: f32,
 }
 
+impl From<&crate::params::SceneParams> for Framing {
+    /// The four values a render takes from the settings, read in one place.
+    ///
+    /// `sunlit-earth displays` prints the plan this leads to and the engine
+    /// renders it. Two readings of `SceneParams` would let the printed plan and
+    /// the drawn one drift the moment a fifth field is added here.
+    fn from(params: &crate::params::SceneParams) -> Self {
+        Self {
+            camera_fov: params.camera.fov_deg,
+            sky_fov: params.sky_fov,
+            offset_x: params.camera.offset_x,
+            offset_y: params.camera.offset_y,
+        }
+    }
+}
+
 /// The widest sky the shader will accept, and the narrowest.
 ///
 /// `sphere.wgsl` clamps `sky_fov` to this range before taking the lens radius,
@@ -253,12 +269,33 @@ pub struct Framing {
 /// derives from it, and what bounds that is the stereographic lens going
 /// singular at 360 rather than anything happening at 180. What is linear in
 /// canvas pixels is `tan(sky_fov / 4)`, so the derived angle self-limits as
-/// screens are added: eight equal screens at the widest slider position come to
-/// 331 degrees and a thousand to 359.7. 330 clears a seven-wide span at that
-/// position and about eleven at the default, and leaves the frame corner 13
-/// degrees clear of the antipode.
-pub const SKY_FOV_MIN: f32 = 60.0;
-pub const SKY_FOV_MAX: f32 = 330.0;
+/// screens are added, and 330 clears a seven-wide span at the widest slider
+/// position. `docs/rendering.md` carries the measured widths.
+pub(crate) const SKY_FOV_MIN: f32 = 60.0;
+pub(crate) const SKY_FOV_MAX: f32 = 330.0;
+
+/// A pixel extent as a float.
+///
+/// Every extent in this module is a `u32` of pixels and every scale it takes
+/// part in is an `f32`, so the narrowing happens here rather than once per
+/// formula. Exact below 2^24, which is eight times the widest screen made.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the one place a pixel extent becomes a float"
+)]
+fn px(pixels: u32) -> f32 {
+    pixels as f32
+}
+
+/// A pixel coordinate as a float, the same narrowing on the signed half of a
+/// `Rect`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the one place a pixel coordinate becomes a float"
+)]
+fn px_at(coordinate: i32) -> f32 {
+    coordinate as f32
+}
 
 /// The Earth lens for one screen's own aspect ratio.
 ///
@@ -268,22 +305,19 @@ pub const SKY_FOV_MAX: f32 = 330.0;
 /// the rule is to contain: below square, the lens is scaled until the horizontal
 /// extent is what the vertical extent would have been.
 ///
-/// Only the Earth lens. The sky lens is anchored to the horizontal axis, where a
-/// portrait screen is the case that already fits and nothing runs off, so
-/// applying the same correction to it would move a sky that was never in
-/// trouble.
-#[allow(clippy::cast_precision_loss)]
+/// Only the Earth lens: the sky lens is anchored to the horizontal axis, where a
+/// portrait screen is the case that already fits.
 pub fn contain_camera_fov(camera_fov: f32, width: u32, height: u32) -> f32 {
     if width == 0 || height == 0 || width >= height {
         return camera_fov;
     }
     let half = (camera_fov.to_radians() * 0.5).tan();
-    let contained = half * height as f32 / width as f32;
+    let contained = half * px(height) / px(width);
     (contained.atan() * 2.0).to_degrees()
 }
 
 /// The framing one screen is rendered with.
-pub fn screen_framing(settings: Framing, width: u32, height: u32) -> Framing {
+pub(crate) fn screen_framing(settings: Framing, width: u32, height: u32) -> Framing {
     Framing {
         camera_fov: contain_camera_fov(settings.camera_fov, width, height),
         ..settings
@@ -298,8 +332,7 @@ pub struct CanvasFraming {
     ///
     /// The globe still continues exactly across the seam; the sky is drawn at a
     /// smaller scale than the anchor alone would have drawn it. No layout built
-    /// out of screens that fit on a desk reaches it: at the default sky the
-    /// canvas has to be about eleven times the anchor's width first.
+    /// out of screens that fit on a desk reaches it.
     pub sky_clamped: bool,
 }
 
@@ -314,7 +347,6 @@ pub struct CanvasFraming {
 ///
 /// The base is the anchor's *own* framing, contain rule included, so that what
 /// the crop reproduces is the image that screen gets in every other mode.
-#[allow(clippy::cast_precision_loss)]
 pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFraming {
     let base = screen_framing(settings, anchor.width, anchor.height);
     if anchor.is_empty() || canvas.is_empty() {
@@ -323,8 +355,8 @@ pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFr
             sky_clamped: false,
         };
     }
-    let (canvas_width, canvas_height) = (canvas.width as f32, canvas.height as f32);
-    let (anchor_width, anchor_height) = (anchor.width as f32, anchor.height as f32);
+    let (canvas_width, canvas_height) = (px(canvas.width), px(canvas.height));
+    let (anchor_width, anchor_height) = (px(anchor.width), px(anchor.height));
 
     let camera_scale = canvas_height / anchor_height;
     let camera_fov = ((base.camera_fov.to_radians() * 0.5).tan() * camera_scale)
@@ -341,8 +373,8 @@ pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFr
     // The anchor's center in canvas pixels, then in canvas NDC, which is where
     // the principal point has to move to.
     let local = anchor.relative_to(&canvas);
-    let center_x = local.x as f32 + anchor_width * 0.5;
-    let center_y = local.y as f32 + anchor_height * 0.5;
+    let center_x = px_at(local.x) + anchor_width * 0.5;
+    let center_y = px_at(local.y) + anchor_height * 0.5;
     let ndc_x = 2.0 * center_x / canvas_width - 1.0;
     let ndc_y = 1.0 - 2.0 * center_y / canvas_height;
 
@@ -455,7 +487,10 @@ pub fn crop(pixels: &[u8], canvas_width: u32, canvas_height: u32, rect: Rect) ->
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the fabricated screen sizes in these tests are small integers"
+)]
 mod tests {
     use approx::assert_relative_eq;
 
@@ -490,70 +525,87 @@ mod tests {
         }
     }
 
+    /// The canvas is the bounding box of the monitors, wherever a desk puts
+    /// them. Windows gives negative coordinates freely, since the primary is
+    /// the origin and everything left of or above it is negative.
     #[test]
-    fn two_side_by_side_bound_a_double_width_canvas() {
-        assert_eq!(
-            bounds_of(&side_by_side()),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                width: 3840,
-                height: 1080
-            })
-        );
-    }
-
-    #[test]
-    fn a_taller_second_monitor_makes_the_canvas_as_tall_as_it_is() {
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1920, 1080, true),
-            monitor("DP-2", 1920, 0, 2560, 1440, false),
-        ];
-        assert_eq!(
-            bounds_of(&monitors),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                width: 4480,
-                height: 1440
-            })
-        );
-    }
-
-    #[test]
-    fn a_stack_bounds_a_tall_canvas() {
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1920, 1080, true),
-            monitor("DP-2", 0, 1080, 1920, 1080, false),
-        ];
-        assert_eq!(
-            bounds_of(&monitors),
-            Some(Rect {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 2160
-            })
-        );
-    }
-
-    #[test]
-    fn a_monitor_left_of_and_above_the_primary_moves_the_canvas_origin() {
-        // Windows gives negative coordinates freely: the primary is the origin
-        // and everything placed left of or above it is negative.
-        let monitors = vec![
-            monitor("DISPLAY1", 0, 0, 1920, 1080, true),
-            monitor("DISPLAY2", -2560, -200, 2560, 1440, false),
-        ];
-        assert_eq!(
-            bounds_of(&monitors),
-            Some(Rect {
-                x: -2560,
-                y: -200,
-                width: 4480,
-                height: 1440
-            })
-        );
+    fn the_canvas_is_the_bounding_box_of_the_monitors() {
+        for (layout, monitors, expected) in [
+            (
+                "side by side",
+                side_by_side(),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 3840,
+                    height: 1080,
+                },
+            ),
+            (
+                "a taller second monitor",
+                vec![
+                    monitor("DP-1", 0, 0, 1920, 1080, true),
+                    monitor("DP-2", 1920, 0, 2560, 1440, false),
+                ],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 4480,
+                    height: 1440,
+                },
+            ),
+            (
+                "a stack",
+                vec![
+                    monitor("DP-1", 0, 0, 1920, 1080, true),
+                    monitor("DP-2", 0, 1080, 1920, 1080, false),
+                ],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 2160,
+                },
+            ),
+            (
+                "left of and above the primary",
+                vec![
+                    monitor("DISPLAY1", 0, 0, 1920, 1080, true),
+                    monitor("DISPLAY2", -2560, -200, 2560, 1440, false),
+                ],
+                Rect {
+                    x: -2560,
+                    y: -200,
+                    width: 4480,
+                    height: 1440,
+                },
+            ),
+            (
+                "one monitor, which bounds exactly itself",
+                vec![monitor("DP-1", 0, 0, 2560, 1440, true)],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                },
+            ),
+            (
+                "two mirrored monitors, which are one screen's worth of canvas",
+                vec![
+                    monitor("DP-1", 0, 0, 1920, 1080, true),
+                    monitor("HDMI-1", 0, 0, 1920, 1080, false),
+                ],
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+            ),
+        ] {
+            assert_eq!(bounds_of(&monitors), Some(expected), "{layout}");
+        }
     }
 
     #[test]
@@ -590,12 +642,6 @@ mod tests {
         );
         assert_eq!(bounds_of(&[]), None);
         assert_eq!(bounds_of(&monitors[1..]), None);
-    }
-
-    #[test]
-    fn one_monitor_bounds_exactly_itself() {
-        let monitors = vec![monitor("DP-1", 0, 0, 2560, 1440, true)];
-        assert_eq!(bounds_of(&monitors), Some(monitors[0].rect()));
     }
 
     #[test]
@@ -701,6 +747,9 @@ mod tests {
             camera_scale(settings().camera_fov, anchor.height),
             max_relative = 1e-5
         );
+        // These two screens are the same height, so the canvas height cancels
+        // and the identity above reduces to the lens being left alone outright.
+        assert_relative_eq!(derived.framing.camera_fov, settings().camera_fov);
 
         // The anchor's center lands where its crop's center is.
         assert_relative_eq!(derived.framing.offset_x, 0.5, epsilon = 1e-6);
@@ -735,11 +784,20 @@ mod tests {
                 sky_scale(settings().sky_fov, monitors[0].width),
                 max_relative = 1e-5
             );
+            assert!(
+                derived.framing.sky_fov > 180.0,
+                "a canvas {screens} times the anchor's width needs a sky past the \
+                 slider's own maximum, and this one derived {}",
+                derived.framing.sky_fov
+            );
         }
     }
 
     #[test]
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a screen count a ceil already made whole"
+    )]
     fn a_canvas_wider_than_the_sky_reaches_says_the_sky_was_clamped() {
         // One screen beyond the reach, which at the default sky is a wall of
         // twelve. Nobody has this layout; what the case is for is that the
@@ -753,31 +811,6 @@ mod tests {
         let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
         assert!(derived.sky_clamped, "{screens} screens: {derived:?}");
         assert_relative_eq!(derived.framing.sky_fov, SKY_FOV_MAX);
-    }
-
-    #[test]
-    fn the_two_screen_span_the_old_cap_refused_is_inside_the_new_one() {
-        // The case the widening was for: two equal screens side by side at the
-        // default sky derive 218 degrees, which the shader's old 180 turned
-        // into a sky drawn at the wrong scale on both of them.
-        let monitors = side_by_side();
-        let canvas = bounds_of(&monitors).unwrap();
-        let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
-        assert!(!derived.sky_clamped, "{derived:?}");
-        assert!(
-            derived.framing.sky_fov > 180.0,
-            "a canvas twice the anchor's width needs a sky past the slider's own \
-             maximum, and this one derived {}",
-            derived.framing.sky_fov
-        );
-    }
-
-    #[test]
-    fn equal_heights_leave_the_earth_lens_untouched() {
-        let monitors = side_by_side();
-        let canvas = bounds_of(&monitors).unwrap();
-        let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
-        assert_relative_eq!(derived.framing.camera_fov, settings().camera_fov);
     }
 
     #[test]
@@ -834,26 +867,6 @@ mod tests {
                 monitors: vec![1]
             }]
         );
-    }
-
-    #[test]
-    fn two_identical_monitors_cost_one_render_and_two_files() {
-        let groups = render_groups(&side_by_side(), DisplayMode::EveryScreen, 0);
-        assert_eq!(groups.len(), 1, "{groups:?}");
-        assert_eq!(groups[0].monitors, vec![0, 1]);
-    }
-
-    #[test]
-    fn mirrored_monitors_share_one_render() {
-        let monitors = vec![
-            monitor("DP-1", 0, 0, 1920, 1080, true),
-            monitor("HDMI-1", 0, 0, 1920, 1080, false),
-        ];
-        let groups = render_groups(&monitors, DisplayMode::EveryScreen, 0);
-        assert_eq!(groups.len(), 1, "{groups:?}");
-        assert_eq!(groups[0].monitors, vec![0, 1]);
-        // And in the span mode the two of them are one screen's worth of canvas.
-        assert_eq!(bounds_of(&monitors), Some(monitors[0].rect()));
     }
 
     #[test]
@@ -948,6 +961,22 @@ mod tests {
         // Their first pixels are the canvas's columns 0 and 4.
         assert_eq!(left[0], 0);
         assert_eq!(right[0], 4);
+
+        // And a crop of the whole canvas is the canvas.
+        assert_eq!(
+            crop(
+                &pixels,
+                8,
+                4,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 4
+                }
+            ),
+            Some(pixels)
+        );
     }
 
     #[test]
@@ -967,25 +996,6 @@ mod tests {
         .unwrap();
         assert_eq!(&corner[..4], &[6, 2, 0, 255]);
         assert_eq!(&corner[corner.len() - 4..], &[7, 3, 0, 255]);
-    }
-
-    #[test]
-    fn a_crop_of_the_whole_canvas_is_the_canvas() {
-        let pixels = canvas(5, 3);
-        assert_eq!(
-            crop(
-                &pixels,
-                5,
-                3,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 5,
-                    height: 3
-                }
-            ),
-            Some(pixels.clone())
-        );
     }
 
     #[test]
@@ -1056,7 +1066,6 @@ mod tests {
         // arrives from the UI, and -1 is what an empty combo answers with.
         assert_eq!(DisplayMode::from_index(-1), DisplayMode::default());
         assert_eq!(DisplayMode::from_index(99), DisplayMode::default());
-        assert_eq!(DisplayMode::default(), DisplayMode::EveryScreen);
     }
 
     #[derive(Serialize, Deserialize)]

@@ -6,11 +6,6 @@
 //! PNG next to the cloud cache and every later run decodes that instead. PNG
 //! because the `image` crate encodes it losslessly and decodes it in a fraction
 //! of the time JPEG XL takes; the file is disposable either way.
-//!
-//! A cached file is a plain downscale of its source, in the source's own
-//! orientation, so reading one back goes through the same
-//! [`texture_loader::load`] a source does. Whether it still matches the source
-//! is decided by a sidecar recording the source's size and modification time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -142,10 +137,8 @@ pub fn load_at_resolution(
         }
     }
 
-    // Stamped before the decode rather than after it. A decode of an 8K source
-    // takes seconds, and a source replaced during those seconds would otherwise
-    // be recorded as what the old pixels came from: an entry that validates
-    // forever and holds the wrong image, with nothing left to invalidate it.
+    // Stamped before the decode rather than after it, so a source replaced
+    // during it is not recorded as where the old pixels came from.
     let before = SourceStamp::of(source);
     let (mut decoded, halved) = load_and_halve(source, target_width)?;
     // Written before the orientation fixes, so what lands on disk is a plain
@@ -292,7 +285,7 @@ fn sweep_unfinished(target: &Path) {
     };
     for entry in entries.flatten() {
         let found = entry.file_name().to_string_lossy().into_owned();
-        if found.starts_with(&prefix) && found.ends_with('~') {
+        if found.starts_with(&prefix) && found.ends_with(UNFINISHED_SUFFIX) {
             let path = entry.path();
             match fs::remove_file(&path) {
                 Ok(()) => debug!(path = %path.display(), "removed an unfinished cache file"),
@@ -304,96 +297,75 @@ fn sweep_unfinished(target: &Path) {
     }
 }
 
+/// The suffix a cache entry that is not finished yet carries, which is also
+/// what [`sweep_unfinished`] looks for.
+const UNFINISHED_SUFFIX: &str = "~";
+
 /// A name for the not-yet-finished version of `path`, unique to this writer.
-///
-/// The `~` suffix is the config save's convention for a file that is not
-/// finished yet. The process id and counter are what the config save does not
-/// need and this does: two runs of the app, or two loader threads in one run
-/// switching resolutions back and forth, can be building the same cache entry
-/// at the same time, and a shared temporary name means the second `File::create`
-/// truncates the first writer's PNG mid-write.
 fn unfinished(path: &Path) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{}.{nonce}~", std::process::id()));
-    PathBuf::from(name)
+    crate::files::unfinished(path, UNFINISHED_SUFFIX)
 }
 
 /// Encode `img` as a PNG at `path`.
 ///
-/// The encoder is named rather than inferred from the file extension, because
-/// the file this writes to is the unfinished one and its extension is not
-/// `png`. Fast compression rather than the default: the file is a cache entry whose
-/// whole point is to be cheaper than decoding the source again, and the encode
-/// happens on the loader thread while the app is waiting for its first frame.
+/// The cheapest compression the encoder offers short of none, because the file
+/// is a cache entry whose whole point is to be cheaper than decoding the source
+/// again, and the encode happens on the loader thread while the app is waiting
+/// for its first frame.
 fn save_png(path: &Path, img: &DecodedImage) -> Result<(), String> {
-    use image::ImageEncoder;
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-
-    let file = fs::File::create(path).map_err(|e| e.to_string())?;
-    PngEncoder::new_with_quality(
-        std::io::BufWriter::new(file),
-        CompressionType::Fast,
-        FilterType::Adaptive,
-    )
-    .write_image(
+    crate::files::write_png(
+        path,
         &img.pixels,
         img.width,
         img.height,
-        image::ExtendedColorType::Rgba8,
+        crate::files::CompressionType::Fast,
+        crate::files::FilterType::Adaptive,
     )
-    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScratchDir;
 
     /// A distinguishable gradient, so a downscale is not confusable with the
     /// source and a replacement is not confusable with either.
     fn write_source(path: &Path, width: u32, height: u32, seed: u8) {
         let mut img = image::RgbaImage::new(width, height);
         for (x, y, px) in img.enumerate_pixels_mut() {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation, reason = "the modulo leaves a byte")]
             let v = ((x * 7 + y * 13) % 256) as u8;
             *px = image::Rgba([v, seed, 255 - v, 255]);
         }
         img.save(path).expect("write the fixture source");
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sunlit_earth_texture_cache_{name}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create the test directory");
-        dir
+    fn temp_dir(name: &str) -> ScratchDir {
+        ScratchDir::new(&format!("texture_cache_{name}"))
     }
 
     // --- halvings_to ---
 
+    /// The setting is a cap, so a source at or under the target is left alone
+    /// and one above it is halved until it fits. A target of zero has no width
+    /// to reach, so the halving stops at one pixel instead of looping.
     #[test]
-    fn a_source_at_the_target_width_is_not_halved() {
-        assert_eq!(halvings_to(8192, 8192), 0);
-    }
-
-    #[test]
-    fn each_step_halves_until_the_target_is_reached() {
-        assert_eq!(halvings_to(8192, 4096), 1);
-        assert_eq!(halvings_to(8192, 2048), 2);
-        assert_eq!(halvings_to(4096, 2048), 1);
-    }
-
-    /// The setting is a cap, so asking for more than the file holds is not an
-    /// upscale.
-    #[test]
-    fn a_source_narrower_than_the_target_is_left_alone() {
-        assert_eq!(halvings_to(2048, 8192), 0);
-        assert_eq!(halvings_to(1, 8192), 0);
-    }
-
-    #[test]
-    fn halving_a_target_of_zero_terminates_at_one_pixel() {
-        assert_eq!(halvings_to(8, 0), 3);
+    fn a_source_is_halved_until_it_fits_the_target() {
+        for (source, target, halvings) in [
+            (8192, 8192, 0),
+            (8192, 4096, 1),
+            (8192, 2048, 2),
+            (4096, 2048, 1),
+            (2048, 8192, 0),
+            (1, 8192, 0),
+            (8, 0, 3),
+        ] {
+            assert_eq!(
+                halvings_to(source, target),
+                halvings,
+                "{source} down to {target}"
+            );
+        }
     }
 
     // --- the cache key ---
@@ -407,16 +379,6 @@ mod tests {
         );
         assert!(image.ends_with("texture_cache/world.topo.200405.2048.png"));
         assert!(meta.ends_with("texture_cache/world.topo.200405.2048.toml"));
-    }
-
-    #[test]
-    fn each_width_gets_its_own_cache_file() {
-        let dir = Path::new("C:/data");
-        let source = Path::new("C:/textures/day.jxl");
-        assert_ne!(
-            cache_paths(dir, source, 4096).0,
-            cache_paths(dir, source, 2048).0
-        );
     }
 
     #[test]
@@ -475,11 +437,11 @@ mod tests {
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
 
-        let img = load_at_resolution(&source, 8, Some(&dir)).expect("load");
+        let img = load_at_resolution(&source, 8, Some(dir.path())).expect("load");
         assert_eq!((img.width, img.height), (8, 4));
         assert_eq!(img.pixels.len(), 8 * 4 * 4);
 
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        let (image_path, meta_path) = cache_paths(dir.path(), &source, 8);
         assert!(image_path.exists(), "the downscale should be cached");
         assert!(meta_path.exists(), "the sidecar should be beside it");
 
@@ -495,15 +457,12 @@ mod tests {
         );
     }
 
-    /// A unique temporary name per writer means nothing reuses it, so a write
-    /// that was killed leaves a file behind. The next successful write of the
-    /// same entry is what clears it.
     #[test]
     fn a_write_sweeps_unfinished_files_an_earlier_one_left() {
         let dir = temp_dir("sweep");
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        let (image_path, meta_path) = cache_paths(dir.path(), &source, 8);
 
         fs::create_dir_all(image_path.parent().expect("a parent")).expect("cache directory");
         let orphans = [
@@ -519,10 +478,10 @@ mod tests {
         fs::write(&bystander, b"not ours").expect("write the bystander");
         // An orphan of the same source at another width: unfinished, but not
         // this target's, so only the prefix check keeps it alive.
-        let other_width = unfinished(&cache_paths(&dir, &source, 4).0);
+        let other_width = unfinished(&cache_paths(dir.path(), &source, 4).0);
         fs::write(&other_width, b"half a png").expect("write the other width");
 
-        load_at_resolution(&source, 8, Some(&dir)).expect("load");
+        load_at_resolution(&source, 8, Some(dir.path())).expect("load");
 
         for orphan in &orphans {
             assert!(!orphan.exists(), "{} should be swept", orphan.display());
@@ -535,8 +494,6 @@ mod tests {
         );
     }
 
-    /// Two writers of the same entry must not share a temporary name, or the
-    /// second `File::create` truncates the first one's PNG mid-write.
     #[test]
     fn each_unfinished_name_is_the_writers_own() {
         let target = Path::new("C:/data/texture_cache/day.2048.png");
@@ -561,11 +518,11 @@ mod tests {
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
 
-        let first = load_at_resolution(&source, 8, Some(&dir)).expect("first load");
-        let (image_path, _) = cache_paths(&dir, &source, 8);
+        let first = load_at_resolution(&source, 8, Some(dir.path())).expect("first load");
+        let (image_path, _) = cache_paths(dir.path(), &source, 8);
         write_source(&image_path, 8, 4, 200);
 
-        let second = load_at_resolution(&source, 8, Some(&dir)).expect("second load");
+        let second = load_at_resolution(&source, 8, Some(dir.path())).expect("second load");
         assert_eq!((second.width, second.height), (8, 4));
         assert_ne!(
             second.pixels, first.pixels,
@@ -573,18 +530,17 @@ mod tests {
         );
     }
 
-    /// The cache is keyed on the source, so replacing the asset must not leave
-    /// the old downscale in use.
     #[test]
     fn a_changed_source_invalidates_the_cache() {
         let dir = temp_dir("invalidate");
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
-        load_at_resolution(&source, 8, Some(&dir)).expect("first load");
+        load_at_resolution(&source, 8, Some(dir.path())).expect("first load");
 
         // A wider source is a different file by size as well as by content.
         write_source(&source, 64, 32, 20);
-        let after = load_at_resolution(&source, 8, Some(&dir)).expect("load after replacement");
+        let after =
+            load_at_resolution(&source, 8, Some(dir.path())).expect("load after replacement");
         assert_eq!(
             (after.width, after.height),
             (8, 4),
@@ -604,22 +560,12 @@ mod tests {
         let source = dir.join("day.png");
         write_source(&source, 32, 16, 10);
 
-        let img = load_at_resolution(&source, 32, Some(&dir)).expect("load");
+        let img = load_at_resolution(&source, 32, Some(dir.path())).expect("load");
         assert_eq!((img.width, img.height), (32, 16));
         assert!(
-            !cache_paths(&dir, &source, 32).0.exists(),
+            !cache_paths(dir.path(), &source, 32).0.exists(),
             "there is nothing to cache when nothing was halved"
         );
-    }
-
-    #[test]
-    fn without_a_cache_directory_the_source_is_still_halved() {
-        let dir = temp_dir("no_cache_dir");
-        let source = dir.join("day.png");
-        write_source(&source, 32, 16, 10);
-
-        let img = load_at_resolution(&source, 8, None).expect("load");
-        assert_eq!((img.width, img.height), (8, 4));
     }
 
     /// A cached downscale holds the source's own orientation, so loading one
@@ -631,17 +577,13 @@ mod tests {
         write_source(&source, 32, 16, 10);
 
         let uncached = load_at_resolution(&source, 8, None).expect("uncached");
-        let written = load_at_resolution(&source, 8, Some(&dir)).expect("cache miss");
-        let read_back = load_at_resolution(&source, 8, Some(&dir)).expect("cache hit");
+        let written = load_at_resolution(&source, 8, Some(dir.path())).expect("cache miss");
+        let read_back = load_at_resolution(&source, 8, Some(dir.path())).expect("cache hit");
 
         assert_eq!(uncached.pixels, written.pixels);
         assert_eq!(uncached.pixels, read_back.pixels);
     }
 
-    /// A source replaced while it was being decoded must not be recorded as
-    /// where the old pixels came from. That entry would validate on every later
-    /// run and hold the wrong image, and since the source is not going to change
-    /// again there would be nothing left to invalidate it.
     #[test]
     fn a_source_that_changed_during_the_decode_is_not_cached() {
         let dir = temp_dir("changed_mid_decode");
@@ -654,7 +596,7 @@ mod tests {
             modified_ms: Some(0),
         });
         let img = load_at_resolution(&source, 8, None).expect("load");
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
+        let (image_path, meta_path) = cache_paths(dir.path(), &source, 8);
 
         write_cache(&image_path, &meta_path, stale_stamp, &source, &img);
         assert!(
@@ -664,37 +606,26 @@ mod tests {
 
         // The same call with the stamp the file actually has does write it, so
         // the check above is the reason nothing was written.
-        write_cache(
-            &image_path,
-            &meta_path,
-            SourceStamp::of(&source),
-            &source,
-            &img,
-        );
+        let live_stamp = SourceStamp::of(&source);
+        write_cache(&image_path, &meta_path, live_stamp, &source, &img);
         assert!(image_path.exists() && meta_path.exists());
-    }
 
-    #[test]
-    fn a_source_that_vanished_during_the_decode_is_not_cached() {
-        let dir = temp_dir("gone_mid_decode");
-        let source = dir.join("day.png");
-        write_source(&source, 32, 16, 10);
-        let img = load_at_resolution(&source, 8, None).expect("load");
-        let before = SourceStamp::of(&source);
+        // The other arm of the same guard: a source that vanished has no
+        // metadata to stamp, so nothing may be cached either.
+        fs::remove_file(&image_path).expect("clear the cached image");
+        fs::remove_file(&meta_path).expect("clear the sidecar");
         fs::remove_file(&source).expect("remove the source");
-
-        let (image_path, meta_path) = cache_paths(&dir, &source, 8);
-        write_cache(&image_path, &meta_path, before, &source, &img);
+        write_cache(&image_path, &meta_path, live_stamp, &source, &img);
         assert!(
             !image_path.exists() && !meta_path.exists(),
-            "a source with no metadata cannot be stamped, so nothing may be cached"
+            "a source with no metadata cannot be stamped"
         );
     }
 
     #[test]
     fn a_missing_source_is_an_error_rather_than_a_panic() {
         let dir = temp_dir("missing");
-        let Err(err) = load_at_resolution(&dir.join("absent.png"), 8, Some(&dir)) else {
+        let Err(err) = load_at_resolution(&dir.join("absent.png"), 8, Some(dir.path())) else {
             panic!("a source that is not there must not load");
         };
         assert!(err.contains("absent.png"), "unexpected error: {err}");

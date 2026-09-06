@@ -30,6 +30,9 @@
 //! --test golden`, on a machine using the adapter you are generating for.
 //! Review the diff by eye before committing it: that is the whole point of a
 //! golden test.
+//!
+//! The measured differences that decide each case's window and each turned-up
+//! parameter are tabulated in `docs/testing.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -60,11 +63,10 @@ const OUTLIER_THRESHOLD: u8 = 24;
 ///
 /// This list is what separates "no references have ever been generated for this
 /// adapter" from "the references went missing". Without it both look identical
-/// from inside the test, and the second one passes: that already happened
-/// during Phase 2, when the macOS probe's golden leg was green while comparing
-/// nothing. Any drift in `adapter_key` output (a Mesa driver that renames
-/// itself, a different macOS device name, a renamed backend) would otherwise
-/// delete the golden suite on that platform without a single red test.
+/// from inside the test, and the second one passes. Any drift in `adapter_key`
+/// output (a Mesa driver that renames itself, a different macOS device name, a
+/// renamed backend) would otherwise delete the golden suite on that platform
+/// without a single red test.
 ///
 /// Adding a reference directory means adding its key here.
 const GENERATED_ADAPTERS: &[&str] = &["warp", "lavapipe", "metal"];
@@ -126,7 +128,9 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     // a source no case here could draw a cloud pixel at all; `base_params`
     // turns the layer off for every case that is not about it.
     config.cloud = Some(std::sync::Arc::new(support::FixtureClouds::bands()));
-    Mutex::new(sunlit_core::engine::start(config))
+    Mutex::new(
+        sunlit_core::engine::start(config).expect("the golden suite needs a working adapter"),
+    )
 });
 
 fn engine() -> MutexGuard<'static, EngineHandle> {
@@ -178,13 +182,9 @@ fn base_params() -> SceneParams {
 /// Most cases compare the whole frame, and three do not. Each of the three is
 /// arithmetic rather than taste, and all three are the same arithmetic: a thing
 /// a few dozen pixels across cannot move a 512 by 256 frame past a tolerance
-/// meant for a whole picture. Removing the Moon entirely comes to a mean
-/// channel difference of 0.22 against a tolerance of 2.00, so a full-frame
-/// reference would go on passing with the feature deleted, which is precisely
-/// the failure phase B's goldens taught; over the window it is 3.12 with 1.71
-/// percent of pixels outliers. `sunrise_band` and `sun_rising_through_the_band`
-/// carry their own measurements above their windows. What each window leaves
-/// out is the globe, which nine other cases pin.
+/// meant for a whole picture, so a full-frame reference would go on passing
+/// with the feature deleted while the same comparison over the window fails.
+/// What each window leaves out is the globe, which nine other cases pin.
 #[derive(Clone, Copy)]
 struct Window {
     x: u32,
@@ -272,7 +272,7 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     // Blend mode is the one that reads the two surface slots, and nothing
     // spawns their decodes until a case asks for the mode: the first blend case
     // to run would otherwise export the frame the fallback draws, which is the
-    // grid. That is what happened to the first pair of cloud references.
+    // grid.
     if params.texture_index == BLEND_MODE {
         wait_for_slot_texture(&engine, "day_texture");
         wait_for_slot_texture(&engine, "night_texture");
@@ -514,12 +514,11 @@ fn sun_camera(longitude: f32, zoom: f32) -> CameraParams {
 ///
 /// The field of view decides how many pixels a degree is worth: 512 of them
 /// across 140 degrees is three, so the whole Spencer composition lands inside
-/// forty pixels and a reference that lost the Sun entirely would still pass at
-/// a mean of 1.11 and half a percent of outliers. At 60 degrees a degree is
-/// eight pixels and the glare is most of the frame, which is the picture these
-/// cases are supposed to be about. What the Sun does at the default is pinned
-/// by the engine cases instead, where a count of painted pixels needs no
-/// tolerance at all.
+/// forty pixels and a reference that lost the Sun entirely would still pass.
+/// At 60 degrees a degree is eight pixels and the glare is most of the frame,
+/// which is the picture these cases are supposed to be about. What the Sun does
+/// at the default is pinned by the engine cases instead, where a count of
+/// painted pixels needs no tolerance at all.
 const SUN_CASE_SKY_FOV: f32 = 60.0;
 
 #[test]
@@ -548,9 +547,8 @@ fn golden_sun_grazing_the_limb() {
     //
     // The glare is turned up because the tint is what this case is for and the
     // tolerance has to be able to see it: at the default strength, losing the
-    // warm shift entirely comes to a mean of 2.33 against a tolerance of 2.00
-    // and 1.04 percent outliers against a limit of 1.00, which is a test that
-    // passes or fails on rounding. At 1.6 it is a test.
+    // warm shift entirely lands on the tolerance rather than past it, which is
+    // a test that passes or fails on rounding. At 1.6 it is a test.
     let base = base_params();
     let params = SceneParams {
         camera: sun_camera(160.75, 0.30),
@@ -583,14 +581,11 @@ fn horizon_camera(longitude: f32) -> CameraParams {
 /// The window the disk and the near half of its glare land in at the framing
 /// below.
 ///
-/// The refraction is what decides the window. Deleting the tint moves the whole
-/// frame by a mean of 10.04 with 16.80 percent of pixels outliers and deleting
-/// the exposure gain by 7.27 with 11.00, both well past the tolerance, but
-/// deleting the lift and the squash moves it by 0.91 with 0.22 percent, which
-/// is a reference that passes with the effect gone. The disk is what refraction
-/// moves and the glare is most of the frame, so comparing where the disk is
-/// puts the three at 55.33 with 83.09 percent, 56.03 with 98.58, and 6.19 with
-/// 4.58.
+/// The refraction is what decides the window. Deleting the tint or the exposure
+/// gain moves the whole frame well past the tolerance, but deleting the lift
+/// and the squash leaves a reference that passes with the effect gone. The disk
+/// is what refraction moves and the glare is most of the frame, so comparing
+/// where the disk is puts all three of them past the tolerance.
 const RISING_SUN_WINDOW: Window = Window {
     x: 40,
     y: 76,
@@ -626,10 +621,9 @@ fn golden_sun_rising_through_the_band() {
 ///
 /// The band is a thread along the limb and the frame is mostly the globe's
 /// bright grid, so a full-frame reference has the same weakness the Moon's had:
-/// deleting the lobe entirely comes to a mean of 0.21 over the whole frame with
-/// 0.40 percent of pixels outliers, which passes on both counts. Over this
-/// strip it is 1.52 and 2.83 percent, which fails on the second. What the strip
-/// leaves out is the glare, and the case beside this one is about that.
+/// deleting the lobe entirely still passes over the whole frame, and fails over
+/// this strip on the outlier count. What the strip leaves out is the glare, and
+/// the case beside this one is about that.
 const SUNRISE_BAND_WINDOW: Window = Window {
     x: 72,
     y: 0,
@@ -659,11 +653,11 @@ fn golden_sunrise_band() {
 /// at rather than the 60 degrees the four cases above are framed in.
 ///
 /// This is where the two lenses disagree most. The globe subtends 15.68
-/// degrees from here, so the painted limb is 204 pixels out, while the sky lens
-/// puts a direction there only when it is 57 degrees off the view axis. A lobe
-/// in the true scattering angle therefore peaks with the Sun's image still 152
-/// pixels inside the painted disc, and is a quarter of its peak by the time the
-/// image reaches the limb.
+/// degrees from here, so the painted limb is 203.8 pixels out, while the sky
+/// lens puts a direction there only when it is 58.3 degrees off the view axis.
+/// A lobe in the true scattering angle therefore peaks with the Sun's image
+/// still 153.4 pixels inside the painted disc, and is a quarter of its peak by
+/// the time the image reaches the limb.
 fn close_camera(longitude: f32) -> CameraParams {
     CameraParams {
         longitude,
@@ -773,9 +767,9 @@ fn golden_panorama_behind_the_stars() {
 /// The same sky at the narrow end of the slider, where the layer is magnified
 /// about two and a half times more.
 ///
-/// Two references at two fields of view are what makes the pair distinguishable
-/// for the reason decision 5 cares about: the bands are wider apart here and
-/// the globe is exactly the size it is in the other one.
+/// Two references at two fields of view are what makes the pair
+/// distinguishable: the bands are wider apart here and the globe is exactly the
+/// size it is in the other one.
 #[test]
 fn golden_panorama_at_a_narrow_sky() {
     let base = base_params();
@@ -941,9 +935,8 @@ fn contact_sheet_of_every_preset() {
 /// The names are spelled here rather than read off the directory, so that a
 /// reference file that went missing fails this case as well as the one that
 /// owns it. What the directory is read for is the other direction: a reference
-/// this list does not name is a case silently outside the guard, which is what
-/// happened when the two panorama references were added, and the closest pair
-/// in the set is exactly the pair most likely to arrive that way.
+/// this list does not name is a case silently outside the guard, and the
+/// closest pair in the set is exactly the pair most likely to arrive that way.
 #[test]
 fn every_golden_case_is_distinguishable() {
     if updating() {

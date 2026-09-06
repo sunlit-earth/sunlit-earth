@@ -5,8 +5,8 @@
 //! of what the renderer believes it owns. The point is the last two side by
 //! side: the day the columns disagree is the day there is a leak.
 //!
-//! The report is short on purpose. Everything below [`REPORT_FLOOR_BYTES`] is
-//! rolled into one line, and only the [`TOP_N`] largest allocation groups are
+//! The report is short on purpose. Everything below `REPORT_FLOOR_BYTES` is
+//! rolled into one line, and only the `TOP_N` largest allocation groups are
 //! listed, because a report nobody reads is telemetry rather than a tool.
 //!
 //! Only the section names are a contract. The numbers, their order within a
@@ -22,6 +22,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+
+use crate::memory::{mib, mib_signed};
 
 /// Allocations and textures below this are rolled up rather than listed.
 const REPORT_FLOOR_BYTES: u64 = 1024 * 1024;
@@ -39,7 +41,7 @@ pub struct ProcessSection {
 
 /// wgpu's own running totals, in bytes and objects.
 ///
-/// Signed because [`wgpu::InternalCounter`] is: it counts up on create and down
+/// Signed because `wgpu::InternalCounter` is: it counts up on create and down
 /// on destroy, and a backend that only implements one half would go negative
 /// rather than wrap.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,7 +65,7 @@ pub struct AllocatorSection {
     pub total_allocated_bytes: u64,
     pub total_reserved_bytes: u64,
     pub blocks: usize,
-    /// The [`TOP_N`] largest groups of at least [`REPORT_FLOOR_BYTES`].
+    /// The `TOP_N` largest groups of at least `REPORT_FLOOR_BYTES`.
     pub top: Vec<AllocationGroup>,
     /// Allocations the two rules above left out.
     pub rolled_up_count: usize,
@@ -240,18 +242,6 @@ fn group_allocations<'a>(
     }
 }
 
-/// Bytes as mebibytes, which is the only unit the report speaks.
-#[allow(clippy::cast_precision_loss)]
-fn mib(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
-}
-
-/// The same for a counter that can be negative.
-#[allow(clippy::cast_precision_loss)]
-fn mib_signed(bytes: i64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
-}
-
 impl fmt::Display for MemoryReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "memory report (adapter {})", self.adapter)?;
@@ -393,8 +383,6 @@ mod tests {
         assert_eq!(labels, ["large", "middle", "small"]);
     }
 
-    /// The whole point of the discipline: a device with hundreds of live
-    /// allocations still produces a report of a fixed, readable length.
     #[test]
     fn at_most_ten_rows_are_listed_and_the_rest_are_rolled_up() {
         let allocations: Vec<(String, u64)> = (0..40)
@@ -413,7 +401,6 @@ mod tests {
         );
     }
 
-    /// The floor is what keeps the staging and uniform buffers off the report.
     #[test]
     fn groups_under_the_floor_are_rolled_up_even_with_room_to_spare() {
         let section = grouped(&pairs(&[
@@ -430,7 +417,6 @@ mod tests {
         assert_eq!(section.rolled_up_bytes, 3072);
     }
 
-    /// A group exactly at the floor is listed: the rule is "at least 1 MiB".
     #[test]
     fn a_group_exactly_at_the_floor_is_listed() {
         let section = grouped(&pairs(&[("edge", MIB)]));
@@ -446,8 +432,6 @@ mod tests {
         assert_eq!(section.top[0].bytes, 4 * MIB);
     }
 
-    /// Nothing may go missing between what was allocated and the two numbers
-    /// the report prints.
     #[test]
     fn listed_plus_rolled_up_is_everything() {
         let allocations: Vec<(String, u64)> =
@@ -472,8 +456,6 @@ mod tests {
         );
     }
 
-    /// The mip chain of a 2:1 texture is four thirds of its base level, which
-    /// is the number every steady-state figure in the plan rests on.
     #[test]
     fn a_full_mip_chain_costs_four_thirds_of_the_base_level() {
         let base = 8192u64 * 4096 * 4;
@@ -498,8 +480,6 @@ mod tests {
         );
     }
 
-    /// A texture whose smaller dimension bottoms out first keeps counting 1
-    /// rather than 0 rows.
     #[test]
     fn mip_levels_past_a_dimension_clamp_to_one() {
         // 4x1 with three levels: 4x1, 2x1, 1x1.
@@ -580,7 +560,6 @@ mod tests {
         );
     }
 
-    /// A row under the floor is left out of the listing but not out of the sum.
     #[test]
     fn a_texture_under_the_floor_is_counted_but_not_listed() {
         let report = fabricated();
@@ -593,8 +572,6 @@ mod tests {
         );
     }
 
-    /// Metal has no allocator report, and the section has to say so rather than
-    /// disappear and leave a three-section report nobody notices is short.
     #[test]
     fn a_backend_without_an_allocator_report_still_prints_the_section() {
         let mut report = fabricated();
@@ -624,8 +601,6 @@ mod tests {
         );
     }
 
-    /// Zero is what a backend with no texture counter reports, and printing it
-    /// as a comparison would read as a disagreement rather than an absence.
     #[test]
     fn a_backend_without_a_texture_counter_makes_no_comparison() {
         let mut report = fabricated();

@@ -63,7 +63,11 @@ impl<'a> RenderTarget<'a> {
 /// placement is what decides whether there is a silhouette to draw at all, so
 /// this is also the one place that can narrow the selection: a Moon with no
 /// disc is returned as `None` and never reaches the pass.
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "a viewport extent is far inside the f32 mantissa, and the length is one uniform per line"
+)]
 #[must_use]
 pub(super) fn write_uniforms<'a>(
     queue: &wgpu::Queue,
@@ -116,9 +120,8 @@ pub(super) fn write_uniforms<'a>(
         atmosphere_radius: RAYLEIGH_RADIUS,
         screen_offset,
         viewport,
-        // Only a Moon that is actually drawn hides anything: a glare fading
-        // behind something invisible is the same incoherence as one burning
-        // around a Moon that covers the disk.
+        // Only a Moon that is actually drawn hides anything; the field's own
+        // doc in `scene::sun_occlusion` says why.
         moon_disc: moon_drawn.and(moon.disc),
         horizon: sun_occlusion::SunHorizonParams {
             size: params.sun_size,
@@ -226,7 +229,10 @@ pub(super) fn write_uniforms<'a>(
 /// forms in the observer rather than in the scene. The shell overlays reuse
 /// the already-bound vertex and index buffers from the Earth draw, and the two
 /// sun quads bind nothing at all.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per draw the pass can make"
+)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -235,19 +241,8 @@ pub(super) fn encode_and_submit(
     stars: Option<Stars<'_>>,
     sun: Option<Sun<'_>>,
     moon: Option<Moon<'_>>,
-    pipeline: &wgpu::RenderPipeline,
-    bind_group: &wgpu::BindGroup,
-    vertex_buffer: &wgpu::Buffer,
-    index_buffer: &wgpu::Buffer,
-    index_count: u32,
-    rayleigh_pipeline: Option<&wgpu::RenderPipeline>,
-    rayleigh_bind_group: Option<&wgpu::BindGroup>,
-    nightglow_orange_pipeline: Option<&wgpu::RenderPipeline>,
-    nightglow_orange_bind_group: Option<&wgpu::BindGroup>,
-    nightglow_green_pipeline: Option<&wgpu::RenderPipeline>,
-    nightglow_green_bind_group: Option<&wgpu::BindGroup>,
-    cloud_pipeline: Option<&wgpu::RenderPipeline>,
-    cloud_bind_group: Option<&wgpu::BindGroup>,
+    earth: &Earth<'_>,
+    overlays: &Overlays<'_>,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("sphere_encoder"),
@@ -261,11 +256,7 @@ pub(super) fn encode_and_submit(
                 depth_slice: None,
                 resolve_target: target.resolve_target,
                 ops: wgpu::Operations {
-                    // Near black rather than the faint blue this was while it
-                    // was the whole sky. With stars, the planets, the Sun and a
-                    // panorama on it, a blue-tinted clear reads as haze under
-                    // the band and, where the band is dark, as a floor the
-                    // stars sit on. Unconditional, so a checkout without the
+                    // Near black, and unconditionally so: a checkout without the
                     // panorama's Git LFS object does not change color the day
                     // it arrives.
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -321,47 +312,30 @@ pub(super) fn encode_and_submit(
         if let Some(moon) = moon {
             pass.set_pipeline(moon.pipeline);
             pass.set_bind_group(0, moon.bind_group, &[]);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..index_count, 0, 0..1);
+            pass.set_vertex_buffer(0, earth.vertex_buffer.slice(..));
+            pass.set_index_buffer(earth.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..earth.index_count, 0, 0..1);
         }
 
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..index_count, 0, 0..1);
+        pass.set_pipeline(earth.pipeline);
+        pass.set_bind_group(0, earth.bind_group, &[]);
+        pass.set_vertex_buffer(0, earth.vertex_buffer.slice(..));
+        pass.set_index_buffer(earth.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..earth.index_count, 0, 0..1);
 
-        // Cloud overlay (alpha blended, drawn before atmosphere so glow
-        // layers render on top — clouds are in the troposphere, well below
-        // the Rayleigh scattering and nightglow layers)
-        if let (Some(cloud_pipe), Some(cloud_bg)) = (cloud_pipeline, cloud_bind_group) {
-            pass.set_pipeline(cloud_pipe);
-            pass.set_bind_group(0, cloud_bg, &[]);
-            // Vertex and index buffers remain bound from the Earth draw
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        // Rayleigh scattering overlay (premultiplied alpha, simulates both
-        // in-scattering and extinction at the limb)
-        if let (Some(pipe), Some(bg)) = (rayleigh_pipeline, rayleigh_bind_group) {
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bg, &[]);
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        // Nightglow orange overlay (additive, sodium D + FeO, ~1.014 radius)
-        if let (Some(pipe), Some(bg)) = (nightglow_orange_pipeline, nightglow_orange_bind_group) {
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bg, &[]);
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        // Nightglow green overlay (additive, OI 557.7nm, ~1.015 radius)
-        if let (Some(pipe), Some(bg)) = (nightglow_green_pipeline, nightglow_green_bind_group) {
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bg, &[]);
-            pass.draw_indexed(0..index_count, 0, 0..1);
+        // The shells reuse the vertex and index buffers the Earth draw bound.
+        for shell in [
+            overlays.cloud,
+            overlays.rayleigh,
+            overlays.nightglow_orange,
+            overlays.nightglow_green,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            pass.set_pipeline(shell.pipeline);
+            pass.set_bind_group(0, shell.bind_group, &[]);
+            pass.draw_indexed(0..earth.index_count, 0, 0..1);
         }
 
         // The glare forms in the observer, so it goes over the scene rather
@@ -376,8 +350,49 @@ pub(super) fn encode_and_submit(
     queue.submit(std::iter::once(encoder.finish()));
 }
 
+/// Write this frame's uniforms, select every optional draw, and submit the
+/// pass into `target`.
+///
+/// The preview and the wallpaper export differ only in where they draw and at
+/// what size, so everything between the two is here and a draw added to one
+/// cannot be missing from the other.
+pub(super) fn draw_scene(
+    res: &Renderer,
+    params: &SceneParams,
+    bind_group: &wgpu::BindGroup,
+    inputs: &FrameInputs,
+    width: u32,
+    height: u32,
+    target: &RenderTarget,
+) {
+    let moon = write_uniforms(
+        &res.queue,
+        &res.uniform_buffer,
+        params,
+        width,
+        height,
+        inputs,
+        Moon::select(res, params),
+    );
+
+    let overlays = Overlays::select(res, params, bind_group);
+    let milky_way = MilkyWay::select(res, params);
+    let stars = Stars::select(res, params, bind_group);
+    let sun = Sun::select(res, params, bind_group);
+    encode_and_submit(
+        &res.device,
+        &res.queue,
+        target,
+        milky_way,
+        stars,
+        sun,
+        moon,
+        &Earth::new(res, bind_group),
+        &overlays,
+    );
+}
+
 /// Encode and submit the preview render pass into the renderer's own texture.
-#[allow(clippy::cast_precision_loss)]
 #[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
 pub(super) fn execute_render_pass(
     res: &Renderer,
@@ -385,16 +400,6 @@ pub(super) fn execute_render_pass(
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
 ) {
-    let moon = write_uniforms(
-        &res.queue,
-        &res.uniform_buffer,
-        params,
-        res.render_width,
-        res.render_height,
-        inputs,
-        Moon::select(res, params),
-    );
-
     let resolve_view = res
         .render_texture
         .create_view(&wgpu::TextureViewDescriptor::default());
@@ -405,31 +410,14 @@ pub(super) fn execute_render_pass(
         res.msaa_depth_view.as_ref(),
     );
 
-    let overlays = Overlays::select(res, params, bind_group);
-    let milky_way = MilkyWay::select(res, params);
-    let stars = Stars::select(res, params, bind_group);
-    let sun = Sun::select(res, params, bind_group);
-    encode_and_submit(
-        &res.device,
-        &res.queue,
-        &target,
-        milky_way,
-        stars,
-        sun,
-        moon,
-        &res.pipeline,
+    draw_scene(
+        res,
+        params,
         bind_group,
-        &res.vertex_buffer,
-        &res.index_buffer,
-        res.index_count,
-        overlays.rayleigh.0,
-        overlays.rayleigh.1,
-        overlays.nightglow_orange.0,
-        overlays.nightglow_orange.1,
-        overlays.nightglow_green.0,
-        overlays.nightglow_green.1,
-        overlays.cloud.0,
-        overlays.cloud.1,
+        inputs,
+        res.render_width,
+        res.render_height,
+        &target,
     );
 }
 
@@ -445,16 +433,12 @@ impl<'a> MilkyWay<'a> {
     /// arrived is not drawn either: it is an overlay, like the clouds and the
     /// Moon, so its absence is a sky without a band rather than something to
     /// wait for.
-    ///
-    /// Nothing about the frame can narrow this further. The draw is the whole
-    /// frame and the lens has an image of every pixel of it, so unlike the
-    /// Moon's there is no geometry here that can fail to appear.
     pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
         if params.milky_way_intensity <= 0.0 {
             return None;
         }
         Some(Self {
-            pipeline: &res.milky_way_pipeline,
+            pipeline: &res.pipelines.milky_way,
             bind_group: res.milky_way_bind_group()?,
         })
     }
@@ -476,7 +460,7 @@ impl<'a> Stars<'a> {
         bind_group: &'a wgpu::BindGroup,
     ) -> Option<Self> {
         (params.star_intensity > 0.0).then_some(Self {
-            pipeline: &res.star_pipeline,
+            pipeline: &res.pipelines.star,
             bind_group,
             catalog_buffer: &res.star_buffer,
             catalog_count: crate::assets::stars::embedded_catalog()
@@ -503,8 +487,8 @@ impl<'a> Sun<'a> {
         bind_group: &'a wgpu::BindGroup,
     ) -> Option<Self> {
         (params.sun_glow > 0.0).then_some(Self {
-            disk_pipeline: &res.sun_disk_pipeline,
-            glare_pipeline: &res.sun_glare_pipeline,
+            disk_pipeline: &res.pipelines.sun_disk,
+            glare_pipeline: &res.pipelines.sun_glare,
             bind_group,
         })
     }
@@ -522,41 +506,58 @@ impl<'a> Moon<'a> {
     /// is not drawn either: it is an overlay, like the clouds, so its absence
     /// is a picture without a Moon rather than something to wait for.
     ///
-    /// Both of those are properties of the configuration. The third condition,
-    /// whether this frame's geometry puts a silhouette on screen at all, is a
-    /// property of the frame, so [`write_uniforms`] applies it where the
-    /// placement is and hands back what is left.
+    /// The third condition, whether this frame's geometry puts a silhouette on
+    /// screen at all, is applied by [`write_uniforms`], which hands back what
+    /// is left.
     pub fn select(res: &'a Renderer, params: &SceneParams) -> Option<Self> {
         if params.moon_brightness <= 0.0 {
             return None;
         }
         Some(Self {
-            pipeline: &res.moon_pipeline,
+            pipeline: &res.pipelines.moon,
             bind_group: res.moon_bind_group()?,
         })
     }
+}
+
+/// The globe's own draw, and the mesh every shell after it reuses.
+pub(super) struct Earth<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+    vertex_buffer: &'a wgpu::Buffer,
+    index_buffer: &'a wgpu::Buffer,
+    index_count: u32,
+}
+
+impl<'a> Earth<'a> {
+    /// The one draw of the pass that is never optional: whatever else a frame
+    /// leaves out, the globe is in it.
+    pub fn new(res: &'a Renderer, bind_group: &'a wgpu::BindGroup) -> Self {
+        Self {
+            pipeline: &res.pipelines.sphere,
+            bind_group,
+            vertex_buffer: &res.vertex_buffer,
+            index_buffer: &res.index_buffer,
+            index_count: res.index_count,
+        }
+    }
+}
+
+/// One overlay shell's draw, over the mesh the Earth left bound.
+#[derive(Clone, Copy)]
+pub(super) struct Overlay<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
 }
 
 /// Which optional overlay shells to draw for a frame, and with which bind
 /// group. Shared by the preview pass and the wallpaper export so the two
 /// cannot drift apart.
 pub(super) struct Overlays<'a> {
-    pub rayleigh: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
-    pub nightglow_orange: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
-    pub nightglow_green: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
-    pub cloud: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
+    pub rayleigh: Option<Overlay<'a>>,
+    pub nightglow_orange: Option<Overlay<'a>>,
+    pub nightglow_green: Option<Overlay<'a>>,
+    pub cloud: Option<Overlay<'a>>,
 }
 
 impl<'a> Overlays<'a> {
@@ -568,24 +569,26 @@ impl<'a> Overlays<'a> {
         params: &SceneParams,
         bind_group: &'a wgpu::BindGroup,
     ) -> Self {
-        let atmo = |on: bool, pipe: &'a wgpu::RenderPipeline| {
-            if on {
-                (Some(pipe), Some(bind_group))
-            } else {
-                (None, None)
-            }
+        let atmo = |on: bool, pipeline: &'a wgpu::RenderPipeline| {
+            on.then_some(Overlay {
+                pipeline,
+                bind_group,
+            })
         };
         let rayleigh_on = params.effective_rayleigh_intensity() > 0.0;
         let nightglow_on = params.effective_nightglow_intensity() > 0.0;
         Self {
-            rayleigh: atmo(rayleigh_on, &res.rayleigh_pipeline),
-            nightglow_orange: atmo(nightglow_on, &res.nightglow_orange_pipeline),
-            nightglow_green: atmo(nightglow_on, &res.nightglow_green_pipeline),
-            cloud: if params.draws_clouds() && res.cloud_bind_group.is_some() {
-                (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
-            } else {
-                (None, None)
-            },
+            rayleigh: atmo(rayleigh_on, &res.pipelines.rayleigh),
+            nightglow_orange: atmo(nightglow_on, &res.pipelines.nightglow_orange),
+            nightglow_green: atmo(nightglow_on, &res.pipelines.nightglow_green),
+            cloud: res
+                .cloud_bind_group
+                .as_ref()
+                .filter(|_| params.draws_clouds())
+                .map(|bind_group| Overlay {
+                    pipeline: &res.pipelines.cloud,
+                    bind_group,
+                }),
         }
     }
 }
@@ -594,14 +597,18 @@ impl<'a> Overlays<'a> {
 ///
 /// Creates a staging buffer with 256-byte row alignment, copies the texture
 /// into it, maps the buffer synchronously, and strips any row padding.
-#[allow(clippy::cast_possible_truncation)]
+///
+/// Losing the device mid-readback is an ordinary event on Windows, where a
+/// driver update or a reset takes it out from under a running process. This is
+/// the wallpaper export and the preview readback, so it fails one frame rather
+/// than the engine thread.
 pub fn read_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     // bytes_per_row must be aligned to 256 for buffer-texture copies
     let bytes_per_row_unaligned = width * 4;
     let bytes_per_row = (bytes_per_row_unaligned + 255) & !255;
@@ -641,10 +648,16 @@ pub fn read_texture_rgba8(
     let slice = readback.slice(..);
     let (tx, rx) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
-        tx.send(result).unwrap();
+        // A lost device returns below with the receiver dropped, and this
+        // callback can still run afterwards; failing to send is that case.
+        let _ = tx.send(result);
     });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    rx.recv().unwrap().expect("buffer mapping failed");
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| format!("the GPU device was lost while reading pixels back: {e}"))?;
+    rx.recv()
+        .map_err(|_| "the readback never reported whether it was mapped".to_owned())?
+        .map_err(|e| format!("the readback buffer could not be mapped: {e}"))?;
 
     let mapped = slice.get_mapped_range();
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
@@ -656,5 +669,5 @@ pub fn read_texture_rgba8(
     drop(mapped);
     readback.unmap();
 
-    pixels
+    Ok(pixels)
 }

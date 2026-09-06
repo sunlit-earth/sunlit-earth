@@ -9,11 +9,7 @@ use tracing::{info, warn};
 /// one `dlclose`s the Vulkan loader. Mesa registers pthread TLS destructors
 /// that outlive that unload, so the next thread to exit calls a destructor
 /// pointer into an unmapped page and the process dies with SIGSEGV inside
-/// `__nptl_deallocate_tsd`. On lavapipe that killed the engine integration
-/// tests at the moment the engine thread was joined: every time under
-/// `cargo test`, and intermittently when a single test was run on its own,
-/// which is the signature of a destructor list that only sometimes has an
-/// entry to walk.
+/// `__nptl_deallocate_tsd`.
 ///
 /// Keeping the instance in a `static` fixes it by construction: the loader is
 /// never unloaded, because the instance is never dropped. It also stops the
@@ -33,19 +29,19 @@ pub fn instance() -> &'static wgpu::Instance {
     INSTANCE.get_or_init(|| {
         // The one call site. `clippy.toml` disallows the method everywhere so
         // that a second one has to be written on purpose.
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the one call site the rule exists to protect"
+        )]
         wgpu::Instance::new(&wgpu::InstanceDescriptor::default())
     })
 }
 
 /// Result of initializing wgpu manually.
 ///
-/// The adapter is not returned. It used to be, so the Slint shell could
-/// assemble a `WGPUConfiguration::Manual` and share this device; nothing does
-/// that any more, and the engine owns the device outright. The device keeps
-/// alive whatever it needs from the adapter, and the instance behind both is
-/// the process-wide `INSTANCE` above.
-pub struct WgpuContext {
+/// The adapter is not returned: the device keeps alive whatever it needs from
+/// it, and the instance behind both is the process-wide `INSTANCE` above.
+pub(crate) struct WgpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter_info: String,
@@ -68,11 +64,15 @@ pub struct WgpuContext {
 /// 1. `WGPU_ADAPTER_NAME` env var (substring match, case-insensitive)
 /// 2. Best available GPU (`DiscreteGpu` > `IntegratedGpu` > others)
 /// 3. CPU/software fallback as last resort
-pub fn init(force_software: bool) -> WgpuContext {
+///
+/// A machine with no adapter at all, or one whose driver refuses a device, is
+/// an ordinary thing to run into rather than a bug in this program, so both
+/// come back as an error for the caller to report.
+pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
     let adapters = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::all()));
-    assert!(!adapters.is_empty(), "No wgpu adapters found");
 
-    let adapter = select_adapter(&adapters, force_software);
+    let adapter = select_adapter(&adapters, force_software)
+        .ok_or("no graphics adapter is available on this system")?;
     let info = adapter.get_info();
     let adapter_info = format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type);
     let adapter_key = adapter_key(&info.name, info.backend);
@@ -94,40 +94,32 @@ pub fn init(force_software: bool) -> WgpuContext {
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
         ..Default::default()
     }))
-    .expect("Failed to create wgpu device");
+    .map_err(|e| format!("the graphics adapter \"{adapter_info}\" refused a device: {e}"))?;
 
     let supported_sample_counts = adapter
         .get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm)
         .flags
         .supported_sample_counts();
 
-    WgpuContext {
+    Ok(WgpuContext {
         device,
         queue,
         adapter_info,
         adapter_key,
         supported_sample_counts,
-    }
+    })
 }
 
 /// Short, filesystem-safe slug naming the implementation behind an adapter.
 ///
 /// Golden references live one directory per adapter, and this names the
-/// directory. The reason is margin, not raw incompatibility. Measured on the
-/// four reference scenes, each against WARP, with a tolerance of mean 2.0 and
-/// 1% outliers: lavapipe agrees to a mean channel difference of 0.19 to 0.86
-/// with 0.001% to 0.42% outliers, and the paravirtual Metal device on a
-/// `macos-latest` runner to 0.008 to 0.18 with at most 0.008% outliers. One
-/// shared set would therefore pass on all three today, but it would spend up to
-/// 43% of the mean budget on the difference between two correct
-/// implementations, leaving a regression that large able to hide on one
-/// platform while failing on another. Per-adapter references give each platform
-/// the whole tolerance to spend on detecting real change.
-///
-/// The ordering in those numbers was not the expected one: the two CPU
-/// rasterizers are the pair that disagree most, and Metal, which is both a
-/// different shader translation target and an actual GPU, lands about five
-/// times closer to WARP than lavapipe does.
+/// directory. The reason is margin, not raw incompatibility: one shared set
+/// would pass on every adapter the project generates for, but a large part of
+/// the mean budget would go on the difference between two correct
+/// implementations, leaving a regression that size able to hide on one platform
+/// while failing on another. Per-adapter references give each platform the whole
+/// tolerance to spend on detecting real change. The measured per-adapter
+/// differences are tabulated in `docs/testing.md`.
 ///
 /// Software rasterizers are keyed by name rather than by backend, because the
 /// backend is the wrong granularity for them: two CPU implementations can sit
@@ -144,7 +136,7 @@ pub fn init(force_software: bool) -> WgpuContext {
 /// references through the GL path today, because the tests force the software
 /// adapter and CI installs `mesa-vulkan-drivers`; if something ever does, the
 /// GL case needs the backend appended to its key.
-pub fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
+pub(crate) fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
     let lower = name.to_lowercase();
 
     // Mesa's Vulkan software driver is called lavapipe; it reports itself with
@@ -169,7 +161,7 @@ pub fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
 
 /// Rank a GPU device type for adapter selection priority.
 /// Lower is better: discrete GPU is preferred, CPU is last resort.
-pub(crate) fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
+fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
     match device_type {
         wgpu::DeviceType::DiscreteGpu => 0,
         wgpu::DeviceType::IntegratedGpu => 1,
@@ -179,13 +171,13 @@ pub(crate) fn adapter_type_rank(device_type: wgpu::DeviceType) -> u32 {
     }
 }
 
-fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Adapter {
+fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> Option<&wgpu::Adapter> {
     if force_software {
         if let Some(adapter) = adapters
             .iter()
             .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
         {
-            return adapter;
+            return Some(adapter);
         }
         warn!("no software adapter found, using default selection");
     }
@@ -197,7 +189,7 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
             .iter()
             .find(|a| a.get_info().name.to_lowercase().contains(&name_lower))
         {
-            return adapter;
+            return Some(adapter);
         }
         warn!(name = %name, "WGPU_ADAPTER_NAME not found, using default selection");
     }
@@ -205,12 +197,17 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> &wgpu::Ad
     adapters
         .iter()
         .min_by_key(|a| adapter_type_rank(a.get_info().device_type))
-        .expect("No adapters available")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_adapter_is_an_answer_rather_than_a_panic() {
+        assert!(select_adapter(&[], false).is_none());
+        assert!(select_adapter(&[], true).is_none());
+    }
 
     #[test]
     fn software_rasterizers_are_keyed_by_name() {
@@ -229,8 +226,6 @@ mod tests {
         );
     }
 
-    /// Two software rasterizers on one backend must not share a key, or one of
-    /// them would be compared against the other's references.
     #[test]
     fn two_software_rasterizers_on_one_backend_differ() {
         assert_ne!(
@@ -257,7 +252,6 @@ mod tests {
         );
     }
 
-    /// The key names a directory, so it has to survive being one.
     #[test]
     fn keys_are_filesystem_safe() {
         for (name, backend) in [
@@ -331,7 +325,6 @@ mod tests {
         .iter()
         .map(|&dt| adapter_type_rank(dt))
         .collect();
-        // Each rank should be strictly less than the next
         for w in ranks.windows(2) {
             assert!(w[0] < w[1], "Expected {}<{}", w[0], w[1]);
         }

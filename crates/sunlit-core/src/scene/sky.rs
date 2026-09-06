@@ -5,7 +5,8 @@ use astronomy_engine_bindings::{
     Astronomy_RotationAxis, Astronomy_SiderealTime, astro_aberration_t_ABERRATION, astro_body_t,
     astro_body_t_BODY_JUPITER, astro_body_t_BODY_MARS, astro_body_t_BODY_MERCURY,
     astro_body_t_BODY_MOON, astro_body_t_BODY_SATURN, astro_body_t_BODY_SUN,
-    astro_body_t_BODY_VENUS, astro_status_t_ASTRO_SUCCESS, astro_time_t,
+    astro_body_t_BODY_VENUS, astro_status_t, astro_status_t_ASTRO_SUCCESS, astro_time_t,
+    astro_vector_t,
 };
 use glam::{Mat3, Vec3};
 
@@ -60,7 +61,7 @@ const PLANETS: [(PlanetKind, astro_body_t); 5] = [
 ];
 
 /// Compute all astronomy inputs for a scene at an injected UTC time.
-pub fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
+pub(crate) fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
     compute_sky_state_from_time(time_for_input(dt, now_utc))
 }
 
@@ -70,7 +71,7 @@ pub fn compute_sky_state(dt: &DateTimeInput) -> SkyState {
 }
 
 /// Compute the sky state from an Astronomy Engine time value.
-pub fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
+pub(crate) fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
     let world_from_eqj = rotation_world_from_eqj(&mut time);
     let sun_direction = body_direction(astro_body_t_BODY_SUN, time, world_from_eqj);
     let planets = PLANETS.map(|(kind, body)| PlanetState {
@@ -95,19 +96,49 @@ pub fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
 /// is 1 AU expressed in those.
 const EARTH_RADII_PER_AU: f32 = 23_454.8;
 
+/// Fail with the entry point's own name when a call reports one.
+///
+/// Every function below can only report a failure for a body it was not given
+/// one of, and every body here is a compile-time constant, so this is
+/// unreachable in practice. Naming the call is what would make it findable.
+///
+/// `#[track_caller]` so the panic points at the entry point rather than at
+/// this line, which is where it pointed when each of them carried its own
+/// assert.
+#[track_caller]
+fn checked(status: astro_status_t, what: &str) {
+    assert_eq!(status, astro_status_t_ASTRO_SUCCESS, "{what} failed");
+}
+
+/// The library computes in f64 and the renderer draws in f32. Every narrowing
+/// of a returned value goes through here, which is what keeps the suppression
+/// to one site instead of one per entry point.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the one place the library's f64 becomes the renderer's f32"
+)]
+fn f32_of(value: f64) -> f32 {
+    value as f32
+}
+
+/// A returned vector in the renderer's precision.
+fn vec3_of(v: astro_vector_t) -> Vec3 {
+    Vec3::new(f32_of(v.x), f32_of(v.y), f32_of(v.z))
+}
+
+/// One row of a returned rotation matrix, likewise.
+fn vec3_of_row(row: [f64; 3]) -> Vec3 {
+    Vec3::new(f32_of(row[0]), f32_of(row[1]), f32_of(row[2]))
+}
+
 /// The Moon's geocentric position in world space, in Earth radii.
-#[allow(clippy::cast_possible_truncation)]
 fn moon_position(time: astro_time_t, rotation: Mat3) -> Vec3 {
     // SAFETY: Astronomy_GeoMoon is a pure C function. The time value is valid
     // and the function returns a value type with no retained references.
     #[allow(unsafe_code)]
     let vector = unsafe { Astronomy_GeoMoon(time) };
-    assert_eq!(
-        vector.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_GeoMoon failed"
-    );
-    let eqj = Vec3::new(vector.x as f32, vector.y as f32, vector.z as f32);
-    rotation * (eqj * EARTH_RADII_PER_AU)
+    checked(vector.status, "Astronomy_GeoMoon");
+    rotation * (vec3_of(vector) * EARTH_RADII_PER_AU)
 }
 
 /// The rotation that takes the Moon's body-fixed frame into world space.
@@ -117,22 +148,13 @@ fn moon_position(time: astro_time_t, rotation: Mat3) -> Vec3 {
 /// equator on the J2000 equator. So the node is the zero of longitude before
 /// the spin is applied, the spin carries the prime meridian to where it
 /// actually points, and the body's own axes follow from the two.
-#[allow(clippy::cast_possible_truncation)]
 fn moon_rotation(time: &mut astro_time_t, world_from_eqj: Mat3) -> Mat3 {
     // SAFETY: Astronomy_RotationAxis only reads and updates the valid time
     // value passed by pointer, and returns a value type.
     #[allow(unsafe_code)]
     let axis = unsafe { Astronomy_RotationAxis(astro_body_t_BODY_MOON, std::ptr::from_mut(time)) };
-    assert_eq!(
-        axis.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_RotationAxis failed"
-    );
-    let pole = Vec3::new(
-        axis.north.x as f32,
-        axis.north.y as f32,
-        axis.north.z as f32,
-    )
-    .normalize();
+    checked(axis.status, "Astronomy_RotationAxis");
+    let pole = vec3_of(axis.north).normalize();
     let node = Vec3::Z.cross(pole);
     // A pole on the J2000 pole itself leaves the node undefined; the Moon's is
     // 66 degrees away from it and the fallback is never taken.
@@ -141,13 +163,12 @@ fn moon_rotation(time: &mut astro_time_t, world_from_eqj: Mat3) -> Mat3 {
     } else {
         Vec3::X
     };
-    let spin = (axis.spin as f32).to_radians();
+    let spin = f32_of(axis.spin).to_radians();
     let prime_meridian = node * spin.cos() + pole.cross(node) * spin.sin();
     let eqj_from_body = Mat3::from_cols(prime_meridian, pole.cross(prime_meridian), pole);
     world_from_eqj * eqj_from_body
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn rotation_world_from_eqj(time: &mut astro_time_t) -> Mat3 {
     // SAFETY: Both functions only read or update the valid time value passed
     // by pointer and return value types with no retained references.
@@ -158,62 +179,37 @@ fn rotation_world_from_eqj(time: &mut astro_time_t) -> Mat3 {
             Astronomy_SiderealTime(std::ptr::from_mut(time)),
         )
     };
-    assert_eq!(
-        rotation.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_Rotation_EQJ_EQD failed"
-    );
+    checked(rotation.status, "Astronomy_Rotation_EQJ_EQD");
 
     let eqd_from_eqj = Mat3::from_cols(
-        Vec3::new(
-            rotation.rot[0][0] as f32,
-            rotation.rot[0][1] as f32,
-            rotation.rot[0][2] as f32,
-        ),
-        Vec3::new(
-            rotation.rot[1][0] as f32,
-            rotation.rot[1][1] as f32,
-            rotation.rot[1][2] as f32,
-        ),
-        Vec3::new(
-            rotation.rot[2][0] as f32,
-            rotation.rot[2][1] as f32,
-            rotation.rot[2][2] as f32,
-        ),
+        vec3_of_row(rotation.rot[0]),
+        vec3_of_row(rotation.rot[1]),
+        vec3_of_row(rotation.rot[2]),
     );
-    let earth_fixed_from_eqd = Mat3::from_rotation_z(-(gast_hours as f32 * 15.0).to_radians());
+    let earth_fixed_from_eqd = Mat3::from_rotation_z(-(f32_of(gast_hours) * 15.0).to_radians());
     let world_from_earth_fixed = Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y);
 
     world_from_earth_fixed * earth_fixed_from_eqd * eqd_from_eqj
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn body_direction(body: astro_body_t, time: astro_time_t, rotation: Mat3) -> Vec3 {
     // SAFETY: Astronomy_GeoVector is a pure C function. The body constants and
     // time value are valid, and the function returns a value type.
     #[allow(unsafe_code)]
     let vector = unsafe { Astronomy_GeoVector(body, time, astro_aberration_t_ABERRATION) };
-    assert_eq!(
-        vector.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_GeoVector failed"
-    );
-    let eqj = Vec3::new(vector.x as f32, vector.y as f32, vector.z as f32).normalize();
-    (rotation * eqj).normalize()
+    checked(vector.status, "Astronomy_GeoVector");
+    (rotation * vec3_of(vector).normalize()).normalize()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
     // SAFETY: Astronomy_Illumination is a pure C function. The body constants
     // and time value are valid, and the function returns a value type.
     #[allow(unsafe_code)]
     let illumination = unsafe { Astronomy_Illumination(body, time) };
-    assert_eq!(
-        illumination.status, astro_status_t_ASTRO_SUCCESS,
-        "Astronomy_Illumination failed"
-    );
-    illumination.mag as f32
+    checked(illumination.status, "Astronomy_Illumination");
+    f32_of(illumination.mag)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn time_for_input(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> astro_time_t {
     if dt.use_custom {
         let doy = dt.custom_day_of_year.max(1);
@@ -307,9 +303,6 @@ mod tests {
     }
 
     /// A custom date and time selects the instant the widgets name.
-    ///
-    /// The branching `time_for_input` does used to sit on the sun path, and
-    /// these three cases moved here with it.
     #[test]
     fn a_custom_datetime_selects_the_instant_it_names() {
         let dt = DateTimeInput {
@@ -365,10 +358,10 @@ mod tests {
     /// The direction from the Moon to the Earth, expressed in the Moon's own
     /// body-fixed frame. Tidal lock puts it near the prime meridian at the
     /// equator, and the libration is how far it wanders.
-    fn sub_earth_point(state: &SkyState) -> (f32, f32) {
-        let eqj_from_body = state.world_from_eqj.transpose() * state.moon_rotation;
+    fn sub_earth_point(state: &MoonState) -> (f32, f32) {
+        let eqj_from_body = state.world_from_eqj.transpose() * state.rotation;
         let toward_earth = eqj_from_body.transpose()
-            * (state.world_from_eqj.transpose() * -state.moon_position).normalize();
+            * (state.world_from_eqj.transpose() * -state.position).normalize();
         (
             toward_earth.y.atan2(toward_earth.x).to_degrees(),
             toward_earth.z.asin().to_degrees(),
@@ -385,12 +378,32 @@ mod tests {
         }
     }
 
-    /// Every six hours over four years, which covers about fifty lunations.
+    /// The three quantities the Moon cases read, and none of the eleven
+    /// ephemeris calls per sample `compute_sky_state_from_time` spends on the
+    /// Sun and the five planets, which no case below looks at.
+    struct MoonState {
+        world_from_eqj: Mat3,
+        position: Vec3,
+        rotation: Mat3,
+    }
+
+    fn moon_state_from_time(mut time: astro_time_t) -> MoonState {
+        let world_from_eqj = rotation_world_from_eqj(&mut time);
+        MoonState {
+            world_from_eqj,
+            position: moon_position(time, world_from_eqj),
+            rotation: moon_rotation(&mut time, world_from_eqj),
+        }
+    }
+
+    /// Twice a day over four years, which is about fifty lunations sampled at
+    /// every phase. Libration and lunar distance run on that cycle, so a finer
+    /// grid buys none of the cases below anything.
     fn four_years_of_times() -> impl Iterator<Item = astro_time_t> {
         (2026..2030).flat_map(|year| {
             (1..=365).flat_map(move |doy| {
                 let (month, day) = super::super::datetime::day_of_year_to_month_day(doy, year);
-                [0, 6, 12, 18].into_iter().map(move |hour| {
+                [0, 12].into_iter().map(move |hour| {
                     make_time(year, i32::from(month), i32::from(day), hour, 0, 0.0)
                 })
             })
@@ -399,11 +412,10 @@ mod tests {
 
     /// Perigee and apogee bound the orbit, so a scale error in the AU
     /// conversion or a direction taken for a position lands outside them.
-    /// Measured over these four years: 55.918 to 63.758.
     #[test]
     fn the_moon_orbits_between_fifty_five_and_sixty_four_earth_radii() {
         for time in four_years_of_times() {
-            let distance = compute_sky_state_from_time(time).moon_position.length();
+            let distance = moon_state_from_time(time).position.length();
             assert!(
                 (55.0..64.0).contains(&distance),
                 "{distance} Earth radii at {}",
@@ -417,7 +429,7 @@ mod tests {
     #[test]
     fn the_moon_distance_agrees_with_the_librarys_kilometers() {
         for time in four_years_of_times().step_by(37) {
-            let distance = compute_sky_state_from_time(time).moon_position.length();
+            let distance = moon_state_from_time(time).position.length();
             let km = f64::from(distance) * 6378.137;
             assert_relative_eq!(km, libration(time).dist_km, max_relative = 1.0e-5);
         }
@@ -444,7 +456,7 @@ mod tests {
     #[test]
     fn the_sub_earth_point_stays_inside_the_libration_bounds() {
         for time in four_years_of_times() {
-            let (longitude, latitude) = sub_earth_point(&compute_sky_state_from_time(time));
+            let (longitude, latitude) = sub_earth_point(&moon_state_from_time(time));
             assert!(
                 longitude.abs() < 8.5 && latitude.abs() < 7.5,
                 "sub-Earth point at ({longitude}, {latitude}) at {}",
@@ -455,13 +467,15 @@ mod tests {
 
     /// The same rotation against the library's own libration model, which is a
     /// second implementation of the same quantity rather than a bound on it.
-    /// Worst disagreement over these four years: 0.0276 degrees.
     #[test]
     fn the_sub_earth_point_agrees_with_the_library_libration() {
         for time in four_years_of_times().step_by(37) {
-            let (longitude, latitude) = sub_earth_point(&compute_sky_state_from_time(time));
+            let (longitude, latitude) = sub_earth_point(&moon_state_from_time(time));
             let libration = libration(time);
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the library reports libration in degrees"
+            )]
             let (elon, elat) = (libration.elon as f32, libration.elat as f32);
             assert!(
                 (longitude - elon).abs() < 0.1 && (latitude - elat).abs() < 0.1,
@@ -480,8 +494,8 @@ mod tests {
         let obliquity = 23.439_291_f32.to_radians();
         let ecliptic_north = Vec3::new(0.0, -obliquity.sin(), obliquity.cos());
         for time in four_years_of_times().step_by(37) {
-            let state = compute_sky_state_from_time(time);
-            let eqj_from_body = state.world_from_eqj.transpose() * state.moon_rotation;
+            let state = moon_state_from_time(time);
+            let eqj_from_body = state.world_from_eqj.transpose() * state.rotation;
             let tilt = eqj_from_body
                 .z_axis
                 .angle_between(ecliptic_north)

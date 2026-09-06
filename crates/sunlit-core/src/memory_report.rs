@@ -23,6 +23,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::memory::{mib, mib_signed};
+
 /// Allocations and textures below this are rolled up rather than listed.
 const REPORT_FLOOR_BYTES: u64 = 1024 * 1024;
 
@@ -238,18 +240,6 @@ fn group_allocations<'a>(
         rolled_up_bytes: rolled_up.iter().map(|group| group.bytes).sum(),
         top: groups.iter().take(listed).cloned().collect(),
     }
-}
-
-/// Bytes as mebibytes, which is the only unit the report speaks.
-#[allow(clippy::cast_precision_loss)]
-fn mib(bytes: u64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
-}
-
-/// The same for a counter that can be negative.
-#[allow(clippy::cast_precision_loss)]
-fn mib_signed(bytes: i64) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
 }
 
 impl fmt::Display for MemoryReport {

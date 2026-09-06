@@ -153,6 +153,24 @@ pub fn snapshot() -> Option<MemorySnapshot> {
     None
 }
 
+/// Bytes as mebibytes, which is the only unit this crate reports memory in.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the one place a byte count becomes a float"
+)]
+pub(crate) fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// The same for a counter that can be negative.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the one place a signed byte count becomes a float"
+)]
+pub(crate) fn mib_signed(bytes: i64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
 /// Log the current process memory at `debug` level with structured fields.
 ///
 /// The `context` parameter describes the checkpoint (e.g. "after wgpu init").
@@ -162,15 +180,14 @@ pub fn snapshot() -> Option<MemorySnapshot> {
 /// through `/proc/self/smaps_rollup`. `enabled!` folds to a constant when the
 /// level is compiled out (`release_max_level_warn`), so release builds drop the
 /// whole body.
-#[allow(clippy::cast_precision_loss)]
 pub fn log_memory_usage(context: &str) {
     if !tracing::enabled!(tracing::Level::DEBUG) {
         return;
     }
     if let Some(snap) = snapshot() {
-        let rss_mb = snap.rss_bytes as f64 / (1024.0 * 1024.0);
-        let peak_rss_mb = snap.peak_rss_bytes as f64 / (1024.0 * 1024.0);
-        let private_mb = snap.private_bytes as f64 / (1024.0 * 1024.0);
+        let rss_mb = mib(snap.rss_bytes);
+        let peak_rss_mb = mib(snap.peak_rss_bytes);
+        let private_mb = mib(snap.private_bytes);
         tracing::debug!(
             context,
             rss_mb = format_args!("{rss_mb:.1}"),
@@ -196,11 +213,7 @@ fn metrics_path() -> Option<PathBuf> {
 fn metrics_path_from(env_dir: Option<&str>) -> Option<PathBuf> {
     match env_dir {
         Some(dir) => Some(PathBuf::from(dir).join(METRICS_FILE_NAME)),
-        None => Some(
-            dirs::data_local_dir()?
-                .join("SunlitEarth")
-                .join(METRICS_FILE_NAME),
-        ),
+        None => Some(crate::app_data_dir()?.join(METRICS_FILE_NAME)),
     }
 }
 

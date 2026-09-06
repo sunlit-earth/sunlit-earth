@@ -73,7 +73,10 @@ pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 ///
 /// The bools are independent latches on a private struct rather than
 /// parameters anyone passes, which is the confusion the lint is about.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent latches on a private struct, which is not the confusion the lint is about"
+)]
 struct Engine {
     rx: Receiver<EngineCommand>,
     clock: Arc<dyn Clock>,
@@ -716,17 +719,25 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 }
 
 /// Encode RGBA8 pixels as PNG and write them to `path`.
+///
+/// `Fast` and `Adaptive` are what `image`'s own extension-driven save used
+/// before this went through one writer: they are that encoder's defaults, and
+/// the name `CompressionType::Default` is a level rather than the default.
+/// Named here so an export keeps producing the bytes it always has.
 pub fn save_png(
     path: &std::path::Path,
     width: u32,
     height: u32,
     pixels: &[u8],
 ) -> Result<(), String> {
-    use image::{ImageBuffer, Rgba};
-    let img: ImageBuffer<Rgba<u8>, _> = ImageBuffer::from_raw(width, height, pixels.to_vec())
-        .ok_or_else(|| "pixel buffer size mismatch".to_owned())?;
-    img.save(path)
-        .map_err(|e| format!("failed to save PNG: {e}"))
+    crate::files::write_png(
+        path,
+        pixels,
+        width,
+        height,
+        crate::files::CompressionType::Fast,
+        crate::files::FilterType::Adaptive,
+    )
 }
 
 #[cfg(test)]
@@ -771,7 +782,6 @@ mod tests {
     #[test]
     fn preview_size_cap_preserves_the_aspect_ratio() {
         let (w, h) = preview_target_size((2560, 1440), QualityTier::Low);
-        #[allow(clippy::cast_precision_loss)]
         let ratio = f64::from(w) / f64::from(h);
         assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
     }

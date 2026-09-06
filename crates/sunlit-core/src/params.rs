@@ -4,6 +4,8 @@
 //! every layer, so there are exactly two translation points for it:
 //! `ui_callbacks::read_params_from_window` and `apply_params_to_window` in
 //! `sunlit-app`, and `renderer::render_pass::write_uniforms` here.
+//!
+//! `docs/rendering.md` lists every file a new parameter touches.
 
 use crate::config::AppConfig;
 use crate::scene::camera::CameraParams;
@@ -32,7 +34,6 @@ const GAMMA_MAX: f32 = 3.0;
 /// resolution and sky state (both derived: resolution from the target, sky
 /// state from the clock plus `datetime`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct SceneParams {
     pub camera: CameraParams,
 
@@ -191,7 +192,11 @@ impl SceneParams {
             datetime: DateTimeInput {
                 use_custom: config.use_custom_datetime,
                 custom_hour: config.custom_hour,
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a day of the year, which the window and the file both keep inside one"
+                )]
                 custom_day_of_year: config.custom_day_of_year as u16,
                 custom_year: config.custom_year,
             },
@@ -200,7 +205,6 @@ impl SceneParams {
 
     /// Write the scene half back into a config, leaving window geometry and the
     /// auto-refresh settings (which are not scene parameters) untouched.
-    #[allow(clippy::cast_precision_loss)]
     pub fn write_to_config(&self, config: &mut AppConfig) {
         config.longitude = self.camera.longitude;
         config.latitude = self.camera.latitude;
@@ -290,134 +294,231 @@ impl SceneParams {
             0.0
         }
     }
-
-    /// Quantized snapshot used for dirty checking.
-    ///
-    /// Camera values compare exactly; every other float is rounded to integer
-    /// thousandths so that sub-visible slider jitter does not force a redraw.
-    #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn digest(&self) -> ParamsDigest {
-        ParamsDigest {
-            camera: self.camera,
-            texture_index: self.texture_index,
-            sample_count: self.sample_count,
-            terminator_width: q(self.terminator_width),
-            diffuse_shading: self.diffuse_shading,
-            diffuse_floor: q(self.diffuse_floor),
-            diffuse_ramp: q(self.diffuse_ramp),
-            spec_shininess: q(self.spec_shininess),
-            spec_intensity: q(self.spec_intensity),
-            fresnel_mix: q(self.fresnel_mix),
-            fresnel_exp: q(self.fresnel_exp),
-            cloud_opacity: q(self.cloud_opacity),
-            cloud_opacity_night: q(self.cloud_opacity_night),
-            cloud_floor: q(self.cloud_floor),
-            cloud_gamma: q(self.cloud_gamma),
-            cloud_night: q(self.cloud_night),
-            rayleigh_intensity: q(self.effective_rayleigh_intensity()),
-            rayleigh_sharpness: q(self.rayleigh_sharpness),
-            rayleigh_haze: q(self.rayleigh_haze),
-            nightglow_intensity: q(self.effective_nightglow_intensity()),
-            nightglow_falloff: q(self.nightglow_falloff),
-            nightglow_balance: q(self.nightglow_balance),
-            atmo_sunrise_glow: q(self.atmo_sunrise_glow),
-            atmo_sunrise_width: q(self.atmo_sunrise_width),
-            sky_fov: q(self.sky_fov),
-            star_intensity: q(self.star_intensity),
-            star_size: q(self.star_size),
-            star_glow_strength: q(self.star_glow_strength),
-            star_glow_radius: q(self.star_glow_radius),
-            star_contrast: q(self.star_contrast),
-            star_mag_limit: q(self.star_mag_limit),
-            sun_glow: q(self.sun_glow),
-            sun_rays: q(self.sun_rays),
-            sun_flare: q(self.sun_flare),
-            sun_size: q(self.sun_size),
-            sun_halo_radius: q(self.sun_halo_radius),
-            sun_horizon_boost: q(self.sun_horizon_boost),
-            sun_horizon_reach: q(self.sun_horizon_reach),
-            sun_horizon_depth: q(self.sun_horizon_depth),
-            sun_reddening: q(self.sun_reddening),
-            sun_refraction: q(self.sun_refraction),
-            moon_brightness: q(self.moon_brightness),
-            moon_size: q(self.moon_size),
-            moon_earthshine: q(self.moon_earthshine),
-            milky_way_intensity: q(self.milky_way_intensity),
-            day_gamma: q(self.day_gamma),
-            day_saturation: q(self.day_saturation),
-            night_gamma: q(self.night_gamma),
-            night_saturation: q(self.night_saturation),
-        }
-    }
 }
 
 /// Quantize a float to integer thousandths.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float-to-integer cast saturates, so a parameter outside the range still compares stably"
+)]
 fn q(value: f32) -> i32 {
     (value * 1000.0) as i32
 }
 
 /// Quantize a direction vector to integer milliradians for stable comparison.
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
     [q(dir.x), q(dir.y), q(dir.z)]
 }
 
-/// Dirty-check snapshot of a `SceneParams`.
+/// Declares the dirty-check half of `SceneParams` once.
 ///
-/// `datetime` is deliberately absent: the derived sky state is compared
-/// separately, so a live UTC render changes even though `datetime` does not.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ParamsDigest {
-    pub camera: CameraParams,
-    pub texture_index: i32,
-    pub sample_count: u32,
-    pub terminator_width: i32,
-    pub diffuse_shading: bool,
-    pub diffuse_floor: i32,
-    pub diffuse_ramp: i32,
-    pub spec_shininess: i32,
-    pub spec_intensity: i32,
-    pub fresnel_mix: i32,
-    pub fresnel_exp: i32,
-    pub cloud_opacity: i32,
-    pub cloud_opacity_night: i32,
-    pub cloud_floor: i32,
-    pub cloud_gamma: i32,
-    pub cloud_night: i32,
-    pub rayleigh_intensity: i32,
-    pub rayleigh_sharpness: i32,
-    pub rayleigh_haze: i32,
-    pub nightglow_intensity: i32,
-    pub nightglow_falloff: i32,
-    pub nightglow_balance: i32,
-    pub atmo_sunrise_glow: i32,
-    pub atmo_sunrise_width: i32,
-    pub sky_fov: i32,
-    pub star_intensity: i32,
-    pub star_size: i32,
-    pub star_glow_strength: i32,
-    pub star_glow_radius: i32,
-    pub star_contrast: i32,
-    pub star_mag_limit: i32,
-    pub sun_glow: i32,
-    pub sun_rays: i32,
-    pub sun_flare: i32,
-    pub sun_size: i32,
-    pub sun_halo_radius: i32,
-    pub sun_horizon_boost: i32,
-    pub sun_horizon_reach: i32,
-    pub sun_horizon_depth: i32,
-    pub sun_reddening: i32,
-    pub sun_refraction: i32,
-    pub moon_brightness: i32,
-    pub moon_size: i32,
-    pub moon_earthshine: i32,
-    pub milky_way_intensity: i32,
-    pub day_gamma: i32,
-    pub day_saturation: i32,
-    pub night_gamma: i32,
-    pub night_saturation: i32,
+/// `ParamsDigest`, `digest()` and the mutation table the tests walk are all
+/// generated from the one list below, so a parameter cannot be in the digest
+/// and missing from the table, or the other way round. The `const _` in the
+/// expansion is what makes the list complete: it builds a `SceneParams` and a
+/// `CameraParams` out of the groups, so a field in either struct and in no
+/// group here is a missing field the compiler names.
+///
+/// The groups say how a parameter is compared, which is the only thing the
+/// digest needs to know about it:
+///
+/// - `camera`: the sub-fields of `CameraParams`, which the digest copies whole
+///   and compares exactly.
+/// - `counted`, `switched`: integers and switches, compared exactly.
+/// - `quantized`: floats rounded to integer thousandths.
+/// - `gated`: floats the digest reads through an accessor rather than from the
+///   field, because another parameter can zero them.
+/// - `indirect`: not a digest field, but a change to it moves one, so it still
+///   needs a row in the table.
+/// - `absent`: neither, and the comment on the group says why.
+macro_rules! scene_digest {
+    (
+        camera { $($cam:ident),* $(,)? }
+        counted { $($cnt:ident: $cnt_ty:ty),* $(,)? }
+        switched { $($sw:ident),* $(,)? }
+        quantized { $($qn:ident),* $(,)? }
+        gated { $($gt:ident from $src:ident),* $(,)? }
+        indirect { $($ind:ident),* $(,)? }
+        absent { $($abs:ident),* $(,)? }
+    ) => {
+        /// Dirty-check snapshot of a `SceneParams`.
+        ///
+        /// `datetime` is deliberately absent: the derived sky state is compared
+        /// separately, so a live UTC render changes even though `datetime` does not.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub(crate) struct ParamsDigest {
+            pub camera: CameraParams,
+            $(pub $cnt: $cnt_ty,)*
+            $(pub $sw: bool,)*
+            $(pub $qn: i32,)*
+            $(pub $gt: i32,)*
+        }
+
+        impl SceneParams {
+            /// Quantized snapshot used for dirty checking.
+            ///
+            /// Camera values compare exactly; every other float is rounded to
+            /// integer thousandths so that sub-visible slider jitter does not
+            /// force a redraw.
+            pub(crate) fn digest(&self) -> ParamsDigest {
+                ParamsDigest {
+                    camera: self.camera,
+                    $($cnt: self.$cnt,)*
+                    $($sw: self.$sw,)*
+                    $($qn: q(self.$qn),)*
+                    $($gt: q(self.$src()),)*
+                }
+            }
+        }
+
+        /// Compile-time proof that the list above classifies every field of
+        /// `SceneParams` and of `CameraParams`: the initializers name them all,
+        /// so a parameter that is in one of those structs and in no group is a
+        /// missing field here, reported under its own name.
+        const _: fn(&SceneParams) -> SceneParams = |p| SceneParams {
+            camera: CameraParams { $($cam: p.camera.$cam,)* },
+            $($cnt: p.$cnt,)*
+            $($sw: p.$sw,)*
+            $($qn: p.$qn,)*
+            $($gt: p.$gt,)*
+            $($ind: p.$ind,)*
+            $($abs: p.$abs,)*
+        };
+
+        /// One row per parameter: its name, and a `SceneParams` that differs
+        /// from `base` in that parameter and nothing else.
+        #[cfg(test)]
+        fn digest_mutations(base: SceneParams) -> Vec<(&'static str, SceneParams)> {
+            vec![
+                $((
+                    stringify!($cam),
+                    SceneParams {
+                        camera: CameraParams {
+                            $cam: base.camera.$cam + 1.0,
+                            ..base.camera
+                        },
+                        ..base
+                    },
+                ),)*
+                $((
+                    stringify!($cnt),
+                    SceneParams {
+                        $cnt: base.$cnt + 1,
+                        ..base
+                    },
+                ),)*
+                $((
+                    stringify!($sw),
+                    SceneParams {
+                        $sw: !base.$sw,
+                        ..base
+                    },
+                ),)*
+                $((
+                    stringify!($qn),
+                    SceneParams {
+                        $qn: base.$qn + 1.0,
+                        ..base
+                    },
+                ),)*
+                $((
+                    stringify!($gt),
+                    SceneParams {
+                        $gt: base.$gt + 1.0,
+                        ..base
+                    },
+                ),)*
+                $((
+                    stringify!($ind),
+                    SceneParams {
+                        $ind: !base.$ind,
+                        ..base
+                    },
+                ),)*
+            ]
+        }
+    };
+}
+
+scene_digest! {
+    camera {
+        longitude,
+        latitude,
+        zoom,
+        offset_x,
+        offset_y,
+        tilt_deg,
+        yaw_deg,
+        pitch_deg,
+        fov_deg,
+    }
+    counted {
+        texture_index: i32,
+        sample_count: u32,
+    }
+    switched {
+        diffuse_shading,
+    }
+    quantized {
+        terminator_width,
+        diffuse_floor,
+        diffuse_ramp,
+        spec_shininess,
+        spec_intensity,
+        fresnel_mix,
+        fresnel_exp,
+        cloud_opacity,
+        cloud_opacity_night,
+        cloud_floor,
+        cloud_gamma,
+        cloud_night,
+        rayleigh_sharpness,
+        rayleigh_haze,
+        nightglow_falloff,
+        nightglow_balance,
+        atmo_sunrise_glow,
+        atmo_sunrise_width,
+        sky_fov,
+        star_intensity,
+        star_size,
+        star_glow_strength,
+        star_glow_radius,
+        star_contrast,
+        star_mag_limit,
+        sun_glow,
+        sun_rays,
+        sun_flare,
+        sun_size,
+        sun_halo_radius,
+        sun_horizon_boost,
+        sun_horizon_reach,
+        sun_horizon_depth,
+        sun_reddening,
+        sun_refraction,
+        moon_brightness,
+        moon_size,
+        moon_earthshine,
+        milky_way_intensity,
+        day_gamma,
+        day_saturation,
+        night_gamma,
+        night_saturation,
+    }
+    gated {
+        rayleigh_intensity from effective_rayleigh_intensity,
+        nightglow_intensity from effective_nightglow_intensity,
+    }
+    indirect {
+        // Zeroes both gated intensities rather than reaching a digest field of
+        // its own.
+        atmo_enabled,
+    }
+    absent {
+        // The instant to render for. The digest compares the sun direction it
+        // derives instead, so a live UTC render changes while `datetime` does
+        // not.
+        datetime,
+    }
 }
 
 /// Map a normalized slider position (0.0 to 1.0) to a gamma value (0.2 to 3.0).
@@ -579,449 +680,18 @@ mod tests {
     }
 
     /// Every field that reaches the shader must make the digest differ.
-    /// Written as a table so adding a parameter without wiring the dirty check
-    /// is a test failure rather than a stale-frame bug.
-    /// The length is the table, one row per shader parameter.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// The rows come from the `scene_digest!` list, so a parameter declared
+    /// there is exercised here without a second edit, and a parameter added to
+    /// `SceneParams` and to no group there does not compile.
     #[test]
     fn every_shader_parameter_triggers_dirty() {
         let base = params();
-        let mutations: Vec<(&str, SceneParams)> = vec![
-            (
-                "longitude",
-                SceneParams {
-                    camera: CameraParams {
-                        longitude: 11.0,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "latitude",
-                SceneParams {
-                    camera: CameraParams {
-                        latitude: 21.0,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "zoom",
-                SceneParams {
-                    camera: CameraParams {
-                        zoom: 0.4,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "offset_x",
-                SceneParams {
-                    camera: CameraParams {
-                        offset_x: 0.5,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "offset_y",
-                SceneParams {
-                    camera: CameraParams {
-                        offset_y: 0.5,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "tilt",
-                SceneParams {
-                    camera: CameraParams {
-                        tilt_deg: 45.0,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "yaw",
-                SceneParams {
-                    camera: CameraParams {
-                        yaw_deg: 30.0,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "pitch",
-                SceneParams {
-                    camera: CameraParams {
-                        pitch_deg: 30.0,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "fov",
-                SceneParams {
-                    camera: CameraParams {
-                        fov_deg: 45.0,
-                        ..base.camera
-                    },
-                    ..base
-                },
-            ),
-            (
-                "texture_index",
-                SceneParams {
-                    texture_index: 1,
-                    ..base
-                },
-            ),
-            (
-                "sample_count",
-                SceneParams {
-                    sample_count: 2,
-                    ..base
-                },
-            ),
-            (
-                "terminator_width",
-                SceneParams {
-                    terminator_width: 0.25,
-                    ..base
-                },
-            ),
-            (
-                "diffuse_shading",
-                SceneParams {
-                    diffuse_shading: !base.diffuse_shading,
-                    ..base
-                },
-            ),
-            (
-                "diffuse_floor",
-                SceneParams {
-                    diffuse_floor: 0.2,
-                    ..base
-                },
-            ),
-            (
-                "diffuse_ramp",
-                SceneParams {
-                    diffuse_ramp: 0.7,
-                    ..base
-                },
-            ),
-            (
-                "spec_shininess",
-                SceneParams {
-                    spec_shininess: 200.0,
-                    ..base
-                },
-            ),
-            (
-                "spec_intensity",
-                SceneParams {
-                    spec_intensity: 0.5,
-                    ..base
-                },
-            ),
-            (
-                "fresnel_mix",
-                SceneParams {
-                    fresnel_mix: 0.6,
-                    ..base
-                },
-            ),
-            (
-                "fresnel_exp",
-                SceneParams {
-                    fresnel_exp: 6.0,
-                    ..base
-                },
-            ),
-            (
-                "cloud_opacity",
-                SceneParams {
-                    cloud_opacity: 0.5,
-                    ..base
-                },
-            ),
-            (
-                "cloud_opacity_night",
-                SceneParams {
-                    cloud_opacity_night: 0.5,
-                    ..base
-                },
-            ),
-            (
-                "cloud_floor",
-                SceneParams {
-                    cloud_floor: 0.3,
-                    ..base
-                },
-            ),
-            (
-                "cloud_gamma",
-                SceneParams {
-                    cloud_gamma: 0.5,
-                    ..base
-                },
-            ),
-            (
-                "cloud_night",
-                SceneParams {
-                    cloud_night: 0.4,
-                    ..base
-                },
-            ),
-            (
-                "atmo_enabled",
-                SceneParams {
-                    atmo_enabled: !base.atmo_enabled,
-                    ..base
-                },
-            ),
-            (
-                "rayleigh_intensity",
-                SceneParams {
-                    rayleigh_intensity: 0.9,
-                    ..base
-                },
-            ),
-            (
-                "rayleigh_sharpness",
-                SceneParams {
-                    rayleigh_sharpness: 60.0,
-                    ..base
-                },
-            ),
-            (
-                "rayleigh_haze",
-                SceneParams {
-                    rayleigh_haze: 0.9,
-                    ..base
-                },
-            ),
-            (
-                "nightglow_intensity",
-                SceneParams {
-                    nightglow_intensity: 0.5,
-                    ..base
-                },
-            ),
-            (
-                "nightglow_falloff",
-                SceneParams {
-                    nightglow_falloff: 6.0,
-                    ..base
-                },
-            ),
-            (
-                "nightglow_balance",
-                SceneParams {
-                    nightglow_balance: 0.8,
-                    ..base
-                },
-            ),
-            (
-                "sky_fov",
-                SceneParams {
-                    sky_fov: 160.0,
-                    ..base
-                },
-            ),
-            (
-                "star_intensity",
-                SceneParams {
-                    star_intensity: 0.8,
-                    ..base
-                },
-            ),
-            (
-                "star_size",
-                SceneParams {
-                    star_size: 1.5,
-                    ..base
-                },
-            ),
-            (
-                "star_glow_strength",
-                SceneParams {
-                    star_glow_strength: 0.7,
-                    ..base
-                },
-            ),
-            (
-                "star_glow_radius",
-                SceneParams {
-                    star_glow_radius: 9.0,
-                    ..base
-                },
-            ),
-            (
-                "star_contrast",
-                SceneParams {
-                    star_contrast: -0.8,
-                    ..base
-                },
-            ),
-            (
-                "star_mag_limit",
-                SceneParams {
-                    star_mag_limit: 5.5,
-                    ..base
-                },
-            ),
-            (
-                "sun_glow",
-                SceneParams {
-                    sun_glow: 1.7,
-                    ..base
-                },
-            ),
-            (
-                "sun_rays",
-                SceneParams {
-                    sun_rays: 0.15,
-                    ..base
-                },
-            ),
-            (
-                "sun_flare",
-                SceneParams {
-                    sun_flare: 0.85,
-                    ..base
-                },
-            ),
-            (
-                "sun_size",
-                SceneParams {
-                    sun_size: 3.5,
-                    ..base
-                },
-            ),
-            (
-                "sun_halo_radius",
-                SceneParams {
-                    sun_halo_radius: 6.5,
-                    ..base
-                },
-            ),
-            (
-                "sun_horizon_boost",
-                SceneParams {
-                    sun_horizon_boost: 5.5,
-                    ..base
-                },
-            ),
-            (
-                "sun_horizon_reach",
-                SceneParams {
-                    sun_horizon_reach: 7.5,
-                    ..base
-                },
-            ),
-            (
-                "sun_horizon_depth",
-                SceneParams {
-                    sun_horizon_depth: 2.5,
-                    ..base
-                },
-            ),
-            (
-                "sun_reddening",
-                SceneParams {
-                    sun_reddening: 1.7,
-                    ..base
-                },
-            ),
-            (
-                "sun_refraction",
-                SceneParams {
-                    sun_refraction: 0.4,
-                    ..base
-                },
-            ),
-            (
-                "atmo_sunrise_glow",
-                SceneParams {
-                    atmo_sunrise_glow: 2.3,
-                    ..base
-                },
-            ),
-            (
-                "atmo_sunrise_width",
-                SceneParams {
-                    atmo_sunrise_width: 65.0,
-                    ..base
-                },
-            ),
-            (
-                "moon_brightness",
-                SceneParams {
-                    moon_brightness: 0.4,
-                    ..base
-                },
-            ),
-            (
-                "moon_size",
-                SceneParams {
-                    moon_size: 4.5,
-                    ..base
-                },
-            ),
-            (
-                "moon_earthshine",
-                SceneParams {
-                    moon_earthshine: 0.2,
-                    ..base
-                },
-            ),
-            (
-                "milky_way_intensity",
-                SceneParams {
-                    milky_way_intensity: 1.4,
-                    ..base
-                },
-            ),
-            (
-                "day_gamma",
-                SceneParams {
-                    day_gamma: 1.8,
-                    ..base
-                },
-            ),
-            (
-                "day_saturation",
-                SceneParams {
-                    day_saturation: 0.8,
-                    ..base
-                },
-            ),
-            (
-                "night_gamma",
-                SceneParams {
-                    night_gamma: 1.5,
-                    ..base
-                },
-            ),
-            (
-                "night_saturation",
-                SceneParams {
-                    night_saturation: 0.5,
-                    ..base
-                },
-            ),
-        ];
-        for (name, mutated) in mutations {
+        assert!(
+            base.atmo_enabled,
+            "the gated rows only move the digest with the atmosphere switched on"
+        );
+        for (name, mutated) in digest_mutations(base) {
             assert_ne!(
                 base.digest(),
                 mutated.digest(),
@@ -1074,7 +744,7 @@ mod tests {
 
     #[test]
     fn gamma_slider_monotonic() {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss, reason = "the loop counter is ten")]
         let values: Vec<f32> = (0..=10)
             .map(|i| gamma_slider_to_value(i as f32 / 10.0))
             .collect();

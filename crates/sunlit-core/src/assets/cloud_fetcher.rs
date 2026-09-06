@@ -163,7 +163,7 @@ pub fn poll_interval() -> Duration {
 fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
     match raw {
         Some(dir) => Some(PathBuf::from(dir)),
-        None => Some(dirs::data_local_dir()?.join("SunlitEarth")),
+        None => crate::app_data_dir(),
     }
 }
 
@@ -178,30 +178,7 @@ fn load_cache_meta(path: &Path) -> Option<CacheMeta> {
 }
 
 fn save_cache_meta(meta: &CacheMeta, path: &Path) {
-    let toml_str = match toml::to_string_pretty(meta) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "could not serialize cloud cache meta");
-            return;
-        }
-    };
-
-    if let Some(parent) = path.parent()
-        && let Err(e) = fs::create_dir_all(parent)
-    {
-        warn!(path = %parent.display(), error = %e, "could not create cloud cache directory");
-        return;
-    }
-
-    let tmp_path = path.with_extension("toml~");
-    if let Err(e) = fs::write(&tmp_path, &toml_str) {
-        warn!(path = %tmp_path.display(), error = %e, "could not write cloud cache meta");
-        return;
-    }
-
-    if let Err(e) = fs::rename(&tmp_path, path) {
-        warn!(path = %path.display(), error = %e, "could not rename cloud cache meta");
-    }
+    crate::files::write_toml(meta, path, "cloud cache meta");
 }
 
 /// Write the cached JPEG, reporting whether the entry now holds it.

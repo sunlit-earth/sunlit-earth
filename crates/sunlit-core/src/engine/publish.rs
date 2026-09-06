@@ -130,12 +130,7 @@ impl Engine {
             warn!(note, "the stored anchor monitor is gone");
         }
 
-        let settings = layout::Framing {
-            camera_fov: self.params.camera.fov_deg,
-            sky_fov: self.params.sky_fov,
-            offset_x: self.params.camera.offset_x,
-            offset_y: self.params.camera.offset_y,
-        };
+        let settings = layout::Framing::from(&self.params);
         let groups = layout::render_groups(&monitors, self.display_mode, anchor.index);
         if groups.is_empty() {
             return Err("this session has no screen with any pixels on it".to_owned());

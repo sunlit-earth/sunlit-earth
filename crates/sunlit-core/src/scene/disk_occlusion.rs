@@ -190,7 +190,10 @@ mod tests {
         let mut previous = -1.0_f32;
         let mut seen_partial = false;
         for step in 0..=200 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the loop counter is two hundred"
+            )]
             let x = 100.0 + step as f32 * 0.4;
             let fraction = visibility(sun_at(x, 6.0), globe(), None).visible_fraction;
             assert!(

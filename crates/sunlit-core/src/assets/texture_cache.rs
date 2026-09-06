@@ -285,7 +285,7 @@ fn sweep_unfinished(target: &Path) {
     };
     for entry in entries.flatten() {
         let found = entry.file_name().to_string_lossy().into_owned();
-        if found.starts_with(&prefix) && found.ends_with('~') {
+        if found.starts_with(&prefix) && found.ends_with(UNFINISHED_SUFFIX) {
             let path = entry.path();
             match fs::remove_file(&path) {
                 Ok(()) => debug!(path = %path.display(), "removed an unfinished cache file"),
@@ -297,46 +297,30 @@ fn sweep_unfinished(target: &Path) {
     }
 }
 
+/// The suffix a cache entry that is not finished yet carries, which is also
+/// what [`sweep_unfinished`] looks for.
+const UNFINISHED_SUFFIX: &str = "~";
+
 /// A name for the not-yet-finished version of `path`, unique to this writer.
-///
-/// The `~` suffix is the config save's convention for a file that is not
-/// finished yet. The process id and counter are what the config save does not
-/// need and this does: two runs of the app, or two loader threads in one run
-/// switching resolutions back and forth, can be building the same cache entry
-/// at the same time, and a shared temporary name means the second `File::create`
-/// truncates the first writer's PNG mid-write.
 fn unfinished(path: &Path) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{}.{nonce}~", std::process::id()));
-    PathBuf::from(name)
+    crate::files::unfinished(path, UNFINISHED_SUFFIX)
 }
 
 /// Encode `img` as a PNG at `path`.
 ///
-/// The encoder is named rather than inferred from the file extension, because
-/// the file this writes to is the unfinished one and its extension is not
-/// `png`. Fast compression rather than the default: the file is a cache entry whose
-/// whole point is to be cheaper than decoding the source again, and the encode
-/// happens on the loader thread while the app is waiting for its first frame.
+/// The cheapest compression the encoder offers short of none, because the file
+/// is a cache entry whose whole point is to be cheaper than decoding the source
+/// again, and the encode happens on the loader thread while the app is waiting
+/// for its first frame.
 fn save_png(path: &Path, img: &DecodedImage) -> Result<(), String> {
-    use image::ImageEncoder;
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-
-    let file = fs::File::create(path).map_err(|e| e.to_string())?;
-    PngEncoder::new_with_quality(
-        std::io::BufWriter::new(file),
-        CompressionType::Fast,
-        FilterType::Adaptive,
-    )
-    .write_image(
+    crate::files::write_png(
+        path,
         &img.pixels,
         img.width,
         img.height,
-        image::ExtendedColorType::Rgba8,
+        crate::files::CompressionType::Fast,
+        crate::files::FilterType::Adaptive,
     )
-    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -349,7 +333,7 @@ mod tests {
     fn write_source(path: &Path, width: u32, height: u32, seed: u8) {
         let mut img = image::RgbaImage::new(width, height);
         for (x, y, px) in img.enumerate_pixels_mut() {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation, reason = "the modulo leaves a byte")]
             let v = ((x * 7 + y * 13) % 256) as u8;
             *px = image::Rgba([v, seed, 255 - v, 255]);
         }

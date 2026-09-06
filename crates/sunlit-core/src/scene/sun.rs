@@ -84,7 +84,10 @@ pub(crate) fn sun_direction_from_time(mut time: astro_time_t) -> Vec3 {
     let phi = subsolar_lat_deg.to_radians();
     let lambda = subsolar_lon_deg.to_radians();
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the components are sines and cosines, and the result is normalized"
+    )]
     let dir = Vec3::new(
         (phi.cos() * lambda.sin()) as f32,
         phi.sin() as f32,

@@ -113,7 +113,10 @@ fn checked(status: astro_status_t, what: &str) {
 /// The library computes in f64 and the renderer draws in f32. Every narrowing
 /// of a returned value goes through here, which is what keeps the suppression
 /// to one site instead of one per entry point.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the one place the library's f64 becomes the renderer's f32"
+)]
 fn f32_of(value: f64) -> f32 {
     value as f32
 }
@@ -207,7 +210,6 @@ fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
     f32_of(illumination.mag)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn time_for_input(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> astro_time_t {
     if dt.use_custom {
         let doy = dt.custom_day_of_year.max(1);
@@ -470,7 +472,10 @@ mod tests {
         for time in four_years_of_times().step_by(37) {
             let (longitude, latitude) = sub_earth_point(&moon_state_from_time(time));
             let libration = libration(time);
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the library reports libration in degrees"
+            )]
             let (elon, elat) = (libration.elon as f32, libration.elat as f32);
             assert!(
                 (longitude - elon).abs() < 0.1 && (latitude - elat).abs() < 0.1,

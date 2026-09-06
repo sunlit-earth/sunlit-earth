@@ -32,7 +32,10 @@ pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 const GRID_TEX_WIDTH: u32 = 2048;
 const GRID_TEX_HEIGHT: u32 = 1024;
 
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear setup sequence; the pipelines it builds are a table in Pipelines::build"
+)]
 #[tracing::instrument(skip_all, fields(width, height, sample_count))]
 pub(super) fn create_renderer(
     device: wgpu::Device,
@@ -251,7 +254,10 @@ pub(super) fn create_renderer(
         planet_buffer,
         vertex_buffer,
         index_buffer,
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a sphere mesh has thousands of indices"
+        )]
         index_count: mesh.indices.len() as u32,
         uniform_buffer,
         bind_group_layout,

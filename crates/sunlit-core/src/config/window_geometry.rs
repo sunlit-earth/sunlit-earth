@@ -27,7 +27,6 @@ pub fn save_window_geometry(x: i32, y: i32, width: u32, height: u32) {
 /// Returns `true` if the position is on-screen, `false` if off-screen or
 /// if validation cannot be performed.
 #[cfg(windows)]
-#[allow(clippy::cast_possible_truncation)]
 fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
@@ -63,7 +62,6 @@ fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
 /// chosen for being the one platform-defined number in the neighbourhood, not
 /// because every platform enforces it.
 #[cfg(not(windows))]
-#[allow(clippy::cast_possible_truncation)]
 fn is_position_on_screen(x: i32, y: i32, width: u32, height: u32) -> bool {
     let Ok(width) = i32::try_from(width) else {
         return false;

@@ -27,7 +27,11 @@ pub fn build_aa_options(supported: &[u32], max_samples: u32) -> (Vec<String>, Ve
     }
 
     // Default to 8x if available, otherwise the highest available option
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "an adapter offers a handful of sample counts"
+    )]
     let default_index = counts
         .iter()
         .position(|&c| c == 8)

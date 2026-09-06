@@ -35,7 +35,10 @@ const CUMULATIVE_DAYS: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273,
 /// :returns: `(month, day)` where month is 1-12 and day is 1-31.
 ///
 /// Clamps `doy` to the valid range for the year.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the month and the day are clamped to a calendar before the narrowing"
+)]
 pub fn day_of_year_to_month_day(doy: u16, year: i32) -> (u8, u8) {
     let max_doy = days_in_year(year);
     let doy = doy.clamp(1, max_doy);
@@ -78,7 +81,11 @@ pub fn month_day_label(doy: u16, year: i32) -> String {
 /// :returns: `(hour, minute)` where hour is 0-23 and minute is 0-59.
 ///
 /// Clamps to \[0.0, 24.0). A value of exactly 24.0 maps to (23, 59).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the hour is clamped to a day before the narrowing"
+)]
 pub(crate) fn hour_float_to_hm(h: f32) -> (u8, u8) {
     let h = h.clamp(0.0, 24.0);
     if h >= 24.0 {
@@ -110,7 +117,10 @@ pub fn hour_label(h: f32) -> String {
 ///
 /// Clamps to \[0.0, 24.0). A value of exactly 24.0 maps to (23, 59, 59.0)
 /// approximately.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the hour is clamped to a day before the narrowing"
+)]
 pub(crate) fn hour_float_to_hms(h: f32) -> (i32, i32, f64) {
     let h = f64::from(h.clamp(0.0, 24.0));
     if h >= 24.0 {

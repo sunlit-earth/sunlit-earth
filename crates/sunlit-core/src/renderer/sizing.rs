@@ -1,3 +1,10 @@
+//! How large a frame is drawn, and with how many samples.
+//!
+//! Policy the settings window and the engine ask for before any GPU object
+//! exists: which anti-aliasing options an adapter and a quality tier leave on
+//! offer, which sample count a request resolves to, and the granularity a
+//! viewport is quantized to.
+
 /// Render dimensions are rounded to this granularity to avoid
 /// creating new GPU textures on every pixel change during resize.
 const SIZE_GRANULARITY: u32 = 64;

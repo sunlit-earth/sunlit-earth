@@ -1,3 +1,8 @@
+//! Where each texture sits, and which slot a texture mode draws the globe from.
+//!
+//! [`SlotLayout`] is where that order is stated; nothing else in the crate
+//! restates it.
+
 /// Texture slot index for the day texture (JXL).
 pub(super) const DAY_SLOT: usize = 1;
 /// Texture slot index for the night texture (JXL).

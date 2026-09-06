@@ -482,6 +482,11 @@ fn start_engine(
 /// keeps the tray's checkmark and the window's checkbox in step, and cannot do
 /// that for a tray that is not there yet.
 ///
+/// The geometry restore is the third step and has no such constraint. It has to
+/// happen before the window is shown, which `run_event_loop` does several steps
+/// later, and nothing else here reads or writes a position or a size; it sits
+/// in this helper because it is the last thing the stored config decides.
+///
 /// `None` is a session with no tray host, or `--mode window`, and the caller
 /// reads it as "this run is a windowed one".
 fn install_tray_and_geometry(

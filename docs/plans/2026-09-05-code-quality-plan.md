@@ -426,6 +426,82 @@ orchestrator 49 to 54.
     one channel in particular. Restored. **This governs runs 4 and 5**, where the same disagreement is available in
     every area note.
 
+### Run 4
+
+All three handovers numbered from 55. Renumbered into the one sequence: package 4.1 supplied 55 to 60, package 4.2
+61 and 62, package 4.3 63 to 69, and the orchestrator 70 to 72.
+
+55. **`wallpaper/linux.rs` also took the Linux `check_supported` and `in_layout_order`**, beyond what the review's B2
+    names, because they belong with the publish path that moved.
+56. **`Publication::write_job` gained a unit test that neither copy of the loop had.** The Arc dedupe was written twice
+    and covered nowhere; the merge is exactly the kind of change that should leave behind a test which fails if either
+    half were imposed on the other. It is the 399th library test and is gated to Windows and Linux.
+57. **The MSAA fallback warning was deduplicated**, which is `engine.md` D3 rather than an item in the package's list.
+    Behavior is identical at both sites and it removes eight lines run 5 would otherwise inherit. **Run 5's package 5.2
+    owns the review's shared-helper item and should know one entry in the 4.4 duplication table is already
+    discharged.**
+58. **`tests/common/` is a misfiled item, not an absent one.** The plan gives package 4.1 "`tests/common/` split if the
+    note's seam is still there". The seam the review describes, `tests/common/{process,pixels,cloud_stub,desktop_linux}.rs`,
+    is in `tests-app.md` against `crates/sunlit-app/tests/e2e.rs`: a different file, in a different crate, that package
+    5.1 owns. `crates/sunlit-core/tests/common/mod.rs` is 132 lines and `tests-engine.md` calls it clean throughout.
+    **This must reach run 5's package 5.1 item list or the seam falls between the two runs**, the way departure 25
+    nearly did.
+59. **`Engine::handle` had no `too_many_lines` allow to delete.** The brief says splitting `new` and `handle` removes
+    both allows; only `new` carried one at the run base. `new`'s was real and its deletion is verified: clippy counted
+    124 against a threshold of 100 before, and is silent after.
+60. **The seven section banners in `tests/engine.rs` became the module docs of the files they named**, in a separate
+    comment-only commit rather than inside a move, so `--color-moved` sees the moves cleanly.
+61. **`gpu_setup.rs`'s pipeline half went 523 lines to 287, not the review's 495 to 130.** The review's figure assumes
+    a positional tuple table; what shipped is the named `Spec`/`Kind` shape its own B1 text describes. A report rather
+    than a miss.
+62. **`encode_and_submit` keeps its `#[allow(clippy::too_many_arguments)]`.** `clippy.toml` sets no threshold override,
+    so the default of seven stands and nine still fires. Verified by deleting the allow and reading
+    `this function has too many arguments (9/7)`, then restoring it. The review's guess that nine "may" clear the bar
+    was wrong.
+63. **The parsers' `#[cfg(any(target_os = "linux", test))]` moved from the two items to the `mod linux;` declaration
+    that now contains them**, with only `snapshot` gated to Linux inside. `config-memory.md` C1 prescribes exactly
+    this in those words, so no fence question arises. Behavior is identical in all six platform-and-profile cases,
+    worked through independently by the implementer, the orchestrator and the validator. The paragraph explaining why
+    the parsers compile in a test build moved to `linux.rs`'s module doc so the reason sits beside the gate. Approved
+    before the commit landed. **The case that matters is Windows plus test, which compiles `linux.rs`, so this host's
+    own `cargo test` checks the module nobody here can otherwise compile; `cargo build` covers the case `cargo test`
+    cannot reach.**
+64. **`sun_occlusion.rs` shipped a temporary `pub use` bridge**, so `tests/engine.rs` and `tests/render_pipeline.rs`
+    kept resolving four symbols through the old path while packages 4.1 and 4.2 restructured them. Editing either from
+    4.3's branch would collide by construction. `crates/sunlit-app/src/mouse_math.rs` was **not** left behind the
+    bridge and was fixed properly, because it is the wrong-module import the review names as the reason to do
+    `sky_lens` first and no run 4 package owns the app. The orchestrator removed the bridge after all three merges; see
+    departure 71.
+65. **The `Kind::Kde` doc comment stayed on its variant.** `display.md` B1 lists it among what moves into `kde.rs`, but
+    it documents an enum variant that stays in `desktop/mod.rs`, so moving it would leave the variant undocumented.
+    Departure 54: the review's own section 4.2 does not ask for it, so the review wins.
+66. **`angular_visible_fraction` stayed in `sun_occlusion.rs`** where `scene.md` B1 puts it in `disk_occlusion.rs`. It
+    reads `SUN_ANGULAR_RADIUS_DEGREES`, which is Sun state, and the same table's stated reason for the module existing
+    is "no sun-specific state"; moving it would also make the two modules import each other. The note disagrees with
+    its own rationale rather than with the review.
+67. **Three test-module section dividers were dropped rather than moved.** A divider separates sections; in a module
+    whose whole test module is the one section it named, it separates nothing.
+68. **`sky.rs` got `f32_of` on top of the review's `vec3_of` and `checked`.** Two helpers alone leave three scalar
+    casts and therefore three function-level cast allows, so the file would have traded five allows for five. Routing
+    every narrowing through one helper takes the FFI half from five to one.
+69. **The XFCE arm's move is a twelve-space dedent**, so it needs `--color-moved-ws=allow-indentation-change` to show
+    as moved. 81 lines on each side. The flag cannot hide an edit: it requires the same whitespace delta on every line
+    of a block and exact content otherwise, and the validator confirmed the closure body is character-identical.
+70. **`crates/sunlit-app/src/mouse_math.rs` was granted to package 4.3**, although no run 4 package owns the app crate.
+    Nothing else in the run touches it, so there was nothing to collide with, and it is the file the review actually
+    complains about: leaving it behind the bridge would have discharged the item's letter and not its point.
+71. **The orchestrator removed the bridge by symbol, not by the handover's line list.** Package 4.1 restructured
+    `tests/engine.rs` into fourteen modules after package 4.3 wrote its inventory, so an exact-text patch would have
+    targeted files that no longer existed. Symbol substitution found **19 references across four files** where the
+    inventory listed nine call sites; the extra ten are doc comments and assertion messages that name the module and
+    would have gone on compiling while lying. **A handover's line list is stale the moment another package touches the
+    file; its symbol table is not.** The first removal attempt also deleted the `pub use` without applying the
+    handover's replacement `use` block, because the block was doing double duty as `sun_occlusion.rs`'s own import;
+    that failed loudly at compile with 14 errors, which is the property that made the bridge safe.
+72. **The e2e suite ran in both guests at run 4's gate**, which the plan's run 4 row does not require. Run 4
+    restructured `wallpaper.rs` including the Linux publish path, and moved `SystemWallpaper::publish` from two arms to
+    one, which is precisely what that suite exercises and what no headless test reaches.
+
 ## Validation record
 
 One entry per package: run, package, validator round date, MAJOR and MINOR counts, what was fixed, what was declined.
@@ -448,6 +524,10 @@ into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3
 | 3 | 3.2 core renderer side | 1 | 2026-09-06 | **1** | 5 | Four fixed in `9c96218`, one was the orchestrator's. The MAJOR: a block `tests-gpu.md` A4 classifies "move" was deleted with no Reserved-files entry, and the pointer left behind claimed `docs/rendering.md` says which of the three shared rules pairs with which, which it does not. The prose was lost from both source and docs; restored to the source and the claim dropped. MINORs: the dummy-texture enumeration defect survived in a third place, `renderer/textures.rs` and `tests/shading.rs` were passed over (departures 40 and 41), and a cross-reference pointed at the weakest of three places carrying the reason. The fifth was the orchestrator's, that two of the three moved blocks partly duplicated prose `docs/rendering.md` already held, so they were merged into it rather than appended. Same hash proof, 21 files identical, plus the three probe string literals hashed separately. |
 | 3 | 3.3 the app and the e2e suite | 1 | 2026-09-06 | **1** | 4 | Three fixed in `132b5b4`, one corrected in the record, and the MAJOR was already fixed before the report arrived. The MAJOR was not in the branch: applying the handover's xtask edit verbatim breaks the test that pins the two job timeouts, which is departure 53 and `0de0e93`. MINORs: `peak_rss_is_not_read_as_rss` documented a guard it did not provide, since the field it is named for comes first in the emitted line, so the test passed under exactly the implementation the doc condemned; it now parses a hand-written line with the fields reordered and was falsified. `SIGNAL_REPLY` covered a `FindWindowW` poll its doc did not mention, which took a constant of its own. The parse-failure panics stopped naming the missing field, a diagnostic regression on the axis D-4 exists to improve; both types now carry a `read` returning `Result` and the panic names the field that failed. The record correction: the round-trip tests are not `displays::signal_line`'s first tests, a claim inherited from the plan and the brief. The validator compared all 15 cases line by line and found arguments, environment, config fixtures, readiness conditions and spawn counts preserved, every one of the four timeout constants taking the larger of its pair, and the `SIGNAL:memory` line byte-for-byte identical on the wire. |
 
+| 4 | 4.1 engine and wallpaper | 1 | 2026-09-06 | 0 | 1 | The MINOR was the orchestrator's to discharge: `engine/mod.rs` at 788 lines and `wallpaper/mod.rs` at 921 differ from the review's "roughly 500" and "~610", and the reasoning sat under Done rather than as a numbered departure, so the copy-out step would have lost it. The validator settled it with arithmetic the implementer had not done: the review's own five per-module estimates sum to 770 of 1485 lines, implying about 715 remaining rather than 500, so the figure was never self-consistent. Recorded here rather than sent back. The validator rebuilt the test-name-to-group-accessor map from the base file and all fourteen head modules and diffed them, getting 72 identical entries, and confirmed the group block byte-identical apart from `pub(crate)` additions; it ran both dedent proofs itself; it found the unbounded-channel paragraph whole in `handle.rs`; it counted `SAFETY` at 16/16/17 across the Windows files against the base's 16/16/17 and 39 crate-wide at both ends; and it re-ran the WSL Linux check independently. |
+| 4 | 4.2 the renderer | 1 | 2026-09-06 | 0 | 2 | Both fixed in `b6221f4`, both in the new `slots.rs`: a module doc claiming "nothing else in the crate restates it" when two pre-existing `gpu_setup.rs` comments restate parts of the slot order, and a `SLOT_LABELS` doc link that stopped resolving once the constant moved away from `Renderer`. The validator compared all ten pipeline descriptors field by field between the trees, traced the preview and export paths end to end, checked the four `shell_vertex` bodies statement by statement, and re-derived `close_camera`'s three figures from `zoom_to_distance` and `globe_screen_circle` rather than from the handover. It judged all four behavior-change commits behavior-neutral on inspection rather than on green goldens, and named the one place the goldens do not look: every case runs at `sample_count: 1`, so the MSAA rebuild path is proven by construction through the shared `Pipelines::build` and not by a pixel. |
+| 4 | 4.3 scene, config, display, desktop, memory | 1 | 2026-09-06 | 0 | 5 | Two fixed in `f105795`, one was a handover correction, two were the orchestrator's. Fixed: a stray `///` separator, and `#[track_caller]` on `sky.rs`'s `checked`, which the FFI dedup had silently cost a panic location; the implementer took it rather than declining, on the ground that a dedup should be behavior-neutral rather than behavior-neutral-except-for-a-panic-location. The handover correction: its bridge line inventory listed eight `engine.rs` call sites where there are nine, which stayed cheap only because the **symbol table** was complete and the orchestrator substitutes by symbol. The orchestrator's two: three stale cross-references in `sphere.wgsl` and two in `docs/rendering.md`. The validator overrode the `desktop` dead-code allow with `cargo rustc -- --force-warn dead_code` rather than trusting the implementer's probe and got exactly the three claimed items; reproduced both `--color-moved` percentages by counting ANSI colour codes; compared each base file's whitespace-stripped sorted line multiset against its split parts; and read `place_sun` argument by argument, including confirming `disc` and `globe` are not swapped where a swap would compile silently. |
+
 ## Budget record
 
 | Run | Started at (window %) | Ended at (window %) | Implementers | Notes |
@@ -456,6 +536,8 @@ into the run directory as `findings-1.1.md`, `findings-1.2.md` and `findings-1.3
 | 2 | 64, with the window rolling over 38 minutes in | 41 of the new window | 3 | The maintainer authorised finishing the old window and continuing into the new one, so the run spans a rollover and the two numbers are not comparable. Measured cost after the rollover, covering all three validator rounds, three fix rounds, the merges and the gates: 39 points. Comparable to run 1's 35. |
 
 | 3 | 3, rising to about 60 by the merge | to be filled at wrap-up | 3 | The window rolled over between runs 2 and 3, so run 3 started almost empty. Three implementers, three validators, three fix rounds and the orchestrator's own merges, docs work and gates. The maintainer raised the controlled-pause threshold from 90 to 95 percent for this session and asked for run 4 to follow run 3 without the plan's "below 50 percent" start condition (departure 51). |
+
+| 4 | 53, crossing a window rollover partway | to be filled at wrap-up | 3 | The largest run in the plan by lines moved. Started at 53 percent of the old window and crossed the reset at about 85, with the orchestrator deliberately holding the last two validators until the far side rather than risking a spawn refusal mid-round. Departure 51's raised ceiling was therefore never approached. |
 
 ## Declined findings
 
@@ -603,6 +685,20 @@ on Linux. **macOS remains uncompiled**, by the maintainer's decision rather than
 
 ## Open items
 
+- **`Renderer`'s remaining fields are not grouped** into `targets`, `textures` and `last` (review B3). `pipelines`
+  is done and delivered most of the benefit; what is left is the other three groups and about thirty field accesses
+  across six files. Package 4.2 offered to do it and the orchestrator declined, to avoid landing further structure
+  after green gates with no validation round left in the run. For run 5 or later.
+- **`tests/engine/main.rs`'s module doc names a `harness_of_its_own` helper that does not exist anywhere in the
+  tree.** Inherited drift from run 2's rebuild that run 3's comment pass missed; package 4.1 found it and moved the
+  prose verbatim rather than edit inside a move commit, which was right. One line for run 5.
+- **The MSAA rebuild path has no golden case.** Every golden runs at `sample_count: 1`, so `rebuild_msaa_resources`
+  is never exercised by a reference image. Since run 4 it is the same single `Pipelines::build` call as the create
+  path, so the duplication that would let the two diverge is gone, but the path is proven by construction rather than
+  by a pixel.
+- **`Schedule`'s `interval` and `next` fields are `pub(super)`** so `engine/mod.rs` can bring a drain forward
+  and `cloud_worker.rs` can build a literal. A method would read better, but that is new code rather than the
+  visibility change a move forces, so run 4 did not write it.
 - **`golden.rs`'s `close_camera` and `docs/rendering.md` disagree about the sky lens at the painted limb**, 57 degrees
   against 63 for what reads as the same quantity. Both predate run 3 and package 3.2's validator correctly declined it
   as out of scope. The orchestrator's partial derivation supports 57: at 512 by 256 the projection is isotropic at

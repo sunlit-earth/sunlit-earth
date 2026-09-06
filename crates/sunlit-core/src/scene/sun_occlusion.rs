@@ -312,9 +312,67 @@ fn horizon_zone_width(
     annulus.max(depth * 2.0 * disk_radius).max(1e-4)
 }
 
+/// The Sun at the antipode of the view axis: off screen whatever the globe
+/// does, so nothing hides it and nothing draws it either.
+fn off_screen_placement(
+    view_direction: Vec3,
+    globe: ScreenCircle,
+    atmosphere_radius: f32,
+    floor: f32,
+    depth: f32,
+) -> SunPlacement {
+    SunPlacement {
+        view_direction,
+        disk_radius_pixels: floor,
+        visibility: SunVisibility {
+            visible_fraction: 1.0,
+        },
+        globe,
+        zone_width_pixels: horizon_zone_width(globe.radius, atmosphere_radius, depth, floor),
+        squash: 1.0,
+        glare_tint: Vec3::ONE,
+        flux: 1.0,
+        horizon_gain: 1.0,
+    }
+}
+
+/// Where refraction puts the disk, what it is imaged as there, and how far the
+/// same bending flattens it.
+///
+/// A lift of nothing leaves the direction untouched rather than sending it
+/// through the lens and back, so a Sun the band cannot reach does not move by
+/// whatever that round trip costs in the last bits.
+fn lift_disc(
+    inputs: &SunPlacementInputs,
+    true_direction: Vec3,
+    disc: ScreenCircle,
+    globe: ScreenCircle,
+    zone: f32,
+    imaged: impl Fn(Vec3) -> Option<ScreenCircle>,
+) -> (Vec3, ScreenCircle, f32) {
+    let geometric_height = (disc.center.distance(globe.center) - globe.radius) / zone;
+    let (apparent_height, squash) = refract(geometric_height, inputs.horizon.refraction);
+    let lift = (apparent_height - geometric_height) * zone;
+    if lift > 0.0 {
+        let radial = (disc.center - globe.center)
+            .try_normalize()
+            .unwrap_or(Vec2::X);
+        let lifted = sky_lens_direction(
+            disc.center + radial * lift,
+            inputs.sky_fov_deg,
+            inputs.screen_offset,
+            inputs.viewport,
+        );
+        imaged(lifted).map_or((true_direction, disc, squash), |moved| {
+            (lifted, moved, squash)
+        })
+    } else {
+        (true_direction, disc, squash)
+    }
+}
+
 /// Place the Sun, color it by the path its light took, and measure what the
 /// globe hides of it.
-#[allow(clippy::too_many_lines)]
 pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
     let horizon = inputs.horizon;
     let true_direction = (inputs.view * inputs.sun_world_direction.extend(0.0))
@@ -351,49 +409,18 @@ pub fn place_sun(inputs: &SunPlacementInputs) -> SunPlacement {
         })
     };
     let Some(disc) = imaged(true_direction) else {
-        // The Sun sits at the antipode of the view axis, off screen whatever
-        // the globe does: nothing hides it, and nothing draws it either.
-        return SunPlacement {
-            view_direction: true_direction,
-            disk_radius_pixels: floor,
-            visibility: SunVisibility {
-                visible_fraction: 1.0,
-            },
+        return off_screen_placement(
+            true_direction,
             globe,
-            zone_width_pixels: horizon_zone_width(
-                globe.radius,
-                atmosphere.radius,
-                horizon.depth,
-                floor,
-            ),
-            squash: 1.0,
-            glare_tint: Vec3::ONE,
-            flux: 1.0,
-            horizon_gain: 1.0,
-        };
+            atmosphere.radius,
+            floor,
+            horizon.depth,
+        );
     };
 
     let zone = horizon_zone_width(globe.radius, atmosphere.radius, horizon.depth, disc.radius);
-    let geometric_height = (disc.center.distance(globe.center) - globe.radius) / zone;
-    let (apparent_height, squash) = refract(geometric_height, horizon.refraction);
-    let lift = (apparent_height - geometric_height) * zone;
-    // A lift of nothing leaves the direction untouched rather than sending it
-    // through the lens and back, so a Sun the band cannot reach does not move
-    // by whatever that round trip costs in the last bits.
-    let (view_direction, disc) = if lift > 0.0 {
-        let radial = (disc.center - globe.center)
-            .try_normalize()
-            .unwrap_or(Vec2::X);
-        let lifted = sky_lens_direction(
-            disc.center + radial * lift,
-            inputs.sky_fov_deg,
-            inputs.screen_offset,
-            inputs.viewport,
-        );
-        imaged(lifted).map_or((true_direction, disc), |moved| (lifted, moved))
-    } else {
-        (true_direction, disc)
-    };
+    let (view_direction, disc, squash) =
+        lift_disc(inputs, true_direction, disc, globe, zone, imaged);
 
     // Flattening the disk about its own center is the same, in area fractions,
     // as leaving it round and moving the limb that cuts it: the scale runs

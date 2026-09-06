@@ -288,10 +288,14 @@ fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer 
 
 /// Run the windowed or tray-mode application.
 ///
+/// The order of the steps below is the whole of this function, and every one of
+/// them has something before it that it cannot be moved ahead of. Each helper's
+/// own doc says which, so a reader who wants to reorder meets the reason first.
+///
 /// `instance_guard` holds the single-instance mutex in tray mode; it is
 /// acquired in `main` so a second instance can exit before creating a window
 /// or a GPU device.
-#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)]
 fn run_app(
     cli: Cli,
     config: &AppConfig,
@@ -299,9 +303,6 @@ fn run_app(
 ) -> ExitCode {
     texture_loader::register_jxl_hook();
     debug!("registered JXL decoding hook");
-
-    let use_tray = matches!(cli.mode, Mode::Tray);
-    let tray_start = cli.tray_start;
 
     // Ahead of the window and the engine: a name the platform refuses, or one
     // another instance is already holding, is an answer worth having before the
@@ -321,23 +322,116 @@ fn run_app(
     window.set_version(env!("CARGO_PKG_VERSION").into());
     sunlit_core::memory::log_memory_usage("after window creation");
 
-    // The engine event callback needs the window; the UI callbacks need the
-    // engine. Break the cycle by building the callback first and moving it
-    // into the config.
+    // One monitor list for the whole window: the Displays group's callbacks read
+    // it, and the engine's `MonitorsChanged` event replaces it.
+    let screens = displays::shared_monitors();
+    let Some(running) = start_engine(&cli, config, &window, &screens) else {
+        return ExitCode::FAILURE;
+    };
+    let Running {
+        engine,
+        link,
+        display_watch,
+        first_refresh,
+    } = running;
+
+    init_ui(
+        &window,
+        config,
+        effective_texture_resolution(&cli, config),
+        &link,
+        &screens,
+    );
+    let about = crate::about::AboutController::default();
+    about.register_settings_callback(&window);
+
+    let tray = install_tray_and_geometry(
+        &window,
+        &link,
+        &about,
+        config,
+        matches!(cli.mode, Mode::Tray),
+    );
+    // A session with no tray host leaves the window as the only way to reach
+    // the app, so from here on this run is a windowed one: the close button
+    // ends it and the window is shown whatever `--tray-start` asked for.
+    let use_tray = tray.is_some();
+    if use_tray {
+        debug!("startup mode: tray");
+    } else {
+        debug!("startup mode: windowed");
+    }
+
+    // The engine started from the config; push once more so anything the UI
+    // clamped on the way in (day-of-year, year index) reaches it too.
+    link.push_params(&window);
+
+    let viewport_timer = start_viewport_timer(&window, &link);
+    let startup_refresh_timer = start_startup_refresh_timer(&link, first_refresh);
+    register_close_handler(&window, &link, use_tray);
+
+    // The socket taken at the top of this function starts being answered here,
+    // now that there is a window and an engine to answer for.
+    let _ipc_thread = ipc.and_then(|listener| {
+        listener
+            .serve(window.as_weak(), link.clone())
+            .inspect_err(|e| warn!("{e}; carrying on without IPC"))
+            .ok()
+    });
+
+    let _instance_guard = instance_guard;
+    let status = run_event_loop(&window, &link, use_tray, cli.tray_start);
+
+    tear_down(
+        engine,
+        display_watch,
+        viewport_timer,
+        startup_refresh_timer,
+        tray,
+    );
+    status
+}
+
+/// What a started engine leaves the rest of the run holding.
+struct Running {
+    engine: EngineHandle,
+    link: EngineLink,
+    /// `None` on a platform with no way to watch for a layout change, which is
+    /// a nudge missing rather than a feature: the monitor list is re-queried on
+    /// every publish regardless.
+    display_watch: Option<display::watch::Watcher>,
+    /// Fires once, when the textures behind the first wallpaper have arrived.
+    /// `None` when auto-refresh is off at startup, and then nothing waits.
+    first_refresh: Option<crossbeam_channel::Receiver<()>>,
+}
+
+/// Start the engine against this window, and the display watcher against the
+/// engine.
+///
+/// After the window, which the event callback needs, and before the UI
+/// callbacks, which need the engine. That cycle is what decides the shape here:
+/// the callback is built first and moved into the config, so the engine can be
+/// started from inside this function and everything it produces handed back at
+/// once.
+///
+/// `None` is a renderer that could not start, which ends the run.
+fn start_engine(
+    cli: &Cli,
+    config: &AppConfig,
+    window: &MainWindow,
+    screens: &displays::SharedMonitors,
+) -> Option<Running> {
     let auto_refresh_at_startup = config.auto_refresh_enabled;
     let startup_refresh_done = Arc::new(AtomicBool::new(!auto_refresh_at_startup));
     let refresh_flag = Arc::clone(&startup_refresh_done);
     let (refresh_tx, refresh_rx) = crossbeam_channel::bounded::<()>(1);
-    // One monitor list for the whole window: the Displays group's callbacks read
-    // it, and the engine's `MonitorsChanged` event replaces it.
-    let screens = displays::shared_monitors();
-    let on_event = engine_client::event_forwarder(&window, &screens, move || {
+    let on_event = engine_client::event_forwarder(window, screens, move || {
         if !refresh_flag.swap(true, Ordering::SeqCst) {
             let _ = refresh_tx.try_send(());
         }
     });
 
-    let mut engine_config = engine_config(&cli, config, (800, 600), true);
+    let mut engine_config = engine_config(cli, config, (800, 600), true);
     engine_config.on_event = on_event;
     let engine: EngineHandle = match engine::start(engine_config) {
         Ok(engine) => engine,
@@ -350,16 +444,16 @@ fn run_app(
             if !cli.software_rendering {
                 eprintln!("try --software-rendering if this machine has no usable GPU driver");
             }
-            return ExitCode::FAILURE;
+            return None;
         }
     };
     window.set_renderer_info(engine.adapter_info().into());
 
     // The display watcher's one consumer is the engine, and its condition is
-    // "always": it runs from here until the teardown below, whether or not a
-    // window is shown. A hint is a nudge and nothing more, so a platform that
-    // cannot watch (macOS, a session with no `DISPLAY`) leaves the app exactly
-    // as it was, with the monitor list re-queried on every publish.
+    // "always": it runs from here until the teardown, whether or not a window
+    // is shown. A hint is a nudge and nothing more, so a platform that cannot
+    // watch (macOS, a session with no `DISPLAY`) leaves the app exactly as it
+    // was, with the monitor list re-queried on every publish.
     let hint_tx = engine.sender();
     let display_watch = display::watch::start(Arc::new(move || {
         let _ = hint_tx.send(EngineCommand::DisplaysChanged);
@@ -372,29 +466,37 @@ fn run_app(
     // The window is about to show the override, and a save must not write it.
     link.set_resolution_is_one_run_only(cli.texture_resolution.is_some());
 
-    init_ui(
-        &window,
-        config,
-        effective_texture_resolution(&cli, config),
-        &link,
-        &screens,
-    );
-    let about = crate::about::AboutController::default();
-    about.register_settings_callback(&window);
+    Some(Running {
+        engine,
+        link,
+        display_watch,
+        first_refresh: auto_refresh_at_startup.then_some(refresh_rx),
+    })
+}
 
-    // The tray icon is a top-level Slint component of its own; it must exist
-    // before the auto-refresh callback so the two views of that setting can be
-    // kept in step.
+/// Put the tray icon in the tray, wire the auto-refresh controls, and place the
+/// window where it was left.
+///
+/// The tray is a top-level Slint component of its own and has to exist before
+/// the auto-refresh callback, which is why the two are one step: the callback
+/// keeps the tray's checkmark and the window's checkbox in step, and cannot do
+/// that for a tray that is not there yet.
+///
+/// `None` is a session with no tray host, or `--mode window`, and the caller
+/// reads it as "this run is a windowed one".
+fn install_tray_and_geometry(
+    window: &MainWindow,
+    link: &EngineLink,
+    about: &crate::about::AboutController,
+    config: &AppConfig,
+    use_tray: bool,
+) -> Option<std::rc::Rc<crate::TrayIcon>> {
     let tray = if use_tray {
-        crate::tray::create_tray(&window, &link, &about).map(std::rc::Rc::new)
+        crate::tray::create_tray(window, link, about).map(std::rc::Rc::new)
     } else {
         None
     };
-    // A session with no tray host leaves the window as the only way to reach
-    // the app, so from here on this run is a windowed one: the close button
-    // ends it and the window is shown whatever `--tray-start` asked for.
-    let use_tray = tray.is_some();
-    register_auto_refresh_callback(&window, &link, config, tray.clone());
+    register_auto_refresh_callback(window, link, config, tray.clone());
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
         window
             .window()
@@ -402,40 +504,45 @@ fn run_app(
         window.window().set_size(slint::PhysicalSize::new(w, h));
     }
     debug!("loaded config from disk");
+    tray
+}
 
-    // The engine started from the config; push once more so anything the UI
-    // clamped on the way in (day-of-year, year index) reaches it too.
-    link.push_params(&window);
-
-    let viewport_timer = start_viewport_timer(&window, &link);
-
-    // When auto-refresh is on at startup, the first wallpaper update waits for
-    // the textures rather than firing against the grid placeholder.
+/// Hold the first unattended wallpaper update back until the textures are in.
+///
+/// After the engine, whose event callback owns the other end of
+/// `first_refresh`. Without the wait the first publish of a run would be the
+/// procedural grid, since the engine is ready long before an 8K decode is.
+fn start_startup_refresh_timer(
+    link: &EngineLink,
+    first_refresh: Option<crossbeam_channel::Receiver<()>>,
+) -> std::rc::Rc<slint::Timer> {
     let startup_refresh_timer = std::rc::Rc::new(slint::Timer::default());
-    if auto_refresh_at_startup {
-        let engine_link = link.clone();
-        let timer = std::rc::Rc::clone(&startup_refresh_timer);
-        startup_refresh_timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_millis(200),
-            move || {
-                if refresh_rx.try_recv().is_ok() {
-                    info!("auto-refresh: initial wallpaper update on startup");
-                    engine_link.send(EngineCommand::RenderWallpaperNow);
-                    timer.stop();
-                }
-            },
-        );
-    }
+    let Some(first_refresh) = first_refresh else {
+        return startup_refresh_timer;
+    };
 
-    if use_tray {
-        debug!("startup mode: tray");
-    } else {
-        debug!("startup mode: windowed");
-    }
+    let engine_link = link.clone();
+    let timer = std::rc::Rc::clone(&startup_refresh_timer);
+    startup_refresh_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(200),
+        move || {
+            if first_refresh.try_recv().is_ok() {
+                info!("auto-refresh: initial wallpaper update on startup");
+                engine_link.send(EngineCommand::RenderWallpaperNow);
+                timer.stop();
+            }
+        },
+    );
+    startup_refresh_timer
+}
 
-    let _instance_guard = instance_guard;
-
+/// Decide what the window's close button does.
+///
+/// After the tray, because `use_tray` is what the tray host answered rather
+/// than what `--mode` asked for: a session with no tray must not hide the only
+/// window the app has.
+fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool) {
     if use_tray {
         let window_weak = window.as_weak();
         let engine_link = link.clone();
@@ -459,25 +566,25 @@ fn run_app(
             slint::CloseRequestResponse::KeepWindowShown
         });
     }
+}
 
-    // The socket taken at the top of this function starts being answered here,
-    // now that there is a window and an engine to answer for.
-    let _ipc_thread = ipc.and_then(|listener| {
-        listener
-            .serve(window.as_weak(), link.clone())
-            .inspect_err(|e| warn!("{e}; carrying on without IPC"))
-            .ok()
-    });
-
-    let status = run_event_loop(&window, &link, use_tray, tray_start);
-
+/// Take the run down, in the one order that works.
+///
+/// After the event loop has returned. The engine goes first because it owns the
+/// GPU device and shutting it down is an ordinary join on a worker thread; the
+/// display watcher second, so a hint that arrives during the teardown still has
+/// an engine to reach; the timers and the tray last, because they hold clones
+/// of the link the two above were reached through.
+fn tear_down(
+    engine: EngineHandle,
+    display_watch: Option<display::watch::Watcher>,
+    viewport_timer: slint::Timer,
+    startup_refresh_timer: std::rc::Rc<slint::Timer>,
+    tray: Option<std::rc::Rc<crate::TrayIcon>>,
+) {
     sunlit_core::memory::log_memory_usage("before exit");
 
-    // The engine owns the GPU device, so shutting it down here is an ordinary
-    // join on a worker thread.
     engine.shutdown();
-    // After the engine, so a hint that arrives during the teardown has an
-    // engine to reach; the watcher's thread is woken and joined here.
     if let Some(watcher) = display_watch {
         watcher.stop();
     }
@@ -486,7 +593,6 @@ fn run_app(
     drop(tray);
 
     debug!("exiting");
-    status
 }
 
 /// Show the window and run the event loop until something quits it.

@@ -5,7 +5,7 @@ Windows is the platform that ships. Linux builds, tests, renders headlessly, and
 Three tiers of evidence, and the macOS column names one per row:
 
 - **compiled** — it builds and its unit tests pass on `macos-latest`. That is a real check of the pure functions and of every type and call, and it is no check at all of what the API does to a desktop.
-- **runner** — it ran in the hosted runner's own session, through the `build-and-e2e` mode of `macos-build.yml`. A runner's session is not a desktop somebody is looking at, so this is evidence that a call succeeds and not that a picture changed.
+- **runner** — it ran in the hosted runner's own session: the `render` smoke step of `ci.yml`, or the `build-and-e2e` mode of `macos-build.yml`. A runner's session is not a desktop somebody is looking at, so this is evidence that a call succeeds and not that a picture changed.
 - **tester** — somebody ran it on a real Mac and reported back. This is the only tier that says a wallpaper appeared on a screen.
 
 A row moves up only when the evidence exists. That is the retrospective's rule about not pretending: a setter that has never painted a real desktop is not "yes" here.
@@ -14,7 +14,7 @@ A row moves up only when the evidence exists. That is the retrospective's rule a
 |---|---|---|---|
 | Build, unit, engine, GPU shader, soak | yes | yes (lavapipe) | yes (Metal), compiled |
 | Golden images | yes (`warp`) | yes (`lavapipe`) | yes (`metal`), compiled |
-| `render` subcommand | yes | yes | yes, compiled |
+| `render` subcommand | yes | yes | yes, runner |
 | Settings window | yes | yes, in the test guest | untested |
 | Status item / tray | yes | yes, where a `StatusNotifier` host runs | Slint's own AppKit status item, unrun |
 | Set the desktop wallpaper | yes | yes, per desktop | `NSWorkspace`, compiled |
@@ -24,6 +24,8 @@ A row moves up only when the evidence exists. That is the retrospective's rule a
 | Clean exit when the session ends | yes (`WM_ENDSESSION`) | yes (SIGTERM) | SIGTERM only, which a logout does not send; see below |
 | Release bundle | zip, verified on its own runner | tarball, verified on its own runner | ad-hoc signed `.app` zip and a tarball, both verified on the runner |
 | Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 15 cases) or in a local VM (13 of 15; the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, neither of which the Windows guest is) | yes, in a local VM (all 14 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiles, unrun |
+
+The `render` row is the one at the middle tier, and what put it there is the smoke step of <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063631672>: the binary the suite built, run on a `macos-latest` runner with no textures and no clouds, wrote a 640x360 PNG whose IHDR the step reads back. It is the first image this project has produced on a Mac. The release bundles are verified the same way and by the same two renders, on the runner that built them, in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063658604>.
 
 Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:
 

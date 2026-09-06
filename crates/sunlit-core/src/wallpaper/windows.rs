@@ -257,10 +257,7 @@ mod shell;
 pub(crate) fn set_wallpaper_job(
     job: &crate::engine::wallpaper_sink::WallpaperJob,
 ) -> Result<String, String> {
-    use std::sync::Arc;
-
     use crate::display::layout::DisplayMode;
-    use crate::engine::wallpaper_sink::Frame;
 
     let spanning = job.mode == DisplayMode::AcrossScreens;
     let mut publication = begin_publication()?;
@@ -288,34 +285,16 @@ pub(crate) fn set_wallpaper_job(
         return Ok(String::new());
     }
 
-    let mut written: Vec<(Arc<Frame>, PathBuf)> = Vec::new();
-    let mut images: Vec<(&crate::display::Monitor, PathBuf)> = Vec::new();
-    let mut anchor_path: Option<PathBuf> = None;
-    for (index, monitor) in job.monitors.iter().enumerate() {
-        // A screen with no picture is one this mode does not paint, and it is
-        // left holding whatever it already had.
-        let Some(frame) = job.image_for(index)? else {
-            continue;
-        };
-        // Two screens showing the same picture cost one render, and this is
-        // what carries that as far as the file: one encode and one path.
-        let seen = written
-            .iter()
-            .find(|(seen, _)| Arc::ptr_eq(seen, &frame))
-            .map(|(_, path)| path.clone());
-        let path = if let Some(path) = seen {
-            path
-        } else {
-            let path =
-                publication.write(&index.to_string(), &frame.pixels, frame.width, frame.height)?;
-            written.push((Arc::clone(&frame), path.clone()));
-            path
-        };
-        if index == job.anchor {
-            anchor_path = Some(path.clone());
-        }
-        images.push((monitor, path));
-    }
+    let written = publication.write_job(job)?;
+    let anchor_path = written.anchor;
+    // A screen with no picture is one this mode does not paint, and it is left
+    // holding whatever it already had.
+    let images: Vec<(&crate::display::Monitor, PathBuf)> = job
+        .monitors
+        .iter()
+        .zip(written.paths)
+        .filter_map(|(monitor, path)| path.map(|path| (monitor, path)))
+        .collect();
     publication.commit();
 
     let api = shell::DesktopWallpaperApi::open()?;

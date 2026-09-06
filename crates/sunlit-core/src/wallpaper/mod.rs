@@ -251,6 +251,16 @@ pub(crate) struct Publication {
     files: Vec<PathBuf>,
 }
 
+/// Where each of a job's images went, index for index with `job.monitors`.
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) struct WrittenImages {
+    /// The file that screen's picture went to, or `None` for a screen this mode
+    /// does not paint and which keeps the wallpaper it has.
+    pub(crate) paths: Vec<Option<PathBuf>>,
+    /// The anchor screen's own file, absent where the anchor has no picture.
+    pub(crate) anchor: Option<PathBuf>,
+}
+
 /// Start a fresh generation to publish into.
 ///
 /// The directory is created empty and no earlier generation is touched. Sweeping
@@ -305,6 +315,50 @@ impl Publication {
 
         self.files.push(path.clone());
         Ok(path)
+    }
+
+    /// Write every image one job carries and answer with where each went.
+    ///
+    /// Two screens showing the same picture cost one render, and this is what
+    /// carries that as far as the file: one encode and one path, named after
+    /// whichever screen came first. A screen the mode does not paint is `None`
+    /// rather than a gap, so the answer stays index-for-index with
+    /// `job.monitors` and a caller can tell which screen each path belongs to.
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn write_job(
+        &mut self,
+        job: &crate::engine::wallpaper_sink::WallpaperJob,
+    ) -> Result<WrittenImages, String> {
+        use std::sync::Arc;
+
+        use crate::engine::wallpaper_sink::Frame;
+
+        let mut written: Vec<(Arc<Frame>, PathBuf)> = Vec::new();
+        let mut paths: Vec<Option<PathBuf>> = Vec::with_capacity(job.monitors.len());
+        let mut anchor = None;
+        for index in 0..job.monitors.len() {
+            let Some(frame) = job.image_for(index)? else {
+                paths.push(None);
+                continue;
+            };
+            let seen = written
+                .iter()
+                .find(|(seen, _)| Arc::ptr_eq(seen, &frame))
+                .map(|(_, path)| path.clone());
+            let path = if let Some(path) = seen {
+                path
+            } else {
+                let path =
+                    self.write(&index.to_string(), &frame.pixels, frame.width, frame.height)?;
+                written.push((Arc::clone(&frame), path.clone()));
+                path
+            };
+            if index == job.anchor {
+                anchor = Some(path.clone());
+            }
+            paths.push(Some(path));
+        }
+        Ok(WrittenImages { paths, anchor })
     }
 
     /// Record this publication as the one the desktop is being handed, and sweep
@@ -578,6 +632,64 @@ mod tests {
                 "{dir:?} is not a generation directory"
             );
         }
+    }
+
+    /// The Arc dedupe is the whole reason two screens of one size cost one
+    /// render, and it now lives in one place for both platforms, so this is
+    /// where it is pinned: a shared frame is one file, a screen with no picture
+    /// keeps its position, and the anchor is named.
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn screens_showing_the_same_picture_are_written_once_and_keep_their_places() {
+        use std::sync::Arc;
+
+        use crate::display::Monitor;
+        use crate::display::layout::DisplayMode;
+        use crate::engine::wallpaper_sink::{Frame, JobImages, WallpaperJob};
+
+        let _scratch = Scratch::new("write_job");
+        let screen = |id: &str, x: i32| Monitor {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            x,
+            y: 0,
+            width: 2,
+            height: 2,
+            primary: x == 0,
+        };
+        let shared = Arc::new(Frame::new(pixels(2, 2, [1, 2, 3, 255]), 2, 2));
+        let job = WallpaperJob {
+            mode: DisplayMode::EveryScreen,
+            monitors: vec![screen("A", 0), screen("B", 2), screen("C", 4)],
+            anchor: 1,
+            images: JobImages::PerMonitor(vec![
+                Some(Arc::clone(&shared)),
+                Some(Arc::clone(&shared)),
+                None,
+            ]),
+        };
+
+        let mut publication = begin_publication().expect("a generation");
+        let written = publication.write_job(&job).expect("write the images");
+
+        assert_eq!(written.paths.len(), 3, "one answer per screen");
+        assert_eq!(
+            written.paths[0], written.paths[1],
+            "one encode for the frame both screens share"
+        );
+        assert_eq!(
+            written.paths[2], None,
+            "the unpainted screen keeps its place"
+        );
+        assert_eq!(
+            written.anchor, written.paths[1],
+            "the anchor's own file, not the first written"
+        );
+        assert_eq!(
+            publication.commit().len(),
+            1,
+            "one file on disk, not one per screen"
+        );
     }
 
     #[test]

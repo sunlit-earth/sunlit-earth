@@ -7,12 +7,9 @@
 //! and the running.
 
 #[cfg(target_os = "linux")]
-use std::sync::Arc;
-
-#[cfg(target_os = "linux")]
 use crate::display::layout::DisplayMode;
 #[cfg(target_os = "linux")]
-use crate::engine::wallpaper_sink::{Frame, WallpaperJob};
+use crate::engine::wallpaper_sink::WallpaperJob;
 
 /// The images of one publish in the order a person sees the screens, left to
 /// right and then top to bottom.
@@ -47,45 +44,26 @@ fn write_placement(
     let mut publication = crate::wallpaper::begin_publication()?;
     match reach {
         Reach::PerMonitor => {
-            let mut written: Vec<(Arc<Frame>, std::path::PathBuf)> = Vec::new();
+            let written = publication.write_job(job)?;
             let mut per_monitor = Vec::with_capacity(job.monitors.len());
             let mut untouched = Vec::new();
             let mut placed: Vec<(i32, i32, Option<std::path::PathBuf>)> =
                 Vec::with_capacity(job.monitors.len());
-            let mut anchor = None;
-            for (index, monitor) in job.monitors.iter().enumerate() {
-                let Some(frame) = job.image_for(index)? else {
-                    untouched.push(monitor.id.clone());
-                    placed.push((monitor.x, monitor.y, None));
-                    continue;
-                };
-                // Two screens showing the same picture cost one render, and
-                // this is what carries that as far as the file: one encode and
-                // one path, named after whichever screen came first.
-                let seen = written
-                    .iter()
-                    .find(|(seen, _)| Arc::ptr_eq(seen, &frame))
-                    .map(|(_, path)| path.clone());
-                let path = if let Some(path) = seen {
-                    path
-                } else {
-                    let path = publication.write(
-                        &index.to_string(),
-                        &frame.pixels,
-                        frame.width,
-                        frame.height,
-                    )?;
-                    written.push((Arc::clone(&frame), path.clone()));
-                    path
-                };
-                if index == job.anchor {
-                    anchor = Some(path.clone());
+            for (monitor, path) in job.monitors.iter().zip(written.paths) {
+                match path {
+                    Some(path) => {
+                        placed.push((monitor.x, monitor.y, Some(path.clone())));
+                        per_monitor.push((monitor.id.clone(), path));
+                    }
+                    None => {
+                        untouched.push(monitor.id.clone());
+                        placed.push((monitor.x, monitor.y, None));
+                    }
                 }
-                placed.push((monitor.x, monitor.y, Some(path.clone())));
-                per_monitor.push((monitor.id.clone(), path));
             }
-            let single =
-                anchor.ok_or_else(|| "this publish has no image for its own anchor".to_owned())?;
+            let single = written
+                .anchor
+                .ok_or_else(|| "this publish has no image for its own anchor".to_owned())?;
             let by_position = in_layout_order(placed);
             publication.commit();
             Ok(Placement {

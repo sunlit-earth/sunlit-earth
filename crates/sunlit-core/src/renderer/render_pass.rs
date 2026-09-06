@@ -234,19 +234,8 @@ pub(super) fn encode_and_submit(
     stars: Option<Stars<'_>>,
     sun: Option<Sun<'_>>,
     moon: Option<Moon<'_>>,
-    pipeline: &wgpu::RenderPipeline,
-    bind_group: &wgpu::BindGroup,
-    vertex_buffer: &wgpu::Buffer,
-    index_buffer: &wgpu::Buffer,
-    index_count: u32,
-    rayleigh_pipeline: Option<&wgpu::RenderPipeline>,
-    rayleigh_bind_group: Option<&wgpu::BindGroup>,
-    nightglow_orange_pipeline: Option<&wgpu::RenderPipeline>,
-    nightglow_orange_bind_group: Option<&wgpu::BindGroup>,
-    nightglow_green_pipeline: Option<&wgpu::RenderPipeline>,
-    nightglow_green_bind_group: Option<&wgpu::BindGroup>,
-    cloud_pipeline: Option<&wgpu::RenderPipeline>,
-    cloud_bind_group: Option<&wgpu::BindGroup>,
+    earth: &Earth<'_>,
+    overlays: &Overlays<'_>,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("sphere_encoder"),
@@ -316,40 +305,30 @@ pub(super) fn encode_and_submit(
         if let Some(moon) = moon {
             pass.set_pipeline(moon.pipeline);
             pass.set_bind_group(0, moon.bind_group, &[]);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..index_count, 0, 0..1);
+            pass.set_vertex_buffer(0, earth.vertex_buffer.slice(..));
+            pass.set_index_buffer(earth.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..earth.index_count, 0, 0..1);
         }
 
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..index_count, 0, 0..1);
+        pass.set_pipeline(earth.pipeline);
+        pass.set_bind_group(0, earth.bind_group, &[]);
+        pass.set_vertex_buffer(0, earth.vertex_buffer.slice(..));
+        pass.set_index_buffer(earth.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..earth.index_count, 0, 0..1);
 
-        if let (Some(cloud_pipe), Some(cloud_bg)) = (cloud_pipeline, cloud_bind_group) {
-            pass.set_pipeline(cloud_pipe);
-            pass.set_bind_group(0, cloud_bg, &[]);
-            // Vertex and index buffers remain bound from the Earth draw
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        if let (Some(pipe), Some(bg)) = (rayleigh_pipeline, rayleigh_bind_group) {
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bg, &[]);
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        if let (Some(pipe), Some(bg)) = (nightglow_orange_pipeline, nightglow_orange_bind_group) {
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bg, &[]);
-            pass.draw_indexed(0..index_count, 0, 0..1);
-        }
-
-        if let (Some(pipe), Some(bg)) = (nightglow_green_pipeline, nightglow_green_bind_group) {
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, bg, &[]);
-            pass.draw_indexed(0..index_count, 0, 0..1);
+        // The shells reuse the vertex and index buffers the Earth draw bound.
+        for shell in [
+            overlays.cloud,
+            overlays.rayleigh,
+            overlays.nightglow_orange,
+            overlays.nightglow_green,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            pass.set_pipeline(shell.pipeline);
+            pass.set_bind_group(0, shell.bind_group, &[]);
+            pass.draw_indexed(0..earth.index_count, 0, 0..1);
         }
 
         // The glare forms in the observer, so it goes over the scene rather
@@ -401,19 +380,8 @@ pub(super) fn draw_scene(
         stars,
         sun,
         moon,
-        &res.pipelines.sphere,
-        bind_group,
-        &res.vertex_buffer,
-        &res.index_buffer,
-        res.index_count,
-        overlays.rayleigh.0,
-        overlays.rayleigh.1,
-        overlays.nightglow_orange.0,
-        overlays.nightglow_orange.1,
-        overlays.nightglow_green.0,
-        overlays.nightglow_green.1,
-        overlays.cloud.0,
-        overlays.cloud.1,
+        &Earth::new(res, bind_group),
+        &overlays,
     );
 }
 
@@ -546,26 +514,44 @@ impl<'a> Moon<'a> {
     }
 }
 
+/// The globe's own draw, and the mesh every shell after it reuses.
+pub(super) struct Earth<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+    vertex_buffer: &'a wgpu::Buffer,
+    index_buffer: &'a wgpu::Buffer,
+    index_count: u32,
+}
+
+impl<'a> Earth<'a> {
+    /// The one draw of the pass that is never optional: whatever else a frame
+    /// leaves out, the globe is in it.
+    pub fn new(res: &'a Renderer, bind_group: &'a wgpu::BindGroup) -> Self {
+        Self {
+            pipeline: &res.pipelines.sphere,
+            bind_group,
+            vertex_buffer: &res.vertex_buffer,
+            index_buffer: &res.index_buffer,
+            index_count: res.index_count,
+        }
+    }
+}
+
+/// One overlay shell's draw, over the mesh the Earth left bound.
+#[derive(Clone, Copy)]
+pub(super) struct Overlay<'a> {
+    pipeline: &'a wgpu::RenderPipeline,
+    bind_group: &'a wgpu::BindGroup,
+}
+
 /// Which optional overlay shells to draw for a frame, and with which bind
 /// group. Shared by the preview pass and the wallpaper export so the two
 /// cannot drift apart.
 pub(super) struct Overlays<'a> {
-    pub rayleigh: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
-    pub nightglow_orange: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
-    pub nightglow_green: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
-    pub cloud: (
-        Option<&'a wgpu::RenderPipeline>,
-        Option<&'a wgpu::BindGroup>,
-    ),
+    pub rayleigh: Option<Overlay<'a>>,
+    pub nightglow_orange: Option<Overlay<'a>>,
+    pub nightglow_green: Option<Overlay<'a>>,
+    pub cloud: Option<Overlay<'a>>,
 }
 
 impl<'a> Overlays<'a> {
@@ -577,12 +563,11 @@ impl<'a> Overlays<'a> {
         params: &SceneParams,
         bind_group: &'a wgpu::BindGroup,
     ) -> Self {
-        let atmo = |on: bool, pipe: &'a wgpu::RenderPipeline| {
-            if on {
-                (Some(pipe), Some(bind_group))
-            } else {
-                (None, None)
-            }
+        let atmo = |on: bool, pipeline: &'a wgpu::RenderPipeline| {
+            on.then_some(Overlay {
+                pipeline,
+                bind_group,
+            })
         };
         let rayleigh_on = params.effective_rayleigh_intensity() > 0.0;
         let nightglow_on = params.effective_nightglow_intensity() > 0.0;
@@ -590,11 +575,14 @@ impl<'a> Overlays<'a> {
             rayleigh: atmo(rayleigh_on, &res.pipelines.rayleigh),
             nightglow_orange: atmo(nightglow_on, &res.pipelines.nightglow_orange),
             nightglow_green: atmo(nightglow_on, &res.pipelines.nightglow_green),
-            cloud: if params.draws_clouds() && res.cloud_bind_group.is_some() {
-                (Some(&res.pipelines.cloud), res.cloud_bind_group.as_ref())
-            } else {
-                (None, None)
-            },
+            cloud: res
+                .cloud_bind_group
+                .as_ref()
+                .filter(|_| params.draws_clouds())
+                .map(|bind_group| Overlay {
+                    pipeline: &res.pipelines.cloud,
+                    bind_group,
+                }),
         }
     }
 }

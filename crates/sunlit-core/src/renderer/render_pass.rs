@@ -405,7 +405,7 @@ pub(super) fn execute_render_pass(
         stars,
         sun,
         moon,
-        &res.pipeline,
+        &res.pipelines.sphere,
         bind_group,
         &res.vertex_buffer,
         &res.index_buffer,
@@ -438,7 +438,7 @@ impl<'a> MilkyWay<'a> {
             return None;
         }
         Some(Self {
-            pipeline: &res.milky_way_pipeline,
+            pipeline: &res.pipelines.milky_way,
             bind_group: res.milky_way_bind_group()?,
         })
     }
@@ -460,7 +460,7 @@ impl<'a> Stars<'a> {
         bind_group: &'a wgpu::BindGroup,
     ) -> Option<Self> {
         (params.star_intensity > 0.0).then_some(Self {
-            pipeline: &res.star_pipeline,
+            pipeline: &res.pipelines.star,
             bind_group,
             catalog_buffer: &res.star_buffer,
             catalog_count: crate::assets::stars::embedded_catalog()
@@ -487,8 +487,8 @@ impl<'a> Sun<'a> {
         bind_group: &'a wgpu::BindGroup,
     ) -> Option<Self> {
         (params.sun_glow > 0.0).then_some(Self {
-            disk_pipeline: &res.sun_disk_pipeline,
-            glare_pipeline: &res.sun_glare_pipeline,
+            disk_pipeline: &res.pipelines.sun_disk,
+            glare_pipeline: &res.pipelines.sun_glare,
             bind_group,
         })
     }
@@ -514,7 +514,7 @@ impl<'a> Moon<'a> {
             return None;
         }
         Some(Self {
-            pipeline: &res.moon_pipeline,
+            pipeline: &res.pipelines.moon,
             bind_group: res.moon_bind_group()?,
         })
     }
@@ -561,11 +561,11 @@ impl<'a> Overlays<'a> {
         let rayleigh_on = params.effective_rayleigh_intensity() > 0.0;
         let nightglow_on = params.effective_nightglow_intensity() > 0.0;
         Self {
-            rayleigh: atmo(rayleigh_on, &res.rayleigh_pipeline),
-            nightglow_orange: atmo(nightglow_on, &res.nightglow_orange_pipeline),
-            nightglow_green: atmo(nightglow_on, &res.nightglow_green_pipeline),
+            rayleigh: atmo(rayleigh_on, &res.pipelines.rayleigh),
+            nightglow_orange: atmo(nightglow_on, &res.pipelines.nightglow_orange),
+            nightglow_green: atmo(nightglow_on, &res.pipelines.nightglow_green),
             cloud: if params.draws_clouds() && res.cloud_bind_group.is_some() {
-                (Some(&res.cloud_pipeline), res.cloud_bind_group.as_ref())
+                (Some(&res.pipelines.cloud), res.cloud_bind_group.as_ref())
             } else {
                 (None, None)
             },

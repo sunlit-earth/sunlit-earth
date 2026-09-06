@@ -240,53 +240,12 @@ pub(super) fn create_renderer(
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
         create_render_textures(&device, width, height, sample_count, PREVIEW_USAGE);
 
-    let pipeline = create_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let star_pipeline = create_star_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let milky_way_pipeline = create_sky_quad_pipeline(
-        &device,
-        &pipeline_layout,
-        &shader,
-        sample_count,
-        "milky_way_pipeline",
-        "vs_milky_way",
-        "fs_milky_way",
-    );
-    let sun_disk_pipeline = create_sky_quad_pipeline(
-        &device,
-        &pipeline_layout,
-        &shader,
-        sample_count,
-        "sun_disk_pipeline",
-        "vs_sun_disk",
-        "fs_sun_disk",
-    );
-    let sun_glare_pipeline = create_sky_quad_pipeline(
-        &device,
-        &pipeline_layout,
-        &shader,
-        sample_count,
-        "sun_glare_pipeline",
-        "vs_sun_glare",
-        "fs_sun_glare",
-    );
-    let moon_pipeline = create_moon_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let cloud_pipeline = create_cloud_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let rayleigh_pipeline =
-        create_rayleigh_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let nightglow_orange_pipeline =
-        create_nightglow_orange_pipeline(&device, &pipeline_layout, &shader, sample_count);
-    let nightglow_green_pipeline =
-        create_nightglow_green_pipeline(&device, &pipeline_layout, &shader, sample_count);
+    let pipelines = Pipelines::build(&device, &pipeline_layout, &shader, sample_count);
 
     crate::memory::log_memory_usage("after GPU resource creation");
 
     Renderer {
-        pipeline,
-        star_pipeline,
-        milky_way_pipeline,
-        sun_disk_pipeline,
-        sun_glare_pipeline,
-        moon_pipeline,
+        pipelines,
         star_buffer,
         planet_buffer,
         vertex_buffer,
@@ -323,70 +282,287 @@ pub(super) fn create_renderer(
         composite_bind_group: None,
         day_texture_view: None,
         night_texture_view: None,
-        rayleigh_pipeline,
-        nightglow_orange_pipeline,
-        nightglow_green_pipeline,
-        cloud_pipeline,
         cloud_bind_group: None,
         cloud_texture_view: None,
     }
 }
 
-/// A screen-aligned quad the vertex shader generates from `vertex_index`
-/// alone, additive, with the depth test out of the way.
+/// Every render pipeline the pass can bind.
 ///
-/// Three draws use it. The Milky Way is the pass's first, where everything
-/// after it overdraws it; the Sun's disk is scheduled with the sky, where the
-/// opaque globe drawn afterwards covers whatever falls inside its painted disc;
-/// the glare is scheduled last, where nothing covers it, which is what veiling
-/// glare does. None of them reads depth, so they differ only in when they run
-/// and which entry points they carry.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn create_sky_quad_pipeline(
+/// They are built together because they share a sample count: an MSAA change
+/// invalidates all ten at once, and a pipeline left behind at the old count is
+/// a wgpu validation error on the engine thread rather than a wrong picture.
+pub(super) struct Pipelines {
+    pub sphere: wgpu::RenderPipeline,
+    pub star: wgpu::RenderPipeline,
+    pub milky_way: wgpu::RenderPipeline,
+    pub sun_disk: wgpu::RenderPipeline,
+    pub sun_glare: wgpu::RenderPipeline,
+    pub moon: wgpu::RenderPipeline,
+    pub cloud: wgpu::RenderPipeline,
+    pub rayleigh: wgpu::RenderPipeline,
+    pub nightglow_orange: wgpu::RenderPipeline,
+    pub nightglow_green: wgpu::RenderPipeline,
+}
+
+impl Pipelines {
+    pub(super) fn build(
+        device: &wgpu::Device,
+        pipeline_layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        sample_count: u32,
+    ) -> Self {
+        let [
+            sphere,
+            star,
+            milky_way,
+            sun_disk,
+            sun_glare,
+            moon,
+            cloud,
+            rayleigh,
+            nightglow_orange,
+            nightglow_green,
+        ] = SPECS.map(|spec| create_pipeline(device, pipeline_layout, shader, sample_count, &spec));
+        Self {
+            sphere,
+            star,
+            milky_way,
+            sun_disk,
+            sun_glare,
+            moon,
+            cloud,
+            rayleigh,
+            nightglow_orange,
+            nightglow_green,
+        }
+    }
+}
+
+/// One pipeline's label and entry points, plus the geometry and blending it
+/// differs from its neighbours by.
+struct Spec {
+    label: &'static str,
+    vs_entry: &'static str,
+    fs_entry: &'static str,
+    kind: Kind,
+}
+
+/// What a pipeline draws and how its fragments reach the target.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// A screen-aligned quad the vertex shader generates from `vertex_index`
+    /// alone, additive, with the depth test out of the way.
+    ///
+    /// Three draws use it. The Milky Way is the pass's first, where everything
+    /// after it overdraws it; the Sun's disk is scheduled with the sky, where
+    /// the opaque globe drawn afterwards covers whatever falls inside its
+    /// painted disc; the glare is scheduled last, where nothing covers it,
+    /// which is what veiling glare does. None of them reads depth, so they
+    /// differ only in when they run and which entry points they carry.
+    SkyQuad,
+    /// One additive quad per catalog record, from the instance buffer, with the
+    /// depth test out of the way.
+    StarSprite,
+    /// The sphere mesh, back-face culled.
+    Mesh {
+        blend: Option<wgpu::BlendState>,
+        depth_write: bool,
+        depth_compare: wgpu::CompareFunction,
+    },
+}
+
+/// Source and destination both at full weight, which is what every emissive
+/// draw in the pass adds itself to the frame with.
+const ADDITIVE: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+/// Premultiplied alpha for the Rayleigh shell. The shader outputs RGB =
+/// in-scattered light, A = extinction (haze), so the result is
+/// `scatter + dst * (1 - extinction)`. At haze=0 this equals additive (no
+/// extinction). At haze>0 the atmosphere partially blocks what's behind it,
+/// tinting bright surfaces like clouds blue.
+const PREMULTIPLIED: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+/// The ten pipelines, in the order [`Pipelines::build`] destructures them.
+const SPECS: [Spec; 10] = [
+    Spec {
+        label: "sphere_pipeline",
+        vs_entry: "vs_main",
+        fs_entry: "fs_main",
+        kind: Kind::Mesh {
+            blend: None,
+            depth_write: true,
+            depth_compare: wgpu::CompareFunction::Less,
+        },
+    },
+    Spec {
+        label: "star_pipeline",
+        vs_entry: "vs_star",
+        fs_entry: "fs_star",
+        kind: Kind::StarSprite,
+    },
+    Spec {
+        label: "milky_way_pipeline",
+        vs_entry: "vs_milky_way",
+        fs_entry: "fs_milky_way",
+        kind: Kind::SkyQuad,
+    },
+    Spec {
+        label: "sun_disk_pipeline",
+        vs_entry: "vs_sun_disk",
+        fs_entry: "fs_sun_disk",
+        kind: Kind::SkyQuad,
+    },
+    Spec {
+        label: "sun_glare_pipeline",
+        vs_entry: "vs_sun_glare",
+        fs_entry: "fs_sun_glare",
+        kind: Kind::SkyQuad,
+    },
+    // The Moon: opaque so it covers the Sun's additive disk, back-face culled,
+    // and out of the depth test's way. `docs/rendering.md` says why each of the
+    // three.
+    Spec {
+        label: "moon_pipeline",
+        vs_entry: "vs_moon",
+        fs_entry: "fs_moon",
+        kind: Kind::Mesh {
+            blend: None,
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::Always,
+        },
+    },
+    Spec {
+        label: "cloud_pipeline",
+        vs_entry: "vs_cloud",
+        fs_entry: "fs_cloud",
+        kind: Kind::Mesh {
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::Less,
+        },
+    },
+    Spec {
+        label: "rayleigh_pipeline",
+        vs_entry: "vs_rayleigh",
+        fs_entry: "fs_rayleigh",
+        kind: Kind::Mesh {
+            blend: Some(PREMULTIPLIED),
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::Less,
+        },
+    },
+    Spec {
+        label: "nightglow_orange_pipeline",
+        vs_entry: "vs_nightglow_orange",
+        fs_entry: "fs_nightglow_orange",
+        kind: Kind::Mesh {
+            blend: Some(ADDITIVE),
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::Less,
+        },
+    },
+    Spec {
+        label: "nightglow_green_pipeline",
+        vs_entry: "vs_nightglow_green",
+        fs_entry: "fs_nightglow_green",
+        kind: Kind::Mesh {
+            blend: Some(ADDITIVE),
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::Less,
+        },
+    },
+];
+
+/// The instance layout every star and planet sprite is drawn from: a direction
+/// and a packed color, one record per body.
+const STAR_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    wgpu::VertexAttribute {
+        offset: 0,
+        shader_location: 2,
+        format: wgpu::VertexFormat::Float32x3,
+    },
+    wgpu::VertexAttribute {
+        offset: 12,
+        shader_location: 3,
+        format: wgpu::VertexFormat::Unorm8x4,
+    },
+];
+
+fn create_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     sample_count: u32,
-    label: &str,
-    vs_entry: &str,
-    fs_entry: &str,
+    spec: &Spec,
 ) -> wgpu::RenderPipeline {
+    let mesh_buffers = [Vertex::buffer_layout()];
+    let star_buffers = [wgpu::VertexBufferLayout {
+        array_stride: stars::RECORD_SIZE as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &STAR_ATTRIBUTES,
+    }];
+    let (buffers, topology, cull_mode): (&[wgpu::VertexBufferLayout], _, _) = match spec.kind {
+        Kind::SkyQuad => (&[], wgpu::PrimitiveTopology::TriangleStrip, None),
+        Kind::StarSprite => (&star_buffers, wgpu::PrimitiveTopology::TriangleStrip, None),
+        Kind::Mesh { .. } => (
+            &mesh_buffers,
+            wgpu::PrimitiveTopology::TriangleList,
+            Some(wgpu::Face::Back),
+        ),
+    };
+    let (blend, depth_write_enabled, depth_compare) = match spec.kind {
+        Kind::SkyQuad | Kind::StarSprite => (Some(ADDITIVE), false, wgpu::CompareFunction::Always),
+        Kind::Mesh {
+            blend,
+            depth_write,
+            depth_compare,
+        } => (blend, depth_write, depth_compare),
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
+        label: Some(spec.label),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
             module: shader,
-            entry_point: Some(vs_entry),
-            buffers: &[],
+            entry_point: Some(spec.vs_entry),
+            buffers,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some(fs_entry),
+            entry_point: Some(spec.fs_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format: COLOR_FORMAT,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent::OVER,
-                }),
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            topology,
             strip_index_format: None,
-            cull_mode: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode,
             ..Default::default()
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
+            depth_write_enabled,
+            depth_compare,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
@@ -398,377 +574,6 @@ pub(super) fn create_sky_quad_pipeline(
         multiview_mask: None,
         cache: None,
     })
-}
-
-pub(super) fn create_star_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
-        wgpu::VertexAttribute {
-            offset: 0,
-            shader_location: 2,
-            format: wgpu::VertexFormat::Float32x3,
-        },
-        wgpu::VertexAttribute {
-            offset: 12,
-            shader_location: 3,
-            format: wgpu::VertexFormat::Unorm8x4,
-        },
-    ];
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("star_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_star"),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: stars::RECORD_SIZE as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &ATTRIBUTES,
-            }],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_star"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: COLOR_FORMAT,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent::OVER,
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            strip_index_format: None,
-            cull_mode: None,
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-pub(super) fn create_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("sphere_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Vertex::buffer_layout()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-/// The Moon: opaque so it covers the Sun's additive disk, back-face culled, and
-/// out of the depth test's way. `docs/rendering.md` says why each of the three.
-pub(super) fn create_moon_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("moon_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_moon"),
-            buffers: &[Vertex::buffer_layout()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_moon"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: COLOR_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Always,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-pub(super) fn create_cloud_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("cloud_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_cloud"),
-            buffers: &[Vertex::buffer_layout()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_cloud"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-/// Shared additive-blend atmosphere pipeline descriptor, differing only in
-/// vertex/fragment entry points and label.
-fn create_atmo_shell_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-    label: &str,
-    vs_entry: &str,
-    fs_entry: &str,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some(vs_entry),
-            buffers: &[Vertex::buffer_layout()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some(fs_entry),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent::OVER,
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-pub(super) fn create_rayleigh_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    // Rayleigh uses premultiplied alpha blending (One + OneMinusSrcAlpha).
-    // The shader outputs RGB = in-scattered light, A = extinction (haze).
-    // result = scatter + dst * (1 - extinction). At haze=0 this equals
-    // additive (no extinction). At haze>0 the atmosphere partially blocks
-    // what's behind it, tinting bright surfaces like clouds blue.
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("rayleigh_pipeline"),
-        layout: Some(pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_rayleigh"),
-            buffers: &[Vertex::buffer_layout()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_rayleigh"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent::OVER,
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: sample_count,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-pub(super) fn create_nightglow_orange_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_atmo_shell_pipeline(
-        device,
-        pipeline_layout,
-        shader,
-        sample_count,
-        "nightglow_orange_pipeline",
-        "vs_nightglow_orange",
-        "fs_nightglow_orange",
-    )
-}
-
-pub(super) fn create_nightglow_green_pipeline(
-    device: &wgpu::Device,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shader: &wgpu::ShaderModule,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    create_atmo_shell_pipeline(
-        device,
-        pipeline_layout,
-        shader,
-        sample_count,
-        "nightglow_green_pipeline",
-        "vs_nightglow_green",
-        "fs_nightglow_green",
-    )
 }
 
 /// Create all size-dependent render textures (resolve target, depth, and optional MSAA).
@@ -857,54 +662,7 @@ pub(super) fn create_render_textures(
 pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
     debug!("rebuilding MSAA resources");
     replace_render_textures(res, res.render_width, res.render_height, sample_count);
-    res.pipeline = create_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.star_pipeline =
-        create_star_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.milky_way_pipeline = create_sky_quad_pipeline(
-        &res.device,
-        &res.pipeline_layout,
-        &res.shader,
-        sample_count,
-        "milky_way_pipeline",
-        "vs_milky_way",
-        "fs_milky_way",
-    );
-    res.sun_disk_pipeline = create_sky_quad_pipeline(
-        &res.device,
-        &res.pipeline_layout,
-        &res.shader,
-        sample_count,
-        "sun_disk_pipeline",
-        "vs_sun_disk",
-        "fs_sun_disk",
-    );
-    res.sun_glare_pipeline = create_sky_quad_pipeline(
-        &res.device,
-        &res.pipeline_layout,
-        &res.shader,
-        sample_count,
-        "sun_glare_pipeline",
-        "vs_sun_glare",
-        "fs_sun_glare",
-    );
-    res.moon_pipeline =
-        create_moon_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.cloud_pipeline =
-        create_cloud_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.rayleigh_pipeline =
-        create_rayleigh_pipeline(&res.device, &res.pipeline_layout, &res.shader, sample_count);
-    res.nightglow_orange_pipeline = create_nightglow_orange_pipeline(
-        &res.device,
-        &res.pipeline_layout,
-        &res.shader,
-        sample_count,
-    );
-    res.nightglow_green_pipeline = create_nightglow_green_pipeline(
-        &res.device,
-        &res.pipeline_layout,
-        &res.shader,
-        sample_count,
-    );
+    res.pipelines = Pipelines::build(&res.device, &res.pipeline_layout, &res.shader, sample_count);
     res.sample_count = sample_count;
 }
 

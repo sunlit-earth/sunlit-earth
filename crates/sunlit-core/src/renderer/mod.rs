@@ -25,7 +25,7 @@ use crate::scene::sky::{PlanetKind, SkyState};
 
 use frame::{FrameState, build_frame_state};
 use gpu_setup::{
-    COLOR_FORMAT, DEPTH_FORMAT, create_render_textures, rebuild_msaa_resources,
+    COLOR_FORMAT, DEPTH_FORMAT, Pipelines, create_render_textures, rebuild_msaa_resources,
     rebuild_render_textures,
 };
 use textures::{TextureSlot, maybe_spawn_texture_load, process_decoded_textures};
@@ -272,16 +272,7 @@ pub(crate) struct RendererConfig {
 
 /// The GPU pipeline and every resource it owns.
 pub(crate) struct Renderer {
-    pipeline: wgpu::RenderPipeline,
-    star_pipeline: wgpu::RenderPipeline,
-    /// The diffuse Milky Way, the pass's first draw.
-    milky_way_pipeline: wgpu::RenderPipeline,
-    /// The Sun's body, drawn with the sky so the painted globe covers it.
-    sun_disk_pipeline: wgpu::RenderPipeline,
-    /// The observer's glare, drawn last over everything in the scene.
-    sun_glare_pipeline: wgpu::RenderPipeline,
-    /// The Moon, drawn with the sky and opaque.
-    moon_pipeline: wgpu::RenderPipeline,
+    pipelines: Pipelines,
     star_buffer: wgpu::Buffer,
     planet_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -348,14 +339,6 @@ pub(crate) struct Renderer {
     /// Stored texture view for the night texture, needed to build the composite
     /// bind group when both become available.
     night_texture_view: Option<wgpu::TextureView>,
-    /// Render pipeline for the Rayleigh scattering atmosphere shell.
-    rayleigh_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline for the orange nightglow atmosphere shell.
-    nightglow_orange_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline for the green nightglow atmosphere shell.
-    nightglow_green_pipeline: wgpu::RenderPipeline,
-    /// Render pipeline for the cloud overlay sphere.
-    cloud_pipeline: wgpu::RenderPipeline,
     /// Bind group for the cloud texture (populated after async load completes).
     cloud_bind_group: Option<wgpu::BindGroup>,
     /// Stored texture view for the cloud texture, used to rebuild the bind group.
@@ -778,7 +761,7 @@ impl Renderer {
             stars,
             sun,
             moon,
-            &self.pipeline,
+            &self.pipelines.sphere,
             bind_group,
             &self.vertex_buffer,
             &self.index_buffer,

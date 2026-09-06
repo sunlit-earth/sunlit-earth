@@ -46,7 +46,7 @@ const AUTO_REFRESH_SAVE_DELAY: Duration = Duration::from_secs(1);
 /// tests can reach it.
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
-    let _guard = init_logging(cli.log_level.as_deref());
+    let _guards = init_logging(cli.log_level.as_deref());
     info!("sunlit earth v{}", env!("CARGO_PKG_VERSION"));
 
     if matches!(cli.tray_start, TrayStart::Hidden) && matches!(cli.mode, Mode::Window) {

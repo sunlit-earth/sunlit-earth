@@ -29,7 +29,9 @@ windows-sys = { workspace = true, features = [
     "Win32_Foundation",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+# SIGTERM is the same thing on both Unixes this ships for: a session or a
+# launchd job ending, answered on an ordinary thread.
+[target.'cfg(unix)'.dependencies]
 signal-hook.workspace = true
 
 [dev-dependencies]

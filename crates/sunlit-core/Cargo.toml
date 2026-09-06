@@ -41,6 +41,13 @@ x11rb.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-color-sync.workspace = true
+dispatch2.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

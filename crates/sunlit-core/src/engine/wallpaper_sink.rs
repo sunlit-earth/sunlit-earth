@@ -180,9 +180,10 @@ const DEFAULT_TARGET_SIZE: (u32, u32) = (2560, 1440);
 /// and reports success: the UI shows this string in the status line, and a
 /// wallpaper that silently did not change is worse than one that says so.
 ///
-/// macOS only, now that Linux has a setter. It keeps the platform's name out of
-/// it because what it says is true of any platform that reaches it.
-#[cfg(not(any(windows, target_os = "linux")))]
+/// Nothing this tree builds for reaches it now that all three platforms have a
+/// setter, and it stays because the fourth one will: it keeps the platform's
+/// name out of it because what it says is true of any platform that lands here.
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 const UNSUPPORTED: &str = "setting the desktop wallpaper is not supported on this platform yet";
 
 /// The one screen a session with no display to ask is planned around.
@@ -207,12 +208,12 @@ fn default_monitor() -> Monitor {
 pub struct SystemWallpaper;
 
 impl WallpaperSink for SystemWallpaper {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn check_supported(&self) -> Result<(), String> {
         crate::wallpaper::check_supported()
     }
 
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     fn check_supported(&self) -> Result<(), String> {
         Err(UNSUPPORTED.to_owned())
     }
@@ -247,14 +248,14 @@ impl WallpaperSink for SystemWallpaper {
         Ok(monitors)
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
         let note = crate::wallpaper::set_wallpaper_job(job)?;
         crate::memory::log_memory_usage("after wallpaper set");
         Ok(note)
     }
 
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     fn publish(&self, _job: &WallpaperJob) -> Result<String, String> {
         Err(UNSUPPORTED.to_owned())
     }
@@ -450,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     fn system_wallpaper_refuses_before_anything_is_rendered() {
         let refusal = SystemWallpaper
             .check_supported()

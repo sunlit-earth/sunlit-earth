@@ -17,6 +17,8 @@
 //! against real xrandr output rather than only where xrandr exists.
 
 pub mod layout;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos;
 pub mod watch;
 
 /// One output, as xrandr describes a connected one with a mode assigned.
@@ -214,7 +216,14 @@ pub fn monitors() -> Option<Vec<Monitor>> {
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+/// CoreGraphics, which needs no main thread and so answers the same from the
+/// engine thread and from the `displays` subcommand alike.
+#[cfg(target_os = "macos")]
+pub fn monitors() -> Option<Vec<Monitor>> {
+    macos::monitors()
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn monitors() -> Option<Vec<Monitor>> {
     None
 }
@@ -246,7 +255,14 @@ pub fn outputs() -> Option<Vec<Output>> {
     Some(parse_outputs(&String::from_utf8_lossy(&out.stdout)))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// The same displays as [`monitors`], in points rather than pixels, which is
+/// the space winit reports a window position in.
+#[cfg(target_os = "macos")]
+pub fn outputs() -> Option<Vec<Output>> {
+    macos::outputs()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn outputs() -> Option<Vec<Output>> {
     None
 }
@@ -407,11 +423,11 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
     /// to be distinguishable from a session with nothing on it.
     #[test]
     fn a_platform_with_no_query_answers_that_it_cannot_ask() {
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         assert!(monitors().is_none());
         // Where there is a query, it either answered or said it could not, and
         // both are answers this run must not confuse for a monitor list.
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         if let Some(list) = monitors() {
             assert!(
                 list.iter().all(|m| !m.id.is_empty()),

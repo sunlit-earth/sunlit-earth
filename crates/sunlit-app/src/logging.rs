@@ -1,10 +1,22 @@
 //! The tracing subscriber this program installs, and how loud its
 //! dependencies are allowed to be.
 
+use std::io::IsTerminal as _;
+
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::{EnvFilter, Layer, fmt};
+
+/// What the log file is called, before the rotation's date suffix.
+const LOG_FILE_PREFIX: &str = "sunlit-earth";
+
+/// How many days of log files are kept.
+///
+/// A week, which is long enough that a tester who noticed something yesterday
+/// still has it and short enough that nothing accumulates unattended.
+const LOG_FILES_KEPT: usize = 7;
 
 /// How loud each dependency is allowed to be, whatever this app's level is.
 ///
@@ -37,12 +49,18 @@ const DEPENDENCY_LEVELS: [&str; 13] = [
 /// to arrive late (or not at all) in e2e tests. The trade-off is that log
 /// writes block the calling thread, which is acceptable in test mode.
 ///
-/// Returns a `WorkerGuard` that must be kept alive for the duration of the
-/// program so that buffered log lines are flushed before exit. In sync mode,
-/// no guard is needed and `None` is returned.
-pub(crate) fn init_logging(
-    cli_level: Option<&str>,
-) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+/// A log file is written too when stderr is not a terminal, which is decision
+/// 14 of the macOS plan and applies on every platform: an `.app` launched from
+/// Finder has no stderr at all, and neither does a Windows binary started from
+/// the shell, so a tester's report would otherwise have nothing in it. It goes
+/// beside the config and the wallpapers under the app data directory, rotates
+/// daily, and keeps a week. A terminal already shows the log, so a run from one
+/// writes no file.
+///
+/// Returns the `WorkerGuard`s that must be kept alive for the duration of the
+/// program so that buffered log lines are flushed before exit. In sync mode no
+/// guard is needed and the list is empty.
+pub(crate) fn init_logging(cli_level: Option<&str>) -> Vec<WorkerGuard> {
     let sync_log = std::env::var("SUNLIT_EARTH_SYNC_LOG").is_ok();
 
     let base_filter = match cli_level {
@@ -55,33 +73,81 @@ pub(crate) fn init_logging(
         .filter_map(|directive| directive.parse().ok())
         .fold(base_filter, EnvFilter::add_directive);
 
-    if sync_log {
-        let fmt_layer = fmt::layer()
+    let mut guards = Vec::new();
+    let (file_layer, file_path) = match file_writer() {
+        Some((writer, path)) => {
+            let (non_blocking, guard) = tracing_appender::non_blocking(writer);
+            guards.push(guard);
+            (
+                Some(
+                    fmt::layer()
+                        .with_writer(non_blocking)
+                        // No colour: this one is read in a text editor, and the
+                        // escape sequences a terminal swallows are noise there.
+                        .with_ansi(false)
+                        .with_target(true)
+                        .with_thread_ids(true)
+                        .with_span_events(FmtSpan::CLOSE)
+                        .boxed(),
+                ),
+                Some(path),
+            )
+        }
+        None => (None, None),
+    };
+
+    let stderr_layer = if sync_log {
+        fmt::layer()
             .with_writer(std::io::stderr)
             .with_target(true)
             .with_thread_ids(true)
-            .with_span_events(FmtSpan::CLOSE);
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .init();
-
-        None
+            .with_span_events(FmtSpan::CLOSE)
+            .boxed()
     } else {
         let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
-
-        let fmt_layer = fmt::layer()
+        guards.push(guard);
+        fmt::layer()
             .with_writer(non_blocking)
             .with_target(true)
             .with_thread_ids(true)
-            .with_span_events(FmtSpan::CLOSE);
+            .with_span_events(FmtSpan::CLOSE)
+            .boxed()
+    };
 
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .init();
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
 
-        Some(guard)
+    if let Some(path) = file_path {
+        tracing::info!(directory = %path.display(), "also logging to a file, because stderr is not a terminal");
     }
+    guards
+}
+
+/// The rolling file appender, and the directory it writes into.
+///
+/// `None` where stderr is a terminal, which is a developer or a tester in
+/// Terminal who is already reading the log, and `None` where the appender
+/// cannot be built, which is a system with no data directory or one that will
+/// not create it. Never a failure: logging that refuses to start because it
+/// could not open a file is worse than logging to one place.
+fn file_writer() -> Option<(
+    tracing_appender::rolling::RollingFileAppender,
+    std::path::PathBuf,
+)> {
+    if std::io::stderr().is_terminal() {
+        return None;
+    }
+    let dir = sunlit_core::app_data_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(LOG_FILE_PREFIX)
+        .filename_suffix("log")
+        .max_log_files(LOG_FILES_KEPT)
+        .build(&dir)
+        .ok()?;
+    Some((appender, dir))
 }

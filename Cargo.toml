@@ -43,6 +43,32 @@ windows-sys = "0.59"
 windows = "0.62"
 winreg = "0.56"
 mach2 = "0.6"
+# The macOS platform bindings. objc2, objc2-app-kit, objc2-foundation,
+# objc2-core-foundation, objc2-core-graphics and dispatch2 are already in the
+# tree through Slint's winit backend, so only objc2-color-sync is a new
+# download. Default features are left on, which is what Slint's own dependency
+# does, so a `cargo test -p sunlit-core` on its own compiles the same crates the
+# app does rather than a differently-featured copy of them.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSScreen", "NSCell"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSURL",
+    "NSDictionary",
+    "NSValue",
+    "NSArray",
+    "NSError",
+] }
+objc2-core-foundation = { version = "0.3", features = ["CFBase", "CFString", "CFUUID"] }
+# The four not in the default set, which is what the display query is made of.
+objc2-core-graphics = { version = "0.3", features = [
+    "libc",
+    "CGError",
+    "CGDirectDisplay",
+    "CGDisplayConfiguration",
+] }
+objc2-color-sync = { version = "0.3", features = ["ColorSyncDevice"] }
+dispatch2 = "0.3"
 signal-hook = "0.3"
 x11rb = { version = "0.13", default-features = false, features = ["randr"] }
 

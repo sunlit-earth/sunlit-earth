@@ -286,7 +286,7 @@ mod platform {
 /// is not its own, so answering it would end a run in the middle of a test.
 /// SIGINT is left to its default, because Ctrl-C in a terminal already ends the
 /// process and a developer pressing it is not a session ending.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn classify_signal(signal: i32) -> Action {
     if signal == signal_hook::consts::SIGTERM {
         Action::End
@@ -298,17 +298,25 @@ pub fn classify_signal(signal: i32) -> Action {
 #[cfg(windows)]
 pub use platform::{CLASS_NAME, Watcher, install};
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub use unix::{Watcher, install};
 
-/// SIGTERM, on its own thread, which is the Linux session's way of saying it is
-/// going.
+/// SIGTERM, on its own thread, which is how a session says it is going.
 ///
 /// A signal handler may call almost nothing, and quitting a Slint event loop is
 /// not on that list, so nothing here runs in a handler: `signal-hook`'s iterator
 /// blocks on a self-pipe the handler writes one byte to, and everything below
 /// happens on an ordinary thread.
-#[cfg(target_os = "linux")]
+///
+/// `cfg(unix)` rather than Linux alone, and what that buys on macOS is smaller
+/// but real. A logout there does not send SIGTERM to an ordinary GUI app: it
+/// sends a quit Apple event, AppKit's default answer to which is to terminate
+/// at once, and winit implements nothing that could block it. What does send
+/// SIGTERM is `kill` from a terminal and a launchd agent being stopped, and
+/// both deserve the same ordered exit Linux gets. The teardown a logout loses
+/// is a roadmap item, because hooking winit's `exiting` needs Slint's
+/// `unstable-winit-030`.
+#[cfg(unix)]
 mod unix {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -367,13 +375,12 @@ mod unix {
 }
 
 /// Nothing to install where neither mechanism exists.
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, unix)))]
 #[derive(Debug, Clone, Copy)]
 pub struct Watcher;
 
-/// macOS asks over its own notification centre, which is not wired up, and
-/// saying so is better than a listener that never fires.
-#[cfg(not(any(windows, target_os = "linux")))]
+/// Saying so is better than a listener that never fires.
+#[cfg(not(any(windows, unix)))]
 pub fn install(
     _force_exit_after: Option<Duration>,
     _on_end: impl Fn() + Send + Sync + 'static,
@@ -393,10 +400,10 @@ mod tests {
         assert_eq!(classify(WM_QUERYENDSESSION, false), Action::Permit);
     }
 
-    /// The Linux decision, which is one signal and not the others.
+    /// The Unix decision, which is one signal and not the others.
     #[test]
-    #[cfg(target_os = "linux")]
-    fn only_sigterm_means_the_linux_session_is_ending() {
+    #[cfg(unix)]
+    fn only_sigterm_means_the_session_is_ending() {
         use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM, SIGUSR1};
 
         assert_eq!(classify_signal(SIGTERM), Action::End);

@@ -1,5 +1,11 @@
 # Documentation
 
+## Building and using the app
+
+- [building.md](building.md) covers native dependencies, WSL builds, launch examples, and developer tooling.
+- [usage.md](usage.md) covers command line options, display modes and diagnostics, app data, and environment overrides.
+- [assets.md](assets.md) covers Git LFS textures, asset discovery and caching, preparation tools, and license notices.
+
 ## How the code works
 
 - [architecture.md](architecture.md): the crate split, the headless-first engine and its clients, `SceneParams`, the renderer's resources, the app and the settings window, quality tiers, texture resolution, memory reporting, environment knobs, dependencies, constraints

@@ -2,6 +2,25 @@
 
 The test layers, the conventions every layer follows, and the hosted CI that runs them. What each platform can and cannot assert, and how the desktop e2e cases gate themselves, is in [platforms.md](platforms.md); running the e2e suite in a local VM is in [vm-setup.md](vm-setup.md).
 
+## Running checks
+
+From the repository root:
+
+```bash
+cargo test --workspace
+cargo unit
+cargo clippy --workspace --all-targets
+cargo fmt --check
+```
+
+`cargo unit` runs unit tests without the integration targets. Clippy includes the workspace's pedantic lint configuration. For an HTML coverage report, install `cargo-llvm-cov` and run:
+
+```bash
+cargo llvm-cov --html
+```
+
+The report is written under `target/llvm-cov/html/`. GPU and desktop requirements still apply to the tests being measured. See [building.md](building.md) for native dependencies, including lavapipe and the optional virtual display used by CI. The soak suite simulates 14 days with a mock clock; the old README recorded a runtime of about 13 seconds, which is a measurement rather than a timing guarantee.
+
 ## Layers
 
 | Layer | Where | What | Runs on |

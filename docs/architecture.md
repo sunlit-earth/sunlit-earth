@@ -192,9 +192,9 @@ The e2e harness and the xtask read six more. They do not go through `env_overrid
 |---|---|
 | `SUNLIT_EARTH_BIN` | The app binary the e2e suite spawns. Falls back to the compile-time `CARGO_BIN_EXE` path, which is wrong inside a guest. |
 | `SUNLIT_EARTH_E2E_FIXTURES` | The e2e fixtures directory, for the same reason. |
-| `SUNLIT_EARTH_E2E_WALLPAPER` | Presence-only: lets `test_set_wallpaper` run. Only the generated Windows guest job sets it, because the case replaces the desktop wallpaper of whatever machine runs it. |
+| `SUNLIT_EARTH_E2E_WALLPAPER` | Presence-only: lets `test_set_wallpaper` run. The generated Windows and Linux guest jobs set it, because the case replaces the desktop wallpaper of whatever machine runs it. |
 | `SUNLIT_EARTH_VM_DIR` | The image store. Defaults to `%LOCALAPPDATA%\SunlitEarth\vm` or `~/.local/share/SunlitEarth/vm`. |
-| `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. |
+| `SUNLIT_EARTH_VM_PROVIDER` | Overrides the provider matrix (`hyperv` or `qemu`), mostly to drive the Windows guest through QEMU on a Windows host. Refused for a layer image. |
 | `SUNLIT_EARTH_VM_RESOLUTION` | Either guest console's resolution as `WxH`, read through `provider::console`. Unset means the largest of `hyperv::CONSOLE_MODES` that fits the host's screen for a Hyper-V guest, and `qemu::DEFAULT_CONSOLE` for a QEMU one. |
 | `SUNLIT_EARTH_REPO` | The repository root, for running the xtask binary from outside its checkout. Defaults to the compile-time location of the crate. |
 

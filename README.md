@@ -1,29 +1,29 @@
-[<img src="docs/images/header-image.webp" width="100%" alt="Sunrise over Earth, with city lights beneath a starry sky">](docs/images/header-image.webp)
+[<img src="docs/images/header-image.webp" width="100%" alt="Sunrise over Earth, with city lights beneath a starry sky">](docs/images/header-image.webp?raw=true)
 
 # Sunlit Earth
 
 [![Status: beta](https://img.shields.io/badge/status-beta-orange)](#downloads)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/klamann/sunlit-earth?include_prereleases&label=release)](https://github.com/klamann/sunlit-earth/releases)
+[![Latest release](https://img.shields.io/github/v/release/sunlit-earth/sunlit-earth?include_prereleases&label=release)](https://github.com/sunlit-earth/sunlit-earth/releases)
 
 Sunlit Earth is a free and open source desktop application that renders a beautiful view of Earth as seen from space and sets it as your wallpaper. The rendered image updates in the background, reflecting the current time of day, cloud cover, the positions of the Sun, Moon, and stars, and other real-world conditions.
 
 I built this application as an alternative to [DesktopEarth](https://web.archive.org/web/20221006113849/http://www.anka.me/desktopearth.aspx) and [Xplanet](https://xplanet.sourceforge.net/), both of which I used for years, but they seem to be abandoned now. Sunlit Earth is an attempt to rebuild the ideas of these projects with modern technologies and package them in an application that is easy to use.
 
-[Download](https://github.com/klamann/sunlit-earth/releases) · [Getting started](#getting-started) · [Using the app](#using-the-app) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
+[Download](https://github.com/sunlit-earth/sunlit-earth/releases) · [Getting started](#getting-started) · [Using the app](#using-the-app) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
 
 ## Screenshots
 
-[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](docs/images/wallpaper-day.webp)
+[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](docs/images/wallpaper-day.webp?raw=true)
 
 <p>
-  <a href="docs/images/wallpaper-night.webp"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>
-  <a href="docs/images/wallpaper-sunrise.webp"><img src="docs/images/thumbnails/wallpaper-sunrise.webp" width="13%" alt="Sunrise over Earth" title="Sunrise over Earth"></a>
-  <a href="docs/images/wallpaper-weather.webp"><img src="docs/images/thumbnails/wallpaper-weather.webp" width="13%" alt="Clouds and weather" title="Clouds and weather"></a>
-  <a href="docs/images/wallpaper-ultrawide.webp"><img src="docs/images/thumbnails/wallpaper-ultrawide.webp" width="13%" alt="Wide view for multi monitor setups" title="Wide view for multi monitor setups"></a>
-  <a href="docs/images/wallpaper-earthrise-photo.webp"><img src="docs/images/thumbnails/wallpaper-earthrise-photo.webp" width="13%" alt="Earthrise" title="Earthrise"></a>
-  <a href="docs/images/screenshot-windows.webp"><img src="docs/images/thumbnails/screenshot-windows.webp" width="13%" alt="Sunlit Earth on Windows" title="Sunlit Earth on Windows"></a>
-  <a href="docs/images/screenshot-linux.webp"><img src="docs/images/thumbnails/screenshot-linux.webp" width="13%" alt="Sunlit Earth on Linux" title="Sunlit Earth on Linux"></a>
+  <a href="docs/images/wallpaper-night.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>
+  <a href="docs/images/wallpaper-sunrise.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-sunrise.webp" width="13%" alt="Sunrise over Earth" title="Sunrise over Earth"></a>
+  <a href="docs/images/wallpaper-weather.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-weather.webp" width="13%" alt="Clouds and weather" title="Clouds and weather"></a>
+  <a href="docs/images/wallpaper-ultrawide.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-ultrawide.webp" width="13%" alt="Wide view for multi monitor setups" title="Wide view for multi monitor setups"></a>
+  <a href="docs/images/wallpaper-earthrise-photo.webp?raw=true"><img src="docs/images/thumbnails/wallpaper-earthrise-photo.webp" width="13%" alt="Earthrise" title="Earthrise"></a>
+  <a href="docs/images/screenshot-windows.webp?raw=true"><img src="docs/images/thumbnails/screenshot-windows.webp" width="13%" alt="Sunlit Earth on Windows" title="Sunlit Earth on Windows"></a>
+  <a href="docs/images/screenshot-linux.webp?raw=true"><img src="docs/images/thumbnails/screenshot-linux.webp" width="13%" alt="Sunlit Earth on Linux" title="Sunlit Earth on Linux"></a>
 </p>
 
 ## Features
@@ -50,6 +50,7 @@ At the moment we only have portable binary releases for Linux and Windows on x86
 
 - Linux: sunlit-earth-0.1.0-linux.tar.gz
 - Windows: sunlit-earth-0.1.0-windows.zip
+- macOS: coming soon
 
 A macOS release, ARM64 support, and more installation options are all on the roadmap.
 
@@ -119,7 +120,7 @@ This uses your saved configuration. On Windows, use `sunlit-earth.exe`; on Linux
 - There is no tray icon: Tray support depends on the desktop session. Launch with `--mode window` to use the app without a tray.
 - The wrong screen or layout is used: Check the Displays mode and anchor. Run `sunlit-earth displays` to inspect the detected layout without changing the wallpaper.
 
-For a [bug report](https://github.com/klamann/sunlit-earth/issues), include the app version from About, your operating system and Linux desktop if applicable, and steps to reproduce your problem. For display problems, include the output of `sunlit-earth displays`. A screenshot can help explain rendering issues.
+For a [bug report](https://github.com/sunlit-earth/sunlit-earth/issues), include the app version from About, your operating system and Linux desktop if applicable, and steps to reproduce your problem. For display problems, include the output of `sunlit-earth displays`. A screenshot can help explain rendering issues.
 
 ## Build from source
 
@@ -143,7 +144,7 @@ On macOS, install Xcode command line tools. If bindgen cannot locate libclang, s
 
 ```bash
 git lfs install
-git clone https://github.com/klamann/sunlit-earth.git
+git clone https://github.com/sunlit-earth/sunlit-earth.git
 cd sunlit-earth
 git lfs pull
 cargo build --release --locked

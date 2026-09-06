@@ -645,24 +645,6 @@ fn display_label(device: &str, index: usize) -> String {
     }
 }
 
-/// Detect the primary monitor's physical resolution in pixels.
-///
-/// One enumeration, not two: this is `enumerate_monitors` narrowed to the
-/// monitor a single-screen wallpaper is sized for, with the same fallback to
-/// the first that [`crate::display::primary_of`] makes for xrandr.
-#[cfg(windows)]
-pub fn get_primary_monitor_resolution() -> Result<(u32, u32), String> {
-    let monitors = enumerate_monitors()?;
-    let monitor = crate::display::primary_monitor_of(&monitors)
-        .ok_or_else(|| "No primary monitor found".to_owned())?;
-    debug!(
-        width = monitor.width,
-        height = monitor.height,
-        "detected primary monitor resolution"
-    );
-    Ok((monitor.width, monitor.height))
-}
-
 /// `IDesktopWallpaper` behind a small safe wrapper.
 ///
 /// The COM interface is the only way to address one monitor:
@@ -1246,13 +1228,7 @@ mod tests {
             1,
             "Windows marks exactly one monitor primary: {monitors:?}"
         );
-        // And the narrowed query answers out of the same list rather than
-        // enumerating a second time with its own rules.
         let primary = monitors.iter().find(|m| m.primary).unwrap();
-        assert_eq!(
-            get_primary_monitor_resolution().unwrap(),
-            (primary.width, primary.height)
-        );
         assert!(
             primary.width >= 640 && primary.height >= 480,
             "a desktop nobody could use: {primary:?}"

@@ -193,18 +193,6 @@ impl From<Output> for Monitor {
     }
 }
 
-/// The monitor a wallpaper is anchored to by default: the primary, or the first.
-///
-/// The same fallback [`primary_of`] makes, and for the same reason: a session
-/// that marks nothing primary is common and is not a session to refuse.
-#[cfg(any(windows, test))]
-pub(crate) fn primary_monitor_of(monitors: &[Monitor]) -> Option<&Monitor> {
-    monitors
-        .iter()
-        .find(|monitor| monitor.primary)
-        .or_else(|| monitors.first())
-}
-
 /// Every monitor this session has, in the order the platform lists them.
 ///
 /// Three-valued the way [`outputs`] is, and load-bearing in the same way:
@@ -404,11 +392,6 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         assert!(!monitors[0].primary);
         assert_eq!((monitors[1].x, monitors[1].y), (0, -200));
         assert!(monitors[1].primary);
-        assert_eq!(
-            primary_monitor_of(&monitors).map(|m| m.id.as_str()),
-            Some("HDMI-1"),
-            "the marked one, not the first listed"
-        );
         assert_eq!(
             monitors[0].rect(),
             layout::Rect {

@@ -4,7 +4,7 @@
 //! apart from the Slint window so they can be tested without one.
 
 use sunlit_core::scene::camera::zoom_to_distance;
-use sunlit_core::scene::sun_occlusion;
+use sunlit_core::scene::sky_lens;
 
 /// Wrap a longitude value into the `[-180, 180)` range.
 #[must_use]
@@ -115,7 +115,7 @@ pub fn coarse_drag_gain(zoom: f32) -> f32 {
 /// :returns: degrees per pixel
 #[must_use]
 pub fn fine_drag_gain(sky_fov_deg: f32, preview_width_px: f32) -> f32 {
-    let edge = sun_occlusion::sky_lens_edge_radius(sky_fov_deg);
+    let edge = sky_lens::sky_lens_edge_radius(sky_fov_deg);
     (2.0 * edge / preview_width_px.max(1.0)).to_degrees()
 }
 
@@ -320,7 +320,7 @@ mod tests {
         let viewport = glam::Vec2::new(width, width * 9.0 / 16.0);
         let theta = theta_deg.to_radians();
         let direction = glam::Vec3::new(theta.sin(), 0.0, -theta.cos());
-        let disc = sun_occlusion::sky_lens_disc(
+        let disc = sky_lens::sky_lens_disc(
             direction,
             0.001_f32.to_radians(),
             sky_fov_deg,

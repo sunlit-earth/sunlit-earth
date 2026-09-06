@@ -204,6 +204,11 @@ impl ChildGuard {
     }
 
     /// The child's process id.
+    ///
+    /// Only the Windows reboot case asks: it finds the app's session listener
+    /// window by the process that owns it, and that case is `cfg`-gated because
+    /// its body is Win32.
+    #[cfg(windows)]
     pub(crate) fn pid(&self) -> u32 {
         self.child.as_ref().expect("child already taken").id()
     }

@@ -6,7 +6,11 @@
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// The one case that measures elapsed time is the Windows reboot sequence, whose
+// body is Win32 and compiles nowhere else.
+#[cfg(windows)]
+use std::time::Instant;
 
 use image::GenericImageView;
 use serial_test::serial;

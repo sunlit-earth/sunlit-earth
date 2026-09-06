@@ -364,33 +364,29 @@ pub(super) fn encode_and_submit(
     queue.submit(std::iter::once(encoder.finish()));
 }
 
-/// Encode and submit the preview render pass into the renderer's own texture.
-#[allow(clippy::cast_precision_loss)]
-#[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
-pub(super) fn execute_render_pass(
+/// Write this frame's uniforms, select every optional draw, and submit the
+/// pass into `target`.
+///
+/// The preview and the wallpaper export differ only in where they draw and at
+/// what size, so everything between the two is here and a draw added to one
+/// cannot be missing from the other.
+pub(super) fn draw_scene(
     res: &Renderer,
     params: &SceneParams,
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
+    width: u32,
+    height: u32,
+    target: &RenderTarget,
 ) {
     let moon = write_uniforms(
         &res.queue,
         &res.uniform_buffer,
         params,
-        res.render_width,
-        res.render_height,
+        width,
+        height,
         inputs,
         Moon::select(res, params),
-    );
-
-    let resolve_view = res
-        .render_texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
-    let target = RenderTarget::new(
-        &resolve_view,
-        res.msaa_texture_view.as_ref(),
-        &res.depth_texture,
-        res.msaa_depth_view.as_ref(),
     );
 
     let overlays = Overlays::select(res, params, bind_group);
@@ -400,7 +396,7 @@ pub(super) fn execute_render_pass(
     encode_and_submit(
         &res.device,
         &res.queue,
-        &target,
+        target,
         milky_way,
         stars,
         sun,
@@ -418,6 +414,36 @@ pub(super) fn execute_render_pass(
         overlays.nightglow_green.1,
         overlays.cloud.0,
         overlays.cloud.1,
+    );
+}
+
+/// Encode and submit the preview render pass into the renderer's own texture.
+#[allow(clippy::cast_precision_loss)]
+#[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
+pub(super) fn execute_render_pass(
+    res: &Renderer,
+    params: &SceneParams,
+    bind_group: &wgpu::BindGroup,
+    inputs: &FrameInputs,
+) {
+    let resolve_view = res
+        .render_texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let target = RenderTarget::new(
+        &resolve_view,
+        res.msaa_texture_view.as_ref(),
+        &res.depth_texture,
+        res.msaa_depth_view.as_ref(),
+    );
+
+    draw_scene(
+        res,
+        params,
+        bind_group,
+        inputs,
+        res.render_width,
+        res.render_height,
+        &target,
     );
 }
 

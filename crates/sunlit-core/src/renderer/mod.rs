@@ -729,16 +729,6 @@ impl Renderer {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             );
 
-        let moon = render_pass::write_uniforms(
-            &self.queue,
-            &self.uniform_buffer,
-            params,
-            target_width,
-            target_height,
-            inputs,
-            render_pass::Moon::select(self, params),
-        );
-
         let resolve_view = export_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let target = render_pass::RenderTarget::new(
             &resolve_view,
@@ -747,33 +737,15 @@ impl Renderer {
             msaa_depth_view.as_ref(),
         );
 
-        let overlays = render_pass::Overlays::select(self, params, bind_group);
-        let milky_way = render_pass::MilkyWay::select(self, params);
-        let stars = render_pass::Stars::select(self, params, bind_group);
-        let sun = render_pass::Sun::select(self, params, bind_group);
-
         crate::memory::log_memory_usage("wallpaper: before render");
-        render_pass::encode_and_submit(
-            &self.device,
-            &self.queue,
-            &target,
-            milky_way,
-            stars,
-            sun,
-            moon,
-            &self.pipelines.sphere,
+        render_pass::draw_scene(
+            self,
+            params,
             bind_group,
-            &self.vertex_buffer,
-            &self.index_buffer,
-            self.index_count,
-            overlays.rayleigh.0,
-            overlays.rayleigh.1,
-            overlays.nightglow_orange.0,
-            overlays.nightglow_orange.1,
-            overlays.nightglow_green.0,
-            overlays.nightglow_green.1,
-            overlays.cloud.0,
-            overlays.cloud.1,
+            inputs,
+            target_width,
+            target_height,
+            &target,
         );
 
         crate::memory::log_memory_usage("wallpaper: before pixel readback");

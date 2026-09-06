@@ -231,3 +231,44 @@ Both findings have the same cause: `ci.yml` is dispatch-only, so nothing runs it
 ### Step 0, first attempt (2026-09-06)
 
 `gh workflow run golden.yml --ref feat/macos -f os=macos-latest` at commit f4068dc. Run <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34055254636>, 4 minutes, failed in the `Regenerate` step with the eleven dead-code errors departure 1 records. macOS job 1 of the 6 this branch is allowed. No references were produced; the `metal` set is still fourteen short and three stale.
+
+### The star case, and what a tile-based renderer does to a diff (2026-09-07)
+
+The one failure left after step 4 was `stars::zero_star_intensity_leaves_catalog_pixels_at_the_clear_color`, which reads the set of pixels a star painted out of the difference between a stars-off and a stars-on render and asserts each of them was exactly the clear color with the stars off. On the paravirtual Metal device it reported one pixel on the globe, and nothing in the draw order can put a star there: the sprites are additive and drawn before an opaque globe, `test_params` sets `sample_count` to 1 so there is no MSAA silhouette to blend through, `star_intensity` is read only by `fs_star`, `fs_main` has no `discard`, and the engine target serializes on `GPU_SERIAL` so no other case can be rendering. On this host the same pixel is (235, 41) of a 512x256 frame, nine pixels inside the globe's edge at that row, in the extreme minification near the limb where neighboring pixels differ by 60 of 255; two renders of the scene are byte-identical here and 11791 pixels change, none of them on the globe.
+
+So the case was made to answer the question itself rather than guess at it: it now reports the frame size, the coordinates and every colour on failure, and one macOS dispatch settled it. <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34062275135>, macOS job 6. Seven pixels, all on the globe near the limb, all reproducible to the byte across two stars-off renders, all one 8-bit step away with the stars on, and three of the seven *darker*: (284, 48) red 132 to 131, (281, 54) 116 to 115, (263, 61) 85 to 84. An additive draw cannot darken anything, so no star reached the globe. What moved is where a tile-based renderer rounds to eight bits, which depends on how much work the pass carries, and the star draw puts ten thousand instanced sprites into it.
+
+One step turned out not to be the bound. The next dispatch, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063631672>, macOS job 7, failed on a single pixel: (285, 48), off `[131, 177, 118]`, on `[133, 177, 117]`, so red up two and blue down one. Put it beside its neighbour from the run before, (284, 48), off `[132, 177, 117]`, on `[131, 177, 118]`, and the two have exchanged values. That is the sampled texel moving under extreme minification, not a rounding of the same value, and the size of the move is bounded by the local texture contrast rather than by a step.
+
+The case's premise was therefore not the draw order, which holds, but that the rest of the frame is reproducible when a draw is added, which on this adapter it is not. A covered pixel is now held to `VISIBLE`, the same 24 of 255 the golden suite calls an outlier, and the exact assertion stays on the background pixels, which is where the property the case is named for lives. Reusing the golden suite's number rather than inventing one is the point: it is this project's existing answer to "a difference worth seeing", and the largest move measured here is two. WARP, lavapipe and this host's dx12 adapter take the same path they always did, since none of them produces a covered pixel at all. The measurement is in `testing.md` beside the cross-adapter deltas, with the conventions bullet it argues for. This last revision is the one thing in the branch no macOS run has seen: the job budget was spent, and the two before it are what it was written from.
+
+### Two more the fail-fast runs had hidden (2026-09-07)
+
+Cargo stops at the first test target that fails, so every macOS dispatch so far had stopped inside the engine target and said nothing about the seven targets after it. `ci.yml` now runs `--no-fail-fast`, and the render smoke test runs whatever the suite made of itself, which on a runner billing at ten times Linux is worth the extra minutes. The first run under that rule found two more macOS-only failures, both predating this branch:
+
+`guest::script_syntax::every_shell_script_the_linux_build_runs_parses` asserts, as a control, that `bash -n` reports an unterminated heredoc with exit 0 and a warning on stderr, because the loops below it check for that warning. Apple ships bash 3.2, which exits 0 and says nothing at all, so the control failed and, had it not, the warning check would have been catching nothing in silence. The control now probes rather than asserts, and prints that the scripts are checked by exit code alone where the shell cannot do better.
+
+The soak test failed on its first run on macOS and passed on its second, and the two samples together say what is wrong. On 2026-09-06: startup 50.3 MiB, warm-up +2.2, growth +10.7 against a `GROWTH_LIMIT` of 8, which fails. On 2026-09-07: startup 50.3 MiB, warm-up +12.9, growth +0.0, which passes. The peak is 63 MiB both times and the totals agree to a tenth of a MiB, so nothing is leaking; what moves is which side of `WARMUP_STEPS` the footprint is charged on, which is what a footprint counted as pages are touched rather than as they are reserved looks like, and `memory/macos.rs` reads `task_info(TASK_VM_INFO)`. Raising `GROWTH_LIMIT` would measure nothing. The roadmap carries it with both samples and with the two fixes that would actually settle it: a warm-up that ends when the allocation has settled rather than after a fixed number of steps, or a macOS reading that charges at reservation.
+
+### Step 2 revisited: the macOS suite (2026-09-07)
+
+<https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063631672>, macOS job 7 of the 8 this run was allowed, at commit 81b5823. Everything compiles, and with `--no-fail-fast` everything now runs: 408 unit tests in `sunlit-core`, 20 golden cases against the `metal` references, 17 in `render_pipeline`, 7 in `shading`, the soak case, 78 in the app crate, 36 Slint UI cases, 633 in the xtask, and the e2e target compiled with its 14 cases ignored as designed. The shell-parser fix is in the log in its own words: "this bash does not warn about an unterminated heredoc, so the scripts below are checked by exit code alone".
+
+The render smoke test ran for the first time on macOS, because it no longer waits on the suite's verdict, and passed: a 640x360 PNG of 152708 bytes with the IHDR the step checks. That is the first image this project has ever produced on a Mac, and it is the strongest single piece of evidence behind the macOS rows in `platforms.md`.
+
+One case failed, `stars::zero_star_intensity_leaves_catalog_pixels_at_the_clear_color`, on the one pixel described above, and the revision that answers it went in afterwards with no job left to prove it. So acceptance criterion 1 is one green dispatch short, and what stands between it and green is a case whose fix is written and whose host gates pass.
+
+### Step 6: the three-platform release dry run (2026-09-07)
+
+<https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063658604>, `release.yml` with `publish=false` at 81b5823. All three build jobs green and `Publish` skipped, which is acceptance criterion 3 minus the tag.
+
+| job | wall | bundle step | archive | files | delta |
+|---|---|---|---|---|---|
+| linux | 5m38s | 22 s | `sunlit-earth-0.1.0-beta.3-linux.tar.gz`, 19.1 MiB | 17 | 22.45 |
+| macos | 12m05s | 99 s | `…-macos.tar.gz`, 15.1 MiB | 7 | 22.49 |
+| macos | | | `…-macos.zip`, 15.2 MiB | 10 | 22.49 |
+| windows | 16m45s | 79 s | `…-windows.zip`, 17.1 MiB | 7 | 22.81 |
+
+Four archives with a record beside each, every one read back and rendered from twice against a floor of 8.0. `codesign --verify --strict passed on the unpacked bundle` is in the macOS log, so the ad-hoc seal survives `ditto` and the round trip, and `lipo -info` reports `Non-fat file: dist-bin/sunlit-earth is architecture: arm64`, which is `universal` off by default doing what decision 9 says.
+
+Open question 3 is answered. The bundle step's cold figures were 298 s on Windows and 155 s on Linux; warm on the same caches they are 79 s and 22 s, and macOS cold is 99 s. Almost all of the cold cost is the xtask's own dependency tree, and warm it is well under two minutes on the dearest runner, so the feature gate the plan held in reserve is not needed.

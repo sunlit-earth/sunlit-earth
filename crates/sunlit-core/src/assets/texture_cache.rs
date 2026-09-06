@@ -308,9 +308,10 @@ fn unfinished(path: &Path) -> PathBuf {
 
 /// Encode `img` as a PNG at `path`.
 ///
-/// Fast compression rather than the default: the file is a cache entry whose
-/// whole point is to be cheaper than decoding the source again, and the encode
-/// happens on the loader thread while the app is waiting for its first frame.
+/// The cheapest compression the encoder offers short of none, because the file
+/// is a cache entry whose whole point is to be cheaper than decoding the source
+/// again, and the encode happens on the loader thread while the app is waiting
+/// for its first frame.
 fn save_png(path: &Path, img: &DecodedImage) -> Result<(), String> {
     crate::files::write_png(
         path,

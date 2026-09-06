@@ -720,9 +720,10 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 
 /// Encode RGBA8 pixels as PNG and write them to `path`.
 ///
-/// Default compression rather than the fast setting the cache and the wallpaper
-/// use: an export is written once and kept, so the smaller file is worth the
-/// wait.
+/// `Fast` and `Adaptive` are what `image`'s own extension-driven save used
+/// before this went through one writer: they are that encoder's defaults, and
+/// the name `CompressionType::Default` is a level rather than the default.
+/// Named here so an export keeps producing the bytes it always has.
 pub fn save_png(
     path: &std::path::Path,
     width: u32,
@@ -734,7 +735,7 @@ pub fn save_png(
         pixels,
         width,
         height,
-        crate::files::CompressionType::Default,
+        crate::files::CompressionType::Fast,
         crate::files::FilterType::Adaptive,
     )
 }

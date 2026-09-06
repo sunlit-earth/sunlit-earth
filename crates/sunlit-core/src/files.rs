@@ -1,11 +1,16 @@
 //! Writing a file without leaving a half-written one behind.
 //!
-//! Every file this crate produces is written under a temporary name and then
-//! put in place: the config, the cloud cache sidecar, a cached texture
-//! downscale, a wallpaper frame and an exported render. What differs between
-//! them is the format and the temporary suffix. The rest is here, so a process
-//! killed mid-write leaves the previous file rather than a truncated one, and
-//! so there is one answer to what a temporary name looks like.
+//! The file a reader can come back to is written under a temporary name and
+//! then put in place: the config, the cloud cache sidecar, a cached texture
+//! downscale and a wallpaper frame. What differs between them is the format and
+//! the temporary suffix. The rest is here, so a process killed mid-write leaves
+//! the previous file rather than a truncated one, and so there is one answer to
+//! what a temporary name looks like.
+//!
+//! An exported render is the exception and writes in place: `engine::save_png`
+//! is the end of a `render --output` or a `displays --out`, nothing in this
+//! program reads the result back, and a half-written file there is one the user
+//! asked for and can ask for again.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,9 +40,10 @@ pub(crate) fn unfinished(path: &Path, suffix: &str) -> PathBuf {
 ///
 /// The encoder is named rather than inferred from the file extension, because
 /// two of the three callers write to a temporary name whose extension is not
-/// `png`. The settings stay with the caller: how much time is worth spending
-/// on the size of a file depends on how often it is rewritten and how long it
-/// is kept.
+/// `png`. The settings stay with the caller rather than being decided here:
+/// how much time is worth spending on the size of a file depends on how often
+/// it is rewritten and who is waiting for it. They agree on compression today
+/// and differ on the filter.
 ///
 /// The buffer check comes before the filesystem does, so a mismatched buffer
 /// creates nothing.

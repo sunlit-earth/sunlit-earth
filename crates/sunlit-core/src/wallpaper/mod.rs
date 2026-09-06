@@ -461,8 +461,6 @@ fn sweep_legacy_files(root: &Path) {
 }
 
 /// A name for the not-yet-finished version of `path`, unique to this writer.
-///
-/// A name for the not-yet-finished version of `path`, unique to this writer.
 fn unfinished(path: &Path) -> PathBuf {
     crate::files::unfinished(path, ".tmp")
 }

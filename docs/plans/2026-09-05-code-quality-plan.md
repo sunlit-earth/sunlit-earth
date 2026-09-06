@@ -699,14 +699,13 @@ on Linux. **macOS remains uncompiled**, by the maintainer's decision rather than
 - **`Schedule`'s `interval` and `next` fields are `pub(super)`** so `engine/mod.rs` can bring a drain forward
   and `cloud_worker.rs` can build a literal. A method would read better, but that is new code rather than the
   visibility change a move forces, so run 4 did not write it.
-- **`golden.rs`'s `close_camera` and `docs/rendering.md` disagree about the sky lens at the painted limb**, 57 degrees
-  against 63 for what reads as the same quantity. Both predate run 3 and package 3.2's validator correctly declined it
-  as out of scope. The orchestrator's partial derivation supports 57: at 512 by 256 the projection is isotropic at
-  1/256 of a projected unit per pixel, so a painted limb 204 pixels out gives a projected length of 0.797, and with
-  `sky_lens_edge_radius(140) = tan(35 degrees) = 0.7002` that is `2 * atan(0.5580)`, or 58.3 degrees. What is not
-  verified is the 204 pixels itself, which comes from the perspective camera rather than the sky lens, so the figure is
-  offered as evidence rather than as a correction. Whoever settles it should check both numbers against the code and fix
-  the loser.
+- **The sky lens at the painted limb: closed in run 4.** `golden.rs`'s `close_camera` said 57 degrees and
+  `docs/rendering.md` said 63 for the same quantity. Derived from the case's own inputs, at distance 3.7 with the
+  default 140 degree sky, a painted limb 203.78 px out gives `2 * atan(203.78/256 * tan(35 deg))` = **58.27 degrees**;
+  57 is what a 137.2 degree sky gives and 63 what a 150 degree one gives, so neither was a value any case used. Package
+  4.2 corrected `golden.rs`'s three figures in `9e3185b` and the orchestrator corrected the document in `65ab052`.
+  **The lesson is why it survived three runs: a second copy of a figure does not corroborate the first, it hides that
+  nothing computed either.**
 - **The offset guard's real reach.** `uniform_buffer_field_offsets_match_wgsl` catches any change that moves an existing
   field's offset, which is what item A2 asked for and what review E1's scenario exercises. It does not catch a field
   appended into the trailing padding: replacing `_pad8` with a real field and setting it in `write_uniforms` leaves the

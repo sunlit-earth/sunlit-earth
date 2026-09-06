@@ -59,7 +59,19 @@ Three persisted parameters, all in the Celestial group: `moon_brightness` (zero 
 
 The surface is the NASA CGI Moon Kit at 1024x512 in slot 3, and it is an overlay like the clouds: excluded from `textures_ready` and `textures_pending`, absent without the file, never delaying a wallpaper export. Unlike the clouds its slot is file-backed, so a resolution switch purges and reloads it, and the load is spawned only while `moon_brightness` is above zero. Tests use a generated fixture map (`tests/support`) rather than the LFS asset: the landmarks in it are asymmetric in all three ways the orientation can be wrong, and generating it rather than committing it is what makes the golden reference's bytes reproducible on any machine.
 
-Adding a shader parameter means: the `.slint` property and slider, the `AppConfig` field, `SceneParams` + its `ParamsDigest`, `Uniforms`, and the WGSL. The bridge functions and the dirty check follow from the struct. `params.rs` has a table-driven test that walks every parameter and asserts it changes the digest, so forgetting the dirty check is a test failure rather than a stale-frame bug.
+Adding a shader parameter is fourteen edits in seven files:
+
+| File | Edits |
+|---|---|
+| `ui/main.slint` | the `in-out property <float>`, and its `SettingRow` block |
+| `ui_callbacks.rs` | `apply_params_to_window`, `read_params_from_window` |
+| `config/mod.rs` | the `AppConfig` field, and its value in `impl Default` |
+| `params.rs` | the `SceneParams` field, `from_config`, `write_to_config`, one line of `scene_digest!` |
+| `renderer/uniforms.rs` | one line of `uniform_block!` |
+| `renderer/render_pass.rs` | `write_uniforms` |
+| `shaders/sphere.wgsl` | the `Uniforms` field with its offset comment, and the use |
+
+The two macro lists are what make the rest safe. `scene_digest!` generates `ParamsDigest`, `digest()` and the mutation table the tests walk from one entry per parameter, and it builds a `SceneParams` out of its own groups in a `const`, so a field that is in the struct and in no group is a missing field the compiler names. `uniform_block!` generates the `Uniforms` struct and a table of its field names, WGSL types and offsets, and two unit tests compare that table against the `Uniforms` block parsed out of `sphere.wgsl`: a name, a type, an offset, a field count or the total size that disagrees fails, and so does a field appended into the trailing padding on one side alone. The two bridge functions in `ui_callbacks.rs` stay hand-written on purpose: they are the crate's stated translation point, and a macro would make `set_sun_glow` a name that cannot be grepped.
 
 A setting that is not a shader parameter takes a different route, and `texture_resolution` is the example: it is an `AppConfig` field with a widget, but it stays out of `SceneParams` and the digest because it does not describe what to draw, and acting on it means re-reading files and swapping GPU textures, which `push_params` cannot express. Such a setting gets its own `EngineCommand` and its own callback, and is read back in `read_config_from_window_onto` rather than in `write_to_config`.
 

@@ -12,7 +12,7 @@ The test layers, the conventions every layer follows, and the hosted CI that run
 | Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance | all three, per-adapter references |
 | GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU | all three |
 | UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` | all three |
-| Desktop e2e | `sunlit-app/tests/e2e.rs` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux> [--screens <n>]` in a VM |
+| Desktop e2e | `sunlit-app/tests/e2e.rs`, harness in `tests/common/` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux> [--screens <n>]` in a VM |
 | VM orchestration | `crates/xtask/src/**` | pure decision logic against fabricated hosts, no VM | all three |
 
 ## What a display-less machine can prove about several displays
@@ -71,6 +71,11 @@ The two bounding tests clear it from both sides, and by these margins: 2048 clea
 clears it by 633, so a cold-start figure set too low fails at the two lower widths while the widest, which is where the
 3 GiB total is anchored, still passes. The narrow end is the binding case rather than a restatement of the wide one: it
 gets the smallest resident allowance and has the same decode to pay for.
+
+**The e2e suite's harness is `tests/common/`.** `tests/e2e.rs` is the fifteen cases; the harness under them is one
+module per layer: `process.rs` starts and watches the binary, `pixels.rs` says what a frame should look like,
+`cloud_stub.rs` is the loopback cloud server, and `desktop_linux.rs` asks a Linux desktop what it did with the
+wallpaper.
 
 **The e2e render case's thresholds and its budget.** `test_render_and_exit` gives itself an empty cache directory so
 that it pays the surface texture decode instead of inheriting a warm cache from whichever case ran first. Measured in

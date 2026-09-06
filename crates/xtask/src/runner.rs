@@ -59,6 +59,14 @@ pub struct Cmd {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// Variables the child must not see, whatever this process holds.
+    ///
+    /// An addition to the environment cannot express an absence, and one
+    /// caller needs exactly that: the bundle's second verification render has
+    /// to look the textures up the way a user's machine does, which it cannot
+    /// do if `SUNLIT_EARTH_TEXTURES` reached it from the shell that started
+    /// the build.
+    pub unset: Vec<String>,
     pub stdin: Option<String>,
     /// The readable form of a command whose arguments are encoded, kept for
     /// logs and for the test double to match on. Never sent to the process.
@@ -113,6 +121,12 @@ impl Cmd {
     #[must_use]
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn unset(mut self, key: impl Into<String>) -> Self {
+        self.unset.push(key.into());
         self
     }
 
@@ -196,6 +210,9 @@ impl RealRunner {
         }
         for (key, value) in &cmd.env {
             command.env(key, value);
+        }
+        for key in &cmd.unset {
+            command.env_remove(key);
         }
         command
     }

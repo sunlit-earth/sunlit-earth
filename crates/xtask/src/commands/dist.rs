@@ -1034,9 +1034,14 @@ pub struct BuildInfo {
     pub channel: String,
     /// `rustc -vV` and `cargo -V` as the guest reported them.
     pub toolchain: String,
-    /// The builder image and what its manifest says about itself.
-    pub builder: BuilderInfo,
-    pub linkage: Linkage,
+    /// What built it: a builder guest on somebody's host, or a hosted runner.
+    pub builder: Builder,
+    /// What the builder's own reading of the binary found, where there was a
+    /// reader. A hosted runner has no `readelf` or `dumpbin` step, so this is
+    /// absent there rather than an empty set that would read as a check that
+    /// found nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linkage: Option<Linkage>,
     /// What each half of the build cache did: restored and from when, or the
     /// one-line reason it was not, and whether this run wrote a fresh one back.
     /// Decision 27, which is what keeps decision 19's argument checkable after
@@ -1079,6 +1084,38 @@ pub struct BundleInfo {
     pub texture_lookup_delta: Option<f64>,
 }
 
+/// What produced the binary.
+///
+/// The two are not variations on one record: a builder guest is a disk this
+/// host built and can name by its template, and a hosted runner is an image
+/// somebody else maintains and a run somebody else can open. Writing both into
+/// one flat shape would leave a reader guessing which half of it to believe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Builder {
+    /// A pristine builder guest of the VM store, as `cargo xtask dist` boots.
+    Vm(BuilderInfo),
+    /// A runner the build did not provision, as the release workflow uses.
+    Hosted(HostedInfo),
+}
+
+/// The runner a hosted build ran on, and where its log is.
+///
+/// `run_id` and `run_url` are absent when the command was not run by a
+/// workflow, which is what a developer invoking `cargo xtask bundle` by hand
+/// gets: there is no run to link to, and a fabricated one would be worse than
+/// none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedInfo {
+    /// What the runner says it is: the image label on GitHub's runners, and
+    /// the operating system and architecture otherwise.
+    pub runner_image: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_url: Option<String>,
+}
+
 /// Which image built it, and which build of that image.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuilderInfo {
@@ -1104,16 +1141,19 @@ impl BuildInfo {
 }
 
 /// The version of the record's own layout.
-pub const BUILD_INFO_VERSION: u32 = 1;
+///
+/// 2 since `builder` became a tagged union and `linkage` became optional, which
+/// a reader of a version 1 record cannot parse.
+pub const BUILD_INFO_VERSION: u32 = 2;
 
 /// Where the artifacts land: `<target dir>/dist/<target>/`.
 ///
 /// `CARGO_TARGET_DIR` if it is set, because a developer who moved their target
 /// directory moved it for a reason, and `<repo>/target` otherwise.
-pub fn dist_dir(target: Target) -> PathBuf {
+pub fn dist_dir(platform: bundle::Platform) -> PathBuf {
     let base = util::env_var("CARGO_TARGET_DIR")
         .map_or_else(|| store::repo_root().join("target"), PathBuf::from);
-    base.join("dist").join(target.slug())
+    base.join("dist").join(platform.slug())
 }
 
 /// Run the command.
@@ -1244,8 +1284,8 @@ fn one_target(
         duration_secs: started.elapsed().as_secs(),
         channel: pinned.channel.clone(),
         toolchain,
-        builder: builder_info,
-        linkage,
+        builder: Builder::Vm(builder_info),
+        linkage: Some(linkage),
         cache: product.cache,
         bundle: None,
         verified_in: None,
@@ -1288,7 +1328,7 @@ fn one_target(
             None => None,
         };
 
-        let dist = dist_dir(target);
+        let dist = dist_dir(target.into());
         publish(
             &dist,
             &exe,
@@ -1345,9 +1385,10 @@ fn assemble_bundle(
             return Ok(None);
         }
     };
-    let name = bundle::bundle_name(version, target);
+    let platform = bundle::Platform::from(target);
+    let name = bundle::bundle_name(version, platform);
     let items = bundle::layout(
-        target,
+        platform,
         &bundle::Sources {
             repo,
             exe,
@@ -1357,7 +1398,7 @@ fn assemble_bundle(
     let root = bundle::assemble(scratch, &name, &items)?;
     info.bundle = Some(BundleInfo {
         name: name.clone(),
-        archive: bundle::archive_name(version, target),
+        archive: bundle::archive_name(version, platform),
         entries: items.len(),
         texture_lookup_delta: None,
     });
@@ -1377,8 +1418,9 @@ fn seal_bundle(
     target: Target,
     scratch: &Path,
 ) -> Result<PathBuf, String> {
-    let format = bundle::Format::of(target);
-    let archive = scratch.join(bundle::archive_name(version, target));
+    let platform = bundle::Platform::from(target);
+    let format = bundle::Format::of(platform);
+    let archive = scratch.join(bundle::archive_name(version, platform));
     let bytes = bundle::write(
         format,
         &bundled.root,
@@ -2965,19 +3007,19 @@ mod tests {
                 copied_in_secs: Some(41),
                 copied_out_secs: Some(40),
             }],
-            builder: BuilderInfo {
+            builder: Builder::Vm(BuilderInfo {
                 image: Image::LinuxBuilder.slug().to_owned(),
                 template_hash: "crc32:deadbeef".to_owned(),
                 built_utc: "2026-08-28T09:00:00Z".to_owned(),
                 source: "ubuntu 22.04 cloud image".to_owned(),
                 parent_checksum: None,
-            },
-            linkage: Linkage {
+            }),
+            linkage: Some(Linkage {
                 needed: EXPECTED_NEEDED.iter().map(|s| (*s).to_owned()).collect(),
                 glibc_floor: Some("2.35".to_owned()),
                 imports: Vec::new(),
                 crt_static: None,
-            },
+            }),
             bundle: Some(BundleInfo {
                 name: "sunlit-earth-0.1.0-linux".to_owned(),
                 archive: "sunlit-earth-0.1.0-linux.tar.gz".to_owned(),
@@ -3022,18 +3064,45 @@ mod tests {
         assert!(json.contains("\"verified_in\": null"), "{json}");
         assert!(json.contains("\"texture_lookup_delta\": null"), "{json}");
         assert_eq!(BuildInfo::from_json(&json).expect("round trip"), unverified);
+
+        // The other builder: a hosted runner, which has no image of this
+        // host's making and no reader for the binary's linkage. Its record has
+        // to be as readable as the guest's, and the tag is what tells them
+        // apart rather than which fields happen to be filled in.
+        let mut hosted = info.clone();
+        hosted.builder = Builder::Hosted(HostedInfo {
+            runner_image: "macOS 26.0.20250901".to_owned(),
+            run_id: Some("34055254636".to_owned()),
+            run_url: Some(
+                "https://github.com/sunlit-earth/sunlit-earth/actions/runs/34055254636".to_owned(),
+            ),
+        });
+        hosted.linkage = None;
+        let json = hosted.to_json();
+        assert!(json.contains("\"kind\": \"hosted\""), "{json}");
+        assert!(json.contains("34055254636"), "{json}");
+        assert!(!json.contains("linkage"), "{json}");
+        assert_eq!(BuildInfo::from_json(&json).expect("round trip"), hosted);
+        assert!(
+            info.to_json().contains("\"kind\": \"vm\""),
+            "{}",
+            info.to_json()
+        );
     }
 
     #[test]
-    fn the_dist_directory_is_under_the_target_directory_and_per_target() {
-        for target in Target::ALL {
-            let dir = dist_dir(target);
+    fn the_dist_directory_is_under_the_target_directory_and_per_platform() {
+        for platform in bundle::Platform::ALL {
+            let dir = dist_dir(platform);
             assert!(
-                dir.ends_with(Path::new("dist").join(target.slug())),
+                dir.ends_with(Path::new("dist").join(platform.slug())),
                 "{dir:?}"
             );
         }
-        assert_ne!(dist_dir(Target::Windows), dist_dir(Target::Linux));
+        let dirs: Vec<PathBuf> = bundle::Platform::ALL.into_iter().map(dist_dir).collect();
+        for (index, dir) in dirs.iter().enumerate() {
+            assert!(!dirs[index + 1..].contains(dir), "{dir:?} is not its own");
+        }
     }
 
     #[test]

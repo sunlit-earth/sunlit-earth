@@ -307,9 +307,8 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
 // Load-defaults callback tests
 // ---------------------------------------------------------------------------
 
-/// The button exists, is unique, and invokes its callback; what the callback
-/// does is `ui_callbacks::on_load_defaults`, which needs an `EngineLink` and is
-/// covered by the e2e suite.
+/// The button exists, is unique, and invokes its callback. What the app's own
+/// callback then does is the test below this one.
 #[test]
 fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
     let window = create_window();
@@ -344,6 +343,79 @@ fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
     approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
     approx::assert_relative_eq!(window.get_camera_zoom(), defaults.zoom);
     assert_eq!(window.get_diffuse_shading(), defaults.diffuse_shading);
+}
+
+/// Load-defaults through the callback the app registers, rather than one this
+/// test writes.
+///
+/// `apply_whole_config` is what load-defaults and reset both run, and it is
+/// four things at once: the window, the diagram, the two settings the engine
+/// holds itself because they are not in `SceneParams`, and the push. The combo
+/// indices are the one part left out, since `defer_combobox_indices` lands on
+/// an event loop this backend does not run.
+#[test]
+fn test_load_defaults_applies_the_whole_config_the_app_would() {
+    use slint::Model;
+    use sunlit_core::engine::EngineCommand;
+
+    let window = create_window();
+    let (sender, sent) = crossbeam_channel::unbounded();
+    let link = sunlit_earth::engine_client::EngineLink::new(
+        sender,
+        vec!["None".to_owned(), "MSAA".to_owned()],
+        vec![1, 8],
+    );
+    let screens = sunlit_earth::displays::shared_monitors();
+    sunlit_earth::displays::set_monitors(&screens, fabricated_monitors());
+    sunlit_earth::ui_callbacks::register_action_callbacks(&window, &link, &screens);
+
+    let defaults = sunlit_core::config::AppConfig::default();
+    let wanted = sunlit_core::params::SceneParams::from_config(&defaults);
+    window.set_camera_longitude(wanted.camera.longitude + 47.0);
+    window.set_sky_fov(wanted.sky_fov - 11.0);
+    window.set_auto_refresh_enabled(!defaults.auto_refresh_enabled);
+    link.set_resolution_is_one_run_only(true);
+
+    window.invoke_load_defaults();
+
+    approx::assert_relative_eq!(window.get_camera_longitude(), wanted.camera.longitude);
+    approx::assert_relative_eq!(window.get_sky_fov(), wanted.sky_fov);
+    assert_eq!(
+        window.get_auto_refresh_enabled(),
+        defaults.auto_refresh_enabled,
+        "a setting outside SceneParams is put back too"
+    );
+    assert_eq!(
+        window.get_display_tiles().iter().count(),
+        fabricated_monitors().len(),
+        "the diagram is rebuilt from the shared monitor list"
+    );
+    assert!(
+        !link.resolution_is_one_run_only(),
+        "the texture resolution is the user's again once they ask for defaults"
+    );
+
+    let sent: Vec<EngineCommand> = sent.try_iter().collect();
+    let resolution = sent.iter().find_map(|command| match command {
+        EngineCommand::SetTextureResolution(width) => Some(*width),
+        _ => None,
+    });
+    assert_eq!(resolution, Some(defaults.texture_resolution));
+
+    let plan = sent.iter().find_map(|command| match command {
+        EngineCommand::SetDisplayPlan { mode, anchor } => Some((*mode, anchor.clone())),
+        _ => None,
+    });
+    assert_eq!(plan, Some((defaults.display_mode, defaults.anchor())));
+
+    let pushed = sent
+        .iter()
+        .find_map(|command| match command {
+            EngineCommand::UpdateParams(params) => Some(params),
+            _ => None,
+        })
+        .expect("the scene the window now holds reaches the engine");
+    approx::assert_relative_eq!(pushed.camera.longitude, wanted.camera.longitude);
 }
 
 // ---------------------------------------------------------------------------

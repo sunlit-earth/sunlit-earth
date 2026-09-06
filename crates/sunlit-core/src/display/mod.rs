@@ -216,8 +216,6 @@ pub fn monitors() -> Option<Vec<Monitor>> {
     }
 }
 
-/// CoreGraphics, which needs no main thread and so answers the same from the
-/// engine thread and from the `displays` subcommand alike.
 #[cfg(target_os = "macos")]
 pub fn monitors() -> Option<Vec<Monitor>> {
     macos::monitors()
@@ -255,8 +253,6 @@ pub fn outputs() -> Option<Vec<Output>> {
     Some(parse_outputs(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// The same displays as [`monitors`], in points rather than pixels, which is
-/// the space winit reports a window position in.
 #[cfg(target_os = "macos")]
 pub fn outputs() -> Option<Vec<Output>> {
     macos::outputs()

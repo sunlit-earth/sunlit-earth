@@ -308,14 +308,8 @@ pub use unix::{Watcher, install};
 /// blocks on a self-pipe the handler writes one byte to, and everything below
 /// happens on an ordinary thread.
 ///
-/// `cfg(unix)` rather than Linux alone, and what that buys on macOS is smaller
-/// but real. A logout there does not send SIGTERM to an ordinary GUI app: it
-/// sends a quit Apple event, AppKit's default answer to which is to terminate
-/// at once, and winit implements nothing that could block it. What does send
-/// SIGTERM is `kill` from a terminal and a launchd agent being stopped, and
-/// both deserve the same ordered exit Linux gets. The teardown a logout loses
-/// is a roadmap item, because hooking winit's `exiting` needs Slint's
-/// `unstable-winit-030`.
+/// A macOS logout sends a quit Apple event rather than SIGTERM, so this covers
+/// less there; `docs/platforms.md` has what it does and does not cover.
 #[cfg(unix)]
 mod unix {
     use std::sync::atomic::{AtomicBool, Ordering};

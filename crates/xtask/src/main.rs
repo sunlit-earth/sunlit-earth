@@ -93,10 +93,6 @@ enum Command {
     },
     /// Assemble a release bundle around a binary that is already built, and
     /// write the archive its platform's users open without a tool.
-    ///
-    /// What `dist` does after the builder guest hands back a binary, asked for
-    /// on its own: the release runners build the binary themselves and have no
-    /// hypervisor to do the rest in.
     Bundle(bundle::Options),
     /// Regenerate a committed asset from its source.
     Bake {
@@ -468,14 +464,10 @@ mod tests {
         let _ = check_usage_lines("dist", 5, &["CLAUDE.md", "docs/vm-setup.md"]);
     }
 
-    /// The same rule for the command the release runners drive: a flag the
-    /// workflows pass and the map does not name is a flag nobody reading this
-    /// repository knows about.
+    /// The same rule for the command the release runners drive.
     #[test]
     fn the_docs_spell_out_every_flag_bundle_takes() {
         let usage = check_usage_lines("bundle", 4, &["CLAUDE.md"]);
-        // And every platform it accepts, because the value is the half of that
-        // line a reader copies.
         for platform in <bundle::Platform as clap::ValueEnum>::value_variants() {
             let slug = platform.slug();
             assert!(

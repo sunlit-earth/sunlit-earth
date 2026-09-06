@@ -244,17 +244,10 @@ mod x11 {
 /// rest of the path takes a redundant hint at the cost of one comparison.
 /// `CGDisplayRegisterReconfigurationCallback`, on the thread that registers it.
 ///
-/// No thread of its own, unlike the other two. CoreGraphics delivers the
-/// callback on the run loop of the thread that registered it, and the app
-/// registers on the main thread before the event loop runs, which is a run loop
-/// that is about to be pumped for the life of the process. A thread of this
-/// module's own would have to build and pump a run loop for one callback, and
-/// then the callback would arrive on a thread nothing else uses.
-///
-/// The consequence, and it is the reason this is written down: a process with
-/// no event loop gets no hints. That is the `render` and `displays`
-/// subcommands, neither of which watches anything, and the engine re-queries
-/// the monitor list on every publish either way.
+/// No thread of its own, unlike the other two: CoreGraphics delivers on the run
+/// loop of the thread that registered, and the app registers on the main thread
+/// before an event loop that runs for the life of the process. The consequence
+/// is that a process with no event loop gets no hints.
 #[cfg(target_os = "macos")]
 mod core_graphics {
     use std::ffi::c_void;
@@ -268,11 +261,8 @@ mod core_graphics {
 
     use super::NotifyFn;
 
-    /// The running watcher.
-    ///
-    /// It owns nothing but the fact of the registration: what has to be undone
-    /// is one call with the same function pointer, and the closure lives in the
-    /// slot below because a C callback has nowhere to keep state.
+    /// The running watcher, which owns nothing but the fact of the
+    /// registration; the closure lives in the slot below.
     #[derive(Debug)]
     pub struct Watcher {
         _private: (),
@@ -297,14 +287,10 @@ mod core_graphics {
         }
     }
 
-    /// The callback the C function pointer reaches, which has nowhere to keep
-    /// state of its own.
-    ///
-    /// A `Mutex` rather than a `OnceLock` so that stopping a watcher really does
-    /// end it, exactly as the Win32 half does it: the slot is emptied on the way
-    /// out and a later `start` can fill it again. The lock is released before
-    /// the callback runs, because what it does is send on a channel and nothing
-    /// here may depend on how long that takes.
+    /// The closure the C callback reaches, which has nowhere to keep state of
+    /// its own. A `Mutex` rather than a `OnceLock` so that stopping really ends
+    /// it and a later `start` can fill the slot again; the lock is released
+    /// before the closure runs.
     static NOTIFY: OnceLock<Mutex<Option<NotifyFn>>> = OnceLock::new();
 
     fn notify_slot() -> &'static Mutex<Option<NotifyFn>> {
@@ -317,12 +303,9 @@ mod core_graphics {
         }
     }
 
-    /// The C callback.
-    ///
-    /// `kCGDisplayBeginConfigurationFlag` is the announcement that a change is
-    /// about to happen, and the layout still reads as it did: acting on it
-    /// would re-query the arrangement that is being replaced and then act again
-    /// on the real notification. Everything else is a hint.
+    /// The C callback. `kCGDisplayBeginConfigurationFlag` announces a change
+    /// that has not happened yet, so acting on it would re-query the
+    /// arrangement being replaced; everything else is a hint.
     // SAFETY: this is a declaration rather than a call, and what makes it
     // sound is that it is only ever installed through
     // `CGDisplayRegisterReconfigurationCallback`, whose contract is exactly

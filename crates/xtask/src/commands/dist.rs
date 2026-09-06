@@ -1036,10 +1036,9 @@ pub struct BuildInfo {
     pub toolchain: String,
     /// What built it: a builder guest on somebody's host, or a hosted runner.
     pub builder: Builder,
-    /// What the builder's own reading of the binary found, where there was a
-    /// reader. A hosted runner has no `readelf` or `dumpbin` step, so this is
-    /// absent there rather than an empty set that would read as a check that
-    /// found nothing.
+    /// What the builder's own reading of the binary found. Absent on a hosted
+    /// runner, which has no `readelf` or `dumpbin` step, rather than an empty
+    /// set that would read as a check that found nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linkage: Option<Linkage>,
     /// What each half of the build cache did: restored and from when, or the
@@ -1049,12 +1048,8 @@ pub struct BuildInfo {
     #[serde(default)]
     pub cache: Vec<cache::Report>,
     /// The release bundles this run wrote, empty where the host held Git LFS
-    /// pointers rather than the texture assets.
-    ///
-    /// A list rather than one, because macOS ships two archives of the same
-    /// binary: the `.app` a person double-clicks and the tarball a tester
-    /// unpacks in Terminal. Each is verified on its own, so each carries its
-    /// own measurement.
+    /// pointers rather than the texture assets. A list because macOS ships two
+    /// archives of the same binary, each verified on its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bundles: Vec<BundleInfo>,
     /// The desktop image the binary was run in, or `null` where `--no-verify`
@@ -1089,12 +1084,9 @@ pub struct BundleInfo {
     pub texture_lookup_delta: Option<f64>,
 }
 
-/// What produced the binary.
-///
-/// The two are not variations on one record: a builder guest is a disk this
-/// host built and can name by its template, and a hosted runner is an image
-/// somebody else maintains and a run somebody else can open. Writing both into
-/// one flat shape would leave a reader guessing which half of it to believe.
+/// What produced the binary. Tagged rather than flat, because a builder guest
+/// and a hosted runner are named by different things and a reader of one flat
+/// shape would have to guess which half to believe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Builder {
@@ -1104,22 +1096,16 @@ pub enum Builder {
     Hosted(HostedInfo),
 }
 
-/// The runner a hosted build ran on, and where its log is.
-///
-/// `run_id` and `run_url` are absent when the command was not run by a
-/// workflow, which is what a developer invoking `cargo xtask bundle` by hand
-/// gets: there is no run to link to, and a fabricated one would be worse than
-/// none.
+/// The runner a hosted build ran on, and where its log is. `run_id` and
+/// `run_url` are absent outside a workflow, where there is no run to link to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedInfo {
     /// What the runner says it is: the image label on GitHub's runners, and
     /// the operating system and architecture otherwise.
     pub runner_image: String,
-    /// The architectures inside the binary that was bundled, where the host
-    /// has a tool that can say. macOS only, because it is the only platform
-    /// here that ships one file holding more than one: decision 9 leaves the
-    /// second slice off by default and this is what says which way a given
-    /// release went.
+    /// The architectures inside the bundled binary, where the host has a tool
+    /// that can say. macOS only, as the one platform here shipping a file that
+    /// can hold more than one, and what says which way a given release went.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub architectures: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1153,9 +1139,6 @@ impl BuildInfo {
 }
 
 /// The version of the record's own layout.
-///
-/// 2 since `builder` became a tagged union and `linkage` became optional, which
-/// a reader of a version 1 record cannot parse.
 pub const BUILD_INFO_VERSION: u32 = 2;
 
 /// Where the artifacts land: `<target dir>/dist/<target>/`.
@@ -3077,10 +3060,8 @@ mod tests {
         assert!(json.contains("\"texture_lookup_delta\": null"), "{json}");
         assert_eq!(BuildInfo::from_json(&json).expect("round trip"), unverified);
 
-        // The other builder: a hosted runner, which has no image of this
-        // host's making and no reader for the binary's linkage. Its record has
-        // to be as readable as the guest's, and the tag is what tells them
-        // apart rather than which fields happen to be filled in.
+        // The other builder, which is told apart by the tag rather than by
+        // which fields happen to be filled in.
         let mut hosted = info.clone();
         hosted.builder = Builder::Hosted(HostedInfo {
             runner_image: "macOS 26.0.20250901".to_owned(),

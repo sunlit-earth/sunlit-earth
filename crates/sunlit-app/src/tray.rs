@@ -69,20 +69,11 @@ pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
     }
 }
 
-/// The name `single-instance` is handed, which is not the same kind of thing on
-/// every platform.
-///
-/// A named mutex on Windows and an abstract socket address on Linux, both of
-/// which are names in namespaces of their own and are fine as they arrive. On
-/// macOS it is `flock` on a file at the literal name, so a relative one is
-/// created in the working directory, and the working directory of an app
-/// launched from Finder is `/`: the create fails, the guard is silently absent,
-/// and a second instance starts beside the first. An absolute path under the
-/// app data directory, which is where the config and the wallpapers already
-/// are, is what makes the guard real there.
-///
-/// A system with no data directory keeps the bare name, which is the behaviour
-/// this had before and no worse than the alternative of refusing to start.
+/// The name `single-instance` is handed, which on macOS is a path it calls
+/// `flock` on rather than a name in a namespace of its own. A relative one
+/// lands in the working directory, which for an app launched from Finder is
+/// `/`, and the guard is then silently absent. A system with no data directory
+/// keeps the bare name, which is what this did before.
 #[cfg(target_os = "macos")]
 fn instance_name(name: &str) -> String {
     let Some(dir) = sunlit_core::app_data_dir() else {
@@ -204,9 +195,8 @@ mod tests {
         ));
     }
 
-    /// Decision 7: on macOS the name is a path, and a relative path is a lock
-    /// file in the working directory, which for an app launched from Finder is
-    /// `/`. Everywhere else it is a name in a namespace and arrives unchanged.
+    /// On macOS the name has to be an absolute path. Everywhere else it is a
+    /// name in a namespace of its own and arrives unchanged.
     #[test]
     fn the_instance_lock_is_a_real_path_on_the_platform_that_makes_it_a_file() {
         let name = instance_name("sunlit-earth-app");

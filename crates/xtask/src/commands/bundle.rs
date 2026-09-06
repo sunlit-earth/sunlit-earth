@@ -40,11 +40,9 @@ use crate::util;
 
 /// The platforms a bundle can be built for.
 ///
-/// Not [`Target`], which names a guest this host can boot: there is no macOS
-/// guest and never will be one, and every `match` in `dist.rs` is exhaustive
-/// over the two that exist. What a bundle needs is a layout and an archive
-/// format, and those have a third case, so the third case lives here and
-/// [`From<Target>`] carries a guest into it.
+/// Not [`Target`], which names a guest this host can boot and has no macOS
+/// variant to keep every `match` in `dist.rs` exhaustive. A bundle needs a
+/// layout and an archive format, and those have the third case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, ValueEnum)]
 pub enum Platform {
     Windows,
@@ -66,9 +64,7 @@ impl Platform {
 
     /// All three, in the order reports list them.
     ///
-    /// Only the tests walk the set today: production code is handed one
-    /// platform by a command line or by a [`Target`], and clap derives its own
-    /// list of the variants for the flag.
+    /// Only the tests walk the set; clap derives its own list for the flag.
     #[cfg(test)]
     pub const ALL: [Self; 3] = [Self::Windows, Self::Linux, Self::MacOs];
 
@@ -136,13 +132,10 @@ pub const VERSION_PLACEHOLDER: &str = "@VERSION@";
 /// What a bundle is shaped like, which is not the same question as which
 /// platform it is for.
 ///
-/// macOS ships both: the `.app` a person double-clicks, and the plain layout in
-/// a tarball. Decision 16 is why the second one exists. Quarantine is an
-/// extended attribute that browsers and Archive Utility set and `tar` in
-/// Terminal does not, so a tester who unpacks the tarball meets no Gatekeeper
-/// dialog and gets the log on the terminal they started it from. It is the same
-/// binary in both, so the linker's ad-hoc signature travels inside the Mach-O
-/// either way and nothing is signed twice.
+/// macOS ships both: the `.app` a person double-clicks, and the plain layout
+/// in a tarball, which is the one a tester unpacks in Terminal where `tar` sets
+/// no quarantine attribute. The same binary is in both, so the linker's ad-hoc
+/// signature travels inside the Mach-O either way and nothing is signed twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Package {
     /// One directory holding the executable with its textures beside it.
@@ -166,10 +159,8 @@ impl Format {
     pub fn of(platform: Platform) -> Self {
         match platform {
             Platform::Windows => Self::Zip,
-            // A tarball on macOS, and deliberately not a zip: decision 16 makes
-            // it the archive a tester unpacks in Terminal, where `tar` sets no
-            // quarantine attribute and the binary starts without a Gatekeeper
-            // dialog. The `.app` beside it is the zip, and `ditto` writes it.
+            // A tarball and deliberately not a zip: it is what a tester
+            // unpacks in Terminal, past Gatekeeper. The `.app` is the zip.
             Platform::Linux | Platform::MacOs => Self::TarGz,
         }
     }
@@ -188,9 +179,8 @@ pub enum Source {
     /// A file on the host: the binary this run built, or something the
     /// repository ships.
     File(PathBuf),
-    /// Bytes this run made, which is the macOS `Info.plist` and nothing else:
-    /// the template in the tree carries a placeholder where the version goes,
-    /// and the version is not known until the manifest is read.
+    /// Bytes this run made, which is the macOS `Info.plist` and nothing else,
+    /// because its version is not known until the manifest is read.
     Made(Vec<u8>),
 }
 
@@ -271,9 +261,8 @@ pub fn archive_format(platform: Platform, package: Package) -> Format {
     }
 }
 
-/// The macOS bundle's archive, which is named for the release rather than for
-/// the `.app` inside it: a download called `Sunlit Earth.app.zip` says nothing
-/// about which version it is.
+/// Named for the release rather than for the `.app` inside it: a download
+/// called `Sunlit Earth.app.zip` says nothing about which version it is.
 pub fn app_archive_name(version: &str) -> String {
     format!("{PACKAGE}-{version}-{}.zip", Platform::MacOs.slug())
 }
@@ -286,11 +275,9 @@ pub fn app_archive_name(version: &str) -> String {
 /// `Contents/Resources/textures` by walking up from the executable, which is
 /// the one candidate this layout needed adding.
 ///
-/// The version is substituted rather than left to a build step, because
-/// `CFBundleShortVersionString` is what a user is shown and what an updater
-/// would compare: a bundle whose plist said `@VERSION@` would be a release
-/// nobody could name. The prerelease suffix goes in as it is; the App Store
-/// would object to it, and this is not going there.
+/// `CFBundleShortVersionString` is what a user is shown, so the version is
+/// substituted here rather than left to a build step. The prerelease suffix
+/// goes in as it is.
 pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String> {
     let template_path = sources.repo.join(INFO_PLIST);
     let template = std::fs::read_to_string(&template_path)
@@ -785,10 +772,7 @@ pub fn skipped_note() -> String {
 
 /// What one `cargo xtask bundle` run was asked for.
 ///
-/// The command's own arguments, declared beside it rather than in `main.rs`:
-/// the flag names and the doc comments that become their help are what this
-/// module means, and `Platform` already carries a clap derive for the same
-/// reason.
+/// Declared here rather than in `main.rs`, as `Platform` already is.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Options {
     /// Which platform's layout and archive format.
@@ -839,12 +823,11 @@ impl Run<'_> {
 /// Assemble every package this platform ships, archive each, read each back,
 /// optionally render from each, and write one record beside them.
 ///
-/// The verification is the same two renders `dist` runs in a desktop guest and
-/// for the same reason: a binary that did not find its textures still writes a
-/// 640x360 PNG, so only the comparison against a render made against an empty
-/// directory can tell a globe from a grid. What differs is where it runs. A
-/// runner is not a pristine guest, and the record says which of the two it was
-/// rather than leaving a reader to assume the stronger one.
+/// The verification is the two renders `dist` runs in a desktop guest, for the
+/// same reason: a binary that found no textures still writes a 640x360 PNG, and
+/// only the comparison against one rendered against an empty directory tells a
+/// globe from a grid. A runner is not a pristine guest, and the record says
+/// which of the two it was.
 pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     let started = std::time::Instant::now();
     let repo = store::repo_root();
@@ -868,10 +851,9 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
         )
     })?;
 
-    // Absolute before anything is derived from it, because `--verify` runs the
-    // binary from a working directory of its own: a relative `--out` would
-    // reach the child as a path relative to that instead, and every one of the
-    // paths derived from it here is handed to the child.
+    // Absolute before anything is derived from it: `--verify` runs the binary
+    // from a working directory of its own, and every path derived here reaches
+    // that child.
     let out = std::path::absolute(
         options
             .out
@@ -988,11 +970,9 @@ fn one_package(run: &Run, package: Package) -> Result<BundleInfo, String> {
 /// Whether an archive entry is metadata the archiver added rather than a file
 /// the bundle holds.
 ///
-/// `ditto` stores extended attributes and resource forks alongside the files
-/// they belong to, under `__MACOSX/` and as `._`-prefixed siblings. They are
-/// not part of the layout and no comparison against the assembled directory can
-/// account for them, so they are dropped from the read-back rather than made
-/// into a reason the check has to be loosened.
+/// `ditto` stores extended attributes and resource forks beside the files they
+/// belong to, under `__MACOSX/` and as `._`-prefixed siblings. Dropping them
+/// from the read-back is what keeps the comparison exact.
 fn is_apple_metadata(path: &str) -> bool {
     path.starts_with("__MACOSX/")
         || Path::new(path)
@@ -1062,11 +1042,9 @@ fn tool(runner: &dyn Runner, cmd: &Cmd) -> Result<String, String> {
 
 /// Unpack an archive into a directory, with the crate that wrote it.
 ///
-/// The tarball's mode field is restored here, and that is what makes the render
-/// below possible at all on the two platforms that have one: an archive that
-/// carried 0644 on the binary would fail with a permission error. Rendering
-/// from the unpacked archive rather than from the directory it was assembled in
-/// is the point, because the archive is what a user is handed.
+/// The tarball's mode field is restored here, without which the binary unpacks
+/// at 0644 and the render below fails on permissions. Rendering from the
+/// unpacked archive is the point: the archive is what a user is handed.
 pub fn unpack(format: Format, archive: &Path, into: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive)
         .map_err(|e| format!("cannot reopen {}: {e}", archive.display()))?;
@@ -1088,10 +1066,8 @@ pub fn unpack(format: Format, archive: &Path, into: &Path) -> Result<(), String>
 /// Unpack the archive and render from it twice, and answer how far apart the
 /// two renders are.
 ///
-/// `None` when nothing ran it, which is the same answer the record carries and
-/// the reason this takes the flag rather than being called behind one: whether
-/// a bundle was run is a property of the bundle, and the one function that can
-/// say so is the one that would have run it.
+/// `None` when nothing ran it, which is what the record carries too, and the
+/// reason this takes the flag rather than being called behind one.
 fn verify_here(
     run: &Run,
     package: Package,
@@ -1125,9 +1101,8 @@ fn verify_here(
         ));
     }
     if package == Package::App {
-        // Acceptance criterion 3: the seal survived the archive and the
-        // unpack, which is the whole reason this format is `ditto`'s and not
-        // the zip crate's.
+        // The seal survived the archive and the unpack, which is the whole
+        // reason this format is `ditto`'s and not the zip crate's.
         tool(
             run.runner,
             &Cmd::new("codesign").args([
@@ -1151,12 +1126,9 @@ fn verify_here(
     };
     let at = |cmd: Cmd| -> Result<(), String> { tool(run.runner, &cmd).map(|_| ()) };
 
-    // The working directory is outside the bundle on purpose, and it is
-    // load-bearing rather than tidiness: `resolve_textures_dir` tries a
-    // `textures` beside the working directory before it walks up from the
-    // executable, so a run from inside the bundle would answer with the first
-    // branch and leave the walk-up, which is what the layout depends on,
-    // untested.
+    // The working directory is outside the bundle on purpose:
+    // `resolve_textures_dir` tries a `textures` beside it before walking up
+    // from the executable, and it is the walk-up this has to test.
     let render = |output: &Path| {
         vec![
             "render".to_owned(),
@@ -1242,11 +1214,9 @@ fn record(
 
 /// The architectures inside the binary, where the host has a tool that can say.
 ///
-/// `lipo -info`, which exists on macOS and nowhere else, and macOS is the only
-/// platform here whose one file can hold two. Empty rather than an error when
-/// the tool is absent or answers something unexpected: the record says less
-/// than it might, and a bundle is not worth refusing over a description of
-/// itself.
+/// `lipo -info`, which exists on macOS and nowhere else. Empty rather than an
+/// error where the tool is absent or says something unexpected: a bundle is not
+/// worth refusing over a description of itself.
 fn architectures(runner: &dyn Runner, platform: Platform, exe: &Path) -> Vec<String> {
     if platform != Platform::MacOs || Platform::host() != Some(Platform::MacOs) {
         return Vec::new();
@@ -1268,10 +1238,8 @@ fn architectures(runner: &dyn Runner, platform: Platform, exe: &Path) -> Vec<Str
 ///
 /// `Non-fat file: <path> is architecture: arm64` for one slice, and
 /// `Architectures in the fat file: <path> are: x86_64 arm64` for several. Both
-/// put the list after the last colon, and a path with a colon in it is not
-/// something this build produces. Anything that is neither of those two
-/// sentences answers with nothing: the alternative is a record naming an
-/// architecture that came out of an error message.
+/// put the list after the last colon. Anything else answers with nothing,
+/// rather than naming an architecture that came out of an error message.
 fn parse_lipo(text: &str) -> Vec<String> {
     if !text.starts_with("Non-fat file:") && !text.starts_with("Architectures in the fat file:") {
         return Vec::new();
@@ -1287,9 +1255,7 @@ fn parse_lipo(text: &str) -> Vec<String> {
 
 /// What the runner this ran on is, and where its log is.
 ///
-/// The GitHub variables or nothing: a developer running this by hand gets their
-/// own operating system and no run to link to, which is the honest answer
-/// rather than a fabricated one.
+/// The GitHub variables or nothing: run by hand there is no run to link to.
 pub fn hosted_info() -> HostedInfo {
     let runner_image = util::env_var("ImageOS").map_or_else(
         || format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
@@ -1740,10 +1706,9 @@ mod tests {
         }
     }
 
-    /// Decision 11: a bundle has three platforms and a guest has two, and the
-    /// conversion runs one way only. `Target` staying two variants is what
-    /// keeps every `match` in `dist.rs` exhaustive without a macOS arm that
-    /// could never be reached.
+    /// A bundle has three platforms and a guest two, and the conversion runs
+    /// one way only, which is what keeps `dist.rs` exhaustive without a macOS
+    /// arm that could never be reached.
     #[test]
     fn a_platform_names_itself_and_a_guest_target_becomes_one() {
         assert_eq!(Platform::Windows.slug(), "windows");
@@ -1760,9 +1725,8 @@ mod tests {
         assert!(Platform::host().is_some());
     }
 
-    /// Decision 16: the macOS archive a tester unpacks in Terminal is a
-    /// tarball, because `tar` sets no quarantine attribute where a browser and
-    /// Archive Utility do.
+    /// The macOS archive a tester unpacks in Terminal is a tarball, because
+    /// `tar` sets no quarantine attribute where a browser does.
     #[test]
     fn the_macos_bundle_is_a_tarball_named_like_the_others() {
         assert_eq!(Format::of(Platform::MacOs), Format::TarGz);
@@ -1811,9 +1775,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The record a runner writes names the runner and, when a workflow drove
-    /// it, the run somebody can open. Run outside one there is no run to link
-    /// to, and an invented link would be worse than none.
+    /// The record names the runner, and the run where a workflow drove it.
     #[test]
     fn a_hosted_record_never_links_to_a_run_it_does_not_have() {
         let hosted = hosted_info();
@@ -1824,15 +1786,11 @@ mod tests {
         );
     }
 
-    /// Decision 8, and the layout Apple's bundle format fixes: the executable
-    /// at `Contents/MacOS/`, everything it reads at `Contents/Resources/`, and
-    /// the plist that names them both at `Contents/`.
-    ///
-    /// The one that matters beyond tidiness is `Contents/Resources/textures`,
-    /// which is the candidate `resolve_textures_dir` gained: from
-    /// `Contents/MacOS/sunlit-earth` the walk up reaches `Contents/` and finds
-    /// it there, and no other layout on any platform puts a `Resources` beside
-    /// a binary.
+    /// The layout Apple's bundle format fixes: the executable at
+    /// `Contents/MacOS/`, everything it reads at `Contents/Resources/`, and the
+    /// plist that names them both at `Contents/`. The one that matters beyond
+    /// tidiness is `Contents/Resources/textures`, which is the candidate
+    /// `resolve_textures_dir` gained.
     #[test]
     fn the_app_bundle_puts_each_file_where_macos_looks_for_it() {
         let dir = scratch("app_layout");
@@ -1903,8 +1861,7 @@ mod tests {
         assert!(text.contains("0.1.0-beta.4"), "{text}");
         assert!(!text.contains(VERSION_PLACEHOLDER), "{text}");
 
-        // The real template, not the fabricated one: these are the strings the
-        // bundle's identity is, and the identifier in particular can never
+        // The real template, not the fabricated one: the identifier can never
         // change once chosen, because preferences and TCC grants key on it.
         let real = std::fs::read_to_string(crate::store::repo_root().join(INFO_PLIST))
             .expect("the committed template");
@@ -1919,8 +1876,7 @@ mod tests {
             assert!(real.contains(value), "the template has no {value}");
         }
         // `LSUIElement` would do nothing: winit sets the regular activation
-        // policy at startup whatever the plist says. The comment that explains
-        // that is welcome; the key is not.
+        // policy at startup whatever the plist says.
         assert!(!real.contains("<key>LSUIElement</key>"), "{real}");
 
         // A template with the placeholder taken out is a refusal, not a bundle

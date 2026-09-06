@@ -97,7 +97,7 @@ The repository stays private (decided 2026-09-06), so every minute is metered: L
 | `macos-build.yml` `build-and-e2e`, arm64, warm | 25 min | about 250 minutes |
 | `golden.yml` on macOS, once | 20 min | about 200 minutes |
 
-A month with one release, four checks and four tester builds is about 850 minutes on warm caches, so the caches are what make the budget work. The measures, each of which the workflow files carry as a comment:
+A month with one release, four checks and four tester builds is about 850 minutes on warm caches, so the caches are what make the budget work. The measures, which the CI section of `docs/testing.md` records rather than the workflow files themselves:
 
 - One `Swatinem/rust-cache` key per profile and platform (`release-<platform>` beside the existing `ci-<platform>`), because release and test artifacts share nothing and a mixed cache evicts itself. `CARGO_INCREMENTAL=0` as in `ci.yml`, since incremental artifacts are large and useless across runs.
 - A tag run restores from `main`'s cache, but its own save is reachable by no later ref, so on tag runs `save-if` is false and the upload minutes are not spent. The cache `main` holds is warmed by the `publish`-false dispatch, which is also the step that proves the pipeline; run it after a dependency bump, not on every push.

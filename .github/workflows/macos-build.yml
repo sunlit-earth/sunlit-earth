@@ -1,15 +1,5 @@
 name: macOS build
 
-# The macOS iteration loop, and the only compiler this project has for the
-# platform: nobody here has a Mac, and the C build script in Astronomy Engine
-# fails a cross `cargo check --target aarch64-apple-darwin` from Windows, so
-# code written for macOS is type-checked here or nowhere.
-#
-# Manual only, and rationed. macOS minutes bill at 10x against a limited budget
-# on a private repository, so `check` is what runs while macOS code is being
-# written, `ci.yml` dispatched with `os: macos-latest` is what runs the whole
-# suite at the end of a step, and `release.yml` with `publish` false is what
-# builds a bundle.
 on:
   workflow_dispatch:
     inputs:
@@ -19,11 +9,8 @@ on:
         default: check
         type: choice
         options:
-          # `cargo check --all-targets` plus the unit tests: the cheap answer to
-          # "does the macOS code compile and do its pure functions hold".
           - check
 
-# A second dispatch does not run beside a forgotten first one.
 concurrency:
   group: macos-build-${{ github.ref }}
   cancel-in-progress: true
@@ -34,9 +21,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # The same gate ci.yml applies, and for the same reason: a warning here is a
-  # build failure on the runner that would otherwise only surface in the CI
-  # dispatch at the end of the step.
   RUSTFLAGS: "-D warnings"
 
 jobs:
@@ -44,8 +28,6 @@ jobs:
     name: ${{ inputs.mode }} on macos-latest
     runs-on: macos-latest
     steps:
-      # No `lfs: true` in `check` mode: nothing here renders, and the tests that
-      # want the 8K assets check their size and skip with a printed reason.
       - uses: actions/checkout@v4
 
       - name: Install the pinned toolchain
@@ -55,9 +37,6 @@ jobs:
           rustup show active-toolchain
         shell: bash
 
-      # Xcode ships a libclang for bindgen. Point at it only if it is where we
-      # expect, so a layout change degrades to clang-sys's own search rather
-      # than to a path that does not exist.
       - name: Point bindgen at Xcode's libclang
         run: |
           LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
@@ -69,9 +48,6 @@ jobs:
           fi
         shell: bash
 
-      # The CI matrix's own key, deliberately: `check` compiles the same tree in
-      # the same profile as the macOS test job, so the two share their
-      # dependencies and neither builds cold because the other ran.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-macos
@@ -81,9 +57,6 @@ jobs:
         run: cargo check --all-targets --locked
         shell: bash
 
-      # The unit tests only: no integration target opens a GPU device here, and
-      # what `check` mode is for is the pure functions the macOS arms are built
-      # out of. The whole suite is `ci.yml` dispatched on macOS.
       - name: Unit tests
         if: inputs.mode == 'check'
         run: cargo test --workspace --lib --bins --locked -- --show-output

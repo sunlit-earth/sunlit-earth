@@ -1,24 +1,15 @@
 //! The macOS half of the wallpaper path: write one PNG per screen, then hand
 //! each to `NSWorkspace` from the main thread.
 //!
-//! Two threads and one hop. The files are written where every other platform
-//! writes them, on the thread that asked, through the shared
-//! [`Publication::write_job`]. The act of handing them to the desktop is
-//! AppKit's, and `NSScreen` is main-thread-only, so that half is submitted to
-//! the main dispatch queue and this thread waits for its answer with a bounded
-//! wait. `exec_async` and not `exec_sync`: the app joins the engine thread from
-//! the main thread at shutdown, and a synchronous hop there is a deadlock
-//! waiting for its moment. A main thread that never answers is a refusal the
-//! status line shows.
+//! The files are written on the thread that asked, through the shared
+//! [`Publication::write_job`]. Handing them over is AppKit's, and `NSScreen` is
+//! main-thread-only, so that half is submitted to the main dispatch queue and
+//! waited on with a bound. `exec_async` and not `exec_sync`: the app joins the
+//! engine thread from the main thread at shutdown, and a synchronous hop there
+//! is a deadlock waiting for its moment.
 //!
-//! Not `osascript`, which needs a TCC Automation grant that a bare binary
-//! cannot hold and whose consent dialog often never appears, and not the
-//! `wallpaper` crate, which wraps `osascript` and stopped in 2021.
-//!
-//! What this cannot do is paint a Space that is not the active one. There is no
-//! API for it; a Space that was not active keeps the path it was handed last
-//! time, which is why [`super::GENERATIONS_KEPT`] is larger here than
-//! elsewhere.
+//! `docs/platforms.md` has the rest: why not `osascript`, and what a Space that
+//! was not active keeps.
 //!
 //! [`Publication::write_job`]: super::Publication::write_job
 
@@ -41,16 +32,14 @@ use crate::engine::wallpaper_sink::WallpaperJob;
 /// How long the engine thread waits for the main thread to take the wallpaper.
 ///
 /// Long enough that a main thread busy with a frame is not mistaken for a dead
-/// one, short enough that a publish is never what a person is waiting on. The
-/// refusal names the number, because "it did not work" and "the main thread has
-/// not answered in ten seconds" are different problems.
+/// one, short enough that a publish is never what a person waits on.
 const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether this session has a display to paint, asked before anything is
 /// rendered.
 ///
-/// A login over SSH has none, and the whole point of asking here is to refuse
-/// before a full-resolution render and readback rather than after.
+/// A login over SSH has none, and asking here refuses before a full-resolution
+/// render rather than after.
 pub(crate) fn check_supported() -> Result<(), String> {
     match crate::display::macos::active_displays() {
         Some(displays) if !displays.is_empty() => Ok(()),
@@ -63,8 +52,8 @@ pub(crate) fn check_supported() -> Result<(), String> {
 
 /// One screen's assignment, as it crosses to the main thread.
 ///
-/// Strings and a path rather than anything of AppKit's: everything in here is
-/// `Send`, which is what lets the closure carry it.
+/// Strings and a path rather than anything of AppKit's, so the closure that
+/// carries it is `Send`.
 #[derive(Debug, Clone)]
 struct Assignment {
     /// The key `display::macos::display_key` gives this monitor, which is what
@@ -78,9 +67,8 @@ struct Assignment {
 /// Write the PNGs and hand each to `NSWorkspace`.
 ///
 /// Every mode reaches here as one image per screen, because `image_for` has
-/// already cut a spanning canvas into per-screen pieces: macOS addresses a
-/// screen individually and has no spanning setter, so `AcrossScreens` is
-/// painted the way `PerMonitor` is and looks the same to the desktop.
+/// already cut a spanning canvas into pieces. macOS has no spanning setter and
+/// needs none.
 pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
     let mut publication = super::begin_publication()?;
     let written = publication.write_job(job)?;
@@ -148,10 +136,9 @@ impl Painted {
 
 /// Submit the AppKit half and wait for its answer.
 ///
-/// The bounded wait is what turns a main thread that never drains its queue
-/// into a refusal rather than a hang. A publish that times out has already
-/// written and committed its files, so the desktop is on the previous
-/// generation and the next publish will try again.
+/// The bound turns a main thread that never drains its queue into a refusal
+/// rather than a hang. The files are already written and committed, so a
+/// publish that times out leaves the desktop on the previous generation.
 fn on_main_thread(
     assignments: Vec<Assignment>,
     anchor: Option<PathBuf>,
@@ -180,10 +167,9 @@ fn timeout_refusal() -> String {
 
 /// The AppKit half, which runs on the main thread and nowhere else.
 ///
-/// `anchor` is the fallback the Windows setter has for the same situation: if
-/// AppKit names no screen this publish knows about, every screen gets the
-/// anchor's picture rather than nobody getting anything, which is what all of
-/// them did before there was a plan at all.
+/// `anchor` is the Windows setter's fallback for the same situation: where
+/// AppKit names no screen this publish knows, every screen gets its picture
+/// rather than nobody getting anything.
 fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, String> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err(
@@ -225,10 +211,8 @@ fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, S
         match outcome {
             Ok(()) => {
                 painted.painted += 1;
-                // Read back and logged, never asserted: reports on 14, 15 and
-                // 26 have this answering with a directory, the default
-                // wallpaper, or another screen's image. It is here for the
-                // conversation with a tester, not as a check.
+                // Logged, never asserted: reports on 14, 15 and 26 have
+                // this answering with a directory or another screen's image.
                 debug!(
                     screen = %assignment.label,
                     read_back = ?workspace.desktopImageURLForScreen(&screen),
@@ -302,9 +286,8 @@ fn every_screen(
 
 /// Fill without letterboxing, which is what every other platform's setter does.
 ///
-/// `NSImageScaleProportionallyUpOrDown` with clipping allowed. The two are also
-/// the default when the keys are omitted, and they are spelled out because a
-/// default that changes under us is not something a wallpaper should depend on.
+/// `NSImageScaleProportionallyUpOrDown` with clipping allowed, which is also
+/// the default when the keys are omitted and is spelled out so it stays so.
 fn fill_options() -> objc2::rc::Retained<NSDictionary<NSString, AnyObject>> {
     // SAFETY: both are `NSString` constants exported by AppKit and are valid
     // for the life of the process; reading them is unsafe only because they are
@@ -325,9 +308,8 @@ fn fill_options() -> objc2::rc::Retained<NSDictionary<NSString, AnyObject>> {
 
 /// The `CGDirectDisplayID` behind an `NSScreen`.
 ///
-/// `deviceDescription`'s `NSScreenNumber`, which is the documented bridge
-/// between the two APIs and the only one: `NSScreen` has no display id of its
-/// own and CoreGraphics has no `NSScreen`.
+/// `deviceDescription`'s `NSScreenNumber`, which is the only bridge between the
+/// two APIs.
 fn screen_display_id(screen: &NSScreen) -> Option<u32> {
     let number = screen
         .deviceDescription()
@@ -342,9 +324,8 @@ fn screen_display_id(screen: &NSScreen) -> Option<u32> {
 mod tests {
     use super::*;
 
-    /// The refusal names the wait, because "it did not work" and "the main
-    /// thread has not answered in ten seconds" are different problems with
-    /// different next steps.
+    /// The refusal names the wait: "it did not work" and "the main thread has
+    /// not answered in ten seconds" are different problems.
     #[test]
     fn the_timeout_refusal_says_how_long_it_waited_and_what_the_desktop_shows() {
         let refusal = timeout_refusal();
@@ -353,8 +334,8 @@ mod tests {
     }
 
     /// A screen the setter could not match and one it could not paint are
-    /// different things, and the note says which is which. Nothing painted at
-    /// all is not a note, it is a refusal, which `paint` returns instead.
+    /// different things, and the note says which. Nothing painted at all is a
+    /// refusal instead.
     #[test]
     fn the_note_tells_an_unmatched_screen_from_a_refused_one() {
         let painted = Painted {
@@ -363,8 +344,7 @@ mod tests {
         };
         assert_eq!(painted.note(), "");
 
-        // The fallback says one thing and says it instead of the rest: every
-        // screen got the same picture, so naming which ones were unmatched
+        // Every screen got the same picture, so naming the unmatched ones
         // would be a list of all of them.
         let painted = Painted {
             painted: 2,
@@ -409,9 +389,7 @@ mod tests {
         assert!(painted.note().contains("; "), "{}", painted.note());
     }
 
-    /// On a session with displays this is supported, and on one without it the
-    /// refusal says which of the two nothing-to-paint cases it is. Both are
-    /// answers; neither is a panic.
+    /// Both are answers; neither is a panic.
     #[test]
     fn the_support_check_answers_for_whatever_session_this_is() {
         match check_supported() {

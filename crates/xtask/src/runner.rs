@@ -59,13 +59,9 @@ pub struct Cmd {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
-    /// Variables the child must not see, whatever this process holds.
-    ///
-    /// An addition to the environment cannot express an absence, and one
-    /// caller needs exactly that: the bundle's second verification render has
-    /// to look the textures up the way a user's machine does, which it cannot
-    /// do if `SUNLIT_EARTH_TEXTURES` reached it from the shell that started
-    /// the build.
+    /// Variables the child must not see, whatever this process holds. `env`
+    /// cannot express an absence, and the bundle's verification render needs
+    /// one: it has to find its textures the way a user's machine does.
     pub unset: Vec<String>,
     pub stdin: Option<String>,
     /// The readable form of a command whose arguments are encoded, kept for

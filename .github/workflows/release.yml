@@ -1,15 +1,5 @@
 name: Release
 
-# One tag, one archive per platform, each verified on the runner that built it.
-#
-# The tag glob matches a prerelease: the three tags this repository has are
-# `v0.1.0-beta.1` to `.3`, and the old `v[0-9]+.[0-9]+.[0-9]+` matched none of
-# them, which is why this workflow had never run.
-#
-# `workflow_dispatch` with `publish` false is how the pipeline is exercised
-# without a tag and without a release, and it is also what keeps the caches on
-# the default branch warm: a tag run restores from them and deliberately saves
-# nothing back, because no later ref could reach a cache saved under a tag.
 on:
   push:
     tags:
@@ -25,64 +15,41 @@ on:
         type: boolean
         default: false
 
-# The release job asks for this; nothing else in this repository writes.
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
-  # Incremental artifacts are large and useless across runs, and they would be
-  # cached.
   CARGO_INCREMENTAL: 0
-  # Deliberately no `RUSTFLAGS: -D warnings` here, unlike ci.yml: a release is
-  # not the place to discover a new lint. `ci.yml` is the gate that fails on a
-  # warning, and it runs before a tag is pushed.
 
 jobs:
   build:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # Every platform reports. A Windows failure that cancelled the Linux job
-      # would cost a whole round trip to learn something this run already knew.
       fail-fast: false
       matrix:
         include:
           - platform: windows
             os: windows-latest
             exe: target/release/sunlit-earth.exe
-          # 22.04 rather than `ubuntu-latest`, which is 24.04: glibc 2.35 is the
-          # floor the `linux-builder` image gives and the one `cargo xtask dist`
-          # checks a binary against. A binary linked on 24.04 needs 2.39 and
-          # refuses to start on the distributions that floor exists to cover.
           - platform: linux
             os: ubuntu-22.04
             exe: target/release/sunlit-earth
-          # The binary is put where the build step leaves it rather than where
-          # cargo does, because the macOS build takes an explicit --target and
-          # may end in a `lipo` of two of them.
           - platform: macos
             os: macos-latest
             exe: dist-bin/sunlit-earth
     steps:
-      # The four JXL textures go inside the bundle, and without them
-      # `cargo xtask bundle` refuses rather than shipping a procedural grid
-      # under a name that promises a release. 4.7 MB per run.
       - uses: actions/checkout@v4
         with:
           lfs: true
 
-      # The channel `rust-toolchain.toml` pins, installed once. A
-      # `dtolnay/rust-toolchain@stable` beside it would be a second toolchain
-      # downloaded on every cold runner to build nothing.
       - name: Install the pinned toolchain
         run: |
           set -euo pipefail
           rustup toolchain install --no-self-update
           rustup show active-toolchain
         shell: bash
-
-      # --- per-OS setup, as ci.yml has it -----------------------------------
 
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
@@ -115,21 +82,11 @@ jobs:
           fi
         shell: bash
 
-      # One key per profile and platform. Release and test artifacts share
-      # nothing, so a mixed cache would evict itself.
-      #
-      # `save-if` is false on a tag run: the cache it would write is keyed on a
-      # ref no later run can reach, so the upload minutes buy nothing. A tag run
-      # restores from the default branch's cache, which the `publish`-false
-      # dispatch is what warms.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.platform }}
           save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
-      # An archive can never be named after a version other than the tag's.
-      # `cargo xtask bundle` reads the workspace manifest, and the tag is what a
-      # user downloads by, so the two have to be the same string.
       - name: Check the tag against the workspace version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -147,18 +104,11 @@ jobs:
           fi
         shell: bash
 
-      # One thing, not the workspace: no tests, no other members, no xtask in
-      # the release profile.
       - name: Build
         if: matrix.platform != 'macos'
         run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth
         shell: bash
 
-      # Apple Silicon by default, and the Intel slice only when a release asks
-      # for it: the second one doubles the compile on the runner whose minutes
-      # cost ten times the others, and no tester with an Intel Mac exists yet.
-      # MACOSX_DEPLOYMENT_TARGET is set for both slices so the halves agree with
-      # each other and with LSMinimumSystemVersion in Info.plist.
       - name: Build (macOS)
         if: matrix.platform == 'macos'
         env:
@@ -173,30 +123,15 @@ jobs:
           if [ "${{ inputs.universal }}" = "true" ]; then
             rustup target add x86_64-apple-darwin
             build x86_64-apple-darwin
-            lipo -create -output dist-bin/sunlit-earth               target/aarch64-apple-darwin/release/sunlit-earth               target/x86_64-apple-darwin/release/sunlit-earth
+            lipo -create -output dist-bin/sunlit-earth target/aarch64-apple-darwin/release/sunlit-earth target/x86_64-apple-darwin/release/sunlit-earth
           else
             cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
           fi
-          # Also read back into build-info.json by the bundle step, so a release
-          # says which way it went rather than leaving it to this log.
           lipo -info dist-bin/sunlit-earth
         shell: bash
 
-      # Assemble, archive, read the archive back, unpack it and render from it
-      # twice. The second render is the one that proves the binary finds the
-      # `textures/` beside it rather than a checkout's.
-      #
-      # This compiles the xtask in the dev profile, which is a second dependency
-      # tree on the runner. The plan's step 1 measures what that costs cold; if
-      # it is more than a minute or two, the bake and VM dependencies move
-      # behind cargo features.
       - name: Bundle and verify
         env:
-          # The verification renders twice, and the binary it runs is the real
-          # one: keep its config, its metrics and its cloud cache in the
-          # workspace rather than in the runner's app data, and skip the cloud
-          # fetch, which neither render waits for and which would spend a
-          # download on a picture nothing asserts.
           SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/bundle-config.toml
           SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/bundle-metrics
           SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/bundle-cache
@@ -219,8 +154,6 @@ jobs:
   publish:
     name: Publish
     needs: build
-    # A tag always publishes; a dispatch only when it was asked to. `needs`
-    # already holds this behind a green build on every platform.
     if: startsWith(github.ref, 'refs/tags/') || inputs.publish
     runs-on: ubuntu-latest
     steps:
@@ -229,10 +162,6 @@ jobs:
           path: artifacts
           pattern: bundle-*
 
-      # Every archive keeps its own name, which already carries the version and
-      # the platform. The records do not: three files called `build-info.json`
-      # cannot be three release assets, so each takes the name of the archive it
-      # describes.
       - name: Collect the release assets
         run: |
           set -euo pipefail
@@ -244,9 +173,6 @@ jobs:
               cp "$archive" release/
             done
             if [ -f "$dir/build-info.json" ]; then
-              # One record per job, named for the platform: macOS writes two
-              # archives and three files called build-info.json cannot be three
-              # release assets.
               cp "$dir/build-info.json" "release/build-info-${platform}.json"
             else
               echo "the $platform bundle wrote no record"
@@ -259,7 +185,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: release/*
-          # A hyphen in the tag is a prerelease, which is what all three tags
-          # this repository has are.
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true

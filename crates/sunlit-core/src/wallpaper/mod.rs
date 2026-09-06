@@ -34,15 +34,11 @@ pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
 /// Everything older is referenced by nothing and its full-resolution PNGs are
 /// worth reclaiming.
 ///
-/// Twelve on macOS, which at the default five-minute refresh is an hour, and
-/// the reason is Spaces. A publish paints the active Space of each screen and
-/// there is no API for the others, so a Space that was not active still holds
-/// the path it was handed whenever it was last active. Nothing records which
-/// path that was, so keeping an hour of them is the cheapest way to make
-/// switching to a stale Space show an hour-old Earth rather than a missing
-/// file. The number is provisional: what a Space does when its file has gone is
-/// question 1 of the macOS research document, and the number moves with the
-/// answer.
+/// Twelve on macOS, an hour at the default refresh, because a publish paints
+/// only the active Space of each screen and nothing records what path an
+/// inactive one still holds. An hour of them is the cheapest way to make a
+/// stale Space show an old Earth rather than a missing file. Provisional until
+/// somebody with a Mac says what a Space does when its file has gone.
 #[cfg(not(target_os = "macos"))]
 pub(crate) const GENERATIONS_KEPT: usize = 2;
 #[cfg(target_os = "macos")]
@@ -441,24 +437,21 @@ fn newest_generation_other_than(root: &Path, current: &Path) -> Option<PathBuf> 
 
 /// Remove every generation but the newest `kept` of them.
 ///
-/// `current` is always one of the survivors and `previous` always another,
-/// whatever their modification times say: `previous` is what the desktop is
-/// showing until this publish's setter has run, and it is named rather than
-/// inferred because the process that published it knows which it is and a
-/// coarse filesystem clock may not. The rest of the quota goes to the newest
-/// remaining directories, and everything past it is a layout no screen can
-/// still be holding, so its full-resolution PNGs go at once.
+/// `current` and `previous` always survive, whatever their modification times
+/// say: `previous` is what the desktop shows until this publish's setter has
+/// run, and it is named rather than inferred because a coarse filesystem clock
+/// may not be able to tell. The rest of the quota goes to the newest remaining
+/// directories.
 ///
-/// `kept` is a parameter rather than [`GENERATIONS_KEPT`] read directly so the
-/// depth is one thing to test rather than one thing per platform to compile.
+/// `kept` is a parameter rather than [`GENERATIONS_KEPT`] read directly, so
+/// one test covers every platform's depth.
 fn sweep_generations(root: &Path, current: &Path, previous: Option<&Path>, kept: usize) {
     let mut others: Vec<PathBuf> = generation_dirs(root)
         .into_iter()
         .filter(|dir| dir != current)
         .collect();
-    // Newest first, and a directory with no file in it last: it is either being
-    // written by another process or was left by one that died, and neither is
-    // something to keep in preference to a generation a desktop may hold.
+    // Newest first, and a directory with no file in it last: it is half
+    // written or abandoned, and worth less than a generation a desktop holds.
     others.sort_by_key(|dir| std::cmp::Reverse(generation_recency(dir)));
 
     let mut keep: Vec<PathBuf> = Vec::with_capacity(kept);
@@ -805,19 +798,14 @@ mod tests {
         }
     }
 
-    /// Decision 10: the depth is a parameter, so one test covers every
-    /// platform's answer rather than one test compiling per platform.
-    ///
-    /// What it holds is the shape of the rule: the publish in flight and the
-    /// one the desktop is still showing always survive, the rest of the quota
-    /// goes to the newest directories left, and everything past it is a layout
-    /// no screen can still be holding.
+    /// The shape of the rule at every depth: the publish in flight and the one
+    /// the desktop is still showing always survive, and the rest of the quota
+    /// goes to the newest directories left.
     #[test]
     fn the_sweep_keeps_exactly_the_depth_it_is_given() {
         let scratch = Scratch::new("sweep_depth");
         let root = scratch.dir().to_path_buf();
-        // Uncommitted, so the sweep is the only thing that removes anything and
-        // the test says which call did it.
+        // Uncommitted, so the sweep is the only thing that removes anything.
         let make = || -> PathBuf {
             let mut publication = begin_publication().expect("a generation");
             publication
@@ -855,9 +843,8 @@ mod tests {
             );
         }
 
-        // The previous generation is kept whatever its modification time says,
-        // because it is the one the desktop is showing and the process that
-        // published it is the only thing that knows which it was.
+        // Kept whatever its modification time says: it is the one the
+        // desktop is showing.
         let named: Vec<PathBuf> = (0..3).map(|_| make()).collect();
         sweep_generations(&root, &named[2], Some(&named[0]), 2);
         assert!(named[0].exists(), "the named previous generation was swept");
@@ -889,8 +876,7 @@ mod tests {
         };
 
         // One more than the platform keeps, so exactly one is swept whatever
-        // the depth is: two on Windows and Linux, twelve on macOS, where a
-        // Space that was not active at publish time still holds an older path.
+        // the depth is.
         let generations: Vec<PathBuf> = (0..=GENERATIONS_KEPT).map(|_| publish()).collect();
 
         assert!(

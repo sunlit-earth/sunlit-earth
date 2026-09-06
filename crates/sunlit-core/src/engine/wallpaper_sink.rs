@@ -180,9 +180,8 @@ const DEFAULT_TARGET_SIZE: (u32, u32) = (2560, 1440);
 /// and reports success: the UI shows this string in the status line, and a
 /// wallpaper that silently did not change is worse than one that says so.
 ///
-/// Nothing this tree builds for reaches it now that all three platforms have a
-/// setter, and it stays because the fourth one will: it keeps the platform's
-/// name out of it because what it says is true of any platform that lands here.
+/// No platform this tree builds for reaches it any more. It stays for the
+/// fourth one, and names no platform, because it is true of any that lands here.
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 const UNSUPPORTED: &str = "setting the desktop wallpaper is not supported on this platform yet";
 

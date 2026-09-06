@@ -28,9 +28,8 @@ pub const ICON_NAME: &str = "sunlit-earth";
 /// Where the baked outputs live, relative to the repository root.
 pub const BAKED_DIR: &str = "assets/icon/baked";
 
-/// The macOS icon's file name under [`BAKED_DIR`], which is also its name
-/// inside the bundle: `CFBundleIconFile` in `Info.plist` names it without the
-/// extension, and `Contents/Resources/` is where it goes.
+/// The macOS icon's file name under [`BAKED_DIR`], and its name inside the
+/// bundle, which `CFBundleIconFile` gives without the extension.
 pub const ICNS_FILE: &str = "sunlit-earth.icns";
 
 /// The sizes inside the Windows `.ico`.
@@ -52,15 +51,10 @@ pub const HICOLOR_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 /// The entries inside the macOS `.icns`, as the type each is filed under and
 /// the pixel size that type wants.
 ///
-/// Five logical sizes, each with its 2x pair, which is the set macOS asks a
-/// bundle for: 16 and 32 in the Dock's smallest states and in list views, 128
-/// and 256 in Finder's icon view and in Get Info, 512 in the largest preview.
-/// The 2x entry of one size is the same pixel count as the 1x entry of the
-/// next, and both are present on purpose: macOS picks by density first, so a
-/// missing 2x entry is resampled rather than substituted.
-///
-/// 64 and 1024 appear as pixel sizes here and nowhere else in the bake, because
-/// they are the 2x renders of 32 and 512 rather than sizes of their own.
+/// Five logical sizes, each with its 2x pair. The 2x entry of one size is the
+/// same pixel count as the 1x entry of the next, and both are there because
+/// macOS picks by density first: a missing 2x entry is resampled, not
+/// substituted.
 const ICNS_TYPES: [(icns::IconType, u32); 10] = [
     (icns::IconType::RGBA32_16x16, 16),
     (icns::IconType::RGBA32_16x16_2x, 32),
@@ -149,10 +143,6 @@ pub fn bake(source_dir: &Path) -> Result<Vec<Output>, String> {
         });
     }
 
-    // The macOS bundle's icon, which is one file holding every density the
-    // Dock, Finder and Get Info ask for. Baked here rather than with Apple's
-    // `iconutil` because the `icns` crate is pure Rust, so the file a release
-    // ships is produced on whichever host runs the bake.
     let mut family = icns::IconFamily::new();
     for (icon_type, size) in ICNS_TYPES {
         let image = icns::Image::from_data(
@@ -474,8 +464,7 @@ mod tests {
         }
     }
 
-    /// The `.icns` is one file that has to hold every density macOS asks for,
-    /// and an entry filed under the wrong type is an icon the Dock resamples
+    /// An entry filed under the wrong type is an icon the Dock resamples
     /// rather than one it draws.
     #[test]
     fn the_macos_icon_holds_each_size_at_both_densities() {
@@ -497,9 +486,7 @@ mod tests {
                 "{icon_type:?}"
             );
         }
-        // Every density of one logical size, which is what a 2x entry is for:
-        // 32 px appears as both the 2x of 16 and the 1x of 32, and macOS picks
-        // by density before it picks by size.
+        // 32 px is both the 2x of 16 and the 1x of 32, and both are needed.
         assert!(family.has_icon_with_type(icns::IconType::RGBA32_16x16_2x));
         assert!(family.has_icon_with_type(icns::IconType::RGBA32_32x32));
     }

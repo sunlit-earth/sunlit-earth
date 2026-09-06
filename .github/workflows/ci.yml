@@ -7,12 +7,6 @@ name: CI
 # machine. What is lost is the other two operating systems, so run this before
 # anything that has to hold on all three. Windows minutes bill at 2x and macOS
 # at 10x, which is most of the cost of a full matrix run.
-#
-# The `os` input narrows the run to one runner, which is what makes a macOS
-# check affordable: one job at 10x rather than a matrix of three. The matrix is
-# chosen by the `plan` job below rather than filtered by a job-level `if`,
-# because `matrix` is not a context a job-level `if` can read; `plan` is a few
-# seconds of a 1x runner and it names what it did in its own log.
 on:
   workflow_dispatch:
     inputs:
@@ -40,17 +34,6 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # Which matrix entries this dispatch asked for.
-  #
-  # The three entries live here as one JSON document rather than in the
-  # strategy, because that is the only place an input can reach them. `cache` is
-  # spelled out rather than derived from `os` so the Windows job keeps the key
-  # it had before the matrix and stays warm. `wrap` is `xvfb-run -a` on Linux:
-  # nothing in the suite opens a window today (the Slint UI tests use the
-  # testing backend and the desktop e2e suite is #[ignore]d), and the display is
-  # here so the first windowed test to arrive runs without a CI change.
-  # `xvfb-run -a` does propagate the exit status (verified), so a failing suite
-  # still fails the job.
   plan:
     name: Plan
     runs-on: ubuntu-latest
@@ -79,9 +62,7 @@ jobs:
           echo "include=$include" >> "$GITHUB_OUTPUT"
         shell: bash
 
-  # Formatting is OS-independent, so it runs once rather than per matrix entry,
-  # and it goes with the Linux entry rather than beside every dispatch: a macOS
-  # check has nothing to say about formatting.
+  # Formatting is OS-independent, so it runs once rather than per matrix entry.
   fmt:
     name: Format
     needs: plan
@@ -166,12 +147,6 @@ jobs:
       # the golden suite's adapter key. libtest discards the output of a passing
       # test otherwise, which is how a golden run that compared nothing looked
       # exactly like one that compared everything.
-      #
-      # --no-fail-fast because cargo otherwise stops at the first target that
-      # fails, and the targets after it then say nothing. One failing engine
-      # case has already cost a whole macOS round trip to learn that the golden,
-      # soak and shading targets had never run; on a runner that bills at 10x,
-      # a run that reports every failure it has is worth the extra minutes.
       - name: Test
         run: ${{ matrix.wrap }} cargo test --locked --no-fail-fast -- --show-output
         shell: bash
@@ -182,12 +157,6 @@ jobs:
       # need no window, no Slint backend and no event loop, and running it with
       # no DISPLAY at all is what makes that claim a tested one rather than a
       # comment.
-      #
-      # It runs whatever the suite made of itself, for the same reason the suite
-      # no longer stops at the first failing target: whether this OS can render
-      # is not a question a failing case somewhere else answers, and finding out
-      # should not cost another run. The binary comes from the test step, so a
-      # build that never got that far fails here saying exactly that.
       - name: Render smoke test
         if: ${{ !cancelled() }}
         env:

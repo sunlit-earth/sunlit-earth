@@ -1,23 +1,14 @@
 //! What the displays are on macOS, asked of CoreGraphics.
 //!
-//! CoreGraphics rather than AppKit, and that is the whole design of this file.
-//! `NSScreen` is main-thread-only, and both callers of [`super::monitors`] are
-//! off it: the engine thread publishes a wallpaper, and the `displays`
-//! subcommand runs before any event loop exists. `CGGetActiveDisplayList` and
-//! everything derived from it need no `MainThreadMarker`, so the query is the
-//! same call from anywhere. The one place AppKit is unavoidable is handing a
-//! finished image to the desktop, and [`crate::wallpaper`] hops to the main
-//! thread for exactly that.
+//! CoreGraphics rather than AppKit, and that is the whole design of this file:
+//! `NSScreen` is main-thread-only and both callers of [`super::monitors`] are
+//! off it, while `CGGetActiveDisplayList` and everything derived from it are
+//! the same call from anywhere.
 //!
-//! Two coordinate spaces meet here. `CGDisplayBounds` answers in points with a
-//! top-left origin in the global display space, which is the space winit
-//! reports a window position in, so [`outputs`] hands the points straight
-//! through. [`monitors`] wants physical pixels: a screen's own size is its
-//! current mode's pixel count, which is exact, and where it sits is its point
-//! origin times its own scale, which is exact for one screen and for several at
-//! one scale. A layout that mixes scales puts the span canvas's geometry in the
-//! state Windows already has open on the roadmap, and per-monitor mode is exact
-//! either way.
+//! Two coordinate spaces meet here. `CGDisplayBounds` answers in points, which
+//! [`outputs`] hands straight through because it is the space winit reports a
+//! window position in; [`monitors`] wants pixels. `docs/platforms.md` has what
+//! that conversion is exact for.
 
 use objc2_core_graphics::{
     CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayIsMain, CGDisplayMode,
@@ -28,10 +19,8 @@ use super::{Monitor, Output};
 
 /// How many displays one query asks about.
 ///
-/// macOS supports far fewer than this on any machine that exists, and the call
-/// takes a fixed buffer, so the array is sized once rather than grown: a
-/// session with more displays than this loses the ones past it, which is a
-/// better failure than two calls that can disagree with each other.
+/// The call takes a fixed buffer, and one that is sized once loses a display
+/// past this rather than risking two calls that disagree with each other.
 const MAX_DISPLAYS: usize = 16;
 
 /// One display, as the four CoreGraphics questions answer.
@@ -53,8 +42,8 @@ pub(crate) struct Display {
 
 /// The active displays of this session, or `None` where CoreGraphics refused.
 ///
-/// An empty list is possible and is not a refusal: a login over SSH has no
-/// display, and that is what the wallpaper setter's own check reads.
+/// An empty list is not a refusal: a login over SSH has no display, which is
+/// what the wallpaper setter's own check reads.
 pub(crate) fn active_displays() -> Option<Vec<u32>> {
     let mut ids = [0u32; MAX_DISPLAYS];
     let mut count: u32 = 0;
@@ -103,19 +92,14 @@ pub(crate) fn describe(id: u32) -> Display {
 
 /// The key a wallpaper job addresses this display by.
 ///
-/// The ColorSync UUID, which is the closest macOS has to Windows' device path:
-/// a `CGDirectDisplayID` is reassigned across a reboot and even across a wake
-/// where external screens come back in a different order, and a serial number
-/// collides between two monitors of the same model. `display-<id>` is the
-/// fallback where the UUID cannot be had, and it is the anchor that then does
-/// not survive a reboot; `docs/platforms.md` says so.
+/// The ColorSync UUID, the closest macOS has to Windows' device path, since a
+/// `CGDirectDisplayID` is reassigned across a reboot. `display-<id>` is the
+/// fallback, and it is the anchor that then does not survive one.
 ///
 /// The panic guard is the binding's, not this call's: `objc2-color-sync`
-/// declares the function non-null and asserts on NULL, and Apple documents NULL
-/// for a display id that is no longer valid. The ids here came from
-/// `CGGetActiveDisplayList` microseconds earlier, so that is a race with a
-/// screen being unplugged, and losing it must give this monitor a duller name
-/// rather than take the process down.
+/// asserts on the NULL that Apple documents for a display id that is no longer
+/// valid, which here is a screen unplugged mid-query, and losing that must cost
+/// a name rather than the process.
 pub(crate) fn display_key(id: u32) -> String {
     // SAFETY: `id` came from `CGGetActiveDisplayList`, which is what the
     // function documents as its argument, and the returned UUID is owned by the
@@ -137,9 +121,8 @@ pub(crate) fn display_key(id: u32) -> String {
 
 /// What to call a display in the settings window.
 ///
-/// Numbered the way the Windows labels are, so the two platforms read alike,
-/// and the built-in screen says so because "Display 1" and "Display 2" tell a
-/// laptop user nothing about which is the lid.
+/// Numbered the way the Windows labels are, and the built-in screen says so,
+/// because "Display 1" and "Display 2" do not say which one is the lid.
 fn display_label(display: &Display, index: usize) -> String {
     if display.builtin {
         format!("Display {} (built-in)", index + 1)
@@ -150,10 +133,9 @@ fn display_label(display: &Display, index: usize) -> String {
 
 /// This display's own scale: pixels per point, or 1.0 where it cannot be read.
 ///
-/// Not `NSScreen::backingScaleFactor`, which needs the main thread. A mode that
-/// answered with no pixel size, which is what a display being reconfigured
-/// under the query looks like, leaves the rectangle in points rather than
-/// scaling it by zero.
+/// Not `NSScreen::backingScaleFactor`, which needs the main thread. A display
+/// being reconfigured under the query answers with no mode, and its rectangle
+/// stays in points rather than being scaled by zero.
 fn scale(display: &Display) -> f64 {
     if display.point_width <= 0.0 || display.pixel_width == 0 {
         return 1.0;
@@ -183,12 +165,9 @@ fn to_pixels_u32(points: f64, scale: f64) -> u32 {
 
 /// One display as a [`Monitor`]: its rectangle in physical pixels.
 ///
-/// The extent comes from the mode rather than from the scaled bounds, because
-/// the mode is the pixel count itself and the multiplication is only ever an
-/// arithmetic route to the same number. The origin has no such shortcut: the
-/// global display space is in points, so where a screen sits in pixels is its
-/// point origin times its own scale, which is exact for one screen and for
-/// several at one scale.
+/// The extent is the mode's own pixel count. The origin has no such shortcut:
+/// the global display space is in points, so where a screen sits in pixels is
+/// its point origin times its own scale.
 fn monitor(display: &Display, index: usize) -> Monitor {
     let scale = scale(display);
     let (width, height) = if display.pixel_width > 0 && display.pixel_height > 0 {
@@ -243,8 +222,8 @@ pub(crate) fn monitors() -> Option<Vec<Monitor>> {
 
 /// Every monitor this session has, in points.
 ///
-/// Points because this is what the window-position check reads, and winit
-/// reports a window's position in points on macOS. Nothing else uses it.
+/// Points, because winit reports a window's position in them and the
+/// window-position check is the only reader.
 pub(crate) fn outputs() -> Option<Vec<Output>> {
     let displays = active_displays()?;
     Some(
@@ -261,9 +240,8 @@ pub(crate) fn outputs() -> Option<Vec<Output>> {
 mod tests {
     use super::*;
 
-    /// A 2x laptop screen at the origin, and a 1x external screen to the right
-    /// of it, which is the layout question 4 in the research document asks a
-    /// tester about.
+    /// A 2x laptop screen at the origin and a 1x external screen to the right
+    /// of it, which is the layout no test here can answer for.
     fn retina() -> Display {
         Display {
             id: 1,
@@ -292,9 +270,8 @@ mod tests {
         }
     }
 
-    /// A Retina screen has twice the pixels it has points, and that is what a
-    /// wallpaper is rendered at: a monitor described in points would be painted
-    /// at half resolution on the screen that most needs the other half.
+    /// A wallpaper is rendered at the pixel count, so a monitor described in
+    /// points would be painted at half resolution on a Retina screen.
     #[test]
     fn a_monitor_is_its_display_in_physical_pixels() {
         let laptop = monitor(&retina(), 0);
@@ -302,28 +279,25 @@ mod tests {
         assert_eq!((laptop.x, laptop.y), (0, 0));
         assert!(laptop.primary);
 
-        // And a 1x screen is the same number twice, so the scaling cannot be a
-        // constant somebody has to remember to turn off.
+        // And a 1x screen is the same number twice.
         let beside_it = monitor(&external(), 1);
         assert_eq!((beside_it.width, beside_it.height), (1920, 1080));
         assert_eq!((beside_it.x, beside_it.y), (1512, 0));
         assert!(!beside_it.primary);
     }
 
-    /// The window-position check reads points, because that is the space winit
-    /// reports a window position in.
+    /// The window-position check reads points, which is winit's space.
     #[test]
     fn an_output_is_its_display_in_points() {
         let laptop = output(&retina(), 0);
         assert_eq!((laptop.width, laptop.height), (1512, 982));
         assert_eq!((laptop.x, laptop.y), (0, 0));
-        // Which is exactly what the shared overlap check then answers over.
         assert!(laptop.overlaps(100, 100, 800, 30));
         assert!(!laptop.overlaps(1512, 100, 800, 30));
     }
 
-    /// A display being reconfigured under the query answers with no mode, and
-    /// the rectangle then stays in points rather than collapsing to nothing.
+    /// A display with no mode keeps its rectangle in points rather than
+    /// collapsing to nothing.
     #[test]
     fn a_display_with_no_mode_keeps_its_points_rather_than_scaling_by_zero() {
         let mut display = retina();
@@ -332,16 +306,15 @@ mod tests {
         assert!((scale(&display) - 1.0).abs() < f64::EPSILON);
         let in_points = monitor(&display, 0);
         assert_eq!((in_points.width, in_points.height), (1512, 982));
-        // And a display with no points either is still a monitor with an area,
-        // because a zero-sized render target is not something to hand a GPU.
+        // And one with no points either still has an area, because a
+        // zero-sized render target is not something to hand a GPU.
         display.point_width = 0.0;
         display.point_height = 0.0;
         let empty = monitor(&display, 0);
         assert_eq!((empty.width, empty.height), (1, 1));
     }
 
-    /// The label is the Windows one plus the one thing a laptop user needs: a
-    /// built-in screen says which of two numbers is the lid.
+    /// The label is the Windows one, plus which of the numbers is the lid.
     #[test]
     fn the_labels_are_numbered_and_the_lid_says_so() {
         assert_eq!(display_label(&retina(), 0), "Display 1 (built-in)");
@@ -350,7 +323,7 @@ mod tests {
 
     /// The id is the UUID where there is one and `display-<id>` where there is
     /// not, and never empty: a monitor nothing can address is not one to plan
-    /// around, which is what the shared display test asserts.
+    /// around.
     #[test]
     fn every_display_key_is_something_a_setter_can_address() {
         let Some(displays) = active_displays() else {
@@ -364,8 +337,8 @@ mod tests {
         }
     }
 
-    /// The whole query, where this session has one. It answers or it says it
-    /// cannot, and what it answers is a list of monitors with an area.
+    /// The whole query: it answers with monitors that have an area, or it says
+    /// it cannot ask.
     #[test]
     fn the_session_query_answers_with_monitors_that_have_an_area() {
         let Some(monitors) = monitors() else {

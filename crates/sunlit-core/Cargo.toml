@@ -1,6 +1,4 @@
 [package]
-# Headless half of the application: scene math, assets, GPU pipeline, engine.
-# It must never depend on Slint or on a window existing.
 name = "sunlit-core"
 version.workspace = true
 edition.workspace = true

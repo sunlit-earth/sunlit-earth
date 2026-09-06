@@ -71,10 +71,7 @@ pub(crate) fn fixture(name: &str) -> PathBuf {
 pub(crate) fn tray_supported() -> bool {
     static ANSWER: OnceLock<bool> = OnceLock::new();
     *ANSWER.get_or_init(|| {
-        // macOS has a menu bar in every GUI session and Slint's own AppKit
-        // status item behind `NSStatusBar`, so there is nothing to probe: what
-        // a session without one has is no session at all, which the cases that
-        // need a window fail on first.
+        // macOS has a menu bar in every GUI session, so there is nothing to probe.
         if cfg!(any(target_os = "windows", target_os = "macos")) {
             return true;
         }
@@ -204,10 +201,6 @@ impl ChildGuard {
     }
 
     /// The child's process id.
-    ///
-    /// Only the Windows reboot case asks: it finds the app's session listener
-    /// window by the process that owns it, and that case is `cfg`-gated because
-    /// its body is Win32.
     #[cfg(windows)]
     pub(crate) fn pid(&self) -> u32 {
         self.child.as_ref().expect("child already taken").id()

@@ -13,9 +13,6 @@ use tracing_subscriber::{EnvFilter, Layer, fmt};
 const LOG_FILE_PREFIX: &str = "sunlit-earth";
 
 /// How many days of log files are kept.
-///
-/// A week, which is long enough that a tester who noticed something yesterday
-/// still has it and short enough that nothing accumulates unattended.
 const LOG_FILES_KEPT: usize = 7;
 
 /// How loud each dependency is allowed to be, whatever this app's level is.
@@ -49,13 +46,10 @@ const DEPENDENCY_LEVELS: [&str; 13] = [
 /// to arrive late (or not at all) in e2e tests. The trade-off is that log
 /// writes block the calling thread, which is acceptable in test mode.
 ///
-/// A log file is written too when stderr is not a terminal, which is decision
-/// 14 of the macOS plan and applies on every platform: an `.app` launched from
-/// Finder has no stderr at all, and neither does a Windows binary started from
-/// the shell, so a tester's report would otherwise have nothing in it. It goes
-/// beside the config and the wallpapers under the app data directory, rotates
-/// daily, and keeps a week. A terminal already shows the log, so a run from one
-/// writes no file.
+/// A log file is written too when stderr is not a terminal, which is where a
+/// report would otherwise have nothing in it: an `.app` launched from Finder,
+/// or a Windows binary started from a shortcut. It goes under the app data
+/// directory, rotates daily and keeps a week.
 ///
 /// Returns the `WorkerGuard`s that must be kept alive for the duration of the
 /// program so that buffered log lines are flushed before exit. In sync mode no
@@ -82,8 +76,6 @@ pub(crate) fn init_logging(cli_level: Option<&str>) -> Vec<WorkerGuard> {
                 Some(
                     fmt::layer()
                         .with_writer(non_blocking)
-                        // No colour: this one is read in a text editor, and the
-                        // escape sequences a terminal swallows are noise there.
                         .with_ansi(false)
                         .with_target(true)
                         .with_thread_ids(true)
@@ -128,11 +120,9 @@ pub(crate) fn init_logging(cli_level: Option<&str>) -> Vec<WorkerGuard> {
 
 /// The rolling file appender, and the directory it writes into.
 ///
-/// `None` where stderr is a terminal, which is a developer or a tester in
-/// Terminal who is already reading the log, and `None` where the appender
-/// cannot be built, which is a system with no data directory or one that will
-/// not create it. Never a failure: logging that refuses to start because it
-/// could not open a file is worse than logging to one place.
+/// `None` where stderr is a terminal, and `None` where the appender cannot be
+/// built. Never a failure: logging that refuses to start because it could not
+/// open a file is worse than logging to one place.
 fn file_writer() -> Option<(
     tracing_appender::rolling::RollingFileAppender,
     std::path::PathBuf,

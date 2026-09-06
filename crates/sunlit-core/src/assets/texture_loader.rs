@@ -147,15 +147,9 @@ pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
 
 /// The textures directory an executable at this path can reach, or `None`.
 ///
-/// Two candidates per ancestor. `textures/` is the release bundle's own layout
-/// and the one a checkout answers with from `target/debug/`. `Resources/textures`
-/// is the macOS bundle: the binary sits at `Contents/MacOS/sunlit-earth`, so the
-/// first ancestor that has a `Resources/` beside it is `Contents/`, and nothing
-/// on the other two platforms puts a `Resources` directory on this walk.
-///
-/// Split out of [`resolve_textures_dir`] so it can be tested against a
-/// fabricated layout: the rest of that function reads the process environment,
-/// and the executable's own path is not something a test can choose.
+/// Two candidates per ancestor: `textures/`, which every bundle but the macOS
+/// one has, and `Resources/textures`, which is the `.app`'s, reached from
+/// `Contents/MacOS/sunlit-earth` at the `Contents/` ancestor.
 pub fn textures_near(exe: &Path) -> Option<PathBuf> {
     let mut dir = exe.to_path_buf();
     while dir.pop() {
@@ -352,9 +346,8 @@ mod tests {
         }
     }
 
-    /// The macOS bundle layout: the binary is at `Contents/MacOS/` and the
-    /// textures are at `Contents/Resources/textures`, which the plain
-    /// `textures/` candidate never reaches on the way up.
+    /// The `.app`'s `Contents/Resources/textures`, which the plain candidate
+    /// never reaches on the way up, and the sibling layout beside it.
     #[test]
     fn the_walk_up_finds_an_app_bundles_resources_and_a_plain_layout_alike() {
         let scratch = crate::test_support::ScratchDir::new("texture_loader_layouts");
@@ -367,8 +360,6 @@ mod tests {
             Some(app.join("Contents/Resources/textures"))
         );
 
-        // The other two platforms' bundles, and a checkout's target directory,
-        // are the sibling case, and the nearer ancestor still wins.
         let plain = scratch.join("sunlit-earth-0.1.0-linux");
         std::fs::create_dir_all(plain.join("textures")).expect("the textures");
         assert_eq!(
@@ -376,8 +367,7 @@ mod tests {
             Some(plain.join("textures"))
         );
 
-        // Where an ancestor has both, the plain one answers: it is the layout
-        // every bundle but the macOS one is assembled in.
+        // Where an ancestor has both, the plain one answers.
         let both = scratch.join("both");
         std::fs::create_dir_all(both.join("textures")).expect("the textures");
         std::fs::create_dir_all(both.join("Resources/textures")).expect("the resources");

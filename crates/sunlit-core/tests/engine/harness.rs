@@ -1,3 +1,5 @@
+//! The GPU lock, the shared engine handle and the waits every case is written against.
+
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;

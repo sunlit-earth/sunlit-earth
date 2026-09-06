@@ -1,3 +1,5 @@
+//! The Milky Way.
+
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -10,10 +12,6 @@ use crate::harness::{Gpu, Harness, TIMEOUT, gpu};
 use crate::moon::{camera_for, sky_for};
 use crate::support;
 use crate::textures::real_asset;
-
-// ---------------------------------------------------------------------------
-// The Milky Way
-// ---------------------------------------------------------------------------
 
 /// A camera that shows `eqj` in the sky, as far as it can be from both the
 /// frame's edges and the painted globe, chosen by maximizing the smaller of

@@ -1,3 +1,5 @@
+//! The shared engines, one per configuration a group of cases needs.
+
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -14,10 +16,6 @@ use crate::sinks::{RecordingSink, two_screens};
 use crate::support;
 use crate::test_support::ScratchDir;
 use crate::textures::blend_params;
-
-// ---------------------------------------------------------------------------
-// The shared engines
-// ---------------------------------------------------------------------------
 
 /// The size the preview quantizes to for every group here, and the size the
 /// cases that read pixels export at.

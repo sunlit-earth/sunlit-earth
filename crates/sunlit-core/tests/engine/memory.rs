@@ -1,10 +1,8 @@
+//! The memory report.
+
 use crate::groups::{FRAME, SURFACE_WIDTH, plain, surface};
 use crate::harness::{gpu, test_params};
 use crate::textures::{blend_params, mib};
-
-// ---------------------------------------------------------------------------
-// The memory report
-// ---------------------------------------------------------------------------
 
 /// The width of every texture the report says the renderer owns under `label`.
 pub(crate) fn expected_widths(

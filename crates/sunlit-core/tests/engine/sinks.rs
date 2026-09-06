@@ -1,3 +1,5 @@
+//! The wallpaper sinks the cases publish into, and what they record.
+
 use std::sync::Arc;
 use std::sync::Mutex;
 

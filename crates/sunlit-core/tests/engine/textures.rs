@@ -1,3 +1,5 @@
+//! Switching the texture resolution, and what the mailbox does about it.
+
 use std::path::Path;
 use std::time::Duration;
 

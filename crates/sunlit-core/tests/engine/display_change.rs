@@ -1,3 +1,5 @@
+//! Reacting to a display layout that changed.
+
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -8,10 +10,6 @@ use sunlit_core::engine::DISPLAY_SETTLE;
 use crate::groups::{Watching, plain, watching};
 use crate::harness::gpu;
 use crate::sinks::{RecordingSink, screen};
-
-// ---------------------------------------------------------------------------
-// Reacting to a display layout that changed
-// ---------------------------------------------------------------------------
 
 /// How long a case waits for something it expects to happen.
 pub(crate) const CHANGE_TIMEOUT: Duration = Duration::from_secs(20);

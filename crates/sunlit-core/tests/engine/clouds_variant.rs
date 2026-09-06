@@ -1,3 +1,5 @@
+//! The cloud variant follows the texture resolution.
+
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -9,10 +11,6 @@ use crate::display_change::{CHANGE_TIMEOUT, NOTHING_HAPPENS_IN};
 use crate::groups::FIXTURES;
 use crate::harness::{Gpu, Harness, TIMEOUT, gpu};
 use crate::textures::mib;
-
-// ---------------------------------------------------------------------------
-// The cloud variant follows the texture resolution
-// ---------------------------------------------------------------------------
 
 /// The variant width in a cloud URL, from the one path segment shaped `WxH`.
 fn variant_width_of(url: &str) -> Option<u32> {

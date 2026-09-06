@@ -1,3 +1,5 @@
+//! Frames, the preview switch, and rendering to a file.
+
 use std::time::Duration;
 
 use sunlit_core::display::layout::DisplayMode;

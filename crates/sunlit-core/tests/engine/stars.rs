@@ -1,3 +1,5 @@
+//! The star catalog.
+
 use crate::groups::{FRAME, plain};
 use crate::harness::{gpu, test_params};
 

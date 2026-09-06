@@ -1,3 +1,5 @@
+//! What each display mode publishes, and to which screen.
+
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -1,13 +1,11 @@
+//! Clouds on the night side.
+
 use sunlit_core::params::SceneParams;
 
 use crate::clouds_variant::wait_for_cloud_size;
 use crate::groups::surface;
 use crate::harness::gpu;
 use crate::support;
-
-// ---------------------------------------------------------------------------
-// Clouds on the night side
-// ---------------------------------------------------------------------------
 
 /// The size the cloud cases export at. Small on purpose: what they measure is
 /// the mean of one window, not a picture.

@@ -1,3 +1,5 @@
+//! The Sun, its glare and the sunrise band.
+
 use sunlit_core::params::SceneParams;
 
 use crate::groups::{FRAME, plain};

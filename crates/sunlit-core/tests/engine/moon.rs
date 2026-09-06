@@ -1,13 +1,11 @@
+//! The Moon.
+
 use sunlit_core::params::SceneParams;
 
 use crate::groups::{FRAME, plain, sky};
 use crate::harness::{gpu, test_params};
 use crate::memory::expected_widths;
 use crate::support;
-
-// ---------------------------------------------------------------------------
-// The Moon
-// ---------------------------------------------------------------------------
 
 /// A framing with the Moon in it, and nothing else that emits light.
 ///

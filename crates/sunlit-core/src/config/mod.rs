@@ -113,22 +113,37 @@ pub(crate) fn resolve_texture_resolution(requested: u32) -> u32 {
     DEFAULT_TEXTURE_RESOLUTION
 }
 
+/// A position in one of the offered lists as the `i32` a Slint combo box index
+/// is. Every such list is a handful of entries long.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    reason = "the one place a list position becomes a combo box index"
+)]
+fn slint_index(position: usize) -> i32 {
+    position as i32
+}
+
 /// The combo box index for `width`, falling back to the default's index.
-#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub fn find_texture_resolution_index(width: u32) -> i32 {
-    TEXTURE_RESOLUTIONS
-        .iter()
-        .position(|&w| w == width)
-        .or_else(|| {
-            TEXTURE_RESOLUTIONS
-                .iter()
-                .position(|&w| w == DEFAULT_TEXTURE_RESOLUTION)
-        })
-        .unwrap_or(0) as i32
+    slint_index(
+        TEXTURE_RESOLUTIONS
+            .iter()
+            .position(|&w| w == width)
+            .or_else(|| {
+                TEXTURE_RESOLUTIONS
+                    .iter()
+                    .position(|&w| w == DEFAULT_TEXTURE_RESOLUTION)
+            })
+            .unwrap_or(0),
+    )
 }
 
 /// The texture width a combo box index selects, falling back to the default.
-#[allow(clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the negative half of the range returns above"
+)]
 pub fn texture_resolution_at(index: i32) -> u32 {
     if index < 0 {
         return DEFAULT_TEXTURE_RESOLUTION;
@@ -159,7 +174,10 @@ struct SunlitSection {
 /// every setting a newer one added.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the settings a window persists, not a parameter list"
+)]
 pub struct AppConfig {
     // Camera position
     pub longitude: f32,
@@ -552,12 +570,13 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
 /// to the last index (highest available count).
 ///
 /// Returns the index as `i32` for direct use with Slint's `set_aa_index()`.
-#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub fn find_sample_count_index(aa_counts: &[u32], desired: u32) -> i32 {
-    aa_counts
-        .iter()
-        .position(|&c| c == desired)
-        .unwrap_or(aa_counts.len().saturating_sub(1)) as i32
+    slint_index(
+        aa_counts
+            .iter()
+            .position(|&c| c == desired)
+            .unwrap_or(aa_counts.len().saturating_sub(1)),
+    )
 }
 
 #[cfg(test)]

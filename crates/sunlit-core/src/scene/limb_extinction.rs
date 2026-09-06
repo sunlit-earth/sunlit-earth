@@ -144,7 +144,10 @@ mod tests {
             "a ray that grazes the surface is red, got {previous}"
         );
         for step in 1..=48 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the loop counter is forty-eight"
+            )]
             let hue = limb_hue(step as f32 * 2.0, 1.0);
             assert!(
                 hue.y >= previous.y && hue.z >= previous.z,

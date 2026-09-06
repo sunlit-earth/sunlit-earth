@@ -258,6 +258,29 @@ pub struct Framing {
 pub(crate) const SKY_FOV_MIN: f32 = 60.0;
 pub(crate) const SKY_FOV_MAX: f32 = 330.0;
 
+/// A pixel extent as a float.
+///
+/// Every extent in this module is a `u32` of pixels and every scale it takes
+/// part in is an `f32`, so the narrowing happens here rather than once per
+/// formula. Exact below 2^24, which is eight times the widest screen made.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the one place a pixel extent becomes a float"
+)]
+fn px(pixels: u32) -> f32 {
+    pixels as f32
+}
+
+/// A pixel coordinate as a float, the same narrowing on the signed half of a
+/// `Rect`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the one place a pixel coordinate becomes a float"
+)]
+fn px_at(coordinate: i32) -> f32 {
+    coordinate as f32
+}
+
 /// The Earth lens for one screen's own aspect ratio.
 ///
 /// The vertical field of view is the setting, so a wider screen sees more to the
@@ -268,13 +291,12 @@ pub(crate) const SKY_FOV_MAX: f32 = 330.0;
 ///
 /// Only the Earth lens: the sky lens is anchored to the horizontal axis, where a
 /// portrait screen is the case that already fits.
-#[allow(clippy::cast_precision_loss)]
 pub fn contain_camera_fov(camera_fov: f32, width: u32, height: u32) -> f32 {
     if width == 0 || height == 0 || width >= height {
         return camera_fov;
     }
     let half = (camera_fov.to_radians() * 0.5).tan();
-    let contained = half * height as f32 / width as f32;
+    let contained = half * px(height) / px(width);
     (contained.atan() * 2.0).to_degrees()
 }
 
@@ -309,7 +331,6 @@ pub struct CanvasFraming {
 ///
 /// The base is the anchor's *own* framing, contain rule included, so that what
 /// the crop reproduces is the image that screen gets in every other mode.
-#[allow(clippy::cast_precision_loss)]
 pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFraming {
     let base = screen_framing(settings, anchor.width, anchor.height);
     if anchor.is_empty() || canvas.is_empty() {
@@ -318,8 +339,8 @@ pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFr
             sky_clamped: false,
         };
     }
-    let (canvas_width, canvas_height) = (canvas.width as f32, canvas.height as f32);
-    let (anchor_width, anchor_height) = (anchor.width as f32, anchor.height as f32);
+    let (canvas_width, canvas_height) = (px(canvas.width), px(canvas.height));
+    let (anchor_width, anchor_height) = (px(anchor.width), px(anchor.height));
 
     let camera_scale = canvas_height / anchor_height;
     let camera_fov = ((base.camera_fov.to_radians() * 0.5).tan() * camera_scale)
@@ -336,8 +357,8 @@ pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFr
     // The anchor's center in canvas pixels, then in canvas NDC, which is where
     // the principal point has to move to.
     let local = anchor.relative_to(&canvas);
-    let center_x = local.x as f32 + anchor_width * 0.5;
-    let center_y = local.y as f32 + anchor_height * 0.5;
+    let center_x = px_at(local.x) + anchor_width * 0.5;
+    let center_y = px_at(local.y) + anchor_height * 0.5;
     let ndc_x = 2.0 * center_x / canvas_width - 1.0;
     let ndc_y = 1.0 - 2.0 * center_y / canvas_height;
 
@@ -450,7 +471,10 @@ pub fn crop(pixels: &[u8], canvas_width: u32, canvas_height: u32, rect: Rect) ->
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the fabricated screen sizes in these tests are small integers"
+)]
 mod tests {
     use approx::assert_relative_eq;
 
@@ -754,7 +778,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a screen count a ceil already made whole"
+    )]
     fn a_canvas_wider_than_the_sky_reaches_says_the_sky_was_clamped() {
         // One screen beyond the reach, which at the default sky is a wall of
         // twelve. Nobody has this layout; what the case is for is that the

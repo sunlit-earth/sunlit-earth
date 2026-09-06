@@ -14,7 +14,10 @@ const LAND_GREEN: [u8; 3] = [80, 170, 110];
 const GRID_WHITE: [u8; 3] = [204, 204, 204];
 const MAJOR_YELLOW: [u8; 3] = [255, 230, 77];
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a texture axis is far inside the f32 mantissa"
+)]
 pub(crate) fn generate(width: u32, height: u32) -> Vec<u8> {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
 
@@ -66,7 +69,11 @@ fn lerp_color(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     ]
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "an interpolation between two bytes stays between them"
+)]
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (f32::from(a) + (f32::from(b) - f32::from(a)) * t) as u8
 }

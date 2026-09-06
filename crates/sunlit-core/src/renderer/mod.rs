@@ -495,7 +495,6 @@ impl Renderer {
     /// so `params` may differ from it only in what `write_uniforms` reads. That
     /// is what the wallpaper path changes: the fields of view and the pan, all
     /// of which are derived per screen.
-    #[allow(clippy::cast_precision_loss)]
     pub(crate) fn export_image_with(
         &self,
         params: &SceneParams,
@@ -556,7 +555,11 @@ impl Renderer {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the clamp and the scale put a magnitude in a byte before the rounding"
+)]
 fn planet_instance_bytes(sky: &SkyState) -> [u8; 5 * crate::assets::stars::RECORD_SIZE] {
     let mut bytes = [0; 5 * crate::assets::stars::RECORD_SIZE];
     let eqj_from_world = sky.world_from_eqj.transpose();

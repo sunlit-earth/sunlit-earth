@@ -132,7 +132,10 @@ struct Diagram {
 /// answers, and the tile it names is drawn highlighted. A label is the monitor's
 /// own position counted from one, so the diagram and the screen combo above it
 /// name the same screen the same way.
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a desktop bounding box in pixels is far inside the f32 mantissa"
+)]
 fn diagram(monitors: &[Monitor], anchor: Option<usize>) -> Diagram {
     let Some(bounds) = bounds_of(monitors) else {
         return Diagram {

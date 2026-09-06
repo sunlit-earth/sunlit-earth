@@ -228,7 +228,11 @@ fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
 /// The hue is weighted by what of the disk is drawn: a part of it the band has
 /// already taken to nothing contributes no light to a glare made of the light
 /// that reached the eye.
-#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    reason = "one parameter per term of the integral, and a sample count far inside the f32 mantissa"
+)]
 fn integrate_disk(
     center_distance: f32,
     disk_radius: f32,
@@ -487,7 +491,10 @@ mod tests {
     /// it, and both have to be exact: the goldens with a Sun well above the
     /// limb come back byte for byte only if nothing here rounds.
     #[test]
-    #[allow(clippy::float_cmp)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a disk clear of the band has to be exactly one, which is what the goldens rest on"
+    )]
     fn a_disk_clear_of_the_band_carries_all_of_its_light() {
         let (tint, transmission) = integrate_disk(400.0, 4.0, 100.0, 100.0, 8.0, 95.565, 1.0, 1.0);
         assert_eq!(transmission, 1.0);
@@ -532,7 +539,10 @@ mod tests {
     // --- refraction ---
 
     #[test]
-    #[allow(clippy::float_cmp)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "no refraction has to leave the disk exactly where it is"
+    )]
     fn no_refraction_leaves_the_disk_exactly_where_it_is() {
         for height in [-9.0, -0.46, 0.0, 0.3, 7.0] {
             let (apparent, squash) = refract(height, 0.0);
@@ -557,7 +567,7 @@ mod tests {
     #[test]
     fn the_newton_solve_inverts_the_map_it_is_solving() {
         for step in 0..60 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss, reason = "the loop counter is sixty")]
             let apparent = step as f32 * 0.05;
             let geometric = apparent - 0.46 * (-REFRACTION_EXPONENT * apparent).exp();
             let (solved, _) = refract(geometric, 1.0);
@@ -569,7 +579,7 @@ mod tests {
     fn the_lift_is_monotonic_and_never_more_than_the_whole_atmosphere() {
         let mut previous = f32::NEG_INFINITY;
         for step in -40..60 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss, reason = "the loop counter is a hundred")]
             let geometric = step as f32 * 0.05;
             let (apparent, squash) = refract(geometric, 1.0);
             assert!(
@@ -627,9 +637,7 @@ mod tests {
                 let mut clear = 0_u32;
                 for row in 0..steps {
                     for column in 0..steps {
-                        #[allow(clippy::cast_precision_loss)]
                         let u = (f32::from(row) + 0.5) / f32::from(steps) * 2.0 - 1.0;
-                        #[allow(clippy::cast_precision_loss)]
                         let v = (f32::from(column) + 0.5) / f32::from(steps) * 2.0 - 1.0;
                         if u * u + v * v > 1.0 {
                             continue;
@@ -692,7 +700,7 @@ mod tests {
         let limb = (1.0_f32 / 80.0).asin();
         let mut worst = 0.0_f32;
         for step in 0..=40 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss, reason = "the loop counter is forty")]
             let separation = limb * 2.0 * step as f32 / 40.0;
             // The eye sits on +Z looking at the origin, so a direction tilted
             // out of the view axis by `separation` is a rotation about X.
@@ -800,7 +808,7 @@ mod tests {
         };
         let mut seen_partial = false;
         for step in 0..=40 {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss, reason = "the loop counter is forty")]
             let tilt = (step as f32 / 40.0) * 40.0_f32.to_radians();
             let centered = fraction(tilt, false);
             let panned = fraction(tilt, true);

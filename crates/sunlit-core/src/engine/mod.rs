@@ -73,7 +73,10 @@ pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 ///
 /// The bools are independent latches on a private struct rather than
 /// parameters anyone passes, which is the confusion the lint is about.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent latches on a private struct, which is not the confusion the lint is about"
+)]
 struct Engine {
     rx: Receiver<EngineCommand>,
     clock: Arc<dyn Clock>,
@@ -771,7 +774,6 @@ mod tests {
     #[test]
     fn preview_size_cap_preserves_the_aspect_ratio() {
         let (w, h) = preview_target_size((2560, 1440), QualityTier::Low);
-        #[allow(clippy::cast_precision_loss)]
         let ratio = f64::from(w) / f64::from(h);
         assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
     }

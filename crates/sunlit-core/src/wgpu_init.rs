@@ -29,7 +29,10 @@ pub fn instance() -> &'static wgpu::Instance {
     INSTANCE.get_or_init(|| {
         // The one call site. `clippy.toml` disallows the method everywhere so
         // that a second one has to be written on purpose.
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the one call site the rule exists to protect"
+        )]
         wgpu::Instance::new(&wgpu::InstanceDescriptor::default())
     })
 }

@@ -349,7 +349,7 @@ mod tests {
     fn write_source(path: &Path, width: u32, height: u32, seed: u8) {
         let mut img = image::RgbaImage::new(width, height);
         for (x, y, px) in img.enumerate_pixels_mut() {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation, reason = "the modulo leaves a byte")]
             let v = ((x * 7 + y * 13) % 256) as u8;
             *px = image::Rgba([v, seed, 255 - v, 255]);
         }

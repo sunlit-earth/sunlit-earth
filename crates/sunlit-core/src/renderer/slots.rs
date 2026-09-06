@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn every_mode_has_a_label() {
         for (index, mode) in MODES {
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_sign_loss, reason = "the table's own indices")]
             let expected = TEXTURE_LABELS[index as usize];
             assert_eq!(mode.label(), expected, "index {index}");
         }

@@ -247,8 +247,9 @@ fn register_auto_refresh_callback(
 
 /// Tell the engine what the auto-refresh controls now say.
 fn send_auto_refresh(engine: &EngineLink, window: &MainWindow) {
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let interval_minutes = u64::from(window.get_auto_refresh_interval().max(1.0) as u32);
+    let interval_minutes = u64::from(ui_callbacks::slider_u32(
+        window.get_auto_refresh_interval().max(1.0),
+    ));
     engine.send(EngineCommand::SetAutoRefresh {
         enabled: window.get_auto_refresh_enabled(),
         interval: Duration::from_mins(interval_minutes),
@@ -270,12 +271,11 @@ fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer 
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let size = {
             let scale = win.window().scale_factor();
             (
-                (win.get_viewport_width() * scale) as u32,
-                (win.get_viewport_height() * scale) as u32,
+                ui_callbacks::slider_u32(win.get_viewport_width() * scale),
+                ui_callbacks::slider_u32(win.get_viewport_height() * scale),
             )
         };
         if size != last.get() && size.0 > 0 && size.1 > 0 {
@@ -295,7 +295,10 @@ fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer 
 /// `instance_guard` holds the single-instance mutex in tray mode; it is
 /// acquired in `main` so a second instance can exit before creating a window
 /// or a GPU device.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "run_app owns the run: the single-instance guard is dropped when it returns"
+)]
 fn run_app(
     cli: Cli,
     config: &AppConfig,

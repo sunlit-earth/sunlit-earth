@@ -71,7 +71,11 @@ pub(crate) fn ensure_dpi_awareness() {
 /// survives a reboot, and `szDevice` does not. Off Windows the same question is
 /// answered by [`crate::display`], which parses `xrandr --query`: there is no
 /// API in this crate to ask, so it asks a program.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "a monitor rectangle arrives in Win32's signed pixels and a Monitor holds unsigned extents"
+)]
 pub(crate) fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
     use std::ptr;
 

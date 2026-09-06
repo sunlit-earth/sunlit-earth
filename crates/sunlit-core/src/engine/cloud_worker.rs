@@ -65,7 +65,10 @@ impl CloudWorker {
 ///
 /// It never touches the GPU: it parks decoded frames in the mailbox and pokes
 /// the engine, which uploads them on its own schedule.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the worker's whole configuration, handed over once at spawn"
+)]
 pub(super) fn spawn_cloud_worker(
     source: Arc<dyn CloudSource>,
     mailbox: TextureMailbox,

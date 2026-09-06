@@ -10,7 +10,10 @@ use super::MemorySnapshot;
 /// other platform, and on the three supported ones only if the OS refuses to
 /// answer.
 #[cfg(windows)]
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the counters struct is a few dozen bytes, which is what its cb field carries"
+)]
 pub fn snapshot() -> Option<MemorySnapshot> {
     use windows_sys::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,

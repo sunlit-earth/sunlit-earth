@@ -40,7 +40,11 @@ pub struct SphereMesh {
 
 /// Generate a UV sphere with the given number of stacks (horizontal rings)
 /// and sectors (vertical slices).
-#[allow(clippy::many_single_char_names, clippy::cast_precision_loss)]
+#[expect(
+    clippy::many_single_char_names,
+    clippy::cast_precision_loss,
+    reason = "i, j, u and v are the mesh's own names, and a ring count is far inside the f32 mantissa"
+)]
 pub fn generate_uv_sphere(stacks: u32, sectors: u32) -> SphereMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();

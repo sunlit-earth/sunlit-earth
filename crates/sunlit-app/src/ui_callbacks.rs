@@ -13,6 +13,37 @@ use sunlit_core::scene::camera::{CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
 use sunlit_core::scene::sun::DateTimeInput;
 
+/// A Slint index as a position in the list it selects from.
+///
+/// A negative index is one no list has, which is what `get` already answers
+/// `None` to, so the conversion needs no separate guard.
+pub(crate) fn slider_index(value: i32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+/// A slider's float as the whole number a setting stores.
+///
+/// Rust's float-to-integer casts saturate, so a value outside the range lands
+/// on an end of it rather than wrapping.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the one place a slider value becomes a count"
+)]
+pub(crate) fn slider_u32(value: f32) -> u32 {
+    value as u32
+}
+
+/// The same for the one setting that is stored narrower, the day of the year.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the one place a slider value becomes a day of the year"
+)]
+pub(crate) fn slider_u16(value: f32) -> u16 {
+    value as u16
+}
+
 /// Register the left-drag: rotate the globe, tilt-corrected, at a gain that
 /// follows the hand.
 ///
@@ -126,12 +157,11 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
 
     let window_weak = window.as_weak();
     let engine = link.clone();
-    #[allow(clippy::cast_sign_loss)]
     window.on_apply_preset(move |index| {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let Some(preset) = PRESETS.get(index as usize) else {
+        let Some(preset) = PRESETS.get(slider_index(index)) else {
             return;
         };
         win.set_camera_longitude(preset.longitude);
@@ -400,7 +430,10 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     apply_params_to_window(window, &SceneParams::from_config(config));
 
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
-    #[allow(clippy::cast_precision_loss)] // interval_minutes fits in f32 mantissa
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an interval in minutes is far inside the f32 mantissa"
+    )]
     window.set_auto_refresh_interval(config.auto_refresh_interval_minutes as f32);
 
     update_datetime_labels(window, datetime::base_year());
@@ -482,9 +515,8 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
 /// This is one of the two translation points for `SceneParams` (the other is
 /// the uniform encoder in the renderer). `aa_counts` maps the AA combo box
 /// index to an MSAA sample count.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneParams {
-    let aa_index = window.get_aa_index().max(0) as usize;
+    let aa_index = slider_index(window.get_aa_index().max(0));
     SceneParams {
         camera: CameraParams {
             longitude: window.get_camera_longitude(),
@@ -556,12 +588,11 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// This is the thin UI-reading layer; the engine turns the result into a
 /// `scene::sky::SkyState` once per frame, which is where the sun direction,
 /// the sky rotation and the planets all come from.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
     DateTimeInput {
         use_custom: window.get_use_custom_datetime(),
         custom_hour: window.get_custom_hour(),
-        custom_day_of_year: window.get_custom_day_of_year() as u16,
+        custom_day_of_year: slider_u16(window.get_custom_day_of_year()),
         custom_year: window.get_custom_year_index() + datetime::base_year(),
     }
 }
@@ -580,7 +611,6 @@ fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
 /// Reading from disk also means a `--quality` override is not persisted, which
 /// is the intended behavior for a per-run flag. `--texture-resolution` does
 /// have a widget, so keeping it out of the file takes the flag `link` carries.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window(window: &MainWindow, link: &EngineLink) -> AppConfig {
     read_config_from_window_onto(
         window,
@@ -595,7 +625,6 @@ pub fn read_config_from_window(window: &MainWindow, link: &EngineLink) -> AppCon
 ///
 /// `keep_stored_resolution` is the one exception to reading the window: with it
 /// set, the width in the window is a one-run override and the stored one wins.
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub fn read_config_from_window_onto(
     window: &MainWindow,
     aa_counts: &[u32],
@@ -613,7 +642,7 @@ pub fn read_config_from_window_onto(
 
     let mut config = AppConfig {
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
-        auto_refresh_interval_minutes: window.get_auto_refresh_interval() as u32,
+        auto_refresh_interval_minutes: slider_u32(window.get_auto_refresh_interval()),
         texture_resolution,
         display_mode: displays::mode_from_window(window),
         anchor_monitor: displays::anchor_to_store(window, &stored.anchor_monitor),
@@ -629,7 +658,6 @@ pub fn read_config_from_window_onto(
 
 /// Update the hour label, day label, and max-day-of-year on the window
 /// based on the current datetime slider values.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn update_datetime_labels(window: &MainWindow, base_year: i32) {
     let h = window.get_custom_hour();
     window.set_hour_label(datetime::hour_label(h).into());
@@ -644,7 +672,7 @@ fn update_datetime_labels(window: &MainWindow, base_year: i32) {
         window.set_custom_day_of_year(f32::from(max_doy));
     }
 
-    let doy = window.get_custom_day_of_year() as u16;
+    let doy = slider_u16(window.get_custom_day_of_year());
     let doy = doy.max(1);
     window.set_day_label(datetime::month_day_label(doy, year).into());
 }

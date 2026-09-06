@@ -97,7 +97,10 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 /// Used for both mip generation in the renderer and the on-disk downscales the
 /// texture cache writes, which is why it lives with the pixel handling rather
 /// than with either caller.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the mean of four bytes is a byte, and a pixel count indexes a buffer that already holds those pixels"
+)]
 pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
     let dst_w = (src_w / 2).max(1) as usize;
     let dst_h = (src_h / 2).max(1) as usize;
@@ -169,7 +172,10 @@ mod tests {
     /// and a row of one colour comes back unchanged because a rotation moves
     /// pixels without altering them.
     #[test]
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the fixture's channels are small by construction"
+    )]
     fn a_row_rotates_right_by_three_quarters_of_its_width() {
         for width in [4usize, 8, 12] {
             let px: Vec<[u8; 4]> = (0..width)
@@ -229,7 +235,6 @@ mod tests {
     /// The flip replaced `DynamicImage::fliph`, which is what every golden
     /// reference was generated with, so it has to mean exactly the same thing.
     #[test]
-    #[allow(clippy::cast_possible_truncation)]
     fn flip_matches_the_image_crates_own() {
         for (w, h) in [(1u32, 1u32), (2, 3), (5, 4), (8, 8), (7, 1)] {
             let pixels: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
@@ -291,7 +296,7 @@ mod tests {
     ///
     /// Derived from the dimensions rather than generated beside them, so no
     /// case is thrown away for having the wrong length.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation, reason = "the modulo leaves a byte")]
     fn fixture(width: u32, height: u32, seed: u8) -> Vec<u8> {
         (0..width as usize * height as usize * 4)
             .map(|i| (i.wrapping_mul(31).wrapping_add(seed as usize) % 251) as u8)

@@ -63,7 +63,11 @@ impl<'a> RenderTarget<'a> {
 /// placement is what decides whether there is a silhouette to draw at all, so
 /// this is also the one place that can narrow the selection: a Moon with no
 /// disc is returned as `None` and never reaches the pass.
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "a viewport extent is far inside the f32 mantissa, and the length is one uniform per line"
+)]
 #[must_use]
 pub(super) fn write_uniforms<'a>(
     queue: &wgpu::Queue,
@@ -225,7 +229,10 @@ pub(super) fn write_uniforms<'a>(
 /// forms in the observer rather than in the scene. The shell overlays reuse
 /// the already-bound vertex and index buffers from the Earth draw, and the two
 /// sun quads bind nothing at all.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per draw the pass can make"
+)]
 pub(super) fn encode_and_submit(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -386,7 +393,6 @@ pub(super) fn draw_scene(
 }
 
 /// Encode and submit the preview render pass into the renderer's own texture.
-#[allow(clippy::cast_precision_loss)]
 #[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
 pub(super) fn execute_render_pass(
     res: &Renderer,
@@ -596,7 +602,6 @@ impl<'a> Overlays<'a> {
 /// driver update or a reset takes it out from under a running process. This is
 /// the wallpaper export and the preview readback, so it fails one frame rather
 /// than the engine thread.
-#[allow(clippy::cast_possible_truncation)]
 pub fn read_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

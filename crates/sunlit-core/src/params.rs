@@ -32,7 +32,6 @@ const GAMMA_MAX: f32 = 3.0;
 /// resolution and sky state (both derived: resolution from the target, sky
 /// state from the clock plus `datetime`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct SceneParams {
     pub camera: CameraParams,
 
@@ -191,7 +190,11 @@ impl SceneParams {
             datetime: DateTimeInput {
                 use_custom: config.use_custom_datetime,
                 custom_hour: config.custom_hour,
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a day of the year, which the window and the file both keep inside one"
+                )]
                 custom_day_of_year: config.custom_day_of_year as u16,
                 custom_year: config.custom_year,
             },
@@ -200,7 +203,6 @@ impl SceneParams {
 
     /// Write the scene half back into a config, leaving window geometry and the
     /// auto-refresh settings (which are not scene parameters) untouched.
-    #[allow(clippy::cast_precision_loss)]
     pub fn write_to_config(&self, config: &mut AppConfig) {
         config.longitude = self.camera.longitude;
         config.latitude = self.camera.latitude;
@@ -293,13 +295,15 @@ impl SceneParams {
 }
 
 /// Quantize a float to integer thousandths.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float-to-integer cast saturates, so a parameter outside the range still compares stably"
+)]
 fn q(value: f32) -> i32 {
     (value * 1000.0) as i32
 }
 
 /// Quantize a direction vector to integer milliradians for stable comparison.
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
     [q(dir.x), q(dir.y), q(dir.z)]
 }
@@ -738,7 +742,7 @@ mod tests {
 
     #[test]
     fn gamma_slider_monotonic() {
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss, reason = "the loop counter is ten")]
         let values: Vec<f32> = (0..=10)
             .map(|i| gamma_slider_to_value(i as f32 / 10.0))
             .collect();

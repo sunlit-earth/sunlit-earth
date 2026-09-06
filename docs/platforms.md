@@ -15,15 +15,15 @@ A row moves up only when the evidence exists. That is the retrospective's rule a
 | Build, unit, engine, GPU shader, soak | yes | yes (lavapipe) | yes (Metal), compiled |
 | Golden images | yes (`warp`) | yes (`lavapipe`) | yes (`metal`), compiled |
 | `render` subcommand | yes | yes | yes, runner |
-| Settings window | yes | yes, in the test guest | untested, compiled |
-| Status item / tray | yes | yes, where a `StatusNotifier` host runs | Slint's own AppKit status item, unrun, compiled |
+| Settings window | yes | yes, in the test guest | compiled; never shown |
+| Status item / tray | yes | yes, where a `StatusNotifier` host runs | compiled; Slint's own AppKit status item, never shown |
 | Set the desktop wallpaper | yes | yes, per desktop | `NSWorkspace`, compiled |
 | Address one monitor of several | yes (`IDesktopWallpaper`) | XFCE and KDE; the rest span or take one image | yes, per `NSScreen`, compiled |
 | Native display query | yes (Win32) | yes (`xrandr`) | yes (CoreGraphics), compiled |
 | Follow a display change | yes (`WM_DISPLAYCHANGE`) | yes (RandR) | yes (`CGDisplayRegisterReconfigurationCallback`), compiled |
 | Clean exit when the session ends | yes (`WM_ENDSESSION`) | yes (SIGTERM) | SIGTERM only, which a logout does not send, compiled; see below |
 | Release bundle | zip, verified on its own runner | tarball, verified on its own runner | ad-hoc signed `.app` zip and a tarball, both verified on the runner |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 15 cases) or in a local VM (13 of 15; the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, neither of which the Windows guest is) | yes, in a local VM (all 14 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiles, unrun, compiled |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 15 cases) or in a local VM (13 of 15; the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, neither of which the Windows guest is) | yes, in a local VM (all 14 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiled; never run |
 
 The macOS CI job is not green. As of 2026-09-07 one engine case fails there, `stars::zero_star_intensity_leaves_catalog_pixels_at_the_clear_color`, on a single pixel the paravirtual Metal device does not reproduce when the star draw enters the pass; `testing.md` has the measurement and the revision written for it, which no macOS run has seen. Every other target passes. Nothing in the table below rests on that case, but a reader should not take "compiled" to mean the job came back green.
 

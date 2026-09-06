@@ -248,9 +248,12 @@ fn paint(assignments: &[Assignment], anchor: Option<&Path>) -> Result<Painted, S
     // the second is what the anchor exists for. Painting every screen over
     // a refusal would throw the reason away and try the same call again.
     if !painted.refused.is_empty() && painted.painted == 0 {
+        // The whole note rather than the refusals alone: a plan where one
+        // screen was refused and another was never named has two things wrong
+        // with it, and a disconnected display must not read as a permission.
         return Err(format!(
-            "AppKit refused every screen it was given: {}",
-            painted.refused.join("; ")
+            "AppKit took no screen's wallpaper. {}",
+            painted.note()
         ));
     }
     if painted.painted == 0 && painted.refused.is_empty() {

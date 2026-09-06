@@ -172,6 +172,8 @@ Settled on 2026-09-06 after the first draft: the identifier is `earth.sunlit.Sun
 
 4. **Decision 14 named a file the appender never writes.** The decision says `sunlit-earth.log` under the app data directory, rotating daily and keeping seven, and `tracing_appender::rolling` cannot do both: with a daily rotation it writes `sunlit-earth.<date>.log` and there is no fixed name to point anybody at. The rotation is the half worth keeping, because a tester who noticed something yesterday still has yesterday's file and nothing accumulates unattended, so the name is what gave way. `usage.md` and `macos-testing.md` now name the dated file and tell a tester to send the newest, the startup line names the file it is writing rather than the directory it is in, and a unit test writes through a real appender and checks that the file which appears is the one that line names, because that name is a contract with `tracing-appender` rather than with us.
 
+5. **Decision 9's Rosetta half is deferred rather than written.** The decision asks the workflows to `softwareupdate --install-rosetta --agree-to-license`, run the x86_64 slice under `arch -x86_64`, and record in `build-info.json` when that did not happen. None of it is implemented. `universal` is off by default in both workflows, no Intel tester exists, which is open question 2, and a blind Rosetta install on a hosted runner is exactly the kind of step this run has no budget left to prove. What both workflows do instead, in the branch that builds the second slice, is print that the x86_64 half was built and not executed, so a log never implies more than was done. The work comes back when a universal build is actually wanted, which is when somebody with an Intel Mac appears; it is shell steps that tolerate Rosetta being absent, and the record's `architectures` field already says which slices are in the binary.
+
 ## Validation record
 
 Filled in as steps land.
@@ -253,6 +255,16 @@ Cargo stops at the first test target that fails, so every macOS dispatch so far 
 `guest::script_syntax::every_shell_script_the_linux_build_runs_parses` asserts, as a control, that `bash -n` reports an unterminated heredoc with exit 0 and a warning on stderr, because the loops below it check for that warning. Apple ships bash 3.2, which exits 0 and says nothing at all, so the control failed and, had it not, the warning check would have been catching nothing in silence. The control now probes rather than asserts, and prints that the scripts are checked by exit code alone where the shell cannot do better.
 
 The soak test failed on its first run on macOS and passed on its second, and the two samples together say what is wrong. On 2026-09-06: startup 50.3 MiB, warm-up +2.2, growth +10.7 against a `GROWTH_LIMIT` of 8, which fails. On 2026-09-07: startup 50.3 MiB, warm-up +12.9, growth +0.0, which passes. The peak is 63 MiB both times and the totals agree to a tenth of a MiB, so nothing is leaking; what moves is which side of `WARMUP_STEPS` the footprint is charged on, which is what a footprint counted as pages are touched rather than as they are reserved looks like, and `memory/macos.rs` reads `task_info(TASK_VM_INFO)`. Raising `GROWTH_LIMIT` would measure nothing. The roadmap carries it with both samples and with the two fixes that would actually settle it: a warm-up that ends when the allocation has settled rather than after a fixed number of steps, or a macOS reading that charges at reservation.
+
+### Validator round 2 (2026-09-07)
+
+One MAJOR and five MINOR in round 1's own territory, all six answered, five by fixing and one by declining.
+
+The MAJOR was a cache key. `macos-build.yml`'s rust-cache step was still the one the `check` mode wrote, so the two new modes would have compiled the release profile into `ci-macos` and mixed two profiles in a cache that then evicts itself. The key follows the mode now: `ci-macos` for `check`, `release-macos` for the other two, which is the cache `release.yml` already keeps warm, and the sentence in `testing.md` says both halves rather than one.
+
+Then the five. `golden.yml` had no `concurrency` group while `testing.md` said every workflow does, so it has one and the sentence is true rather than softened. `release.yml`'s publish job tested the ref and not the intention, so a dispatch on a tag with `publish=false` would have republished over that tag's own assets; it now needs a tag push, or a dispatch on a tag that asked to publish, and the three paths were re-read afterwards. Three cells in `platforms.md` read "untested, compiled" and the like, where the tier and the qualifier fought each other; they lead with the tier now. And `wallpaper::macos::paint`'s refusal error named only the refused screens, so a plan holding one refused screen and one that was never matched hid the second behind a permission problem: the error carries the whole note, which is the same sentence the status line gets and which lists both.
+
+The decline is decision 9's Rosetta smoke test, recorded as departure 5.
 
 ### Validator round 1 (2026-09-07)
 

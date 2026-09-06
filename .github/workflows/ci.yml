@@ -166,8 +166,14 @@ jobs:
       # the golden suite's adapter key. libtest discards the output of a passing
       # test otherwise, which is how a golden run that compared nothing looked
       # exactly like one that compared everything.
+      #
+      # --no-fail-fast because cargo otherwise stops at the first target that
+      # fails, and the targets after it then say nothing. One failing engine
+      # case has already cost a whole macOS round trip to learn that the golden,
+      # soak and shading targets had never run; on a runner that bills at 10x,
+      # a run that reports every failure it has is worth the extra minutes.
       - name: Test
-        run: ${{ matrix.wrap }} cargo test --locked -- --show-output
+        run: ${{ matrix.wrap }} cargo test --locked --no-fail-fast -- --show-output
         shell: bash
 
       # The headless render path is the useful cross-platform mode today, and
@@ -176,7 +182,14 @@ jobs:
       # need no window, no Slint backend and no event loop, and running it with
       # no DISPLAY at all is what makes that claim a tested one rather than a
       # comment.
+      #
+      # It runs whatever the suite made of itself, for the same reason the suite
+      # no longer stops at the first failing target: whether this OS can render
+      # is not a question a failing case somewhere else answers, and finding out
+      # should not cost another run. The binary comes from the test step, so a
+      # build that never got that far fails here saying exactly that.
       - name: Render smoke test
+        if: ${{ !cancelled() }}
         env:
           # The real binary records metrics and reads the user config. Keep both
           # in the workspace so nothing lands in the runner's app data.

@@ -14,7 +14,7 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 ## Screenshots
 
-[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](docs/images/wallpaper-day.webp)
+[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-day.webp)
 
 <p>
   <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-night.webp"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>

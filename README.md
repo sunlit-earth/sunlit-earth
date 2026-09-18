@@ -44,19 +44,19 @@ Planned features:
 
 ## Downloads
 
-> Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and so far it hasn't caused any damage to my devices, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
+> ⚠️ Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and I'm confident it won't do something bad on your system, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
 
 At the moment we only have portable binary releases for Linux and Windows on x86-64:
 
-- Linux: sunlit-earth-0.1.0-linux.tar.gz
-- Windows: sunlit-earth-0.1.0-windows.zip
+- Linux: [sunlit-earth-0.1.0-linux.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.1.0/sunlit-earth-0.1.0-linux.tar.gz)
+- Windows: [sunlit-earth-0.1.0-windows.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.1.0/sunlit-earth-0.1.0-windows.zip)
 - macOS: coming soon
 
 A macOS release, ARM64 support, and more installation options are all on the roadmap.
 
 The Linux version was tested on KDE, GNOME, Xfce, Cinnamon, and should work on many other desktop environments. The Windows version was tested on a recent version of Windows 11; it'll probably run on older Windows versions, but no guarantees.
 
-On Windows, unpack the zip file and launch `sunlit-earth.exe`. On Linux, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`.
+On Windows, unpack the zip file and launch `sunlit-earth.exe`. You might get a scary blue warning popup from Microsoft SmartScreen where you have to allow starting the app; sorry, nothing I can do about that at the moment. On Linux, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`.
 
 If you know your way around the Rust toolchain, you can [build Sunlit Earth from source](#build-from-source) instead.
 
@@ -187,7 +187,7 @@ More information can be found in the [docs folder](docs/README.md). The [VM guid
 
 ## AI disclaimer
 
-Most of the code in this repo was written with the help of AI tools. Sunlit Earth is my pet project. While I've invested a lot of time in it, I wouldn't have been able to get it to a state where I feel comfortable sharing it publicly without these tools that make me question if "programmer" will still be a job soon.
+Most of the code in this repo was written with the help of AI tools. Sunlit Earth is my pet project, and while I've invested a lot of time in it, I wouldn't have been able to get it to a state where I feel comfortable sharing it publicly without these tools that make me question if "programmer" will still be a job soon.
 
 Should you trust the code if most of it was written by a machine? That's up to you. I trust my workflow and review and testing enough that I run the code on my own devices. I'm just sharing this here so you know and can choose for yourself.
 

@@ -5,7 +5,9 @@ name = "sunlit-earth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "A desktop application that renders a realistic 3D view of Earth as seen from space and sets it as the wallpaper"
+publish = false
 
 [dependencies]
 sunlit-core = { path = "../sunlit-core" }

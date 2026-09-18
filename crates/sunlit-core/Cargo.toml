@@ -5,7 +5,9 @@ name = "sunlit-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Headless rendering engine for Sunlit Earth"
+publish = false
 
 [dependencies]
 wgpu.workspace = true

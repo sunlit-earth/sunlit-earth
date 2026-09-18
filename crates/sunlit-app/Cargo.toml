@@ -1,6 +1,4 @@
 [package]
-# The package (and therefore the binary) keeps the name `sunlit-earth` even
-# though the crate directory is `sunlit-app`.
 name = "sunlit-earth"
 version.workspace = true
 edition.workspace = true
@@ -29,7 +27,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Foundation",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 signal-hook.workspace = true
 
 [dev-dependencies]

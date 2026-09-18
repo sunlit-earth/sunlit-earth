@@ -131,8 +131,7 @@ pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
 /// 1. `--textures-dir` CLI flag
 /// 2. `SUNLIT_EARTH_TEXTURES` environment variable
 /// 3. `textures/` relative to the current working directory
-/// 4. `textures/` relative to the executable, walking up ancestor directories
-///    (finds the project root from `target/debug/` or `target/release/`)
+/// 4. [`textures_near`], walking up from the executable
 pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
     let explicit: [Option<PathBuf>; 3] = [
         cli_override.map(Path::to_path_buf),
@@ -143,11 +142,21 @@ pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
         return Some(dir);
     }
 
-    let mut dir = std::env::current_exe().ok()?;
+    textures_near(&std::env::current_exe().ok()?)
+}
+
+/// The textures directory an executable at this path can reach, or `None`.
+///
+/// Two candidates per ancestor: `textures/`, which every bundle but the macOS
+/// one has, and `Resources/textures`, which is the `.app`'s, reached from
+/// `Contents/MacOS/sunlit-earth` at the `Contents/` ancestor.
+pub fn textures_near(exe: &Path) -> Option<PathBuf> {
+    let mut dir = exe.to_path_buf();
     while dir.pop() {
-        let candidate = dir.join("textures");
-        if candidate.is_dir() {
-            return Some(candidate);
+        for candidate in [dir.join("textures"), dir.join("Resources").join("textures")] {
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -335,5 +344,36 @@ mod tests {
             }
             proptest::prop_assert_eq!(buf, original);
         }
+    }
+
+    /// The `.app`'s `Contents/Resources/textures`, which the plain candidate
+    /// never reaches on the way up, and the sibling layout beside it.
+    #[test]
+    fn the_walk_up_finds_an_app_bundles_resources_and_a_plain_layout_alike() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_layouts");
+
+        let app = scratch.join("Sunlit Earth.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).expect("the executable directory");
+        std::fs::create_dir_all(app.join("Contents/Resources/textures")).expect("the resources");
+        assert_eq!(
+            textures_near(&app.join("Contents/MacOS/sunlit-earth")),
+            Some(app.join("Contents/Resources/textures"))
+        );
+
+        let plain = scratch.join("sunlit-earth-0.1.0-linux");
+        std::fs::create_dir_all(plain.join("textures")).expect("the textures");
+        assert_eq!(
+            textures_near(&plain.join("sunlit-earth")),
+            Some(plain.join("textures"))
+        );
+
+        // Where an ancestor has both, the plain one answers.
+        let both = scratch.join("both");
+        std::fs::create_dir_all(both.join("textures")).expect("the textures");
+        std::fs::create_dir_all(both.join("Resources/textures")).expect("the resources");
+        assert_eq!(
+            textures_near(&both.join("sunlit-earth")),
+            Some(both.join("textures"))
+        );
     }
 }

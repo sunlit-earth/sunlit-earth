@@ -28,6 +28,7 @@ csv = "1"
 dirs = "6"
 resvg = { version = "0.48", default-features = false }
 ico = "0.5"
+icns = { version = "0.4", default-features = false, features = ["pngio"] }
 zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 flate2 = "1"
@@ -43,10 +44,27 @@ windows-sys = "0.59"
 windows = "0.62"
 winreg = "0.56"
 mach2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSScreen", "NSCell"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSURL",
+    "NSDictionary",
+    "NSValue",
+    "NSArray",
+    "NSError",
+] }
+objc2-core-foundation = { version = "0.3", features = ["CFBase", "CFString", "CFUUID"] }
+objc2-core-graphics = { version = "0.3", features = [
+    "libc",
+    "CGError",
+    "CGDirectDisplay",
+    "CGDisplayConfiguration",
+] }
+objc2-color-sync = { version = "0.3", features = ["ColorSyncDevice"] }
+dispatch2 = "0.3"
 signal-hook = "0.3"
 x11rb = { version = "0.13", default-features = false, features = ["randr"] }
-
-# dev-dependencies
 approx = "0.5"
 proptest = "1"
 serial_test = "3"
@@ -65,7 +83,6 @@ missing_panics_doc = "allow"
 unsafe_code = "deny"
 
 [profile.dev.package."*"]
-# Optimize dependencies even in dev builds — important for GPU/math crates
 opt-level = 2
 debug = false
 

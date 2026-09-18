@@ -209,7 +209,10 @@ The e2e harness and the xtask read six more. They do not go through `env_overrid
 - `interprocess`: local socket IPC. `single-instance`: the OS mutex (app only)
 - `windows-sys`: Win32 FFI, `SystemParametersInfoW`, `EnumDisplayMonitors`, `GetMonitorInfoW`, `GetProcessMemoryInfo` in core; `AttachConsole` in the app
 - `mach2`: Mach FFI on macOS, for `task_info(TASK_VM_INFO)` in `memory.rs` and nothing else. Declarations only; the `unsafe` call site is ours
-- `signal-hook`: Linux only, and only for `session_end`. A signal handler may call almost nothing and quitting a Slint event loop is not on the list, so the delivery has to reach an ordinary thread first; this crate does that with a self-pipe, which is why it is a dependency rather than a scoped `unsafe` around `libc::signal`
+- `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-core-foundation`, `objc2-core-graphics`, `dispatch2`: macOS only, for the display query, the display watcher and the wallpaper setter. All but one were already in the tree through Slint's winit backend, which is why the macOS arms cost one new download rather than six. Declarations only, as `mach2` is; every `unsafe` call site is ours and carries its own argument. Default features stay on, which is what Slint's own dependency does, so `cargo test -p sunlit-core` compiles the same crates the app does rather than a differently-featured copy of them; `objc2-core-graphics` additionally names the four features outside that set which the display query is made of
+- `objc2-color-sync`: macOS only, and only for `CGDisplayCreateUUIDFromDisplayID`, which is the one display id that survives a reboot and which CoreGraphics does not export
+- `icns`: the macOS icon bake (xtask only). Pure Rust, so the `.icns` a release ships is produced by whichever host runs the bake rather than by Apple's `iconutil`. Only the `pngio` feature, which encodes the 256 px entries and larger; not `jp2io`, which decodes the JPEG 2000 entries of icons this project never reads
+- `signal-hook`: both Unixes, and only for `session_end`. A signal handler may call almost nothing and quitting a Slint event loop is not on the list, so the delivery has to reach an ordinary thread first; this crate does that with a self-pipe, which is why it is a dependency rather than a scoped `unsafe` around `libc::signal`
 
 ## Resource-flow rules (from the retrospective, section 8.2)
 
@@ -232,10 +235,11 @@ The e2e harness and the xtask read six more. They do not go through `env_overrid
   binaries and a local `cargo build --release` included, and the `cc` crate follows it
   with `/MT` for the Astronomy Engine's C. A clean Windows 10 then needs no Visual C++
   redistributable, which is what `dist --target windows` proves on the artifact.
-- `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `scene/sky.rs`, `wallpaper/windows.rs`, `wallpaper/windows/shell.rs`, `config/window_geometry.rs`, `memory/windows.rs`, `memory/macos.rs`, and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments. New FFI, on any platform, follows that pattern; the macOS `task_info` call in `memory.rs` is the most recent example.
+- `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `scene/sky.rs`, `wallpaper/windows.rs`, `wallpaper/windows/shell.rs`, `config/window_geometry.rs`, `memory/windows.rs`, `memory/macos.rs`, `display/macos.rs`, `display/watch.rs`, `wallpaper/macos.rs`, `about.rs`, `session_end.rs` and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments. New FFI, on any platform, follows that pattern; the macOS `task_info` call in `memory.rs` is the most recent example.
 - Slint is pinned to `~1.17` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during resize, and then capped by the quality tier.
 - Zoom is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
 - The grid texture uses 16x anisotropic filtering with trilinear mipmaps.
 - WGSL `vec3<f32>` has 16-byte alignment, so `#[repr(C)]` structs need an explicit `_pad: f32` after every `[f32; 3]` field. `uniforms.rs` has a compile-time size assertion. It also declares the block once, as a list of Rust type and WGSL type, and its unit tests read `sphere.wgsl` and compare the two field lists name for name and offset for offset.
 - LF line endings globally.
+- `[profile.dev.package."*"]` builds dependencies at `opt-level = 2` with no debug info even in debug builds, which is what makes the GPU and math crates usable in a debug run.

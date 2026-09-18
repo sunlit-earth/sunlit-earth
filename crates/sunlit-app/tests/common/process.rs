@@ -71,7 +71,8 @@ pub(crate) fn fixture(name: &str) -> PathBuf {
 pub(crate) fn tray_supported() -> bool {
     static ANSWER: OnceLock<bool> = OnceLock::new();
     *ANSWER.get_or_init(|| {
-        if cfg!(target_os = "windows") {
+        // macOS has a menu bar in every GUI session, so there is nothing to probe.
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
             return true;
         }
         if !cfg!(target_os = "linux") {
@@ -132,7 +133,11 @@ pub(crate) fn wallpaper_supported() -> bool {
 /// The half of the question that is still a compile-time fact, and the one worth
 /// pinning: a platform on this list that refuses is a regression, and one off it
 /// that succeeds is a setter nobody wrote.
-pub(crate) const WALLPAPER_PLATFORM: bool = cfg!(any(target_os = "windows", target_os = "linux"));
+pub(crate) const WALLPAPER_PLATFORM: bool = cfg!(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos"
+));
 
 /// Whether this run is allowed to replace the desktop wallpaper.
 ///
@@ -196,6 +201,7 @@ impl ChildGuard {
     }
 
     /// The child's process id.
+    #[cfg(windows)]
     pub(crate) fn pid(&self) -> u32 {
         self.child.as_ref().expect("child already taken").id()
     }

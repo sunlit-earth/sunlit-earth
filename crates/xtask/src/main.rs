@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    bake_icon, bake_licenses, bake_stars, build_image, dist, doctor, e2e, setup, sweep, teardown,
-    vm,
+    bake_icon, bake_licenses, bake_stars, build_image, bundle, dist, doctor, e2e, setup, sweep,
+    teardown, vm,
 };
 use crate::host::facts;
 use crate::provider::desktop::Desktop;
@@ -91,6 +91,9 @@ enum Command {
         #[arg(long)]
         allow_dirty: bool,
     },
+    /// Assemble a release bundle around a binary that is already built, and
+    /// write the archive its platform's users open without a tool.
+    Bundle(bundle::Options),
     /// Regenerate a committed asset from its source.
     Bake {
         #[command(subcommand)]
@@ -282,6 +285,7 @@ fn main() -> ExitCode {
                 allow_dirty,
             },
         ),
+        Command::Bundle(options) => bundle::run(&runner, &options),
         Command::Bake { command } => match command {
             BakeCommand::Icon { review } => bake_icon::run(review),
             BakeCommand::Stars { input, output } => bake_stars::run(&input, &output),
@@ -457,27 +461,53 @@ mod tests {
     /// `--allow-expired-image` was in neither until this test asked.
     #[test]
     fn the_docs_spell_out_every_flag_dist_takes() {
+        let _ = check_usage_lines("dist", 5, &["CLAUDE.md", "docs/vm-setup.md"]);
+    }
+
+    /// The same rule for the command the release runners drive.
+    #[test]
+    fn the_docs_spell_out_every_flag_bundle_takes() {
+        let usage = check_usage_lines("bundle", 4, &["CLAUDE.md"]);
+        for platform in <bundle::Platform as clap::ValueEnum>::value_variants() {
+            let slug = platform.slug();
+            assert!(
+                usage.contains(slug),
+                "CLAUDE.md does not name {slug}: {usage}"
+            );
+        }
+    }
+
+    /// Every long flag of a subcommand appears on that subcommand's usage line
+    /// in each document, which is what keeps a usage line complete rather than
+    /// merely present.
+    fn check_usage_lines(subcommand: &str, least: usize, docs: &[&str]) -> String {
         let cli = Cli::command();
-        let dist = cli.find_subcommand("dist").expect("a dist subcommand");
-        let flags: Vec<String> = dist
+        let command = cli
+            .find_subcommand(subcommand)
+            .unwrap_or_else(|| panic!("a {subcommand} subcommand"));
+        let flags: Vec<String> = command
             .get_arguments()
             .filter_map(clap::Arg::get_long)
             .filter(|long| *long != "help" && *long != "version")
             .map(|long| format!("--{long}"))
             .collect();
-        assert!(flags.len() >= 5, "{flags:?}");
+        assert!(flags.len() >= least, "{flags:?}");
 
-        for doc in ["CLAUDE.md", "docs/vm-setup.md"] {
+        let prefix = format!("cargo xtask {subcommand} ");
+        let mut found = String::new();
+        for doc in docs {
             let path = store::repo_root().join(doc);
             let text = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
             let usage = text
                 .lines()
-                .find(|line| line.starts_with("cargo xtask dist ["))
-                .unwrap_or_else(|| panic!("{doc} has no `cargo xtask dist [...]` usage line"));
+                .find(|line| line.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{doc} has no `{prefix}...` usage line"));
             for flag in &flags {
                 assert!(usage.contains(flag), "{doc} does not name {flag}: {usage}");
             }
+            found = usage.to_owned();
         }
+        found
     }
 }

@@ -3,7 +3,21 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create the GitHub release. Off means build and verify only."
+        type: boolean
+        default: false
+      universal:
+        description: "Build the macOS binary for Intel as well as Apple Silicon."
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: write
@@ -13,28 +27,177 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  release:
-    name: Build and Release
-    runs-on: windows-latest
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+            exe: target/release/sunlit-earth.exe
+          - platform: linux
+            os: ubuntu-22.04
+            exe: target/release/sunlit-earth
+          - platform: macos
+            os: macos-latest
+            exe: dist-bin/sunlit-earth
     steps:
+      - name: Refuse to publish from anything but a tag
+        if: ${{ inputs.publish && !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          echo "publish=true names a release after ${GITHUB_REF_NAME}, which is not a tag,"
+          echo "and the version gate below only runs on one. Push the tag instead;"
+          echo "a dispatch is the dry run, which is publish=false."
+          exit 1
+        shell: bash
+
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+        with:
+          lfs: true
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+        shell: bash
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libclang-dev \
+            mesa-vulkan-drivers
+        shell: bash
+
       - uses: KyleMayes/install-llvm-action@v2
+        if: matrix.platform == 'windows'
         with:
           version: "19"
       - name: Set LIBCLANG_PATH
+        if: matrix.platform == 'windows'
         run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
         shell: bash
+
+      - name: Point bindgen at Xcode's libclang
+        if: matrix.platform == 'macos'
+        run: |
+          LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          if [ -f "$LIB/libclang.dylib" ]; then
+            echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-windows
-          add-rust-environment-hash-key: false
-      - run: cargo build --release --locked
+          shared-key: release-${{ matrix.platform }}
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Check the tag against the workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ -z "$version" ]; then
+            echo "cannot read the workspace version out of Cargo.toml"
+            exit 1
+          fi
+          echo "workspace version: $version, tag: ${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "the tag ${GITHUB_REF_NAME} does not name the workspace version $version."
+            echo "Bump [workspace.package] version, or tag v$version."
+            exit 1
+          fi
         shell: bash
-      - name: Package binary
-        run: 7z a sunlit-earth-${{ github.ref_name }}-x86_64-windows.zip ./target/release/sunlit-earth.exe
+
+      - name: Build
+        if: matrix.platform != 'macos'
+        run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth
         shell: bash
+
+      - name: Build (macOS)
+        if: matrix.platform == 'macos'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euo pipefail
+          build() {
+            cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$1"
+          }
+          build aarch64-apple-darwin
+          mkdir -p dist-bin
+          if [ "${{ inputs.universal }}" = "true" ]; then
+            rustup target add x86_64-apple-darwin
+            build x86_64-apple-darwin
+            lipo -create -output dist-bin/sunlit-earth target/aarch64-apple-darwin/release/sunlit-earth target/x86_64-apple-darwin/release/sunlit-earth
+            echo "the x86_64 slice was built and not executed: nothing here installs Rosetta or runs it, so only the arm64 half of this binary has been shown to start"
+          else
+            cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
+          fi
+          lipo -info dist-bin/sunlit-earth
+        shell: bash
+
+      - name: Bundle and verify
+        env:
+          SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/bundle-config.toml
+          SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/bundle-metrics
+          SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/bundle-cache
+          SUNLIT_EARTH_NO_CLOUDS: "1"
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          cargo xtask bundle --platform ${{ matrix.platform }} \
+            --exe ${{ matrix.exe }} --out dist --verify
+          echo "bundle step took $(( $(date +%s) - start )) s, xtask compile included"
+          ls -l dist
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/') && (github.event_name == 'push' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: bundle-*
+
+      - name: Collect the release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for dir in artifacts/bundle-*; do
+            platform=${dir#artifacts/bundle-}
+            for archive in "$dir"/*.zip "$dir"/*.tar.gz; do
+              [ -f "$archive" ] || continue
+              cp "$archive" release/
+            done
+            if [ -f "$dir/build-info.json" ]; then
+              cp "$dir/build-info.json" "release/build-info-${platform}.json"
+            else
+              echo "the $platform bundle wrote no record"
+              exit 1
+            fi
+          done
+          ls -l release
+        shell: bash
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: sunlit-earth-${{ github.ref_name }}-x86_64-windows.zip
+          files: release/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true

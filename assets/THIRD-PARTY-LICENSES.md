@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 557 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
+Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 559 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
 
 ## Packages
 
@@ -296,6 +296,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `objc2-app-kit 0.2.2`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-app-kit 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-cloud-kit 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
+- `objc2-color-sync 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-core-data 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-core-foundation 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-core-graphics 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
@@ -305,6 +306,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `objc2-encode 4.1.0`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-foundation 0.2.2`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-foundation 0.3.2`, [MIT](#license-13), https://github.com/madsmtm/objc2
+- `objc2-metal 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-quartz-core 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `once_cell 1.21.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/matklad/once_cell
 - `once_cell_polyfill 1.70.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/polyfill-rs/once_cell_polyfill

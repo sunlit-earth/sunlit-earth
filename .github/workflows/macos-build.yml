@@ -195,23 +195,9 @@ jobs:
 
       # Legacy VNC auth uses the password as a DES key and keeps the first eight
       # characters, so a `VNC_PASSWORD` longer than that is not stronger.
-      # The hosted Apple Silicon image has no display hardware: no IODisplay in
-      # ioreg, zero IOFramebuffer instances, and WindowServer in daemon mode
-      # against a null display. There is nothing there to share, which is what
-      # runs 35730210452 and 35734470521 measured, so this refuses rather than
-      # spending fifteen minutes proving it again. The Intel image is a VMware
-      # guest whose resolution can be set, so a framebuffer can be made to exist.
-      - name: Refuse a session the image cannot give
-        if: ${{ inputs.interactive && inputs.runner != 'macos-26-intel' && !cancelled() }}
-        run: |
-          echo "${{ inputs.runner }} has no framebuffer, so nothing can share its screen."
-          echo "Dispatch with runner=macos-26-intel, or use a Mac you have admin on."
-          exit 1
-        shell: bash
-
       - name: Open a screen sharing session
         id: screen
-        if: ${{ inputs.interactive && inputs.runner == 'macos-26-intel' && !cancelled() }}
+        if: ${{ inputs.interactive && !cancelled() }}
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
@@ -241,14 +227,28 @@ jobs:
           printf '%s' "$VNC_PASSWORD" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' \
             | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
 
-          # Give the guest a mode. Without one the shared screen has no
-          # framebuffer and every client draws black.
-          sudo "/Library/Application Support/VMware Tools/vmware-resolutionSet" 1920 1080 \
-            || echo "no VMware tools here; if the desktop comes up black, that is why"
-
           # Its own call, and -console, because the combined form used until now
-          # logged "Stopped ARD Agent" and never brought it back.
+          # logged "Stopped ARD Agent" and never brought it back. With this the
+          # agent does come up, and it is still not what owns the port.
           sudo "$kickstart" -restart -agent -console
+
+          # screensharingd is the VNC listener, and kickstart leaves its launchd
+          # job at "state = not running" holding no socket. `bootstrap` is the
+          # wrong verb for a job that is already loaded: it fails as already
+          # bootstrapped, which an earlier attempt hid by discarding stderr.
+          # `kickstart -k` is the one that starts a loaded job.
+          echo "== disabled? =="
+          sudo launchctl print-disabled system | grep -i screensharing || echo "(not listed as disabled)"
+          sudo launchctl enable system/com.apple.screensharing || true
+          sudo launchctl kickstart -k system/com.apple.screensharing || true
+
+          # Whether this display can be read at all is a question of its own:
+          # build-and-e2e's before and after shots depend on it.
+          if screencapture -x /tmp/probe.png 2>/dev/null; then
+            echo "screencapture wrote $(stat -f%z /tmp/probe.png) bytes"
+          else
+            echo "screencapture refused this display"
+          fi
 
           for _ in $(seq 1 20); do
             if lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then

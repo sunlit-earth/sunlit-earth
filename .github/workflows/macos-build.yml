@@ -232,20 +232,28 @@ jobs:
           # agent does come up, and it is still not what owns the port.
           sudo "$kickstart" -restart -agent -console
 
-          # screensharingd is the VNC listener, and kickstart leaves its launchd
-          # job at "state = not running" holding no socket. `bootstrap` is the
-          # wrong verb for a job that is already loaded: it fails as already
-          # bootstrapped, which an earlier attempt hid by discarding stderr.
-          # `kickstart -k` is the one that starts a loaded job.
-          echo "== disabled? =="
-          sudo launchctl print-disabled system | grep -i screensharing || echo "(not listed as disabled)"
+          # screensharingd is the VNC listener. Its launchd job is not disabled
+          # ("com.apple.screensharing" => enabled) and `kickstart -k` reports
+          # nothing, yet the job stays at "state = not running" with no socket,
+          # so it is being started and going straight back down. The job's own
+          # record of why is further into `launchctl print` than the twelve
+          # lines this used to show, and in screensharingd's log.
+          mkdir -p session-out
           sudo launchctl enable system/com.apple.screensharing || true
-          sudo launchctl kickstart -k system/com.apple.screensharing || true
+          sudo launchctl kickstart -kp system/com.apple.screensharing || echo "kickstart exited $?"
+          sleep 3
+          echo "== the job, further in =="
+          sudo launchctl print system/com.apple.screensharing 2>&1 \
+            | sed -n '1,45p' | tee session-out/screensharing-job.txt
+          echo "== what screensharingd logged =="
+          log show --predicate 'process == "screensharingd"' --last 5m --style compact 2>/dev/null \
+            | tail -25 | tee session-out/screensharingd.log || echo "(nothing logged)"
 
-          # Whether this display can be read at all is a question of its own:
-          # build-and-e2e's before and after shots depend on it.
-          if screencapture -x /tmp/probe.png 2>/dev/null; then
-            echo "screencapture wrote $(stat -f%z /tmp/probe.png) bytes"
+          # This display can be read: an arm64 runner wrote an 80 KB PNG of it on
+          # 2026-09-22. Keeping the frame is worth more than the fact, so it goes
+          # out as an artifact whether or not the port ever opens.
+          if screencapture -x session-out/desktop.png 2>/dev/null; then
+            echo "desktop.png: $(stat -f%z session-out/desktop.png) bytes"
           else
             echo "screencapture refused this display"
           fi
@@ -270,9 +278,13 @@ jobs:
           exit 1
         shell: bash
 
-      # The job is the session's lifetime. The first frame after connecting is
-      # often black, which is the console session switching rather than a
-      # failure: reconnect.
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.interactive && !cancelled() }}
+        with:
+          name: session-${{ inputs.runner }}
+          path: session-out/
+          if-no-files-found: warn
+
       - name: Hold the session open
         if: ${{ inputs.interactive && !cancelled() && steps.screen.outcome == 'success' }}
         env:

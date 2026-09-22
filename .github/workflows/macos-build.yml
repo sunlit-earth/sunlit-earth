@@ -225,7 +225,7 @@ jobs:
           # serve the port because it cannot get the screen. Plain Screen
           # Sharing is the half that needs no agent.
           kickstart=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
-          sudo "$kickstart" -deactivate -configure -access -off || true
+          sudo "$kickstart" -deactivate || true
 
           # The two keys screensharingd looked for and reported unset, plus the
           # one that lets a plain VNC client authenticate at all.
@@ -241,15 +241,24 @@ jobs:
             | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
 
           mkdir -p session-out
+          # -deactivate takes the job out of the system domain entirely
+          # ("Could not find service ... in domain for system"), so bootstrap is
+          # finally the right verb: earlier it was wrong only because the job was
+          # already loaded. Load, allow, start, in that order.
+          sudo launchctl bootstrap system \
+            /System/Library/LaunchDaemons/com.apple.screensharing.plist || echo "bootstrap exited $?"
           sudo launchctl enable system/com.apple.screensharing || true
           sudo launchctl kickstart -kp system/com.apple.screensharing || echo "kickstart exited $?"
           sleep 3
+          # Every line below is evidence, so none of it may end the step: the
+          # last run died at `launchctl print` returning 113 and never reached
+          # the probe at all.
           echo "== the job, further in =="
-          sudo launchctl print system/com.apple.screensharing 2>&1 \
-            | sed -n '1,45p' | tee session-out/screensharing-job.txt
+          { sudo launchctl print system/com.apple.screensharing 2>&1 \
+            | sed -n '1,45p' | tee session-out/screensharing-job.txt; } || true
           echo "== what screensharingd logged =="
-          log show --predicate 'process == "screensharingd"' --last 5m --style compact 2>/dev/null \
-            | tail -25 | tee session-out/screensharingd.log || echo "(nothing logged)"
+          { log show --predicate 'process == "screensharingd"' --last 5m --style compact 2>/dev/null \
+            | tail -25 | tee session-out/screensharingd.log; } || echo "(nothing logged)"
 
           # This display can be read: an arm64 runner wrote an 80 KB PNG of it on
           # 2026-09-22. Keeping the frame is worth more than the fact, so it goes

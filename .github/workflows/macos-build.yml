@@ -217,9 +217,22 @@ jobs:
           sudo defaults write /Library/Preferences/com.apple.screensaver askForPassword -int 0 || true
           sudo defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -bool true || true
 
+          # Remote Management stays OFF, which is the one configuration six runs
+          # never tried. screensharingd starts fine (pid, runs = 1, never
+          # exited) and then leaves without binding 5900, logging "remote
+          # management service is active" and "system mode = 2": with Remote
+          # Management on it stands aside for ARDAgent, and ARDAgent will not
+          # serve the port because it cannot get the screen. Plain Screen
+          # Sharing is the half that needs no agent.
           kickstart=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
-          sudo "$kickstart" -activate
-          sudo "$kickstart" -configure -allowAccessFor -allUsers -privs -all
+          sudo "$kickstart" -deactivate -configure -access -off || true
+
+          # The two keys screensharingd looked for and reported unset, plus the
+          # one that lets a plain VNC client authenticate at all.
+          rm_prefs=/Library/Preferences/com.apple.RemoteManagement
+          sudo defaults write "$rm_prefs" VNCLegacyConnectionsEnabled -bool true || true
+          sudo defaults write "$rm_prefs" allowRemoteScreenObservation -bool true || true
+          sudo defaults write "$rm_prefs" allowScreenShot -bool true || true
           sudo "$kickstart" -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
           # Some builds take -setvncpw and store nothing, so the obfuscated file
           # is written directly too. The key is fixed and public, and the format
@@ -227,17 +240,6 @@ jobs:
           printf '%s' "$VNC_PASSWORD" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' \
             | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
 
-          # Its own call, and -console, because the combined form used until now
-          # logged "Stopped ARD Agent" and never brought it back. With this the
-          # agent does come up, and it is still not what owns the port.
-          sudo "$kickstart" -restart -agent -console
-
-          # screensharingd is the VNC listener. Its launchd job is not disabled
-          # ("com.apple.screensharing" => enabled) and `kickstart -k` reports
-          # nothing, yet the job stays at "state = not running" with no socket,
-          # so it is being started and going straight back down. The job's own
-          # record of why is further into `launchctl print` than the twelve
-          # lines this used to show, and in screensharingd's log.
           mkdir -p session-out
           sudo launchctl enable system/com.apple.screensharing || true
           sudo launchctl kickstart -kp system/com.apple.screensharing || echo "kickstart exited $?"
@@ -274,7 +276,9 @@ jobs:
           echo "IOFramebuffer instances: $(ioreg -lw0 | grep -c IOFramebuffer || true)"
           lsof -nP -iTCP:5900 || echo "(no socket on 5900 at all)"
           ps -ef | grep -iE 'ARDAgent|WindowServer|screensharingd' | grep -v grep || true
-          sudo launchctl print system/com.apple.screensharing 2>&1 | head -12 || true
+          sudo launchctl print system/com.apple.screensharing 2>&1 | sed -n '1,35p' || true
+          echo "== what it logged on the way out =="
+          log show --predicate 'process == "screensharingd"' --last 3m --style compact 2>/dev/null | tail -20 || true
           exit 1
         shell: bash
 

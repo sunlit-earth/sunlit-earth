@@ -245,9 +245,15 @@ jobs:
           # ("Could not find service ... in domain for system"), so bootstrap is
           # finally the right verb: earlier it was wrong only because the job was
           # already loaded. Load, allow, start, in that order.
+          # enable before bootstrap, not after. -deactivate leaves the job
+          # disabled as well as unloaded, and bootstrapping a disabled job fails
+          # with "5: Input/output error" rather than saying which of the two it
+          # minded. enable writes the override whether or not the job is loaded.
+          echo "== disabled after deactivate? =="
+          sudo launchctl print-disabled system | grep -i screensharing || echo "(not listed)"
+          sudo launchctl enable system/com.apple.screensharing || echo "enable exited $?"
           sudo launchctl bootstrap system \
             /System/Library/LaunchDaemons/com.apple.screensharing.plist || echo "bootstrap exited $?"
-          sudo launchctl enable system/com.apple.screensharing || true
           sudo launchctl kickstart -kp system/com.apple.screensharing || echo "kickstart exited $?"
           sleep 3
           # Every line below is evidence, so none of it may end the step: the

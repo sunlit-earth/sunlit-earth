@@ -1,12 +1,16 @@
 name: CI
 
-# Manual only. This repository is private, so every minute here is billed
-# against a limited budget, and the local VM suite now covers what the hosted
+# Manual only. It ran on every push and pull request until the hosted minutes
+# ran out, back when this repository was private and every minute here was
+# billed against a limited budget. It has been public since the 0.1.0 release,
+# so standard runners are free and unmetered and cost is no longer the reason.
+# What keeps it manual is that the local VM suite covers what the hosted
 # runners were for: `cargo xtask e2e --target <windows|linux>` runs the real
 # desktop suite, and `cargo test` runs everything else on the developer's
 # machine. What is lost is the other two operating systems, so run this before
-# anything that has to hold on all three. Windows minutes bill at 2x and macOS
-# at 10x, which is most of the cost of a full matrix run.
+# anything that has to hold on all three. Going back to push and pull request
+# triggers is now a question of noise rather than of budget, and
+# `docs/roadmap.md` carries it.
 on:
   workflow_dispatch:
     inputs:

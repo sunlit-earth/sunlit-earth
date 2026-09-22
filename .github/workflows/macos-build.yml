@@ -293,11 +293,46 @@ jobs:
             echo "screencapture refused this display"
           fi
 
+          # Apple's server answers on 5900 and streams black, because its agent
+          # checks in with screenCaptureFlag 0: attached to the console, with no
+          # screen capture right. That is the grant kickstart warns needs System
+          # Settings or MDM, and it cannot be made here.
+          #
+          # screencapture, run from this shell, reads the same desktop fine. TCC
+          # attributes a command line tool's rights to its responsible process,
+          # so the runner's own process tree holds what Apple's agent does not,
+          # and a server started as a child of this shell inherits it. `open -a`
+          # would reparent to launchd and lose exactly that, so RustDesk is
+          # started by path, in the background, from here.
+          brew install --cask rustdesk 2>&1 | tail -3 || echo "brew install exited $?"
+          rd=/Applications/RustDesk.app/Contents/MacOS/RustDesk
+          if [ -x "$rd" ]; then
+            conf="$HOME/Library/Preferences/com.carriez.RustDesk"
+            mkdir -p "$conf"
+            printf '%s\n' \
+              '[options]' \
+              "direct-server = 'Y'" \
+              "direct-access-port = '21118'" \
+              "verification-method = 'use-permanent-password'" \
+              > "$conf/RustDesk2.toml"
+            "$rd" --password "$VNC_PASSWORD" 2>&1 | tail -2 || echo "password set exited $?"
+            "$rd" > session-out/rustdesk.log 2>&1 &
+            sleep 15
+            echo "== what rustdesk holds =="
+            { sudo lsof -nP -iTCP -sTCP:LISTEN | grep -iE 'rustdesk|21118' || echo "(rustdesk holds no listening socket)"; } || true
+            tail -20 session-out/rustdesk.log || true
+          else
+            echo "rustdesk did not install; nothing to start"
+          fi
+
           for _ in $(seq 1 20); do
-            if sudo lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
-              python3 -c "import socket; s=socket.create_connection(('127.0.0.1',5900),5); print('local VNC banner:', s.recv(12))" || true
-              echo "connect a VNC client to $(tailscale ip -4):5900, password only, no user name"
+            if sudo lsof -nP -iTCP:21118 -sTCP:LISTEN > /dev/null 2>&1; then
+              echo "RustDesk direct access is up."
+              echo "connect the RustDesk client to $(tailscale ip -4):21118 with the same password"
               exit 0
+            fi
+            if sudo lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
+              echo "only Apple's server is up, on $(tailscale ip -4):5900, and it streams black"
             fi
             sleep 2
           done

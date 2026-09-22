@@ -30,19 +30,22 @@ pub use x11::{Watcher, start};
 #[cfg(windows)]
 pub use win32::{Watcher, start};
 
-/// `RandR` on Linux and `WM_DISPLAYCHANGE` on Windows. macOS has
-/// `CGDisplayRegisterReconfigurationCallback`, and that belongs to the setter
-/// on the day there is one.
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+pub use core_graphics::{Watcher, start};
+
+/// `RandR` on Linux, `WM_DISPLAYCHANGE` on Windows,
+/// `CGDisplayRegisterReconfigurationCallback` on macOS, and nothing anywhere
+/// else.
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 #[derive(Debug)]
 pub struct Watcher;
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 impl Watcher {
     pub fn stop(self) {}
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn start(_notify: NotifyFn) -> Option<Watcher> {
     tracing::debug!("this platform has no way to watch the displays");
     None
@@ -216,6 +219,124 @@ mod x11 {
                 }
             }
         }
+    }
+}
+
+/// `CGDisplayRegisterReconfigurationCallback`, on the thread that registers it.
+///
+/// No thread of its own, unlike the other two: CoreGraphics delivers on the run
+/// loop of the thread that registered, and the app registers on the main thread
+/// before an event loop that runs for the life of the process. The consequence
+/// is that a process with no event loop gets no hints.
+#[cfg(target_os = "macos")]
+mod core_graphics {
+    use std::ffi::c_void;
+    use std::sync::{Mutex, OnceLock};
+
+    use objc2_core_graphics::{
+        CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayRegisterReconfigurationCallback,
+        CGDisplayRemoveReconfigurationCallback, CGError,
+    };
+    use tracing::{debug, warn};
+
+    use super::NotifyFn;
+
+    /// The running watcher, which owns nothing but the fact of the
+    /// registration; the closure lives in the slot below.
+    #[derive(Debug)]
+    pub struct Watcher {
+        _private: (),
+    }
+
+    impl Watcher {
+        /// Unregister and forget the closure.
+        pub fn stop(self) {
+            // SAFETY: the callback is the same function pointer `start`
+            // registered, with the same null `user_info`, which is what
+            // CoreGraphics matches a removal on. Removing one that was never
+            // registered is an error code rather than undefined behavior.
+            #[allow(unsafe_code)]
+            let status = unsafe {
+                CGDisplayRemoveReconfigurationCallback(Some(reconfigured), std::ptr::null_mut())
+            };
+            if status != CGError::Success {
+                warn!(code = status.0, "the display watcher could not be removed");
+            }
+            clear_notify();
+            debug!("display watcher stopped");
+        }
+    }
+
+    /// The closure the C callback reaches, which has nowhere to keep state of
+    /// its own. A `Mutex` rather than a `OnceLock` so that stopping really ends
+    /// it and a later `start` can fill the slot again; the lock is released
+    /// before the closure runs.
+    static NOTIFY: OnceLock<Mutex<Option<NotifyFn>>> = OnceLock::new();
+
+    fn notify_slot() -> &'static Mutex<Option<NotifyFn>> {
+        NOTIFY.get_or_init(|| Mutex::new(None))
+    }
+
+    fn clear_notify() {
+        if let Ok(mut slot) = notify_slot().lock() {
+            *slot = None;
+        }
+    }
+
+    /// The C callback. `kCGDisplayBeginConfigurationFlag` announces a change
+    /// that has not happened yet, so acting on it would re-query the
+    /// arrangement being replaced; everything else is a hint.
+    // SAFETY: this is a declaration rather than a call, and what makes it
+    // sound is that it is only ever installed through
+    // `CGDisplayRegisterReconfigurationCallback`, whose contract is exactly
+    // this signature. It touches neither of its pointers, reads no state but a
+    // mutex, and returns normally on every path, so it cannot unwind into C.
+    #[allow(unsafe_code)]
+    unsafe extern "C-unwind" fn reconfigured(
+        _display: CGDirectDisplayID,
+        flags: CGDisplayChangeSummaryFlags,
+        _user_info: *mut c_void,
+    ) {
+        if flags.contains(CGDisplayChangeSummaryFlags::BeginConfigurationFlag) {
+            return;
+        }
+        let notify = notify_slot()
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(std::sync::Arc::clone));
+        if let Some(notify) = notify {
+            notify();
+        }
+    }
+
+    /// Start watching, or say why not.
+    pub fn start(notify: NotifyFn) -> Option<Watcher> {
+        {
+            let mut slot = notify_slot().lock().ok()?;
+            if slot.is_some() {
+                warn!("a display watcher is already running");
+                return None;
+            }
+            *slot = Some(notify);
+        }
+        // SAFETY: `reconfigured` has the signature CoreGraphics documents for
+        // this callback and returns normally on every path, and the null
+        // `user_info` is the documented way to pass none. The registration is
+        // undone by `Watcher::stop` with the same pointer.
+        #[allow(unsafe_code)]
+        let status = unsafe {
+            CGDisplayRegisterReconfigurationCallback(Some(reconfigured), std::ptr::null_mut())
+        };
+        if status != CGError::Success {
+            warn!(
+                code = status.0,
+                "could not register the display reconfiguration callback"
+            );
+            clear_notify();
+            return None;
+        }
+        debug!("display watcher running");
+        Some(Watcher { _private: () })
     }
 }
 

@@ -58,6 +58,7 @@ pub enum InstanceCheck {
 /// :param `mutex_name`: the process-wide name this instance claims
 /// :returns: what the check found
 pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
+    let mutex_name = &instance_name(mutex_name);
     match single_instance::SingleInstance::new(mutex_name) {
         Ok(instance) if instance.is_single() => InstanceCheck::Alone(Some(instance)),
         Ok(_) => InstanceCheck::AlreadyRunning,
@@ -66,6 +67,31 @@ pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
             InstanceCheck::Alone(None)
         }
     }
+}
+
+/// The name `single-instance` is handed, which on macOS is a path it calls
+/// `flock` on rather than a name in a namespace of its own. A relative one
+/// lands in the working directory, which for an app launched from Finder is
+/// `/`, and the guard is then silently absent. A system with no data directory
+/// keeps the bare name, which is what this did before.
+#[cfg(target_os = "macos")]
+fn instance_name(name: &str) -> String {
+    let Some(dir) = sunlit_core::app_data_dir() else {
+        warn!("this system has no data directory to keep the instance lock in");
+        return name.to_owned();
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!("the instance lock's directory could not be created: {e}");
+        return name.to_owned();
+    }
+    dir.join(format!("instance-{name}.lock"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn instance_name(name: &str) -> String {
+    name.to_owned()
 }
 
 /// Create the tray icon and wire its callbacks to the window and the engine.
@@ -167,6 +193,24 @@ mod tests {
             acquire_single_instance(r"sunlit-earth-bad\name"),
             InstanceCheck::Alone(None)
         ));
+    }
+
+    /// On macOS the name has to be an absolute path. Everywhere else it is a
+    /// name in a namespace of its own and arrives unchanged.
+    #[test]
+    fn the_instance_lock_is_a_real_path_on_the_platform_that_makes_it_a_file() {
+        let name = instance_name("sunlit-earth-app");
+        if cfg!(target_os = "macos") {
+            let path = std::path::Path::new(&name);
+            assert!(path.is_absolute(), "{name}");
+            assert!(name.ends_with("instance-sunlit-earth-app.lock"), "{name}");
+            assert!(
+                path.parent().is_some_and(std::path::Path::is_dir),
+                "the lock's directory has to exist for the create to work: {name}"
+            );
+        } else {
+            assert_eq!(name, "sunlit-earth-app");
+        }
     }
 
     #[test]

@@ -1,14 +1,33 @@
 name: CI
 
-# Manual only. This repository is private, so every minute here is billed
-# against a limited budget, and the local VM suite now covers what the hosted
+# Manual only. It ran on every push and pull request until the hosted minutes
+# ran out, back when this repository was private and every minute here was
+# billed against a limited budget. It has been public since the 0.1.0 release,
+# so standard runners are free and unmetered and cost is no longer the reason.
+# What keeps it manual is that the local VM suite covers what the hosted
 # runners were for: `cargo xtask e2e --target <windows|linux>` runs the real
 # desktop suite, and `cargo test` runs everything else on the developer's
 # machine. What is lost is the other two operating systems, so run this before
-# anything that has to hold on all three. Windows minutes bill at 2x and macOS
-# at 10x, which is most of the cost of a full matrix run.
+# anything that has to hold on all three. Going back to push and pull request
+# triggers is now a question of noise rather than of budget, and
+# `docs/roadmap.md` carries it.
 on:
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Which runner to test on"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Read-only. Nothing here writes to the repository, so nothing here needs to be
 # able to; `release.yml` is the one workflow that does, and it asks for itself.
@@ -23,9 +42,39 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          all='[
+            {"name":"Linux","os":"ubuntu-latest","cache":"linux","wrap":"xvfb-run -a"},
+            {"name":"Windows","os":"windows-latest","cache":"windows","wrap":""},
+            {"name":"macOS","os":"macos-latest","cache":"macos","wrap":""}
+          ]'
+          asked='${{ inputs.os }}'
+          if [ "$asked" = "all" ]; then
+            include=$(echo "$all" | jq -c .)
+          else
+            include=$(echo "$all" | jq -c --arg os "$asked" '[.[] | select(.os == $os)]')
+          fi
+          if [ "$(echo "$include" | jq length)" = "0" ]; then
+            echo "no matrix entry runs on $asked"
+            exit 1
+          fi
+          echo "testing on: $(echo "$include" | jq -r '[.[].name] | join(", ")')"
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+        shell: bash
+
   # Formatting is OS-independent, so it runs once rather than per matrix entry.
   fmt:
     name: Format
+    needs: plan
+    if: ${{ contains(fromJSON(needs.plan.outputs.include).*.os, 'ubuntu-latest') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,32 +86,14 @@ jobs:
 
   test:
     name: Test (${{ matrix.name }})
+    needs: plan
     runs-on: ${{ matrix.os }}
     strategy:
       # Every OS reports. A Linux failure that cancels the macOS job costs a
       # whole round trip to learn something the same run already knew.
       fail-fast: false
       matrix:
-        include:
-          # `cache` is spelled out rather than derived from `os` so the Windows
-          # job keeps the key it had before the matrix and stays warm.
-          - name: Linux
-            os: ubuntu-latest
-            cache: linux
-            # Nothing in the suite opens a window today: the Slint UI tests use
-            # the testing backend and the desktop e2e suite is #[ignore]d. The
-            # display is here so that the first windowed test to arrive runs
-            # without a CI change. `xvfb-run -a` does propagate the exit status
-            # (verified), so a failing suite still fails the job.
-            wrap: xvfb-run -a
-          - name: Windows
-            os: windows-latest
-            cache: windows
-            wrap: ""
-          - name: macOS
-            os: macos-latest
-            cache: macos
-            wrap: ""
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -125,7 +156,7 @@ jobs:
       # test otherwise, which is how a golden run that compared nothing looked
       # exactly like one that compared everything.
       - name: Test
-        run: ${{ matrix.wrap }} cargo test --locked -- --show-output
+        run: ${{ matrix.wrap }} cargo test --locked --no-fail-fast -- --show-output
         shell: bash
 
       # The headless render path is the useful cross-platform mode today, and
@@ -135,6 +166,7 @@ jobs:
       # no DISPLAY at all is what makes that claim a tested one rather than a
       # comment.
       - name: Render smoke test
+        if: ${{ !cancelled() }}
         env:
           # The real binary records metrics and reads the user config. Keep both
           # in the workspace so nothing lands in the runner's app data.

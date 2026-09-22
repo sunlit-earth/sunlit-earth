@@ -2,6 +2,8 @@
 
 The desktop end-to-end suite opens real windows, uses a real tray icon, and sets a real wallpaper. On a development machine that means it takes the desktop over for a minute; anywhere without an interactive desktop, including every hosted CI runner, it cannot run at all. This is how to run it in a local virtual machine instead. The same machinery builds the release binaries; that part is under [Release builds](#release-builds) below.
 
+macOS is the exception and always will be: there is no macOS guest, because virtualizing macOS needs Apple hardware to be legal and this project has none. Everything macOS runs on GitHub's hosted runners instead, through `ci.yml` with `os: macos-latest`, `macos-build.yml` and the macOS job of `release.yml`; `cargo xtask bundle` is the piece of the release path that works without a VM, and a Mac is what runs it there. [testing.md](testing.md) has the workflows and [platforms.md](platforms.md) has what that evidence is worth.
+
 Everything goes through `cargo xtask`. The design is in [plans/2026-08-19-phase3-vm-orchestration-plan.md](plans/2026-08-19-phase3-vm-orchestration-plan.md), the Linux guest's overhaul in [plans/2026-08-21-phase5-linux-vm-and-parity-plan.md](plans/2026-08-21-phase5-linux-vm-and-parity-plan.md), and the release builds in [plans/2026-08-28-vm-release-build-plan.md](plans/2026-08-28-vm-release-build-plan.md).
 
 ## Four images

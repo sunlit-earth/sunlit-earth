@@ -28,6 +28,10 @@ pub const ICON_NAME: &str = "sunlit-earth";
 /// Where the baked outputs live, relative to the repository root.
 pub const BAKED_DIR: &str = "assets/icon/baked";
 
+/// The macOS icon's file name under [`BAKED_DIR`], and its name inside the
+/// bundle, which `CFBundleIconFile` gives without the extension.
+pub const ICNS_FILE: &str = "sunlit-earth.icns";
+
 /// The sizes inside the Windows `.ico`.
 ///
 /// The list is what Windows itself asks for across its shell surfaces: 16 in a
@@ -43,6 +47,26 @@ pub const ICO_SIZES: [u32; 9] = [16, 20, 24, 32, 40, 48, 64, 128, 256];
 /// The theme spec's own list minus the ones no panel asks for; 20 and 40 are
 /// Windows shell sizes and have no hicolor directory to live in.
 pub const HICOLOR_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+
+/// The entries inside the macOS `.icns`, as the type each is filed under and
+/// the pixel size that type wants.
+///
+/// Five logical sizes, each with its 2x pair. The 2x entry of one size is the
+/// same pixel count as the 1x entry of the next, and both are there because
+/// macOS picks by density first: a missing 2x entry is resampled, not
+/// substituted.
+const ICNS_TYPES: [(icns::IconType, u32); 10] = [
+    (icns::IconType::RGBA32_16x16, 16),
+    (icns::IconType::RGBA32_16x16_2x, 32),
+    (icns::IconType::RGBA32_32x32, 32),
+    (icns::IconType::RGBA32_32x32_2x, 64),
+    (icns::IconType::RGBA32_128x128, 128),
+    (icns::IconType::RGBA32_128x128_2x, 256),
+    (icns::IconType::RGBA32_256x256, 256),
+    (icns::IconType::RGBA32_256x256_2x, 512),
+    (icns::IconType::RGBA32_512x512, 512),
+    (icns::IconType::RGBA32_512x512_2x, 1024),
+];
 
 /// The tray pixmap's edge, which is what `tray::create_icon` hands Slint.
 pub const TRAY_SIZE: u32 = 32;
@@ -118,6 +142,28 @@ pub fn bake(source_dir: &Path) -> Result<Vec<Output>, String> {
             bytes: png(render(source_dir, size)?, size)?,
         });
     }
+
+    let mut family = icns::IconFamily::new();
+    for (icon_type, size) in ICNS_TYPES {
+        let image = icns::Image::from_data(
+            icns::PixelFormat::RGBA,
+            size,
+            size,
+            render(source_dir, size)?,
+        )
+        .map_err(|e| format!("the {size} px image for {icon_type:?}: {e}"))?;
+        family
+            .add_icon_with_type(&image, icon_type)
+            .map_err(|e| format!("adding {icon_type:?} to {ICON_NAME}.icns: {e}"))?;
+    }
+    let mut icns_bytes = Vec::new();
+    family
+        .write(&mut icns_bytes)
+        .map_err(|e| format!("assembling {ICON_NAME}.icns: {e}"))?;
+    outputs.push(Output {
+        path: PathBuf::from(ICNS_FILE),
+        bytes: icns_bytes,
+    });
 
     // Raw RGBA rather than a PNG: the app crate wraps these bytes in a
     // `SharedPixelBuffer` directly, so shipping them decoded is what keeps an
@@ -349,6 +395,7 @@ mod tests {
         let sizes = ICO_SIZES
             .into_iter()
             .chain(HICOLOR_SIZES)
+            .chain(ICNS_TYPES.map(|(_, size)| size))
             .chain([TRAY_SIZE, ABOUT_SIZE]);
         for size in sizes {
             let source = source_dir().join(source_for(size));
@@ -415,6 +462,33 @@ mod tests {
                 installed.display()
             );
         }
+    }
+
+    /// An entry filed under the wrong type is an icon the Dock resamples
+    /// rather than one it draws.
+    #[test]
+    fn the_macos_icon_holds_each_size_at_both_densities() {
+        let baked = store::repo_root().join(BAKED_DIR).join(ICNS_FILE);
+        let bytes =
+            std::fs::read(&baked).unwrap_or_else(|e| panic!("reading {}: {e}", baked.display()));
+        let family = icns::IconFamily::read(std::io::Cursor::new(bytes)).expect("a readable icns");
+        for (icon_type, size) in ICNS_TYPES {
+            assert!(
+                family.has_icon_with_type(icon_type),
+                "{icon_type:?} is missing from {ICNS_FILE}"
+            );
+            let image = family
+                .get_icon_with_type(icon_type)
+                .unwrap_or_else(|e| panic!("decoding {icon_type:?}: {e}"));
+            assert_eq!(
+                (image.width(), image.height()),
+                (size, size),
+                "{icon_type:?}"
+            );
+        }
+        // 32 px is both the 2x of 16 and the 1x of 32, and both are needed.
+        assert!(family.has_icon_with_type(icns::IconType::RGBA32_16x16_2x));
+        assert!(family.has_icon_with_type(icns::IconType::RGBA32_32x32));
     }
 
     #[test]

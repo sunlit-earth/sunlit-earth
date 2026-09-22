@@ -15,13 +15,34 @@ use tracing::debug;
 
 #[cfg(any(target_os = "linux", test))]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{check_supported, set_wallpaper_job};
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{check_supported, set_wallpaper_job};
 #[cfg(windows)]
 pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
+
+/// How many generations a publish leaves on disk, its own included.
+///
+/// Two everywhere but macOS: the one just published and the one before it,
+/// which is the one the desktop is still showing until the setter has run.
+/// Everything older is referenced by nothing and its full-resolution PNGs are
+/// worth reclaiming.
+///
+/// Twelve on macOS, an hour at the default refresh, because a publish paints
+/// only the active Space of each screen and nothing records what path an
+/// inactive one still holds. An hour of them is the cheapest way to make a
+/// stale Space show an old Earth rather than a missing file. Provisional until
+/// somebody with a Mac says what a Space does when its file has gone.
+#[cfg(not(target_os = "macos"))]
+pub(crate) const GENERATIONS_KEPT: usize = 2;
+#[cfg(target_os = "macos")]
+pub(crate) const GENERATIONS_KEPT: usize = 12;
 
 /// Return the wallpaper output directory, creating it if it does not exist.
 ///
@@ -247,7 +268,7 @@ pub(crate) struct Publication {
 }
 
 /// Where each of a job's images went, index for index with `job.monitors`.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(crate) struct WrittenImages {
     /// The file that screen's picture went to, or `None` for a screen this mode
     /// does not paint and which keeps the wallpaper it has.
@@ -319,7 +340,7 @@ impl Publication {
     /// whichever screen came first. A screen the mode does not paint is `None`
     /// rather than a gap, so the answer stays index-for-index with
     /// `job.monitors` and a caller can tell which screen each path belongs to.
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     pub(crate) fn write_job(
         &mut self,
         job: &crate::engine::wallpaper_sink::WallpaperJob,
@@ -387,7 +408,7 @@ impl Publication {
                 .as_ref()
                 .map(|generation| generation.dir.clone())
                 .or_else(|| newest_generation_other_than(root, &self.dir));
-            sweep_generations(root, &self.dir, previous.as_deref());
+            sweep_generations(root, &self.dir, previous.as_deref(), GENERATIONS_KEPT);
             if previous.is_some() {
                 sweep_legacy_files(root);
             }
@@ -414,14 +435,40 @@ fn newest_generation_other_than(root: &Path, current: &Path) -> Option<PathBuf> 
         .map(|(_, dir)| dir)
 }
 
-/// Remove every generation except the one just published and the one before it.
+/// Remove every generation but the newest `kept` of them.
 ///
-/// `keep` names the two survivors. A directory that is neither is one no screen
-/// holds any more, so its whole layout of full-resolution PNGs is removed at
-/// once.
-fn sweep_generations(root: &Path, current: &Path, previous: Option<&Path>) {
-    for generation in generation_dirs(root) {
-        if generation == current || Some(generation.as_path()) == previous {
+/// `current` and `previous` always survive, whatever their modification times
+/// say: `previous` is what the desktop shows until this publish's setter has
+/// run, and it is named rather than inferred because a coarse filesystem clock
+/// may not be able to tell. The rest of the quota goes to the newest remaining
+/// directories.
+///
+/// `kept` is a parameter rather than [`GENERATIONS_KEPT`] read directly, so
+/// one test covers every platform's depth.
+fn sweep_generations(root: &Path, current: &Path, previous: Option<&Path>, kept: usize) {
+    let mut others: Vec<PathBuf> = generation_dirs(root)
+        .into_iter()
+        .filter(|dir| dir != current)
+        .collect();
+    // Newest first, and a directory with no file in it last: it is half
+    // written or abandoned, and worth less than a generation a desktop holds.
+    others.sort_by_key(|dir| std::cmp::Reverse(generation_recency(dir)));
+
+    let mut keep: Vec<PathBuf> = Vec::with_capacity(kept);
+    if let Some(previous) = previous {
+        keep.push(previous.to_path_buf());
+    }
+    for dir in &others {
+        if keep.len() + 1 >= kept {
+            break;
+        }
+        if !keep.contains(dir) {
+            keep.push(dir.clone());
+        }
+    }
+
+    for generation in others {
+        if keep.contains(&generation) {
             continue;
         }
         match std::fs::remove_dir_all(&generation) {
@@ -751,8 +798,61 @@ mod tests {
         }
     }
 
+    /// The shape of the rule at every depth: the publish in flight and the one
+    /// the desktop is still showing always survive, and the rest of the quota
+    /// goes to the newest directories left.
     #[test]
-    fn the_sweep_keeps_the_last_two_generations_and_clears_the_legacy_files() {
+    fn the_sweep_keeps_exactly_the_depth_it_is_given() {
+        let scratch = Scratch::new("sweep_depth");
+        let root = scratch.dir().to_path_buf();
+        // Uncommitted, so the sweep is the only thing that removes anything.
+        let make = || -> PathBuf {
+            let mut publication = begin_publication().expect("a generation");
+            publication
+                .write("0", &pixels(1, 1, [0, 0, 255, 255]), 1, 1)
+                .expect("write an image");
+            publication.dir.clone()
+        };
+
+        let deep: Vec<PathBuf> = (0..6).map(|_| make()).collect();
+        sweep_generations(&root, &deep[5], Some(&deep[4]), 4);
+        for kept in &deep[2..] {
+            assert!(
+                kept.exists(),
+                "{} was swept at a depth of 4",
+                kept.display()
+            );
+        }
+        for gone in &deep[..2] {
+            assert!(!gone.exists(), "{} survived a depth of 4", gone.display());
+        }
+
+        // And the two the other platforms keep, over what is left plus more.
+        let shallow: Vec<PathBuf> = (0..3).map(|_| make()).collect();
+        sweep_generations(&root, &shallow[2], Some(&shallow[1]), 2);
+        assert!(shallow[2].exists() && shallow[1].exists());
+        assert!(
+            !shallow[0].exists(),
+            "a depth of 2 keeps a pair and no more"
+        );
+        for gone in &deep {
+            assert!(
+                !gone.exists(),
+                "{} outlived every generation newer than it",
+                gone.display()
+            );
+        }
+
+        // Kept whatever its modification time says: it is the one the
+        // desktop is showing.
+        let named: Vec<PathBuf> = (0..3).map(|_| make()).collect();
+        sweep_generations(&root, &named[2], Some(&named[0]), 2);
+        assert!(named[0].exists(), "the named previous generation was swept");
+        assert!(!named[1].exists(), "a depth of 2 keeps a pair and no more");
+    }
+
+    #[test]
+    fn the_sweep_keeps_this_platforms_generations_and_clears_the_legacy_files() {
         let scratch = Scratch::new("sweep");
         let root = scratch.dir().to_path_buf();
 
@@ -775,13 +875,21 @@ mod tests {
             dir
         };
 
-        let first = publish();
-        let second = publish();
-        let third = publish();
+        // One more than the platform keeps, so exactly one is swept whatever
+        // the depth is.
+        let generations: Vec<PathBuf> = (0..=GENERATIONS_KEPT).map(|_| publish()).collect();
 
-        assert!(!first.exists(), "the oldest generation was not swept");
-        assert!(second.exists(), "the previous generation must be kept");
-        assert!(third.exists(), "the newest generation must be kept");
+        assert!(
+            !generations[0].exists(),
+            "the oldest generation was not swept"
+        );
+        for kept in &generations[1..] {
+            assert!(
+                kept.exists(),
+                "{} is inside the {GENERATIONS_KEPT} this platform keeps",
+                kept.display()
+            );
+        }
 
         for legacy in [
             "wallpaper-1-0.png",

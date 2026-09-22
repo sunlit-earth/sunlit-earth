@@ -16,6 +16,14 @@ on:
         description: "Build the binary for Intel as well as Apple Silicon."
         type: boolean
         default: false
+      interactive:
+        description: "Open a screen sharing session on the runner once the mode's work is done."
+        type: boolean
+        default: false
+      interactive_minutes:
+        description: "How long to hold that session open."
+        type: number
+        default: 30
 
 concurrency:
   group: macos-build-${{ github.ref }}
@@ -154,3 +162,98 @@ jobs:
           name: e2e-macos
           path: e2e-out/
           if-no-files-found: warn
+
+      # --- the session somebody watches --------------------------------------
+
+      # Every mode above reports what a Mac did in a log somebody reads
+      # afterwards. `interactive` is the other half: it holds the runner open
+      # so the desktop can be looked at while it is still there. It composes
+      # with all three modes rather than being a fourth, so the session can
+      # start on a machine that has just compiled, just bundled, or just run
+      # the e2e suite and still has its wallpaper on the screen. It also
+      # compiles nothing of its own, which is why the cache key above is a
+      # function of `mode` alone.
+      #
+      # `!cancelled()` rather than the default, because a failed build is the
+      # case where looking is worth most. The steps come after the uploads so
+      # the artifacts exist before anybody starts poking at the machine.
+
+      # A hosted runner accepts no inbound connection: multi-tenant, behind
+      # NAT, and GitHub's own guidance is that nothing ever needs to reach in.
+      # So the session is dialled from inside. The runner joins the tailnet as
+      # an ephemeral node, tagged `tag:ci` and logged out again by the time the
+      # job ends, and its screen answers on a 100.x address that routes only
+      # from machines already on that tailnet. That is the whole of the access
+      # control, and it is why the address below is safe to print here.
+      #
+      # A public tunnel would do the same job and was rejected twice over: it
+      # puts a reachable address in a public repository's logs, and it meters
+      # the stream. A desktop rendering the Earth is a continuously changing
+      # image, which is the worst case for a delta encoder, and spends a
+      # gigabyte of monthly allowance in well under an hour.
+      - name: Join the tailnet
+        if: ${{ inputs.interactive && !cancelled() }}
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      # Apple's own screen sharing server rather than a third-party one,
+      # because it is a system service and therefore exempt from the Screen
+      # Recording consent that a capture tool would have to be clicked through,
+      # and there is nobody here to click it.
+      #
+      # The password goes through the legacy VNC path so that every client can
+      # speak it, Apple's own authentication being something only some of them
+      # implement. That protocol uses the password as a DES key and keeps the
+      # first eight characters, so `VNC_PASSWORD` is eight characters long and
+      # a longer secret would be a longer secret and not a stronger one. The
+      # runner account is logged in with no lock screen, so a connection lands
+      # on the desktop without an account password in the picture at all.
+      - name: Open a screen sharing session
+        if: ${{ inputs.interactive && !cancelled() }}
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kickstart=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
+          sudo "$kickstart" -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
+          sudo "$kickstart" -activate -configure -access -on -restart -agent -privs -all
+          if command -v tailscale > /dev/null; then
+            echo "connect a VNC client to $(tailscale ip -4):5900, password only, no user name"
+          else
+            echo "the tailscale CLI is not on PATH; take the address from the Join the tailnet step above"
+          fi
+        shell: bash
+
+      # The job is the session's lifetime, so the last step is the session.
+      # The sentinel is the way out: `touch /tmp/release-the-runner` from a
+      # terminal inside the session ends the job at once instead of running the
+      # clock down, which is worth doing because the tailnet's free allowance
+      # is a monthly pool of ephemeral node minutes rather than a per-session
+      # limit. The first frame after connecting is often black, and that is the
+      # console session switching rather than a failure: reconnect.
+      - name: Hold the session open
+        if: ${{ inputs.interactive && !cancelled() }}
+        env:
+          MINUTES: ${{ inputs.interactive_minutes }}
+        run: |
+          set -euo pipefail
+          # Bash evaluates a bare name inside $(( )) as an expression, so a
+          # value that is not a number is a way to run a command here. The
+          # dispatch form already types this input as a number; this is the
+          # half of that which does not depend on the form.
+          case "$MINUTES" in
+            '' | *[!0-9]*) echo "interactive_minutes must be a whole number"; exit 1 ;;
+          esac
+          deadline=$(( $(date +%s) + MINUTES * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if [ -e /tmp/release-the-runner ]; then
+              echo "released from inside the session"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "held for $MINUTES minutes"
+        shell: bash

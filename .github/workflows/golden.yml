@@ -106,6 +106,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ steps.cache_key.outputs.key }}
+          cache-on-failure: true
 
       - name: Regenerate
         id: regenerate

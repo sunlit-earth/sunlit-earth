@@ -64,9 +64,19 @@ jobs:
           fi
         shell: bash
 
+      # `cache-on-failure` defaults to false, which costs more here than
+      # anywhere else in this repository. Every workflow is dispatch-only, so a
+      # run exists because somebody wanted an answer, and the answer they most
+      # often want is why something failed. Without this, the run that finds a
+      # failure saves nothing, and the run that goes back to look at it
+      # recompiles the workspace from cold. The `interactive` input makes that
+      # sharper still: the session steps run under `!cancelled()` so the desktop
+      # is there whatever the suite did, but the job still concludes as failed,
+      # so a debugging session could never warm anything.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ inputs.mode == 'check' && 'ci-macos' || inputs.mode == 'build' && 'release-macos' || 'macos-build-e2e' }}
+          cache-on-failure: true
 
       - name: Check
         if: inputs.mode == 'check'

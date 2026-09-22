@@ -30,6 +30,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Same value as ci.yml, for the reason golden.yml spells out: rust-cache folds
+  # the RUST* environment into its cache key, and cargo's own fingerprint
+  # includes RUSTFLAGS, so a job that omits this shares nothing with one that
+  # has it. macos-build.yml's `build` mode points at this job's cache.
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   build:
@@ -104,6 +109,7 @@ jobs:
         with:
           shared-key: release-${{ matrix.platform }}
           save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          cache-on-failure: true
 
       - name: Check the tag against the workspace version
         if: startsWith(github.ref, 'refs/tags/')

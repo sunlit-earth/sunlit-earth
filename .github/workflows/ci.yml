@@ -144,9 +144,15 @@ jobs:
           fi
         shell: bash
 
+      # A dispatch exists because somebody wanted an answer, and the answer is
+      # often a failure. `cache-on-failure` defaults to false, so without this
+      # the run that finds the failure saves nothing and the run that goes back
+      # to look at it starts cold. `--no-fail-fast` below is the same argument
+      # about the same round trip.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ matrix.cache }}
+          cache-on-failure: true
 
       # --- the suite ---------------------------------------------------------
 

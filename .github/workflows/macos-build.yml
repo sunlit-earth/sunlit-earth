@@ -294,7 +294,7 @@ jobs:
           fi
 
           for _ in $(seq 1 20); do
-            if lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
+            if sudo lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
               python3 -c "import socket; s=socket.create_connection(('127.0.0.1',5900),5); print('local VNC banner:', s.recv(12))" || true
               echo "connect a VNC client to $(tailscale ip -4):5900, password only, no user name"
               exit 0
@@ -307,7 +307,7 @@ jobs:
           echo "console user: $(stat -f%Su /dev/console)"
           system_profiler SPDisplaysDataType | head -30
           echo "IOFramebuffer instances: $(ioreg -lw0 | grep -c IOFramebuffer || true)"
-          lsof -nP -iTCP:5900 || echo "(no socket on 5900 at all)"
+          sudo lsof -nP -iTCP:5900 || echo "(no socket on 5900 at all)"
           ps -ef | grep -iE 'ARDAgent|WindowServer|screensharingd' | grep -v grep || true
           sudo launchctl print system/com.apple.screensharing 2>&1 | sed -n '1,35p' || true
           echo "== what it logged on the way out =="

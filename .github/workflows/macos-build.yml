@@ -195,42 +195,78 @@ jobs:
 
       # Legacy VNC auth uses the password as a DES key and keeps the first eight
       # characters, so a `VNC_PASSWORD` longer than that is not stronger.
+      # The hosted Apple Silicon image has no display hardware: no IODisplay in
+      # ioreg, zero IOFramebuffer instances, and WindowServer in daemon mode
+      # against a null display. There is nothing there to share, which is what
+      # runs 35730210452 and 35734470521 measured, so this refuses rather than
+      # spending fifteen minutes proving it again. The Intel image is a VMware
+      # guest whose resolution can be set, so a framebuffer can be made to exist.
+      - name: Refuse a session the image cannot give
+        if: ${{ inputs.interactive && inputs.runner != 'macos-26-intel' && !cancelled() }}
+        run: |
+          echo "${{ inputs.runner }} has no framebuffer, so nothing can share its screen."
+          echo "Dispatch with runner=macos-26-intel, or use a Mac you have admin on."
+          exit 1
+        shell: bash
+
       - name: Open a screen sharing session
         id: screen
-        if: ${{ inputs.interactive && !cancelled() }}
+        if: ${{ inputs.interactive && inputs.runner == 'macos-26-intel' && !cancelled() }}
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ "${#VNC_PASSWORD}" -gt 8 ]; then
+            echo "VNC_PASSWORD must be eight characters or fewer; legacy auth reads no more"
+            exit 1
+          fi
+
+          # Nothing here may restart loginwindow. The Actions runner is a
+          # LaunchAgent inside the console user's GUI session, so restarting it
+          # logs that session out and kills the job with 143. Keeping the display
+          # awake is the half that can be done from outside the session, and it
+          # matters: once the display sleeps there is no way to wake it and the
+          # server streams an empty framebuffer.
+          sudo pmset -a sleep 0 displaysleep 0 disksleep 0 || true
+          sudo defaults write /Library/Preferences/com.apple.screensaver askForPassword -int 0 || true
+          sudo defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -bool true || true
+
           kickstart=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
+          sudo "$kickstart" -activate
+          sudo "$kickstart" -configure -allowAccessFor -allUsers -privs -all
           sudo "$kickstart" -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
-          sudo "$kickstart" -activate -configure -access -on -restart -agent -privs -all
+          # Some builds take -setvncpw and store nothing, so the obfuscated file
+          # is written directly too. The key is fixed and public, and the format
+          # keeps only the first eight characters, as the check above assumes.
+          printf '%s' "$VNC_PASSWORD" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' \
+            | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
 
-          # kickstart alone does not open the port. On 2026-09-22 it warned that
-          # "Screen Sharing or Remote Management must be enabled from System
-          # Settings or via MDM", reported "Activated Remote Management", then
-          # "Stopped ARD Agent" and never brought it back, so 5900 was closed
-          # while this step printed an address for it. Screen Sharing is the
-          # plain launchd job behind the same port and needs no ARD agent; the
-          # probe below is what decides whether either route worked, because the
-          # exit code of neither says so.
-          sudo launchctl enable system/com.apple.screensharing || true
-          sudo launchctl bootstrap system \
-            /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
+          # Give the guest a mode. Without one the shared screen has no
+          # framebuffer and every client draws black.
+          sudo "/Library/Application Support/VMware Tools/vmware-resolutionSet" 1920 1080 \
+            || echo "no VMware tools here; if the desktop comes up black, that is why"
 
-          for _ in $(seq 1 15); do
+          # Its own call, and -console, because the combined form used until now
+          # logged "Stopped ARD Agent" and never brought it back.
+          sudo "$kickstart" -restart -agent -console
+
+          for _ in $(seq 1 20); do
             if lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
+              python3 -c "import socket; s=socket.create_connection(('127.0.0.1',5900),5); print('local VNC banner:', s.recv(12))" || true
               echo "connect a VNC client to $(tailscale ip -4):5900, password only, no user name"
               exit 0
             fi
             sleep 2
           done
 
-          echo "nothing is listening on 5900 after 30 s, so the session is unreachable"
+          echo "nothing is listening on 5900 after 40 s, so the session is unreachable"
           sw_vers
+          echo "console user: $(stat -f%Su /dev/console)"
+          system_profiler SPDisplaysDataType | head -30
+          echo "IOFramebuffer instances: $(ioreg -lw0 | grep -c IOFramebuffer || true)"
           lsof -nP -iTCP:5900 || echo "(no socket on 5900 at all)"
-          sudo launchctl print system/com.apple.screensharing 2>&1 | head -20 || true
-          /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate || true
+          ps -ef | grep -iE 'ARDAgent|WindowServer|screensharingd' | grep -v grep || true
+          sudo launchctl print system/com.apple.screensharing 2>&1 | head -12 || true
           exit 1
         shell: bash
 

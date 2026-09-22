@@ -14,16 +14,16 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 ## Screenshots
 
-[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](docs/images/wallpaper-day.webp)
+[<img src="docs/images/wallpaper-day.webp" width="100%" alt="Earth in daylight, view over Africa and Europe">](https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-day.webp)
 
 <p>
-  <a href="docs/images/wallpaper-night.webp"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>
-  <a href="docs/images/wallpaper-sunrise.webp"><img src="docs/images/thumbnails/wallpaper-sunrise.webp" width="13%" alt="Sunrise over Earth" title="Sunrise over Earth"></a>
-  <a href="docs/images/wallpaper-weather.webp"><img src="docs/images/thumbnails/wallpaper-weather.webp" width="13%" alt="Clouds and weather" title="Clouds and weather"></a>
-  <a href="docs/images/wallpaper-ultrawide.webp"><img src="docs/images/thumbnails/wallpaper-ultrawide.webp" width="13%" alt="Wide view for multi monitor setups" title="Wide view for multi monitor setups"></a>
-  <a href="docs/images/wallpaper-earthrise-photo.webp"><img src="docs/images/thumbnails/wallpaper-earthrise-photo.webp" width="13%" alt="Earthrise" title="Earthrise"></a>
-  <a href="docs/images/screenshot-windows.webp"><img src="docs/images/thumbnails/screenshot-windows.webp" width="13%" alt="Sunlit Earth on Windows" title="Sunlit Earth on Windows"></a>
-  <a href="docs/images/screenshot-linux.webp"><img src="docs/images/thumbnails/screenshot-linux.webp" width="13%" alt="Sunlit Earth on Linux" title="Sunlit Earth on Linux"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-night.webp"><img src="docs/images/thumbnails/wallpaper-night.webp" width="13%" alt="Earth at night" title="Earth at night"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-sunrise.webp"><img src="docs/images/thumbnails/wallpaper-sunrise.webp" width="13%" alt="Sunrise over Earth" title="Sunrise over Earth"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-weather.webp"><img src="docs/images/thumbnails/wallpaper-weather.webp" width="13%" alt="Clouds and weather" title="Clouds and weather"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-ultrawide.webp"><img src="docs/images/thumbnails/wallpaper-ultrawide.webp" width="13%" alt="Wide view for multi monitor setups" title="Wide view for multi monitor setups"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/wallpaper-earthrise-photo.webp"><img src="docs/images/thumbnails/wallpaper-earthrise-photo.webp" width="13%" alt="Earthrise" title="Earthrise"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/screenshot-windows.webp"><img src="docs/images/thumbnails/screenshot-windows.webp" width="13%" alt="Sunlit Earth on Windows" title="Sunlit Earth on Windows"></a>
+  <a href="https://raw.githubusercontent.com/sunlit-earth/sunlit-earth/refs/heads/main/docs/images/screenshot-linux.webp"><img src="docs/images/thumbnails/screenshot-linux.webp" width="13%" alt="Sunlit Earth on Linux" title="Sunlit Earth on Linux"></a>
 </p>
 
 ## Features
@@ -44,19 +44,19 @@ Planned features:
 
 ## Downloads
 
-> Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and so far it hasn't caused any damage to my devices, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
+> ⚠️ Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and I'm confident it won't do something bad on your system, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
 
 At the moment we only have portable binary releases for Linux and Windows on x86-64:
 
-- Linux: sunlit-earth-0.1.0-linux.tar.gz
-- Windows: sunlit-earth-0.1.0-windows.zip
+- Linux: [sunlit-earth-0.1.0-linux.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.1.0/sunlit-earth-0.1.0-linux.tar.gz)
+- Windows: [sunlit-earth-0.1.0-windows.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.1.0/sunlit-earth-0.1.0-windows.zip)
 - macOS: coming soon
 
 A macOS release, ARM64 support, and more installation options are all on the roadmap.
 
 The Linux version was tested on KDE, GNOME, Xfce, Cinnamon, and should work on many other desktop environments. The Windows version was tested on a recent version of Windows 11; it'll probably run on older Windows versions, but no guarantees.
 
-On Windows, unpack the zip file and launch `sunlit-earth.exe`. On Linux, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`.
+On Windows, unpack the zip file and launch `sunlit-earth.exe`. You might get a scary blue warning popup from Microsoft SmartScreen where you have to allow starting the app; sorry, nothing I can do about that at the moment. On Linux, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`.
 
 If you know your way around the Rust toolchain, you can [build Sunlit Earth from source](#build-from-source) instead.
 
@@ -187,7 +187,7 @@ More information can be found in the [docs folder](docs/README.md). The [VM guid
 
 ## AI disclaimer
 
-Most of the code in this repo was written with the help of AI tools. Sunlit Earth is my pet project. While I've invested a lot of time in it, I wouldn't have been able to get it to a state where I feel comfortable sharing it publicly without these tools that make me question if "programmer" will still be a job soon.
+Most of the code in this repo was written with the help of AI tools. Sunlit Earth is my pet project, and while I've invested a lot of time in it, I wouldn't have been able to get it to a state where I feel comfortable sharing it publicly without these tools that make me question if "programmer" will still be a job soon.
 
 Should you trust the code if most of it was written by a machine? That's up to you. I trust my workflow and review and testing enough that I run the code on my own devices. I'm just sharing this here so you know and can choose for yourself.
 

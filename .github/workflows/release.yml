@@ -27,8 +27,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Must match the other workflows: cargo's fingerprint and rust-cache's key both
-  # include RUSTFLAGS, so omitting it shares no cache with anything that sets it.
   RUSTFLAGS: "-D warnings"
 
 jobs:

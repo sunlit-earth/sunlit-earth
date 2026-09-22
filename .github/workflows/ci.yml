@@ -118,8 +118,6 @@ jobs:
           fi
         shell: bash
 
-      # cache-on-failure defaults to false, and a dispatch usually exists to
-      # look at a failure.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ matrix.cache }}

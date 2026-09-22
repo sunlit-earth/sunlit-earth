@@ -25,8 +25,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # rust-cache folds the RUST* environment into its cache key, so a workflow
-  # that omits this restores nothing from the matrix's cache. All four set it.
   RUSTFLAGS: "-D warnings"
 
 jobs:

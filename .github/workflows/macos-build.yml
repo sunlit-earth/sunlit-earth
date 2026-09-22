@@ -64,9 +64,6 @@ jobs:
           fi
         shell: bash
 
-      # cache-on-failure defaults to false, and an `interactive` run concludes as
-      # failed whenever the suite did, so without it a debugging session could
-      # never warm anything.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ inputs.mode == 'check' && 'ci-macos' || inputs.mode == 'build' && 'release-macos' || 'macos-build-e2e' }}
@@ -181,7 +178,7 @@ jobs:
       # Apple's own server, not a third-party one: it is a system service and so
       # exempt from the Screen Recording consent nobody is here to click. Legacy
       # VNC auth uses the password as a DES key and keeps the first eight
-      # characters, so a `VNC_PASSWORD` longer than that is longer, not stronger.
+      # characters, so a `VNC_PASSWORD` longer than that is not stronger.
       - name: Open a screen sharing session
         if: ${{ inputs.interactive && !cancelled() }}
         env:

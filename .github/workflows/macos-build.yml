@@ -24,6 +24,13 @@ on:
         description: "How long to hold that session open."
         type: number
         default: 30
+      runner:
+        description: "Which image. Intel is 4 vCPU and 14 GB against Apple Silicon's 3 and 7, and takes check only."
+        type: choice
+        default: macos-latest
+        options:
+          - macos-latest
+          - macos-26-intel
 
 concurrency:
   group: macos-build-${{ github.ref }}
@@ -39,9 +46,20 @@ env:
 
 jobs:
   macos:
-    name: ${{ inputs.mode }} on macos-latest
-    runs-on: macos-latest
+    name: ${{ inputs.mode }} on ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner }}
     steps:
+      # The build modes compile for aarch64-apple-darwin and then run what they
+      # produced, which an Intel runner cannot do at all: there is no Rosetta in
+      # that direction. The image is here for the interactive experiment.
+      - name: Refuse a build on the Intel image
+        if: ${{ inputs.runner == 'macos-26-intel' && inputs.mode != 'check' }}
+        run: |
+          echo "mode=${{ inputs.mode }} builds for aarch64 and runs it; ${{ inputs.runner }} cannot."
+          echo "Use macos-latest, or mode=check."
+          exit 1
+        shell: bash
+
       - uses: actions/checkout@v4
         with:
           lfs: ${{ inputs.mode != 'check' }}

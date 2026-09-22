@@ -1,16 +1,5 @@
 name: CI
 
-# Manual only. It ran on every push and pull request until the hosted minutes
-# ran out, back when this repository was private and every minute here was
-# billed against a limited budget. It has been public since the 0.1.0 release,
-# so standard runners are free and unmetered and cost is no longer the reason.
-# What keeps it manual is that the local VM suite covers what the hosted
-# runners were for: `cargo xtask e2e --target <windows|linux>` runs the real
-# desktop suite, and `cargo test` runs everything else on the developer's
-# machine. What is lost is the other two operating systems, so run this before
-# anything that has to hold on all three. Going back to push and pull request
-# triggers is now a question of noise rather than of budget, and
-# `docs/roadmap.md` carries it.
 on:
   workflow_dispatch:
     inputs:
@@ -29,16 +18,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Read-only. Nothing here writes to the repository, so nothing here needs to be
-# able to; `release.yml` is the one workflow that does, and it asks for itself.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Warnings fail the build. Cargo passes --cap-lints allow to registry
-  # dependencies, so this only gates code in this workspace.
   RUSTFLAGS: "-D warnings"
 
 jobs:
@@ -70,7 +55,6 @@ jobs:
           echo "include=$include" >> "$GITHUB_OUTPUT"
         shell: bash
 
-  # Formatting is OS-independent, so it runs once rather than per matrix entry.
   fmt:
     name: Format
     needs: plan
@@ -89,8 +73,6 @@ jobs:
     needs: plan
     runs-on: ${{ matrix.os }}
     strategy:
-      # Every OS reports. A Linux failure that cancels the macOS job costs a
-      # whole round trip to learn something the same run already knew.
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.include) }}
@@ -98,12 +80,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # --- per-OS setup ------------------------------------------------------
-
-      # Slint's documented Linux build dependencies, mesa's Vulkan software
-      # driver (lavapipe, which is what the GPU tests run on here), and Xvfb.
-      # Installed explicitly rather than relied on from the runner image, which
-      # is free to drop any of them.
+      # mesa-vulkan-drivers is lavapipe, which the GPU tests run on here.
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -118,8 +95,8 @@ jobs:
             xvfb
         shell: bash
 
-      # bindgen needs libclang for astronomy-engine-bindings. Windows has no
-      # system one, so it is installed and pinned.
+      # bindgen needs libclang for astronomy-engine-bindings, and Windows has no
+      # system one.
       - uses: KyleMayes/install-llvm-action@v2
         if: matrix.os == 'windows-latest'
         with:
@@ -129,9 +106,6 @@ jobs:
         run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
         shell: bash
 
-      # Xcode ships a libclang. Point at it only if it is where we expect, so a
-      # layout change degrades to clang-sys's own search rather than to a path
-      # that does not exist.
       - name: Point bindgen at Xcode's libclang
         if: matrix.os == 'macos-latest'
         run: |
@@ -144,67 +118,44 @@ jobs:
           fi
         shell: bash
 
-      # A dispatch exists because somebody wanted an answer, and the answer is
-      # often a failure. `cache-on-failure` defaults to false, so without this
-      # the run that finds the failure saves nothing and the run that goes back
-      # to look at it starts cold. `--no-fail-fast` below is the same argument
-      # about the same round trip.
+      # cache-on-failure defaults to false, and a dispatch usually exists to
+      # look at a failure.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ matrix.cache }}
           cache-on-failure: true
 
-      # --- the suite ---------------------------------------------------------
-
-      # --show-output because several tests report numbers that are only
-      # interesting when they pass: the soak test's per-OS memory profile, and
-      # the golden suite's adapter key. libtest discards the output of a passing
-      # test otherwise, which is how a golden run that compared nothing looked
-      # exactly like one that compared everything.
+      # --show-output because libtest discards a passing test's output, which is
+      # how a golden run that compared nothing looked exactly like one that
+      # compared everything.
       - name: Test
         run: ${{ matrix.wrap }} cargo test --locked --no-fail-fast -- --show-output
         shell: bash
 
-      # The headless render path is the useful cross-platform mode today, and
-      # the one place all three OSes are asked to produce a real image end to
-      # end. Deliberately not wrapped in xvfb on Linux: `run_render` claims to
-      # need no window, no Slint backend and no event loop, and running it with
-      # no DISPLAY at all is what makes that claim a tested one rather than a
-      # comment.
+      # No `matrix.wrap` here on purpose: running with no DISPLAY at all is what
+      # makes `run_render`'s claim to need no window and no event loop a tested
+      # one rather than a comment.
       - name: Render smoke test
         if: ${{ !cancelled() }}
         env:
-          # The real binary records metrics and reads the user config. Keep both
-          # in the workspace so nothing lands in the runner's app data.
           SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/smoke-metrics
           SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/smoke-config.toml
           SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/smoke-cache
           SUNLIT_EARTH_NO_CLOUDS: "1"
-          # An empty directory, on purpose. `textures/**` is Git LFS and
-          # `actions/checkout` does not fetch it, so the working tree holds
-          # pointer files that look like textures and fail to decode as JXL.
-          # The engine then waits two minutes for a `TexturesReady` that cannot
-          # arrive (see the roadmap entry on `Renderer::textures_ready`), and
-          # the log fills with decode errors that mean nothing. Pointing at an
-          # empty directory says what we actually want: render without the 8K
-          # assets, on the procedural grid, and tell us whether the pipeline
-          # and the PNG encoder work on this OS. Turning on LFS here would
-          # exercise the decode too, at the cost of making every run on every
-          # OS spend LFS bandwidth quota.
+          # Empty on purpose. `textures/**` is Git LFS and checkout does not
+          # fetch it, so the working tree holds pointer files that fail to decode
+          # and leave the engine waiting two minutes for a `TexturesReady` that
+          # cannot arrive.
           SUNLIT_EARTH_TEXTURES: ${{ github.workspace }}/smoke-textures
         run: |
           set -euo pipefail
           mkdir -p smoke-textures
-          # The binary the test step already built, rather than `cargo run`.
-          # `cargo test` builds bins under the test profile (the e2e suite needs
-          # one via CARGO_BIN_EXE), and `cargo run` would build them again under
-          # dev: 7 minutes of relinking on Windows to produce the same
-          # executable. Running the artifact the suite produced is both faster
-          # and a slightly better test.
+          # The binary the test step already built. `cargo run` would build it
+          # again under dev: 7 minutes of relinking on Windows for the same
+          # executable.
           BIN=target/debug/sunlit-earth
-          # An `if` rather than `[ -f x ] && BIN=...`, which would evaluate to
-          # false on the three OSes without an .exe and fail the step under
-          # `set -e` the moment it became the last statement in the block.
+          # An `if` rather than `[ -f x ] && BIN=...`, which evaluates to false on
+          # the OSes without an .exe and would fail the step under `set -e`.
           if [ -f "$BIN.exe" ]; then
             BIN="$BIN.exe"
           fi
@@ -213,11 +164,8 @@ jobs:
             exit 1
           fi
           "$BIN" render --output render-smoke.png --width 640 --height 360
-          # Assert what was asked for: a PNG that is 640x360. A byte count only
-          # says the file is not empty, and the failure this guards against is a
-          # render that silently came out at the wrong size or was not an image
-          # at all. The first 24 bytes of a PNG are the signature, the IHDR
-          # length and tag, then width and height as big-endian u32s.
+          # PNG signature, IHDR length and tag, then width and height as
+          # big-endian u32s: 0x280 by 0x168.
           header=$(od -An -v -tx1 -N24 render-smoke.png | tr -d ' \n')
           expected="89504e470d0a1a0a0000000d494844520000028000000168"
           echo "render-smoke.png header: $header ($(wc -c < render-smoke.png) bytes)"
@@ -227,9 +175,6 @@ jobs:
           fi
         shell: bash
 
-      # The contact sheet renders every camera preset into one image. It is not
-      # asserted on; it exists so a human can glance at a shading change. Per OS,
-      # because the three adapters are exactly what it is worth comparing.
       - name: Upload images
         if: always()
         uses: actions/upload-artifact@v4

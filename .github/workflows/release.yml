@@ -3,11 +3,8 @@ name: Release
 # Manual only. Release artifacts are currently built with `cargo xtask dist`, which
 # compiles in clean VMs. Proper GitHub action builds will come later.
 #
-# That is why the tag-aware logic further down is kept rather than deleted. With
-# no tag trigger every `startsWith(github.ref, 'refs/tags/')` below is false, so
-# the version check never fires and the cache always saves; all of it is what a
-# tag push needs on the day the trigger comes back, and none of it costs anything
-# while it is dormant.
+# Until then every `startsWith(github.ref, 'refs/tags/')` below is false and the
+# logic behind it dormant, kept for the day the tag trigger comes back.
 on:
   workflow_dispatch:
     inputs:
@@ -30,10 +27,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Same value as ci.yml, for the reason golden.yml spells out: rust-cache folds
-  # the RUST* environment into its cache key, and cargo's own fingerprint
-  # includes RUSTFLAGS, so a job that omits this shares nothing with one that
-  # has it. macos-build.yml's `build` mode points at this job's cache.
+  # Must match the other workflows: cargo's fingerprint and rust-cache's key both
+  # include RUSTFLAGS, so omitting it shares no cache with anything that sets it.
   RUSTFLAGS: "-D warnings"
 
 jobs:

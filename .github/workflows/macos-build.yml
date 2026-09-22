@@ -64,15 +64,9 @@ jobs:
           fi
         shell: bash
 
-      # `cache-on-failure` defaults to false, which costs more here than
-      # anywhere else in this repository. Every workflow is dispatch-only, so a
-      # run exists because somebody wanted an answer, and the answer they most
-      # often want is why something failed. Without this, the run that finds a
-      # failure saves nothing, and the run that goes back to look at it
-      # recompiles the workspace from cold. The `interactive` input makes that
-      # sharper still: the session steps run under `!cancelled()` so the desktop
-      # is there whatever the suite did, but the job still concludes as failed,
-      # so a debugging session could never warm anything.
+      # cache-on-failure defaults to false, and an `interactive` run concludes as
+      # failed whenever the suite did, so without it a debugging session could
+      # never warm anything.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ inputs.mode == 'check' && 'ci-macos' || inputs.mode == 'build' && 'release-macos' || 'macos-build-e2e' }}
@@ -173,34 +167,9 @@ jobs:
           path: e2e-out/
           if-no-files-found: warn
 
-      # --- the session somebody watches --------------------------------------
-
-      # Every mode above reports what a Mac did in a log somebody reads
-      # afterwards. `interactive` is the other half: it holds the runner open
-      # so the desktop can be looked at while it is still there. It composes
-      # with all three modes rather than being a fourth, so the session can
-      # start on a machine that has just compiled, just bundled, or just run
-      # the e2e suite and still has its wallpaper on the screen. It also
-      # compiles nothing of its own, which is why the cache key above is a
-      # function of `mode` alone.
-      #
-      # `!cancelled()` rather than the default, because a failed build is the
-      # case where looking is worth most. The steps come after the uploads so
-      # the artifacts exist before anybody starts poking at the machine.
-
-      # A hosted runner accepts no inbound connection: multi-tenant, behind
-      # NAT, and GitHub's own guidance is that nothing ever needs to reach in.
-      # So the session is dialled from inside. The runner joins the tailnet as
-      # an ephemeral node, tagged `tag:ci` and logged out again by the time the
-      # job ends, and its screen answers on a 100.x address that routes only
-      # from machines already on that tailnet. That is the whole of the access
-      # control, and it is why the address below is safe to print here.
-      #
-      # A public tunnel would do the same job and was rejected twice over: it
-      # puts a reachable address in a public repository's logs, and it meters
-      # the stream. A desktop rendering the Earth is a continuously changing
-      # image, which is the worst case for a delta encoder, and spends a
-      # gigabyte of monthly allowance in well under an hour.
+      # A hosted runner accepts no inbound connection, so the session is dialled
+      # from inside. The node is ephemeral and answers on a 100.x address that
+      # routes only from this tailnet, which is why printing it below is safe.
       - name: Join the tailnet
         if: ${{ inputs.interactive && !cancelled() }}
         uses: tailscale/github-action@v4
@@ -209,18 +178,10 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      # Apple's own screen sharing server rather than a third-party one,
-      # because it is a system service and therefore exempt from the Screen
-      # Recording consent that a capture tool would have to be clicked through,
-      # and there is nobody here to click it.
-      #
-      # The password goes through the legacy VNC path so that every client can
-      # speak it, Apple's own authentication being something only some of them
-      # implement. That protocol uses the password as a DES key and keeps the
-      # first eight characters, so `VNC_PASSWORD` is eight characters long and
-      # a longer secret would be a longer secret and not a stronger one. The
-      # runner account is logged in with no lock screen, so a connection lands
-      # on the desktop without an account password in the picture at all.
+      # Apple's own server, not a third-party one: it is a system service and so
+      # exempt from the Screen Recording consent nobody is here to click. Legacy
+      # VNC auth uses the password as a DES key and keeps the first eight
+      # characters, so a `VNC_PASSWORD` longer than that is longer, not stronger.
       - name: Open a screen sharing session
         if: ${{ inputs.interactive && !cancelled() }}
         env:
@@ -237,23 +198,17 @@ jobs:
           fi
         shell: bash
 
-      # The job is the session's lifetime, so the last step is the session.
-      # The sentinel is the way out: `touch /tmp/release-the-runner` from a
-      # terminal inside the session ends the job at once instead of running the
-      # clock down, which is worth doing because the tailnet's free allowance
-      # is a monthly pool of ephemeral node minutes rather than a per-session
-      # limit. The first frame after connecting is often black, and that is the
-      # console session switching rather than a failure: reconnect.
+      # The job is the session's lifetime. The first frame after connecting is
+      # often black, which is the console session switching rather than a
+      # failure: reconnect.
       - name: Hold the session open
         if: ${{ inputs.interactive && !cancelled() }}
         env:
           MINUTES: ${{ inputs.interactive_minutes }}
         run: |
           set -euo pipefail
-          # Bash evaluates a bare name inside $(( )) as an expression, so a
-          # value that is not a number is a way to run a command here. The
-          # dispatch form already types this input as a number; this is the
-          # half of that which does not depend on the form.
+          # Bash evaluates a bare name inside $(( )) as an expression, so a value
+          # that is not a number is a way to run a command there.
           case "$MINUTES" in
             '' | *[!0-9]*) echo "interactive_minutes must be a whole number"; exit 1 ;;
           esac

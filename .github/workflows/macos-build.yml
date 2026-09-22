@@ -175,11 +175,10 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      # Apple's own server, not a third-party one: it is a system service and so
-      # exempt from the Screen Recording consent nobody is here to click. Legacy
-      # VNC auth uses the password as a DES key and keeps the first eight
+      # Legacy VNC auth uses the password as a DES key and keeps the first eight
       # characters, so a `VNC_PASSWORD` longer than that is not stronger.
       - name: Open a screen sharing session
+        id: screen
         if: ${{ inputs.interactive && !cancelled() }}
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
@@ -188,18 +187,40 @@ jobs:
           kickstart=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
           sudo "$kickstart" -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
           sudo "$kickstart" -activate -configure -access -on -restart -agent -privs -all
-          if command -v tailscale > /dev/null; then
-            echo "connect a VNC client to $(tailscale ip -4):5900, password only, no user name"
-          else
-            echo "the tailscale CLI is not on PATH; take the address from the Join the tailnet step above"
-          fi
+
+          # kickstart alone does not open the port. On 2026-09-22 it warned that
+          # "Screen Sharing or Remote Management must be enabled from System
+          # Settings or via MDM", reported "Activated Remote Management", then
+          # "Stopped ARD Agent" and never brought it back, so 5900 was closed
+          # while this step printed an address for it. Screen Sharing is the
+          # plain launchd job behind the same port and needs no ARD agent; the
+          # probe below is what decides whether either route worked, because the
+          # exit code of neither says so.
+          sudo launchctl enable system/com.apple.screensharing || true
+          sudo launchctl bootstrap system \
+            /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
+
+          for _ in $(seq 1 15); do
+            if lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
+              echo "connect a VNC client to $(tailscale ip -4):5900, password only, no user name"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "nothing is listening on 5900 after 30 s, so the session is unreachable"
+          sw_vers
+          lsof -nP -iTCP:5900 || echo "(no socket on 5900 at all)"
+          sudo launchctl print system/com.apple.screensharing 2>&1 | head -20 || true
+          /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate || true
+          exit 1
         shell: bash
 
       # The job is the session's lifetime. The first frame after connecting is
       # often black, which is the console session switching rather than a
       # failure: reconnect.
       - name: Hold the session open
-        if: ${{ inputs.interactive && !cancelled() }}
+        if: ${{ inputs.interactive && !cancelled() && steps.screen.outcome == 'success' }}
         env:
           MINUTES: ${{ inputs.interactive_minutes }}
         run: |

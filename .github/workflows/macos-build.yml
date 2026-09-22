@@ -266,6 +266,24 @@ jobs:
           { log show --predicate 'process == "screensharingd"' --last 5m --style compact 2>/dev/null \
             | tail -25 | tee session-out/screensharingd.log; } || echo "(nothing logged)"
 
+          # It reaches "screen sharing service is active", system mode = 1,
+          # agent on console, checkin done, and adds descriptors, and still
+          # nothing answers on 5900. So ask what it actually holds rather than
+          # assuming the port.
+          echo "== what screensharingd is listening on =="
+          ssd=$(pgrep -x screensharingd || true)
+          if [ -n "$ssd" ]; then
+            { sudo lsof -nP -p "$ssd" | grep -iE 'TCP|IPv' || echo "(it holds no TCP socket)"; } \
+              | tee session-out/screensharingd-sockets.txt
+          else
+            echo "(screensharingd is not running by the time we look)"
+          fi
+          echo "== everything this machine is listening on =="
+          { netstat -an -p tcp | grep -i LISTEN | head -30; } 2>/dev/null \
+            | tee session-out/listening.txt || true
+          echo "== the job's sockets, if launchd holds any =="
+          { sudo launchctl print system/com.apple.screensharing 2>&1 | grep -A12 -i 'sockets' || echo "(no sockets section)"; } || true
+
           # This display can be read: an arm64 runner wrote an 80 KB PNG of it on
           # 2026-09-22. Keeping the frame is worth more than the fact, so it goes
           # out as an artifact whether or not the port ever opens.

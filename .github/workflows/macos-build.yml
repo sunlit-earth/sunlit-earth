@@ -21,7 +21,7 @@ on:
         type: number
         default: 30
       runner:
-        description: "Which image. Intel is 4 vCPU and 14 GB against Apple Silicon's 3 and 7, and takes check only."
+        description: "Which image, and so which architecture is built. Intel is 4 vCPU and 14 GB against Apple Silicon's 3 and 7."
         type: choice
         default: macos-latest
         options:
@@ -29,7 +29,7 @@ on:
           - macos-26-intel
 
 concurrency:
-  group: macos-build-${{ github.ref }}
+  group: macos-build-${{ github.ref }}-${{ inputs.runner }}-${{ inputs.mode }}
   cancel-in-progress: true
 
 permissions:
@@ -44,18 +44,11 @@ jobs:
   macos:
     name: ${{ inputs.mode }} on ${{ inputs.runner }}
     runs-on: ${{ inputs.runner }}
+    # Each image builds for its own architecture, because the bundle and e2e
+    # steps run what was built.
+    env:
+      TARGET: ${{ inputs.runner == 'macos-26-intel' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
     steps:
-      # The build modes compile for aarch64-apple-darwin and then run what they
-      # produced, which an Intel runner cannot do at all: there is no Rosetta in
-      # that direction. The image is here for the interactive experiment.
-      - name: Refuse a build on the Intel image
-        if: ${{ inputs.runner == 'macos-26-intel' && inputs.mode != 'check' }}
-        run: |
-          echo "mode=${{ inputs.mode }} builds for aarch64 and runs it; ${{ inputs.runner }} cannot."
-          echo "Use macos-latest, or mode=check."
-          exit 1
-        shell: bash
-
       - uses: actions/checkout@v4
         with:
           lfs: ${{ inputs.mode != 'check' }}
@@ -97,7 +90,7 @@ jobs:
         if: inputs.mode != 'check'
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target aarch64-apple-darwin
+        run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$TARGET"
         shell: bash
 
       - name: Bundle and verify
@@ -111,7 +104,7 @@ jobs:
           set -euo pipefail
           start=$(date +%s)
           cargo xtask bundle --platform macos \
-            --exe target/aarch64-apple-darwin/release/sunlit-earth --out "${{ github.workspace }}/dist" --verify
+            --exe target/$TARGET/release/sunlit-earth --out "${{ github.workspace }}/dist" --verify
           echo "bundle step took $(( $(date +%s) - start )) s, xtask compile included"
           ls -l "${{ github.workspace }}/dist"
         shell: bash
@@ -119,7 +112,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: inputs.mode != 'check'
         with:
-          name: bundle-macos
+          name: bundle-macos-${{ env.TARGET }}
           path: dist/
           if-no-files-found: error
 
@@ -137,7 +130,7 @@ jobs:
           set -euo pipefail
           mkdir -p e2e-out
           system_profiler SPDisplaysDataType | tee e2e-out/displays-system-profiler.txt
-          "$(pwd)/target/aarch64-apple-darwin/release/sunlit-earth" displays | tee e2e-out/displays.txt
+          "$(pwd)/target/$TARGET/release/sunlit-earth" displays | tee e2e-out/displays.txt
           screencapture -x e2e-out/desktop-before.png || echo "screencapture refused; the suite is the test, this is only evidence"
         shell: bash
 
@@ -167,7 +160,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ inputs.mode == 'build-and-e2e' && !cancelled() }}
         with:
-          name: e2e-macos
+          name: e2e-macos-${{ env.TARGET }}
           path: e2e-out/
           if-no-files-found: warn
 

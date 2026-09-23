@@ -946,7 +946,6 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
     assert_the_files_match_the_layout(&files);
 
     let monitors = sunlit_core::display::monitors().unwrap_or_default();
-    let bounds = sunlit_core::display::layout::bounds_of(&monitors);
     let sizes: Vec<(u32, u32)> = files
         .iter()
         .map(|file| {
@@ -959,7 +958,8 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
         monitors.len()
     );
 
-    if let Some(bounds) = bounds {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(bounds) = sunlit_core::display::layout::bounds_of(&monitors) {
         let canvas = (bounds.width, bounds.height);
         #[cfg(target_os = "linux")]
         {
@@ -998,12 +998,21 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
                 }
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "windows")]
         {
             // Windows spans through the shell rather than by being cut, so the
             // one file is the canvas whatever the screen count.
             assert_eq!(sizes, vec![canvas], "the span writes one canvas");
         }
+    }
+    #[cfg(target_os = "macos")]
+    if !monitors.is_empty() {
+        let expected: Vec<(u32, u32)> = monitors.iter().map(|m| (m.width, m.height)).collect();
+        assert_eq!(
+            sizes, expected,
+            "macOS has no spanning setter, so each screen gets its own piece of \
+             the canvas at its own size"
+        );
     }
 
     // The desktop's own account of what it is holding, for the mode where the
@@ -1052,7 +1061,8 @@ fn test_a_layout_change_republishes_the_wallpaper() {
             CASE,
             "this session offers no layout change this case can make: it needs \
              two outputs to switch one off or a second mode to switch to, and \
-             `display::outputs` is a Linux query, so off Linux it always lands here",
+             every change it makes is an xrandr command, so off Linux it always \
+             lands here",
         );
         return;
     };

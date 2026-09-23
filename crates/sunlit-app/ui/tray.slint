@@ -4,7 +4,9 @@
 // shipped as an asset.
 export component TrayIcon inherits SystemTrayIcon {
     tooltip: "Sunlit Earth";
-    title: "Sunlit Earth";
+    // macOS draws the title as a label beside the icon in the menu bar; Linux
+    // only hands it to accessibility tools and overflow lists.
+    title: Platform.os == OperatingSystemType.macos ? "" : "Sunlit Earth";
     // Only properties declared here are exposed to Rust, so the inherited
     // `icon` is fed through one of our own.
     icon: root.tray-image;

@@ -5,7 +5,7 @@ Windows is the platform that ships. Linux builds, tests, renders headlessly, and
 Three tiers of evidence, and the macOS column names one per row:
 
 - **compiled** — it builds and its unit tests pass on `macos-latest`. That is a real check of the pure functions and of every type and call, and it is no check at all of what the API does to a desktop.
-- **runner** — it ran in the hosted runner's own session: the `render` smoke step of `ci.yml`, or the `build-and-e2e` mode of `macos-build.yml`. A runner's session is not a desktop somebody is looking at, so this is evidence that a call succeeds and not that a picture changed.
+- **runner** — it ran in the hosted runner's own session: the `render` smoke step of `ci.yml`, or the `build-and-e2e` mode of `macos-build.yml`. A runner's session is not a desktop somebody is looking at, so this is evidence that a call succeeds and not that a picture changed, except where a row says it was seen over VNC in an interactive session: that is the runner's own paravirtual screens, not a Mac's panel, and no Retina or mixed-scale question is answered there.
 - **tester** — somebody ran it on a real Mac and reported back. This is the only tier that says a wallpaper appeared on a screen.
 
 A row moves up only when the evidence exists. That is the retrospective's rule about not pretending: a setter that has never painted a real desktop is not "yes" here.
@@ -15,19 +15,21 @@ A row moves up only when the evidence exists. That is the retrospective's rule a
 | Build, unit, engine, GPU shader, soak | yes | yes (lavapipe) | yes (Metal), compiled |
 | Golden images | yes (`warp`) | yes (`lavapipe`) | yes (`metal`), compiled |
 | `render` subcommand | yes | yes | yes, runner |
-| Settings window | yes | yes, in the test guest | compiled; never shown |
-| Status item / tray | yes | yes, where a `StatusNotifier` host runs | compiled; Slint's own AppKit status item, never shown |
-| Set the desktop wallpaper | yes | yes, per desktop | `NSWorkspace`, compiled |
-| Address one monitor of several | yes (`IDesktopWallpaper`) | XFCE and KDE; the rest span or take one image | yes, per `NSScreen`, compiled |
-| Native display query | yes (Win32) | yes (`xrandr`) | yes (CoreGraphics), compiled |
+| Settings window | yes | yes, in the test guest | runner; opened and driven over VNC in a `macos-build.yml` session |
+| Status item / tray | yes | yes, where a `StatusNotifier` host runs | runner; Slint's own AppKit status item, icon only in the menu bar, and its menu opens over VNC |
+| Set the desktop wallpaper | yes | yes, per desktop | `NSWorkspace`, runner; the e2e wallpaper cases pass, and the picture was seen over VNC |
+| Address one monitor of several | yes (`IDesktopWallpaper`) | XFCE and KDE; the rest span or take one image | yes, per `NSScreen`, runner; two screens, the second virtual, each given an image at its own size, and Extend seen across both over VNC |
+| Native display query | yes (Win32) | yes (`xrandr`) | yes (CoreGraphics), runner; one screen and two, with their rectangles |
 | Follow a display change | yes (`WM_DISPLAYCHANGE`) | yes (RandR) | yes (`CGDisplayRegisterReconfigurationCallback`), compiled |
 | Clean exit when the session ends | yes (`WM_ENDSESSION`) | yes (SIGTERM) | SIGTERM only, which a logout does not send, compiled; see below |
 | Release bundle | zip, verified on its own runner | tarball, verified on its own runner | ad-hoc signed `.app` zip and a tarball, both verified on the runner |
-| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 15 cases) or in a local VM (13 of 15; the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, neither of which the Windows guest is) | yes, in a local VM (all 14 under KDE, one screen or two; the other three desktops were last run at ten cases) | compiled; never run |
+| Desktop e2e (`tests/e2e.rs`) | yes, on the desktop (11 of 15 cases) or in a local VM (13 of 15; the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, neither of which the Windows guest is) | yes, in a local VM (all 14 under KDE, one screen or two; the other three desktops were last run at ten cases) | runner; Intel 14 of 14 with one screen, the layout-change and plasmashell cases skipping themselves; Apple Silicon 13 of 14 with one screen or two, `test_render_and_exit` failing on exit memory |
 
 The macOS CI job is not green. As of 2026-09-07 one engine case fails there, `stars::zero_star_intensity_leaves_catalog_pixels_at_the_clear_color`, on a single pixel the paravirtual Metal device does not reproduce when the star draw enters the pass; `testing.md` has the measurement and the revision written for it, which no macOS run has seen. Every other target passes. Nothing in the table below rests on that case, but a reader should not take "compiled" to mean the job came back green.
 
 The `render` row is the one at the middle tier, and what put it there is the smoke step of <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063631672>: the binary the suite built, run on a `macos-latest` runner with no textures and no clouds, wrote a 640x360 PNG whose IHDR the step reads back. It is the first image this project has produced on a Mac. The release bundles are verified the same way and by the same two renders, on the runner that built them, in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/34063658604>.
+
+The rows at the runner tier since 2026-09-23 rest on `macos-build.yml` in `build-and-e2e` mode: the whole suite on Intel with one screen in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/35850483773>, and on Apple Silicon with one screen in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/35849074116> and with two in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/35859134554>, the second screen being the virtual one `testing.md` describes. The settings window, the status item and both display modes that span or repeat were then driven by hand over VNC in sessions of the same workflow. `test_render_and_exit` fails only on Apple Silicon, with an exit RSS of 1775 to 2075 MB against its 1000 MB bound; the cause is not known.
 
 Per-OS implementations live in four places, each behind a `cfg` and each documented where it sits:
 

@@ -7,7 +7,7 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{Session, X11Facts};
+use super::{PortalFacts, Session, X11Facts};
 
 /// This process's own session.
 pub(crate) struct LiveSession {
@@ -18,11 +18,13 @@ pub(crate) struct LiveSession {
     bus_names: std::cell::RefCell<HashMap<String, bool>>,
     x11: OnceCell<Option<X11Facts>>,
     wayland: OnceCell<Option<Vec<String>>>,
+    portal: OnceCell<Option<PortalFacts>>,
 }
 
 impl LiveSession {
     pub(crate) fn new() -> Self {
         Self {
+            portal: OnceCell::new(),
             x11: OnceCell::new(),
             wayland: OnceCell::new(),
             processes: OnceCell::new(),
@@ -96,6 +98,84 @@ impl Session for LiveSession {
 
     fn wallpaper_dir(&self) -> Option<PathBuf> {
         crate::wallpaper::wallpaper_dir().ok()
+    }
+
+    fn portal(&self) -> Option<PortalFacts> {
+        self.portal
+            .get_or_init(|| self.bus().map(portal_facts))
+            .clone()
+    }
+}
+
+const PORTAL_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+const BACKEND_PREFIX: &str = "org.freedesktop.impl.portal.desktop.";
+
+/// The backends known to implement the wallpaper portal, for one that is
+/// installed and not yet running, which cannot be asked without starting it.
+const KNOWN_WALLPAPER_BACKENDS: [&str; 4] = ["gnome", "gtk", "kde", "xapp"];
+
+/// The introspection XML of one object, or nothing where it did not answer.
+fn introspect(bus: &zbus::blocking::Connection, destination: &str) -> String {
+    bus.call_method(
+        Some(destination),
+        PORTAL_PATH,
+        Some("org.freedesktop.DBus.Introspectable"),
+        "Introspect",
+        &(),
+    )
+    .ok()
+    .and_then(|reply| reply.body().deserialize::<String>().ok())
+    .unwrap_or_default()
+}
+
+fn declares(xml: &str, interface: &str) -> bool {
+    xml.contains(&format!("\"{interface}\""))
+}
+
+/// What the portal frontend exports, and which backends on the bus implement
+/// the wallpaper portal behind it.
+fn portal_facts(bus: &zbus::blocking::Connection) -> PortalFacts {
+    let frontend = introspect(bus, PORTAL_BUS_NAME);
+    let proxy = zbus::blocking::fdo::DBusProxy::new(bus).ok();
+    let owned: Vec<String> = proxy
+        .as_ref()
+        .and_then(|p| p.list_names().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| name.to_string())
+        .collect();
+    let activatable: Vec<String> = proxy
+        .as_ref()
+        .and_then(|p| p.list_activatable_names().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| name.to_string())
+        .collect();
+    let mut wallpaper_backends: Vec<String> = Vec::new();
+    for name in owned.iter().chain(&activatable) {
+        let Some(suffix) = name.strip_prefix(BACKEND_PREFIX) else {
+            continue;
+        };
+        if wallpaper_backends.iter().any(|known| known == suffix) {
+            continue;
+        }
+        let implements = if owned.contains(name) {
+            declares(
+                &introspect(bus, name),
+                "org.freedesktop.impl.portal.Wallpaper",
+            )
+        } else {
+            KNOWN_WALLPAPER_BACKENDS.contains(&suffix)
+        };
+        if implements {
+            wallpaper_backends.push(suffix.to_owned());
+        }
+    }
+    PortalFacts {
+        wallpaper: declares(&frontend, "org.freedesktop.portal.Wallpaper"),
+        registry: declares(&frontend, "org.freedesktop.host.portal.Registry"),
+        wallpaper_backends,
     }
 }
 

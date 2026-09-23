@@ -6,6 +6,7 @@
 //! there is no system call to make on Linux; what this module owns is the files
 //! and the running.
 
+mod portal;
 mod root_pixmap;
 mod swaybg;
 
@@ -175,6 +176,16 @@ pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
                 "wallpaper set through a swaybg of our own"
             );
             return Ok(done());
+        }
+        Mechanism::Portal => {
+            let placement = write_placement(job, backend.reach())?;
+            let waiting = portal::publish(&placement.single)?;
+            tracing::info!(path = %placement.single.display(), "wallpaper handed to the portal");
+            return Ok([waiting, done()]
+                .into_iter()
+                .filter(|note| !note.is_empty())
+                .collect::<Vec<_>>()
+                .join("; "));
         }
     }
     let placement = write_placement(job, backend.reach())?;

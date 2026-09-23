@@ -8,9 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    AWWW, Backend, COMPOSITING_SHELLS, DEEPIN_BUS_NAMES, DEEPIN_LEGACY, DESKTOP_ENV,
-    DESKTOP_WINDOW_OWNERS, Gate, Kind, LADDER, LAYER_SHELL, ROOT_PIXMAP, ROWS, Row, SWAY, SWAYBG,
-    SWWW, WPAPERD, names_a_file_under,
+    APP_ID, AWWW, Backend, COMPOSITING_SHELLS, DEEPIN_BUS_NAMES, DEEPIN_LEGACY, DESKTOP_ENV,
+    DESKTOP_WINDOW_OWNERS, GTK_PORTAL_BACKEND, Gate, Kind, LADDER, LAYER_SHELL, PORTAL,
+    ROOT_PIXMAP, ROWS, Row, SWAY, SWAYBG, SWWW, WPAPERD, names_a_file_under,
 };
 
 /// The variables walked, in order, for the name a session gives itself.
@@ -49,6 +49,22 @@ pub trait Session {
     fn processes_named(&self, name: &str) -> Vec<Vec<String>>;
     /// The directory this app publishes its wallpapers into.
     fn wallpaper_dir(&self) -> Option<PathBuf>;
+    /// What the XDG desktop portal offers, or `None` where the session bus
+    /// could not be asked.
+    fn portal(&self) -> Option<PortalFacts>;
+}
+
+/// What the portal rung asks of the session bus.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortalFacts {
+    /// Whether `org.freedesktop.portal.Wallpaper` is exported.
+    pub wallpaper: bool,
+    /// Whether `org.freedesktop.host.portal.Registry` is, which lets the app
+    /// be known by its own id.
+    pub registry: bool,
+    /// The backends that implement `org.freedesktop.impl.portal.Wallpaper`,
+    /// by the last part of their bus name: `gnome`, `gtk`, `kde`.
+    pub wallpaper_backends: Vec<String>,
 }
 
 /// The two things an X11 session is asked before its root is painted.
@@ -171,7 +187,58 @@ fn ladder(session: &dyn Session, declined: &mut Vec<Declined>) -> Option<Choice>
             }
         }
     }
-    None
+    let mut evidence = Vec::new();
+    match portal_applies(session, &mut evidence) {
+        Ok(()) => Some(Choice {
+            backend: PORTAL,
+            evidence,
+        }),
+        Err(reason) => {
+            decline("portal", reason);
+            None
+        }
+    }
+}
+
+/// Whether the portal can set a wallpaper that something draws.
+///
+/// The GTK backend writes GNOME's key, so where it is the only backend that
+/// implements the wallpaper portal and no GNOME shell runs, a success would
+/// change nothing on screen.
+fn portal_applies(session: &dyn Session, evidence: &mut Vec<String>) -> Result<(), String> {
+    let Some(portal) = session.portal() else {
+        return Err("the session bus could not be asked for the portal".to_owned());
+    };
+    if !portal.wallpaper {
+        return Err(
+            "org.freedesktop.portal.Wallpaper is not exported, so no portal backend here \
+             sets wallpapers"
+                .to_owned(),
+        );
+    }
+    evidence.push("org.freedesktop.portal.Wallpaper exported".to_owned());
+    if portal.wallpaper_backends == [GTK_PORTAL_BACKEND] {
+        if !session.process_running("gnome-shell") {
+            return Err(
+                "the only portal backend that sets wallpapers is xdg-desktop-portal-gtk, which \
+                 writes GNOME's key, and no gnome-shell runs to draw it"
+                    .to_owned(),
+            );
+        }
+        evidence.push("the GTK backend, with gnome-shell running to draw its key".to_owned());
+    } else if !portal.wallpaper_backends.is_empty() {
+        evidence.push(format!(
+            "wallpaper backends: {}",
+            portal.wallpaper_backends.join(", ")
+        ));
+    }
+    evidence.push(if portal.registry {
+        format!("registered with the portal as {APP_ID}")
+    } else {
+        "no portal Registry, so the permission is shared with every other unidentified app"
+            .to_owned()
+    });
+    Ok(())
 }
 
 /// The Wayland rungs, in the order they are tried.
@@ -513,6 +580,11 @@ fn present(
     if backend.kind == Kind::RootPixmap && session.x11().is_none() {
         return Err("no X display could be opened to paint the root of".to_owned());
     }
+    if backend.kind == Kind::Portal && !session.portal().is_some_and(|p| p.wallpaper) {
+        return Err(
+            "org.freedesktop.portal.Wallpaper is not exported on the session bus".to_owned(),
+        );
+    }
     Ok(())
 }
 
@@ -568,7 +640,7 @@ pub(crate) mod fake {
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
 
-    use super::{Session, X11Facts};
+    use super::{PortalFacts, Session, X11Facts};
 
     /// A session made of fabricated answers.
     #[derive(Default)]
@@ -580,6 +652,7 @@ pub(crate) mod fake {
         pub paths: HashSet<PathBuf>,
         pub x11: Option<X11Facts>,
         pub wayland_globals: Option<Vec<String>>,
+        pub portal: Option<PortalFacts>,
         /// Each process's command line, its name first.
         pub cmdlines: Vec<Vec<String>>,
         /// Every program is on `PATH` and every process runs, whatever the
@@ -645,6 +718,16 @@ pub(crate) mod fake {
                 .var("XDG_RUNTIME_DIR", "/run/user/1000")
         }
 
+        /// A portal exporting the wallpaper interface, served by `backends`.
+        pub(crate) fn portal(mut self, backends: &[&str], registry: bool) -> Self {
+            self.portal = Some(PortalFacts {
+                wallpaper: true,
+                registry,
+                wallpaper_backends: backends.iter().map(|b| (*b).to_owned()).collect(),
+            });
+            self
+        }
+
         pub(crate) fn running(mut self, cmdline: &[&str]) -> Self {
             self.cmdlines
                 .push(cmdline.iter().map(|a| (*a).to_owned()).collect());
@@ -694,6 +777,10 @@ pub(crate) mod fake {
 
         fn wallpaper_dir(&self) -> Option<PathBuf> {
             Some(PathBuf::from(WALLPAPER_DIR))
+        }
+
+        fn portal(&self) -> Option<PortalFacts> {
+            self.portal.clone()
         }
     }
 
@@ -1060,9 +1147,62 @@ mod tests {
     }
 
     #[test]
+    fn the_portal_is_the_last_rung() {
+        let session = FakeSession::named("COSMIC")
+            .wayland(&["wl_compositor"])
+            .portal(&["cosmic", "gtk"], true);
+        let choice = choose(&session).expect("the portal");
+        assert_eq!(choice.backend.setter, "portal");
+        assert!(choice.explanation().contains(APP_ID), "{choice:?}");
+
+        let unregistered = FakeSession::named("COSMIC")
+            .wayland(&["wl_compositor"])
+            .portal(&["kde"], false);
+        let explanation = choose(&unregistered).expect("the portal").explanation();
+        assert!(
+            explanation.contains("shared with every other"),
+            "{explanation}"
+        );
+
+        // Anything earlier wins: layer shell and swaybg come first.
+        let swaybg = FakeSession::named("COSMIC")
+            .wayland(&[LAYER_SHELL])
+            .program("swaybg")
+            .portal(&["kde"], true);
+        assert_eq!(chosen(&swaybg), Some("swaybg"));
+    }
+
+    #[test]
+    fn the_gtk_backend_alone_is_trusted_only_with_a_gnome_shell() {
+        let bare = FakeSession::named("")
+            .var("DISPLAY", ":0")
+            .portal(&[GTK_PORTAL_BACKEND], true);
+        let text = choose(&bare)
+            .expect_err("gtk writes a key nobody draws")
+            .to_string();
+        assert!(text.contains("portal: the only portal backend"), "{text}");
+
+        let with_shell = FakeSession::named("")
+            .var("DISPLAY", ":0")
+            .process("gnome-shell")
+            .portal(&[GTK_PORTAL_BACKEND], true);
+        assert_eq!(choose(&with_shell).map(|c| c.backend.setter), Ok("portal"));
+
+        let beside_another = FakeSession::named("")
+            .var("DISPLAY", ":0")
+            .portal(&[GTK_PORTAL_BACKEND, "xapp"], true);
+        assert_eq!(
+            choose(&beside_another).map(|c| c.backend.setter),
+            Ok("portal")
+        );
+    }
+
+    #[test]
     fn every_setter_can_be_forced_by_its_name() {
         for name in setter_names() {
-            let session = FakeSession::complete("").var(FORCE_ENV, name);
+            let session = FakeSession::complete("")
+                .portal(&["gnome"], true)
+                .var(FORCE_ENV, name);
             let choice = choose(&session).unwrap_or_else(|r| panic!("{name}: {r}"));
             assert_eq!(choice.backend.setter, name);
         }

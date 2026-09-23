@@ -7,10 +7,12 @@
 //! its Wayland one, because neither the shell nor the setting knows or cares which
 //! is running.
 //!
-//! Not the XDG desktop portal: it puts a confirmation dialog in front of every
-//! set, and this wallpaper refreshes on a schedule.
+//! A session the table does not claim goes down a ladder instead: a daemon it
+//! already runs, a `swaybg` of this app's own, the X11 root window, and last the
+//! XDG desktop portal, whose permission dialog appears once rather than on
+//! every set. `choose` picks, and says why.
 //!
-//! Everything here is a pure function over an environment and a path. Only the
+//! Everything here is a pure function over a [`Session`] and a path. Only the
 //! sink runs the commands, so the table is tested on every platform against
 //! fabricated sessions rather than only where a desktop exists.
 
@@ -30,7 +32,7 @@ pub(crate) mod probe;
 mod setters;
 mod xfce;
 
-pub use choose::{Choice, Declined, FORCE_ENV, Refusal, Session, X11Facts, choose};
+pub use choose::{Choice, Declined, FORCE_ENV, PortalFacts, Refusal, Session, X11Facts, choose};
 use setters::{
     LXDE_FILL_MODE, TRINITY_FILL_MODE, deepin_commands, hyprpaper_commands, sway_quoted,
 };
@@ -131,6 +133,9 @@ enum Kind {
     Wpaperd,
     /// A `swaybg` this process starts, and leaves running when it exits.
     Swaybg,
+    /// The XDG desktop portal's `SetWallpaperFile`, over this process's own
+    /// session bus connection.
+    Portal,
 }
 
 /// How a setter is carried out, for the sink to dispatch on.
@@ -143,6 +148,8 @@ pub enum Mechanism {
     /// Start the one command [`Backend::commands`] gives, leave it running,
     /// and end the one it replaces.
     Swaybg,
+    /// Hand the image to the XDG desktop portal.
+    Portal,
 }
 
 /// How far into a multi-monitor session one desktop's setter reaches.
@@ -255,7 +262,8 @@ impl Backend {
             | Kind::RootPixmap
             | Kind::Awww { .. }
             | Kind::Wpaperd
-            | Kind::Swaybg => None,
+            | Kind::Swaybg
+            | Kind::Portal => None,
         }
     }
 
@@ -264,6 +272,7 @@ impl Backend {
         match self.kind {
             Kind::RootPixmap => Mechanism::RootPixmap,
             Kind::Swaybg => Mechanism::Swaybg,
+            Kind::Portal => Mechanism::Portal,
             _ => Mechanism::Commands,
         }
     }
@@ -294,7 +303,8 @@ impl Backend {
             | Kind::Trinity
             | Kind::Awww { .. }
             | Kind::Wpaperd
-            | Kind::Swaybg => Reach::OneImage,
+            | Kind::Swaybg
+            | Kind::Portal => Reach::OneImage,
         }
     }
 
@@ -399,7 +409,7 @@ impl Backend {
                     TRINITY_FILL_MODE.to_owned(),
                 ],
             )],
-            Kind::RootPixmap => Vec::new(),
+            Kind::RootPixmap | Kind::Portal => Vec::new(),
             Kind::Awww { program } => vec![Invocation::new(
                 program,
                 [
@@ -721,7 +731,23 @@ pub(crate) const SWAYBG: Backend = Backend {
 
 /// The setters the ladder can reach that no desktop names, in the order the
 /// forcing variable lists them.
-pub(crate) const LADDER: &[Backend] = &[AWWW, WPAPERD, SWAYBG, ROOT_PIXMAP];
+pub(crate) const LADDER: &[Backend] = &[AWWW, WPAPERD, SWAYBG, ROOT_PIXMAP, PORTAL];
+
+/// The XDG desktop portal, the last rung.
+pub(crate) const PORTAL: Backend = Backend {
+    desktop: "the XDG desktop portal",
+    setter: "portal",
+    program: None,
+    kind: Kind::Portal,
+};
+
+/// The portal backend that implements the wallpaper portal by writing GNOME's
+/// key, and so means something only where a GNOME shell draws that key.
+pub(crate) const GTK_PORTAL_BACKEND: &str = "gtk";
+
+/// The app id the portal knows this app by, which is also its desktop file's
+/// basename and its XDG app id.
+pub const APP_ID: &str = "sunlit-earth";
 
 /// Whether a command line names a file under `dir`, which is how a `swaybg`
 /// this app started is told from one the user did: no state file, just the

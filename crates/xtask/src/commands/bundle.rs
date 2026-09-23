@@ -109,6 +109,101 @@ impl fmt::Display for Platform {
     }
 }
 
+/// The instruction set a bundled binary is compiled for.
+///
+/// Read out of the binary's own header rather than passed in, so an archive
+/// cannot be named for an architecture other than the one inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Arch {
+    X86_64,
+    Aarch64,
+}
+
+impl Arch {
+    #[cfg(test)]
+    pub const ALL: [Self; 2] = [Self::X86_64, Self::Aarch64];
+
+    /// The name in archive names and records, which is Rust's own spelling in
+    /// a target triple.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+
+    /// The platform and architecture a binary's header declares.
+    ///
+    /// PE for Windows, ELF for Linux and a thin 64-bit Mach-O for macOS. A
+    /// universal Mach-O is refused rather than named for one of its slices:
+    /// every archive holds exactly one architecture.
+    pub fn of_binary(bytes: &[u8]) -> Result<(Platform, Self), String> {
+        let u16_le = |at: usize| {
+            bytes
+                .get(at..at + 2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        };
+        let u32_le = |at: usize| {
+            bytes
+                .get(at..at + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let truncated = || "the binary's header is truncated".to_owned();
+        match bytes.get(..4).ok_or_else(truncated)? {
+            [b'M', b'Z', ..] => {
+                let pe = u32_le(0x3C).ok_or_else(truncated)? as usize;
+                if bytes.get(pe..pe + 4) != Some(b"PE\0\0") {
+                    return Err("an MZ header without a PE signature after it".to_owned());
+                }
+                match u16_le(pe + 4).ok_or_else(truncated)? {
+                    0x8664 => Ok((Platform::Windows, Self::X86_64)),
+                    0xAA64 => Ok((Platform::Windows, Self::Aarch64)),
+                    other => Err(format!("a PE binary for machine type {other:#06x}")),
+                }
+            }
+            [0x7F, b'E', b'L', b'F'] => {
+                let machine = match bytes.get(5) {
+                    Some(1) => u16_le(18),
+                    Some(2) => bytes.get(18..20).map(|b| u16::from_be_bytes([b[0], b[1]])),
+                    _ => return Err("an ELF binary of unknown byte order".to_owned()),
+                };
+                match machine.ok_or_else(truncated)? {
+                    62 => Ok((Platform::Linux, Self::X86_64)),
+                    183 => Ok((Platform::Linux, Self::Aarch64)),
+                    other => Err(format!("an ELF binary for machine {other}")),
+                }
+            }
+            [0xCF, 0xFA, 0xED, 0xFE] => match u32_le(4).ok_or_else(truncated)? {
+                0x0100_0007 => Ok((Platform::MacOs, Self::X86_64)),
+                0x0100_000C => Ok((Platform::MacOs, Self::Aarch64)),
+                other => Err(format!("a Mach-O binary for CPU type {other:#010x}")),
+            },
+            [0xCA, 0xFE, 0xBA, 0xBE | 0xBF] => Err(
+                "a universal Mach-O, which holds more than one architecture; bundle \
+                 each slice on its own"
+                    .to_owned(),
+            ),
+            _ => Err("not a PE, ELF or Mach-O binary".to_owned()),
+        }
+    }
+
+    /// Read the header of the binary at `exe`.
+    pub fn of(exe: &Path) -> Result<(Platform, Self), String> {
+        use std::io::Read as _;
+        let mut head = Vec::with_capacity(4096);
+        std::fs::File::open(exe)
+            .and_then(|file| file.take(4096).read_to_end(&mut head))
+            .map_err(|e| format!("cannot read {}: {e}", exe.display()))?;
+        Self::of_binary(&head).map_err(|why| format!("{}: {why}", exe.display()))
+    }
+}
+
+impl fmt::Display for Arch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.slug())
+    }
+}
+
 /// The package the bundle is named after, which is also the binary's stem.
 pub const PACKAGE: &str = "sunlit-earth";
 
@@ -244,9 +339,10 @@ pub struct Sources<'a> {
 /// From the workspace `Cargo.toml`'s version rather than from `git describe`:
 /// this repository has no tags, so `describe` is a bare hash and
 /// `sunlit-earth-4b4cb2e-windows.zip` tells a user nothing. The hash is inside,
-/// in the record.
-pub fn bundle_name(version: &str, platform: Platform) -> String {
-    format!("{PACKAGE}-{version}-{}", platform.slug())
+/// in the record. The architecture is in the name because one release carries
+/// more than one per platform.
+pub fn bundle_name(version: &str, platform: Platform, arch: Arch) -> String {
+    format!("{PACKAGE}-{version}-{}-{}", platform.slug(), arch.slug())
 }
 
 /// Which writer and reader one package of one platform uses.
@@ -263,8 +359,8 @@ pub fn archive_format(platform: Platform, package: Package) -> Format {
 
 /// Named for the release rather than for the `.app` inside it: a download
 /// called `Sunlit Earth.app.zip` says nothing about which version it is.
-pub fn app_archive_name(version: &str) -> String {
-    format!("{PACKAGE}-{version}-{}.zip", Platform::MacOs.slug())
+pub fn app_archive_name(version: &str, arch: Arch) -> String {
+    format!("{}.zip", bundle_name(version, Platform::MacOs, arch))
 }
 
 /// What the `.app` holds, in the order it is assembled.
@@ -325,10 +421,10 @@ pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String>
 }
 
 /// The archive's file name, which is the bundle's name plus its format.
-pub fn archive_name(version: &str, platform: Platform) -> String {
+pub fn archive_name(version: &str, platform: Platform, arch: Arch) -> String {
     format!(
         "{}.{}",
-        bundle_name(version, platform),
+        bundle_name(version, platform, arch),
         Format::of(platform).extension()
     )
 }
@@ -810,6 +906,7 @@ struct Run<'a> {
     out: &'a Path,
     version: &'a str,
     platform: Platform,
+    arch: Arch,
     verify: bool,
 }
 
@@ -845,6 +942,14 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
             options.exe.display()
         ));
     }
+    let (built_for, arch) = Arch::of(&options.exe)?;
+    if built_for != platform {
+        return Err(format!(
+            "{} is a {built_for} binary, and this is a {platform} bundle",
+            options.exe.display()
+        ));
+    }
+    println!("binary: {platform} {arch}");
     // Not the skip `dist` falls back to: that run has a loose binary to publish
     // instead, and this command has nothing else to produce.
     let textures = artifacts::textures_present(&repo).map_err(|why| {
@@ -874,6 +979,7 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
         out: &out,
         version: &version,
         platform,
+        arch,
         verify: options.verify,
     };
 
@@ -895,7 +1001,7 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     let _ = std::fs::remove_dir_all(out.join(STAGE_DIR));
     outcome?;
 
-    let record = record(runner, &repo, platform, &options.exe, bundles, started)?;
+    let record = record(runner, &repo, platform, arch, bundles, started)?;
     std::fs::write(out.join(RECORD), record.to_json())
         .map_err(|e| format!("cannot write {}: {e}", out.join(RECORD).display()))?;
 
@@ -914,10 +1020,10 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
 fn one_package(run: &Run, package: Package) -> Result<BundleInfo, String> {
     let (name, archive_file) = match package {
         Package::Plain => (
-            bundle_name(run.version, run.platform),
-            archive_name(run.version, run.platform),
+            bundle_name(run.version, run.platform, run.arch),
+            archive_name(run.version, run.platform, run.arch),
         ),
-        Package::App => (APP_DIR.to_owned(), app_archive_name(run.version)),
+        Package::App => (APP_DIR.to_owned(), app_archive_name(run.version, run.arch)),
     };
     let items = match package {
         Package::Plain => layout(run.platform, &run.sources()),
@@ -1185,19 +1291,19 @@ fn record(
     runner: &dyn Runner,
     repo: &Path,
     platform: Platform,
-    exe: &Path,
+    arch: Arch,
     bundles: Vec<BundleInfo>,
     started: std::time::Instant,
 ) -> Result<BuildInfo, String> {
     let git = dist::git_facts(runner, repo)?;
-    let mut hosted = hosted_info();
-    hosted.architectures = architectures(runner, platform, exe);
+    let hosted = hosted_info();
     let verified = bundles
         .iter()
         .any(|bundle| bundle.texture_lookup_delta.is_some());
     Ok(BuildInfo {
         format_version: BUILD_INFO_VERSION,
         target: platform.slug().to_owned(),
+        arch: arch.slug().to_owned(),
         commit: git.commit,
         describe: git.describe,
         dirty: git.dirty,
@@ -1212,47 +1318,6 @@ fn record(
         bundles,
         xtask_version: env!("CARGO_PKG_VERSION").to_owned(),
     })
-}
-
-/// The architectures inside the binary, where the host has a tool that can say.
-///
-/// `lipo -info`, which exists on macOS and nowhere else. Empty rather than an
-/// error where the tool is absent or says something unexpected: a bundle is not
-/// worth refusing over a description of itself.
-fn architectures(runner: &dyn Runner, platform: Platform, exe: &Path) -> Vec<String> {
-    if platform != Platform::MacOs || Platform::host() != Some(Platform::MacOs) {
-        return Vec::new();
-    }
-    let cmd = Cmd::new("lipo")
-        .arg("-info")
-        .arg(exe.to_string_lossy().into_owned());
-    let Ok(out) = runner.capture(&cmd) else {
-        return Vec::new();
-    };
-    if !out.success() {
-        return Vec::new();
-    }
-    parse_lipo(out.trimmed())
-}
-
-/// The architectures out of `lipo -info`, whichever of its two sentences it
-/// answered with.
-///
-/// `Non-fat file: <path> is architecture: arm64` for one slice, and
-/// `Architectures in the fat file: <path> are: x86_64 arm64` for several. Both
-/// put the list after the last colon. Anything else answers with nothing,
-/// rather than naming an architecture that came out of an error message.
-fn parse_lipo(text: &str) -> Vec<String> {
-    if !text.starts_with("Non-fat file:") && !text.starts_with("Architectures in the fat file:") {
-        return Vec::new();
-    }
-    text.rsplit_once(':')
-        .map(|(_, list)| {
-            list.split_whitespace()
-                .map(std::borrow::ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// What the runner this ran on is, and where its log is.
@@ -1277,7 +1342,6 @@ pub fn hosted_info() -> HostedInfo {
     };
     HostedInfo {
         runner_image,
-        architectures: Vec::new(),
         run_id,
         run_url,
     }
@@ -1375,30 +1439,43 @@ mod tests {
     #[test]
     fn a_bundle_is_named_for_the_version_and_takes_its_targets_format() {
         assert_eq!(
-            bundle_name("0.1.0", Platform::Windows),
-            "sunlit-earth-0.1.0-windows"
+            bundle_name("0.1.0", Platform::Windows, Arch::X86_64),
+            "sunlit-earth-0.1.0-windows-x86_64"
         );
         assert_eq!(
-            archive_name("0.1.0", Platform::Windows),
-            "sunlit-earth-0.1.0-windows.zip"
+            archive_name("0.1.0", Platform::Windows, Arch::X86_64),
+            "sunlit-earth-0.1.0-windows-x86_64.zip"
         );
         assert_eq!(
-            archive_name("0.1.0", Platform::Linux),
-            "sunlit-earth-0.1.0-linux.tar.gz"
+            archive_name("0.1.0", Platform::Linux, Arch::X86_64),
+            "sunlit-earth-0.1.0-linux-x86_64.tar.gz"
         );
         assert_eq!(
-            archive_name("0.1.0-beta.1", Platform::Windows),
-            "sunlit-earth-0.1.0-beta.1-windows.zip"
+            archive_name("0.1.0-beta.1", Platform::Windows, Arch::X86_64),
+            "sunlit-earth-0.1.0-beta.1-windows-x86_64.zip"
+        );
+        assert_eq!(Format::of(Platform::Windows), Format::Zip);
+        assert_eq!(
+            archive_name("0.1.0", Platform::Linux, Arch::Aarch64),
+            "sunlit-earth-0.1.0-linux-aarch64.tar.gz"
         );
         assert_eq!(Format::of(Platform::Windows), Format::Zip);
         assert_eq!(Format::of(Platform::Linux), Format::TarGz);
-        // The archive unpacks to one directory of the bundle's own name.
+        // The archive unpacks to one directory of the bundle's own name, and
+        // no two builds of one release share an archive name.
+        let mut names = std::collections::HashSet::new();
         for platform in Platform::ALL {
-            let name = bundle_name("9.9.9", platform);
-            assert!(
-                archive_name("9.9.9", platform).starts_with(&name),
-                "{platform}"
-            );
+            for arch in Arch::ALL {
+                let name = bundle_name("9.9.9", platform, arch);
+                assert!(
+                    archive_name("9.9.9", platform, arch).starts_with(&name),
+                    "{platform} {arch}"
+                );
+                assert!(names.insert(archive_name("9.9.9", platform, arch)));
+                if platform.packages().contains(&Package::App) {
+                    assert!(names.insert(app_archive_name("9.9.9", arch)));
+                }
+            }
         }
     }
 
@@ -1537,14 +1614,14 @@ mod tests {
         for platform in Platform::ALL {
             let exe = repo.join("bin").join(exe_name(platform));
             let items = layout(platform, &sources(&repo, &exe, &repo.join("textures")));
-            let name = bundle_name("0.1.0", platform);
+            let name = bundle_name("0.1.0", platform, Arch::X86_64);
             let root = assemble(&dir, &name, &items).expect("assembled");
 
             let assembled = walk(&root).expect("walked");
             assert_eq!(assembled.len(), items.len(), "{platform}");
 
             let format = Format::of(platform);
-            let archive = dir.join(archive_name("0.1.0", platform));
+            let archive = dir.join(archive_name("0.1.0", platform, Arch::X86_64));
             let bytes = write(format, &root, &name, &items, &archive).expect("written");
             assert!(bytes > 0, "{platform}");
 
@@ -1644,9 +1721,9 @@ mod tests {
             Platform::Windows,
             &sources(&repo, &exe, &repo.join("textures")),
         );
-        let name = bundle_name("0.1.0", Platform::Windows);
+        let name = bundle_name("0.1.0", Platform::Windows, Arch::X86_64);
         let root = assemble(&dir, &name, &items).expect("assembled");
-        let archive = dir.join(archive_name("0.1.0", Platform::Windows));
+        let archive = dir.join(archive_name("0.1.0", Platform::Windows, Arch::X86_64));
         write(Format::Zip, &root, &name, &items, &archive).expect("written");
 
         let file = std::fs::File::open(&archive).expect("open");
@@ -1672,10 +1749,10 @@ mod tests {
     /// archive that is in every other way the one a full run writes.
     #[test]
     fn the_closing_line_names_the_archive_and_whether_anything_ran_it() {
-        let path = Path::new("/t/dist/linux/sunlit-earth-0.1.0-linux.tar.gz");
+        let path = Path::new("/t/dist/linux/sunlit-earth-0.1.0-linux-x86_64.tar.gz");
         let verified = summary(path, true);
         assert!(
-            verified.contains("sunlit-earth-0.1.0-linux.tar.gz"),
+            verified.contains("sunlit-earth-0.1.0-linux-x86_64.tar.gz"),
             "{verified}"
         );
         assert!(verified.contains("textures"), "{verified}");
@@ -1733,8 +1810,8 @@ mod tests {
     fn the_macos_bundle_is_a_tarball_named_like_the_others() {
         assert_eq!(Format::of(Platform::MacOs), Format::TarGz);
         assert_eq!(
-            archive_name("0.1.0-beta.4", Platform::MacOs),
-            "sunlit-earth-0.1.0-beta.4-macos.tar.gz"
+            archive_name("0.1.0-beta.4", Platform::MacOs, Arch::X86_64),
+            "sunlit-earth-0.1.0-beta.4-macos-x86_64.tar.gz"
         );
         assert_eq!(exe_name(Platform::MacOs), "sunlit-earth");
     }
@@ -1749,10 +1826,10 @@ mod tests {
         for platform in Platform::ALL {
             let exe = repo.join("bin").join(exe_name(platform));
             let items = layout(platform, &sources(&repo, &exe, &repo.join("textures")));
-            let name = bundle_name("0.1.0", platform);
+            let name = bundle_name("0.1.0", platform, Arch::X86_64);
             let root = assemble(&dir, &name, &items).expect("assembled");
             let format = Format::of(platform);
-            let archive = dir.join(archive_name("0.1.0", platform));
+            let archive = dir.join(archive_name("0.1.0", platform, Arch::X86_64));
             write(format, &root, &name, &items, &archive).expect("written");
 
             let into = dir.join(format!("unpacked-{platform}"));
@@ -1899,10 +1976,10 @@ mod tests {
         assert_eq!(Platform::Linux.packages(), &[Package::Plain]);
         assert_eq!(Platform::MacOs.packages(), &[Package::Plain, Package::App]);
 
-        let tarball = archive_name("0.1.0", Platform::MacOs);
-        let app = app_archive_name("0.1.0");
-        assert_eq!(tarball, "sunlit-earth-0.1.0-macos.tar.gz");
-        assert_eq!(app, "sunlit-earth-0.1.0-macos.zip");
+        let tarball = archive_name("0.1.0", Platform::MacOs, Arch::X86_64);
+        let app = app_archive_name("0.1.0", Arch::X86_64);
+        assert_eq!(tarball, "sunlit-earth-0.1.0-macos-x86_64.tar.gz");
+        assert_eq!(app, "sunlit-earth-0.1.0-macos-x86_64.zip");
         assert_ne!(tarball, app);
         // The `.app` is a zip whatever the platform's plain format is, because
         // `ditto` writes one.
@@ -1913,22 +1990,69 @@ mod tests {
         );
     }
 
-    /// `lipo -info` answers with one of two sentences and the architectures are
-    /// after the last colon in both, which is what a universal release has to
-    /// be able to say about itself.
+    fn pe_header(machine: u16) -> Vec<u8> {
+        let mut bytes = vec![0; 0x90];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        bytes[0x84..0x86].copy_from_slice(&machine.to_le_bytes());
+        bytes
+    }
+
+    fn elf_header(machine: u16) -> Vec<u8> {
+        let mut bytes = vec![0; 64];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4] = 2;
+        bytes[5] = 1;
+        bytes[18..20].copy_from_slice(&machine.to_le_bytes());
+        bytes
+    }
+
+    fn macho_header(cpu: u32) -> Vec<u8> {
+        let mut bytes = vec![0; 32];
+        bytes[..4].copy_from_slice(&0xFEED_FACFu32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&cpu.to_le_bytes());
+        bytes
+    }
+
     #[test]
-    fn the_architectures_come_out_of_either_thing_lipo_says() {
-        assert_eq!(
-            parse_lipo("Non-fat file: dist-bin/sunlit-earth is architecture: arm64"),
-            vec!["arm64".to_owned()]
+    fn the_platform_and_architecture_come_out_of_the_binarys_header() {
+        let cases = [
+            (pe_header(0x8664), Platform::Windows, Arch::X86_64),
+            (pe_header(0xAA64), Platform::Windows, Arch::Aarch64),
+            (elf_header(62), Platform::Linux, Arch::X86_64),
+            (elf_header(183), Platform::Linux, Arch::Aarch64),
+            (macho_header(0x0100_0007), Platform::MacOs, Arch::X86_64),
+            (macho_header(0x0100_000C), Platform::MacOs, Arch::Aarch64),
+        ];
+        for (bytes, platform, arch) in cases {
+            assert_eq!(Arch::of_binary(&bytes), Ok((platform, arch)));
+        }
+    }
+
+    #[test]
+    fn a_binary_that_is_not_one_thin_known_architecture_is_refused() {
+        let universal = 0xCAFE_BABEu32.to_be_bytes();
+        assert!(
+            Arch::of_binary(&universal)
+                .unwrap_err()
+                .contains("universal")
         );
-        assert_eq!(
-            parse_lipo("Architectures in the fat file: dist-bin/sunlit-earth are: x86_64 arm64"),
-            vec!["x86_64".to_owned(), "arm64".to_owned()]
-        );
-        // Anything else says nothing rather than inventing an architecture.
-        assert!(parse_lipo("").is_empty());
-        assert!(parse_lipo("lipo: can't figure out the architecture").is_empty());
+        assert!(Arch::of_binary(&pe_header(0x014C)).is_err());
+        assert!(Arch::of_binary(&elf_header(40)).is_err());
+        assert!(Arch::of_binary(b"#!/bin/sh\n").is_err());
+        assert!(Arch::of_binary(b"MZ").is_err());
+        assert!(Arch::of_binary(&[]).is_err());
+    }
+
+    /// The xtask binary running this test is a real executable of this host's
+    /// own platform and architecture.
+    #[test]
+    fn the_running_binary_reads_as_this_host() {
+        let exe = std::env::current_exe().expect("the test binary");
+        let (platform, arch) = Arch::of(&exe).expect("a readable header");
+        assert_eq!(Some(platform), Platform::host());
+        assert_eq!(arch.slug(), std::env::consts::ARCH);
     }
 
     /// `ditto` stores extended attributes beside the files they belong to, and

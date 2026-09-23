@@ -12,10 +12,6 @@ on:
         description: "Create the GitHub release. Off means build and verify only."
         type: boolean
         default: false
-      universal:
-        description: "Build the macOS binary for Intel as well as Apple Silicon."
-        type: boolean
-        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,25 +23,48 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  RUSTFLAGS: "-D warnings"
 
 jobs:
   build:
-    name: ${{ matrix.platform }}
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    # Every build runs on a runner of its own architecture, so the bundle step
+    # executes the binary it verifies natively rather than under emulation.
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows
+            arch: x86_64
             os: windows-latest
-            exe: target/release/sunlit-earth.exe
+            target: x86_64-pc-windows-msvc
+            exe: sunlit-earth.exe
           - platform: linux
+            arch: x86_64
             os: ubuntu-22.04
-            exe: target/release/sunlit-earth
+            target: x86_64-unknown-linux-gnu
+            exe: sunlit-earth
+          - platform: linux
+            arch: aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            exe: sunlit-earth
           - platform: macos
+            arch: x86_64
+            os: macos-26-intel
+            target: x86_64-apple-darwin
+            exe: sunlit-earth
+          - platform: macos
+            arch: aarch64
             os: macos-latest
-            exe: dist-bin/sunlit-earth
+            target: aarch64-apple-darwin
+            exe: sunlit-earth
+    env:
+      # RUSTFLAGS replaces `[target.<triple>] rustflags` in .cargo/config.toml
+      # rather than adding to it, so the static C runtime the config asks for on
+      # Windows has to be repeated here or the binary imports vcruntime140.dll.
+      RUSTFLAGS: ${{ matrix.platform == 'windows' && '-D warnings -C target-feature=+crt-static' || '-D warnings' }}
+      EXE: target/${{ matrix.target }}/release/${{ matrix.exe }}
     steps:
       - name: Refuse to publish from anything but a tag
         if: ${{ inputs.publish && !startsWith(github.ref, 'refs/tags/') }}
@@ -63,8 +82,18 @@ jobs:
       - name: Install the pinned toolchain
         run: |
           set -euo pipefail
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
           rustup toolchain install --no-self-update
           rustup show active-toolchain
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "this runner's host is $host, and the job builds ${{ matrix.target }} natively"
+            exit 1
+          fi
         shell: bash
 
       - name: Install Linux dependencies
@@ -89,18 +118,19 @@ jobs:
         run: echo "LIBCLANG_PATH=${{ env.LLVM_PATH }}/lib" >> $GITHUB_ENV
         shell: bash
 
-      - name: Point bindgen at Xcode's libclang
+      - name: Point bindgen at Xcode's libclang and set the deployment target
         if: matrix.platform == 'macos'
         run: |
           LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
           if [ -f "$LIB/libclang.dylib" ]; then
             echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
           fi
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
         shell: bash
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: release-${{ matrix.platform }}
+          shared-key: release-${{ matrix.platform }}-${{ matrix.arch }}
           save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
           cache-on-failure: true
 
@@ -122,30 +152,32 @@ jobs:
         shell: bash
 
       - name: Build
-        if: matrix.platform != 'macos'
-        run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth
+        run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target ${{ matrix.target }}
         shell: bash
 
-      - name: Build (macOS)
-        if: matrix.platform == 'macos'
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
+      - name: Check the binary's linkage
         run: |
           set -euo pipefail
-          build() {
-            cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$1"
-          }
-          build aarch64-apple-darwin
-          mkdir -p dist-bin
-          if [ "${{ inputs.universal }}" = "true" ]; then
-            rustup target add x86_64-apple-darwin
-            build x86_64-apple-darwin
-            lipo -create -output dist-bin/sunlit-earth target/aarch64-apple-darwin/release/sunlit-earth target/x86_64-apple-darwin/release/sunlit-earth
-            echo "the x86_64 slice was built and not executed: nothing here installs Rosetta or runs it, so only the arm64 half of this binary has been shown to start"
-          else
-            cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
-          fi
-          lipo -info dist-bin/sunlit-earth
+          case "${{ matrix.platform }}" in
+            windows)
+              if grep -aqi 'vcruntime140' "$EXE"; then
+                echo "the binary imports vcruntime140.dll, so it needs the Visual C++ redistributable"
+                exit 1
+              fi
+              echo "no import of vcruntime140.dll"
+              ;;
+            linux)
+              readelf -h "$EXE" | grep -E 'Class|Machine'
+              readelf -d "$EXE" | grep NEEDED
+              floor=$(objdump -T "$EXE" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+              echo "glibc floor: $floor"
+              ;;
+            macos)
+              lipo -info "$EXE"
+              otool -l "$EXE" | grep -A3 LC_BUILD_VERSION | grep -E 'minos|sdk'
+              otool -L "$EXE"
+              ;;
+          esac
         shell: bash
 
       - name: Bundle and verify
@@ -158,14 +190,18 @@ jobs:
           set -euo pipefail
           start=$(date +%s)
           cargo xtask bundle --platform ${{ matrix.platform }} \
-            --exe ${{ matrix.exe }} --out dist --verify
+            --exe "$EXE" --out dist --verify
           echo "bundle step took $(( $(date +%s) - start )) s, xtask compile included"
+          if ! grep -q '"arch": "${{ matrix.arch }}"' dist/build-info.json; then
+            echo "the record names another architecture than ${{ matrix.arch }}"
+            exit 1
+          fi
           ls -l dist
         shell: bash
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bundle-${{ matrix.platform }}
+          name: bundle-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
 
@@ -185,15 +221,15 @@ jobs:
           set -euo pipefail
           mkdir -p release
           for dir in artifacts/bundle-*; do
-            platform=${dir#artifacts/bundle-}
+            build=${dir#artifacts/bundle-}
             for archive in "$dir"/*.zip "$dir"/*.tar.gz; do
               [ -f "$archive" ] || continue
               cp "$archive" release/
             done
             if [ -f "$dir/build-info.json" ]; then
-              cp "$dir/build-info.json" "release/build-info-${platform}.json"
+              cp "$dir/build-info.json" "release/build-info-${build}.json"
             else
-              echo "the $platform bundle wrote no record"
+              echo "the $build bundle wrote no record"
               exit 1
             fi
           done

@@ -110,7 +110,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ inputs.mode == 'check' && 'ci-macos' || inputs.mode == 'build' && 'release-macos' || 'macos-build-e2e' }}
+          shared-key: ${{ inputs.mode == 'check' && 'ci-macos' || inputs.mode == 'build' && (inputs.runner == 'macos-26-intel' && 'release-macos-x86_64' || 'release-macos-aarch64') || 'macos-build-e2e' }}
           cache-on-failure: true
 
       - name: Check

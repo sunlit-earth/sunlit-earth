@@ -681,8 +681,9 @@ fn run_event_loop(
         error!("the window could not be shown: {e}");
         return ExitCode::FAILURE;
     }
-    // Registered ahead of the deferred hide below, so it reads the handle of a
-    // window that has not been hidden yet.
+    // Under Wayland the handle can appear only after the first event loop
+    // iterations, so with `--tray-start hidden` the retry may read it after the
+    // deferred hide below. It is read either way: hiding keeps the handle.
     report_windowing(window.as_weak(), 0);
 
     // In tray mode with --tray-start hidden, defer the hide to a zero-duration

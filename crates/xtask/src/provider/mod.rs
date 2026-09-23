@@ -435,15 +435,6 @@ mod tests {
         assert!(guest_textures(Target::Windows).starts_with("C:"));
     }
 
-    /// The orchestrator and the scripts baked into the images have to name the
-    /// same directory. Nothing else connects them, so a rename on either side
-    /// would otherwise be found by a guest that boots and then fails to run
-    /// anything.
-    ///
-    /// Every spelling is pinned, not one per file: the Linux root appears in
-    /// the `install -d` that creates the scp destinations, in the session
-    /// marker that writes `session.env`, and in the job runner's default, and
-    /// a rename that missed any one of them would still break a run.
     /// A Wayland session's `session.env` names its compositor socket, which is
     /// what makes the app a Wayland client there, and an X11 session's has no
     /// such line at all, blank or otherwise.
@@ -462,6 +453,15 @@ mod tests {
         );
     }
 
+    /// The orchestrator and the scripts baked into the images have to name the
+    /// same directory. Nothing else connects them, so a rename on either side
+    /// would otherwise be found by a guest that boots and then fails to run
+    /// anything.
+    ///
+    /// Every spelling is pinned, not one per file: the Linux root appears in
+    /// the `install -d` that creates the scp destinations, in the session
+    /// marker that writes `session.env`, and in the job runner's default, and
+    /// a rename that missed any one of them would still break a run.
     #[test]
     fn the_guest_roots_match_the_shipped_runners() {
         let repo = crate::store::repo_root();

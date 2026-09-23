@@ -45,8 +45,9 @@ fn placement_of(
 /// Answers with the values the desktop was found to be holding, whole, so that
 /// a caller which publishes twice can require the second answer to differ from
 /// the first. Not the file names: every publish writes its own directory with
-/// the same names in it, so two publishes the desktop told apart share them. `None` where this desktop's setter has no store to ask, which is
-/// Plasma's tool and `LXQt`'s file manager.
+/// the same names in it, so two publishes the desktop told apart share them.
+/// `None` where this desktop's setter has no store to ask, which is Plasma's
+/// tool and `LXQt`'s file manager.
 ///
 /// The read-back is derived from the writes the sink performs rather than
 /// written out again, so a row that sets the wrong key reads the wrong key back

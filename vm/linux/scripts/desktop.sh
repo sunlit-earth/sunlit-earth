@@ -114,7 +114,7 @@ done
 for session in plasma gnome-wayland; do
   test -f "/usr/share/wayland-sessions/${session}.desktop"
   if [ -e "/usr/share/xsessions/${session}.desktop" ]; then
-    echo "${session} is an X11 session name as well as a Wayland one, so sddm"       "would start the X11 session for it" >&2
+    echo "${session} is an X11 session name as well as a Wayland one, so sddm would start the X11 session for it" >&2
     exit 1
   fi
 done

@@ -120,15 +120,22 @@ impl Session<'_> {
     /// which is as true there and costs the same.
     fn check_login(&self) -> Result<String, String> {
         let expected = self.state.login().unwrap_or(Login::IMAGE_DEFAULT);
-        let session_env = self
+        let path = format!("{}/session.env", provider::GUEST_ROOT_LINUX);
+        let out = self
             .provider
-            .exec(
-                &self.state,
-                &format!("cat {}/session.env", provider::GUEST_ROOT_LINUX),
-            )
-            .map(|out| out.stdout)
-            .unwrap_or_default();
-        expected.check_session_env(&session_env)?;
+            .exec(&self.state, &format!("cat {path}"))
+            .map_err(|e| {
+                format!(
+                    "the session came up, but its {path} could not be read to                      check which session it is: {e}"
+                )
+            })?;
+        if !out.success() {
+            return Err(format!(
+                "the session came up, but its {path} could not be read to check                  which session it is: {}",
+                out.stderr.trim()
+            ));
+        }
+        expected.check_session_env(&out.stdout)?;
         Ok(format!("  the session is {}", expected.label()))
     }
 

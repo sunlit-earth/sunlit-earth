@@ -26,6 +26,19 @@ use crate::logging::init_logging;
 use crate::startup::{effective_texture_resolution, engine_config};
 use crate::ui_callbacks;
 
+/// The app id a Wayland compositor matches the window to its desktop entry by.
+///
+/// The basename of `assets/linux/sunlit-earth.desktop`, which is also its
+/// `StartupWMClass`, so an X11 task manager and a Wayland one find the same
+/// entry.
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+const APP_ID: &str = "sunlit-earth";
+
+/// How often the app checks whether a window handle exists yet, and how many
+/// times, before the windowing signal gives up and answers `other`.
+const WINDOW_HANDLE_POLL: Duration = Duration::from_millis(50);
+const WINDOW_HANDLE_ATTEMPTS: u32 = 100;
+
 /// How often the app checks whether the preview viewport changed size.
 const VIEWPORT_POLL: Duration = Duration::from_millis(200);
 
@@ -324,6 +337,15 @@ fn run_app(
     };
     window.set_version(env!("CARGO_PKG_VERSION").into());
     sunlit_core::memory::log_memory_usage("after window creation");
+    // After the window exists, because that is what brings the platform up and
+    // the call has nowhere to put the id before it, and before the window is
+    // shown, because that is when winit reads it.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Err(e) = slint::set_xdg_app_id(APP_ID) {
+        warn!(
+            "the app id could not be set, so a Wayland task manager may not match the window to its desktop entry: {e}"
+        );
+    }
 
     // One monitor list for the whole window: the Displays group's callbacks read
     // it, and the engine's `MonitorsChanged` event replaces it.
@@ -603,6 +625,47 @@ fn tear_down(
     debug!("exiting");
 }
 
+/// Announce which window system the window is a client of, once its handle
+/// exists.
+///
+/// The handle appears only after the event loop has run following `show()`, so
+/// this asks from a timer and asks again until it answers.
+fn report_windowing(window: slint::Weak<MainWindow>, attempt: u32) {
+    use raw_window_handle::HasWindowHandle;
+    let delay = if attempt == 0 {
+        Duration::ZERO
+    } else {
+        WINDOW_HANDLE_POLL
+    };
+    slint::Timer::single_shot(delay, move || {
+        let Some(win) = window.upgrade() else {
+            return;
+        };
+        let answer = win
+            .window()
+            .window_handle()
+            .window_handle()
+            .map(|handle| crate::ipc::Windowing::of(handle.as_raw()));
+        let windowing = match answer {
+            Ok(windowing) => windowing,
+            Err(_) if attempt + 1 < WINDOW_HANDLE_ATTEMPTS => {
+                report_windowing(window, attempt + 1);
+                return;
+            }
+            Err(e) => {
+                warn!("the window has no handle to read its window system from: {e}");
+                crate::ipc::Windowing::Other
+            }
+        };
+        info!(
+            windowing = windowing.name(),
+            "the window is a {} client",
+            windowing.name()
+        );
+        crate::ipc::signal(&windowing.line());
+    });
+}
+
 /// Show the window and run the event loop until something quits it.
 ///
 /// Both steps answer with a `PlatformError` when the session has no display
@@ -618,6 +681,9 @@ fn run_event_loop(
         error!("the window could not be shown: {e}");
         return ExitCode::FAILURE;
     }
+    // Registered ahead of the deferred hide below, so it reads the handle of a
+    // window that has not been hidden yet.
+    report_windowing(window.as_weak(), 0);
 
     // In tray mode with --tray-start hidden, defer the hide to a zero-duration
     // timer so it fires after the event loop is running. Hiding synchronously
@@ -654,4 +720,22 @@ fn run_event_loop(
     }
     info!("event loop exited");
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_app_id_is_the_desktop_entry_it_is_matched_to() {
+        let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/linux")
+            .join(format!("{}.desktop", super::APP_ID));
+        let text =
+            std::fs::read_to_string(&entry).unwrap_or_else(|e| panic!("{}: {e}", entry.display()));
+        assert!(
+            text.lines()
+                .any(|line| line.trim() == format!("StartupWMClass={}", super::APP_ID)),
+            "the X11 match and the Wayland one name different entries:
+{text}"
+        );
+    }
 }

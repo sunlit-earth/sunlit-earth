@@ -10,6 +10,7 @@ repository = "https://github.com/sunlit-earth/sunlit-earth"
 
 [workspace.dependencies]
 slint = "~1.17"
+raw-window-handle = "0.6"
 slint-build = "~1.17"
 wgpu = { version = "28", features = ["counters"] }
 glam = "0.30"

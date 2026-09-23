@@ -134,6 +134,9 @@ jobs:
           screencapture -x e2e-out/desktop-before.png || echo "screencapture refused; the suite is the test, this is only evidence"
         shell: bash
 
+      # No SUNLIT_EARTH_NO_CLOUDS here: it is presence-only and every child
+      # inherits it, which starves the cloud case of the downloads it waits
+      # for. The harness sets it itself for the cases that want it.
       - name: Desktop e2e suite
         if: inputs.mode == 'build-and-e2e'
         env:
@@ -141,7 +144,6 @@ jobs:
           SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/e2e-config.toml
           SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/e2e-metrics
           SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/e2e-cache
-          SUNLIT_EARTH_NO_CLOUDS: "1"
         run: |
           set -euo pipefail
           mkdir -p e2e-out

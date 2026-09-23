@@ -49,7 +49,6 @@ pub struct CounterSection {
     pub texture_bytes: i64,
     pub buffer_bytes: i64,
     pub allocations: i64,
-    pub textures: i64,
 }
 
 /// Live allocations sharing one label, which is how the report names a texture.
@@ -166,7 +165,6 @@ pub(crate) fn collect(
             texture_bytes: counter(counters.hal.texture_memory.read()),
             buffer_bytes: counter(counters.hal.buffer_memory.read()),
             allocations: counter(counters.hal.memory_allocations.read()),
-            textures: counter(counters.hal.textures.read()),
         },
         allocator: device
             .generate_allocator_report()
@@ -523,7 +521,6 @@ mod tests {
                 texture_bytes: counter_mib(90),
                 buffer_bytes: counter_mib(1),
                 allocations: 7,
-                textures: 3,
             },
             allocator: Some(grouped(&pairs(&[
                 ("day_texture", 40 * MIB),

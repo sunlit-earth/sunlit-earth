@@ -121,19 +121,18 @@ impl Session<'_> {
     fn check_login(&self) -> Result<String, String> {
         let expected = self.state.login().unwrap_or(Login::IMAGE_DEFAULT);
         let path = format!("{}/session.env", provider::GUEST_ROOT_LINUX);
+        let unreadable = |why: &str| {
+            format!(
+                "the session came up, but its {path} could not be read to check \
+                 which session it is: {why}"
+            )
+        };
         let out = self
             .provider
             .exec(&self.state, &format!("cat {path}"))
-            .map_err(|e| {
-                format!(
-                    "the session came up, but its {path} could not be read to                      check which session it is: {e}"
-                )
-            })?;
+            .map_err(|e| unreadable(&e))?;
         if !out.success() {
-            return Err(format!(
-                "the session came up, but its {path} could not be read to check                  which session it is: {}",
-                out.stderr.trim()
-            ));
+            return Err(unreadable(out.stderr.trim()));
         }
         expected.check_session_env(&out.stdout)?;
         Ok(format!("  the session is {}", expected.label()))

@@ -149,6 +149,7 @@ pub(super) use live::set;
 mod live {
     use x11rb::connection::Connection;
     use x11rb::image::{BitsPerPixel, Image, ImageOrder, ScanlinePad};
+    use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{
         self, AtomEnum, ChangeWindowAttributesAux, CloseDown, ConnectionExt as _, CreateGCAux,
         Pixmap, PropMode, Window,
@@ -253,7 +254,14 @@ mod live {
 
         let pixmap = conn.generate_id().map_err(|e| refused(&e))?;
         conn.create_pixmap(root.depth, pixmap, root.window, root.width, root.height)
-            .map_err(|e| refused(&e))?;
+            .map_err(|e| refused(&e))?
+            .check()
+            .map_err(|e| {
+                fail(
+                    "the server could not make a pixmap the size of the root",
+                    &e,
+                )
+            })?;
         let gc = conn.generate_id().map_err(|e| refused(&e))?;
         conn.create_gc(gc, pixmap, &CreateGCAux::new())
             .map_err(|e| refused(&e))?;
@@ -262,6 +270,7 @@ mod live {
             .map_err(|e| refused(&e))?;
         drop(image);
         conn.free_gc(gc).map_err(|e| refused(&e))?;
+        settle(&conn)?;
 
         install(&conn, root.window, pixmap)?;
         tracing::info!(
@@ -273,7 +282,29 @@ mod live {
         Ok(())
     }
 
+    /// Wait for the server to have handled every request so far, and fail
+    /// with the first error any of them caused.
+    ///
+    /// A request with no reply reports its error as an event, so a round trip
+    /// alone would answer even where the upload before it was refused.
+    fn settle(conn: &RustConnection) -> Result<(), String> {
+        conn.get_input_focus()
+            .map_err(|e| refused(&e))?
+            .reply()
+            .map_err(|e| refused(&e))?;
+        while let Some(event) = conn.poll_for_event().map_err(|e| refused(&e))? {
+            if let Event::Error(e) = event {
+                return Err(refused(&format!("{e:?}")));
+            }
+        }
+        Ok(())
+    }
+
     /// Make `pixmap` the root's background, the way feh and Esetroot do.
+    ///
+    /// The pixmap is handed to the server before either atom names it, and
+    /// the previous one is freed only once both name the new one, so a
+    /// failure at any point leaves the atoms naming a pixmap that exists.
     fn install(conn: &RustConnection, root: Window, pixmap: Pixmap) -> Result<(), String> {
         let mut atoms = [0; 2];
         for (atom, name) in atoms.iter_mut().zip(ROOT_ATOMS) {
@@ -293,17 +324,8 @@ mod live {
                     .and_then(|reply| reply.value32().and_then(|mut v| v.next()))
             })
             .collect();
-        if let [Some(old), Some(esetroot)] = previous[..]
-            && old == esetroot
-            && old != 0
-        {
-            // The previous setter's connection is gone, so its pixmap is the
-            // only resource that id's client still holds. An id somebody
-            // already freed is an error nobody needs to hear about.
-            if let Ok(cookie) = conn.kill_client(old) {
-                let _ = cookie.check();
-            }
-        }
+        conn.set_close_down_mode(CloseDown::RETAIN_PERMANENT)
+            .map_err(|e| refused(&e))?;
         for atom in atoms {
             conn.change_property32(PropMode::REPLACE, root, atom, AtomEnum::PIXMAP, &[pixmap])
                 .map_err(|e| refused(&e))?;
@@ -315,12 +337,19 @@ mod live {
         .map_err(|e| refused(&e))?;
         conn.clear_area(false, root, 0, 0, 0, 0)
             .map_err(|e| refused(&e))?;
-        conn.set_close_down_mode(CloseDown::RETAIN_PERMANENT)
-            .map_err(|e| refused(&e))?;
-        conn.get_input_focus()
-            .map_err(|e| refused(&e))?
-            .reply()
-            .map_err(|e| refused(&e))?;
+        settle(conn)?;
+        if let [Some(old), Some(esetroot)] = previous[..]
+            && old == esetroot
+            && old != 0
+            && old != pixmap
+        {
+            // The previous setter's connection is gone, so its pixmap is the
+            // only resource that id's client still holds. An id somebody
+            // already freed is an error nobody needs to hear about.
+            if let Ok(cookie) = conn.kill_client(old) {
+                let _ = cookie.check();
+            }
+        }
         Ok(())
     }
 }

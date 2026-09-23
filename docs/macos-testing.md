@@ -6,16 +6,16 @@ This is the checklist for somebody with a Mac who is willing to find out. Nothin
 
 ## Getting it open
 
-Two archives are published for Apple Silicon. `sunlit-earth-<version>-macos.zip` holds `Sunlit Earth.app`, and `sunlit-earth-<version>-macos.tar.gz` holds the same binary with its textures and no bundle. Both are signed ad-hoc: notarization needs an Apple Developer Program membership this project does not have, so Gatekeeper treats either download as unverified, and since macOS 15.1 there is no Control-click "Open" shortcut around that.
+Two archives are published for each Mac architecture, `<arch>` being `aarch64` for Apple Silicon and `x86_64` for Intel. `sunlit-earth-<version>-macos-<arch>.zip` holds `Sunlit Earth.app`, and `sunlit-earth-<version>-macos-<arch>.tar.gz` holds the same binary with its textures and no bundle. Both are signed ad-hoc: notarization needs an Apple Developer Program membership this project does not have, so Gatekeeper treats either download as unverified, and since macOS 15.1 there is no Control-click "Open" shortcut around that.
 
 **The bundle.** Unzip, move `Sunlit Earth.app` to Applications, double-click it. The first attempt gives a dialog saying macOS could not verify that the app is free of malware. Open System Settings, go to Privacy & Security, scroll to the bottom, and choose Open Anyway for Sunlit Earth. On macOS 26 that asks for an administrator password; on 15 it does not. `xattr -dr com.apple.quarantine "/Applications/Sunlit Earth.app"` in Terminal does the same thing by removing the attribute the browser set, and is worth trying if the System Settings route does not appear.
 
 **The tarball.** Downloaded with `curl` and unpacked with `tar`, it meets no Gatekeeper dialog at all, because quarantine is an extended attribute that browsers and Archive Utility set and `tar` does not:
 
 ```bash
-curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/sunlit-earth-0.1.0-macos.tar.gz
-tar xzf sunlit-earth-0.1.0-macos.tar.gz
-cd sunlit-earth-0.1.0-macos
+curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/sunlit-earth-0.1.0-macos-aarch64.tar.gz
+tar xzf sunlit-earth-0.1.0-macos-aarch64.tar.gz
+cd sunlit-earth-0.1.0-macos-aarch64
 ./sunlit-earth
 ```
 

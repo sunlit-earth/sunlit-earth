@@ -160,11 +160,11 @@ jobs:
           set -euo pipefail
           case "${{ matrix.platform }}" in
             windows)
-              if grep -aqi 'vcruntime140' "$EXE"; then
-                echo "the binary imports vcruntime140.dll, so it needs the Visual C++ redistributable"
+              if grep -aqiE 'vcruntime140|msvcp140' "$EXE"; then
+                echo "the binary imports the dynamic C runtime, so it needs the Visual C++ redistributable"
                 exit 1
               fi
-              echo "no import of vcruntime140.dll"
+              echo "no import of vcruntime140.dll or msvcp140.dll"
               ;;
             linux)
               readelf -h "$EXE" | grep -E 'Class|Machine'

@@ -71,7 +71,10 @@ jobs:
             -o "$RUNNER_TEMP/virtual-display" .github/macos/virtual-display.m
           "$RUNNER_TEMP/virtual-display" 1600 900 > "$RUNNER_TEMP/virtual-display.log" 2>&1 &
           echo "$!" > "$RUNNER_TEMP/virtual-display.pid"
-          sleep 5
+          for _ in $(seq 1 20); do
+            grep -q "active displays" "$RUNNER_TEMP/virtual-display.log" && break
+            sleep 1
+          done
           cat "$RUNNER_TEMP/virtual-display.log"
           if ! kill -0 "$(cat "$RUNNER_TEMP/virtual-display.pid")" 2>/dev/null; then
             echo "the virtual display helper exited"
@@ -79,6 +82,10 @@ jobs:
           fi
           if ! grep -q "active displays: 2" "$RUNNER_TEMP/virtual-display.log"; then
             echo "the session does not have two screens"
+            exit 1
+          fi
+          if grep -qE '\] id [0-9]+ at -' "$RUNNER_TEMP/virtual-display.log"; then
+            echo "the second screen is not to the right of the first"
             exit 1
           fi
         shell: bash

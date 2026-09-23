@@ -93,9 +93,21 @@ int main(int argc, const char *argv[]) {
             return 1;
         }
         printf("virtual display %u is %ux%u\n", display.displayID, width, height);
+        CGDirectDisplayID added = display.displayID;
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            print_displays();
+        // macOS puts a new screen on whichever side it likes, and has picked
+        // both, so it is moved flush to the right of the main one.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            CGDisplayConfigRef config;
+            CGRect main = CGDisplayBounds(CGMainDisplayID());
+            if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess
+                || CGConfigureDisplayOrigin(config, added, (int32_t)CGRectGetMaxX(main), 0) != kCGErrorSuccess
+                || CGCompleteDisplayConfiguration(config, kCGConfigureForSession) != kCGErrorSuccess) {
+                fprintf(stderr, "could not move the virtual display beside the main one\n");
+            }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                print_displays();
+            });
         });
         dispatch_main();
     }

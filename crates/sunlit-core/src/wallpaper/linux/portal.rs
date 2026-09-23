@@ -50,6 +50,19 @@ pub(super) fn answer_path<'a>(expected: &'a str, returned: Option<&'a str>) -> &
     returned.unwrap_or(expected)
 }
 
+/// Whether a `Response` signal is the answer to this request: sent by the
+/// connection that answered the call, on the handle being waited on. Any
+/// process of this user can emit a signal on any path, so the path alone is
+/// not enough.
+pub(super) fn is_answer(
+    sender: Option<&str>,
+    path: Option<&str>,
+    portal: &str,
+    handle: &str,
+) -> bool {
+    sender == Some(portal) && path == Some(handle)
+}
+
 #[cfg(target_os = "linux")]
 pub(super) use live::publish;
 
@@ -64,7 +77,7 @@ mod live {
     use zbus::blocking::{Connection, MessageIterator};
     use zbus::zvariant::{Fd, OwnedObjectPath, OwnedValue, Value};
 
-    use super::{answer_path, request_path, response};
+    use super::{answer_path, is_answer, request_path, response};
     use crate::desktop::APP_ID;
 
     const BUS_NAME: &str = "org.freedesktop.portal.Desktop";
@@ -163,6 +176,11 @@ mod live {
             )
             .map_err(|e| refused(&e))?;
         drop(file);
+        let portal = reply
+            .header()
+            .sender()
+            .map(ToString::to_string)
+            .ok_or_else(|| refused(&"the portal's reply named no sender"))?;
         let returned = reply
             .body()
             .deserialize::<OwnedObjectPath>()
@@ -181,10 +199,13 @@ mod live {
                 let code = responses
                     .filter_map(Result::ok)
                     .find(|message| {
-                        message
-                            .header()
-                            .path()
-                            .is_some_and(|path| path.as_str() == handle)
+                        let header = message.header();
+                        is_answer(
+                            header.sender().map(zbus::names::UniqueName::as_str),
+                            header.path().map(zbus::zvariant::ObjectPath::as_str),
+                            &portal,
+                            &handle,
+                        )
                     })
                     .and_then(|message| {
                         message
@@ -245,6 +266,18 @@ mod tests {
         let own = "/org/freedesktop/portal/desktop/request/1_42/t7";
         assert_eq!(answer_path(&expected, Some(own)), own);
         assert_eq!(answer_path(&expected, None), expected);
+    }
+
+    #[test]
+    fn only_the_portal_answers_on_the_handle() {
+        let handle = request_path(":1.42", "sunlit_earth_0");
+        let portal = ":1.7";
+        assert!(is_answer(Some(portal), Some(&handle), portal, &handle));
+        assert!(!is_answer(Some(":1.99"), Some(&handle), portal, &handle));
+        assert!(!is_answer(None, Some(&handle), portal, &handle));
+        let other = request_path(":1.42", "sunlit_earth_1");
+        assert!(!is_answer(Some(portal), Some(&other), portal, &handle));
+        assert!(!is_answer(Some(portal), None, portal, &handle));
     }
 
     #[test]

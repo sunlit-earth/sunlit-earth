@@ -95,11 +95,26 @@ cargo xtask e2e --target linux --desktop xfce
 cargo xtask vm smoke linux --desktop cinnamon
 ```
 
-With no flag it is KDE Plasma, which is the image's default. Every one of them is that desktop's X11 session and not its Wayland one, deliberately: the guest contract starts windowed processes over SSH through `DISPLAY`, and a Wayland session has none to hand out.
+With no flag it is KDE Plasma on X11, which is the image's default. `--session-type <x11|wayland>` picks the display server, X11 when it is not given, and KDE and GNOME have a Wayland session in the same image:
 
-Nothing in the image decides this, so switching desktops costs a boot rather than a rebuild. The host adds `-fw_cfg name=opt/sunlit/desktop,string=<session>` to QEMU's command line; in the guest, a oneshot unit ordered before the display manager reads the value out of `/sys/firmware/qemu_fw_cfg`, checks it against its own allowlist of four names, and writes sddm's `[Autologin] Session=`. Which desktop a guest is running goes into its run record, so `cargo xtask vm status` names it and a run's results say which desktop they came from.
+```
+cargo xtask vm up linux --desktop gnome --session-type wayland
+cargo xtask e2e --target linux --desktop kde --session-type wayland
+```
 
-`--desktop` is a Linux guest option and the Windows image has one desktop, so asking for one there is refused rather than ignored: a run whose flag did nothing is a run whose results are about a desktop nobody chose.
+`--session-type wayland` without `--desktop` is Plasma on Wayland. XFCE's and Cinnamon's Wayland sessions are experimental in Debian 13 and are refused before anything is built or booted, and so is `--screens` above one under Wayland, since the screens are placed with `xrandr` and the pointer mapped with `xinput`, and neither reaches a Wayland compositor's outputs.
+
+Nothing in the image decides this, so switching desktops costs a boot rather than a rebuild. The host adds `-fw_cfg name=opt/sunlit/desktop,string=<session>` to QEMU's command line; in the guest, a oneshot unit ordered before the display manager reads the value out of `/sys/firmware/qemu_fw_cfg`, checks it against its own allowlist of six names, and writes sddm's `[Autologin] Session=`. The Wayland names are `plasma` and `gnome-wayland`, never `gnome`, which is a session file in both directories: sddm's autologin looks in the X11 one first, so `Session=gnome` would start GNOME on Xorg. Which desktop and session type a guest is running go into its run record, so `cargo xtask vm status` names them (`KDE Plasma (Wayland)`) and a run's results say which session they came from.
+
+Every boot of the Linux guest then checks that the session it got is the one it asked for. The session writes `XDG_SESSION_TYPE` and `XDG_CURRENT_DESKTOP` into `session.env` along with the rest of its environment, and the boot reads them back after the ready marker and stops, naming both, when they are not what was asked. A session that silently fell back to Plasma on X11 would otherwise produce a green run about the wrong session. The boot prints `the session is <label>` when they agree.
+
+`--desktop` and `--session-type` are Linux guest options and the Windows image has one desktop, so asking for either there is refused rather than ignored: a run whose flag did nothing is a run whose results are about a desktop nobody chose.
+
+### What differs under Wayland
+
+A Wayland session's `session.env` carries `WAYLAND_DISPLAY`, and an X11 session's has no such line, so the job, the hand-over launcher and any `vm ssh` command that sources the file start the app as a native Wayland client, because winit picks Wayland whenever that variable is set. `DISPLAY` and `XAUTHORITY` are written in both, because the display query, the layout watcher and several of the wallpaper setters reach Xwayland through them. `test_the_window_is_a_client_of_the_sessions_display_server` checks the app's own `SIGNAL:windowing` line against `XDG_SESSION_TYPE`, which is what makes a Wayland run a run of a Wayland client.
+
+`test_a_layout_change_republishes_the_wallpaper` skips under Wayland with "xrandr cannot move a Wayland session's outputs". The other layout cases run and read the layout through Xwayland, which at the guest's scale of 1 reports the true rectangles. KWin and Mutter composite through llvmpipe under Wayland, where KWin's compositing cannot be switched off as it is on X11, and the suite's timeouts needed nothing for it: on 2026-09-23 the suite took 71 s in Plasma on Wayland against 72 s on X11, and 53 s in GNOME on Wayland against 63 s on Xorg.
 
 Only Windows has one setter for every session. Linux has one per desktop, so `check_supported` there reads `XDG_CURRENT_DESKTOP` and looks for that desktop's own tool before anything is rendered. All four in the image have been run and the wallpaper looked at afterwards in each; MATE, LXQt and Budgie have table rows written from their documented setters and have never run, which `docs/roadmap.md` says rather than the docs claiming support nothing produced.
 

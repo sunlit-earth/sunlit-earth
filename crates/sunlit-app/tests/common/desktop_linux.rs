@@ -42,10 +42,12 @@ fn placement_of(
 
 /// Ask this desktop what its wallpaper is, and check the answer is ours.
 ///
-/// Answers with the file name the desktop was found to be holding, so that a
-/// caller which publishes twice can require the second answer to differ from the
-/// first. `None` where this desktop's setter has no store to ask, which is
-/// Plasma's tool and `LXQt`'s file manager.
+/// Answers with the values the desktop was found to be holding, whole, so that
+/// a caller which publishes twice can require the second answer to differ from
+/// the first. Not the file names: every publish writes its own directory with
+/// the same names in it, so two publishes the desktop told apart share them.
+/// `None` where this desktop's setter has no store to ask, which is Plasma's
+/// tool and `LXQt`'s file manager.
 ///
 /// The read-back is derived from the writes the sink performs rather than
 /// written out again, so a row that sets the wrong key reads the wrong key back
@@ -90,6 +92,7 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
     let placement = placement_of(&backend, published, &monitors);
 
     let mut holders: Vec<String> = Vec::new();
+    let mut held: Vec<String> = Vec::new();
     for command in backend.commands(&placement, &discovered) {
         // The fill-mode writes carry a mode rather than a path, and the mode is
         // not what this is about.
@@ -122,6 +125,7 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
             query.args.join(" ")
         );
         holders.push(query.args.join(" "));
+        held.push(value);
     }
     assert!(
         !holders.is_empty(),
@@ -155,7 +159,7 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
         backend.desktop,
         holders.len()
     );
-    Some(name)
+    Some(held.join(", "))
 }
 
 /// The command that reads back what one of the sink's writes set.

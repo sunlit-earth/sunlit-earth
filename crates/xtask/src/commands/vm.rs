@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::commands::status;
 use crate::commands::teardown::{self, Selection};
 use crate::guest::job;
-use crate::provider::desktop::Desktop;
+use crate::provider::desktop::{Desktop, Login, SessionType};
 use crate::provider::target::{HostOs, Image, ProviderKind, Target};
 use crate::provider::{self, Provider};
 use crate::runner::Runner;
@@ -96,6 +96,9 @@ impl Session<'_> {
             SESSION_TIMEOUT,
         )?;
         println!("{}", readiness_ready_line(self.image, elapsed));
+        if self.image == Image::Linux {
+            println!("{}", self.check_login()?);
+        }
         // Only a Linux guest can have a second screen, and only a Linux guest
         // has the xrandr the placement is written in, so the target is asked
         // rather than inferred from the count.
@@ -107,6 +110,32 @@ impl Session<'_> {
             );
         }
         Ok(())
+    }
+
+    /// Whether the session that came up is the one this guest was asked for.
+    ///
+    /// Read from the `session.env` the session wrote before its ready marker,
+    /// which carries `XDG_SESSION_TYPE` and `XDG_CURRENT_DESKTOP` as the session
+    /// itself set them. A boot that named nothing is held to the image default,
+    /// which is as true there and costs the same.
+    fn check_login(&self) -> Result<String, String> {
+        let expected = self.state.login().unwrap_or(Login::IMAGE_DEFAULT);
+        let path = format!("{}/session.env", provider::GUEST_ROOT_LINUX);
+        let unreadable = |why: &str| {
+            format!(
+                "the session came up, but its {path} could not be read to check \
+                 which session it is: {why}"
+            )
+        };
+        let out = self
+            .provider
+            .exec(&self.state, &format!("cat {path}"))
+            .map_err(|e| unreadable(&e))?;
+        if !out.success() {
+            return Err(unreadable(out.stderr.trim()));
+        }
+        expected.check_session_env(&out.stdout)?;
+        Ok(format!("  the session is {}", expected.label()))
     }
 
     /// How to reach and get rid of this guest, for when something has gone
@@ -462,6 +491,78 @@ pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<De
     }
 }
 
+/// Which session a guest may be asked to log into, and whether it may be asked
+/// at all.
+///
+/// A session type with no desktop is the image default's desktop, KDE, on that
+/// type. The refusals off the Linux image mirror [`desktop_for`]'s, for the
+/// same reason.
+pub fn login_for(
+    image: Image,
+    desktop: Option<Desktop>,
+    session_type: Option<SessionType>,
+) -> Result<Option<Login>, String> {
+    let desktop = desktop_for(image, desktop)?;
+    match (image, session_type) {
+        (Image::Linux, None) => desktop.map(|d| Login::new(d, SessionType::X11)).transpose(),
+        (Image::Linux, Some(session_type)) => Login::new(
+            desktop.unwrap_or(Login::IMAGE_DEFAULT.desktop()),
+            session_type,
+        )
+        .map(Some),
+        (_, None) => Ok(None),
+        (_, Some(session_type)) if image.has_desktop() => Err(format!(
+            "--session-type {session_type} is a Debian 13 guest option; the {image} \
+             image has one session and no way to choose another"
+        )),
+        (_, Some(session_type)) => Err(format!(
+            "--session-type {session_type} asks for a session the {image} image does \
+             not have: it carries no desktop at all"
+        )),
+    }
+}
+
+/// What a boot is asked for beyond the image itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootRequest {
+    pub desktop: Option<Desktop>,
+    pub session_type: Option<SessionType>,
+    pub screens: u16,
+}
+
+impl BootRequest {
+    /// The image as it was built: its own default session on one screen.
+    pub const PLAIN: Self = Self {
+        desktop: None,
+        session_type: None,
+        screens: 1,
+    };
+
+    /// The request checked against the image: the session to name, if any, and
+    /// how many screens.
+    ///
+    /// More than one screen is refused under Wayland because both halves of
+    /// placing them are X11 commands: `xrandr` moves the outputs and `xinput`
+    /// maps the pointer, and neither reaches a Wayland compositor's outputs.
+    pub fn check(self, image: Image) -> Result<(Option<Login>, u16), String> {
+        let login = login_for(image, self.desktop, self.session_type)?;
+        let screens = screens_for(image, self.screens)?;
+        if screens > 1
+            && let Some(login) = login.filter(|l| l.session_type() == SessionType::Wayland)
+        {
+            return Err(format!(
+                "--screens {screens} with --session-type wayland asks for a layout \
+                 nothing here can make: the screens are placed with xrandr and the \
+                 pointer mapped with xinput, and neither can move {}'s outputs. \
+                 --session-type x11 gives {screens} screens, and a Wayland session \
+                 runs on one",
+                login.label()
+            ));
+        }
+        Ok((login, screens))
+    }
+}
+
 /// The most screens a guest may be asked for.
 ///
 /// Not virtio-gpu's limit, which is sixteen scanouts: four is more than any
@@ -518,11 +619,9 @@ pub fn boot<'a>(
     image: Image,
     reason: StartReason,
     allow_expired: bool,
-    desktop: Option<Desktop>,
-    screens: u16,
+    request: BootRequest,
 ) -> Result<Session<'a>, String> {
-    let desktop = desktop_for(image, desktop)?;
-    let screens = screens_for(image, screens)?;
+    let (login, screens) = request.check(image)?;
     check_image(store, image, allow_expired)?;
     check_no_other_vm(runner, store, image)?;
     clear_stale_state(runner, store, image)?;
@@ -540,7 +639,11 @@ pub fn boot<'a>(
     // fw_cfg argument, and its consoles, out of the record rather than out of a
     // parameter. One screen is recorded as no answer, which is what every record
     // written before a guest could have two already carries.
-    state.desktop = desktop.map(|d| d.flag().to_owned());
+    state.desktop = login.map(|l| l.desktop().flag().to_owned());
+    state.session_type = login
+        .map(Login::session_type)
+        .filter(|t| *t != SessionType::X11)
+        .map(|t| t.flag().to_owned());
     state.screens = (screens > 1).then_some(screens);
 
     // From here the VM exists: for Hyper-V it is registered, for QEMU its
@@ -1376,9 +1479,10 @@ pub fn up(
     runner: &dyn Runner,
     image: Image,
     allow_expired: bool,
-    desktop: Option<Desktop>,
-    screens: u16,
+    request: BootRequest,
 ) -> Result<u8, String> {
+    // A usage error is answered before the build it would otherwise waste.
+    request.check(image)?;
     let store = store::store()?;
     // Built before anything is created, because it decides what this boot is: a
     // guest carrying the current binaries, or the golden image itself to look
@@ -1411,8 +1515,7 @@ pub fn up(
         image,
         StartReason::Up,
         allow_expired,
-        desktop,
-        screens,
+        request,
     )?;
     // Decision 14: an interactive guest carries the current binaries, exactly
     // as a test run would, so `vm up` and `e2e --keep` land in the same place.
@@ -1642,13 +1745,11 @@ pub fn smoke(
     runner: &dyn Runner,
     image: Image,
     keep: bool,
-    desktop: Option<Desktop>,
+    request: BootRequest,
 ) -> Result<u8, String> {
     let store = store::store()?;
     let started = std::time::Instant::now();
-    // One screen: the smoke job asks whether the guest contract works, and a
-    // second screen is not part of that question.
-    let mut session = boot(runner, &store, image, StartReason::Run, false, desktop, 1)?;
+    let mut session = boot(runner, &store, image, StartReason::Run, false, request)?;
 
     let script = smoke_script(image);
 
@@ -2252,6 +2353,65 @@ mod tests {
         for image in Image::ALL {
             assert_eq!(desktop_for(image, None), Ok(None), "{image}");
         }
+    }
+
+    #[test]
+    fn a_session_type_is_asked_of_the_linux_guest_alone_and_defaults_to_kde() {
+        let wayland = Some(SessionType::Wayland);
+        assert_eq!(
+            login_for(Image::Linux, None, wayland),
+            Ok(Login::new(Desktop::Kde, SessionType::Wayland).ok())
+        );
+        assert_eq!(
+            login_for(Image::Linux, Some(Desktop::Gnome), wayland),
+            Ok(Login::new(Desktop::Gnome, SessionType::Wayland).ok())
+        );
+        assert_eq!(
+            login_for(Image::Linux, Some(Desktop::Xfce), None),
+            Ok(Login::new(Desktop::Xfce, SessionType::X11).ok()),
+            "a desktop alone is its X11 session, as it always was"
+        );
+        assert_eq!(login_for(Image::Linux, None, None), Ok(None));
+        let refusal = login_for(Image::Linux, Some(Desktop::Cinnamon), wayland)
+            .expect_err("Cinnamon has no Wayland session here");
+        assert!(refusal.contains("--desktop gnome"), "{refusal}");
+
+        let refusal =
+            login_for(Image::Windows, None, wayland).expect_err("the Windows image has one");
+        assert!(refusal.contains("Debian 13 guest option"), "{refusal}");
+        let refusal = login_for(Image::Windows, None, Some(SessionType::X11))
+            .expect_err("even the one it would have anyway");
+        assert!(refusal.contains("--session-type x11"), "{refusal}");
+        let refusal = login_for(Image::LinuxBuilder, None, wayland)
+            .expect_err("the Linux builder has no desktop");
+        assert!(refusal.contains("no desktop at all"), "{refusal}");
+    }
+
+    #[test]
+    fn a_wayland_guest_is_refused_a_second_screen_and_an_x11_one_is_not() {
+        let request = |session_type, screens| BootRequest {
+            desktop: Some(Desktop::Gnome),
+            session_type,
+            screens,
+        };
+        let refusal = request(Some(SessionType::Wayland), 2)
+            .check(Image::Linux)
+            .expect_err("xrandr cannot place a Wayland session's outputs");
+        assert!(refusal.contains("--screens 2"), "{refusal}");
+        assert!(refusal.contains("--session-type x11"), "{refusal}");
+        assert!(refusal.contains("GNOME (Wayland)"), "{refusal}");
+        assert!(
+            request(Some(SessionType::Wayland), 1)
+                .check(Image::Linux)
+                .is_ok()
+        );
+        assert!(
+            request(Some(SessionType::X11), 2)
+                .check(Image::Linux)
+                .is_ok()
+        );
+        assert!(request(None, 2).check(Image::Linux).is_ok());
+        assert_eq!(BootRequest::PLAIN.check(Image::Windows), Ok((None, 1)));
     }
 
     #[test]

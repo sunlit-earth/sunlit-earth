@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use image::GenericImageView;
 use serial_test::serial;
-use sunlit_earth::ipc::DisplaysSignal;
+use sunlit_earth::ipc::{DisplaysSignal, Windowing};
 
 mod common;
 
@@ -829,6 +829,50 @@ fn test_set_wallpaper() {
     );
 }
 
+/// Whether this run is inside a Wayland session, as the session says.
+fn session_is_wayland() -> bool {
+    std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t.trim() == "wayland")
+}
+
+/// The window is a client of the display server the session runs, which on
+/// Linux is what `WAYLAND_DISPLAY` reaching the app decides.
+///
+/// The session type is the session's claim and the signal is winit's choice,
+/// read from the window's own handle, so a Wayland session whose app came up
+/// through Xwayland fails here rather than passing every other case as an X11
+/// client. Elsewhere only the signal's arrival is checked.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_the_window_is_a_client_of_the_sessions_display_server() {
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
+    let line = stdout_watcher.wait_for_signal_line_from("windowing", 0, READY);
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+
+    let windowing = Windowing::parse(&line)
+        .unwrap_or_else(|| panic!("a windowing line the app did not write: {line:?}"));
+    println!("the window is a {} client", windowing.name());
+    if cfg!(target_os = "linux") {
+        let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        match session.trim() {
+            "wayland" => assert_eq!(
+                windowing,
+                Windowing::Wayland,
+                "a Wayland session's app came up as a {} client; is \
+                 WAYLAND_DISPLAY ({:?}) reaching it?",
+                windowing.name(),
+                std::env::var("WAYLAND_DISPLAY").ok()
+            ),
+            "x11" => assert_eq!(windowing, Windowing::X11, "an X11 session"),
+            other => skip_case(
+                "test_the_window_is_a_client_of_the_sessions_display_server's check",
+                &format!("XDG_SESSION_TYPE is {other:?}, which names no display server"),
+            ),
+        }
+    }
+}
+
 /// What the running app says this session's screens are.
 ///
 /// The Linux half of the platform seam, and the half a unit test cannot reach:
@@ -1040,6 +1084,13 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
 #[serial]
 fn test_a_layout_change_republishes_the_wallpaper() {
     const CASE: &str = "test_a_layout_change_republishes_the_wallpaper";
+
+    // First, because under Wayland the gate below still passes: it finds the
+    // outputs through Xwayland, and the change it then makes moves nothing.
+    if session_is_wayland() {
+        skip_case(CASE, "xrandr cannot move a Wayland session's outputs");
+        return;
+    }
 
     if !wallpaper_supported() {
         skip_case(

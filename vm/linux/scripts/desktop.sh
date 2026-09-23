@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Four desktops on Xorg, one display manager, and a per-boot choice between
-# them. Runs as root through sudo.
+# Four desktops on Xorg, two of them on Wayland as well, one display manager,
+# and a per-boot choice between them. Runs as root through sudo.
 #
 # Phase 5 decision 2: KDE Plasma (the default), GNOME, XFCE and Cinnamon, each
 # from the smallest package set that gives a working session, never the
@@ -106,10 +106,22 @@ for session in plasmax11 gnome-xorg xfce cinnamon; do
   test -f "/usr/share/xsessions/${session}.desktop"
 done
 
-# Xorg, not Wayland, in every one of them. An X session is what makes DISPLAY=:0
-# reachable from a process the orchestrator starts over SSH, which is how the job
-# runs at all. Each of these desktops also ships a Wayland session, and the
-# selector below only ever names the X11 ones.
+# The two Wayland sessions, from the same packages. Each name has to exist in the
+# Wayland directory and must not exist in the X11 one: sddm's autologin resolves
+# a name by basename and looks in /usr/share/xsessions first (sddm issue #837), so
+# a name in both starts the X11 session while every record says Wayland. That is
+# why GNOME's is `gnome-wayland` and not `gnome`, which both directories have.
+for session in plasma gnome-wayland; do
+  test -f "/usr/share/wayland-sessions/${session}.desktop"
+  if [ -e "/usr/share/xsessions/${session}.desktop" ]; then
+    echo "${session} is an X11 session name as well as a Wayland one, so sddm would start the X11 session for it" >&2
+    exit 1
+  fi
+done
+
+# The greeter's display server, which is all this setting decides: autologin
+# never shows the greeter, and the session type comes from the session file the
+# selector below names.
 install -d -m 0755 /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/00-sunlit-general.conf <<'EOF'
 [General]
@@ -290,7 +302,7 @@ fi
 #
 # The accepted names are an allowlist, not whatever the host said. A value from
 # outside the machine ends up in a configuration file read by a process running
-# as root, and `crates/xtask/src/provider/desktop.rs` holds the same four names
+# as root, and `crates/xtask/src/provider/desktop.rs` holds the same six names
 # on the other side with a test that compares them against this file.
 cat > /usr/local/bin/sunlit-e2e-select-desktop <<'SELECTOR'
 #!/bin/sh
@@ -306,7 +318,7 @@ session="${default_session}"
 if [ -r "${asked_path}" ]; then
   asked="$(tr -d '\000\r\n' < "${asked_path}")"
   case "${asked}" in
-    plasmax11|gnome-xorg|xfce|cinnamon) session="${asked}" ;;
+    plasmax11|gnome-xorg|xfce|cinnamon|plasma|gnome-wayland) session="${asked}" ;;
     "") ;;
     *) echo "sunlit-e2e: '${asked}' is not a desktop this image offers" >&2 ;;
   esac
@@ -315,7 +327,11 @@ fi
 # A name that passed the allowlist and still has no session file means the image
 # was built without that desktop, which is worth saying rather than handing sddm
 # a session it will silently replace with one of its own choosing.
-if [ ! -f "/usr/share/xsessions/${session}.desktop" ]; then
+case "${session}" in
+  plasma|gnome-wayland) sessions_dir=/usr/share/wayland-sessions ;;
+  *) sessions_dir=/usr/share/xsessions ;;
+esac
+if [ ! -f "${sessions_dir}/${session}.desktop" ]; then
   echo "sunlit-e2e: no ${session} session in this image" >&2
   session="${default_session}"
 fi

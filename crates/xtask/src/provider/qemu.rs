@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::guest::ssh::SshTarget;
 use crate::provider::Stopped;
 use crate::provider::console;
-use crate::provider::desktop::Desktop;
+use crate::provider::desktop::Login;
 use crate::provider::qmp;
 use crate::provider::target::{HostOs, Image, ProviderKind, Target};
 use crate::runner::{Cmd, Runner};
@@ -415,11 +415,11 @@ pub struct Launch {
     /// The console's size, which the Linux guest is told and the Windows guest
     /// is not. See [`display_args`].
     pub console: (u32, u32),
-    /// Which desktop the Linux guest logs into, when the host asked for one.
+    /// Which session the Linux guest logs into, when the host asked for one.
     ///
     /// `None` leaves the image's own default, so a guest booted by anything that
     /// does not know about this behaves as it always did.
-    pub desktop: Option<Desktop>,
+    pub login: Option<Login>,
 }
 
 impl Launch {
@@ -500,8 +500,8 @@ impl Launch {
             self.screens(),
         ));
         args.extend(pointer_args(self.image.target()));
-        if let Some(desktop) = self.desktop {
-            args.extend(crate::provider::desktop::fw_cfg_args(desktop));
+        if let Some(login) = self.login {
+            args.extend(crate::provider::desktop::fw_cfg_args(login));
         }
         if let Some(firmware) = &self.firmware {
             // pflash rather than -bios: -bios gives the firmware nowhere to
@@ -722,7 +722,7 @@ impl<'a> QemuProvider<'a> {
             vnc_displays: vnc_displays_of(state),
             firmware,
             console: console::requested_resolution(true).unwrap_or(DEFAULT_CONSOLE),
-            desktop: state.desktop.as_deref().and_then(Desktop::parse),
+            login: state.login(),
         }
     }
 
@@ -878,7 +878,7 @@ impl crate::provider::Provider for QemuProvider<'_> {
         if image.target() == Target::Linux {
             let (width, height) = launch.console;
             let session = if image.has_desktop() {
-                launch.desktop.map_or_else(
+                launch.login.map_or_else(
                     || "the image's own default desktop".to_owned(),
                     |d| format!("the {} session", d.label()),
                 )
@@ -1000,6 +1000,7 @@ impl crate::provider::Provider for QemuProvider<'_> {
 mod tests {
     use super::*;
     use crate::provider::Provider as _;
+    use crate::provider::desktop::{Desktop, SessionType};
     use crate::runner::fake::FakeRunner;
 
     fn launch(image: Image) -> Launch {
@@ -1016,7 +1017,7 @@ mod tests {
             vnc_displays: vec![VNC_DISPLAY],
             firmware: None,
             console: DEFAULT_CONSOLE,
-            desktop: None,
+            login: None,
         }
     }
 
@@ -1904,10 +1905,16 @@ mod tests {
         );
 
         let mut with_desktop = launch(Image::Linux);
-        with_desktop.desktop = Some(Desktop::Gnome);
+        with_desktop.login = Login::new(Desktop::Gnome, SessionType::X11).ok();
         let text = with_desktop.args().join(" ");
         assert!(
             text.contains("-fw_cfg name=opt/sunlit/desktop,string=gnome-xorg"),
+            "{text}"
+        );
+        with_desktop.login = Login::new(Desktop::Gnome, SessionType::Wayland).ok();
+        let text = with_desktop.args().join(" ");
+        assert!(
+            text.contains("-fw_cfg name=opt/sunlit/desktop,string=gnome-wayland"),
             "{text}"
         );
     }

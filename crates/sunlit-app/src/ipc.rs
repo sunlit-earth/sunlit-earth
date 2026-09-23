@@ -390,6 +390,57 @@ fn signal_list(line: &str, key: &str) -> Option<Vec<String>> {
     Some(value.split(';').map(str::to_owned).collect())
 }
 
+/// Which window system the settings window is a client of, announced once as
+/// `SIGNAL:windowing <name>` after the first window exists.
+///
+/// Read from the window's own raw handle rather than from the environment,
+/// because the environment says what the session offers and the handle says
+/// what winit chose. A session with `WAYLAND_DISPLAY` whose app still came up
+/// through Xwayland is the case this exists to catch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Windowing {
+    Wayland,
+    X11,
+    Other,
+}
+
+impl Windowing {
+    const ALL: [Self; 3] = [Self::Wayland, Self::X11, Self::Other];
+
+    #[must_use]
+    pub fn of(handle: raw_window_handle::RawWindowHandle) -> Self {
+        use raw_window_handle::RawWindowHandle;
+        match handle {
+            RawWindowHandle::Wayland(_) => Self::Wayland,
+            RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_) => Self::X11,
+            _ => Self::Other,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Wayland => "wayland",
+            Self::X11 => "x11",
+            Self::Other => "other",
+        }
+    }
+
+    /// The signal body, without the `SIGNAL:` prefix.
+    #[must_use]
+    pub fn line(self) -> String {
+        format!("windowing {}", self.name())
+    }
+
+    /// Read the answer back out of a `SIGNAL:windowing <name>` line.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        let body = line.trim().strip_prefix("SIGNAL:").unwrap_or(line.trim());
+        let name = body.strip_prefix("windowing ")?.trim();
+        Self::ALL.into_iter().find(|w| w.name() == name)
+    }
+}
+
 pub(crate) fn signal(name: &str) {
     let msg = format!("SIGNAL:{name}\n");
     let stdout = std::io::stdout();
@@ -545,6 +596,40 @@ mod tests {
         assert!(
             second.is_err(),
             "a name already taken has to be refused, not shared"
+        );
+    }
+
+    #[test]
+    fn the_windowing_line_round_trips_for_every_answer() {
+        for windowing in Windowing::ALL {
+            let line = format!("SIGNAL:{}", windowing.line());
+            assert_eq!(Windowing::parse(&line), Some(windowing), "{line}");
+        }
+        assert_eq!(Windowing::parse("SIGNAL:windowing mir"), None);
+        assert_eq!(Windowing::parse("SIGNAL:window_shown"), None);
+    }
+
+    #[test]
+    fn the_handle_decides_the_answer() {
+        use raw_window_handle::{
+            RawWindowHandle, WaylandWindowHandle, Win32WindowHandle, XcbWindowHandle,
+            XlibWindowHandle,
+        };
+        let surface = std::ptr::NonNull::<std::ffi::c_void>::dangling();
+        assert_eq!(
+            Windowing::of(RawWindowHandle::Wayland(WaylandWindowHandle::new(surface))),
+            Windowing::Wayland
+        );
+        assert_eq!(
+            Windowing::of(RawWindowHandle::Xlib(XlibWindowHandle::new(7))),
+            Windowing::X11
+        );
+        let xcb = XcbWindowHandle::new(std::num::NonZeroU32::new(7).expect("nonzero"));
+        assert_eq!(Windowing::of(RawWindowHandle::Xcb(xcb)), Windowing::X11);
+        let hwnd = std::num::NonZeroIsize::new(7).expect("nonzero");
+        assert_eq!(
+            Windowing::of(RawWindowHandle::Win32(Win32WindowHandle::new(hwnd))),
+            Windowing::Other
         );
     }
 }

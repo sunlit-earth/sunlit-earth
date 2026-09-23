@@ -271,16 +271,18 @@ fn one_swaybg_of_ours_shows(published: &[std::path::PathBuf]) -> String {
     newest
 }
 
-/// Under the portal on GNOME: the backend wrote GNOME's key, and it names the
-/// file this publish handed over.
+/// Under the portal on GNOME: the backend wrote GNOME's key, and the file it
+/// names holds the image this publish handed over. GNOME's backend copies the
+/// image to `~/.config/background` and points the key there, the same path on
+/// every publish, so the name says nothing and the bytes are what is compared;
+/// the answer names the file they match, which is what differs between two.
 #[cfg(target_os = "linux")]
 fn the_portal_wrote_gnomes_key(published: &[std::path::PathBuf]) -> String {
-    let name = published
+    let handed = published
         .first()
-        .and_then(|path| path.file_name())
-        .expect("the portal setter writes the image it hands over")
-        .to_string_lossy()
-        .into_owned();
+        .expect("the portal setter writes the image it hands over");
+    let expected =
+        std::fs::read(handed).unwrap_or_else(|e| panic!("cannot read {}: {e}", handed.display()));
     let query = sunlit_core::desktop::Invocation {
         program: "gsettings",
         args: vec![
@@ -289,18 +291,26 @@ fn the_portal_wrote_gnomes_key(published: &[std::path::PathBuf]) -> String {
             "picture-uri".to_owned(),
         ],
     };
+    let holds = |value: &str| {
+        value
+            .strip_prefix("file://")
+            .and_then(|path| std::fs::read(path).ok())
+            .is_some_and(|bytes| bytes == expected)
+    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut value = read_setting(&query);
-    while !value.contains(&name) && std::time::Instant::now() < deadline {
+    while !holds(&value) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(250));
         value = read_setting(&query);
     }
     assert!(
-        value.contains(&name),
-        "the portal said it set the wallpaper and GNOME's key holds {value:?}, not {name}"
+        holds(&value),
+        "the portal said it set the wallpaper and GNOME's key holds {value:?},          which is not a copy of {}",
+        handed.display()
     );
-    println!("the portal left {value} in GNOME's picture-uri");
-    value
+    let held = format!("{value}, a copy of {}", handed.display());
+    println!("the portal left {held} in GNOME's picture-uri");
+    held
 }
 
 /// Under the root pixmap: `_XROOTPMAP_ID` names a live pixmap, and the one the

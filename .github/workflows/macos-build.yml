@@ -46,335 +46,83 @@ env:
 
 jobs:
   macos:
-    name: ${{ inputs.mode }} on ${{ inputs.runner }}
+    name: vnc experiment on ${{ inputs.runner }}
     runs-on: ${{ inputs.runner }}
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      OUT: ${{ github.workspace }}/session-out
     steps:
-      # The build modes compile for aarch64-apple-darwin and then run what they
-      # produced, which an Intel runner cannot do at all: there is no Rosetta in
-      # that direction. The image is here for the interactive experiment.
-      - name: Refuse a build on the Intel image
-        if: ${{ inputs.runner == 'macos-26-intel' && inputs.mode != 'check' }}
-        run: |
-          echo "mode=${{ inputs.mode }} builds for aarch64 and runs it; ${{ inputs.runner }} cannot."
-          echo "Use macos-latest, or mode=check."
-          exit 1
-        shell: bash
-
-      - uses: actions/checkout@v4
-        with:
-          lfs: ${{ inputs.mode != 'check' }}
-
-      - name: Install the pinned toolchain
-        run: |
-          set -euo pipefail
-          rustup toolchain install --no-self-update
-          rustup show active-toolchain
-        shell: bash
-
-      - name: Point bindgen at Xcode's libclang
-        run: |
-          LIB="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
-          if [ -f "$LIB/libclang.dylib" ]; then
-            echo "LIBCLANG_PATH=$LIB" >> "$GITHUB_ENV"
-            echo "using $LIB"
-          else
-            echo "no libclang at $LIB, leaving clang-sys to find it"
-          fi
-        shell: bash
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ inputs.mode == 'check' && 'ci-macos' || inputs.mode == 'build' && 'release-macos' || 'macos-build-e2e' }}
-          cache-on-failure: true
-
-      - name: Check
-        if: inputs.mode == 'check'
-        run: cargo check --all-targets --locked
-        shell: bash
-
-      - name: Unit tests
-        if: inputs.mode == 'check'
-        run: cargo test --workspace --lib --bins --locked -- --show-output
-        shell: bash
-
-      - name: Build
-        if: inputs.mode != 'check'
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: |
-          set -euo pipefail
-          build() {
-            cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$1"
-          }
-          build aarch64-apple-darwin
-          mkdir -p dist-bin
-          if [ "${{ inputs.universal }}" = "true" ]; then
-            rustup target add x86_64-apple-darwin
-            build x86_64-apple-darwin
-            lipo -create -output dist-bin/sunlit-earth target/aarch64-apple-darwin/release/sunlit-earth target/x86_64-apple-darwin/release/sunlit-earth
-            echo "the x86_64 slice was built and not executed: nothing here installs Rosetta or runs it, so only the arm64 half of this binary has been shown to start"
-          else
-            cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
-          fi
-          lipo -info dist-bin/sunlit-earth
-        shell: bash
-
-      - name: Bundle and verify
-        if: inputs.mode != 'check'
-        env:
-          SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/bundle-config.toml
-          SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/bundle-metrics
-          SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/bundle-cache
-          SUNLIT_EARTH_NO_CLOUDS: "1"
-        run: |
-          set -euo pipefail
-          start=$(date +%s)
-          cargo xtask bundle --platform macos \
-            --exe dist-bin/sunlit-earth --out "${{ github.workspace }}/dist" --verify
-          echo "bundle step took $(( $(date +%s) - start )) s, xtask compile included"
-          ls -l "${{ github.workspace }}/dist"
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        if: inputs.mode != 'check'
-        with:
-          name: bundle-macos
-          path: dist/
-          if-no-files-found: error
-
-      - name: What this session has
-        if: inputs.mode == 'build-and-e2e'
-        run: |
-          set -euo pipefail
-          mkdir -p e2e-out
-          system_profiler SPDisplaysDataType | tee e2e-out/displays-system-profiler.txt
-          "$(pwd)/dist-bin/sunlit-earth" displays | tee e2e-out/displays.txt
-          screencapture -x e2e-out/desktop-before.png || echo "screencapture refused; the suite is the test, this is only evidence"
-        shell: bash
-
-      - name: Desktop e2e suite
-        if: inputs.mode == 'build-and-e2e'
-        env:
-          SUNLIT_EARTH_E2E_WALLPAPER: "1"
-          SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/e2e-config.toml
-          SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/e2e-metrics
-          SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/e2e-cache
-          SUNLIT_EARTH_NO_CLOUDS: "1"
-        run: |
-          set -euo pipefail
-          mkdir -p e2e-out
-          cargo e2e 2>&1 | tee e2e-out/e2e.log
-        shell: bash
-
-      - name: What the desktop looks like now
-        if: ${{ inputs.mode == 'build-and-e2e' && !cancelled() }}
-        run: |
-          set -euo pipefail
-          mkdir -p e2e-out
-          screencapture -x e2e-out/desktop-after.png || echo "screencapture refused; the suite is the test, this is only evidence"
-          ls -l e2e-out
-        shell: bash
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ inputs.mode == 'build-and-e2e' && !cancelled() }}
-        with:
-          name: e2e-macos
-          path: e2e-out/
-          if-no-files-found: warn
-
-      # A hosted runner accepts no inbound connection, so the session is dialled
-      # from inside. The node is ephemeral and answers on a 100.x address that
-      # routes only from this tailnet, which is why printing it below is safe.
       - name: Join the tailnet
-        if: ${{ inputs.interactive && !cancelled() }}
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      # Legacy VNC auth uses the password as a DES key and keeps the first eight
-      # characters, so a `VNC_PASSWORD` longer than that is not stronger.
-      - name: Open a screen sharing session
-        id: screen
-        if: ${{ inputs.interactive && !cancelled() }}
-        env:
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+      - name: Prepare the session
+        run: |
+          set -uo pipefail
+          mkdir -p "$OUT"
+          sudo pmset -a sleep 0 displaysleep 0 disksleep 0 || true
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ83WRwidH1JyERg9/ckhDlirY9ihG0uKumpFt5jdDWG runner-probe" >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          {
+            echo "tailscale ip: $(tailscale ip -4)"
+            sw_vers
+            csrutil status
+            echo "user: $(whoami), console: $(stat -f%Su /dev/console)"
+            echo "== ancestors of this step =="
+            pid=$$
+            while [ "${pid:-1}" -gt 1 ]; do
+              ps -o pid=,ppid=,user=,command= -p "$pid"
+              pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+            done
+            echo "== listening =="
+            sudo lsof -nP -iTCP -sTCP:LISTEN
+          } 2>&1 | tee "$OUT/prepare.txt"
+          screencapture -x "$OUT/desktop.png" && echo "desktop.png: $(stat -f%z "$OUT/desktop.png") bytes"
+        shell: bash
+
+      - name: Build macVNC
         run: |
           set -euo pipefail
-          if [ "${#VNC_PASSWORD}" -gt 8 ]; then
-            echo "VNC_PASSWORD must be eight characters or fewer; legacy auth reads no more"
-            exit 1
-          fi
+          brew install libvncserver 2>&1 | tail -3
+          git clone --depth 1 https://github.com/LibVNC/macVNC "$RUNNER_TEMP/macVNC"
+          cmake -S "$RUNNER_TEMP/macVNC" -B "$RUNNER_TEMP/macVNC/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/macVNC/build"
+          ls -l "$RUNNER_TEMP/macVNC/build/macVNC.app/Contents/MacOS/"
+        shell: bash
 
-          # Nothing here may restart loginwindow. The Actions runner is a
-          # LaunchAgent inside the console user's GUI session, so restarting it
-          # logs that session out and kills the job with 143. Keeping the display
-          # awake is the half that can be done from outside the session, and it
-          # matters: once the display sleeps there is no way to wake it and the
-          # server streams an empty framebuffer.
-          sudo pmset -a sleep 0 displaysleep 0 disksleep 0 || true
-          sudo defaults write /Library/Preferences/com.apple.screensaver askForPassword -int 0 || true
-          sudo defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -bool true || true
-
-          # Remote Management stays OFF, which is the one configuration six runs
-          # never tried. screensharingd starts fine (pid, runs = 1, never
-          # exited) and then leaves without binding 5900, logging "remote
-          # management service is active" and "system mode = 2": with Remote
-          # Management on it stands aside for ARDAgent, and ARDAgent will not
-          # serve the port because it cannot get the screen. Plain Screen
-          # Sharing is the half that needs no agent.
-          kickstart=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
-          sudo "$kickstart" -deactivate || true
-
-          # The two keys screensharingd looked for and reported unset, plus the
-          # one that lets a plain VNC client authenticate at all.
-          rm_prefs=/Library/Preferences/com.apple.RemoteManagement
-          sudo defaults write "$rm_prefs" VNCLegacyConnectionsEnabled -bool true || true
-          sudo defaults write "$rm_prefs" allowRemoteScreenObservation -bool true || true
-          sudo defaults write "$rm_prefs" allowScreenShot -bool true || true
-          sudo "$kickstart" -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD"
-          # Some builds take -setvncpw and store nothing, so the obfuscated file
-          # is written directly too. The key is fixed and public, and the format
-          # keeps only the first eight characters, as the check above assumes.
-          printf '%s' "$VNC_PASSWORD" | perl -we 'BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }; $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_; foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"' \
-            | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
-
-          mkdir -p session-out
-          # -deactivate takes the job out of the system domain entirely
-          # ("Could not find service ... in domain for system"), so bootstrap is
-          # finally the right verb: earlier it was wrong only because the job was
-          # already loaded. Load, allow, start, in that order.
-          # enable before bootstrap, not after. -deactivate leaves the job
-          # disabled as well as unloaded, and bootstrapping a disabled job fails
-          # with "5: Input/output error" rather than saying which of the two it
-          # minded. enable writes the override whether or not the job is loaded.
-          echo "== disabled after deactivate? =="
-          sudo launchctl print-disabled system | grep -i screensharing || echo "(not listed)"
-          sudo launchctl enable system/com.apple.screensharing || echo "enable exited $?"
-          sudo launchctl bootstrap system \
-            /System/Library/LaunchDaemons/com.apple.screensharing.plist || echo "bootstrap exited $?"
-          sudo launchctl kickstart -kp system/com.apple.screensharing || echo "kickstart exited $?"
-          sleep 3
-          # Every line below is evidence, so none of it may end the step: the
-          # last run died at `launchctl print` returning 113 and never reached
-          # the probe at all.
-          echo "== the job, further in =="
-          { sudo launchctl print system/com.apple.screensharing 2>&1 \
-            | sed -n '1,45p' | tee session-out/screensharing-job.txt; } || true
-          echo "== what screensharingd logged =="
-          { log show --predicate 'process == "screensharingd"' --last 5m --style compact 2>/dev/null \
-            | tail -25 | tee session-out/screensharingd.log; } || echo "(nothing logged)"
-
-          # It reaches "screen sharing service is active", system mode = 1,
-          # agent on console, checkin done, and adds descriptors, and still
-          # nothing answers on 5900. So ask what it actually holds rather than
-          # assuming the port.
-          echo "== what screensharingd is listening on =="
-          ssd=$(pgrep -x screensharingd || true)
-          if [ -n "$ssd" ]; then
-            { sudo lsof -nP -p "$ssd" | grep -iE 'TCP|IPv' || echo "(it holds no TCP socket)"; } \
-              | tee session-out/screensharingd-sockets.txt
-          else
-            echo "(screensharingd is not running by the time we look)"
-          fi
-          echo "== everything this machine is listening on =="
-          { netstat -an -p tcp | grep -i LISTEN | head -30; } 2>/dev/null \
-            | tee session-out/listening.txt || true
-          echo "== the job's sockets, if launchd holds any =="
-          { sudo launchctl print system/com.apple.screensharing 2>&1 | grep -A12 -i 'sockets' || echo "(no sockets section)"; } || true
-
-          # This display can be read: an arm64 runner wrote an 80 KB PNG of it on
-          # 2026-09-22. Keeping the frame is worth more than the fact, so it goes
-          # out as an artifact whether or not the port ever opens.
-          if screencapture -x session-out/desktop.png 2>/dev/null; then
-            echo "desktop.png: $(stat -f%z session-out/desktop.png) bytes"
-          else
-            echo "screencapture refused this display"
-          fi
-
-          # Apple's server answers on 5900 and streams black, because its agent
-          # checks in with screenCaptureFlag 0: attached to the console, with no
-          # screen capture right. That is the grant kickstart warns needs System
-          # Settings or MDM, and it cannot be made here.
-          #
-          # screencapture, run from this shell, reads the same desktop fine. TCC
-          # attributes a command line tool's rights to its responsible process,
-          # so the runner's own process tree holds what Apple's agent does not,
-          # and a server started as a child of this shell inherits it. `open -a`
-          # would reparent to launchd and lose exactly that, so RustDesk is
-          # started by path, in the background, from here.
-          brew install --cask rustdesk 2>&1 | tail -3 || echo "brew install exited $?"
-          rd=/Applications/RustDesk.app/Contents/MacOS/RustDesk
-          if [ -x "$rd" ]; then
-            conf="$HOME/Library/Preferences/com.carriez.RustDesk"
-            mkdir -p "$conf"
-            printf '%s\n' \
-              '[options]' \
-              "direct-server = 'Y'" \
-              "direct-access-port = '21118'" \
-              "verification-method = 'use-permanent-password'" \
-              > "$conf/RustDesk2.toml"
-            "$rd" --password "$VNC_PASSWORD" 2>&1 | tail -2 || echo "password set exited $?"
-            "$rd" > session-out/rustdesk.log 2>&1 &
-            sleep 15
-            echo "== what rustdesk holds =="
-            { sudo lsof -nP -iTCP -sTCP:LISTEN | grep -iE 'rustdesk|21118' || echo "(rustdesk holds no listening socket)"; } || true
-            tail -20 session-out/rustdesk.log || true
-          else
-            echo "rustdesk did not install; nothing to start"
-          fi
-
-          for _ in $(seq 1 20); do
-            if sudo lsof -nP -iTCP:21118 -sTCP:LISTEN > /dev/null 2>&1; then
-              echo "RustDesk direct access is up."
-              echo "connect the RustDesk client to $(tailscale ip -4):21118 with the same password"
-              exit 0
-            fi
-            if sudo lsof -nP -iTCP:5900 -sTCP:LISTEN > /dev/null 2>&1; then
-              echo "only Apple's server is up, on $(tailscale ip -4):5900, and it streams black"
-            fi
-            sleep 2
+      # The server is a child of this step, which is what gives it the screen
+      # capture grant the image makes to the runner's process tree. Started over
+      # SSH it would not have it.
+      - name: Hold the session open
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          MINUTES: ${{ inputs.interactive_minutes }}
+        run: |
+          set -uo pipefail
+          case "$MINUTES" in
+            '' | *[!0-9]*) echo "interactive_minutes must be a whole number"; exit 1 ;;
+          esac
+          app="$RUNNER_TEMP/macVNC/build/macVNC.app/Contents/MacOS/macVNC"
+          "$app" -rfbport 5900 -passwd "$VNC_PASSWORD" > "$OUT/macvnc.log" 2>&1 &
+          echo "macVNC pid $!"
+          sleep 5
+          sudo lsof -nP -iTCP:5900 -sTCP:LISTEN || echo "nothing on 5900"
+          tail -20 "$OUT/macvnc.log"
+          echo "connect a VNC client to $(tailscale ip -4):5900"
+          deadline=$(( $(date +%s) + MINUTES * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ] && [ ! -e /tmp/release-the-runner ]; do
+            sleep 10
           done
-
-          echo "nothing is listening on 5900 after 40 s, so the session is unreachable"
-          sw_vers
-          echo "console user: $(stat -f%Su /dev/console)"
-          system_profiler SPDisplaysDataType | head -30
-          echo "IOFramebuffer instances: $(ioreg -lw0 | grep -c IOFramebuffer || true)"
-          sudo lsof -nP -iTCP:5900 || echo "(no socket on 5900 at all)"
-          ps -ef | grep -iE 'ARDAgent|WindowServer|screensharingd' | grep -v grep || true
-          sudo launchctl print system/com.apple.screensharing 2>&1 | sed -n '1,35p' || true
-          echo "== what it logged on the way out =="
-          log show --predicate 'process == "screensharingd"' --last 3m --style compact 2>/dev/null | tail -20 || true
-          exit 1
         shell: bash
 
       - uses: actions/upload-artifact@v4
-        if: ${{ inputs.interactive && !cancelled() }}
+        if: always()
         with:
           name: session-${{ inputs.runner }}
           path: session-out/
           if-no-files-found: warn
-
-      - name: Hold the session open
-        if: ${{ inputs.interactive && !cancelled() && steps.screen.outcome == 'success' }}
-        env:
-          MINUTES: ${{ inputs.interactive_minutes }}
-        run: |
-          set -euo pipefail
-          # Bash evaluates a bare name inside $(( )) as an expression, so a value
-          # that is not a number is a way to run a command there.
-          case "$MINUTES" in
-            '' | *[!0-9]*) echo "interactive_minutes must be a whole number"; exit 1 ;;
-          esac
-          deadline=$(( $(date +%s) + MINUTES * 60 ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            if [ -e /tmp/release-the-runner ]; then
-              echo "released from inside the session"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "held for $MINUTES minutes"
-        shell: bash

@@ -29,6 +29,17 @@ pub(super) fn to_end(processes: &[Running<'_>], dir: &Path, keep: u32) -> Vec<u3
         .collect()
 }
 
+/// swaybg's own report that it could not read the image, from its log.
+///
+/// swaybg does not exit when an image fails to load: it keeps running and
+/// draws nothing, so its exit status cannot tell that publish from one that
+/// worked, and its log is the only place that says so.
+pub(super) fn load_failure(log: &str) -> Option<&str> {
+    log.lines()
+        .find(|line| line.contains("Failed to load"))
+        .map(str::trim)
+}
+
 #[cfg(target_os = "linux")]
 pub(super) use live::publish;
 
@@ -40,7 +51,7 @@ mod live {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
 
-    use super::{Running, to_end};
+    use super::{Running, load_failure, to_end};
     use crate::desktop::Invocation;
     use crate::desktop::probe::own_processes;
 
@@ -95,6 +106,12 @@ mod live {
                 ));
             }
             std::thread::sleep(Duration::from_millis(50));
+        }
+        let said = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if let Some(failure) = load_failure(&said) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("swaybg could not show the image: {failure}"));
         }
 
         LATEST.store(child.id(), Ordering::SeqCst);
@@ -205,5 +222,19 @@ mod tests {
         assert_eq!(to_end(&processes, dir, 11), vec![10]);
         // With nothing kept, every one of ours goes and still nothing else.
         assert_eq!(to_end(&processes, dir, 0), vec![10, 11]);
+    }
+
+    #[test]
+    fn a_swaybg_that_could_not_read_the_image_is_a_failure() {
+        let failed = "2026-09-23 19:25:33 - [main.c:282] Found config * for output Virtual-1
+            2026-09-23 19:25:33 - [background-image.c:30] Failed to load background image             (Couldn't recognize the image file format for file \"/tmp/0.png\").
+            2026-09-23 19:25:33 - [main.c:610] Failed to load image: /tmp/0.png
+";
+        let failure = load_failure(failed).expect("a load failure");
+        assert!(failure.contains("Couldn't recognize"), "{failure}");
+        let shown = "2026-09-23 19:27:24 - [main.c:282] Found config * for output Virtual-1
+";
+        assert_eq!(load_failure(shown), None);
+        assert_eq!(load_failure(""), None);
     }
 }

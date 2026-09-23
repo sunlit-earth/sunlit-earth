@@ -28,12 +28,15 @@ install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 \
 # own data where the session says it is. The other four are what makes a window
 # and a D-Bus call possible at all.
 #
-# `WAYLAND_DISPLAY` is written only when the session has one, which is what makes
-# the app started from this file a Wayland client there: winit picks Wayland
-# whenever the variable is set. An X11 session's file is left exactly as it was,
-# with no blank line for winit to find. `DISPLAY` and `XAUTHORITY` are written in
-# both, because the display query, the layout watcher and several of the setters
-# reach Xwayland through them.
+# A variable is written only when the session has it. A blank one is not the same
+# as an unset one to every reader: GLib's MIME lookup takes a blank
+# `XDG_DATA_DIRS` as no directories at all, so a gdk-pixbuf program started from
+# the file (swaybg is one) recognizes no image format, and libXau takes a blank
+# `XAUTHORITY` as a file name. sway and i3 set neither of the `XDG_*_DIRS`.
+# `WAYLAND_DISPLAY` is the one this matters most for, since winit picks Wayland
+# whenever the variable is set; `DISPLAY` and `XAUTHORITY` are there under
+# Wayland too, because the display query, the layout watcher and several of the
+# setters reach Xwayland through them.
 cat > /usr/local/bin/sunlit-e2e-session-ready <<'EOF'
 #!/bin/sh
 set -e
@@ -42,20 +45,14 @@ mkdir -p "${root}/results/artifacts" "${root}/bin"
 # An SSH-launched process runs as the same user but with no X credentials of
 # its own; this is what lets it open a window on the running session.
 xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
-{
-  echo "DISPLAY=${DISPLAY}"
-  echo "XAUTHORITY=${XAUTHORITY}"
-  echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}"
-  echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
-  echo "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP}"
-  echo "XDG_SESSION_TYPE=${XDG_SESSION_TYPE}"
-  echo "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP}"
-  echo "XDG_DATA_DIRS=${XDG_DATA_DIRS}"
-  echo "XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS}"
-  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    echo "WAYLAND_DISPLAY=${WAYLAND_DISPLAY}"
+for name in DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR \
+  XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP \
+  XDG_DATA_DIRS XDG_CONFIG_DIRS WAYLAND_DISPLAY; do
+  eval "value=\${${name}:-}"
+  if [ -n "${value}" ]; then
+    echo "${name}=${value}"
   fi
-} > "${root}/session.env"
+done > "${root}/session.env"
 rm -f "${root}/ready"
 date +%s > "${root}/ready"
 EOF

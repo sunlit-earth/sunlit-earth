@@ -309,7 +309,11 @@ fi
 # replaces the default background, whose image is in sway-backgrounds, a
 # Recommends this build leaves out. i3 reads the account's own config before
 # /etc/i3's, and having one is also what keeps i3-config-wizard from asking in a
-# window over the session at the first login.
+# window over the session at the first login. sway looks for i3's config too,
+# and before /etc/sway/config, so without one of its own it would read the i3
+# file above instead of the snippet, and answer its one i3-only line with an
+# "errors in your config file" bar over the session. The account's sway config
+# is the system one.
 install -d -m 0755 /etc/sway/config.d
 cat > /etc/sway/config.d/50-sunlit-e2e.conf <<'EOF'
 output * bg #203040 solid_color
@@ -319,6 +323,9 @@ install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 "${home}/.config/i3"
 grep -v 'i3-config-wizard' /etc/i3/config > "${home}/.config/i3/config"
 echo 'exec --no-startup-id /usr/local/bin/sunlit-e2e-session-ready' >> "${home}/.config/i3/config"
 chown "${TEST_USER}:${TEST_USER}" "${home}/.config/i3/config"
+install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 "${home}/.config/sway"
+echo 'include /etc/sway/config' > "${home}/.config/sway/config"
+chown "${TEST_USER}:${TEST_USER}" "${home}/.config/sway/config"
 
 # The per-boot desktop choice (phase 5 decision 3). The host adds
 # `-fw_cfg name=opt/sunlit/desktop,string=<session>` to QEMU's command line and

@@ -7,7 +7,7 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::Session;
+use super::{Session, X11Facts};
 
 /// This process's own session.
 pub(crate) struct LiveSession {
@@ -16,11 +16,13 @@ pub(crate) struct LiveSession {
     /// The session bus, or `None` where it could not be reached.
     bus: OnceCell<Option<zbus::blocking::Connection>>,
     bus_names: std::cell::RefCell<HashMap<String, bool>>,
+    x11: OnceCell<Option<X11Facts>>,
 }
 
 impl LiveSession {
     pub(crate) fn new() -> Self {
         Self {
+            x11: OnceCell::new(),
             processes: OnceCell::new(),
             bus: OnceCell::new(),
             bus_names: std::cell::RefCell::new(HashMap::new()),
@@ -68,6 +70,93 @@ impl Session for LiveSession {
     fn path_exists(&self, path: &Path) -> bool {
         path.exists()
     }
+
+    fn x11(&self) -> Option<X11Facts> {
+        self.x11.get_or_init(x11_facts).clone()
+    }
+}
+
+/// Ask the X server for the desktop windows and the window manager's name,
+/// over one connection that is closed again straight after.
+fn x11_facts() -> Option<X11Facts> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, Window};
+
+    let (conn, screen_num) = match x11rb::connect(None) {
+        Ok(connected) => connected,
+        Err(e) => {
+            tracing::debug!("no X display to ask about the desktop: {e}");
+            return None;
+        }
+    };
+    let root = conn.setup().roots.get(screen_num)?.root;
+    let atom = |name: &str| -> Option<u32> {
+        Some(
+            conn.intern_atom(false, name.as_bytes())
+                .ok()?
+                .reply()
+                .ok()?
+                .atom,
+        )
+    };
+    let property = |window: Window, name: u32, kind: u32, length: u32| {
+        conn.get_property(false, window, name, kind, 0, length)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+    };
+
+    let client_list = atom("_NET_CLIENT_LIST")?;
+    let window_type = atom("_NET_WM_WINDOW_TYPE")?;
+    let desktop_type = atom("_NET_WM_WINDOW_TYPE_DESKTOP")?;
+    let windows: Vec<Window> = property(root, client_list, AtomEnum::WINDOW.into(), u32::MAX)
+        .and_then(|reply| reply.value32().map(Iterator::collect))
+        .unwrap_or_default();
+    let desktop_windows = windows
+        .into_iter()
+        .filter(|&window| {
+            property(window, window_type, AtomEnum::ATOM.into(), 64)
+                .and_then(|reply| {
+                    reply
+                        .value32()
+                        .map(|mut types| types.any(|t| t == desktop_type))
+                })
+                .unwrap_or(false)
+        })
+        .map(|window| {
+            property(
+                window,
+                AtomEnum::WM_CLASS.into(),
+                AtomEnum::STRING.into(),
+                256,
+            )
+            .map(|reply| {
+                reply
+                    .value
+                    .split(|&b| b == 0)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| String::from_utf8_lossy(part).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+        })
+        .collect();
+
+    let wm_name = (|| {
+        let check = atom("_NET_SUPPORTING_WM_CHECK")?;
+        let window = property(root, check, AtomEnum::WINDOW.into(), 1)?
+            .value32()?
+            .next()?;
+        let name = atom("_NET_WM_NAME")?;
+        let utf8 = atom("UTF8_STRING")?;
+        let reply = property(window, name, utf8, 256)?;
+        Some(String::from_utf8_lossy(&reply.value).into_owned())
+    })()
+    .filter(|name| !name.is_empty());
+
+    Some(X11Facts {
+        desktop_windows,
+        wm_name,
+    })
 }
 
 fn name_has_owner(bus: &zbus::blocking::Connection, name: &str) -> bool {

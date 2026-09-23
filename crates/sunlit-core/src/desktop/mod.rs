@@ -30,7 +30,7 @@ mod probe;
 mod setters;
 mod xfce;
 
-pub use choose::{Choice, Declined, FORCE_ENV, Refusal, Session, choose};
+pub use choose::{Choice, Declined, FORCE_ENV, Refusal, Session, X11Facts, choose};
 use setters::{
     LXDE_FILL_MODE, TRINITY_FILL_MODE, deepin_commands, hyprpaper_commands, sway_quoted,
 };
@@ -122,6 +122,18 @@ enum Kind {
     Deepin { legacy: bool },
     /// Trinity's `kdesktop` over `dcop`, the KDE 3 way that Trinity kept.
     Trinity,
+    /// The X11 root window's background pixmap, set by this process over its
+    /// own X connection. Runs no program.
+    RootPixmap,
+}
+
+/// How a setter is carried out, for the sink to dispatch on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mechanism {
+    /// Run [`Backend::commands`] in order.
+    Commands,
+    /// Paint the X11 root window directly; nothing is written to disk.
+    RootPixmap,
 }
 
 /// How far into a multi-monitor session one desktop's setter reaches.
@@ -230,7 +242,16 @@ impl Backend {
             | Kind::Sway
             | Kind::Hyprpaper
             | Kind::Deepin { .. }
-            | Kind::Trinity => None,
+            | Kind::Trinity
+            | Kind::RootPixmap => None,
+        }
+    }
+
+    /// How the sink carries this setter out.
+    pub fn mechanism(&self) -> Mechanism {
+        match self.kind {
+            Kind::RootPixmap => Mechanism::RootPixmap,
+            _ => Mechanism::Commands,
         }
     }
 
@@ -241,7 +262,9 @@ impl Backend {
             // each screen its own containment, so both hold one path per screen
             // and both can be told to leave a screen alone. Deepin takes a
             // monitor's own name in every call.
-            Kind::Xfce | Kind::Kde | Kind::Deepin { .. } => Reach::PerMonitor,
+            // The root pixmap is one image the size of the root, so every
+            // monitor's picture is drawn at its own rectangle.
+            Kind::Xfce | Kind::Kde | Kind::Deepin { .. } | Kind::RootPixmap => Reach::PerMonitor,
             // No per-monitor wallpaper in any of these schemas, but
             // `picture-options` has a `spanned` value that stretches one image
             // over the whole virtual desktop.
@@ -356,6 +379,7 @@ impl Backend {
                     TRINITY_FILL_MODE.to_owned(),
                 ],
             )],
+            Kind::RootPixmap => Vec::new(),
         }
     }
 
@@ -610,6 +634,36 @@ pub(crate) const DEEPIN_LEGACY: Backend = Backend {
 /// The bus names Deepin's appearance daemon has had, current first.
 pub(crate) const DEEPIN_BUS_NAMES: [&str; 2] =
     ["org.deepin.dde.Appearance1", "com.deepin.daemon.Appearance"];
+
+/// The X11 root window, for a window manager that draws no desktop.
+pub(crate) const ROOT_PIXMAP: Backend = Backend {
+    desktop: "the X11 root window",
+    setter: "root-pixmap",
+    program: None,
+    kind: Kind::RootPixmap,
+};
+
+/// The setters the ladder can reach that no desktop names, in the order the
+/// forcing variable lists them.
+pub(crate) const LADDER: &[Backend] = &[ROOT_PIXMAP];
+
+/// Which row a desktop window belongs to, by its `WM_CLASS`.
+///
+/// The programs that draw a desktop window over the root on an X11 session,
+/// and the setter each one listens to. Matched against either half of
+/// `WM_CLASS`, lower case.
+pub(crate) const DESKTOP_WINDOW_OWNERS: &[(&str, &str)] = &[
+    ("pcmanfm", "lxde"),
+    ("pcmanfm-qt", "lxqt"),
+    ("xfdesktop", "xfce"),
+    ("nemo-desktop", "cinnamon"),
+    ("caja", "mate"),
+    ("plasmashell", "kde"),
+];
+
+/// Window manager names that mean the shell draws its own background, so a
+/// root pixmap would be painted under it and never seen.
+pub(crate) const COMPOSITING_SHELLS: &[&str] = &["Mutter", "Muffin", "GNOME Shell", "KWin"];
 
 /// The setter for this process's session, asked of the session itself.
 #[cfg(target_os = "linux")]

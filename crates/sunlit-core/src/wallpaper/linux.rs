@@ -6,6 +6,8 @@
 //! there is no system call to make on Linux; what this module owns is the files
 //! and the running.
 
+mod root_pixmap;
+
 #[cfg(target_os = "linux")]
 use crate::display::layout::DisplayMode;
 #[cfg(target_os = "linux")]
@@ -139,9 +141,23 @@ pub(crate) fn check_supported() -> Result<(), String> {
 /// would fail in a way that named the wrong desktop.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
+    use crate::desktop::Mechanism;
+
     let backend = crate::desktop::choose_current()
         .map_err(|refusal| refusal.to_string())?
         .backend;
+    let done = || {
+        backend
+            .degradation(job.mode, job.monitors.len())
+            .unwrap_or_default()
+    };
+    match backend.mechanism() {
+        Mechanism::Commands => {}
+        Mechanism::RootPixmap => {
+            root_pixmap::set(job)?;
+            return Ok(done());
+        }
+    }
     let placement = write_placement(job, backend.reach())?;
 
     let discovered = match backend.discovery() {
@@ -163,9 +179,7 @@ pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
         screens = job.monitors.len(),
         "wallpaper set successfully"
     );
-    Ok(backend
-        .degradation(job.mode, job.monitors.len())
-        .unwrap_or_default())
+    Ok(done())
 }
 
 #[cfg(test)]

@@ -7,7 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Backend, DEEPIN_BUS_NAMES, DEEPIN_LEGACY, DESKTOP_ENV, Gate, Kind, ROWS, Row, SWAY};
+use super::{
+    Backend, COMPOSITING_SHELLS, DEEPIN_BUS_NAMES, DEEPIN_LEGACY, DESKTOP_ENV,
+    DESKTOP_WINDOW_OWNERS, Gate, Kind, LADDER, ROOT_PIXMAP, ROWS, Row, SWAY,
+};
 
 /// The variables walked, in order, for the name a session gives itself.
 ///
@@ -35,6 +38,20 @@ pub trait Session {
     fn bus_name_owned(&self, name: &str) -> bool;
     /// Whether something exists at this path: a socket, most often.
     fn path_exists(&self, path: &Path) -> bool;
+    /// What the X server says about the desktop, or `None` where no X display
+    /// could be opened.
+    fn x11(&self) -> Option<X11Facts>;
+}
+
+/// The two things an X11 session is asked before its root is painted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct X11Facts {
+    /// The `WM_CLASS` of every window typed `_NET_WM_WINDOW_TYPE_DESKTOP`, both
+    /// halves of each.
+    pub desktop_windows: Vec<Vec<String>>,
+    /// The window manager's own name, from `_NET_SUPPORTING_WM_CHECK`, where
+    /// it sets one.
+    pub wm_name: Option<String>,
 }
 
 /// The setter a session gets, and why.
@@ -92,13 +109,121 @@ pub fn choose(session: &dyn Session) -> Result<Choice, Refusal> {
     if let Some(choice) = from_sway_socket(session, &mut declined) {
         return Ok(choice);
     }
+    if let Some(choice) = ladder(session, &mut declined) {
+        return Ok(choice);
+    }
     Err(Refusal { declined })
+}
+
+/// The rungs for a session no row claimed, first working one wins.
+fn ladder(session: &dyn Session, declined: &mut Vec<Declined>) -> Option<Choice> {
+    let mut decline = |rung: &str, reason: String| {
+        declined.push(Declined {
+            rung: rung.to_owned(),
+            reason,
+        });
+    };
+    let wayland = session.var("WAYLAND_DISPLAY");
+    let display = session.var("DISPLAY");
+    match (&wayland, &display) {
+        (Some(wayland), _) => {
+            let reason = format!("WAYLAND_DISPLAY={wayland}, so the X11 root is not what is shown");
+            decline("desktop window owner", reason.clone());
+            decline("root pixmap", reason);
+        }
+        (None, None) => {
+            decline(
+                "desktop window owner",
+                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_owned(),
+            );
+            decline("root pixmap", "DISPLAY is not set".to_owned());
+        }
+        (None, Some(display)) => match x11_rungs(session, display) {
+            Ok(choice) => return Some(choice),
+            Err(reasons) => {
+                for (rung, reason) in reasons {
+                    decline(rung, reason);
+                }
+            }
+        },
+    }
+    None
+}
+
+/// The two X11 rungs: the program that owns a desktop window, or the root.
+fn x11_rungs(session: &dyn Session, display: &str) -> Result<Choice, Vec<(&'static str, String)>> {
+    let owner = "desktop window owner";
+    let root = "root pixmap";
+    let Some(facts) = session.x11() else {
+        let reason = format!("DISPLAY={display} could not be opened");
+        return Err(vec![(owner, reason.clone()), (root, reason)]);
+    };
+    let mut evidence = vec![format!("X11 session on DISPLAY={display}")];
+    if let Some(classes) = facts.desktop_windows.first() {
+        let class = classes.join(".");
+        let row = DESKTOP_WINDOW_OWNERS
+            .iter()
+            .find(|(owner, _)| classes.iter().any(|c| c.eq_ignore_ascii_case(owner)))
+            .and_then(|(_, setter)| ROWS.iter().find(|row| row.backend.setter == *setter));
+        let covered = format!("a desktop window ({class}) covers the root");
+        let Some(row) = row else {
+            return Err(vec![
+                (
+                    owner,
+                    format!("the desktop window's class {class} has no row here"),
+                ),
+                (root, covered),
+            ]);
+        };
+        evidence.push(format!(
+            "desktop window of class {class}, which is {}'s",
+            row.backend.desktop
+        ));
+        let backend = resolve(session, row.backend, &mut evidence);
+        return match present(session, &backend, &mut evidence) {
+            Ok(()) => Ok(Choice { backend, evidence }),
+            Err(reason) => Err(vec![(owner, reason), (root, covered)]),
+        };
+    }
+    let no_window = "no desktop window".to_owned();
+    let wm = facts.wm_name.as_deref();
+    if let Some((name, shell)) = wm.and_then(|name| {
+        COMPOSITING_SHELLS
+            .iter()
+            .find(|shell| name.contains(*shell))
+            .map(|shell| (name, shell))
+    }) {
+        return Err(vec![
+            (owner, no_window),
+            (
+                root,
+                format!(
+                    "the window manager is {name}, and {shell} draws its own background \
+                     over the root"
+                ),
+            ),
+        ]);
+    }
+    evidence.push(no_window);
+    evidence.push(wm.map_or_else(
+        || "the window manager names itself nowhere".to_owned(),
+        |name| format!("window manager {name}"),
+    ));
+    Ok(Choice {
+        backend: ROOT_PIXMAP,
+        evidence,
+    })
+}
+
+/// Every setter [`FORCE_ENV`] can name: the table's rows, then the ladder's.
+fn forcible() -> impl Iterator<Item = &'static Backend> {
+    ROWS.iter().map(|row| &row.backend).chain(LADDER)
 }
 
 /// Every name [`FORCE_ENV`] accepts, in the order the table has them.
 fn setter_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
-    for backend in ROWS.iter().map(|row| &row.backend) {
+    for backend in forcible() {
         if !names.contains(&backend.setter) {
             names.push(backend.setter);
         }
@@ -117,14 +242,11 @@ fn forced(session: &dyn Session, name: &str) -> Result<Choice, Refusal> {
             reason,
         }],
     };
-    let Some(row) = ROWS
-        .iter()
-        .find(|row| row.backend.setter.eq_ignore_ascii_case(name))
-    else {
+    let Some(backend) = forcible().find(|backend| backend.setter.eq_ignore_ascii_case(name)) else {
         return Err(refuse("no setter goes by that name".to_owned()));
     };
     let mut evidence = vec![format!("{FORCE_ENV}={name}")];
-    let backend = resolve(session, row.backend, &mut evidence);
+    let backend = resolve(session, *backend, &mut evidence);
     present(session, &backend, &mut evidence).map_err(refuse)?;
     Ok(Choice { backend, evidence })
 }
@@ -253,6 +375,9 @@ fn present(
         }
         evidence.push(format!("{program} on PATH"));
     }
+    if backend.kind == Kind::RootPixmap && session.x11().is_none() {
+        return Err("no X display could be opened to paint the root of".to_owned());
+    }
     Ok(())
 }
 
@@ -308,7 +433,7 @@ pub(crate) mod fake {
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
 
-    use super::Session;
+    use super::{Session, X11Facts};
 
     /// A session made of fabricated answers.
     #[derive(Default)]
@@ -318,6 +443,7 @@ pub(crate) mod fake {
         pub processes: HashSet<String>,
         pub bus_names: HashSet<String>,
         pub paths: HashSet<PathBuf>,
+        pub x11: Option<X11Facts>,
         /// Every program is on `PATH` and every process runs, whatever the
         /// sets hold.
         pub everything: bool,
@@ -334,6 +460,7 @@ pub(crate) mod fake {
         pub(crate) fn complete(desktop: &str) -> Self {
             Self {
                 everything: true,
+                x11: Some(X11Facts::default()),
                 ..Self::named(desktop)
             }
             .var("XDG_RUNTIME_DIR", "/run/user/1000")
@@ -365,6 +492,12 @@ pub(crate) mod fake {
             self.paths.insert(PathBuf::from(path));
             self
         }
+
+        /// An X11 session on `:0` whose server answers with `facts`.
+        pub(crate) fn x11(mut self, facts: X11Facts) -> Self {
+            self.x11 = Some(facts);
+            self.var("DISPLAY", ":0")
+        }
     }
 
     impl Session for FakeSession {
@@ -389,6 +522,10 @@ pub(crate) mod fake {
 
         fn path_exists(&self, path: &Path) -> bool {
             self.paths.contains(path)
+        }
+
+        fn x11(&self) -> Option<X11Facts> {
+            self.x11.clone()
         }
     }
 }
@@ -566,6 +703,90 @@ mod tests {
         for name in setter_names() {
             assert!(text.contains(name), "{text}");
         }
+    }
+
+    fn window_manager(name: Option<&str>) -> X11Facts {
+        X11Facts {
+            desktop_windows: Vec::new(),
+            wm_name: name.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_plain_window_manager_on_x11_gets_the_root_pixmap() {
+        for wm in [Some("i3"), Some("Openbox"), None] {
+            let session = FakeSession::named("i3").x11(window_manager(wm));
+            let choice = choose(&session).unwrap_or_else(|r| panic!("{wm:?}: {r}"));
+            assert_eq!(choice.backend.setter, "root-pixmap", "{wm:?}");
+            let explanation = choice.explanation();
+            assert!(explanation.contains("no desktop window"), "{explanation}");
+        }
+        // An empty XDG_CURRENT_DESKTOP, as sddm leaves it for i3.
+        let unnamed = FakeSession::default()
+            .var("XDG_SESSION_DESKTOP", "i3")
+            .x11(window_manager(Some("i3")));
+        assert_eq!(
+            choose(&unnamed).map(|c| c.backend.setter),
+            Ok("root-pixmap")
+        );
+    }
+
+    #[test]
+    fn a_shell_that_draws_its_own_background_gets_no_root_pixmap() {
+        for wm in ["GNOME Shell", "Mutter (Muffin)", "KWin"] {
+            let session = FakeSession::named("i3").x11(window_manager(Some(wm)));
+            let text = choose(&session).expect_err(wm).to_string();
+            assert!(text.contains("root pixmap"), "{text}");
+            assert!(text.contains(wm), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_desktop_window_picks_its_owners_row_and_keeps_the_root_alone() {
+        let xfdesktop = X11Facts {
+            desktop_windows: vec![vec!["xfdesktop".to_owned(), "Xfdesktop".to_owned()]],
+            wm_name: Some("Openbox".to_owned()),
+        };
+        let session = FakeSession::named("openbox")
+            .x11(xfdesktop.clone())
+            .program("xfconf-query");
+        let choice = choose(&session).expect("xfdesktop owns the desktop");
+        assert_eq!(choice.backend.setter, "xfce");
+        assert!(choice.explanation().contains("xfdesktop"), "{choice:?}");
+
+        let without = FakeSession::named("openbox").x11(xfdesktop);
+        let text = choose(&without).expect_err("no xfconf-query").to_string();
+        assert!(text.contains("covers the root"), "{text}");
+
+        let unknown = FakeSession::named("openbox").x11(X11Facts {
+            desktop_windows: vec![vec!["spacefm".to_owned(), "Spacefm".to_owned()]],
+            wm_name: None,
+        });
+        let text = choose(&unknown)
+            .expect_err("no row for spacefm")
+            .to_string();
+        assert!(text.contains("spacefm"), "{text}");
+        assert!(text.contains("covers the root"), "{text}");
+    }
+
+    #[test]
+    fn a_wayland_session_is_not_offered_the_root() {
+        let session = FakeSession::named("niri")
+            .var("WAYLAND_DISPLAY", "wayland-1")
+            .x11(window_manager(None));
+        let text = choose(&session).expect_err("no rung yet").to_string();
+        assert!(text.contains("root pixmap: WAYLAND_DISPLAY"), "{text}");
+    }
+
+    #[test]
+    fn the_root_pixmap_can_be_forced_only_where_there_is_an_x_display() {
+        let session = FakeSession::named("KDE")
+            .program("dbus-send")
+            .var(FORCE_ENV, "root-pixmap")
+            .x11(window_manager(Some("KWin")));
+        assert_eq!(chosen(&session), Some(ROOT_PIXMAP.desktop));
+        let no_display = FakeSession::named("KDE").var(FORCE_ENV, "root-pixmap");
+        assert!(choose(&no_display).is_err());
     }
 
     #[test]

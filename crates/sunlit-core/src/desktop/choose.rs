@@ -79,13 +79,14 @@ pub struct X11Facts {
 }
 
 /// The windows typed as a desktop, from the window manager's client list where
-/// it keeps one, and otherwise from the root's own children.
+/// it names one, and otherwise from the root's own children.
 ///
-/// A session whose window manager is gone, or never ran, has no
-/// `_NET_CLIENT_LIST`, and its desktop window is then a plain child of the
-/// root. A child without the type is also looked through one level down,
-/// since a reparenting window manager that keeps no list puts the type on the
-/// client inside its frame.
+/// A session whose window manager never ran has no `_NET_CLIENT_LIST`, and one
+/// whose window manager died keeps the last list it wrote, which a desktop
+/// window mapped since is not on. The tree is therefore walked whenever the
+/// list yields no desktop window. A child without the type is also looked
+/// through one level down, since a reparenting window manager puts the type on
+/// the client inside its frame.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn desktop_windows<W: Copy>(
     client_list: Option<Vec<W>>,
@@ -93,24 +94,27 @@ pub(crate) fn desktop_windows<W: Copy>(
     children: impl Fn(W) -> Vec<W>,
     is_desktop: impl Fn(W) -> bool,
 ) -> Vec<W> {
-    match client_list {
-        Some(clients) if !clients.is_empty() => {
-            clients.into_iter().filter(|&w| is_desktop(w)).collect()
-        }
-        _ => top_level()
-            .into_iter()
-            .flat_map(|window| {
-                if is_desktop(window) {
-                    vec![window]
-                } else {
-                    children(window)
-                        .into_iter()
-                        .filter(|&w| is_desktop(w))
-                        .collect()
-                }
-            })
-            .collect(),
+    let listed: Vec<W> = client_list
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|&w| is_desktop(w))
+        .collect();
+    if !listed.is_empty() {
+        return listed;
     }
+    top_level()
+        .into_iter()
+        .flat_map(|window| {
+            if is_desktop(window) {
+                vec![window]
+            } else {
+                children(window)
+                    .into_iter()
+                    .filter(|&w| is_desktop(w))
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 /// The setter a session gets, and why.
@@ -1089,6 +1093,10 @@ mod tests {
         assert_eq!(desktop_windows(None, tree, frames, is_desktop), vec![21, 3]);
         assert_eq!(
             desktop_windows(Some(Vec::new()), tree, frames, is_desktop),
+            vec![21, 3]
+        );
+        assert_eq!(
+            desktop_windows(Some(vec![1, 2]), tree, frames, is_desktop),
             vec![21, 3]
         );
         assert!(desktop_windows(None, Vec::new, frames, is_desktop).is_empty());

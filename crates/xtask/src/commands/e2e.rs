@@ -97,6 +97,7 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
         Target::Linux => format!(
             "#!/usr/bin/env bash\n\
              set -uo pipefail\n\
+             {swaysock}\
              export SUNLIT_EARTH_BIN={app}\n\
              export SUNLIT_EARTH_E2E_FIXTURES={fixtures}\n\
              export SUNLIT_EARTH_E2E_WALLPAPER=1\n\
@@ -112,6 +113,7 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
                 )
             }),
             harness = artifacts::shell_quote(&paths.harness),
+            swaysock = LINUX_SWAYSOCK,
         ),
         Target::Windows => format!(
             "@echo off\r\n\
@@ -133,6 +135,19 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
         ),
     }
 }
+
+/// sway's IPC socket, for a suite started over SSH under a sway session.
+///
+/// A process sway starts inherits `SWAYSOCK`; the suite is started by the job
+/// runner from `session.env`, which the image's session marker writes without
+/// it, so `swaymsg` in the app would find no sway to talk to. The socket is
+/// `sway-ipc.<uid>.<pid>.sock` in the runtime directory, and a session other
+/// than sway has none, which leaves the variable unset.
+const LINUX_SWAYSOCK: &str = "if [ -z \"${SWAYSOCK:-}\" ]; then\n  \
+     for sock in \"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}\"/sway-ipc.*.sock; do\n    \
+     [ -S \"${sock}\" ] && export SWAYSOCK=\"${sock}\"\n  \
+     done\n\
+     fi\n";
 
 /// The app's variables a guest run passes on from the host's environment, so
 /// that one run can steer the app the way a user of that session could:

@@ -149,7 +149,8 @@ pub fn run(
                 .to_owned(),
         ),
         None if request.session_type.is_some() => Err(
-            "--session-type chooses a session in the Linux guest; a run on this              host uses the session you are sitting in"
+            "--session-type chooses a session in the Linux guest; a run on this \
+             host uses the session you are sitting in"
                 .to_owned(),
         ),
         None if request.screens != 1 => Err(

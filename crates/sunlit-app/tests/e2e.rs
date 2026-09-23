@@ -859,7 +859,8 @@ fn test_the_window_is_a_client_of_the_sessions_display_server() {
             "wayland" => assert_eq!(
                 windowing,
                 Windowing::Wayland,
-                "a Wayland session's app came up as a {} client; is                  WAYLAND_DISPLAY ({:?}) reaching it?",
+                "a Wayland session's app came up as a {} client; is \
+                 WAYLAND_DISPLAY ({:?}) reaching it?",
                 windowing.name(),
                 std::env::var("WAYLAND_DISPLAY").ok()
             ),

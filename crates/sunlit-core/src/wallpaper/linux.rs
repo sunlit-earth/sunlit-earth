@@ -50,15 +50,12 @@ fn write_placement(
             let mut placed: Vec<(i32, i32, Option<std::path::PathBuf>)> =
                 Vec::with_capacity(job.monitors.len());
             for (monitor, path) in job.monitors.iter().zip(written.paths) {
-                match path {
-                    Some(path) => {
-                        placed.push((monitor.x, monitor.y, Some(path.clone())));
-                        per_monitor.push((monitor.id.clone(), path));
-                    }
-                    None => {
-                        untouched.push(monitor.id.clone());
-                        placed.push((monitor.x, monitor.y, None));
-                    }
+                if let Some(path) = path {
+                    placed.push((monitor.x, monitor.y, Some(path.clone())));
+                    per_monitor.push((monitor.id.clone(), path));
+                } else {
+                    untouched.push(monitor.id.clone());
+                    placed.push((monitor.x, monitor.y, None));
                 }
             }
             let single = written

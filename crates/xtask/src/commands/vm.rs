@@ -506,10 +506,12 @@ pub fn login_for(
         .map(Some),
         (_, None) => Ok(None),
         (_, Some(session_type)) if image.has_desktop() => Err(format!(
-            "--session-type {session_type} is a Debian 13 guest option; the {image}              image has one session and no way to choose another"
+            "--session-type {session_type} is a Debian 13 guest option; the {image} \
+             image has one session and no way to choose another"
         )),
         (_, Some(session_type)) => Err(format!(
-            "--session-type {session_type} asks for a session the {image} image does              not have: it carries no desktop at all"
+            "--session-type {session_type} asks for a session the {image} image does \
+             not have: it carries no desktop at all"
         )),
     }
 }
@@ -543,7 +545,11 @@ impl BootRequest {
             && let Some(login) = login.filter(|l| l.session_type() == SessionType::Wayland)
         {
             return Err(format!(
-                "--screens {screens} with --session-type wayland asks for a layout                  nothing here can make: the screens are placed with xrandr and the                  pointer mapped with xinput, and neither can move {}'s outputs.                  --session-type x11 gives {screens} screens, and a Wayland session                  runs on one",
+                "--screens {screens} with --session-type wayland asks for a layout \
+                 nothing here can make: the screens are placed with xrandr and the \
+                 pointer mapped with xinput, and neither can move {}'s outputs. \
+                 --session-type x11 gives {screens} screens, and a Wayland session \
+                 runs on one",
                 login.label()
             ));
         }

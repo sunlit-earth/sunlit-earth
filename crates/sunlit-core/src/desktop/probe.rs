@@ -17,12 +17,14 @@ pub(crate) struct LiveSession {
     bus: OnceCell<Option<zbus::blocking::Connection>>,
     bus_names: std::cell::RefCell<HashMap<String, bool>>,
     x11: OnceCell<Option<X11Facts>>,
+    wayland: OnceCell<Option<Vec<String>>>,
 }
 
 impl LiveSession {
     pub(crate) fn new() -> Self {
         Self {
             x11: OnceCell::new(),
+            wayland: OnceCell::new(),
             processes: OnceCell::new(),
             bus: OnceCell::new(),
             bus_names: std::cell::RefCell::new(HashMap::new()),
@@ -53,7 +55,12 @@ impl Session for LiveSession {
 
     fn process_running(&self, name: &str) -> bool {
         self.processes
-            .get_or_init(own_process_names)
+            .get_or_init(|| {
+                own_processes()
+                    .into_iter()
+                    .map(|process| process.comm)
+                    .collect()
+            })
             .iter()
             .any(|process| process == name)
     }
@@ -74,6 +81,59 @@ impl Session for LiveSession {
     fn x11(&self) -> Option<X11Facts> {
         self.x11.get_or_init(x11_facts).clone()
     }
+
+    fn wayland_globals(&self) -> Option<Vec<String>> {
+        self.wayland.get_or_init(wayland_globals).clone()
+    }
+
+    fn processes_named(&self, name: &str) -> Vec<Vec<String>> {
+        own_processes()
+            .into_iter()
+            .filter(|process| process.comm == name)
+            .map(|process| process.cmdline)
+            .collect()
+    }
+
+    fn wallpaper_dir(&self) -> Option<PathBuf> {
+        crate::wallpaper::wallpaper_dir().ok()
+    }
+}
+
+/// The interface names the compositor advertises, from one registry round
+/// trip over a connection dropped straight after.
+fn wayland_globals() -> Option<Vec<String>> {
+    use wayland_client::protocol::wl_registry;
+    use wayland_client::{Connection, Dispatch, QueueHandle};
+
+    struct Globals(Vec<String>);
+
+    impl Dispatch<wl_registry::WlRegistry, ()> for Globals {
+        fn event(
+            state: &mut Self,
+            _: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let wl_registry::Event::Global { interface, .. } = event {
+                state.0.push(interface);
+            }
+        }
+    }
+
+    let conn = match Connection::connect_to_env() {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::debug!("no Wayland display to ask what it offers: {e}");
+            return None;
+        }
+    };
+    let mut queue = conn.new_event_queue();
+    conn.display().get_registry(&queue.handle(), ());
+    let mut globals = Globals(Vec::new());
+    queue.roundtrip(&mut globals).ok()?;
+    Some(globals.0)
 }
 
 /// Ask the X server for the desktop windows and the window manager's name,
@@ -179,11 +239,18 @@ pub(crate) fn which(program: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// The `comm` of every process this user owns.
+/// One process of this user's, as `/proc` describes it.
+pub(crate) struct Process {
+    pub(crate) pid: u32,
+    pub(crate) comm: String,
+    pub(crate) cmdline: Vec<String>,
+}
+
+/// Every process this user owns.
 ///
 /// Another user's shell does not draw this session's wallpaper, so a process
 /// counts only when its `/proc` entry belongs to the same user as this one.
-fn own_process_names() -> Vec<String> {
+pub(crate) fn own_processes() -> Vec<Process> {
     use std::os::unix::fs::MetadataExt;
 
     let Ok(me) = std::fs::metadata("/proc/self").map(|m| m.uid()) else {
@@ -194,14 +261,22 @@ fn own_process_names() -> Vec<String> {
     };
     entries
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            if !entry.metadata().is_ok_and(|m| m.uid() == me) {
+                return None;
+            }
+            let comm = std::fs::read_to_string(entry.path().join("comm")).ok()?;
+            let cmdline = std::fs::read(entry.path().join("cmdline")).unwrap_or_default();
+            Some(Process {
+                pid,
+                comm: comm.trim_end().to_owned(),
+                cmdline: cmdline
+                    .split(|&b| b == 0)
+                    .filter(|arg| !arg.is_empty())
+                    .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                    .collect(),
+            })
         })
-        .filter(|entry| entry.metadata().is_ok_and(|m| m.uid() == me))
-        .filter_map(|entry| std::fs::read_to_string(entry.path().join("comm")).ok())
-        .map(|comm| comm.trim_end().to_owned())
         .collect()
 }

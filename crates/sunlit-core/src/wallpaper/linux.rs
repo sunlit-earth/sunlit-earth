@@ -7,6 +7,7 @@
 //! and the running.
 
 mod root_pixmap;
+mod swaybg;
 
 #[cfg(target_os = "linux")]
 use crate::display::layout::DisplayMode;
@@ -155,6 +156,24 @@ pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
         Mechanism::Commands => {}
         Mechanism::RootPixmap => {
             root_pixmap::set(job)?;
+            return Ok(done());
+        }
+        Mechanism::Swaybg => {
+            let placement = write_placement(job, backend.reach())?;
+            let command = backend
+                .commands(&placement, "")
+                .into_iter()
+                .next()
+                .ok_or_else(|| backend.nothing_to_run())?;
+            let image_dir = placement
+                .single
+                .parent()
+                .ok_or_else(|| "the wallpaper was written to no directory".to_owned())?;
+            swaybg::publish(&command, image_dir, &crate::wallpaper::wallpaper_dir()?)?;
+            tracing::info!(
+                path = %placement.single.display(),
+                "wallpaper set through a swaybg of our own"
+            );
             return Ok(done());
         }
     }

@@ -8,8 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    Backend, COMPOSITING_SHELLS, DEEPIN_BUS_NAMES, DEEPIN_LEGACY, DESKTOP_ENV,
-    DESKTOP_WINDOW_OWNERS, Gate, Kind, LADDER, ROOT_PIXMAP, ROWS, Row, SWAY,
+    AWWW, Backend, COMPOSITING_SHELLS, DEEPIN_BUS_NAMES, DEEPIN_LEGACY, DESKTOP_ENV,
+    DESKTOP_WINDOW_OWNERS, Gate, Kind, LADDER, LAYER_SHELL, ROOT_PIXMAP, ROWS, Row, SWAY, SWAYBG,
+    SWWW, WPAPERD, names_a_file_under,
 };
 
 /// The variables walked, in order, for the name a session gives itself.
@@ -41,6 +42,13 @@ pub trait Session {
     /// What the X server says about the desktop, or `None` where no X display
     /// could be opened.
     fn x11(&self) -> Option<X11Facts>;
+    /// The interfaces the Wayland compositor advertises, or `None` where no
+    /// Wayland display could be opened.
+    fn wayland_globals(&self) -> Option<Vec<String>>;
+    /// The command lines of this user's processes with this name.
+    fn processes_named(&self, name: &str) -> Vec<Vec<String>>;
+    /// The directory this app publishes its wallpapers into.
+    fn wallpaper_dir(&self) -> Option<PathBuf>;
 }
 
 /// The two things an X11 session is asked before its root is painted.
@@ -127,27 +135,150 @@ fn ladder(session: &dyn Session, declined: &mut Vec<Declined>) -> Option<Choice>
     let display = session.var("DISPLAY");
     match (&wayland, &display) {
         (Some(wayland), _) => {
+            match wayland_rungs(session, wayland) {
+                Ok(choice) => return Some(choice),
+                Err(reasons) => {
+                    for (rung, reason) in reasons {
+                        decline(rung, reason);
+                    }
+                }
+            }
             let reason = format!("WAYLAND_DISPLAY={wayland}, so the X11 root is not what is shown");
             decline("desktop window owner", reason.clone());
             decline("root pixmap", reason);
         }
         (None, None) => {
+            for rung in WAYLAND_RUNGS {
+                decline(rung, "WAYLAND_DISPLAY is not set".to_owned());
+            }
             decline(
                 "desktop window owner",
                 "neither WAYLAND_DISPLAY nor DISPLAY is set".to_owned(),
             );
             decline("root pixmap", "DISPLAY is not set".to_owned());
         }
-        (None, Some(display)) => match x11_rungs(session, display) {
-            Ok(choice) => return Some(choice),
-            Err(reasons) => {
-                for (rung, reason) in reasons {
-                    decline(rung, reason);
+        (None, Some(display)) => {
+            for rung in WAYLAND_RUNGS {
+                decline(rung, "WAYLAND_DISPLAY is not set".to_owned());
+            }
+            match x11_rungs(session, display) {
+                Ok(choice) => return Some(choice),
+                Err(reasons) => {
+                    for (rung, reason) in reasons {
+                        decline(rung, reason);
+                    }
                 }
             }
-        },
+        }
     }
     None
+}
+
+/// The Wayland rungs, in the order they are tried.
+const WAYLAND_RUNGS: [&str; 3] = ["awww", "wpaperd", "swaybg"];
+
+/// The three Wayland rungs: a daemon the user already runs, then a `swaybg` of
+/// this app's own.
+///
+/// A running daemon comes first so the app does not put a second background
+/// surface under one the user already has.
+fn wayland_rungs(
+    session: &dyn Session,
+    wayland: &str,
+) -> Result<Choice, Vec<(&'static str, String)>> {
+    let mut reasons = Vec::new();
+    let session_line = format!("Wayland session on WAYLAND_DISPLAY={wayland}");
+    let runtime = session.var("XDG_RUNTIME_DIR");
+
+    let daemon = |backends: &[(Backend, PathBuf)]| -> Result<Choice, String> {
+        let mut found = None;
+        for (backend, socket) in backends {
+            if !session.path_exists(socket) {
+                continue;
+            }
+            let mut evidence = vec![
+                session_line.clone(),
+                format!("{} daemon socket at {}", backend.desktop, socket.display()),
+            ];
+            match present(session, backend, &mut evidence) {
+                Ok(()) => {
+                    return Ok(Choice {
+                        backend: *backend,
+                        evidence,
+                    });
+                }
+                Err(reason) => found = Some(reason),
+            }
+        }
+        Err(found.unwrap_or_else(|| {
+            let sockets: Vec<String> = backends
+                .iter()
+                .map(|(_, socket)| socket.display().to_string())
+                .collect();
+            format!("no daemon listens: nothing at {}", sockets.join(" or "))
+        }))
+    };
+
+    if let Some(runtime) = &runtime {
+        let display = Path::new(wayland).file_name().map_or_else(
+            || wayland.to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let runtime = Path::new(runtime);
+        let awww = [
+            (AWWW, runtime.join(format!("{display}-awww-daemon.sock"))),
+            (SWWW, runtime.join(format!("{display}-swww-daemon.sock"))),
+        ];
+        match daemon(&awww) {
+            Ok(choice) => return Ok(choice),
+            Err(reason) => reasons.push(("awww", reason)),
+        }
+        match daemon(&[(WPAPERD, runtime.join("wpaperd.sock"))]) {
+            Ok(choice) => return Ok(choice),
+            Err(reason) => reasons.push(("wpaperd", reason)),
+        }
+    } else {
+        let reason = "XDG_RUNTIME_DIR is not set, so there is no daemon socket to look for";
+        reasons.push(("awww", reason.to_owned()));
+        reasons.push(("wpaperd", reason.to_owned()));
+    }
+
+    let Some(globals) = session.wayland_globals() else {
+        reasons.push((
+            "swaybg",
+            format!("WAYLAND_DISPLAY={wayland} could not be opened to ask what it offers"),
+        ));
+        return Err(reasons);
+    };
+    if !globals.iter().any(|global| global == LAYER_SHELL) {
+        reasons.push((
+            "swaybg",
+            format!("the compositor does not offer {LAYER_SHELL}, which swaybg draws with"),
+        ));
+        return Err(reasons);
+    }
+    let mut evidence = vec![session_line, format!("{LAYER_SHELL} advertised")];
+    if let Err(reason) = present(session, &SWAYBG, &mut evidence) {
+        reasons.push(("swaybg", reason));
+        return Err(reasons);
+    }
+    let foreign = match session.wallpaper_dir() {
+        Some(dir) => session
+            .processes_named("swaybg")
+            .iter()
+            .filter(|cmdline| !names_a_file_under(cmdline, &dir))
+            .count(),
+        None => 0,
+    };
+    if foreign > 0 {
+        evidence.push(format!(
+            "{foreign} swaybg not started by this app already runs and is left alone"
+        ));
+    }
+    Ok(Choice {
+        backend: SWAYBG,
+        evidence,
+    })
 }
 
 /// The two X11 rungs: the program that owns a desktop window, or the root.
@@ -349,6 +480,10 @@ fn applies(session: &dyn Session, row: &Row, mut evidence: Vec<String>) -> Resul
 
 /// The variant of a row this session has, where a row has more than one.
 fn resolve(session: &dyn Session, backend: Backend, evidence: &mut Vec<String>) -> Backend {
+    if backend == AWWW && !session.on_path("awww") && session.on_path("swww") {
+        evidence.push("swww, awww's name before its rename, on PATH".to_owned());
+        return SWWW;
+    }
     if let Kind::Deepin { .. } = backend.kind {
         let [current, legacy] = DEEPIN_BUS_NAMES;
         if !session.bus_name_owned(current) && session.bus_name_owned(legacy) {
@@ -444,6 +579,9 @@ pub(crate) mod fake {
         pub bus_names: HashSet<String>,
         pub paths: HashSet<PathBuf>,
         pub x11: Option<X11Facts>,
+        pub wayland_globals: Option<Vec<String>>,
+        /// Each process's command line, its name first.
+        pub cmdlines: Vec<Vec<String>>,
         /// Every program is on `PATH` and every process runs, whatever the
         /// sets hold.
         pub everything: bool,
@@ -498,6 +636,20 @@ pub(crate) mod fake {
             self.x11 = Some(facts);
             self.var("DISPLAY", ":0")
         }
+
+        /// A Wayland session on `wayland-1` whose compositor advertises
+        /// `globals`.
+        pub(crate) fn wayland(mut self, globals: &[&str]) -> Self {
+            self.wayland_globals = Some(globals.iter().map(|g| (*g).to_owned()).collect());
+            self.var("WAYLAND_DISPLAY", "wayland-1")
+                .var("XDG_RUNTIME_DIR", "/run/user/1000")
+        }
+
+        pub(crate) fn running(mut self, cmdline: &[&str]) -> Self {
+            self.cmdlines
+                .push(cmdline.iter().map(|a| (*a).to_owned()).collect());
+            self
+        }
     }
 
     impl Session for FakeSession {
@@ -527,7 +679,26 @@ pub(crate) mod fake {
         fn x11(&self) -> Option<X11Facts> {
             self.x11.clone()
         }
+
+        fn wayland_globals(&self) -> Option<Vec<String>> {
+            self.wayland_globals.clone()
+        }
+
+        fn processes_named(&self, name: &str) -> Vec<Vec<String>> {
+            self.cmdlines
+                .iter()
+                .filter(|cmdline| cmdline.first().is_some_and(|first| first.ends_with(name)))
+                .cloned()
+                .collect()
+        }
+
+        fn wallpaper_dir(&self) -> Option<PathBuf> {
+            Some(PathBuf::from(WALLPAPER_DIR))
+        }
     }
+
+    /// Where the fabricated sessions' app publishes.
+    pub(crate) const WALLPAPER_DIR: &str = "/home/t/.local/share/SunlitEarth/wallpaper";
 }
 
 #[cfg(test)]
@@ -787,6 +958,105 @@ mod tests {
         assert_eq!(chosen(&session), Some(ROOT_PIXMAP.desktop));
         let no_display = FakeSession::named("KDE").var(FORCE_ENV, "root-pixmap");
         assert!(choose(&no_display).is_err());
+    }
+
+    #[test]
+    fn a_running_daemon_comes_before_a_swaybg_of_our_own() {
+        let everything = FakeSession::named("niri")
+            .wayland(&[LAYER_SHELL])
+            .program("awww")
+            .program("wpaperctl")
+            .program("swaybg")
+            .path("/run/user/1000/wayland-1-awww-daemon.sock")
+            .path("/run/user/1000/wpaperd.sock");
+        assert_eq!(chosen(&everything), Some("awww"));
+
+        let wpaperd = FakeSession::named("niri")
+            .wayland(&[LAYER_SHELL])
+            .program("awww")
+            .program("wpaperctl")
+            .program("swaybg")
+            .path("/run/user/1000/wpaperd.sock");
+        assert_eq!(chosen(&wpaperd), Some("wpaperd"));
+
+        let bare = FakeSession::named("niri")
+            .wayland(&[LAYER_SHELL])
+            .program("awww")
+            .program("wpaperctl")
+            .program("swaybg");
+        let choice = choose(&bare).expect("swaybg");
+        assert_eq!(choice.backend.desktop, "swaybg");
+        assert!(choice.explanation().contains(LAYER_SHELL), "{choice:?}");
+    }
+
+    #[test]
+    fn an_older_swww_is_used_under_its_own_socket_name() {
+        let session = FakeSession::named("river")
+            .wayland(&[])
+            .program("swww")
+            .path("/run/user/1000/wayland-1-swww-daemon.sock");
+        let choice = choose(&session).expect("swww");
+        assert_eq!(choice.backend.desktop, "swww");
+        assert_eq!(
+            choice
+                .backend
+                .commands(&crate::desktop::Placement::single("/w.png".into()), "")[0]
+                .program,
+            "swww"
+        );
+    }
+
+    #[test]
+    fn swaybg_needs_layer_shell_and_says_so() {
+        let session = FakeSession::named("GNOME")
+            .wayland(&["wl_compositor", "xdg_wm_base"])
+            .program("swaybg")
+            .program("gsettings");
+        let text = choose(&session)
+            .expect_err("mutter has no layer shell")
+            .to_string();
+        assert!(
+            text.contains(&format!("does not offer {LAYER_SHELL}")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_swaybg_that_is_not_ours_is_mentioned_and_left_alone() {
+        let ours = format!("{}/gen-1/0.png", fake::WALLPAPER_DIR);
+        let session = FakeSession::named("labwc:wlroots")
+            .wayland(&[LAYER_SHELL])
+            .program("swaybg")
+            .running(&["swaybg", "-o", "*", "-i", &ours, "-m", "fill"])
+            .running(&["/usr/bin/swaybg", "-i", "/home/t/Pictures/beach.png"]);
+        let choice = choose(&session).expect("swaybg");
+        let explanation = choice.explanation();
+        assert!(
+            explanation.contains("1 swaybg not started by this app"),
+            "{explanation}"
+        );
+    }
+
+    #[test]
+    fn our_swaybg_is_told_by_the_file_it_was_given() {
+        let dir = Path::new(fake::WALLPAPER_DIR);
+        let words = |line: &[&str]| line.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        let ours = format!("{}/gen-7/0.png", fake::WALLPAPER_DIR);
+        assert!(names_a_file_under(&words(&["swaybg", "-i", &ours]), dir));
+        assert!(!names_a_file_under(
+            &words(&["swaybg", "-i", "/home/t/Pictures/beach.png"]),
+            dir
+        ));
+        // A sibling directory whose name merely starts the same is not ours.
+        assert!(!names_a_file_under(
+            &words(&[
+                "swaybg",
+                "-i",
+                "/home/t/.local/share/SunlitEarth/wallpaper-old/0.png"
+            ]),
+            dir
+        ));
+        assert!(!names_a_file_under(&words(&[&ours]), dir), "the name alone");
     }
 
     #[test]

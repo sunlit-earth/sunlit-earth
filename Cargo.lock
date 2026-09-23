@@ -5702,6 +5702,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pollster",
  "proptest",
+ "rustix 1.1.4",
  "serde",
  "time",
  "toml 0.9.12+spec-1.1.0",

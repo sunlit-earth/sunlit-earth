@@ -26,7 +26,7 @@ use crate::display::layout::DisplayMode;
 mod choose;
 mod kde;
 #[cfg(target_os = "linux")]
-mod probe;
+pub(crate) mod probe;
 mod setters;
 mod xfce;
 
@@ -124,6 +124,13 @@ enum Kind {
     /// The X11 root window's background pixmap, set by this process over its
     /// own X connection. Runs no program.
     RootPixmap,
+    /// A running awww daemon, told through its client, which is `swww` in
+    /// releases before the rename.
+    Awww { program: &'static str },
+    /// A running wpaperd, told through `wpaperctl`.
+    Wpaperd,
+    /// A `swaybg` this process starts, and leaves running when it exits.
+    Swaybg,
 }
 
 /// How a setter is carried out, for the sink to dispatch on.
@@ -133,6 +140,9 @@ pub enum Mechanism {
     Commands,
     /// Paint the X11 root window directly; nothing is written to disk.
     RootPixmap,
+    /// Start the one command [`Backend::commands`] gives, leave it running,
+    /// and end the one it replaces.
+    Swaybg,
 }
 
 /// How far into a multi-monitor session one desktop's setter reaches.
@@ -242,7 +252,10 @@ impl Backend {
             | Kind::Hyprpaper
             | Kind::Deepin { .. }
             | Kind::Trinity
-            | Kind::RootPixmap => None,
+            | Kind::RootPixmap
+            | Kind::Awww { .. }
+            | Kind::Wpaperd
+            | Kind::Swaybg => None,
         }
     }
 
@@ -250,6 +263,7 @@ impl Backend {
     pub fn mechanism(&self) -> Mechanism {
         match self.kind {
             Kind::RootPixmap => Mechanism::RootPixmap,
+            Kind::Swaybg => Mechanism::Swaybg,
             _ => Mechanism::Commands,
         }
     }
@@ -271,9 +285,16 @@ impl Backend {
             // sway and hyprpaper address outputs by the compositor's names,
             // which `xrandr` through Xwayland does not report, so both are
             // handed one image for every output.
-            Kind::Lxqt | Kind::Lxde | Kind::Sway | Kind::Hyprpaper | Kind::Trinity => {
-                Reach::OneImage
-            }
+            // The Wayland daemons could take outputs by name too, and the names
+            // are the compositor's, which this session has no way to ask yet.
+            Kind::Lxqt
+            | Kind::Lxde
+            | Kind::Sway
+            | Kind::Hyprpaper
+            | Kind::Trinity
+            | Kind::Awww { .. }
+            | Kind::Wpaperd
+            | Kind::Swaybg => Reach::OneImage,
         }
     }
 
@@ -379,6 +400,27 @@ impl Backend {
                 ],
             )],
             Kind::RootPixmap => Vec::new(),
+            Kind::Awww { program } => vec![Invocation::new(
+                program,
+                [
+                    "img".to_owned(),
+                    single,
+                    "--transition-type".to_owned(),
+                    "none".to_owned(),
+                ],
+            )],
+            Kind::Wpaperd => vec![Invocation::new("wpaperctl", ["set".to_owned(), single])],
+            Kind::Swaybg => vec![Invocation::new(
+                "swaybg",
+                [
+                    "-o".to_owned(),
+                    "*".to_owned(),
+                    "-i".to_owned(),
+                    single,
+                    "-m".to_owned(),
+                    "fill".to_owned(),
+                ],
+            )],
         }
     }
 
@@ -645,9 +687,54 @@ pub(crate) const ROOT_PIXMAP: Backend = Backend {
     kind: Kind::RootPixmap,
 };
 
+/// A running awww daemon.
+pub(crate) const AWWW: Backend = Backend {
+    desktop: "awww",
+    setter: "awww",
+    program: Some("awww"),
+    kind: Kind::Awww { program: "awww" },
+};
+
+/// A running swww daemon, awww before its rename, under the same setter name.
+pub(crate) const SWWW: Backend = Backend {
+    desktop: "swww",
+    setter: "awww",
+    program: Some("swww"),
+    kind: Kind::Awww { program: "swww" },
+};
+
+/// A running wpaperd.
+pub(crate) const WPAPERD: Backend = Backend {
+    desktop: "wpaperd",
+    setter: "wpaperd",
+    program: Some("wpaperctl"),
+    kind: Kind::Wpaperd,
+};
+
+/// A `swaybg` started and owned by this process.
+pub(crate) const SWAYBG: Backend = Backend {
+    desktop: "swaybg",
+    setter: "swaybg",
+    program: Some("swaybg"),
+    kind: Kind::Swaybg,
+};
+
 /// The setters the ladder can reach that no desktop names, in the order the
 /// forcing variable lists them.
-pub(crate) const LADDER: &[Backend] = &[ROOT_PIXMAP];
+pub(crate) const LADDER: &[Backend] = &[AWWW, WPAPERD, SWAYBG, ROOT_PIXMAP];
+
+/// Whether a command line names a file under `dir`, which is how a `swaybg`
+/// this app started is told from one the user did: no state file, just the
+/// image it was given.
+pub fn names_a_file_under(cmdline: &[String], dir: &Path) -> bool {
+    cmdline
+        .iter()
+        .skip(1)
+        .any(|arg| Path::new(arg).starts_with(dir) && Path::new(arg) != dir)
+}
+
+/// The protocol a compositor has to offer for `swaybg` to draw a background.
+pub(crate) const LAYER_SHELL: &str = "zwlr_layer_shell_v1";
 
 /// Which row a desktop window belongs to, by its `WM_CLASS`.
 ///

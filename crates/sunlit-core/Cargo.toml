@@ -40,6 +40,7 @@ winreg.workspace = true
 x11rb.workspace = true
 zbus.workspace = true
 wayland-client.workspace = true
+rustix.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2.workspace = true

@@ -1025,6 +1025,9 @@ pub fn check_linkage(target: Target, deps: &str) -> Result<Linkage, String> {
 pub struct BuildInfo {
     pub format_version: u32,
     pub target: String,
+    /// The instruction set the binary is compiled for, read out of its header.
+    #[serde(default)]
+    pub arch: String,
     pub commit: String,
     pub describe: String,
     pub dirty: bool,
@@ -1103,11 +1106,6 @@ pub struct HostedInfo {
     /// What the runner says it is: the image label on GitHub's runners, and
     /// the operating system and architecture otherwise.
     pub runner_image: String,
-    /// The architectures inside the bundled binary, where the host has a tool
-    /// that can say. macOS only, as the one platform here shipping a file that
-    /// can hold more than one, and what says which way a given release went.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub architectures: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1139,7 +1137,7 @@ impl BuildInfo {
 }
 
 /// The version of the record's own layout.
-pub const BUILD_INFO_VERSION: u32 = 2;
+pub const BUILD_INFO_VERSION: u32 = 3;
 
 /// Where the artifacts land: `<target dir>/dist/<target>/`.
 ///
@@ -1260,6 +1258,12 @@ fn one_target(
             exe.display()
         ));
     }
+    let (built_for, arch) = bundle::Arch::of(&exe)?;
+    if built_for != bundle::Platform::from(target) {
+        return Err(format!(
+            "the {target} build brought back a {built_for} binary"
+        ));
+    }
     let deps = std::fs::read_to_string(results.join("artifacts").join("deps.txt"))
         .map_err(|e| format!("the build brought back no readable deps.txt: {e}"))?;
     let linkage = check_linkage(target, &deps)?;
@@ -1272,6 +1276,7 @@ fn one_target(
     let mut info = BuildInfo {
         format_version: BUILD_INFO_VERSION,
         target: target.slug().to_owned(),
+        arch: arch.slug().to_owned(),
         commit: git.commit.clone(),
         describe: git.describe.clone(),
         dirty: git.dirty,
@@ -1293,7 +1298,7 @@ fn one_target(
     let scratch = store.bundle_scratch(desktop);
     let _ = std::fs::remove_dir_all(&scratch);
     let outcome = (|| -> Result<String, String> {
-        let bundled = assemble_bundle(repo, target, &version, &exe, &scratch, &mut info)?;
+        let bundled = assemble_bundle(repo, target, arch, &version, &exe, &scratch, &mut info)?;
 
         let verified = if options.verify {
             Some(verify_in_desktop(
@@ -1319,7 +1324,7 @@ fn one_target(
         // Archived after verification, because the record written beside the
         // archive has to carry what verification found.
         let archive = match &bundled {
-            Some(bundled) => Some(seal_bundle(bundled, &version, target, &scratch)?),
+            Some(bundled) => Some(seal_bundle(bundled, target, &scratch)?),
             None => None,
         };
 
@@ -1367,6 +1372,7 @@ fn one_target(
 fn assemble_bundle(
     repo: &Path,
     target: Target,
+    arch: bundle::Arch,
     version: &str,
     exe: &Path,
     scratch: &Path,
@@ -1381,7 +1387,7 @@ fn assemble_bundle(
         }
     };
     let platform = bundle::Platform::from(target);
-    let name = bundle::bundle_name(version, platform);
+    let name = bundle::bundle_name(version, platform, arch);
     let items = bundle::layout(
         platform,
         &bundle::Sources {
@@ -1393,7 +1399,7 @@ fn assemble_bundle(
     let root = bundle::assemble(scratch, &name, &items)?;
     info.bundles = vec![BundleInfo {
         name: name.clone(),
-        archive: bundle::archive_name(version, platform),
+        archive: bundle::archive_name(version, platform, arch),
         entries: items.len(),
         texture_lookup_delta: None,
     }];
@@ -1407,15 +1413,10 @@ fn assemble_bundle(
 /// The read-back is the cheap half of proving the bundle: that the archive holds
 /// exactly what the directory holds, at the sizes the directory has. The
 /// expensive half is the two renders in the desktop guest.
-fn seal_bundle(
-    bundled: &Bundled,
-    version: &str,
-    target: Target,
-    scratch: &Path,
-) -> Result<PathBuf, String> {
+fn seal_bundle(bundled: &Bundled, target: Target, scratch: &Path) -> Result<PathBuf, String> {
     let platform = bundle::Platform::from(target);
     let format = bundle::Format::of(platform);
-    let archive = scratch.join(bundle::archive_name(version, platform));
+    let archive = scratch.join(format!("{}.{}", bundled.name, format.extension()));
     let bytes = bundle::write(
         format,
         &bundled.root,
@@ -2985,6 +2986,7 @@ mod tests {
         let info = BuildInfo {
             format_version: BUILD_INFO_VERSION,
             target: Target::Linux.slug().to_owned(),
+            arch: "x86_64".to_owned(),
             commit: "0123456789abcdef".to_owned(),
             describe: "v0.1.0-3-g0123456".to_owned(),
             dirty: false,
@@ -3016,8 +3018,8 @@ mod tests {
                 crt_static: None,
             }),
             bundles: vec![BundleInfo {
-                name: "sunlit-earth-0.1.0-linux".to_owned(),
-                archive: "sunlit-earth-0.1.0-linux.tar.gz".to_owned(),
+                name: "sunlit-earth-0.1.0-linux-x86_64".to_owned(),
+                archive: "sunlit-earth-0.1.0-linux-x86_64.tar.gz".to_owned(),
                 entries: 17,
                 texture_lookup_delta: Some(31.75),
             }],
@@ -3037,7 +3039,10 @@ mod tests {
         // And the bundle section says what was written and what the two renders
         // in the desktop guest measured, which is decision 32 recorded rather
         // than claimed.
-        assert!(json.contains("sunlit-earth-0.1.0-linux.tar.gz"), "{json}");
+        assert!(
+            json.contains("sunlit-earth-0.1.0-linux-x86_64.tar.gz"),
+            "{json}"
+        );
         assert!(json.contains("texture_lookup_delta"), "{json}");
 
         // A run with no bundle carries no bundle section at all, the way a
@@ -3065,7 +3070,6 @@ mod tests {
         let mut hosted = info.clone();
         hosted.builder = Builder::Hosted(HostedInfo {
             runner_image: "macOS 26.0.20250901".to_owned(),
-            architectures: vec!["arm64".to_owned()],
             run_id: Some("34055254636".to_owned()),
             run_url: Some(
                 "https://github.com/sunlit-earth/sunlit-earth/actions/runs/34055254636".to_owned(),

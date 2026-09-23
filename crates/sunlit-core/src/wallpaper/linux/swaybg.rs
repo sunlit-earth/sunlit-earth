@@ -1,11 +1,12 @@
 //! A `swaybg` this app starts for every publish, and the one it replaces.
 //!
-//! swaybg has no IPC: a new image is a new process. So each publish starts one,
-//! gives it a second to put its surface up, and then ends every earlier one
-//! whose command line names a file under the app's wallpaper directory. The
-//! last one is left running when the app exits, which keeps the wallpaper on
-//! screen the way every desktop's own setter does, and the next start finds it
-//! by its command line rather than through a state file.
+//! swaybg has no IPC: a new image is a new process. So each publish notes the
+//! ones already running whose command line names a file under the app's
+//! wallpaper directory, starts its own, gives it a second to put its surface
+//! up, and then ends the ones it noted. The last one is left running when the
+//! app exits, which keeps the wallpaper on screen the way every desktop's own
+//! setter does, and the next start finds it by its command line rather than
+//! through a state file.
 
 use std::path::Path;
 
@@ -18,14 +19,27 @@ pub(super) struct Running<'a> {
     pub(super) cmdline: &'a [String],
 }
 
-/// The `swaybg` processes this app started, other than `keep`.
+/// The `swaybg` processes this app started.
 ///
 /// A `swaybg` showing a file of the user's own is theirs, and stays.
-pub(super) fn to_end(processes: &[Running<'_>], dir: &Path, keep: u32) -> Vec<u32> {
+pub(super) fn ours(processes: &[Running<'_>], dir: &Path) -> Vec<u32> {
     processes
         .iter()
-        .filter(|p| p.pid != keep && p.comm == "swaybg" && names_a_file_under(p.cmdline, dir))
+        .filter(|p| p.comm == "swaybg" && names_a_file_under(p.cmdline, dir))
         .map(|p| p.pid)
+        .collect()
+}
+
+/// Which of the `swaybg`s a publish noted before starting its own are still
+/// ours to end once the new one is up.
+///
+/// Only those noted: one a later publish started meanwhile is that publish's
+/// to keep. And only while the pid is still one of ours, since a pid that
+/// ended may have been given to something else.
+pub(super) fn to_end(noted: &[u32], processes: &[Running<'_>], dir: &Path) -> Vec<u32> {
+    ours(processes, dir)
+        .into_iter()
+        .filter(|pid| noted.contains(pid))
         .collect()
 }
 
@@ -48,12 +62,11 @@ mod live {
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
 
-    use super::{Running, load_failure, to_end};
+    use super::{Running, load_failure, ours, to_end};
     use crate::desktop::Invocation;
-    use crate::desktop::probe::own_processes;
+    use crate::desktop::probe::{Process, own_processes};
 
     /// How long a new `swaybg` has to fail before it counts as running.
     const STARTUP: Duration = Duration::from_millis(500);
@@ -61,9 +74,6 @@ mod live {
     /// How long the old surface stays up under the new one, so the screen
     /// never shows the compositor's grey between them.
     const HANDOVER: Duration = Duration::from_secs(1);
-
-    /// The `swaybg` the latest publish started, which is never ended.
-    static LATEST: AtomicU32 = AtomicU32::new(0);
 
     /// The `swaybg` this process started last, kept so that ending it can also
     /// reap it. One at a time: each publish takes the previous one out.
@@ -78,6 +88,7 @@ mod live {
         image_dir: &Path,
         wallpaper_dir: &Path,
     ) -> Result<(), String> {
+        let noted = ours(&running(&own_processes()), wallpaper_dir);
         let log_path = image_dir.join("swaybg.log");
         let log = std::fs::File::create(&log_path)
             .map_err(|e| format!("cannot write {}: {e}", log_path.display()))?;
@@ -114,7 +125,6 @@ mod live {
             return Err(format!("swaybg could not show the image: {failure}"));
         }
 
-        LATEST.store(child.id(), Ordering::SeqCst);
         let previous = OWNED
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -122,23 +132,25 @@ mod live {
         let dir = wallpaper_dir.to_owned();
         std::thread::Builder::new()
             .name("swaybg-handover".to_owned())
-            .spawn(move || hand_over(&dir, previous))
+            .spawn(move || hand_over(&dir, &noted, previous))
             .map_err(|e| format!("cannot start the swaybg handover: {e}"))?;
         Ok(())
     }
 
-    fn hand_over(dir: &Path, previous: Option<Child>) {
-        std::thread::sleep(HANDOVER);
-        let processes = own_processes();
-        let running: Vec<Running<'_>> = processes
+    fn running(processes: &[Process]) -> Vec<Running<'_>> {
+        processes
             .iter()
             .map(|p| Running {
                 pid: p.pid,
                 comm: &p.comm,
                 cmdline: &p.cmdline,
             })
-            .collect();
-        for pid in to_end(&running, dir, LATEST.load(Ordering::SeqCst)) {
+            .collect()
+    }
+
+    fn hand_over(dir: &Path, noted: &[u32], previous: Option<Child>) {
+        std::thread::sleep(HANDOVER);
+        for pid in to_end(noted, &running(&own_processes()), dir) {
             let signalled = i32::try_from(pid)
                 .ok()
                 .and_then(rustix::process::Pid::from_raw)
@@ -155,10 +167,8 @@ mod live {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            if child.id() != LATEST.load(Ordering::SeqCst) {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -219,9 +229,12 @@ mod tests {
                 cmdline: &viewer,
             },
         ];
-        assert_eq!(to_end(&processes, dir, 11), vec![10]);
-        // With nothing kept, every one of ours goes and still nothing else.
-        assert_eq!(to_end(&processes, dir, 0), vec![10, 11]);
+        assert_eq!(ours(&processes, dir), vec![10, 11]);
+        // Noted before 11 started, so 11 is kept whenever the handover runs.
+        assert_eq!(to_end(&[10], &processes, dir), vec![10]);
+        // A pid noted as ours that now belongs to something else is left.
+        assert_eq!(to_end(&[10, 13], &processes, dir), vec![10]);
+        assert!(to_end(&[], &processes, dir).is_empty());
     }
 
     #[test]

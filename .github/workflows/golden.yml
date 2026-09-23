@@ -32,7 +32,7 @@ jobs:
     name: Regenerate on ${{ inputs.os }}
     runs-on: ${{ inputs.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux dependencies
@@ -116,7 +116,7 @@ jobs:
       # Only the adapter that ran: an archive of all three, extracted over the
       # tracked directory, would silently revert the other two.
       - name: Upload references
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golden-${{ steps.regenerate.outputs.key }}
           path: crates/sunlit-core/tests/golden/${{ steps.regenerate.outputs.key }}/

@@ -61,7 +61,7 @@ jobs:
     if: ${{ contains(fromJSON(needs.plan.outputs.include).*.os, 'ubuntu-latest') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -77,7 +77,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.include) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
       # mesa-vulkan-drivers is lavapipe, which the GPU tests run on here.
@@ -175,7 +175,7 @@ jobs:
 
       - name: Upload images
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: images-${{ matrix.name }}
           path: |

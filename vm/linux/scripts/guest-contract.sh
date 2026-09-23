@@ -27,6 +27,13 @@ install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 \
 # for the setters themselves, which are Qt and GTK programs that look for their
 # own data where the session says it is. The other four are what makes a window
 # and a D-Bus call possible at all.
+#
+# `WAYLAND_DISPLAY` is written only when the session has one, which is what makes
+# the app started from this file a Wayland client there: winit picks Wayland
+# whenever the variable is set. An X11 session's file is left exactly as it was,
+# with no blank line for winit to find. `DISPLAY` and `XAUTHORITY` are written in
+# both, because the display query, the layout watcher and several of the setters
+# reach Xwayland through them.
 cat > /usr/local/bin/sunlit-e2e-session-ready <<'EOF'
 #!/bin/sh
 set -e
@@ -45,6 +52,9 @@ xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
   echo "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP}"
   echo "XDG_DATA_DIRS=${XDG_DATA_DIRS}"
   echo "XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS}"
+  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    echo "WAYLAND_DISPLAY=${WAYLAND_DISPLAY}"
+  fi
 } > "${root}/session.env"
 rm -f "${root}/ready"
 date +%s > "${root}/ready"

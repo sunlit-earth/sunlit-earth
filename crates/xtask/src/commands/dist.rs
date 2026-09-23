@@ -1649,8 +1649,7 @@ fn build_in_builder(
         builder,
         StartReason::Dist,
         options.allow_expired,
-        None,
-        1,
+        vm::BootRequest::PLAIN,
     )?;
 
     // From here the guest exists, so nothing may return without saying what
@@ -1848,8 +1847,7 @@ fn verify_in_desktop(
         desktop,
         StartReason::Dist,
         options.allow_expired,
-        None,
-        1,
+        vm::BootRequest::PLAIN,
     )?;
 
     let outcome = (|| -> Result<Verified, String> {

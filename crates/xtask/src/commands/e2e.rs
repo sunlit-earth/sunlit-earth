@@ -12,7 +12,6 @@ use crate::commands::vm;
 use crate::guest::artifacts::{self, GuestPaths};
 use crate::guest::job;
 use crate::provider;
-use crate::provider::desktop::Desktop;
 use crate::provider::target::{Image, Target};
 use crate::runner::{Cmd, Runner};
 use crate::store;
@@ -141,22 +140,25 @@ pub fn run(
     location: Where,
     keep: bool,
     allow_expired: bool,
-    desktop: Option<Desktop>,
-    screens: u16,
+    request: vm::BootRequest,
 ) -> Result<u8, String> {
     match location.guest() {
-        None if desktop.is_some() => Err(
+        None if request.desktop.is_some() => Err(
             "--desktop chooses a session in the Linux guest; a run on this host \
              uses the desktop you are sitting in front of"
                 .to_owned(),
         ),
-        None if screens != 1 => Err(
+        None if request.session_type.is_some() => Err(
+            "--session-type chooses a session in the Linux guest; a run on this              host uses the session you are sitting in"
+                .to_owned(),
+        ),
+        None if request.screens != 1 => Err(
             "--screens chooses how many screens the Linux guest gets; a run on \
              this host uses the monitors you are sitting in front of"
                 .to_owned(),
         ),
         None => run_on_host(runner),
-        Some(target) => run_in_guest(runner, target, keep, allow_expired, desktop, screens),
+        Some(target) => run_in_guest(runner, target, keep, allow_expired, request),
     }
 }
 
@@ -192,8 +194,7 @@ fn run_in_guest(
     target: Target,
     keep: bool,
     allow_expired: bool,
-    desktop: Option<Desktop>,
-    screens: u16,
+    request: vm::BootRequest,
 ) -> Result<u8, String> {
     // The suite runs in the desktop image of that operating system, which is
     // the only one of its two images with a session to run windowed tests in.
@@ -204,8 +205,7 @@ fn run_in_guest(
     // belong for every other caller, but that is on the far side of the build
     // below: `--target windows --screens 2` used to compile the workspace for
     // minutes before saying that guest has one head.
-    vm::desktop_for(image, desktop)?;
-    vm::screens_for(image, screens)?;
+    request.check(image)?;
 
     let store = store::store()?;
     let started = std::time::Instant::now();
@@ -223,8 +223,7 @@ fn run_in_guest(
         image,
         StartReason::Run,
         allow_expired,
-        desktop,
-        screens,
+        request,
     )?;
 
     // From here on the VM exists, so no failure may return without saying what
@@ -343,6 +342,69 @@ mod tests {
         assert_eq!(Where::Windows.guest(), Some(Target::Windows));
     }
 
+    use crate::provider::desktop::{Desktop, SessionType};
+
+    fn asked(
+        desktop: Option<Desktop>,
+        session_type: Option<SessionType>,
+        screens: u16,
+    ) -> vm::BootRequest {
+        vm::BootRequest {
+            desktop,
+            session_type,
+            screens,
+        }
+    }
+
+    #[test]
+    fn a_host_run_refuses_a_session_type_rather_than_ignoring_it() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        for session_type in SessionType::ALL {
+            let refusal = run(
+                &runner,
+                Where::Host,
+                false,
+                false,
+                asked(None, Some(session_type), 1),
+            )
+            .expect_err("a host run cannot choose a session type");
+            assert!(refusal.contains("--session-type"), "{refusal}");
+        }
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
+    }
+
+    /// The session pairs the image has no session for, and the Wayland layout
+    /// nothing can place, are refused before the build rather than after it.
+    #[test]
+    fn a_guest_run_refuses_a_session_it_cannot_boot_before_it_builds_anything() {
+        let runner = crate::runner::fake::FakeRunner::new();
+        let wayland = Some(SessionType::Wayland);
+        for request in [
+            asked(Some(Desktop::Xfce), wayland, 1),
+            asked(Some(Desktop::Cinnamon), wayland, 1),
+            asked(Some(Desktop::Kde), wayland, 2),
+            asked(None, wayland, 2),
+        ] {
+            let refusal = run(&runner, Where::Linux, false, false, request)
+                .expect_err("not a session this guest can boot");
+            assert!(refusal.contains("--session-type"), "{refusal}");
+        }
+        let refusal = run(
+            &runner,
+            Where::Windows,
+            false,
+            false,
+            asked(None, wayland, 1),
+        )
+        .expect_err("the Windows guest has one session");
+        assert!(refusal.contains("--session-type wayland"), "{refusal}");
+        assert!(
+            runner.calls().is_empty(),
+            "the refusal built something first: {:?}",
+            runner.calls()
+        );
+    }
+
     /// `--desktop` chooses a session in a guest, and a host run has no session
     /// to choose: the one it uses is the one the developer is sitting in.
     ///
@@ -353,8 +415,14 @@ mod tests {
     fn a_host_run_refuses_a_desktop_rather_than_ignoring_it() {
         let runner = crate::runner::fake::FakeRunner::new();
         for desktop in Desktop::ALL {
-            let refusal = run(&runner, Where::Host, false, false, Some(desktop), 1)
-                .expect_err("a host run cannot choose a desktop");
+            let refusal = run(
+                &runner,
+                Where::Host,
+                false,
+                false,
+                asked(Some(desktop), None, 1),
+            )
+            .expect_err("a host run cannot choose a desktop");
             assert!(refusal.contains("--desktop"), "{refusal}");
             assert!(refusal.contains("Linux guest"), "{refusal}");
         }
@@ -371,7 +439,7 @@ mod tests {
     #[test]
     fn a_host_run_refuses_extra_screens_rather_than_ignoring_them() {
         let runner = crate::runner::fake::FakeRunner::new();
-        let refusal = run(&runner, Where::Host, false, false, None, 2)
+        let refusal = run(&runner, Where::Host, false, false, asked(None, None, 2))
             .expect_err("a host run cannot be given screens");
         assert!(refusal.contains("--screens"), "{refusal}");
         assert!(
@@ -388,7 +456,7 @@ mod tests {
     #[test]
     fn a_host_run_refuses_no_screens_as_readily_as_two() {
         let runner = crate::runner::fake::FakeRunner::new();
-        let refusal = run(&runner, Where::Host, false, false, None, 0)
+        let refusal = run(&runner, Where::Host, false, false, asked(None, None, 0))
             .expect_err("a run cannot be given no screen at all");
         assert!(refusal.contains("--screens"), "{refusal}");
         assert!(runner.calls().is_empty(), "{:?}", runner.calls());
@@ -400,7 +468,7 @@ mod tests {
     #[test]
     fn a_guest_run_refuses_an_impossible_screen_count_before_it_builds_anything() {
         let runner = crate::runner::fake::FakeRunner::new();
-        let refusal = run(&runner, Where::Windows, false, false, None, 2)
+        let refusal = run(&runner, Where::Windows, false, false, asked(None, None, 2))
             .expect_err("the Windows guest has one head");
         assert!(refusal.contains("--screens 2"), "{refusal}");
         assert!(

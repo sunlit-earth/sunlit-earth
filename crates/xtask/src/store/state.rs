@@ -177,6 +177,12 @@ pub struct RunState {
     /// Linux one booted before this existed.
     #[serde(default)]
     pub desktop: Option<String>,
+    /// Which display server that desktop runs on, as
+    /// [`SessionType::flag`](crate::provider::desktop::SessionType::flag), for
+    /// the same two readers. `None` is X11, which is every record written before
+    /// a guest could have anything else.
+    #[serde(default)]
+    pub session_type: Option<String>,
     /// Whether this guest was stopped on purpose and is waiting to be resumed.
     ///
     /// A stopped guest and a crashed one both answer no to
@@ -216,6 +222,7 @@ impl RunState {
             reason,
             handed_over: false,
             desktop: None,
+            session_type: None,
             stopped: false,
         }
     }
@@ -249,6 +256,14 @@ impl RunState {
     /// asked for more.
     pub fn screen_count(&self) -> u16 {
         self.screens.unwrap_or(1).max(1)
+    }
+
+    /// The session this guest was asked to log into, if the host named one.
+    pub fn login(&self) -> Option<crate::provider::desktop::Login> {
+        crate::provider::desktop::Login::from_record(
+            self.desktop.as_deref(),
+            self.session_type.as_deref(),
+        )
     }
 
     /// The operating system this record is about, if it names one this xtask
@@ -419,6 +434,26 @@ mod tests {
                 .as_deref()
                 .and_then(crate::provider::desktop::Desktop::parse),
             Some(crate::provider::desktop::Desktop::Xfce)
+        );
+    }
+
+    #[test]
+    fn a_guest_booted_into_a_wayland_session_says_so_in_its_record() {
+        use crate::provider::desktop::{Desktop, Login, SessionType};
+        let mut state = sample();
+        let gnome = Login::new(Desktop::Gnome, SessionType::Wayland).expect("offered");
+        state.desktop = Some(gnome.desktop().flag().to_owned());
+        state.session_type = Some(gnome.session_type().flag().to_owned());
+        let json = state.to_json();
+        assert!(json.contains(r#""session_type": "wayland""#), "{json}");
+        let parsed = RunState::from_json(&json).expect("round trip");
+        assert_eq!(parsed.login(), Some(gnome));
+
+        state.session_type = None;
+        assert_eq!(
+            state.login().map(Login::session_type),
+            Some(SessionType::X11),
+            "a record without the field is an X11 guest"
         );
     }
 

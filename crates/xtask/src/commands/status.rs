@@ -6,7 +6,6 @@
 
 use std::fmt::Write as _;
 
-use crate::provider::desktop::Desktop;
 use crate::provider::target::Image;
 use crate::store::inventory::{ImageInventory, Inventory};
 use crate::store::state::{RunState, StartReason};
@@ -298,7 +297,9 @@ fn running_vm(image: Image, state: &RunState) -> String {
         let _ = writeln!(
             out,
             "    desktop session: {}",
-            Desktop::parse(desktop).map_or_else(|| desktop.to_owned(), |d| d.label().to_owned())
+            state
+                .login()
+                .map_or_else(|| desktop.to_owned(), |l| l.label().to_owned())
         );
     }
     if state.ssh_port > 0 {
@@ -490,6 +491,23 @@ mod tests {
         // heads were written, which `consoles()` is there to stop being
         // believed over the list.
         assert!(!text.contains("vnc 127.0.0.1:5900"), "{text}");
+    }
+
+    #[test]
+    fn a_guest_names_its_session_type_along_with_its_desktop() {
+        let mut state = running_state(Image::Linux);
+        state.desktop = Some("kde".to_owned());
+        assert!(
+            running_vm(Image::Linux, &state).contains("desktop session: KDE Plasma (X11)"),
+            "{}",
+            running_vm(Image::Linux, &state)
+        );
+        state.session_type = Some("wayland".to_owned());
+        assert!(
+            running_vm(Image::Linux, &state).contains("desktop session: KDE Plasma (Wayland)"),
+            "{}",
+            running_vm(Image::Linux, &state)
+        );
     }
 
     #[test]

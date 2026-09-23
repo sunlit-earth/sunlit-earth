@@ -27,7 +27,7 @@ use crate::commands::{
     teardown, vm,
 };
 use crate::host::facts;
-use crate::provider::desktop::Desktop;
+use crate::provider::desktop::{Desktop, SessionType};
 use crate::provider::target::{HostOs, Image};
 use crate::runner::RealRunner;
 
@@ -60,11 +60,9 @@ enum Command {
         /// Run even though the image's evaluation licence has expired.
         #[arg(long)]
         allow_expired_image: bool,
-        /// Which desktop to run the suite under. Linux guest only; the image
-        /// default is KDE Plasma.
-        #[arg(long)]
-        desktop: Option<Desktop>,
-        /// How many screens to give the guest. Linux guest only.
+        #[command(flatten)]
+        session: SessionArgs,
+        /// How many screens to give the guest. Linux guest only, and X11 only.
         #[arg(long, default_value_t = 1, value_name = "N")]
         screens: u16,
     },
@@ -164,12 +162,10 @@ enum VmCommand {
         /// Boot even though the image's evaluation licence has expired.
         #[arg(long)]
         allow_expired_image: bool,
-        /// Which desktop to log into. Linux guest only; the image default is
-        /// KDE Plasma.
-        #[arg(long)]
-        desktop: Option<Desktop>,
+        #[command(flatten)]
+        session: SessionArgs,
         /// How many screens to give the guest, laid out left to right. Linux
-        /// guest only; `vm view` opens one viewer per screen.
+        /// guest only, and X11 only; `vm view` opens one viewer per screen.
         #[arg(long, default_value_t = 1, value_name = "N")]
         screens: u16,
     },
@@ -194,10 +190,8 @@ enum VmCommand {
         /// Leave the VM running afterwards.
         #[arg(long)]
         keep: bool,
-        /// Which desktop to log into. Linux guest only; the image default is
-        /// KDE Plasma.
-        #[arg(long)]
-        desktop: Option<Desktop>,
+        #[command(flatten)]
+        session: SessionArgs,
     },
     /// List the images, media, overlays, and VMs the xtask owns.
     Status,
@@ -228,6 +222,30 @@ enum VmCommand {
         #[arg(short, long)]
         force: bool,
     },
+}
+
+/// Which session a Linux guest logs into, as the three commands that boot one
+/// take it.
+#[derive(clap::Args, Clone, Copy)]
+struct SessionArgs {
+    /// Which desktop to log into. Linux guest only; the image default is KDE
+    /// Plasma.
+    #[arg(long)]
+    desktop: Option<Desktop>,
+    /// Which display server that desktop runs on. Linux guest only, Wayland for
+    /// KDE and GNOME only; X11 when not given.
+    #[arg(long)]
+    session_type: Option<SessionType>,
+}
+
+impl SessionArgs {
+    fn with_screens(self, screens: u16) -> vm::BootRequest {
+        vm::BootRequest {
+            desktop: self.desktop,
+            session_type: self.session_type,
+            screens,
+        }
+    }
 }
 
 /// One image or all of them, which is what the two teardowns take.
@@ -264,9 +282,15 @@ fn main() -> ExitCode {
             target,
             keep,
             allow_expired_image,
-            desktop,
+            session,
             screens,
-        } => e2e::run(&runner, target, keep, allow_expired_image, desktop, screens),
+        } => e2e::run(
+            &runner,
+            target,
+            keep,
+            allow_expired_image,
+            session.with_screens(screens),
+        ),
         Command::Dist {
             target,
             keep,
@@ -310,9 +334,14 @@ fn main() -> ExitCode {
             VmCommand::Up {
                 image,
                 allow_expired_image,
-                desktop,
+                session,
                 screens,
-            } => vm::up(&runner, image, allow_expired_image, desktop, screens),
+            } => vm::up(
+                &runner,
+                image,
+                allow_expired_image,
+                session.with_screens(screens),
+            ),
             VmCommand::Stop { image } => vm::stop(&runner, image),
             VmCommand::Start { image } => vm::start(&runner, image),
             VmCommand::Ssh { image, command } => vm::ssh(&runner, image, &command),
@@ -320,8 +349,8 @@ fn main() -> ExitCode {
             VmCommand::Smoke {
                 image,
                 keep,
-                desktop,
-            } => vm::smoke(&runner, image, keep, desktop),
+                session,
+            } => vm::smoke(&runner, image, keep, session.with_screens(1)),
             VmCommand::Status => vm::status(&runner),
             VmCommand::Down { image } => vm::down(&runner, image.into()),
             VmCommand::Purge {

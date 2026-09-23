@@ -444,6 +444,24 @@ mod tests {
     /// the `install -d` that creates the scp destinations, in the session
     /// marker that writes `session.env`, and in the job runner's default, and
     /// a rename that missed any one of them would still break a run.
+    /// A Wayland session's `session.env` names its compositor socket, which is
+    /// what makes the app a Wayland client there, and an X11 session's has no
+    /// such line at all, blank or otherwise.
+    #[test]
+    fn the_session_marker_carries_wayland_display_only_when_there_is_one() {
+        let linux = std::fs::read_to_string(
+            crate::store::repo_root().join("vm/linux/scripts/guest-contract.sh"),
+        )
+        .expect("the Linux guest contract script");
+        let line = "echo \"WAYLAND_DISPLAY=${WAYLAND_DISPLAY}\"";
+        assert_eq!(linux.matches(line).count(), 1, "{linux}");
+        let guarded = format!("if [ -n \"${{WAYLAND_DISPLAY:-}}\" ]; then\n    {line}\n  fi");
+        assert!(
+            linux.contains(&guarded),
+            "the line is written unconditionally"
+        );
+    }
+
     #[test]
     fn the_guest_roots_match_the_shipped_runners() {
         let repo = crate::store::repo_root();

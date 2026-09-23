@@ -241,6 +241,28 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
             wait_until("the cloud download", || cloud.fetches() >= expected_fetches);
         }
 
+        {
+            let a = private_bytes().unwrap_or(0);
+            let b = engine.memory_report().expect("report");
+            std::thread::sleep(Duration::from_millis(50));
+            engine.send(EngineCommand::Poke);
+            let c = engine.memory_report().expect("report");
+            let priv_of = |r: &sunlit_core::memory_report::MemoryReport| {
+                r.process.as_ref().map_or(0, |p| p.private_bytes)
+            };
+            println!(
+                "DIAG step {step:>3} pub={} fetches={} | A {:.2} | B {:.2} tex={} texmem={:.2} | C {:.2} tex={} texmem={:.2}",
+                u8::from(published),
+                cloud.fetches(),
+                mib(a),
+                mib(priv_of(&b)),
+                b.counters.textures,
+                mib(u64::try_from(b.counters.texture_bytes).unwrap_or(0)),
+                mib(priv_of(&c)),
+                c.counters.textures,
+                mib(u64::try_from(c.counters.texture_bytes).unwrap_or(0)),
+            );
+        }
         if step % (STEPS / 8) == 0
             && let Some(bytes) = private_bytes()
         {
@@ -340,4 +362,5 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
         mib(warmup),
         mib(WARMUP_LIMIT)
     );
+    panic!("diagnostic run: print the DIAG table");
 }

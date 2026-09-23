@@ -23,9 +23,13 @@ use std::path::{Path, PathBuf};
 
 use crate::display::layout::DisplayMode;
 
+mod choose;
 mod kde;
+#[cfg(target_os = "linux")]
+mod probe;
 mod xfce;
 
+pub use choose::{Choice, Declined, Refusal, Session, choose};
 use xfce::{XFCE_CHANNEL, XFCE_IMAGE_PROPERTY};
 
 /// The variable that says which desktop this is.
@@ -178,10 +182,12 @@ pub struct Backend {
     /// What to call this in a message, which is read by whoever is looking at a
     /// refusal.
     pub desktop: &'static str,
+    /// The name `SUNLIT_EARTH_WALLPAPER_SETTER` knows this setter by.
+    pub setter: &'static str,
     /// The program that has to exist for this backend to work at all. Probed
     /// before anything is rendered, because a wallpaper frame is the most
-    /// expensive thing the engine does.
-    pub program: &'static str,
+    /// expensive thing the engine does. `None` for a setter that runs nothing.
+    pub program: Option<&'static str>,
     kind: Kind,
 }
 
@@ -344,7 +350,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["kde", "plasma"],
         Backend {
             desktop: "KDE Plasma",
-            program: "dbus-send",
+            setter: "kde",
+            program: Some("dbus-send"),
             kind: Kind::Kde,
         },
     ),
@@ -352,7 +359,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["xfce"],
         Backend {
             desktop: "XFCE",
-            program: "xfconf-query",
+            setter: "xfce",
+            program: Some("xfconf-query"),
             kind: Kind::Xfce,
         },
     ),
@@ -360,7 +368,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["x-cinnamon", "cinnamon"],
         Backend {
             desktop: "Cinnamon",
-            program: "gsettings",
+            setter: "cinnamon",
+            program: Some("gsettings"),
             kind: Kind::Gsettings {
                 schema: "org.cinnamon.desktop.background",
                 keys: &["picture-uri"],
@@ -373,7 +382,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["mate"],
         Backend {
             desktop: "MATE",
-            program: "gsettings",
+            setter: "mate",
+            program: Some("gsettings"),
             kind: Kind::Gsettings {
                 schema: "org.mate.background",
                 // A path, not a URI: the key is named for what it holds.
@@ -387,7 +397,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["lxqt"],
         Backend {
             desktop: "LXQt",
-            program: "pcmanfm-qt",
+            setter: "lxqt",
+            program: Some("pcmanfm-qt"),
             kind: Kind::Lxqt,
         },
     ),
@@ -399,7 +410,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["budgie"],
         Backend {
             desktop: "Budgie",
-            program: "gsettings",
+            setter: "budgie",
+            program: Some("gsettings"),
             kind: GNOME_BACKGROUND,
         },
     ),
@@ -407,7 +419,8 @@ const BACKENDS: &[(&[&str], Backend)] = &[
         &["gnome", "unity", "gnome-classic", "gnome-flashback"],
         Backend {
             desktop: "GNOME",
-            program: "gsettings",
+            setter: "gnome",
+            program: Some("gsettings"),
             kind: GNOME_BACKGROUND,
         },
     ),
@@ -422,49 +435,25 @@ const GNOME_BACKGROUND: Kind = Kind::Gsettings {
     fill: Some("picture-options"),
 };
 
-/// The backend for a desktop, from the value of [`DESKTOP_ENV`].
-///
-/// The list is walked in the order the desktop wrote it and the first token that
-/// names a backend wins. Matching the table in its own order instead would make
-/// the first row win regardless of what the session said it was.
-fn detect(current_desktop: &str) -> Option<Backend> {
-    current_desktop
-        .split(':')
-        .map(|token| token.trim().to_ascii_lowercase())
-        .filter(|token| !token.is_empty())
-        .find_map(|token| {
-            BACKENDS
-                .iter()
-                .find(|(names, _)| names.contains(&token.as_str()))
-                .map(|(_, backend)| *backend)
-        })
+/// The setter for this process's session, asked of the session itself.
+#[cfg(target_os = "linux")]
+pub fn choose_current() -> Result<Choice, Refusal> {
+    choose(&probe::LiveSession::new())
 }
 
-/// The backend for this process's session.
+/// The backend for this process's session, where it has one.
+#[cfg(target_os = "linux")]
 pub fn detect_current() -> Option<Backend> {
-    detect(&crate::env_override(DESKTOP_ENV).unwrap_or_default())
+    choose_current().ok().map(|choice| choice.backend)
 }
 
-/// What to say when there is no backend for this session.
-///
-/// Names what was detected rather than only refusing, because the two causes
-/// look identical from the outside: a desktop with no row in the table, and no
-/// desktop at all.
-pub(crate) fn no_backend_message(current_desktop: &str) -> String {
-    let known: Vec<&str> = BACKENDS.iter().map(|(_, b)| b.desktop).collect();
-    if current_desktop.trim().is_empty() {
-        format!(
-            "no desktop session to set a wallpaper in: {DESKTOP_ENV} is not set. \
-             The desktops with a setter here are {}.",
-            known.join(", ")
-        )
-    } else {
-        format!(
-            "setting the wallpaper is not supported on {current_desktop}. \
-             The desktops with a setter here are {}.",
-            known.join(", ")
-        )
-    }
+/// The backend a session named `desktop` gets when everything it asks for is
+/// there, which is the table's own answer with no probing in the way.
+#[cfg(test)]
+fn detect(desktop: &str) -> Option<Backend> {
+    choose(&choose::fake::FakeSession::complete(desktop))
+        .ok()
+        .map(|choice| choice.backend)
 }
 
 #[cfg(test)]
@@ -576,6 +565,35 @@ mod tests {
         assert_eq!(detect("GNOME").map(|b| b.desktop), Some("GNOME"));
     }
 
+    /// What each of the table's desktops is called by the sessions that run it,
+    /// and the setter that name chose before there was anything but the table.
+    #[test]
+    fn the_desktops_in_the_table_choose_the_setter_they_always_chose() {
+        for (session, setter) in [
+            ("KDE", "kde"),
+            ("plasma", "kde"),
+            ("XFCE", "xfce"),
+            ("X-Cinnamon", "cinnamon"),
+            ("Cinnamon", "cinnamon"),
+            ("MATE", "mate"),
+            ("LXQt", "lxqt"),
+            ("Budgie:GNOME", "budgie"),
+            ("GNOME", "gnome"),
+            ("ubuntu:GNOME", "gnome"),
+            ("pop:GNOME", "gnome"),
+            ("GNOME-Classic:GNOME", "gnome"),
+            ("GNOME-Flashback:GNOME", "gnome"),
+            ("Unity", "gnome"),
+            ("TDE:KDE", "kde"),
+        ] {
+            assert_eq!(
+                detect(session).map(|backend| backend.setter),
+                Some(setter),
+                "{session}"
+            );
+        }
+    }
+
     #[test]
     fn the_match_is_case_insensitive_and_ignores_padding() {
         for spelling in ["kde", "KDE", "Kde", " KDE ", "plasma:KDE"] {
@@ -593,14 +611,6 @@ mod tests {
         assert_eq!(detect("COSMIC"), None);
         assert_eq!(detect(""), None);
         assert_eq!(detect(":::"), None);
-
-        let refusal = no_backend_message("Enlightenment");
-        assert!(refusal.contains("Enlightenment"), "{refusal}");
-        assert!(refusal.contains("KDE Plasma"), "{refusal}");
-        // No session at all is a different sentence, because the cause is.
-        let unset = no_backend_message("");
-        assert!(unset.contains(DESKTOP_ENV), "{unset}");
-        assert!(!unset.contains("not supported on"), "{unset}");
     }
 
     #[test]
@@ -642,10 +652,10 @@ mod tests {
             let cmds = backend.commands(&Placement::single(PathBuf::from("/w.png")), discovered);
             assert!(!cmds.is_empty(), "{desktop} produced no command");
             for cmd in &cmds {
-                assert_eq!(cmd.program, backend.program, "{desktop}");
+                assert_eq!(Some(cmd.program), backend.program, "{desktop}");
             }
             if let Some(discovery) = backend.discovery() {
-                assert_eq!(discovery.program, backend.program, "{desktop}");
+                assert_eq!(Some(discovery.program), backend.program, "{desktop}");
             }
         }
     }

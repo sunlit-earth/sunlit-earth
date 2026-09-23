@@ -1225,8 +1225,11 @@ fn test_plasmashell_survives_rapid_republishing() {
         );
         return;
     }
+    #[cfg(target_os = "linux")]
     let is_plasma = sunlit_core::desktop::detect_current()
         .is_some_and(|backend| backend.desktop == "KDE Plasma");
+    #[cfg(not(target_os = "linux"))]
+    let is_plasma = false;
     if !is_plasma {
         skip_case(
             CASE,

@@ -43,6 +43,13 @@ pub(super) fn request_path(unique_name: &str, token: &str) -> String {
     format!("/org/freedesktop/portal/desktop/request/{sender}/{token}")
 }
 
+/// The request object to wait on: the handle the portal answered the call
+/// with, which a portal older than the `handle_token` option chose itself, or
+/// the path the token asked for where the reply named none.
+pub(super) fn answer_path<'a>(expected: &'a str, returned: Option<&'a str>) -> &'a str {
+    returned.unwrap_or(expected)
+}
+
 #[cfg(target_os = "linux")]
 pub(super) use live::publish;
 
@@ -54,10 +61,10 @@ mod live {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
-    use zbus::blocking::{Connection, Proxy};
-    use zbus::zvariant::{Fd, OwnedValue, Value};
+    use zbus::blocking::{Connection, MessageIterator};
+    use zbus::zvariant::{Fd, OwnedObjectPath, OwnedValue, Value};
 
-    use super::{request_path, response};
+    use super::{answer_path, request_path, response};
     use crate::desktop::APP_ID;
 
     const BUS_NAME: &str = "org.freedesktop.portal.Desktop";
@@ -127,16 +134,18 @@ mod live {
             .unique_name()
             .ok_or_else(|| refused(&"the bus connection has no name"))?
             .to_string();
-        let request = Proxy::new(
-            &conn,
-            BUS_NAME,
-            request_path(&unique, &token),
-            "org.freedesktop.portal.Request",
-        )
-        .map_err(|e| refused(&e))?;
-        let mut responses = request
-            .receive_signal("Response")
-            .map_err(|e| refused(&e))?;
+        let expected = request_path(&unique, &token);
+        // Every request's answers, subscribed before the call so none is
+        // missed, and sorted by the handle the call returns.
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.freedesktop.portal.Request")
+            .and_then(|rule| rule.member("Response"))
+            .and_then(|rule| rule.path_namespace("/org/freedesktop/portal/desktop/request"))
+            .map_err(|e| refused(&e))?
+            .build();
+        let responses =
+            MessageIterator::for_match_rule(rule, &conn, Some(8)).map_err(|e| refused(&e))?;
 
         let file = std::fs::File::open(image)
             .map_err(|e| format!("cannot open {}: {e}", image.display()))?;
@@ -144,28 +153,46 @@ mod live {
         options.insert("handle_token", Value::from(token.as_str()));
         options.insert("show-preview", Value::from(false));
         options.insert("set-on", Value::from("background"));
-        conn.call_method(
-            Some(BUS_NAME),
-            PATH,
-            Some("org.freedesktop.portal.Wallpaper"),
-            "SetWallpaperFile",
-            &("", Fd::from(&file), options),
-        )
-        .map_err(|e| refused(&e))?;
+        let reply = conn
+            .call_method(
+                Some(BUS_NAME),
+                PATH,
+                Some("org.freedesktop.portal.Wallpaper"),
+                "SetWallpaperFile",
+                &("", Fd::from(&file), options),
+            )
+            .map_err(|e| refused(&e))?;
         drop(file);
+        let returned = reply
+            .body()
+            .deserialize::<OwnedObjectPath>()
+            .ok()
+            .map(|path| path.as_str().to_owned());
+        let handle = answer_path(&expected, returned.as_deref()).to_owned();
+        if handle != expected {
+            tracing::debug!(%handle, %expected, "the portal answers on a handle of its own");
+        }
 
         let (tx, rx) = crossbeam_channel::bounded::<u32>(1);
         PENDING.store(true, Ordering::SeqCst);
         std::thread::Builder::new()
             .name("portal-response".to_owned())
             .spawn(move || {
-                let code = responses.next().and_then(|message| {
-                    message
-                        .body()
-                        .deserialize::<(u32, HashMap<String, OwnedValue>)>()
-                        .ok()
-                        .map(|(code, _)| code)
-                });
+                let code = responses
+                    .filter_map(Result::ok)
+                    .find(|message| {
+                        message
+                            .header()
+                            .path()
+                            .is_some_and(|path| path.as_str() == handle)
+                    })
+                    .and_then(|message| {
+                        message
+                            .body()
+                            .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+                            .ok()
+                            .map(|(code, _)| code)
+                    });
                 PENDING.store(false, Ordering::SeqCst);
                 if let Some(code) = code
                     && tx.try_send(code).is_err()
@@ -209,6 +236,15 @@ mod tests {
         assert!(shared.contains("every unidentified app"), "{shared}");
         let dismissed = response(1, true).expect_err("dismissed");
         assert!(dismissed.contains("asks again"), "{dismissed}");
+    }
+
+    #[test]
+    fn the_answer_is_awaited_on_the_handle_the_portal_returned() {
+        let expected = request_path(":1.42", "sunlit_earth_0");
+        assert_eq!(answer_path(&expected, Some(&expected)), expected);
+        let own = "/org/freedesktop/portal/desktop/request/1_42/t7";
+        assert_eq!(answer_path(&expected, Some(own)), own);
+        assert_eq!(answer_path(&expected, None), expected);
     }
 
     #[test]

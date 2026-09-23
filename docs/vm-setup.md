@@ -13,7 +13,7 @@ The store holds four, and every `vm` command takes one of their slugs:
 | slug | what it is | what it is for |
 |---|---|---|
 | `windows` | Windows 11 Enterprise evaluation | the e2e guest |
-| `linux` | Debian 13 with four desktops | the e2e guest |
+| `linux` | Debian 13 with four desktops, sway and i3 | the e2e guest |
 | `windows-builder` | a layer over `windows`, plus MSVC, libclang and rustup | release builds |
 | `linux-builder` | Ubuntu 22.04, a toolchain, no graphics stack | release builds |
 
@@ -61,7 +61,7 @@ What goes into a guest is the app, the test harness, the fixtures, and the `text
 | | Windows guest | Linux guest | This desktop |
 |---|---|---|---|
 | Hypervisor | Hyper-V | QEMU | none |
-| Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops | whatever you are on |
+| Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops, sway and i3 | whatever you are on |
 | Host it runs from | Windows, or Linux with the `windows-builder` image | Windows or Linux | any |
 | Cases | all 11 | 10 of 10 under KDE and XFCE, 8 of 10 under GNOME and Cinnamon | 10 of 11 |
 | GPU | WARP | lavapipe | the real one |
@@ -81,13 +81,13 @@ What the builder guest gets is the working tree rather than `HEAD`, which is the
 
 Without that image, `vm up windows` on a Linux host still boots: it says nothing of ours is going in, names `vm build-image windows-builder` as what would change that, and points at `vm view` and `vm ssh`. Its console is VNC and not `vmconnect` either way, so none of the enhanced-session machinery applies: nothing asks for credentials, nothing resizes, and the closing text says so.
 
-Both guests run the case that sets a real desktop wallpaper. It is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the guest jobs set, so running the suite on your own desktop leaves your wallpaper alone and says so. In the Linux guest that case is the one that proves a desktop's wallpaper backend, which is why the guest carries four desktops: `--desktop <kde|gnome|xfce|cinnamon>` runs the suite under each of them in turn, from one image, and each run exercises a different setter.
+Both guests run the case that sets a real desktop wallpaper. It is opt-in through `SUNLIT_EARTH_E2E_WALLPAPER`, which only the guest jobs set, so running the suite on your own desktop leaves your wallpaper alone and says so. In the Linux guest that case is the one that proves a desktop's wallpaper backend, which is why the guest carries four desktops and two sessions with no desktop at all: `--desktop <kde|gnome|xfce|cinnamon|sway|i3>` runs the suite under each of them in turn, from one image, and each run exercises a different setter. sway exercises the sway row and i3 the X11 root pixmap; `SUNLIT_EARTH_WALLPAPER_SETTER=<name>` on the host is passed on to the guest's suite, which is how the owned `swaybg` (`--desktop sway` with `swaybg`) and the portal (`--desktop gnome` with `portal`) are run.
 
 The Linux guest skips the two cases that need a tray icon. One of them is the tray-start-hidden lifecycle; the other is single-instance enforcement, which the app performs in tray mode only, so on a platform without a tray there is nothing for it to enforce. Both print why they skipped.
 
 ## Choosing the Linux guest's desktop
 
-The Linux image carries KDE Plasma, GNOME, XFCE and Cinnamon, installed minimally and side by side, and the boot decides which one it logs into:
+The Linux image carries KDE Plasma, GNOME, XFCE and Cinnamon, installed minimally and side by side, plus sway and i3, and the boot decides which one it logs into:
 
 ```
 cargo xtask vm up linux --desktop gnome
@@ -102,7 +102,7 @@ cargo xtask vm up linux --desktop gnome --session-type wayland
 cargo xtask e2e --target linux --desktop kde --session-type wayland
 ```
 
-`--session-type wayland` without `--desktop` is Plasma on Wayland. XFCE's and Cinnamon's Wayland sessions are experimental in Debian 13 and are refused before anything is built or booted, and so is `--screens` above one under Wayland, since the screens are placed with `xrandr` and the pointer mapped with `xinput`, and neither reaches a Wayland compositor's outputs.
+`--session-type wayland` without `--desktop` is Plasma on Wayland, and `--desktop sway` is Wayland without the flag, since sway has no X11 session; i3 is X11 only. XFCE's and Cinnamon's Wayland sessions are experimental in Debian 13 and are refused before anything is built or booted, as are i3 on Wayland and sway on X11, and so is `--screens` above one under Wayland, since the screens are placed with `xrandr` and the pointer mapped with `xinput`, and neither reaches a Wayland compositor's outputs.
 
 Nothing in the image decides this, so switching desktops costs a boot rather than a rebuild. The host adds `-fw_cfg name=opt/sunlit/desktop,string=<session>` to QEMU's command line; in the guest, a oneshot unit ordered before the display manager reads the value out of `/sys/firmware/qemu_fw_cfg`, checks it against its own allowlist of six names, and writes sddm's `[Autologin] Session=`. The Wayland names are `plasma` and `gnome-wayland`, never `gnome`, which is a session file in both directories: sddm's autologin looks in the X11 one first, so `Session=gnome` would start GNOME on Xorg. Which desktop and session type a guest is running go into its run record, so `cargo xtask vm status` names them (`KDE Plasma (Wayland)`) and a run's results say which session they came from.
 

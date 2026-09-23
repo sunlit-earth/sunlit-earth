@@ -185,6 +185,7 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 | `SUNLIT_EARTH_SYNC_LOG` | Presence-only: synchronous stderr logging (for e2e). |
 | `SUNLIT_EARTH_UPDATE_GOLDEN` | Presence-only: regenerate golden references. |
 | `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
+| `SUNLIT_EARTH_WALLPAPER_SETTER` | Linux: forces the wallpaper setter by name (`kde`, `xfce`, `cinnamon`, `mate`, `lxqt`, `budgie`, `gnome`, `unity`, `sway`, `hyprland`, `lxde`, `deepin`, `trinity`, `awww`, `wpaperd`, `swaybg`, `root-pixmap`, `portal`), skipping detection but not that setter's own presence check. An unknown name is a refusal that lists these. `cargo xtask e2e --target linux` passes it on to the guest's suite when it is set on the host. See [platforms.md](platforms.md#setting-a-wallpaper-on-linux). |
 
 The e2e harness and the xtask read six more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
 

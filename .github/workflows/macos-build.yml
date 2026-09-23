@@ -190,6 +190,13 @@ jobs:
         run: |
           set -euo pipefail
           brew install libvncserver 2>&1 | tail -3
+          # The Intel bottle's CMake export names libsasl2 inside the SDK of the
+          # machine that built it, which this image does not have.
+          sdk=$(xcrun --show-sdk-path)
+          grep -rlE '/SDKs/MacOSX[0-9.]*\.sdk' "$(brew --prefix libvncserver)/lib/cmake" 2>/dev/null \
+            | while read -r f; do
+                sed -i '' -E "s#/[^;\"]*/SDKs/MacOSX[0-9.]*\\.sdk#$sdk#g" "$f"
+              done
           src="$RUNNER_TEMP/macVNC"
           git init -q "$src"
           git -C "$src" fetch -q --depth 1 https://github.com/LibVNC/macVNC 6c45640168dd170120d96661b3b711d283257166

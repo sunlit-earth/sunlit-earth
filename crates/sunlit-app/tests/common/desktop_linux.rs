@@ -58,6 +58,25 @@ fn placement_of(
 pub(crate) fn assert_the_desktop_holds_the_wallpaper(
     published: &[std::path::PathBuf],
 ) -> Option<String> {
+    use sunlit_core::desktop::Mechanism;
+
+    let backend = sunlit_core::desktop::detect_current()
+        .expect("a session with no backend could not have got this far");
+    match backend.mechanism() {
+        Mechanism::RootPixmap => Some(the_root_holds_a_new_pixmap()),
+        Mechanism::Swaybg => Some(one_swaybg_of_ours_shows(published)),
+        Mechanism::Portal => Some(the_portal_wrote_gnomes_key(published)),
+        Mechanism::Commands => the_commands_writes_hold(&backend, published),
+    }
+}
+
+/// The read-back for a setter that runs commands: each write is asked back of
+/// the store it went to.
+#[cfg(target_os = "linux")]
+fn the_commands_writes_hold(
+    backend: &sunlit_core::desktop::Backend,
+    published: &[std::path::PathBuf],
+) -> Option<String> {
     assert!(
         !published.is_empty(),
         "the setter said it set a wallpaper, so one was written"
@@ -76,8 +95,6 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
         })
         .collect();
     let name = names.join(", ");
-    let backend = sunlit_core::desktop::detect_current()
-        .expect("a session with no backend could not have got this far");
 
     let discovered = match backend.discovery() {
         Some(query) => read_setting(&query),
@@ -89,7 +106,7 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
         .map(|monitor| monitor.id)
         .collect();
 
-    let placement = placement_of(&backend, published, &monitors);
+    let placement = placement_of(backend, published, &monitors);
 
     let mut holders: Vec<String> = Vec::new();
     let mut held: Vec<String> = Vec::new();
@@ -104,6 +121,11 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
             continue;
         };
         let written = written.clone();
+        if command.program == "swaymsg" {
+            holders.push("sway's swaybg".to_owned());
+            held.push(sway_shows(&written));
+            continue;
+        }
         let Some(query) = readback_of(&command) else {
             skip_case(
                 "test_set_wallpaper's read-back",
@@ -160,6 +182,175 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
         holders.len()
     );
     Some(held.join(", "))
+}
+
+/// What sway holds after `output * bg`: sway runs a swaybg of its own for it,
+/// so the answer is that process's command line naming the file.
+#[cfg(target_os = "linux")]
+fn sway_shows(written: &str) -> String {
+    let file = written.trim_matches('"').to_owned();
+    let shown = wait_for_swaybgs(|lines| lines.iter().any(|line| line.contains(&file)));
+    assert!(
+        shown.iter().any(|line| line.contains(&file)),
+        "sway was told to show {file} and no swaybg shows it: {shown:?}"
+    );
+    file
+}
+
+/// The command lines of this user's `swaybg` processes, polled for up to ten
+/// seconds until `settled` holds, since the owned one's predecessor is ended a
+/// second after the publish and sway starts its own asynchronously.
+#[cfg(target_os = "linux")]
+fn wait_for_swaybgs(settled: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let me = std::fs::metadata("/proc/self").map(|m| m.uid()).ok();
+    let read = || -> Vec<Vec<String>> {
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.metadata().ok().map(|m| m.uid()) == me)
+            .filter(|entry| {
+                std::fs::read_to_string(entry.path().join("comm"))
+                    .is_ok_and(|comm| comm.trim_end() == "swaybg")
+            })
+            .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+            .map(|raw| {
+                raw.split(|&b| b == 0)
+                    .filter(|arg| !arg.is_empty())
+                    .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                    .collect()
+            })
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let lines = read();
+        if settled(&lines) || std::time::Instant::now() >= deadline {
+            return lines;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// Under the owned `swaybg`: exactly one `swaybg` names a file under the
+/// wallpaper directory, and it is the file this publish wrote. More than one is
+/// the leak the handover exists to prevent.
+#[cfg(target_os = "linux")]
+fn one_swaybg_of_ours_shows(published: &[std::path::PathBuf]) -> String {
+    let newest = published
+        .first()
+        .expect("the swaybg setter writes the image it starts swaybg with")
+        .to_string_lossy()
+        .into_owned();
+    let dir = sunlit_core::wallpaper::wallpaper_dir().expect("a wallpaper directory");
+    let ours = |lines: &[Vec<String>]| -> Vec<Vec<String>> {
+        lines
+            .iter()
+            .filter(|line| sunlit_core::desktop::names_a_file_under(line, &dir))
+            .cloned()
+            .collect()
+    };
+    let lines = wait_for_swaybgs(|lines| {
+        let ours = ours(lines);
+        ours.len() == 1 && ours[0].contains(&newest)
+    });
+    let ours = ours(&lines);
+    assert_eq!(
+        ours.len(),
+        1,
+        "exactly one swaybg of ours should be running after the handover: {ours:?}"
+    );
+    assert!(
+        ours[0].contains(&newest),
+        "the swaybg left running shows {:?}, not the newest image {newest}",
+        ours[0]
+    );
+    println!("one swaybg of ours runs, showing {newest}; all swaybgs: {lines:?}");
+    newest
+}
+
+/// Under the portal on GNOME: the backend wrote GNOME's key, and it names the
+/// file this publish handed over.
+#[cfg(target_os = "linux")]
+fn the_portal_wrote_gnomes_key(published: &[std::path::PathBuf]) -> String {
+    let name = published
+        .first()
+        .and_then(|path| path.file_name())
+        .expect("the portal setter writes the image it hands over")
+        .to_string_lossy()
+        .into_owned();
+    let query = sunlit_core::desktop::Invocation {
+        program: "gsettings",
+        args: vec![
+            "get".to_owned(),
+            "org.gnome.desktop.background".to_owned(),
+            "picture-uri".to_owned(),
+        ],
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut value = read_setting(&query);
+    while !value.contains(&name) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        value = read_setting(&query);
+    }
+    assert!(
+        value.contains(&name),
+        "the portal said it set the wallpaper and GNOME's key holds {value:?}, not {name}"
+    );
+    println!("the portal left {value} in GNOME's picture-uri");
+    value
+}
+
+/// Under the root pixmap: `_XROOTPMAP_ID` names a live pixmap, and the one the
+/// previous publish left is gone, which is the leak check. Answers with the id,
+/// so a caller that publishes twice requires the two to differ.
+#[cfg(target_os = "linux")]
+fn the_root_holds_a_new_pixmap() -> String {
+    use std::sync::Mutex;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    static PREVIOUS: Mutex<Option<u32>> = Mutex::new(None);
+
+    let (conn, screen) = x11rb::connect(None).expect("an X display to read the root of");
+    let root = conn.setup().roots[screen].root;
+    let atom = conn
+        .intern_atom(true, b"_XROOTPMAP_ID")
+        .expect("intern")
+        .reply()
+        .expect("intern reply")
+        .atom;
+    assert_ne!(atom, 0, "nothing ever set _XROOTPMAP_ID on this display");
+    let id = conn
+        .get_property(false, root, atom, AtomEnum::PIXMAP, 0, 1)
+        .expect("get_property")
+        .reply()
+        .expect("get_property reply")
+        .value32()
+        .and_then(|mut values| values.next())
+        .expect("_XROOTPMAP_ID holds a pixmap");
+    assert!(
+        conn.get_geometry(id).expect("get_geometry").reply().is_ok(),
+        "_XROOTPMAP_ID names pixmap {id:#x}, which does not exist"
+    );
+    let mut previous = PREVIOUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(old) = previous.filter(|old| *old != id) {
+        assert!(
+            conn.get_geometry(old)
+                .expect("get_geometry")
+                .reply()
+                .is_err(),
+            "the previous root pixmap {old:#x} is still alive after the next \
+             publish replaced it with {id:#x}: every publish would leak one"
+        );
+        println!("the root pixmap moved from {old:#x} to {id:#x} and the old one is freed");
+    }
+    *previous = Some(id);
+    format!("root pixmap {id:#x}")
 }
 
 /// The command that reads back what one of the sink's writes set.

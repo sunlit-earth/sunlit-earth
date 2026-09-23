@@ -495,7 +495,8 @@ pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<De
 /// at all.
 ///
 /// A session type with no desktop is the image default's desktop, KDE, on that
-/// type. The refusals off the Linux image mirror [`desktop_for`]'s, for the
+/// type, and a desktop with no session type gets the one it runs on: X11 where
+/// it has it, Wayland for sway. The refusals off the Linux image mirror [`desktop_for`]'s, for the
 /// same reason.
 pub fn login_for(
     image: Image,
@@ -504,7 +505,9 @@ pub fn login_for(
 ) -> Result<Option<Login>, String> {
     let desktop = desktop_for(image, desktop)?;
     match (image, session_type) {
-        (Image::Linux, None) => desktop.map(|d| Login::new(d, SessionType::X11)).transpose(),
+        (Image::Linux, None) => desktop
+            .map(|d| Login::new(d, d.default_session_type()))
+            .transpose(),
         (Image::Linux, Some(session_type)) => Login::new(
             desktop.unwrap_or(Login::IMAGE_DEFAULT.desktop()),
             session_type,

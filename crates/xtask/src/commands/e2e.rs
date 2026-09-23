@@ -134,6 +134,32 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
     }
 }
 
+/// The app's variables a guest run passes on from the host's environment, so
+/// that one run can steer the app the way a user of that session could:
+/// `SUNLIT_EARTH_WALLPAPER_SETTER=swaybg cargo xtask e2e --target linux
+/// --desktop sway` runs the suite with the setter forced.
+pub const FORWARDED: [&str; 1] = ["SUNLIT_EARTH_WALLPAPER_SETTER"];
+
+/// `script` with every [`FORWARDED`] variable `lookup` has a value for set
+/// before the suite starts. Blank is unset, as everywhere else.
+pub fn forward(target: Target, script: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let lines: String = FORWARDED
+        .iter()
+        .filter_map(|name| {
+            let value = lookup(name).filter(|value| !value.trim().is_empty())?;
+            Some(match target {
+                Target::Linux => format!("export {name}={}\n", artifacts::shell_quote(&value)),
+                Target::Windows => format!("set {name}={value}\r\n"),
+            })
+        })
+        .collect();
+    let before = match target {
+        Target::Linux => "export RUST_BACKTRACE=1\n",
+        Target::Windows => "set RUST_BACKTRACE=1\r\n",
+    };
+    script.replacen(before, &format!("{lines}{before}"), 1)
+}
+
 /// Run the suite.
 pub fn run(
     runner: &dyn Runner,
@@ -238,7 +264,16 @@ fn run_in_guest(
     };
 
     println!("running the suite in the guest's console session");
-    let script = job_script(target, &paths);
+    let script = forward(target, &job_script(target, &paths), |name| {
+        std::env::var(name).ok()
+    });
+    for name in FORWARDED {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            println!("passing {name}={value} to the suite");
+        }
+    }
     let scratch = store.job_scratch(image);
     let code = job::run(
         session.provider.as_ref(),
@@ -485,6 +520,24 @@ mod tests {
         // of, so the suite's own budget is the larger of the two there.
         assert!(job_timeout(Target::Linux) >= job_timeout(Target::Windows));
         assert!(job_timeout(Target::Windows) >= Duration::from_mins(10));
+    }
+
+    #[test]
+    fn a_forced_setter_on_the_host_reaches_the_suite_and_a_blank_one_does_not() {
+        for target in [Target::Linux, Target::Windows] {
+            let plain = job_script(target, &paths(target));
+            let forced = forward(target, &plain, |name| {
+                (name == "SUNLIT_EARTH_WALLPAPER_SETTER").then(|| "swaybg".to_owned())
+            });
+            let harness = forced.find("--ignored").expect("the harness line");
+            let set = forced
+                .find("SUNLIT_EARTH_WALLPAPER_SETTER=")
+                .unwrap_or_else(|| panic!("{forced}"));
+            assert!(set < harness, "set after the suite starts: {forced}");
+            assert!(forced.contains("swaybg"), "{forced}");
+            assert_eq!(forward(target, &plain, |_| Some("  ".to_owned())), plain);
+            assert_eq!(forward(target, &plain, |_| None), plain);
+        }
     }
 
     #[test]

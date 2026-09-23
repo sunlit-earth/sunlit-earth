@@ -775,6 +775,7 @@ fn test_set_wallpaper() {
     let mut published: Vec<Vec<std::path::PathBuf>> = Vec::new();
     #[cfg(target_os = "linux")]
     let mut held: Vec<Option<String>> = Vec::new();
+    let writes_files = writes_wallpaper_files();
     for pass in 1..=2 {
         let from = stdout_watcher.line_count();
         send_ipc_command(&socket_name, "set-wallpaper");
@@ -783,22 +784,35 @@ fn test_set_wallpaper() {
             line.contains("wallpaper_set"),
             "publish {pass}: the engine reported a failure instead: {line}"
         );
-        let files =
-            sunlit_core::wallpaper::published_wallpaper_files().expect("a local data directory");
-        assert!(
-            !files.is_empty(),
-            "publish {pass}: the engine reported a wallpaper and wrote no file"
-        );
-        assert_the_files_match_the_layout(&files);
+        let files = if writes_files {
+            let files = sunlit_core::wallpaper::published_wallpaper_files()
+                .expect("a local data directory");
+            assert!(
+                !files.is_empty(),
+                "publish {pass}: the engine reported a wallpaper and wrote no file"
+            );
+            assert_the_files_match_the_layout(&files);
+            files
+        } else {
+            Vec::new()
+        };
 
         // Everything above is the app's own account of what it did. This is the
         // desktop's.
         #[cfg(target_os = "linux")]
         held.push(assert_the_desktop_holds_the_wallpaper(&files));
-        published.push(files);
+        if writes_files {
+            published.push(files);
+        }
     }
     // Every path, not only one of them: the alternation has to hold per screen,
     // or a second monitor sits on a picture the desktop has no reason to reload.
+    // A setter that writes no file has only its read-back to compare below.
+    let published = if writes_files {
+        published
+    } else {
+        vec![Vec::new(), Vec::new()]
+    };
     assert_eq!(
         published[0].len(),
         published[1].len(),
@@ -827,6 +841,57 @@ fn test_set_wallpaper() {
         stderr.contains("wallpaper updated"),
         "stderr missing 'wallpaper updated':\n{stderr}"
     );
+}
+
+/// `sunlit-earth displays` names the setter this session gets and the evidence
+/// for it, the one line a bug report from an unusual desktop needs.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_displays_names_the_wallpaper_setter() {
+    const CASE: &str = "test_displays_names_the_wallpaper_setter";
+    if !cfg!(target_os = "linux") {
+        skip_case(
+            CASE,
+            "the setter line is Linux's; the other platforms have one setter each",
+        );
+        return;
+    }
+    let out = Command::new(binary())
+        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+        .arg("displays")
+        .output()
+        .expect("sunlit-earth displays runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "displays failed: {stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("setter: "))
+        .unwrap_or_else(|| panic!("displays printed no setter line:\n{stdout}"));
+    println!("{line}");
+    if wallpaper_supported() {
+        assert!(
+            !line.starts_with("setter: none"),
+            "the sink accepts this session and displays names no setter: {line}"
+        );
+    } else {
+        assert!(line.starts_with("setter: none"), "{line}");
+    }
+}
+
+/// Whether a publish in this session leaves image files behind. The X11 root
+/// pixmap is the one setter that writes none: its image goes to the X server.
+fn writes_wallpaper_files() -> bool {
+    #[cfg(target_os = "linux")]
+    return sunlit_core::desktop::detect_current()
+        .is_none_or(|backend| backend.mechanism() != sunlit_core::desktop::Mechanism::RootPixmap);
+    #[cfg(not(target_os = "linux"))]
+    true
 }
 
 /// Whether this run is inside a Wayland session, as the session says.
@@ -959,6 +1024,14 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
             "test_across_screens_writes_what_this_desktop_can_hold",
             "this case replaces the desktop wallpaper, so it runs only where \
              that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+    if !writes_wallpaper_files() {
+        skip_case(
+            "test_across_screens_writes_what_this_desktop_can_hold",
+            "this session's setter paints the X11 root and writes no file whose \
+             size could be checked; test_set_wallpaper reads the root back",
         );
         return;
     }
@@ -1104,6 +1177,14 @@ fn test_a_layout_change_republishes_the_wallpaper() {
             CASE,
             "this case replaces the desktop wallpaper, so it runs only where \
              that is harmless; the VM job sets SUNLIT_EARTH_E2E_WALLPAPER",
+        );
+        return;
+    }
+    if !writes_wallpaper_files() {
+        skip_case(
+            CASE,
+            "this session's setter paints the X11 root and writes no file, and \
+             the files are what this case compares across the change",
         );
         return;
     }

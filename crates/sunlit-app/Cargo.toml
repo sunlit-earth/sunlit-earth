@@ -43,6 +43,9 @@ image = { workspace = true }
 regex-lite.workspace = true
 interprocess.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb.workspace = true
+
 [build-dependencies]
 slint-build.workspace = true
 

@@ -32,11 +32,23 @@ pub enum Desktop {
     Gnome,
     Xfce,
     Cinnamon,
+    /// sway, a Wayland compositor with no desktop of its own, which is where
+    /// the sway row and the owned `swaybg` are exercised.
+    Sway,
+    /// i3, a plain X11 window manager, which is where the root pixmap is.
+    I3,
 }
 
 impl Desktop {
-    /// All four, in the order the docs and the reports list them.
-    pub const ALL: [Self; 4] = [Self::Kde, Self::Gnome, Self::Xfce, Self::Cinnamon];
+    /// All six, in the order the docs and the reports list them.
+    pub const ALL: [Self; 6] = [
+        Self::Kde,
+        Self::Gnome,
+        Self::Xfce,
+        Self::Cinnamon,
+        Self::Sway,
+        Self::I3,
+    ];
 
     /// What `--desktop` is spelled as, and what the run record stores.
     pub fn flag(self) -> &'static str {
@@ -45,6 +57,8 @@ impl Desktop {
             Self::Gnome => "gnome",
             Self::Xfce => "xfce",
             Self::Cinnamon => "cinnamon",
+            Self::Sway => "sway",
+            Self::I3 => "i3",
         }
     }
 
@@ -62,7 +76,8 @@ impl Desktop {
     /// which is a basename in both session directories: sddm's autologin looks in
     /// the X11 one first (sddm issue #837), so `Session=gnome` starts GNOME on
     /// Xorg. XFCE's and Cinnamon's Wayland sessions are experimental in this
-    /// release and not offered.
+    /// release and not offered. sway runs on Wayland alone, as `sway` from
+    /// `sway`, and i3 on X11 alone, as `i3` from `i3-wm`.
     ///
     /// `the_guest_accepts_exactly_the_sessions_the_host_can_ask_for` pins each
     /// one against the selector shipped in the image.
@@ -74,18 +89,36 @@ impl Desktop {
             (Self::Cinnamon, SessionType::X11) => Some("cinnamon"),
             (Self::Kde, SessionType::Wayland) => Some("plasma"),
             (Self::Gnome, SessionType::Wayland) => Some("gnome-wayland"),
-            (Self::Xfce | Self::Cinnamon, SessionType::Wayland) => None,
+            (Self::Sway, SessionType::Wayland) => Some("sway"),
+            (Self::I3, SessionType::X11) => Some("i3"),
+            (Self::Xfce | Self::Cinnamon | Self::I3, SessionType::Wayland)
+            | (Self::Sway, SessionType::X11) => None,
+        }
+    }
+
+    /// The session type a boot gets when `--session-type` names none: X11
+    /// where the desktop has it, and otherwise the one it has.
+    pub fn default_session_type(self) -> SessionType {
+        if self.session(SessionType::X11).is_some() {
+            SessionType::X11
+        } else {
+            SessionType::Wayland
         }
     }
 
     /// What `XDG_CURRENT_DESKTOP` names this desktop as inside its session,
     /// which is how the guest reports back which one came up.
+    ///
+    /// sway's and i3's come from the `DesktopNames` of their session files,
+    /// `sway;wlroots` and `i3`, which sddm exports as the variable.
     pub fn current_desktop(self) -> &'static str {
         match self {
             Self::Kde => "KDE",
             Self::Gnome => "GNOME",
             Self::Xfce => "XFCE",
             Self::Cinnamon => "X-Cinnamon",
+            Self::Sway => "sway",
+            Self::I3 => "i3",
         }
     }
 
@@ -96,6 +129,8 @@ impl Desktop {
             Self::Gnome => "GNOME (Xorg)",
             Self::Xfce => "XFCE",
             Self::Cinnamon => "Cinnamon",
+            Self::Sway => "sway (Wayland)",
+            Self::I3 => "i3 (X11)",
         }
     }
 
@@ -173,12 +208,18 @@ impl Login {
             .filter(|d| d.session(session_type).is_some())
             .map(|d| format!("--desktop {d}"))
             .collect();
+        let runs_on = desktop.default_session_type();
+        let why = match desktop {
+            Desktop::Xfce | Desktop::Cinnamon => {
+                format!("{desktop}'s {session_type} session is experimental in Debian 13")
+            }
+            _ => format!("{desktop} has no {session_type} session"),
+        };
         Err(format!(
             "--desktop {desktop} --session-type {session_type} asks for a session \
-             this image does not offer: {desktop}'s {session_type} session is \
-             experimental in Debian 13. {} have one, and {desktop} runs with \
-             --session-type x11",
-            offered.join(" and ")
+             this image does not offer: {why}. {} have one, and {desktop} runs with \
+             --session-type {runs_on}",
+            offered.join(", ")
         ))
     }
 
@@ -205,6 +246,8 @@ impl Login {
             (Desktop::Gnome, SessionType::Wayland) => "GNOME (Wayland)",
             (Desktop::Xfce, SessionType::Wayland) => "XFCE (Wayland)",
             (Desktop::Cinnamon, SessionType::Wayland) => "Cinnamon (Wayland)",
+            (Desktop::Sway, SessionType::Wayland) => Desktop::Sway.label(),
+            (Desktop::I3, SessionType::Wayland) => "i3 (Wayland)",
         }
     }
 
@@ -367,6 +410,21 @@ mod tests {
             assert!(refusal.contains("--desktop gnome"), "{refusal}");
             assert!(refusal.contains("--session-type x11"), "{refusal}");
         }
+    }
+
+    #[test]
+    fn sway_and_i3_have_one_session_each_and_get_it_by_default() {
+        assert_eq!(Desktop::Sway.default_session_type(), SessionType::Wayland);
+        assert_eq!(Desktop::I3.default_session_type(), SessionType::X11);
+        assert_eq!(Desktop::Kde.default_session_type(), SessionType::X11);
+
+        let refusal = Login::new(Desktop::Sway, SessionType::X11).expect_err("Wayland only");
+        assert!(refusal.contains("sway has no x11 session"), "{refusal}");
+        assert!(refusal.contains("--session-type wayland"), "{refusal}");
+        assert!(!refusal.contains("experimental"), "{refusal}");
+        let refusal = Login::new(Desktop::I3, SessionType::Wayland).expect_err("X11 only");
+        assert!(refusal.contains("--session-type x11"), "{refusal}");
+        assert!(refusal.contains("--desktop sway"), "{refusal}");
     }
 
     #[test]

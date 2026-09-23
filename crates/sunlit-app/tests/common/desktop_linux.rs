@@ -305,7 +305,7 @@ fn the_portal_wrote_gnomes_key(published: &[std::path::PathBuf]) -> String {
     }
     assert!(
         holds(&value),
-        "the portal said it set the wallpaper and GNOME's key holds {value:?},          which is not a copy of {}",
+        "the portal said it set the wallpaper and GNOME's key holds {value:?}, which is not a copy of {}",
         handed.display()
     );
     let held = format!("{value}, a copy of {}", handed.display());

@@ -63,7 +63,7 @@ What goes into a guest is the app, the test harness, the fixtures, and the `text
 | Hypervisor | Hyper-V | QEMU | none |
 | Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops, sway and i3 | whatever you are on |
 | Host it runs from | Windows, or Linux with the `windows-builder` image | Windows or Linux | any |
-| Cases | all 11 | 16 of 17 in every session, those a session's tray or desktop cannot exercise skipping and saying why | 10 of 11 |
+| Cases | all 11 | 16 of 17 (the 17th is Windows only), those a session's tray or desktop cannot exercise skipping and saying why: on 2026-09-23 all 16 passed in each of the eight sessions, and in sway with the owned `swaybg` forced; GNOME with the portal forced passed 15, its layout-change republish refused while the permission dialog was still unanswered; Cinnamon passed 15 on an earlier boot whose shell had crashed, before the desktop-window probe learned to read the root's children | 10 of 11 |
 | GPU | WARP | lavapipe | the real one |
 
 Nothing is ever cross-compiled: a guest's binaries are built on the operating system they are for. Three arrangements cover the matrix, and `artifacts::builder_for` is the one place that says which is which.

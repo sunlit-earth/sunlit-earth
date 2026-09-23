@@ -60,11 +60,19 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Growth allowed after warm-up: one decoded 2048x1024 frame.
 ///
-/// Sized with `STEPS` so the sensitivity per update is fixed, at 49
-/// publications against 8 MiB. Measured growth on the development desktop is
-/// 2.0 MiB with about 2.5 MiB of sample-to-sample noise, so the headroom is
-/// fourfold.
+/// Sized with `STEPS` and `FLOOR_WINDOW` so the sensitivity per update is
+/// fixed: at least 35 publications lie between the last step of the baseline
+/// window and the first step of the end window, against 8 MiB.
 const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
+/// Steps each memory floor is the minimum over.
+///
+/// One reading is not a level. On `macos-latest` the footprint sits flat and
+/// then reads 8.0 or 10.8 MiB high for a single sample, about one step in
+/// twenty and on steps with no cloud update as often as on steps with one, and
+/// a baseline or end taken from one reading passes or fails by whether it
+/// lands on such a step. A leak raises every reading after it, the lowest
+/// included, so the floor of a window still sees it. Seven publications wide.
+const FLOOR_WINDOW: u64 = STEPS / 8;
 /// Allocation allowed during warm-up: the first cloud texture, its mip chain,
 /// and wgpu's allocator pools.
 const WARMUP_LIMIT: u64 = 192 * 1024 * 1024;
@@ -217,8 +225,7 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     // The first fetch above consumed version 1; every publication after that
     // must be downloaded too.
     let mut expected_fetches = 1;
-    let mut samples: Vec<(u64, u64)> = Vec::new();
-    let mut baseline = startup;
+    let mut readings: Vec<Option<u64>> = Vec::new();
 
     for step in 1..=STEPS {
         let published = step % STEPS_PER_CLOUD_UPDATE == 0;
@@ -241,18 +248,10 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
             wait_until("the cloud download", || cloud.fetches() >= expected_fetches);
         }
 
-        if step % (STEPS / 8) == 0
-            && let Some(bytes) = private_bytes()
-        {
-            samples.push((step, bytes));
-        }
-        if step == WARMUP_STEPS {
-            baseline = private_bytes();
-        }
+        readings.push(private_bytes());
     }
 
     let elapsed = started.elapsed();
-    let end = private_bytes();
     let exports = sink.count();
     let fetches = cloud.fetches();
     engine.shutdown();
@@ -290,9 +289,26 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     // Memory: the whole point. A hidden path that parked one decoded frame per
     // update would cost hundreds of megabytes over these updates; this
     // architecture should add nothing per update at all.
-    for (step, bytes) in &samples {
-        println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
+    for (step, bytes) in (1..).zip(&readings) {
+        if step % FLOOR_WINDOW == 0
+            && let Some(bytes) = bytes
+        {
+            println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
+        }
     }
+
+    let floor = |from: u64| -> Option<u64> {
+        let from = usize::try_from(from).expect("step fits in usize");
+        let window = usize::try_from(FLOOR_WINDOW).expect("window fits in usize");
+        readings[from..from + window]
+            .iter()
+            .copied()
+            .collect::<Option<Vec<u64>>>()?
+            .into_iter()
+            .min()
+    };
+    let baseline = floor(WARMUP_STEPS);
+    let end = floor(STEPS - FLOOR_WINDOW);
 
     let (startup, baseline, end) = match (startup, baseline, end) {
         (Some(startup), Some(baseline), Some(end)) => (startup, baseline, end),
@@ -315,8 +331,8 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     let growth = end.saturating_sub(baseline);
     let soaked_days = (STEPS - WARMUP_STEPS) / 24;
     println!(
-        "private bytes: startup {:.1} MiB, after warm-up {:.1} MiB (+{:.1}), \
-         end {:.1} MiB (+{:.1} over {soaked_days} simulated days)",
+        "private bytes: startup {:.1} MiB, floor after warm-up {:.1} MiB (+{:.1}), \
+         floor at the end {:.1} MiB (+{:.1} over {soaked_days} simulated days)",
         mib(startup),
         mib(baseline),
         mib(warmup),

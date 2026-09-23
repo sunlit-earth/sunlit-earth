@@ -248,12 +248,19 @@ fn x11_facts() -> Option<X11Facts> {
     let client_list = atom("_NET_CLIENT_LIST")?;
     let window_type = atom("_NET_WM_WINDOW_TYPE")?;
     let desktop_type = atom("_NET_WM_WINDOW_TYPE_DESKTOP")?;
-    let windows: Vec<Window> = property(root, client_list, AtomEnum::WINDOW.into(), u32::MAX)
-        .and_then(|reply| reply.value32().map(Iterator::collect))
-        .unwrap_or_default();
-    let desktop_windows = windows
-        .into_iter()
-        .filter(|&window| {
+    let children = |window: Window| -> Vec<Window> {
+        conn.query_tree(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.children)
+            .unwrap_or_default()
+    };
+    let desktop_windows = super::choose::desktop_windows(
+        property(root, client_list, AtomEnum::WINDOW.into(), u32::MAX)
+            .and_then(|reply| reply.value32().map(Iterator::collect)),
+        || children(root),
+        children,
+        |window| {
             property(window, window_type, AtomEnum::ATOM.into(), 64)
                 .and_then(|reply| {
                     reply
@@ -261,25 +268,27 @@ fn x11_facts() -> Option<X11Facts> {
                         .map(|mut types| types.any(|t| t == desktop_type))
                 })
                 .unwrap_or(false)
+        },
+    )
+    .into_iter()
+    .map(|window| {
+        property(
+            window,
+            AtomEnum::WM_CLASS.into(),
+            AtomEnum::STRING.into(),
+            256,
+        )
+        .map(|reply| {
+            reply
+                .value
+                .split(|&b| b == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect()
         })
-        .map(|window| {
-            property(
-                window,
-                AtomEnum::WM_CLASS.into(),
-                AtomEnum::STRING.into(),
-                256,
-            )
-            .map(|reply| {
-                reply
-                    .value
-                    .split(|&b| b == 0)
-                    .filter(|part| !part.is_empty())
-                    .map(|part| String::from_utf8_lossy(part).into_owned())
-                    .collect()
-            })
-            .unwrap_or_default()
-        })
-        .collect();
+        .unwrap_or_default()
+    })
+    .collect();
 
     let wm_name = (|| {
         let check = atom("_NET_SUPPORTING_WM_CHECK")?;

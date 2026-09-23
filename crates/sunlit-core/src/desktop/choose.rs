@@ -78,6 +78,41 @@ pub struct X11Facts {
     pub wm_name: Option<String>,
 }
 
+/// The windows typed as a desktop, from the window manager's client list where
+/// it keeps one, and otherwise from the root's own children.
+///
+/// A session whose window manager is gone, or never ran, has no
+/// `_NET_CLIENT_LIST`, and its desktop window is then a plain child of the
+/// root. A child without the type is also looked through one level down,
+/// since a reparenting window manager that keeps no list puts the type on the
+/// client inside its frame.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn desktop_windows<W: Copy>(
+    client_list: Option<Vec<W>>,
+    top_level: impl FnOnce() -> Vec<W>,
+    children: impl Fn(W) -> Vec<W>,
+    is_desktop: impl Fn(W) -> bool,
+) -> Vec<W> {
+    match client_list {
+        Some(clients) if !clients.is_empty() => {
+            clients.into_iter().filter(|&w| is_desktop(w)).collect()
+        }
+        _ => top_level()
+            .into_iter()
+            .flat_map(|window| {
+                if is_desktop(window) {
+                    vec![window]
+                } else {
+                    children(window)
+                        .into_iter()
+                        .filter(|&w| is_desktop(w))
+                        .collect()
+                }
+            })
+            .collect(),
+    }
+}
+
 /// The setter a session gets, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
@@ -1025,6 +1060,38 @@ mod tests {
             .to_string();
         assert!(text.contains("spacefm"), "{text}");
         assert!(text.contains("covers the root"), "{text}");
+    }
+
+    #[test]
+    fn cinnamon_without_its_shell_is_found_by_nemos_desktop_window() {
+        let facts = X11Facts {
+            desktop_windows: vec![vec!["nemo-desktop".to_owned(), "Nemo-desktop".to_owned()]],
+            wm_name: None,
+        };
+        let session = FakeSession::named("X-Cinnamon")
+            .program("gsettings")
+            .x11(facts);
+        let choice = choose(&session).expect("nemo-desktop owns the desktop");
+        assert_eq!(choice.backend.setter, "cinnamon");
+        assert!(choice.explanation().contains("nemo-desktop"), "{choice:?}");
+    }
+
+    #[test]
+    fn the_client_list_is_read_where_there_is_one_and_the_tree_where_there_is_not() {
+        let desktops = [3, 21];
+        let is_desktop = |w: u32| desktops.contains(&w);
+        let frames = |w: u32| if w == 2 { vec![21] } else { Vec::new() };
+
+        let listed = desktop_windows(Some(vec![1, 3]), || panic!("unused"), frames, is_desktop);
+        assert_eq!(listed, vec![3]);
+
+        let tree = || vec![1, 2, 3];
+        assert_eq!(desktop_windows(None, tree, frames, is_desktop), vec![21, 3]);
+        assert_eq!(
+            desktop_windows(Some(Vec::new()), tree, frames, is_desktop),
+            vec![21, 3]
+        );
+        assert!(desktop_windows(None, Vec::new, frames, is_desktop).is_empty());
     }
 
     #[test]

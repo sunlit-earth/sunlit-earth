@@ -313,6 +313,11 @@ fn a_different_mode(output: &str, current: (u32, u32)) -> Option<String> {
 /// the screen count moving. Either is a real layout change made by a real
 /// display server, which is what no unit test can produce.
 pub(crate) fn a_layout_change_this_session_can_make() -> Option<LayoutChange> {
+    // Every change below is an xrandr command, and macOS answers
+    // `display::outputs` too.
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
     let outputs = sunlit_core::display::outputs().unwrap_or_default();
     let primary = sunlit_core::display::primary_of(&outputs)?.name.clone();
     if outputs.len() >= 2 {

@@ -12,10 +12,6 @@ on:
           - check
           - build
           - build-and-e2e
-      universal:
-        description: "Build the binary for Intel as well as Apple Silicon."
-        type: boolean
-        default: false
       interactive:
         description: "Open a screen sharing session on the runner once the mode's work is done."
         type: boolean
@@ -101,22 +97,7 @@ jobs:
         if: inputs.mode != 'check'
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: |
-          set -euo pipefail
-          build() {
-            cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target "$1"
-          }
-          build aarch64-apple-darwin
-          mkdir -p dist-bin
-          if [ "${{ inputs.universal }}" = "true" ]; then
-            rustup target add x86_64-apple-darwin
-            build x86_64-apple-darwin
-            lipo -create -output dist-bin/sunlit-earth target/aarch64-apple-darwin/release/sunlit-earth target/x86_64-apple-darwin/release/sunlit-earth
-            echo "the x86_64 slice was built and not executed: nothing here installs Rosetta or runs it, so only the arm64 half of this binary has been shown to start"
-          else
-            cp target/aarch64-apple-darwin/release/sunlit-earth dist-bin/sunlit-earth
-          fi
-          lipo -info dist-bin/sunlit-earth
+        run: cargo build --release --locked -p sunlit-earth --bin sunlit-earth --target aarch64-apple-darwin
         shell: bash
 
       - name: Bundle and verify
@@ -130,7 +111,7 @@ jobs:
           set -euo pipefail
           start=$(date +%s)
           cargo xtask bundle --platform macos \
-            --exe dist-bin/sunlit-earth --out "${{ github.workspace }}/dist" --verify
+            --exe target/aarch64-apple-darwin/release/sunlit-earth --out "${{ github.workspace }}/dist" --verify
           echo "bundle step took $(( $(date +%s) - start )) s, xtask compile included"
           ls -l "${{ github.workspace }}/dist"
         shell: bash
@@ -156,7 +137,7 @@ jobs:
           set -euo pipefail
           mkdir -p e2e-out
           system_profiler SPDisplaysDataType | tee e2e-out/displays-system-profiler.txt
-          "$(pwd)/dist-bin/sunlit-earth" displays | tee e2e-out/displays.txt
+          "$(pwd)/target/aarch64-apple-darwin/release/sunlit-earth" displays | tee e2e-out/displays.txt
           screencapture -x e2e-out/desktop-before.png || echo "screencapture refused; the suite is the test, this is only evidence"
         shell: bash
 

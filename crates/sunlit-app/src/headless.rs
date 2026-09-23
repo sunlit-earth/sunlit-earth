@@ -52,6 +52,11 @@ pub(crate) fn run_displays(
             settings
         )
     );
+    #[cfg(target_os = "linux")]
+    match sunlit_core::desktop::choose_current() {
+        Ok(choice) => println!("setter: {}", choice.explanation()),
+        Err(refusal) => println!("setter: none; {refusal}"),
+    }
     let Some(dir) = out else {
         return ExitCode::SUCCESS;
     };

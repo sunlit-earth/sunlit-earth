@@ -131,9 +131,26 @@ fn run(command: &crate::desktop::Invocation) -> Result<String, String> {
 /// full-resolution render and readback is what this exists to avoid.
 #[cfg(target_os = "linux")]
 pub(crate) fn check_supported() -> Result<(), String> {
-    crate::desktop::choose_current()
-        .map(|_| ())
-        .map_err(|refusal| refusal.to_string())
+    chosen().map(|_| ())
+}
+
+/// The setter this session gets now, with its evidence logged whenever it
+/// differs from the last choice's, so a log shows each change of setter once.
+#[cfg(target_os = "linux")]
+fn chosen() -> Result<crate::desktop::Backend, String> {
+    use std::sync::Mutex;
+
+    static LAST: Mutex<Option<String>> = Mutex::new(None);
+    let choice = crate::desktop::choose_current().map_err(|refusal| refusal.to_string())?;
+    let explanation = choice.explanation();
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.as_deref() != Some(explanation.as_str()) {
+        tracing::info!("wallpaper setter: {explanation}");
+        *last = Some(explanation);
+    }
+    Ok(choice.backend)
 }
 
 /// Write the PNGs and run the desktop's own setter.
@@ -145,9 +162,7 @@ pub(crate) fn check_supported() -> Result<(), String> {
 pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
     use crate::desktop::Mechanism;
 
-    let backend = crate::desktop::choose_current()
-        .map_err(|refusal| refusal.to_string())?
-        .backend;
+    let backend = chosen()?;
     let done = || {
         backend
             .degradation(job.mode, job.monitors.len())

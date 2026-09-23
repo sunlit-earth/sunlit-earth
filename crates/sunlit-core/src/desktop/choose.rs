@@ -1198,6 +1198,35 @@ mod tests {
     }
 
     #[test]
+    fn a_session_nothing_accepts_is_refused_with_every_rung_and_its_reason() {
+        let refusal = choose(&FakeSession::default()).expect_err("nothing here");
+        let rungs: Vec<&str> = refusal.declined.iter().map(|d| d.rung.as_str()).collect();
+        assert_eq!(
+            rungs,
+            [
+                "desktop table",
+                "awww",
+                "wpaperd",
+                "swaybg",
+                "desktop window owner",
+                "root pixmap",
+                "portal"
+            ]
+        );
+        for declined in &refusal.declined {
+            assert!(!declined.reason.is_empty(), "{declined:?}");
+        }
+        let text = refusal.to_string();
+        for declined in &refusal.declined {
+            assert!(
+                text.contains(&format!("{}: {}", declined.rung, declined.reason)),
+                "{text}"
+            );
+        }
+        assert!(text.contains(FORCE_ENV), "{text}");
+    }
+
+    #[test]
     fn every_setter_can_be_forced_by_its_name() {
         for name in setter_names() {
             let session = FakeSession::complete("")

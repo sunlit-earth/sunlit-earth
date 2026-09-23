@@ -1,3 +1,6 @@
+# Every text file is LF in every checkout, whatever core.autocrlf says.
+* text=auto eol=lf
+
 textures/** filter=lfs diff=lfs merge=lfs -text
 # Except the note saying where they came from, which is text and belongs in the
 # repository rather than behind an LFS pointer nobody can read on the web.

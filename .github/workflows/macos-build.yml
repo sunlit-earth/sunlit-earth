@@ -56,7 +56,7 @@ jobs:
     env:
       TARGET: ${{ inputs.runner == 'macos-26-intel' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: ${{ inputs.mode != 'check' }}
 
@@ -146,7 +146,7 @@ jobs:
           ls -l "${{ github.workspace }}/dist"
         shell: bash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: inputs.mode != 'check'
         with:
           name: bundle-macos-${{ env.TARGET }}
@@ -196,7 +196,7 @@ jobs:
           ls -l e2e-out
         shell: bash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ inputs.mode == 'build-and-e2e' && !cancelled() }}
         with:
           name: e2e-macos-${{ env.TARGET }}
@@ -300,7 +300,7 @@ jobs:
           cp "$RUNNER_TEMP/virtual-display.log" session-out/ 2>/dev/null || true
         shell: bash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ inputs.interactive && always() }}
         with:
           name: session-${{ inputs.runner }}

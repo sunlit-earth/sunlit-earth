@@ -111,8 +111,7 @@ enum Kind {
     Lxde,
     /// `swaymsg output * bg`, which has sway start its own `swaybg`.
     Sway,
-    /// `hyprctl hyprpaper`, three calls to a daemon that holds every image it
-    /// was given until told to let go.
+    /// `hyprctl hyprpaper wallpaper`, for Hyprland sessions running hyprpaper.
     Hyprpaper,
     /// Deepin's appearance daemon over `dbus-send`, one call per monitor.
     ///
@@ -584,8 +583,11 @@ pub(crate) const ROWS: &[Row] = &[
             kind: Kind::Lxde,
         },
     },
+    // `DDE` is what Deepin's own portal configuration expects the session to
+    // be called; `Deepin` is what other projects match. Neither was seen in a
+    // running session.
     Row {
-        names: &["deepin"],
+        names: &["deepin", "dde"],
         gate: Gate::None,
         backend: Backend {
             desktop: "Deepin",

@@ -17,23 +17,20 @@ pub(super) fn sway_quoted(path: &str) -> String {
     format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Load the image into hyprpaper, show it on every monitor, and have it drop
-/// the images nothing shows any more.
+/// Show the image on every monitor through hyprpaper.
+///
+/// One call since hyprpaper 0.8, which dropped `preload` and `unload`: an
+/// empty monitor is every monitor, and `cover` zooms the image until it fills
+/// the screen.
 pub(super) fn hyprpaper_commands(path: &str) -> Vec<Invocation> {
-    let call = |args: &[&str]| {
-        Invocation::new(
-            "hyprctl",
-            ["hyprpaper"]
-                .iter()
-                .chain(args)
-                .map(|arg| (*arg).to_owned()),
-        )
-    };
-    vec![
-        call(&["preload", path]),
-        call(&["wallpaper", &format!(",{path}")]),
-        call(&["unload", "unused"]),
-    ]
+    vec![Invocation::new(
+        "hyprctl",
+        [
+            "hyprpaper".to_owned(),
+            "wallpaper".to_owned(),
+            format!(", {path}, cover"),
+        ],
+    )]
 }
 
 /// One `SetMonitorBackground` per monitor this publish painted.
@@ -85,17 +82,10 @@ mod tests {
     }
 
     #[test]
-    fn hyprpaper_loads_shows_and_then_lets_go_of_what_nothing_shows() {
+    fn hyprpaper_covers_every_monitor_in_one_call() {
         let cmds = commands("Hyprland", "/w.png", "");
         let calls: Vec<Vec<&str>> = cmds.iter().map(args).collect();
-        assert_eq!(
-            calls,
-            [
-                vec!["hyprpaper", "preload", "/w.png"],
-                vec!["hyprpaper", "wallpaper", ",/w.png"],
-                vec!["hyprpaper", "unload", "unused"],
-            ]
-        );
+        assert_eq!(calls, [vec!["hyprpaper", "wallpaper", ", /w.png, cover"]]);
     }
 
     #[test]

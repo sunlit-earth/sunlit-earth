@@ -41,7 +41,11 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
             options.exe.display()
         ));
     }
+    // Absolute because the renders run with this directory as their working
+    // directory, where a relative path would be resolved a second time.
     let parent = options.work.clone().unwrap_or_else(std::env::temp_dir);
+    let parent = std::path::absolute(&parent)
+        .map_err(|e| format!("cannot resolve {}: {e}", parent.display()))?;
     let work = fresh_dir(&parent)?;
 
     println!(
@@ -160,6 +164,40 @@ mod tests {
         let made: Vec<&String> = after.iter().filter(|name| !before.contains(name)).collect();
         assert_eq!(made.len(), 1, "{after:?}");
         assert!(made[0].starts_with(WORK_PREFIX), "{made:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_relative_working_directory_reaches_the_renders_as_an_absolute_path() {
+        let dir = owned_dir("relative");
+        let exe = dir.join("sunlit-earth");
+        std::fs::write(&exe, b"").expect("the command");
+        let relative = PathBuf::from(format!("xtask_verify_install_rel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&relative);
+
+        let runner = FakeRunner::new().on("sunlit-earth", CommandOutput::ok(""));
+        let _ = run(
+            &runner,
+            &Options {
+                exe,
+                work: Some(relative.clone()),
+            },
+        );
+        let absolute = std::path::absolute(&relative).expect("the absolute path");
+        let renders: Vec<String> = runner
+            .calls()
+            .into_iter()
+            .filter(|call| call.contains("render"))
+            .collect();
+        assert_eq!(renders.len(), 2, "{renders:?}");
+        for call in &renders {
+            assert!(
+                call.contains(&*absolute.to_string_lossy()),
+                "the render was handed a path that is not under {}: {call}",
+                absolute.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&relative);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

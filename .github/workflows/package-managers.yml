@@ -167,10 +167,6 @@ jobs:
         run: |
           set -euo pipefail
           exe=$(command -v sunlit-earth)
-          if [ "${{ matrix.kind }}" = cask ] && [ "$TAG" = v0.2.0-beta.1 ]; then
-            echo "::notice::v0.2.0-beta.1 predates the texture lookup through a symlink, so the app's own binary is checked instead of $exe (departure 3 of the plan)"
-            exe="$APP/Contents/MacOS/sunlit-earth"
-          fi
           work="$RUNNER_TEMP/verify"
           mkdir -p "$work/empty"
           cd "$work"

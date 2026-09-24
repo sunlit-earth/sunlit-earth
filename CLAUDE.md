@@ -86,10 +86,9 @@ cargo xtask bundle --platform <windows|linux|macos> --exe <path> [--out <dir>] [
 
 ```bash
 cargo xtask manifests --version <version> --assets <dir> --out <dir>
-cargo xtask verify-install --exe <path> [--work <dir>]
 ```
 
-`manifests` hashes a published release's five archives (as `gh release download` leaves them) and writes the Scoop manifest, the Homebrew cask and the Homebrew formula under `--out`, laid out as `sunlit-earth/scoop-bucket` and `sunlit-earth/homebrew-tap`; `verify-install` makes `bundle --verify`'s two renders through an installed command. `package-managers.yml` runs both when a release is published and is the only writer of those two repositories; `docs/testing.md` describes it.
+`manifests` hashes a published release's five archives (as `gh release download` leaves them) and writes the Scoop manifest, the Homebrew cask and the Homebrew formula under `--out`, laid out as `sunlit-earth/scoop-bucket` and `sunlit-earth/homebrew-tap`. `package-managers.yml` runs it when a release is published and is the only writer of those two repositories; `docs/testing.md` describes it.
 
 ### Rare
 

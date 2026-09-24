@@ -49,6 +49,8 @@ pub(crate) fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Op
         pick("lroc_color_poles_1k.jxl"),
         pick("milkyway_2020_4k.jxl"),
     ];
+    // package-managers.yml reads this line, its wording and the `day` field, to
+    // tell whether an installed command found its textures.
     info!(
         textures_dir = ?dir,
         day = ?paths[0],

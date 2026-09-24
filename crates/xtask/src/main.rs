@@ -24,7 +24,7 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{
     bake_icon, bake_licenses, bake_stars, build_image, bundle, dist, doctor, e2e, manifests, setup,
-    sweep, teardown, verify_install, vm,
+    sweep, teardown, vm,
 };
 use crate::host::facts;
 use crate::provider::desktop::{Desktop, SessionType};
@@ -95,9 +95,6 @@ enum Command {
     /// Write the Scoop manifest, the Homebrew cask and the Homebrew formula for
     /// one release, from its archives.
     Manifests(manifests::Options),
-    /// Render twice through an installed `sunlit-earth` and prove it found its
-    /// textures, as `bundle --verify` does for an unpacked archive.
-    VerifyInstall(verify_install::Options),
     /// Regenerate a committed asset from its source.
     Bake {
         #[command(subcommand)]
@@ -321,7 +318,6 @@ fn main() -> ExitCode {
         ),
         Command::Bundle(options) => bundle::run(&runner, &options),
         Command::Manifests(options) => manifests::run(&options),
-        Command::VerifyInstall(options) => verify_install::run(&runner, &options),
         Command::Bake { command } => match command {
             BakeCommand::Icon { review } => bake_icon::run(review),
             BakeCommand::Stars { input, output } => bake_stars::run(&input, &output),

@@ -1310,7 +1310,7 @@ fn verify_here(
 /// the executable, and it is the walk-up this has to test. A difference under
 /// [`TEXTURE_LOOKUP_FLOOR`] is refused, and both renders stay in `work` for
 /// whoever reads the refusal.
-pub fn render_comparison(runner: &dyn Runner, exe: &Path, work: &Path) -> Result<f64, String> {
+fn render_comparison(runner: &dyn Runner, exe: &Path, work: &Path) -> Result<f64, String> {
     // The empty directory is what makes the grid render a grid: the loader takes
     // the variable's directory when it is one and finds no files in it.
     let empty = work.join(dist::EMPTY_TEXTURES);

@@ -20,5 +20,4 @@ pub mod setup;
 pub mod status;
 pub mod sweep;
 pub mod teardown;
-pub mod verify_install;
 pub mod vm;

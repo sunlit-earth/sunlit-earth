@@ -195,7 +195,7 @@ jobs:
     environment: package-managers
     # Pushes for two releases never run at the same time. A group holds one
     # running and one pending job, and a newer pending job cancels the older
-    # pending one even with cancel-in-progress off; that push is rerun by hand.
+    # pending one even with cancel-in-progress off; rerun one only if still latest.
     concurrency:
       group: package-managers-push
       cancel-in-progress: false

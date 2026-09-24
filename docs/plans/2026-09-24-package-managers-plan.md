@@ -133,7 +133,7 @@ gh run watch <id>
 gh repo edit sunlit-earth/scoop-bucket --add-topic scoop-bucket
 ```
 
-The first dispatch for v0.2.0 is also the first run in which the macOS verify jobs render through the cask's `bin/` symlink (departure 3), so a failure there on "The installed command finds its textures" means decision 4 did not reach the release binary, not that the cask is wrong.
+**v0.2.0 has to be tagged from `main` after this pull request is merged.** The first dispatch for v0.2.0 is the first run in which the macOS verify jobs render through the cask's `bin/` symlink (departure 3), and only a binary that contains the texture lookup fallback of decision 4 (commit 39fb348) finds its textures from there. A v0.2.0 tagged before the merge would fail both macOS verify jobs on "The installed command finds its textures", and since `push` needs every verify job, the bootstrap could not happen for it at all. The same failure on a release tagged after the merge means decision 4 did not reach the release binary, not that the cask is wrong.
 
 ### Step 5: The prerelease check
 
@@ -171,6 +171,8 @@ Once the bucket holds a verified manifest, add the `scoop-bucket` topic to `sunl
 - **Publishing stops raising the event.** If a release is ever published with `GITHUB_TOKEN`, nothing runs (decision 6). The dispatch covers it, and `testing.md` says so.
 - **The app's credentials leak.** The token is scoped to two repositories and expires within the hour, and the private key is readable only from runs on `v*` tags or `main` through the environment rule. Rotating the key is one click in the app's settings.
 - **A release is published and its manifests are not.** Intended by decision 6. Rerun the failed jobs, or dispatch `package-managers.yml` with the tag.
+- **A push moves users backwards.** A dispatch for an older tag with `push` on, or a patch release of an older line published after a newer release, would otherwise overwrite newer manifests. The push job reads the version each of the three manifests holds and refuses when it is newer than the one being pushed; an equal version is the no-op. Only stable versions are ever written, so the comparison is on `X.Y.Z`.
+- **Two runs race to the same branches.** The workflow's concurrency group is per tag, so runs for two releases can overlap. The push job has its own fixed concurrency group, `package-managers-push`, which serializes every push across releases; if a push still meets a moved branch, `git push` fails as not a fast-forward and rerunning the job is the fix.
 
 ## Rollback Strategy
 
@@ -185,4 +187,11 @@ A bad manifest: revert its commit in the repository that holds it, and users' ne
 
 ## Validation Record
 
-None yet.
+**Round 1** (validator on `e34e6ec..1b6492e`): 1 major and 5 minors.
+
+1. Major: `verify-install` removed and recreated `--work` before any check, so `--work` naming an install, a textures directory or `.` deleted user data. Fixed: it makes a fresh, uniquely named directory under `--work` and deletes only that one, after a passing run; the guard against a working directory inside the install was dropped as dead logic, since the lookup reads only `./textures` from the working directory and a directory made empty there cannot answer it. Tests cover a refusal that touches nothing, the named directory and its contents surviving a run, and a fresh directory never reusing one that exists.
+2. Minor: the workflow passes `app-id`, which `actions/create-github-app-token` v3 deprecates in favor of `client-id`. Deferred to the user, since it needs a new variable in the `package-managers` environment.
+3. Minor: nothing prevented a downgrade. Fixed with the push job's version check and its fixed concurrency group, both under Risks.
+4. Minor: the plan did not say that v0.2.0 must be tagged after the merge. Fixed in Step 4's after-merge section.
+5. Minor: `testing.md` named only the `FormulaAudit/ComponentsOrder` exclusion. Fixed: it names the audit's `--skip-style --except version` too.
+6. Minor: the README and `assets/readme/*.txt` proposals. Deferred to the user, who decides both.

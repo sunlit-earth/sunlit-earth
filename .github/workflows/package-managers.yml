@@ -19,22 +19,16 @@ on:
         description: "Commit the manifests to scoop-bucket and homebrew-tap. Off means a dry run."
         type: boolean
         default: false
-  # Temporary: the dry run for v0.2.0-beta.1 while this workflow is on the
-  # feature branch. Removed before the pull request leaves draft.
-  push:
-    branches: [feat/package-managers]
-    paths:
-      - .github/workflows/package-managers.yml
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag || 'v0.2.0-beta.1' }}
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 env:
-  TAG: ${{ github.event.release.tag_name || inputs.tag || 'v0.2.0-beta.1' }}
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
   PUSH: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.push) }}
 
 jobs:
@@ -172,7 +166,6 @@ jobs:
       - name: The installed command finds its textures
         env:
           SUNLIT_EARTH_NO_CLOUDS: "1"
-          SUNLIT_EARTH_TEXTURES: ${{ runner.temp }}/verify/empty
         run: |
           set -euo pipefail
           exe=$(command -v sunlit-earth)

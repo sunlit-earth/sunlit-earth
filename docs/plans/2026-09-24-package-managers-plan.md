@@ -108,6 +108,33 @@ The generator from decision 5 and the verification from decision 7, with `verify
 
 `package-managers.yml` per decisions 6, 7, 8 and 10, with the checks Step 1 settled. The dispatch has a second input, `push`, off by default, so a dispatch is a dry run unless asked; the `release` event always pushes, and on a prerelease stops per decision 8. A dispatch needs the workflow on the default branch, so while it is on the feature branch it also carries a temporary `push: branches: [feat/package-managers]` trigger that runs the dry run for `v0.2.0-beta.1`: all five verify jobs, no `push` job. That trigger is removed before the pull request leaves draft. After the merge, which is the user's call: dispatch from `main` for `v0.2.0` with `push` off, then with it on to bootstrap the repositories, then once more to see criterion 3's no-op. If 0.2.0 is not published by then, those three dispatches wait for it and are handed to the user with the exact commands.
 
+#### State before the merge, and what is left for after it
+
+The dry run through the temporary trigger went green on all five verify jobs in <https://github.com/sunlit-earth/sunlit-earth/actions/runs/36051180250>, with the `push` job skipped, as it is for every `push` event. The trigger was then removed, so from here the workflow runs only on `release` and `workflow_dispatch`, and a dispatch needs the file on `main`. The rest of Steps 4, 5 and 7 needs the merge, which is the user's call, and for Step 4 also a published stable 0.2.0. In order, from a checkout of `main` after the merge; `gh workflow run` prints the new run's URL, and `<id>` is the number at its end:
+
+```bash
+# Step 4, once v0.2.0 is published: a dry run, then the bootstrap, then the no-op.
+gh workflow run package-managers.yml --ref main -f tag=v0.2.0 -f push=false
+gh run watch <id> --exit-status
+gh workflow run package-managers.yml --ref main -f tag=v0.2.0 -f push=true
+gh run watch <id> --exit-status
+gh api repos/sunlit-earth/scoop-bucket/commits --jq '.[0].commit.message'   # sunlit-earth 0.2.0
+gh api repos/sunlit-earth/homebrew-tap/commits --jq '.[0].commit.message'   # sunlit-earth 0.2.0
+gh workflow run package-managers.yml --ref main -f tag=v0.2.0 -f push=true
+gh run watch <id> --exit-status
+# criterion 3: the Push job's log says "already at 0.2.0, nothing to commit" for both repositories
+
+# Step 5, needs only the merge: a prerelease with push on stops at the first job.
+gh workflow run package-managers.yml --ref main -f tag=v0.2.0-beta.1 -f push=true
+gh run watch <id>
+# expected: Manifests fails with "v0.2.0-beta.1 is a prerelease, and this run would push", Verify and Push never run
+
+# Step 7, after asking the user, once the bucket holds the verified 0.2.0 manifest.
+gh repo edit sunlit-earth/scoop-bucket --add-topic scoop-bucket
+```
+
+The first dispatch for v0.2.0 is also the first run in which the macOS verify jobs render through the cask's `bin/` symlink (departure 3), so a failure there on "The installed command finds its textures" means decision 4 did not reach the release binary, not that the cask is wrong.
+
 ### Step 5: The prerelease check
 
 After the merge, dispatch with `v0.2.0-beta.1` and `push` on, and confirm the run stops at the first job with the reason. The `release` event half of criterion 2 is seen the first time a prerelease is published after the merge, since this workflow does not exist at any earlier tag; that needs no throwaway release.

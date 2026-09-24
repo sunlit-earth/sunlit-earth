@@ -211,13 +211,16 @@ jobs:
       # form of it satisfies FormulaAudit/ComponentsOrder with; see departure 2
       # of docs/plans/2026-09-24-package-managers-plan.md. brew audit refuses
       # --except-cops beside --strict, so its style half is left to brew style.
+      # Its version audit calls the version redundant on aarch64 only, where
+      # Homebrew reads the same version from the URL; the x86_64 URL does not
+      # give it that version, so the stanza stays.
       - name: brew style and brew audit
         if: matrix.kind != 'scoop'
         run: |
           set -euo pipefail
           if [ "${{ matrix.kind }}" = formula ]; then
             brew style --except-cops FormulaAudit/ComponentsOrder "$MANIFEST"
-            brew audit --formula --strict --skip-style sunlit-earth/verify/sunlit-earth
+            brew audit --formula --strict --skip-style --except version sunlit-earth/verify/sunlit-earth
           else
             brew style "$MANIFEST"
             brew audit --cask --strict sunlit-earth/verify/sunlit-earth

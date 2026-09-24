@@ -111,6 +111,10 @@ jobs:
       run:
         shell: bash
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
       - uses: actions/download-artifact@v8
         with:
           name: manifests
@@ -160,9 +164,11 @@ jobs:
           echo "$(command -v sunlit-earth): $out"
           [ "$out" = "sunlit-earth ${TAG#v}" ] || { echo "::error::expected sunlit-earth ${TAG#v}"; exit 1; }
 
-      # From an empty directory, so the lookup's ./textures candidate cannot
-      # answer and a day texture can only come from the walk up from the
-      # executable. The line is logged by resolve_texture_paths in startup.rs.
+      # Two renders from an empty directory, where the lookup's ./textures
+      # cannot answer, one against an empty textures directory: a command that
+      # found its textures draws a globe that differs from the grid by far more
+      # than 8 channel steps, TEXTURE_LOOKUP_FLOOR in dist.rs (departure 1 of
+      # the amendment).
       - name: The installed command finds its textures
         env:
           SUNLIT_EARTH_NO_CLOUDS: "1"
@@ -174,14 +180,14 @@ jobs:
             exe="$APP/Contents/MacOS/sunlit-earth"
           fi
           work="$RUNNER_TEMP/verify"
-          mkdir -p "$work"
+          mkdir -p "$work/empty"
           cd "$work"
           export SUNLIT_EARTH_CONFIG="$work/config.toml" SUNLIT_EARTH_CACHE_DIR="$work/cache" SUNLIT_EARTH_METRICS_DIR="$work/metrics"
-          "$exe" render --output "$RUNNER_TEMP/verify.png" --width 64 --height 64 2> render.log || { cat render.log; exit 1; }
-          line=$(sed 's/\x1b\[[0-9;]*m//g' render.log | grep 'resolved texture paths' || true)
-          echo "${line:-no resolved texture paths line}"
-          [ -s "$RUNNER_TEMP/verify.png" ] || { echo "::error::the render wrote no PNG"; exit 1; }
-          [[ "$line" == *"day=Some("* ]] || { echo "::error::$exe did not find its textures"; exit 1; }
+          SUNLIT_EARTH_TEXTURES="$work/empty" "$exe" render --output grid.png --width 640 --height 360
+          "$exe" render --output smoke.png --width 640 --height 360
+          if [ "$RUNNER_OS" = Windows ]; then py=python; else py=python3; fi
+          "$py" "$GITHUB_WORKSPACE/.github/scripts/render-difference.py" grid.png smoke.png 8 ||
+            { echo "::error::$exe did not find its textures"; exit 1; }
 
       - name: No quarantine on the installed app
         if: matrix.kind == 'cask'

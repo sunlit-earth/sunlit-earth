@@ -62,7 +62,7 @@ What changes:
 
 ## Departures
 
-None yet.
+1. **The texture check compares two renders, as before, instead of reading the log.** A release build logs nothing below `warn`: the workspace's `tracing` and `log` dependencies set `release_max_level_warn`, so the `info!` line `resolved texture paths` is compiled out of every binary a release ships. The measurement in "Facts measured" was taken on a debug build, where it is present. The first dry run under this amendment, <https://github.com/sunlit-earth/sunlit-earth/actions/runs/36059878668>, showed it: the line was missing on all five verify jobs and every texture check failed, and the released `v0.2.0-beta.1` binary run by hand on Windows and in WSL with stderr redirected wrote no log line at all. Raising the line to `warn` would misstate what it is, and would in any case not reach `v0.2.0-beta.1`, the only release the dry run can use. So the step renders twice from an empty directory, once against an empty textures directory, and `.github/scripts/render-difference.py` computes the same mean channel difference `bundle --verify` does and refuses under the same floor of 8, `TEXTURE_LOOKUP_FLOOR`. The script is standard-library Python, which every hosted runner has, so decision 12's point stands: no verify job installs Rust or builds anything; each checks out only `.github/scripts`. On the `v0.2.0-beta.1` Windows binary by hand, the pair differed by 22.37 and two grid renders by 0.09. The comment decision 12's risk asked for in `startup.rs` is not added, since the workflow does not read that line.
 
 ## Validation record
 

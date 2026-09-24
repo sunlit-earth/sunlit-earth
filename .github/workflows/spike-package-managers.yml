@@ -43,7 +43,7 @@ jobs:
           uname -m
           brew config | head -20
           grep -rn "postflight_steps\|flight_steps" "$(brew --repository)/Library/Homebrew/cask" | head -40 || true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Hashes
         run: |
@@ -58,7 +58,7 @@ jobs:
             h=$(grep "linux-$arch.tar.gz" digests.txt | sed 's/.*sha256://')
             echo "SHA_LINUX_$arch=$h" >> "$GITHUB_ENV"
           done
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: A local tap with a cask and a Linux-only formula
         run: |
@@ -129,14 +129,14 @@ jobs:
             end
           end
           EOF
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: The formula without --cask on macOS
         run: |
           brew install sunlit-earth/verify/sunlit-earth 2>&1 | tee formula-on-macos.txt
           echo "exit: ${PIPESTATUS[0]}"
           true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Control, the cask without a flight step
         run: |
@@ -153,7 +153,7 @@ jobs:
           ls -l "$(brew --prefix)/bin/sunlit-earth"
           brew uninstall --cask sunlit-earth/verify/sunlit-earth
           ls -ld "/Applications/Sunlit Earth.app" || echo "app removed"
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: The cask with postflight_steps
         run: |
@@ -169,7 +169,7 @@ jobs:
           xattr -l "/Applications/Sunlit Earth.app" || true
           xattr -p com.apple.quarantine "/Applications/Sunlit Earth.app" && echo "QUARANTINED" || echo "NOT QUARANTINED"
           xattr -rl "/Applications/Sunlit Earth.app" | grep -c quarantine || true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: brew style and audit
         run: |
@@ -182,7 +182,7 @@ jobs:
           brew audit --formula --strict sunlit-earth/verify/sunlit-earth
           echo "formula audit exit: $?"
           true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Run through PATH and the binary symlink
         run: |
@@ -195,7 +195,7 @@ jobs:
           SUNLIT_EARTH_TEXTURES="$GITHUB_WORKSPACE/empty" sunlit-earth render --output grid.png --width 640 --height 360 2>&1 | grep -i "texture" | head -5
           "/Applications/Sunlit Earth.app/Contents/MacOS/sunlit-earth" render --output direct.png --width 640 --height 360 2>&1 | grep -i "texture" | head -5
           ls -l *.png
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: open -a
         run: |
@@ -206,7 +206,7 @@ jobs:
           pgrep -fl sunlit-earth || echo "no process"
           log show --last 1m --predicate 'subsystem == "com.apple.syspolicy" OR process == "syspolicyd"' --style compact 2>/dev/null | tail -20 || true
           spctl --assess --type execute -vv "/Applications/Sunlit Earth.app" 2>&1 || true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Uninstall
         run: |
@@ -217,7 +217,7 @@ jobs:
           ls -ld "/Applications/Sunlit Earth.app" || echo "app removed"
           ls -l "$(brew --prefix)/bin/sunlit-earth" || echo "binary link removed"
           ls -ld "$(brew --prefix)/Caskroom/sunlit-earth" || echo "caskroom removed"
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: For comparison, the legacy postflight block
         run: |
@@ -232,7 +232,7 @@ jobs:
           brew style "$TAP/Casks/sunlit-earth.rb"
           brew uninstall --cask sunlit-earth/verify/sunlit-earth
           true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -264,7 +264,7 @@ jobs:
           command -v brew || echo "brew not on PATH"
           cat /etc/os-release | head -3
           uname -m
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Put Homebrew on PATH or install it
         run: |
@@ -279,13 +279,13 @@ jobs:
             echo "/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
             echo "installed now"
           fi
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Homebrew
         run: |
           brew --version
           brew config | head -20
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: A local tap with the formula
         run: |
@@ -337,7 +337,7 @@ jobs:
           end
           EOF
           cat "$tap/Formula/sunlit-earth.rb"
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Install
         run: |
@@ -346,7 +346,7 @@ jobs:
           echo "exit: $?"
           ls -l "$(brew --prefix)/bin/sunlit-earth"
           ls "$(brew --prefix)/opt/sunlit-earth/libexec"
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Did Homebrew rewrite the ELF
         run: |
@@ -361,7 +361,7 @@ jobs:
             readelf -d "$f" | grep -E 'RPATH|RUNPATH|NEEDED'
             sha256sum "$f"
           done
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: What the render lacks before any apt package
         run: |
@@ -372,7 +372,7 @@ jobs:
           sunlit-earth --version
           sunlit-earth render --output bare.png --width 640 --height 360 2>&1 | tail -15
           echo "render exit: ${PIPESTATUS[0]}"
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Install lavapipe and render
         run: |
@@ -384,7 +384,7 @@ jobs:
           echo "render exit: ${PIPESTATUS[0]}"
           SUNLIT_EARTH_TEXTURES="$GITHUB_WORKSPACE/empty" sunlit-earth render --output grid.png --width 640 --height 360 2>&1 | grep -iE "texture|error" | head -5
           ls -l *.png
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: brew style and audit
         run: |
@@ -396,7 +396,7 @@ jobs:
           echo "audit online exit: $?"
           brew info sunlit-earth/verify/sunlit-earth
           true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: The caveat's desktop entry script
         run: |
@@ -410,7 +410,7 @@ jobs:
           echo "exit: $?"
           ls ~/.local/share/applications/sunlit-earth.desktop 2>&1 || true
           find ~/.local/share/icons -name 'sunlit-earth*' | head
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - name: Uninstall
         run: |
@@ -420,7 +420,7 @@ jobs:
           ls -l "$(brew --prefix)/bin/sunlit-earth" 2>&1 || true
           ls -ld "$(brew --prefix)/Cellar/sunlit-earth" 2>&1 || true
           ls -ld "$(brew --prefix)/opt/sunlit-earth" 2>&1 || true
-        shell: bash
+        shell: bash --noprofile --norc {0}
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -539,26 +539,23 @@ jobs:
 
       - name: scoop update while the tray app runs
         run: |
-          $exe = "$env:USERPROFILE\scoop\apps\sunlit-earth\current\sunlit-earth.exe"
-          $p = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 10
-          Get-Process sunlit-earth -ErrorAction SilentlyContinue | Format-Table Id, Path
+          $exe = "$env:USERPROFILE\scooppps\sunlit-earth\current\sunlit-earth.exe"
+          $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError tray-stderr.txt -RedirectStandardOutput tray-stdout.txt
+          Start-Sleep -Seconds 20
+          "tray process exited: $($p.HasExited) code: $($p.ExitCode)"
+          Get-Content tray-stderr.txt -Tail 15
+          (Get-Process sunlit-earth -ErrorAction SilentlyContinue | ForEach-Object { "running: $($_.Id) $($_.Path)" }) -join "`n"
           $m = Get-Content manifests\sunlit-earth.json -Raw | ConvertFrom-Json
-          $m.version = "$env:VERSION.1"
+          $m.version = "$env:VERSION.2"
           $m | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 manifests\sunlit-earth.json
           "--- scoop update"
-          scoop update sunlit-earth 2>&1
-          "exit: $LASTEXITCODE"
-          scoop list
-          Get-ChildItem "$env:USERPROFILE\scoop\apps\sunlit-earth"
-          Get-Process sunlit-earth -ErrorAction SilentlyContinue | Format-Table Id, Path
+          scoop update sunlit-earth 2>&1 | Out-String
+          (Get-ChildItem "$env:USERPROFILE\scooppps\sunlit-earth").Name -join ", "
           Stop-Process -Name sunlit-earth -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           "--- scoop update after the app quit"
-          scoop update sunlit-earth 2>&1
-          "exit: $LASTEXITCODE"
-          scoop list
-          Get-ChildItem "$env:USERPROFILE\scoop\apps\sunlit-earth"
+          scoop update sunlit-earth 2>&1 | Out-String
+          (Get-ChildItem "$env:USERPROFILE\scooppps\sunlit-earth").Name -join ", "
         shell: pwsh
 
       - name: Uninstall

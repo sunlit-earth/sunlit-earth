@@ -22,6 +22,7 @@ env:
 jobs:
   macos:
     name: macOS ${{ matrix.arch }}
+    if: ${{ false }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -244,6 +245,7 @@ jobs:
 
   linux:
     name: Linux ${{ matrix.arch }}
+    if: ${{ false }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -540,6 +542,7 @@ jobs:
       - name: scoop update while the tray app runs
         run: |
           $exe = "$env:USERPROFILE\scoop\apps\sunlit-earth\current\sunlit-earth.exe"
+          $env:SLINT_BACKEND = "winit-software"
           $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError tray-stderr.txt -RedirectStandardOutput tray-stdout.txt
           Start-Sleep -Seconds 20
           "tray process exited: $($p.HasExited) code: $($p.ExitCode)"

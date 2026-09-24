@@ -9,9 +9,8 @@
 //! `bucket/` for `sunlit-earth/scoop-bucket`, `Casks/` and `Formula/` for
 //! `sunlit-earth/homebrew-tap`.
 //!
-//! The Ruby is plain string assembly. Whether Homebrew accepts it is what
-//! `brew style` and `brew audit` in `package-managers.yml` check, and nothing
-//! here reimplements them.
+//! The Ruby is plain string assembly. Whether Homebrew accepts it is what the
+//! installs in `package-managers.yml` show, on every architecture it serves.
 
 use std::fmt::Write as _;
 use std::io::Read as _;

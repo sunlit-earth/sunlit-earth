@@ -5682,7 +5682,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sunlit-core"
-version = "0.1.1-beta.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "approx",
  "astronomy-engine-bindings",
@@ -5719,7 +5719,7 @@ dependencies = [
 
 [[package]]
 name = "sunlit-earth"
-version = "0.1.1-beta.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "approx",
  "clap",
@@ -7666,7 +7666,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.1-beta.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "clap",
  "crc32fast",

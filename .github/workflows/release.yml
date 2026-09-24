@@ -1,11 +1,13 @@
 name: Release
 
-# Manual only. Release artifacts are currently built with `cargo xtask dist`, which
-# compiles in clean VMs. Proper GitHub action builds will come later.
-#
-# Until then every `startsWith(github.ref, 'refs/tags/')` below is false and the
-# logic behind it dormant, kept for the day the tag trigger comes back.
+# A version tag push builds every platform and creates the GitHub release as a
+# draft. A dispatch runs the same pipeline and publishes only when it is run on a
+# tag with publish on.
 on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
   workflow_dispatch:
     inputs:
       publish:

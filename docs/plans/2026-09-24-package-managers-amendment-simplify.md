@@ -1,0 +1,69 @@
+# Plan Amendment: A Simpler Package Manager Workflow
+
+Amends [2026-09-24-package-managers-plan.md](2026-09-24-package-managers-plan.md). Written 2026-09-24, after two validation rounds passed on `feat/package-managers` at a20bce8. `package-managers.yml` came out at 513 lines. It works, but most of that length re-proves facts that were established once and cannot change between releases, and some of it is logic that a simpler rule replaces. This amendment cuts the workflow down to what a release can actually break, and moves the app token to the client ID.
+
+## What changes, and what does not
+
+Unchanged: the three manifests and `cargo xtask manifests`; the cask's quarantine removal; the texture lookup fallback in the app; the trigger on `release: published` and the dispatch with `tag` and `push`; the refusal of drafts and prereleases before anything is pushed; the environment, the app, the token's scope, and a commit only when something changed.
+
+What changes:
+
+- The verify jobs check only what differs between releases, and none of them needs a Rust toolchain.
+- `cargo xtask verify-install` is removed; the app's own log says whether it found its textures.
+- `brew style` and `brew audit` leave the workflow, and with them the three exclusions of departure 2.
+- The downgrade check becomes one rule: the tag must be the repository's latest release.
+- The token is minted with the client ID.
+
+## Facts measured for this amendment
+
+- **Where the length is.** Of the 513 lines at a20bce8: about 120 are checks of package manager behavior (`Zone.Identifier`, the Start Menu shortcut, `open -a`, the Linux desktop entry script, three "uninstall left nothing" steps); about 30 install a Rust toolchain, cache and build the xtask on each of five runners, for `verify-install` alone; about 20 are `brew style` and `brew audit` with their exclusions; about 50 are the semver comparison in the downgrade step; and much of the rest is the same check written twice, once in bash and once in PowerShell, behind `if: matrix.kind`.
+- **The texture log line.** `startup.rs` logs `resolved texture paths` at info level with `textures_dir`, `day`, `night`, `moon` and `milky_way`. A debug build on Windows, `sunlit-earth.exe render --output x.png --width 64 --height 64` with stdout and stderr redirected, printed it on stderr at the default log level, with ANSI color codes around the field names, and exited 0. Run from the repository root, it found `textures` relative to the working directory, which is the lookup's third candidate (`./textures`) and not the walk from the executable. A check built on it must run from a directory without a `textures/` and must strip the color codes.
+- **What was proven once.** Spike runs 36047584120, 36048250176 and 36048919200 and dry run 36051180250 established: Scoop leaves no `Zone.Identifier` and makes the shortcut point through `current`; `open -a` starts the app; `install-user.sh --exec` and `--uninstall` work from `opt_libexec`; each uninstall leaves nothing behind; Homebrew leaves the Linux ELF byte-identical; the cask's `postflight_steps` removes quarantine on both Mac architectures. Only the last depends on the manifest this pipeline writes.
+- **"Latest" on GitHub.** The REST documentation for `make_latest` says: "Defaults to true for newly published releases", and drafts and prereleases cannot be latest. `gh release view` without a tag returns that release. So a patch for an older line published after a newer release becomes latest unless "Set as the latest release" is unchecked when publishing. The same page describes the latest-release endpoint as sorted by `created_at`; which of the two wins when the flag was set by hand is not stated, and is left to be seen.
+- **The client ID.** The app's client ID is `Iv23likY6zXeJfA32fFo`, readable from `gh api apps/sunlit-earth-packaging`. The user added it to the `package-managers` environment as `PACKAGING_APP_CLIENT_ID` on 2026-09-24; `PACKAGING_APP_ID` is still there.
+
+## Decisions (continuing the plan's numbering)
+
+11. **The verify jobs check what a release can break, and nothing else.** Each job downloads the generated manifest, installs it through the package manager, and checks three things: the command on `PATH` reports the version; the installed command finds its textures (decision 12); and on macOS, the installed `.app` carries no `com.apple.quarantine` attribute. The `Zone.Identifier`, shortcut, `open -a`, desktop entry and uninstall checks are dropped, because they test Scoop, Homebrew, macOS and `install-user.sh`, which no release of ours changes, and the runs above already proved them. They are recorded as proven in `platforms.md` with those run numbers, not as guarded. This replaces the list of checks in decision 7.
+
+12. **The texture check reads the app's own log.** The job runs `sunlit-earth render --output "$RUNNER_TEMP/verify.png" --width 64 --height 64` through the command on `PATH`, from an empty directory under `$RUNNER_TEMP`, with `SUNLIT_EARTH_NO_CLOUDS=1` and the config, cache and metrics variables pointed into that directory as today. It strips ANSI codes from stderr and requires that the `resolved texture paths` line's `day` field is `Some(...)` and the render wrote a PNG. The empty working directory rules out the `./textures` candidate, so a `Some` can only come from the walk up from the executable, which is the lookup under test. This replaces `cargo xtask verify-install` and its two-render comparison, which answered a question `release.yml` already answers: `bundle --verify` renders every archive twice on the runner that built it, so the textures in the archive are known to decode and render. What is left after installing is whether the lookup finds them, and the log says that directly. Checks run in bash on all five runners, including Windows, where `command -v sunlit-earth` finds the Scoop shim, as the existing version check already does. Only installing Scoop and running `scoop install` stay in PowerShell.
+
+13. **`cargo xtask verify-install` is removed.** `verify_install.rs`, its CLI wiring, its tests and its line in `CLAUDE.md` go. `bundle::render_comparison` stays where the factoring put it, since `verify_here` uses it and it reads better as a function.
+
+14. **No `brew style` or `brew audit` in the workflow.** Nobody lints a third-party tap but us, the install on both architectures proves the formula and the cask work, and the only thing the lint found was departure 2's per-architecture download, which has no accepted form and needed three exclusions to get past. The formula keeps `on_arm` and `on_intel`. Departure 2 is superseded by this decision.
+
+15. **The downgrade rule is "the tag is the latest release".** Whenever the run would push, the first job refuses unless `gh release view --json tagName` without a tag names this tag. That also covers what the semver step covered in practice: a dispatch for an older tag with `push` on is refused, and so is an event for a release that was not made latest. The residual case is a patch for an older line published with "Set as the latest release" left checked, which GitHub does by default; `testing.md` says to uncheck it for such a patch. The step in the push job that parsed versions out of the three files is removed, and so is the push job's repeated prerelease check: the first job's gate is the one gate, and the push job `needs` it. The push job keeps its fixed concurrency group.
+
+16. **Departure 3's exception stays one step, until 0.2.0.** The only published release with the current archive names is `v0.2.0-beta.1`, whose binary predates the symlink fallback, so a dry run against it still checks the `.app`'s own binary on macOS instead of the command on `PATH`, with a notice. It is one condition in the texture check. The after-merge steps gain removing it once the v0.2.0 bootstrap has passed, so that the workflow on `main` then has no tag named in it.
+
+17. **The token is minted with the client ID.** `actions/create-github-app-token` gets `client-id: ${{ vars.PACKAGING_APP_CLIENT_ID }}` in place of the deprecated `app-id:`. The private key is unchanged. `PACKAGING_APP_ID` is no longer read, and the user can delete it. Decision 10 and Step 0 of the plan are updated to say so.
+
+## Steps
+
+1. **The workflow.** Rewrite `package-managers.yml` per decisions 11, 12 and 14 to 17. One check step per question, in bash, with `if: matrix.kind` only where the package manager differs (installing it and installing with it, and the macOS quarantine check).
+2. **The xtask.** Remove `verify-install` per decision 13. Gates as in the plan: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`.
+3. **The dry run.** As in the plan's Step 4: a temporary `push: branches: [feat/package-managers]` trigger running the dry run for `v0.2.0-beta.1`, all five verify jobs green and the push job skipped, then the trigger removed. Also prove the texture check can fail once, for example by running it with `SUNLIT_EARTH_TEXTURES` pointing at an empty directory and requiring the step to refuse, so the check is not green for a reason it does not test. Record which runs show it.
+4. **The documents.** The plan: a pointer to this amendment in its Summary, decisions 7, 8 and 10 and Step 0 marked as amended here, departure 2 marked superseded by decision 14, and the after-merge steps gaining decision 16's removal. `testing.md`: what the workflow checks now, what it leaves to `bundle --verify`, and the "Set as the latest release" note from decision 15. `platforms.md`: the one-time evidence from the facts above. `CLAUDE.md`: drop the `verify-install` line.
+
+## Acceptance criteria
+
+1. `package-managers.yml` is at most 250 lines, comments included.
+2. No verify job installs a Rust toolchain or builds anything.
+3. The dry run for `v0.2.0-beta.1` is green on all five verify jobs with the push job skipped, and a run where the textures cannot be found fails the texture check.
+4. The first job refuses to push for a prerelease, a draft, and a tag that is not the latest release; a dispatch with `push` off verifies any published release.
+5. The push job authenticates with `client-id` and nothing in the repository reads `PACKAGING_APP_ID`.
+6. The plan's criteria 1 to 8 still hold, with criterion 7's "checks Step 1 selects" now meaning none.
+
+## Risks
+
+- **The log line changes.** The texture check depends on the wording `resolved texture paths` and the `day` field. A change to that line fails the check loudly rather than passing it wrongly, since the check requires the line to be there. `startup.rs` gets a comment saying the workflow reads it.
+- **A lint regression goes unnoticed.** Without `brew style`, a formula or cask that Homebrew starts to reject would show up as a failed install, which the verify jobs still catch.
+- **The latest flag is set wrongly.** Publishing a patch for an older line with the default checkbox left on would push that patch to the repositories. The refusal of prereleases and drafts still holds, and `testing.md` names the checkbox. A revert in the affected repository undoes it, as the plan's rollback says.
+
+## Departures
+
+None yet.
+
+## Validation record
+
+None yet.

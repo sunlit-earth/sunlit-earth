@@ -6,7 +6,7 @@ Two repositories in the `sunlit-earth` organization, `scoop-bucket` and `homebre
 
 `v0.2.0-beta.1`, published as a prerelease on 2026-09-24, is the first release with every archive under the current names, and it is what the spike and the dry runs use. The repositories are bootstrapped from the stable 0.2.0 once that is published, which may come after the rest of this plan is done.
 
-The research is in [2026-09-24-package-managers-research.md](2026-09-24-package-managers-research.md).
+The research is in [2026-09-24-package-managers-research.md](2026-09-24-package-managers-research.md). [2026-09-24-package-managers-amendment-simplify.md](2026-09-24-package-managers-amendment-simplify.md) amends decisions 7, 8 and 10, Step 0 and departure 2: fewer checks per release, the texture check read from the app's log, no `brew style` or `brew audit`, the latest release as the downgrade rule, and the token minted with the client ID.
 
 ## Stakes Classification
 

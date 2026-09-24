@@ -172,6 +172,7 @@ jobs:
       - name: The installed command finds its textures
         env:
           SUNLIT_EARTH_NO_CLOUDS: "1"
+          SUNLIT_EARTH_TEXTURES: ${{ runner.temp }}/verify/empty
         run: |
           set -euo pipefail
           exe=$(command -v sunlit-earth)

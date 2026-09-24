@@ -5702,16 +5702,19 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pollster",
  "proptest",
+ "rustix 1.1.4",
  "serde",
  "time",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "ureq",
+ "wayland-client",
  "wgpu",
  "windows",
  "windows-sys 0.59.0",
  "winreg 0.56.0",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]
@@ -5741,6 +5744,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "windows-sys 0.59.0",
+ "x11rb",
 ]
 
 [[package]]

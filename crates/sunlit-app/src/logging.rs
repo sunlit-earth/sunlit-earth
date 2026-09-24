@@ -18,8 +18,9 @@ const LOG_FILES_KEPT: usize = 7;
 /// How loud each dependency is allowed to be, whatever this app's level is.
 ///
 /// The decoders and the graphics stack log per frame and per tile at their own
-/// default, which buries everything this program has to say.
-const DEPENDENCY_LEVELS: [&str; 13] = [
+/// default, and zbus a dozen span lines per connection, which buries everything
+/// this program has to say.
+const DEPENDENCY_LEVELS: [&str; 14] = [
     "wgpu_core=warn",
     "wgpu_hal=error",
     "naga=warn",
@@ -33,6 +34,7 @@ const DEPENDENCY_LEVELS: [&str; 13] = [
     "jxl_bitstream=warn",
     "jxl_frame=warn",
     "jxl_color=warn",
+    "zbus=warn",
 ];
 
 /// Initialize the global tracing subscriber.

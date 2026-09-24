@@ -7,10 +7,12 @@
 //! its Wayland one, because neither the shell nor the setting knows or cares which
 //! is running.
 //!
-//! Not the XDG desktop portal: it puts a confirmation dialog in front of every
-//! set, and this wallpaper refreshes on a schedule.
+//! A session the table does not claim goes down a ladder instead: a daemon it
+//! already runs, a `swaybg` of this app's own, the X11 root window, and last the
+//! XDG desktop portal, whose permission dialog appears once rather than on
+//! every set. `choose` picks, and says why.
 //!
-//! Everything here is a pure function over an environment and a path. Only the
+//! Everything here is a pure function over a [`Session`] and a path. Only the
 //! sink runs the commands, so the table is tested on every platform against
 //! fabricated sessions rather than only where a desktop exists.
 
@@ -23,9 +25,17 @@ use std::path::{Path, PathBuf};
 
 use crate::display::layout::DisplayMode;
 
+mod choose;
 mod kde;
+#[cfg(target_os = "linux")]
+pub(crate) mod probe;
+mod setters;
 mod xfce;
 
+pub use choose::{Choice, Declined, FORCE_ENV, PortalFacts, Refusal, Session, X11Facts, choose};
+use setters::{
+    LXDE_FILL_MODE, TRINITY_FILL_MODE, deepin_commands, hyprpaper_commands, sway_quoted,
+};
 use xfce::{XFCE_CHANNEL, XFCE_IMAGE_PROPERTY};
 
 /// The variable that says which desktop this is.
@@ -98,6 +108,48 @@ enum Kind {
     /// `pcmanfm-qt --set-wallpaper <path>`, `LXQt`'s file manager doubling as its
     /// desktop.
     Lxqt,
+    /// `pcmanfm --set-wallpaper`, LXDE's file manager doing the same job as
+    /// `LXQt`'s under the older name.
+    Lxde,
+    /// `swaymsg output * bg`, which has sway start its own `swaybg`.
+    Sway,
+    /// `hyprctl hyprpaper wallpaper`, for Hyprland sessions running hyprpaper.
+    Hyprpaper,
+    /// Deepin's appearance daemon over `dbus-send`, one call per monitor.
+    ///
+    /// Two names for one interface: the daemon moved from
+    /// `com.deepin.daemon.Appearance` to `org.deepin.dde.Appearance1`, and which
+    /// one a session has is asked of its bus.
+    Deepin { legacy: bool },
+    /// Trinity's `kdesktop` over `dcop`, the KDE 3 way that Trinity kept.
+    Trinity,
+    /// The X11 root window's background pixmap, set by this process over its
+    /// own X connection. Runs no program.
+    RootPixmap,
+    /// A running awww daemon, told through its client, which is `swww` in
+    /// releases before the rename.
+    Awww { program: &'static str },
+    /// A running wpaperd, told through `wpaperctl`.
+    Wpaperd,
+    /// A `swaybg` this process starts, and leaves running when it exits.
+    Swaybg,
+    /// The XDG desktop portal's `SetWallpaperFile`, over this process's own
+    /// session bus connection.
+    Portal,
+}
+
+/// How a setter is carried out, for the sink to dispatch on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mechanism {
+    /// Run [`Backend::commands`] in order.
+    Commands,
+    /// Paint the X11 root window directly; nothing is written to disk.
+    RootPixmap,
+    /// Start the one command [`Backend::commands`] gives, leave it running,
+    /// and end the one it replaces.
+    Swaybg,
+    /// Hand the image to the XDG desktop portal.
+    Portal,
 }
 
 /// How far into a multi-monitor session one desktop's setter reaches.
@@ -178,10 +230,12 @@ pub struct Backend {
     /// What to call this in a message, which is read by whoever is looking at a
     /// refusal.
     pub desktop: &'static str,
+    /// The name `SUNLIT_EARTH_WALLPAPER_SETTER` knows this setter by.
+    pub setter: &'static str,
     /// The program that has to exist for this backend to work at all. Probed
     /// before anything is rendered, because a wallpaper frame is the most
-    /// expensive thing the engine does.
-    pub program: &'static str,
+    /// expensive thing the engine does. `None` for a setter that runs nothing.
+    pub program: Option<&'static str>,
     kind: Kind,
 }
 
@@ -197,7 +251,29 @@ impl Backend {
                 "xfconf-query",
                 ["-c".to_owned(), XFCE_CHANNEL.to_owned(), "-l".to_owned()],
             )),
-            Kind::Gsettings { .. } | Kind::Kde | Kind::Lxqt => None,
+            Kind::Gsettings { .. }
+            | Kind::Kde
+            | Kind::Lxqt
+            | Kind::Lxde
+            | Kind::Sway
+            | Kind::Hyprpaper
+            | Kind::Deepin { .. }
+            | Kind::Trinity
+            | Kind::RootPixmap
+            | Kind::Awww { .. }
+            | Kind::Wpaperd
+            | Kind::Swaybg
+            | Kind::Portal => None,
+        }
+    }
+
+    /// How the sink carries this setter out.
+    pub fn mechanism(&self) -> Mechanism {
+        match self.kind {
+            Kind::RootPixmap => Mechanism::RootPixmap,
+            Kind::Swaybg => Mechanism::Swaybg,
+            Kind::Portal => Mechanism::Portal,
+            _ => Mechanism::Commands,
         }
     }
 
@@ -206,13 +282,29 @@ impl Backend {
         match self.kind {
             // XFCE names a backdrop property after each monitor and Plasma gives
             // each screen its own containment, so both hold one path per screen
-            // and both can be told to leave a screen alone.
-            Kind::Xfce | Kind::Kde => Reach::PerMonitor,
+            // and both can be told to leave a screen alone. Deepin takes a
+            // monitor's own name in every call.
+            // The root pixmap is one image the size of the root, so every
+            // monitor's picture is drawn at its own rectangle.
+            Kind::Xfce | Kind::Kde | Kind::Deepin { .. } | Kind::RootPixmap => Reach::PerMonitor,
             // No per-monitor wallpaper in any of these schemas, but
             // `picture-options` has a `spanned` value that stretches one image
             // over the whole virtual desktop.
             Kind::Gsettings { .. } => Reach::Spanned,
-            Kind::Lxqt => Reach::OneImage,
+            // sway and hyprpaper address outputs by the compositor's names,
+            // which `xrandr` through Xwayland does not report, so both are
+            // handed one image for every output.
+            // The Wayland daemons could take outputs by name too, and the names
+            // are the compositor's, which this session has no way to ask yet.
+            Kind::Lxqt
+            | Kind::Lxde
+            | Kind::Sway
+            | Kind::Hyprpaper
+            | Kind::Trinity
+            | Kind::Awww { .. }
+            | Kind::Wpaperd
+            | Kind::Swaybg
+            | Kind::Portal => Reach::OneImage,
         }
     }
 
@@ -288,23 +380,81 @@ impl Backend {
                 "pcmanfm-qt",
                 ["--set-wallpaper".to_owned(), single],
             )],
+            Kind::Lxde => vec![Invocation::new(
+                "pcmanfm",
+                [
+                    format!("--set-wallpaper={single}"),
+                    format!("--wallpaper-mode={LXDE_FILL_MODE}"),
+                ],
+            )],
+            Kind::Sway => vec![Invocation::new(
+                "swaymsg",
+                [
+                    "output".to_owned(),
+                    "*".to_owned(),
+                    "bg".to_owned(),
+                    sway_quoted(&single),
+                    "fill".to_owned(),
+                ],
+            )],
+            Kind::Hyprpaper => hyprpaper_commands(&single),
+            Kind::Deepin { legacy } => deepin_commands(placement, legacy),
+            Kind::Trinity => vec![Invocation::new(
+                "dcop",
+                [
+                    "kdesktop".to_owned(),
+                    "KBackgroundIface".to_owned(),
+                    "setWallpaper".to_owned(),
+                    single,
+                    TRINITY_FILL_MODE.to_owned(),
+                ],
+            )],
+            Kind::RootPixmap | Kind::Portal => Vec::new(),
+            Kind::Awww { program } => vec![Invocation::new(
+                program,
+                [
+                    "img".to_owned(),
+                    single,
+                    "--transition-type".to_owned(),
+                    "none".to_owned(),
+                ],
+            )],
+            Kind::Wpaperd => vec![Invocation::new("wpaperctl", ["set".to_owned(), single])],
+            Kind::Swaybg => vec![Invocation::new(
+                "swaybg",
+                [
+                    "-o".to_owned(),
+                    "*".to_owned(),
+                    "-i".to_owned(),
+                    single,
+                    "-m".to_owned(),
+                    "fill".to_owned(),
+                ],
+            )],
         }
     }
 
     /// Why this backend produced nothing to run, in the desktop's own terms.
     ///
-    /// Only reachable for XFCE, and worth its own sentence rather than a generic
-    /// failure: it means the session listed no backdrop property and named no
-    /// monitor either, so there was nowhere to put the image and nowhere to
-    /// create one, which is a different problem from a setter that ran and did
-    /// not work.
+    /// Only reachable for the setters that address monitors by name, and worth
+    /// its own sentence rather than a generic failure. For XFCE it means the
+    /// session listed no backdrop property and named no monitor either, so there
+    /// was nowhere to put the image and nowhere to create one, which is a
+    /// different problem from a setter that ran and did not work.
     pub(crate) fn nothing_to_run(&self) -> String {
-        format!(
-            "{} has no wallpaper property to set: `xfconf-query -c {XFCE_CHANNEL} -l` \
-             listed nothing ending in `{XFCE_IMAGE_PROPERTY}` and no connected \
-             monitor was named, so there is no backdrop to write to",
-            self.desktop
-        )
+        match self.kind {
+            Kind::Deepin { .. } => format!(
+                "{} sets a wallpaper per monitor by name, and xrandr named no \
+                 connected monitor to set it on",
+                self.desktop
+            ),
+            _ => format!(
+                "{} has no wallpaper property to set: `xfconf-query -c {XFCE_CHANNEL} -l` \
+                 listed nothing ending in `{XFCE_IMAGE_PROPERTY}` and no connected \
+                 monitor was named, so there is no backdrop to write to",
+                self.desktop
+            ),
+        }
     }
 }
 
@@ -331,36 +481,65 @@ fn file_uri(path: &Path) -> String {
     uri
 }
 
-/// Every backend, with the names each desktop identifies itself by.
+/// What has to be true, besides its name and its program, for a row to apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// Nothing more.
+    None,
+    /// One of these processes runs: the one that draws the key the setter
+    /// writes. `gsettings set` succeeds silently with nobody drawing, so the
+    /// schema being installed says nothing on its own.
+    Process(&'static [&'static str]),
+    /// hyprpaper's socket exists, which is the difference between a Hyprland
+    /// that takes `hyprctl hyprpaper` and one running some other daemon.
+    HyprpaperSocket,
+}
+
+/// One desktop the session can name itself as.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Row {
+    /// The names it goes by, lower case.
+    pub(crate) names: &'static [&'static str],
+    pub(crate) gate: Gate,
+    pub(crate) backend: Backend,
+}
+
+/// Every desktop with a row, with the names each identifies itself by.
 ///
 /// The names are matched case-insensitively against the tokens of
 /// [`DESKTOP_ENV`], which is how one row covers the several spellings a desktop
 /// has had: `X-Cinnamon` and `Cinnamon`, `KDE` and `plasma`.
 ///
-/// Not every row has been run against its desktop; `docs/roadmap.md` names the
-/// ones that have not.
-const BACKENDS: &[(&[&str], Backend)] = &[
-    (
-        &["kde", "plasma"],
-        Backend {
+/// Not every row has been run against its desktop; `docs/platforms.md` gives
+/// each one's tier of evidence.
+pub(crate) const ROWS: &[Row] = &[
+    Row {
+        names: &["kde", "plasma"],
+        gate: Gate::None,
+        backend: Backend {
             desktop: "KDE Plasma",
-            program: "dbus-send",
+            setter: "kde",
+            program: Some("dbus-send"),
             kind: Kind::Kde,
         },
-    ),
-    (
-        &["xfce"],
-        Backend {
+    },
+    Row {
+        names: &["xfce"],
+        gate: Gate::None,
+        backend: Backend {
             desktop: "XFCE",
-            program: "xfconf-query",
+            setter: "xfce",
+            program: Some("xfconf-query"),
             kind: Kind::Xfce,
         },
-    ),
-    (
-        &["x-cinnamon", "cinnamon"],
-        Backend {
+    },
+    Row {
+        names: &["x-cinnamon", "cinnamon"],
+        gate: Gate::Process(&["cinnamon"]),
+        backend: Backend {
             desktop: "Cinnamon",
-            program: "gsettings",
+            setter: "cinnamon",
+            program: Some("gsettings"),
             kind: Kind::Gsettings {
                 schema: "org.cinnamon.desktop.background",
                 keys: &["picture-uri"],
@@ -368,12 +547,14 @@ const BACKENDS: &[(&[&str], Backend)] = &[
                 fill: Some("picture-options"),
             },
         },
-    ),
-    (
-        &["mate"],
-        Backend {
+    },
+    Row {
+        names: &["mate"],
+        gate: Gate::None,
+        backend: Backend {
             desktop: "MATE",
-            program: "gsettings",
+            setter: "mate",
+            program: Some("gsettings"),
             kind: Kind::Gsettings {
                 schema: "org.mate.background",
                 // A path, not a URI: the key is named for what it holds.
@@ -382,35 +563,101 @@ const BACKENDS: &[(&[&str], Backend)] = &[
                 fill: Some("picture-options"),
             },
         },
-    ),
-    (
-        &["lxqt"],
-        Backend {
+    },
+    Row {
+        names: &["lxqt"],
+        gate: Gate::None,
+        backend: Backend {
             desktop: "LXQt",
-            program: "pcmanfm-qt",
+            setter: "lxqt",
+            program: Some("pcmanfm-qt"),
             kind: Kind::Lxqt,
         },
-    ),
-    (
-        // Budgie is a GNOME shell replacement and keeps GNOME's settings store,
-        // so it takes the same row's mechanism under its own name. It has to be
-        // its own row rather than falling through to GNOME's, because the
-        // refusal messages name what was detected.
-        &["budgie"],
-        Backend {
+    },
+    // Budgie is a GNOME shell replacement and keeps GNOME's settings store, so
+    // it takes the same row's mechanism under its own name. It has to be its
+    // own row rather than falling through to GNOME's, because the refusal
+    // messages name what was detected.
+    Row {
+        names: &["budgie"],
+        gate: Gate::None,
+        backend: Backend {
             desktop: "Budgie",
-            program: "gsettings",
+            setter: "budgie",
+            program: Some("gsettings"),
             kind: GNOME_BACKGROUND,
         },
-    ),
-    (
-        &["gnome", "unity", "gnome-classic", "gnome-flashback"],
-        Backend {
+    },
+    Row {
+        names: &["gnome", "gnome-classic", "gnome-flashback"],
+        gate: Gate::Process(&["gnome-shell", "gnome-flashback"]),
+        backend: Backend {
             desktop: "GNOME",
-            program: "gsettings",
+            setter: "gnome",
+            program: Some("gsettings"),
             kind: GNOME_BACKGROUND,
         },
-    ),
+    },
+    // Unity draws GNOME's key, and no process name for it was verified, so it
+    // has GNOME's mechanism without GNOME's gate.
+    Row {
+        names: &["unity"],
+        gate: Gate::None,
+        backend: Backend {
+            desktop: "Unity",
+            setter: "unity",
+            program: Some("gsettings"),
+            kind: GNOME_BACKGROUND,
+        },
+    },
+    Row {
+        names: &["sway"],
+        gate: Gate::None,
+        backend: SWAY,
+    },
+    Row {
+        names: &["hyprland"],
+        gate: Gate::HyprpaperSocket,
+        backend: Backend {
+            desktop: "Hyprland",
+            setter: "hyprland",
+            program: Some("hyprctl"),
+            kind: Kind::Hyprpaper,
+        },
+    },
+    Row {
+        names: &["lxde"],
+        gate: Gate::None,
+        backend: Backend {
+            desktop: "LXDE",
+            setter: "lxde",
+            program: Some("pcmanfm"),
+            kind: Kind::Lxde,
+        },
+    },
+    // `DDE` is what Deepin's own portal configuration expects the session to
+    // be called; `Deepin` is what other projects match. Neither was seen in a
+    // running session.
+    Row {
+        names: &["deepin", "dde"],
+        gate: Gate::None,
+        backend: Backend {
+            desktop: "Deepin",
+            setter: "deepin",
+            program: Some("dbus-send"),
+            kind: Kind::Deepin { legacy: false },
+        },
+    },
+    Row {
+        names: &["tde", "trinity"],
+        gate: Gate::None,
+        backend: Backend {
+            desktop: "Trinity",
+            setter: "trinity",
+            program: Some("dcop"),
+            kind: Kind::Trinity,
+        },
+    },
 ];
 
 /// Both keys, because GNOME picks between them by the current colour scheme and
@@ -422,49 +669,136 @@ const GNOME_BACKGROUND: Kind = Kind::Gsettings {
     fill: Some("picture-options"),
 };
 
-/// The backend for a desktop, from the value of [`DESKTOP_ENV`].
-///
-/// The list is walked in the order the desktop wrote it and the first token that
-/// names a backend wins. Matching the table in its own order instead would make
-/// the first row win regardless of what the session said it was.
-fn detect(current_desktop: &str) -> Option<Backend> {
-    current_desktop
-        .split(':')
-        .map(|token| token.trim().to_ascii_lowercase())
-        .filter(|token| !token.is_empty())
-        .find_map(|token| {
-            BACKENDS
-                .iter()
-                .find(|(names, _)| names.contains(&token.as_str()))
-                .map(|(_, backend)| *backend)
-        })
+/// sway's row, which a session can also reach through `SWAYSOCK` alone.
+pub(crate) const SWAY: Backend = Backend {
+    desktop: "sway",
+    setter: "sway",
+    program: Some("swaymsg"),
+    kind: Kind::Sway,
+};
+
+/// Deepin's appearance daemon under the name releases before DDE 23 used.
+pub(crate) const DEEPIN_LEGACY: Backend = Backend {
+    desktop: "Deepin",
+    setter: "deepin",
+    program: Some("dbus-send"),
+    kind: Kind::Deepin { legacy: true },
+};
+
+/// The bus names Deepin's appearance daemon has had, current first.
+pub(crate) const DEEPIN_BUS_NAMES: [&str; 2] =
+    ["org.deepin.dde.Appearance1", "com.deepin.daemon.Appearance"];
+
+/// The X11 root window, for a window manager that draws no desktop.
+pub(crate) const ROOT_PIXMAP: Backend = Backend {
+    desktop: "the X11 root window",
+    setter: "root-pixmap",
+    program: None,
+    kind: Kind::RootPixmap,
+};
+
+/// A running awww daemon.
+pub(crate) const AWWW: Backend = Backend {
+    desktop: "awww",
+    setter: "awww",
+    program: Some("awww"),
+    kind: Kind::Awww { program: "awww" },
+};
+
+/// A running swww daemon, awww before its rename, under the same setter name.
+pub(crate) const SWWW: Backend = Backend {
+    desktop: "swww",
+    setter: "awww",
+    program: Some("swww"),
+    kind: Kind::Awww { program: "swww" },
+};
+
+/// A running wpaperd.
+pub(crate) const WPAPERD: Backend = Backend {
+    desktop: "wpaperd",
+    setter: "wpaperd",
+    program: Some("wpaperctl"),
+    kind: Kind::Wpaperd,
+};
+
+/// A `swaybg` started and owned by this process.
+pub(crate) const SWAYBG: Backend = Backend {
+    desktop: "swaybg",
+    setter: "swaybg",
+    program: Some("swaybg"),
+    kind: Kind::Swaybg,
+};
+
+/// The setters the ladder can reach that no desktop names, in the order the
+/// forcing variable lists them.
+pub(crate) const LADDER: &[Backend] = &[AWWW, WPAPERD, SWAYBG, ROOT_PIXMAP, PORTAL];
+
+/// The XDG desktop portal, the last rung.
+pub(crate) const PORTAL: Backend = Backend {
+    desktop: "the XDG desktop portal",
+    setter: "portal",
+    program: None,
+    kind: Kind::Portal,
+};
+
+/// The portal backend that implements the wallpaper portal by writing GNOME's
+/// key, and so means something only where a GNOME shell draws that key.
+pub(crate) const GTK_PORTAL_BACKEND: &str = "gtk";
+
+/// The app id the portal knows this app by, which is also its desktop file's
+/// basename and its XDG app id.
+pub const APP_ID: &str = "sunlit-earth";
+
+/// Whether a command line names a file under `dir`, which is how a `swaybg`
+/// this app started is told from one the user did: no state file, just the
+/// image it was given.
+pub fn names_a_file_under(cmdline: &[String], dir: &Path) -> bool {
+    cmdline
+        .iter()
+        .skip(1)
+        .any(|arg| Path::new(arg).starts_with(dir) && Path::new(arg) != dir)
 }
 
-/// The backend for this process's session.
+/// The protocol a compositor has to offer for `swaybg` to draw a background.
+pub(crate) const LAYER_SHELL: &str = "zwlr_layer_shell_v1";
+
+/// Which row a desktop window belongs to, by its `WM_CLASS`.
+///
+/// The programs that draw a desktop window over the root on an X11 session,
+/// and the setter each one listens to. Matched against either half of
+/// `WM_CLASS`, lower case.
+pub(crate) const DESKTOP_WINDOW_OWNERS: &[(&str, &str)] = &[
+    ("pcmanfm", "lxde"),
+    ("pcmanfm-qt", "lxqt"),
+    ("xfdesktop", "xfce"),
+    ("nemo-desktop", "cinnamon"),
+    ("caja", "mate"),
+    ("plasmashell", "kde"),
+];
+
+/// Window manager names that mean the shell draws its own background, so a
+/// root pixmap would be painted under it and never seen.
+pub(crate) const COMPOSITING_SHELLS: &[&str] = &["Mutter", "Muffin", "GNOME Shell", "KWin"];
+
+/// The setter for this process's session, asked of the session itself.
+#[cfg(target_os = "linux")]
+pub fn choose_current() -> Result<Choice, Refusal> {
+    choose(&probe::LiveSession::new())
+}
+
+/// The backend for this process's session, where it has one.
+#[cfg(target_os = "linux")]
 pub fn detect_current() -> Option<Backend> {
-    detect(&crate::env_override(DESKTOP_ENV).unwrap_or_default())
+    choose_current().ok().map(|choice| choice.backend)
 }
 
-/// What to say when there is no backend for this session.
-///
-/// Names what was detected rather than only refusing, because the two causes
-/// look identical from the outside: a desktop with no row in the table, and no
-/// desktop at all.
-pub(crate) fn no_backend_message(current_desktop: &str) -> String {
-    let known: Vec<&str> = BACKENDS.iter().map(|(_, b)| b.desktop).collect();
-    if current_desktop.trim().is_empty() {
-        format!(
-            "no desktop session to set a wallpaper in: {DESKTOP_ENV} is not set. \
-             The desktops with a setter here are {}.",
-            known.join(", ")
-        )
-    } else {
-        format!(
-            "setting the wallpaper is not supported on {current_desktop}. \
-             The desktops with a setter here are {}.",
-            known.join(", ")
-        )
-    }
+/// The backend a session named `desktop` gets when everything it asks for is
+/// there, which is the table's own answer with no probing in the way.
+#[cfg(test)]
+fn detect(desktop: &str) -> Option<Backend> {
+    choose(&choose::fake::FakeSession::complete(desktop))
+        .ok()
+        .map(|choice| choice.backend)
 }
 
 #[cfg(test)]
@@ -576,6 +910,35 @@ mod tests {
         assert_eq!(detect("GNOME").map(|b| b.desktop), Some("GNOME"));
     }
 
+    /// What each of the table's desktops is called by the sessions that run it,
+    /// and the setter that name chose before there was anything but the table.
+    #[test]
+    fn the_desktops_in_the_table_choose_the_setter_they_always_chose() {
+        for (session, setter) in [
+            ("KDE", "kde"),
+            ("plasma", "kde"),
+            ("XFCE", "xfce"),
+            ("X-Cinnamon", "cinnamon"),
+            ("Cinnamon", "cinnamon"),
+            ("MATE", "mate"),
+            ("LXQt", "lxqt"),
+            ("Budgie:GNOME", "budgie"),
+            ("GNOME", "gnome"),
+            ("ubuntu:GNOME", "gnome"),
+            ("pop:GNOME", "gnome"),
+            ("GNOME-Classic:GNOME", "gnome"),
+            ("GNOME-Flashback:GNOME", "gnome"),
+            ("Unity", "unity"),
+            ("Unity:Unity7", "unity"),
+        ] {
+            assert_eq!(
+                detect(session).map(|backend| backend.setter),
+                Some(setter),
+                "{session}"
+            );
+        }
+    }
+
     #[test]
     fn the_match_is_case_insensitive_and_ignores_padding() {
         for spelling in ["kde", "KDE", "Kde", " KDE ", "plasma:KDE"] {
@@ -593,14 +956,6 @@ mod tests {
         assert_eq!(detect("COSMIC"), None);
         assert_eq!(detect(""), None);
         assert_eq!(detect(":::"), None);
-
-        let refusal = no_backend_message("Enlightenment");
-        assert!(refusal.contains("Enlightenment"), "{refusal}");
-        assert!(refusal.contains("KDE Plasma"), "{refusal}");
-        // No session at all is a different sentence, because the cause is.
-        let unset = no_backend_message("");
-        assert!(unset.contains(DESKTOP_ENV), "{unset}");
-        assert!(!unset.contains("not supported on"), "{unset}");
     }
 
     #[test]
@@ -635,17 +990,21 @@ mod tests {
     fn every_backend_names_the_program_its_commands_run() {
         // The probe happens before anything is rendered, so it has to look for
         // the program the commands will actually invoke.
-        for (names, backend) in BACKENDS {
+        for Row { names, backend, .. } in ROWS {
             let desktop = names[0];
             let discovered = "/backdrop/screen0/monitor0/workspace0/image-style\n\
                               /backdrop/screen0/monitor0/workspace0/last-image";
-            let cmds = backend.commands(&Placement::single(PathBuf::from("/w.png")), discovered);
+            let placement = Placement {
+                per_monitor: vec![("Virtual-1".to_owned(), PathBuf::from("/w.png"))],
+                ..Placement::single(PathBuf::from("/w.png"))
+            };
+            let cmds = backend.commands(&placement, discovered);
             assert!(!cmds.is_empty(), "{desktop} produced no command");
             for cmd in &cmds {
-                assert_eq!(cmd.program, backend.program, "{desktop}");
+                assert_eq!(Some(cmd.program), backend.program, "{desktop}");
             }
             if let Some(discovery) = backend.discovery() {
-                assert_eq!(discovery.program, backend.program, "{desktop}");
+                assert_eq!(Some(discovery.program), backend.program, "{desktop}");
             }
         }
     }
@@ -705,7 +1064,7 @@ mod tests {
     #[test]
     fn a_desktop_that_cannot_reach_the_mode_says_what_it_did_instead() {
         // One screen has nothing to explain: all three modes mean the same.
-        for (_, backend) in BACKENDS {
+        for Row { backend, .. } in ROWS {
             for mode in DisplayMode::ALL {
                 assert_eq!(backend.degradation(mode, 1), None, "{}", backend.desktop);
             }
@@ -745,15 +1104,18 @@ mod tests {
     fn no_two_backends_answer_to_the_same_name() {
         // One name in two rows would make the table's answer depend on its
         // order, which the detection deliberately does not use.
-        let mut seen: Vec<&str> = BACKENDS
-            .iter()
-            .flat_map(|(names, _)| *names)
-            .copied()
-            .collect();
+        let mut seen: Vec<&str> = ROWS.iter().flat_map(|row| row.names).copied().collect();
         let before = seen.len();
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), before, "a desktop name appears in two rows");
+        // Nor two rows to the same setter name, which is what the forcing
+        // variable looks them up by.
+        let mut setters: Vec<&str> = ROWS.iter().map(|row| row.backend.setter).collect();
+        let rows = setters.len();
+        setters.sort_unstable();
+        setters.dedup();
+        assert_eq!(setters.len(), rows, "a setter name appears in two rows");
         // And every name is already lower case, since that is what it is
         // compared against.
         for name in seen {

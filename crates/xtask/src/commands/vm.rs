@@ -495,7 +495,8 @@ pub fn desktop_for(image: Image, requested: Option<Desktop>) -> Result<Option<De
 /// at all.
 ///
 /// A session type with no desktop is the image default's desktop, KDE, on that
-/// type. The refusals off the Linux image mirror [`desktop_for`]'s, for the
+/// type, and a desktop with no session type gets the one it runs on: X11 where
+/// it has it, Wayland for sway. The refusals off the Linux image mirror [`desktop_for`]'s, for the
 /// same reason.
 pub fn login_for(
     image: Image,
@@ -504,7 +505,9 @@ pub fn login_for(
 ) -> Result<Option<Login>, String> {
     let desktop = desktop_for(image, desktop)?;
     match (image, session_type) {
-        (Image::Linux, None) => desktop.map(|d| Login::new(d, SessionType::X11)).transpose(),
+        (Image::Linux, None) => desktop
+            .map(|d| Login::new(d, d.default_session_type()))
+            .transpose(),
         (Image::Linux, Some(session_type)) => Login::new(
             desktop.unwrap_or(Login::IMAGE_DEFAULT.desktop()),
             session_type,
@@ -550,13 +553,19 @@ impl BootRequest {
         if screens > 1
             && let Some(login) = login.filter(|l| l.session_type() == SessionType::Wayland)
         {
+            let label = login.label();
+            let instead = if login.desktop().session(SessionType::X11).is_some() {
+                format!(
+                    "--session-type x11 gives {screens} screens, and a Wayland session \
+                     runs on one"
+                )
+            } else {
+                format!("{label} has no X11 session, so it runs on one screen")
+            };
             return Err(format!(
-                "--screens {screens} with --session-type wayland asks for a layout \
-                 nothing here can make: the screens are placed with xrandr and the \
-                 pointer mapped with xinput, and neither can move {}'s outputs. \
-                 --session-type x11 gives {screens} screens, and a Wayland session \
-                 runs on one",
-                login.label()
+                "--screens {screens} with {label} asks for a layout nothing here can \
+                 make: the screens are placed with xrandr and the pointer mapped with \
+                 xinput, and neither can move a Wayland compositor's outputs. {instead}"
             ));
         }
         Ok((login, screens))
@@ -2412,6 +2421,16 @@ mod tests {
         );
         assert!(request(None, 2).check(Image::Linux).is_ok());
         assert_eq!(BootRequest::PLAIN.check(Image::Windows), Ok((None, 1)));
+
+        let sway = BootRequest {
+            desktop: Some(Desktop::Sway),
+            session_type: None,
+            screens: 2,
+        };
+        let refusal = sway.check(Image::Linux).expect_err("sway is Wayland only");
+        assert!(refusal.contains("sway (Wayland)"), "{refusal}");
+        assert!(refusal.contains("no X11 session"), "{refusal}");
+        assert!(!refusal.contains("--session-type"), "{refusal}");
     }
 
     #[test]

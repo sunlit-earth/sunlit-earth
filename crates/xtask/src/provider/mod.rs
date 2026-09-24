@@ -435,21 +435,49 @@ mod tests {
         assert!(guest_textures(Target::Windows).starts_with("C:"));
     }
 
-    /// A Wayland session's `session.env` names its compositor socket, which is
-    /// what makes the app a Wayland client there, and an X11 session's has no
-    /// such line at all, blank or otherwise.
+    /// `session.env` has a line for a variable only when the session has it. A
+    /// Wayland session's names its compositor socket, which is what makes the
+    /// app a Wayland client there, and an X11 session's has no such line at
+    /// all; a blank `XDG_DATA_DIRS`, which sway would otherwise leave, makes
+    /// gdk-pixbuf recognize no image format in anything started from the file.
     #[test]
-    fn the_session_marker_carries_wayland_display_only_when_there_is_one() {
+    fn the_session_marker_writes_only_the_variables_the_session_has() {
         let linux = std::fs::read_to_string(
             crate::store::repo_root().join("vm/linux/scripts/guest-contract.sh"),
         )
         .expect("the Linux guest contract script");
-        let line = "echo \"WAYLAND_DISPLAY=${WAYLAND_DISPLAY}\"";
-        assert_eq!(linux.matches(line).count(), 1, "{linux}");
-        let guarded = format!("if [ -n \"${{WAYLAND_DISPLAY:-}}\" ]; then\n    {line}\n  fi");
+        let head = linux
+            .find("for name in DISPLAY")
+            .expect("the marker's loop over the variables");
+        let rest = &linux[head..];
+        let list_end = rest.find("; do").expect("the loop's list");
+        let names: Vec<&str> = rest[..list_end]
+            .split_whitespace()
+            .skip(2)
+            .filter(|word| *word != "\\")
+            .collect();
+        for name in [
+            "WAYLAND_DISPLAY",
+            "XDG_DATA_DIRS",
+            "XDG_CURRENT_DESKTOP",
+            "DISPLAY",
+        ] {
+            assert!(names.contains(&name), "{name} is not written: {names:?}");
+        }
+        let body_end = rest
+            .find("done > \"${root}/session.env\"")
+            .expect("the loop writes session.env");
+        let body = &rest[list_end..body_end];
+        let guarded = "  if [ -n \"${value}\" ]; then
+    echo \"${name}=${value}\"
+  fi";
         assert!(
-            linux.contains(&guarded),
-            "the line is written unconditionally"
+            body.contains(guarded),
+            "a variable is written blank: {body}"
+        );
+        assert!(
+            !linux.contains("echo \"WAYLAND_DISPLAY="),
+            "a line outside the loop writes WAYLAND_DISPLAY"
         );
     }
 

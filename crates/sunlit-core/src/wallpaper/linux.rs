@@ -6,6 +6,10 @@
 //! there is no system call to make on Linux; what this module owns is the files
 //! and the running.
 
+mod portal;
+mod root_pixmap;
+mod swaybg;
+
 #[cfg(target_os = "linux")]
 use crate::display::layout::DisplayMode;
 #[cfg(target_os = "linux")]
@@ -99,17 +103,6 @@ fn write_placement(
     }
 }
 
-/// Whether a program is on `PATH`, and where.
-///
-/// Written out rather than shelling out to `which`, which is one more program
-/// that has to be installed for the check to work.
-#[cfg(target_os = "linux")]
-fn which(program: &str) -> Option<std::path::PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
-}
-
 /// Run one of the desktop's commands, and answer with its output.
 ///
 /// A failure carries the program's own stderr, because the useful half of
@@ -131,41 +124,85 @@ fn run(command: &crate::desktop::Invocation) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Whether this desktop has a setter, asked before anything is rendered.
+/// Whether this session has a setter, asked before anything is rendered.
 ///
 /// On Linux both halves of the answer are cheap and both matter: which
-/// desktop this is, and whether its setter is installed. Finding out after a
+/// setter this session gets, and whether it is installed. Finding out after a
 /// full-resolution render and readback is what this exists to avoid.
 #[cfg(target_os = "linux")]
 pub(crate) fn check_supported() -> Result<(), String> {
-    let backend = crate::desktop::detect_current().ok_or_else(|| {
-        crate::desktop::no_backend_message(
-            &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
-        )
-    })?;
-    if which(backend.program).is_none() {
-        return Err(format!(
-            "this is {desktop}, whose wallpaper is set with `{program}`, and \
-             that program is not on PATH",
-            desktop = backend.desktop,
-            program = backend.program,
-        ));
+    chosen().map(|_| ())
+}
+
+/// The setter this session gets now, with its evidence logged whenever it
+/// differs from the last choice's, so a log shows each change of setter once.
+#[cfg(target_os = "linux")]
+fn chosen() -> Result<crate::desktop::Backend, String> {
+    use std::sync::Mutex;
+
+    static LAST: Mutex<Option<String>> = Mutex::new(None);
+    let choice = crate::desktop::choose_current().map_err(|refusal| refusal.to_string())?;
+    let explanation = choice.explanation();
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.as_deref() != Some(explanation.as_str()) {
+        tracing::info!("wallpaper setter: {explanation}");
+        *last = Some(explanation);
     }
-    Ok(())
+    Ok(choice.backend)
 }
 
 /// Write the PNGs and run the desktop's own setter.
 ///
-/// The backend is looked up again rather than cached from `check_supported`:
-/// the sink outlives a session change, and running the previous desktop's
-/// setter would fail in a way that named the wrong desktop.
+/// The setter is chosen again rather than cached from `check_supported`: the
+/// sink outlives a session change, and running the previous desktop's setter
+/// would fail in a way that named the wrong desktop.
 #[cfg(target_os = "linux")]
 pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
-    let backend = crate::desktop::detect_current().ok_or_else(|| {
-        crate::desktop::no_backend_message(
-            &crate::env_override(crate::desktop::DESKTOP_ENV).unwrap_or_default(),
-        )
-    })?;
+    use crate::desktop::Mechanism;
+
+    let backend = chosen()?;
+    let done = || {
+        backend
+            .degradation(job.mode, job.monitors.len())
+            .unwrap_or_default()
+    };
+    match backend.mechanism() {
+        Mechanism::Commands => {}
+        Mechanism::RootPixmap => {
+            root_pixmap::set(job)?;
+            return Ok(done());
+        }
+        Mechanism::Swaybg => {
+            let placement = write_placement(job, backend.reach())?;
+            let command = backend
+                .commands(&placement, "")
+                .into_iter()
+                .next()
+                .ok_or_else(|| backend.nothing_to_run())?;
+            let image_dir = placement
+                .single
+                .parent()
+                .ok_or_else(|| "the wallpaper was written to no directory".to_owned())?;
+            swaybg::publish(&command, image_dir, &crate::wallpaper::wallpaper_dir()?)?;
+            tracing::info!(
+                path = %placement.single.display(),
+                "wallpaper set through a swaybg of our own"
+            );
+            return Ok(done());
+        }
+        Mechanism::Portal => {
+            let placement = write_placement(job, backend.reach())?;
+            let waiting = portal::publish(&placement.single)?;
+            tracing::info!(path = %placement.single.display(), "wallpaper handed to the portal");
+            return Ok([waiting, done()]
+                .into_iter()
+                .filter(|note| !note.is_empty())
+                .collect::<Vec<_>>()
+                .join("; "));
+        }
+    }
     let placement = write_placement(job, backend.reach())?;
 
     let discovered = match backend.discovery() {
@@ -187,9 +224,7 @@ pub(crate) fn set_wallpaper_job(job: &WallpaperJob) -> Result<String, String> {
         screens = job.monitors.len(),
         "wallpaper set successfully"
     );
-    Ok(backend
-        .degradation(job.mode, job.monitors.len())
-        .unwrap_or_default())
+    Ok(done())
 }
 
 #[cfg(test)]
@@ -227,28 +262,15 @@ mod tests {
     }
 
     /// On Linux the answer depends on the session, which a unit test does not
-    /// have, so what is asserted is that the refusal explains itself. Both
-    /// causes are refusals with something to act on: no desktop, and a desktop
-    /// whose setter is not installed.
+    /// have, so what is asserted is that a refusal explains itself.
     #[test]
     #[cfg(target_os = "linux")]
-    fn a_linux_refusal_names_the_desktop_or_the_missing_program() {
-        match SystemWallpaper.check_supported() {
-            Ok(()) => {
-                // A desktop with its setter present, which is what the guest
-                // has: then the backend was found and probed.
-                let backend =
-                    crate::desktop::detect_current().expect("supported means a backend was found");
-                assert!(which(backend.program).is_some());
-            }
-            Err(refusal) => {
-                assert!(
-                    refusal.contains(crate::desktop::DESKTOP_ENV)
-                        || refusal.contains("not supported on")
-                        || refusal.contains("not on PATH"),
-                    "{refusal}"
-                );
-            }
+    fn a_linux_refusal_says_what_was_tried() {
+        if let Err(refusal) = SystemWallpaper.check_supported() {
+            assert!(refusal.contains("no way to set the wallpaper"), "{refusal}");
+            assert!(refusal.contains(": "), "{refusal}");
+        } else {
+            assert!(crate::desktop::detect_current().is_some());
         }
     }
 }

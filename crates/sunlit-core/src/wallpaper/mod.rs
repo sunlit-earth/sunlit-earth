@@ -56,7 +56,7 @@ pub(crate) const GENERATIONS_KEPT: usize = 12;
 /// with no scratch set panics rather than falling back to the live directory, so
 /// a test that forgets the isolation fails loudly in CI instead of quietly on a
 /// desktop.
-pub(crate) fn wallpaper_dir() -> Result<PathBuf, String> {
+pub fn wallpaper_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     let dir = scratch_override().expect(
         "a unit test resolved wallpaper_dir() without a scratch override; wrap the \

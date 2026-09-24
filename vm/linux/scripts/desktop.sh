@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Four desktops on Xorg, two of them on Wayland as well, one display manager,
-# and a per-boot choice between them. Runs as root through sudo.
+# Four desktops on Xorg, two of them on Wayland as well, sway and i3, one
+# display manager, and a per-boot choice between them. Runs as root through sudo.
 #
 # Phase 5 decision 2: KDE Plasma (the default), GNOME, XFCE and Cinnamon, each
 # from the smallest package set that gives a working session, never the
@@ -98,20 +98,29 @@ apt-get install -y --no-install-recommends \
   xfce4 \
   cinnamon-core
 
+# Two sessions with no desktop of their own, where the wallpaper setters that
+# are not a desktop's are exercised: sway on Wayland, with `swaybg` both for
+# sway's own `output bg` and for the app's owned one, and i3 on X11, where the
+# app paints the root window itself. Neither runs XDG autostart, so each gets
+# the session marker from its own configuration below.
+apt-get install -y --no-install-recommends \
+  sway swaybg \
+  i3-wm
+
 # Every session name the host may ask for has to exist, and the moment to find
 # out is the build rather than a boot forty minutes of image later: a missing
 # session file makes sddm fall back to its own idea of a session, which is not
 # the desktop whose results anybody is about to read.
-for session in plasmax11 gnome-xorg xfce cinnamon; do
+for session in plasmax11 gnome-xorg xfce cinnamon i3; do
   test -f "/usr/share/xsessions/${session}.desktop"
 done
 
-# The two Wayland sessions, from the same packages. Each name has to exist in the
+# The Wayland sessions, from the same packages. Each name has to exist in the
 # Wayland directory and must not exist in the X11 one: sddm's autologin resolves
 # a name by basename and looks in /usr/share/xsessions first (sddm issue #837), so
 # a name in both starts the X11 session while every record says Wayland. That is
 # why GNOME's is `gnome-wayland` and not `gnome`, which both directories have.
-for session in plasma gnome-wayland; do
+for session in plasma gnome-wayland sway; do
   test -f "/usr/share/wayland-sessions/${session}.desktop"
   if [ -e "/usr/share/xsessions/${session}.desktop" ]; then
     echo "${session} is an X11 session name as well as a Wayland one, so sddm would start the X11 session for it" >&2
@@ -294,6 +303,30 @@ if [ -f /etc/xdg/xfce4/panel/default.xml ]; then
   chown -R "${TEST_USER}:${TEST_USER}" "${home}/.config/xfce4"
 fi
 
+# sway and i3 start no XDG autostart entries, so the session marker every other
+# desktop gets from /etc/xdg/autostart is started from their own configuration.
+# Debian's /etc/sway/config ends by including /etc/sway/config.d; the snippet also
+# replaces the default background, whose image is in sway-backgrounds, a
+# Recommends this build leaves out. i3 reads the account's own config before
+# /etc/i3's, and having one is also what keeps i3-config-wizard from asking in a
+# window over the session at the first login. sway looks for i3's config too,
+# and before /etc/sway/config, so without one of its own it would read the i3
+# file above instead of the snippet, and answer its one i3-only line with an
+# "errors in your config file" bar over the session. The account's sway config
+# is the system one.
+install -d -m 0755 /etc/sway/config.d
+cat > /etc/sway/config.d/50-sunlit-e2e.conf <<'EOF'
+output * bg #203040 solid_color
+exec /usr/local/bin/sunlit-e2e-session-ready
+EOF
+install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 "${home}/.config/i3"
+grep -v 'i3-config-wizard' /etc/i3/config > "${home}/.config/i3/config"
+echo 'exec --no-startup-id /usr/local/bin/sunlit-e2e-session-ready' >> "${home}/.config/i3/config"
+chown "${TEST_USER}:${TEST_USER}" "${home}/.config/i3/config"
+install -d -o "${TEST_USER}" -g "${TEST_USER}" -m 0755 "${home}/.config/sway"
+echo 'include /etc/sway/config' > "${home}/.config/sway/config"
+chown "${TEST_USER}:${TEST_USER}" "${home}/.config/sway/config"
+
 # The per-boot desktop choice (phase 5 decision 3). The host adds
 # `-fw_cfg name=opt/sunlit/desktop,string=<session>` to QEMU's command line and
 # this reads it back out. The device is ACPI-enumerated as QEMU0002, so
@@ -318,7 +351,7 @@ session="${default_session}"
 if [ -r "${asked_path}" ]; then
   asked="$(tr -d '\000\r\n' < "${asked_path}")"
   case "${asked}" in
-    plasmax11|gnome-xorg|xfce|cinnamon|plasma|gnome-wayland) session="${asked}" ;;
+    plasmax11|gnome-xorg|xfce|cinnamon|i3|plasma|gnome-wayland|sway) session="${asked}" ;;
     "") ;;
     *) echo "sunlit-e2e: '${asked}' is not a desktop this image offers" >&2 ;;
   esac
@@ -328,7 +361,7 @@ fi
 # was built without that desktop, which is worth saying rather than handing sddm
 # a session it will silently replace with one of its own choosing.
 case "${session}" in
-  plasma|gnome-wayland) sessions_dir=/usr/share/wayland-sessions ;;
+  plasma|gnome-wayland|sway) sessions_dir=/usr/share/wayland-sessions ;;
   *) sessions_dir=/usr/share/xsessions ;;
 esac
 if [ ! -f "${sessions_dir}/${session}.desktop" ]; then

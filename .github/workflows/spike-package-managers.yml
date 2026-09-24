@@ -1,0 +1,577 @@
+name: Spike package managers
+
+# Temporary: Step 1 of docs/plans/2026-09-24-package-managers-plan.md, against
+# the published v0.2.0-beta.1. Removed once its findings are recorded.
+on:
+  push:
+    branches: [feat/package-managers]
+    paths:
+      - .github/workflows/spike-package-managers.yml
+
+permissions:
+  contents: read
+
+env:
+  TAG: v0.2.0-beta.1
+  VERSION: 0.2.0-beta.1
+  BASE: https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1
+  SUNLIT_EARTH_NO_CLOUDS: "1"
+  GH_TOKEN: ${{ github.token }}
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            os: macos-latest
+          - arch: x86_64
+            os: macos-26-intel
+    env:
+      SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/spike-config.toml
+      SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/spike-cache
+      SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/spike-metrics
+    steps:
+      - name: Homebrew and macOS
+        run: |
+          brew --version
+          sw_vers
+          uname -m
+          brew config | head -20
+          grep -rn "postflight_steps\|flight_steps" "$(brew --repository)/Library/Homebrew/cask" | head -40 || true
+        shell: bash
+
+      - name: Hashes
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" -R sunlit-earth/sunlit-earth --json assets \
+            --jq '.assets[] | "\(.name) \(.digest)"' | tee digests.txt
+          for arch in aarch64 x86_64; do
+            h=$(grep "macos-$arch-app.zip" digests.txt | sed 's/.*sha256://')
+            echo "SHA_MAC_$arch=$h" >> "$GITHUB_ENV"
+          done
+          for arch in aarch64 x86_64; do
+            h=$(grep "linux-$arch.tar.gz" digests.txt | sed 's/.*sha256://')
+            echo "SHA_LINUX_$arch=$h" >> "$GITHUB_ENV"
+          done
+        shell: bash
+
+      - name: A local tap with a cask and a Linux-only formula
+        run: |
+          set -euo pipefail
+          brew tap-new --no-git sunlit-earth/verify
+          tap="$(brew --repository)/Library/Taps/sunlit-earth/homebrew-verify"
+          TAP="$tap"
+          echo "TAP=$tap" >> "$GITHUB_ENV"
+          mkdir -p "$tap/Casks" "$tap/Formula"
+          write_cask() {
+            cat > "$TAP/Casks/sunlit-earth.rb" <<EOF
+          cask "sunlit-earth" do
+            arch arm: "aarch64", intel: "x86_64"
+
+            version "$VERSION"
+            sha256 arm:   "$SHA_MAC_aarch64",
+                   intel: "$SHA_MAC_x86_64"
+
+            url "https://github.com/sunlit-earth/sunlit-earth/releases/download/v#{version}/sunlit-earth-#{version}-macos-#{arch}-app.zip"
+            name "Sunlit Earth"
+            desc "View of Earth as seen from space as your wallpaper"
+            homepage "https://github.com/sunlit-earth/sunlit-earth"
+
+            livecheck do
+              url "https://github.com/sunlit-earth/sunlit-earth"
+              strategy :github_latest
+            end
+
+            depends_on macos: :big_sur
+
+            app "sunlit-earth-#{version}-macos-#{arch}-app/Sunlit Earth.app"
+            binary "#{appdir}/Sunlit Earth.app/Contents/MacOS/sunlit-earth"
+          $1
+            uninstall quit: "earth.sunlit.SunlitEarth"
+
+            zap trash: "~/Library/Application Support/SunlitEarth"
+          end
+          EOF
+            cat "$TAP/Casks/sunlit-earth.rb"
+          }
+          declare -f write_cask > write_cask.sh
+          write_cask ""
+          cat > "$tap/Formula/sunlit-earth.rb" <<EOF
+          class SunlitEarth < Formula
+            desc "View of Earth as seen from space as your wallpaper"
+            homepage "https://github.com/sunlit-earth/sunlit-earth"
+            version "$VERSION"
+            license "GPL-3.0-or-later"
+
+            on_arm do
+              url "https://github.com/sunlit-earth/sunlit-earth/releases/download/v#{version}/sunlit-earth-#{version}-linux-aarch64.tar.gz"
+              sha256 "$SHA_LINUX_aarch64"
+            end
+            on_intel do
+              url "https://github.com/sunlit-earth/sunlit-earth/releases/download/v#{version}/sunlit-earth-#{version}-linux-x86_64.tar.gz"
+              sha256 "$SHA_LINUX_x86_64"
+            end
+
+            depends_on :linux
+
+            def install
+              libexec.install Dir["*"]
+              bin.install_symlink libexec/"sunlit-earth"
+            end
+
+            test do
+              system bin/"sunlit-earth", "--version"
+            end
+          end
+          EOF
+        shell: bash
+
+      - name: The formula without --cask on macOS
+        run: |
+          brew install sunlit-earth/verify/sunlit-earth 2>&1 | tee formula-on-macos.txt
+          echo "exit: ${PIPESTATUS[0]}"
+          true
+        shell: bash
+
+      - name: Control, the cask without a flight step
+        run: |
+          set -uo pipefail
+          brew fetch --cask sunlit-earth/verify/sunlit-earth
+          cached=$(brew --cache --cask sunlit-earth/verify/sunlit-earth)
+          echo "cached download: $cached"
+          xattr -l "$cached" || true
+          brew install --cask sunlit-earth/verify/sunlit-earth
+          echo "exit: $?"
+          echo "--- xattr on the installed app"
+          xattr -l "/Applications/Sunlit Earth.app" || true
+          xattr -p com.apple.quarantine "/Applications/Sunlit Earth.app" && echo "QUARANTINED" || echo "NOT QUARANTINED"
+          ls -l "$(brew --prefix)/bin/sunlit-earth"
+          brew uninstall --cask sunlit-earth/verify/sunlit-earth
+          ls -ld "/Applications/Sunlit Earth.app" || echo "app removed"
+        shell: bash
+
+      - name: The cask with postflight_steps
+        run: |
+          set -uo pipefail
+          source write_cask.sh
+          write_cask '  postflight_steps do
+              run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Sunlit Earth.app"]
+            end
+          '
+          brew install --cask sunlit-earth/verify/sunlit-earth 2>&1 | tee cask-install.txt
+          echo "exit: ${PIPESTATUS[0]}"
+          echo "--- xattr on the installed app"
+          xattr -l "/Applications/Sunlit Earth.app" || true
+          xattr -p com.apple.quarantine "/Applications/Sunlit Earth.app" && echo "QUARANTINED" || echo "NOT QUARANTINED"
+          xattr -rl "/Applications/Sunlit Earth.app" | grep -c quarantine || true
+        shell: bash
+
+      - name: brew style and audit
+        run: |
+          brew style "$TAP/Casks/sunlit-earth.rb" "$TAP/Formula/sunlit-earth.rb"
+          echo "style exit: $?"
+          brew audit --cask --strict sunlit-earth/verify/sunlit-earth
+          echo "cask audit exit: $?"
+          brew audit --cask --strict --online sunlit-earth/verify/sunlit-earth
+          echo "cask audit online exit: $?"
+          brew audit --formula --strict sunlit-earth/verify/sunlit-earth
+          echo "formula audit exit: $?"
+          true
+        shell: bash
+
+      - name: Run through PATH and the binary symlink
+        run: |
+          set -uo pipefail
+          mkdir -p elsewhere empty && cd elsewhere
+          which sunlit-earth
+          ls -l "$(which sunlit-earth)"
+          sunlit-earth --version
+          sunlit-earth render --output through-link.png --width 640 --height 360 2>&1 | grep -i "texture" | head -5
+          SUNLIT_EARTH_TEXTURES="$GITHUB_WORKSPACE/empty" sunlit-earth render --output grid.png --width 640 --height 360 2>&1 | grep -i "texture" | head -5
+          "/Applications/Sunlit Earth.app/Contents/MacOS/sunlit-earth" render --output direct.png --width 640 --height 360 2>&1 | grep -i "texture" | head -5
+          ls -l *.png
+        shell: bash
+
+      - name: open -a
+        run: |
+          set -uo pipefail
+          open -a "Sunlit Earth"
+          echo "open exit: $?"
+          sleep 10
+          pgrep -fl sunlit-earth || echo "no process"
+          log show --last 1m --predicate 'subsystem == "com.apple.syspolicy" OR process == "syspolicyd"' --style compact 2>/dev/null | tail -20 || true
+          spctl --assess --type execute -vv "/Applications/Sunlit Earth.app" 2>&1 || true
+        shell: bash
+
+      - name: Uninstall
+        run: |
+          set -uo pipefail
+          brew uninstall --cask sunlit-earth/verify/sunlit-earth
+          echo "exit: $?"
+          pgrep -fl sunlit-earth || echo "no process"
+          ls -ld "/Applications/Sunlit Earth.app" || echo "app removed"
+          ls -l "$(brew --prefix)/bin/sunlit-earth" || echo "binary link removed"
+          ls -ld "$(brew --prefix)/Caskroom/sunlit-earth" || echo "caskroom removed"
+        shell: bash
+
+      - name: For comparison, the legacy postflight block
+        run: |
+          set -uo pipefail
+          source write_cask.sh
+          write_cask '  postflight do
+              system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{appdir}/Sunlit Earth.app"]
+            end
+          '
+          brew install --cask sunlit-earth/verify/sunlit-earth 2>&1 | tee legacy-install.txt
+          xattr -p com.apple.quarantine "/Applications/Sunlit Earth.app" && echo "QUARANTINED" || echo "NOT QUARANTINED"
+          brew style "$TAP/Casks/sunlit-earth.rb"
+          brew uninstall --cask sunlit-earth/verify/sunlit-earth
+          true
+        shell: bash
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: spike-macos-${{ matrix.arch }}
+          path: |
+            elsewhere/*.png
+            *.txt
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    env:
+      SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/spike-config.toml
+      SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/spike-cache
+      SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/spike-metrics
+    steps:
+      - name: Is Homebrew here
+        run: |
+          ls -ld /home/linuxbrew/.linuxbrew || echo "no /home/linuxbrew/.linuxbrew"
+          command -v brew || echo "brew not on PATH"
+          cat /etc/os-release | head -3
+          uname -m
+        shell: bash
+
+      - name: Put Homebrew on PATH or install it
+        run: |
+          set -euo pipefail
+          if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+            echo "/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+            echo "preinstalled"
+          else
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+            echo "/home/linuxbrew/.linuxbrew/sbin" >> "$GITHUB_PATH"
+            echo "installed now"
+          fi
+        shell: bash
+
+      - name: Homebrew
+        run: |
+          brew --version
+          brew config | head -20
+        shell: bash
+
+      - name: A local tap with the formula
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" -R sunlit-earth/sunlit-earth --json assets \
+            --jq '.assets[] | "\(.name) \(.digest)"' > digests.txt
+          sha_a=$(grep "linux-aarch64.tar.gz" digests.txt | sed 's/.*sha256://')
+          sha_x=$(grep "linux-x86_64.tar.gz" digests.txt | sed 's/.*sha256://')
+          brew tap-new --no-git sunlit-earth/verify
+          tap="$(brew --repository)/Library/Taps/sunlit-earth/homebrew-verify"
+          TAP="$tap"
+          echo "TAP=$tap" >> "$GITHUB_ENV"
+          mkdir -p "$tap/Formula"
+          cat > "$tap/Formula/sunlit-earth.rb" <<EOF
+          class SunlitEarth < Formula
+            desc "View of Earth as seen from space as your wallpaper"
+            homepage "https://github.com/sunlit-earth/sunlit-earth"
+            version "$VERSION"
+            license "GPL-3.0-or-later"
+
+            on_arm do
+              url "https://github.com/sunlit-earth/sunlit-earth/releases/download/v#{version}/sunlit-earth-#{version}-linux-aarch64.tar.gz"
+              sha256 "$sha_a"
+            end
+            on_intel do
+              url "https://github.com/sunlit-earth/sunlit-earth/releases/download/v#{version}/sunlit-earth-#{version}-linux-x86_64.tar.gz"
+              sha256 "$sha_x"
+            end
+
+            depends_on :linux
+
+            def install
+              libexec.install Dir["*"]
+              bin.install_symlink libexec/"sunlit-earth"
+            end
+
+            def caveats
+              <<~EOS
+                To add Sunlit Earth to your desktop's application menu, run:
+                  #{opt_libexec}/assets/linux/install-user.sh --exec #{opt_bin}/sunlit-earth
+                Before uninstalling, remove the entry again with:
+                  #{opt_libexec}/assets/linux/install-user.sh --uninstall
+              EOS
+            end
+
+            test do
+              system bin/"sunlit-earth", "--version"
+            end
+          end
+          EOF
+          cat "$tap/Formula/sunlit-earth.rb"
+        shell: bash
+
+      - name: Install
+        run: |
+          set -uo pipefail
+          brew install sunlit-earth/verify/sunlit-earth
+          echo "exit: $?"
+          ls -l "$(brew --prefix)/bin/sunlit-earth"
+          ls "$(brew --prefix)/opt/sunlit-earth/libexec"
+        shell: bash
+
+      - name: Did Homebrew rewrite the ELF
+        run: |
+          set -uo pipefail
+          curl -fsSL -o shipped.tar.gz "$BASE/sunlit-earth-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+          tar xzf shipped.tar.gz
+          shipped="sunlit-earth-$VERSION-linux-${{ matrix.arch }}/sunlit-earth"
+          installed="$(brew --prefix)/opt/sunlit-earth/libexec/sunlit-earth"
+          for f in "$shipped" "$installed"; do
+            echo "=== $f"
+            readelf -l "$f" | grep -A1 INTERP
+            readelf -d "$f" | grep -E 'RPATH|RUNPATH|NEEDED'
+            sha256sum "$f"
+          done
+        shell: bash
+
+      - name: What the render lacks before any apt package
+        run: |
+          set -uo pipefail
+          ldd "$(brew --prefix)/opt/sunlit-earth/libexec/sunlit-earth" | grep -i "not found" || echo "every NEEDED library resolves"
+          ls /usr/share/vulkan/icd.d/ 2>/dev/null || echo "no Vulkan ICDs"
+          mkdir -p elsewhere empty && cd elsewhere
+          sunlit-earth --version
+          sunlit-earth render --output bare.png --width 640 --height 360 2>&1 | tail -15
+          echo "render exit: ${PIPESTATUS[0]}"
+        shell: bash
+
+      - name: Install lavapipe and render
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+          cd elsewhere
+          sunlit-earth render --output through-link.png --width 640 --height 360 2>&1 | grep -iE "texture|adapter|error" | head -10
+          echo "render exit: ${PIPESTATUS[0]}"
+          SUNLIT_EARTH_TEXTURES="$GITHUB_WORKSPACE/empty" sunlit-earth render --output grid.png --width 640 --height 360 2>&1 | grep -iE "texture|error" | head -5
+          ls -l *.png
+        shell: bash
+
+      - name: brew style and audit
+        run: |
+          brew style "$TAP/Formula/sunlit-earth.rb"
+          echo "style exit: $?"
+          brew audit --formula --strict sunlit-earth/verify/sunlit-earth
+          echo "audit exit: $?"
+          brew audit --formula --strict --online sunlit-earth/verify/sunlit-earth
+          echo "audit online exit: $?"
+          brew info sunlit-earth/verify/sunlit-earth
+          true
+        shell: bash
+
+      - name: The caveat's desktop entry script
+        run: |
+          set -uo pipefail
+          opt="$(brew --prefix)/opt/sunlit-earth"
+          "$opt/libexec/assets/linux/install-user.sh" --exec "$opt/bin/sunlit-earth"
+          echo "exit: $?"
+          cat ~/.local/share/applications/sunlit-earth.desktop
+          find ~/.local/share/icons -name 'sunlit-earth*' | head
+          "$opt/libexec/assets/linux/install-user.sh" --uninstall
+          echo "exit: $?"
+          ls ~/.local/share/applications/sunlit-earth.desktop 2>&1 || true
+          find ~/.local/share/icons -name 'sunlit-earth*' | head
+        shell: bash
+
+      - name: Uninstall
+        run: |
+          set -uo pipefail
+          brew uninstall sunlit-earth
+          echo "exit: $?"
+          ls -l "$(brew --prefix)/bin/sunlit-earth" 2>&1 || true
+          ls -ld "$(brew --prefix)/Cellar/sunlit-earth" 2>&1 || true
+          ls -ld "$(brew --prefix)/opt/sunlit-earth" 2>&1 || true
+        shell: bash
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: spike-linux-${{ matrix.arch }}
+          path: elsewhere/*.png
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    env:
+      SUNLIT_EARTH_CONFIG: ${{ github.workspace }}\spike-config.toml
+      SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}\spike-cache
+      SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}\spike-metrics
+    steps:
+      - name: Install Scoop
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile install-scoop.ps1
+          .\install-scoop.ps1 -RunAsAdmin
+          "$env:USERPROFILE\scoop\shims" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+        shell: pwsh
+
+      - name: Scoop
+        run: |
+          scoop --version
+          scoop config
+        shell: pwsh
+
+      - name: A local manifest
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $digest = gh release view $env:TAG -R sunlit-earth/sunlit-earth --json assets --jq '.assets[] | select(.name | endswith("windows-x86_64.zip")) | .digest'
+          $hash = $digest -replace '^sha256:', ''
+          if (-not $hash) { throw "no digest" }
+          "HASH=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          function Write-Manifest([string]$version, [string]$path) {
+            $m = [ordered]@{
+              version = $version
+              description = "View of Earth as seen from space as your wallpaper"
+              homepage = "https://github.com/sunlit-earth/sunlit-earth"
+              license = "GPL-3.0-or-later"
+              architecture = [ordered]@{
+                '64bit' = [ordered]@{
+                  url = "$env:BASE/sunlit-earth-$env:VERSION-windows-x86_64.zip"
+                  hash = $hash
+                  extract_dir = "sunlit-earth-$env:VERSION-windows-x86_64"
+                }
+              }
+              bin = "sunlit-earth.exe"
+              shortcuts = @(,@("sunlit-earth.exe", "Sunlit Earth"))
+              checkver = "github"
+              autoupdate = [ordered]@{
+                architecture = [ordered]@{
+                  '64bit' = [ordered]@{
+                    url = 'https://github.com/sunlit-earth/sunlit-earth/releases/download/v$version/sunlit-earth-$version-windows-x86_64.zip'
+                    extract_dir = 'sunlit-earth-$version-windows-x86_64'
+                  }
+                }
+              }
+            }
+            $m | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 $path
+          }
+          New-Item -ItemType Directory -Force manifests | Out-Null
+          Write-Manifest $env:VERSION "manifests\sunlit-earth.json"
+          Get-Content manifests\sunlit-earth.json
+        shell: pwsh
+
+      - name: Install from the local path
+        run: |
+          scoop install "$env:GITHUB_WORKSPACE\manifests\sunlit-earth.json"
+          "exit: $LASTEXITCODE"
+          scoop list
+          Get-Content "$env:USERPROFILE\scoop\apps\sunlit-earth\current\install.json" -ErrorAction SilentlyContinue
+          Get-Content "$env:USERPROFILE\scoop\apps\sunlit-earth\current\manifest.json" -ErrorAction SilentlyContinue | Select-Object -First 5
+          Get-Item "$env:USERPROFILE\scoop\apps\sunlit-earth\current" | Format-List LinkType, Target
+        shell: pwsh
+
+      - name: The shim
+        run: |
+          New-Item -ItemType Directory -Force elsewhere, empty | Out-Null
+          Set-Location elsewhere
+          (Get-Command sunlit-earth).Source
+          Get-ChildItem "$env:USERPROFILE\scoop\shims\sunlit-earth*"
+          Get-Content "$env:USERPROFILE\scoop\shims\sunlit-earth.shim"
+          "--- --version"
+          sunlit-earth --version
+          "exit: $LASTEXITCODE"
+          "--- displays"
+          sunlit-earth displays
+          "exit: $LASTEXITCODE"
+          "--- render"
+          sunlit-earth render --output through-shim.png --width 640 --height 360 2>&1 | Select-String -Pattern "texture" | Select-Object -First 5
+          "exit: $LASTEXITCODE"
+          $env:SUNLIT_EARTH_TEXTURES = "$env:GITHUB_WORKSPACE\empty"
+          sunlit-earth render --output grid.png --width 640 --height 360 2>&1 | Select-String -Pattern "texture" | Select-Object -First 5
+          Get-ChildItem *.png
+        shell: pwsh
+
+      - name: Mark of the Web and the shortcut
+        run: |
+          $exe = "$env:USERPROFILE\scoop\apps\sunlit-earth\current\sunlit-earth.exe"
+          $zone = Get-Item $exe -Stream Zone.Identifier -ErrorAction SilentlyContinue
+          if ($zone) { "Zone.Identifier present"; Get-Content $exe -Stream Zone.Identifier } else { "no Zone.Identifier stream" }
+          Get-Item $exe -Stream * | Format-Table Stream, Length
+          $cache = Get-ChildItem "$env:USERPROFILE\scoop\cache" -Filter "sunlit-earth*"
+          $cache | ForEach-Object { $_.FullName; Get-Item $_.FullName -Stream * | Format-Table Stream, Length }
+          $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "Sunlit Earth*.lnk"
+          $lnk | ForEach-Object {
+            $_.FullName
+            $s = (New-Object -ComObject WScript.Shell).CreateShortcut($_.FullName)
+            "target: $($s.TargetPath)"
+            "working directory: $($s.WorkingDirectory)"
+          }
+        shell: pwsh
+
+      - name: scoop update while the tray app runs
+        run: |
+          $exe = "$env:USERPROFILE\scoop\apps\sunlit-earth\current\sunlit-earth.exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 10
+          Get-Process sunlit-earth -ErrorAction SilentlyContinue | Format-Table Id, Path
+          $m = Get-Content manifests\sunlit-earth.json -Raw | ConvertFrom-Json
+          $m.version = "$env:VERSION.1"
+          $m | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 manifests\sunlit-earth.json
+          "--- scoop update"
+          scoop update sunlit-earth 2>&1
+          "exit: $LASTEXITCODE"
+          scoop list
+          Get-ChildItem "$env:USERPROFILE\scoop\apps\sunlit-earth"
+          Get-Process sunlit-earth -ErrorAction SilentlyContinue | Format-Table Id, Path
+          Stop-Process -Name sunlit-earth -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          "--- scoop update after the app quit"
+          scoop update sunlit-earth 2>&1
+          "exit: $LASTEXITCODE"
+          scoop list
+          Get-ChildItem "$env:USERPROFILE\scoop\apps\sunlit-earth"
+        shell: pwsh
+
+      - name: Uninstall
+        run: |
+          scoop uninstall sunlit-earth 2>&1
+          "exit: $LASTEXITCODE"
+          Test-Path "$env:USERPROFILE\scoop\apps\sunlit-earth"
+          Get-ChildItem "$env:USERPROFILE\scoop\shims\sunlit-earth*" -ErrorAction SilentlyContinue
+          Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "Sunlit Earth*.lnk"
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: spike-windows
+          path: elsewhere/*.png

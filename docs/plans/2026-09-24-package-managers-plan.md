@@ -139,7 +139,7 @@ A bad manifest: revert its commit in the repository that holds it, and users' ne
 
 ## Departures
 
-None yet.
+1. **The Step 1 spike ran on the run branch, not on a `spike/package-managers` branch.** The run that implements this plan may push only `feat/package-managers`, so the spike workflow was a temporary file on that branch, triggered by `push` to it, and was removed in a later commit once its findings were recorded under Step 1 below. The branch's history keeps both commits, which costs nothing, since the pull request is merged as a whole and the file does not exist at its head.
 
 ## Validation Record
 

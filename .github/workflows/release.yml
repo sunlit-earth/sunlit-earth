@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Create the GitHub release. Off means build and verify only."
+        description: "Create the GitHub release as a draft. Off means build and verify only."
         type: boolean
         default: false
 
@@ -236,8 +236,10 @@ jobs:
           ls -l release
         shell: bash
 
+      # Always a draft: making a release public is done by hand on GitHub.
       - uses: softprops/action-gh-release@v3
         with:
+          draft: true
           files: release/*
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true

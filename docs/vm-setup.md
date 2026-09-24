@@ -310,6 +310,7 @@ full text of every license in the dependency tree.
 | in the bundle | why |
 |---|---|
 | `sunlit-earth` / `sunlit-earth.exe` | 0755 in the tarball, so nobody has to `chmod +x` |
+| `README.txt` | how to start the app on that platform and where the project lives, from `assets/readme/<platform>.txt` |
 | `textures/` | the four JXL assets. Without them the app draws the procedural grid |
 | `LICENSE` | the GPL 3.0 text the workspace declares |
 | `THIRD-PARTY-LICENSES.md` | the license of every crate in the binary and the full text of each of those licenses, from the canonical SPDX texts in `assets/licenses/`. The About window's third tab links each identifier to spdx.org, which is no use to somebody reading an unpacked archive offline, so this file is what carries the texts |

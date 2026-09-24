@@ -157,7 +157,8 @@ jobs:
         if: ${{ inputs.interactive && inputs.mode != 'check' && !cancelled() }}
         run: |
           set -euo pipefail
-          ditto -x -k dist/sunlit-earth-*-macos.zip "$HOME/Desktop"
+          ditto -x -k dist/sunlit-earth-*-macos-*-app.zip "$RUNNER_TEMP/app"
+          mv "$RUNNER_TEMP"/app/*/"Sunlit Earth.app" "$HOME/Desktop/"
           ls -ld "$HOME/Desktop/Sunlit Earth.app"
         shell: bash
 

@@ -1,0 +1,61 @@
+Sunlit Earth for macOS
+======================
+
+Sunlit Earth is a free and open source desktop application that renders a
+beautiful view of Earth as seen from space and sets it as your wallpaper.
+The rendered image updates in the background, reflecting the current time of
+day, cloud cover, the positions of the Sun, Moon, and stars, and other
+real-world conditions.
+
+There are two downloads for each Mac, "aarch64" for Apple Silicon and
+"x86_64" for Intel. Both hold the same app:
+
+  *-app.zip          Sunlit Earth.app, for Finder and the Applications folder
+  *-terminal.tar.gz  the plain program, for starting it from Terminal
+
+The app
+-------
+
+1. Unzip the download and move "Sunlit Earth.app" to Applications.
+2. Double-click it. macOS says it could not verify that the app is free of
+   malware, because the app is not notarized by Apple.
+3. Open System Settings, go to Privacy & Security, scroll down, and click
+   "Open Anyway" next to Sunlit Earth. macOS may ask for your password.
+
+Instead of step 3 you can run this once in Terminal:
+
+    xattr -dr com.apple.quarantine "/Applications/Sunlit Earth.app"
+
+From Terminal
+-------------
+
+Downloaded with curl and unpacked with tar, the program starts without the
+dialog above and prints its log to the terminal:
+
+    curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/<file name>
+    tar xzf sunlit-earth-*-terminal.tar.gz
+    cd sunlit-earth-*-terminal/
+    ./sunlit-earth
+
+A tarball downloaded in a browser and unpacked in Finder gets the same
+dialog as the app. Keep the files together: sunlit-earth finds its Earth
+images in the textures folder next to it.
+
+Using it
+--------
+
+Choose a view, click "Set as Wallpaper", and enable "Auto-refresh wallpaper"
+to keep the wallpaper up to date. Settings, caches and log files are stored
+in ~/Library/Application Support/SunlitEarth.
+
+Help and source code
+--------------------
+
+Project page:  https://github.com/sunlit-earth/sunlit-earth
+Bug reports:   https://github.com/sunlit-earth/sunlit-earth/issues
+New releases:  https://github.com/sunlit-earth/sunlit-earth/releases
+
+Sunlit Earth is free software under the GNU General Public License,
+version 3 or later. Both downloads include the license as LICENSE, and
+THIRD-PARTY-LICENSES.md lists the licenses of the components and images the
+app includes. In the app they are in Contents/Resources.

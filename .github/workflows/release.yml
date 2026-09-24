@@ -222,6 +222,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
+          records='{}'
           for dir in artifacts/bundle-*; do
             build=${dir#artifacts/bundle-}
             for archive in "$dir"/*.zip "$dir"/*.tar.gz; do
@@ -229,12 +230,14 @@ jobs:
               cp "$archive" release/
             done
             if [ -f "$dir/build-info.json" ]; then
-              cp "$dir/build-info.json" "release/build-info-${build}.json"
+              records=$(jq --arg build "$build" --slurpfile record "$dir/build-info.json" \
+                '. + {($build): $record[0]}' <<< "$records")
             else
               echo "the $build bundle wrote no record"
               exit 1
             fi
           done
+          jq . <<< "$records" > release/build-info.json
           ls -l release
         shell: bash
 

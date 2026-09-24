@@ -539,7 +539,7 @@ jobs:
 
       - name: scoop update while the tray app runs
         run: |
-          $exe = "$env:USERPROFILE\scooppps\sunlit-earth\current\sunlit-earth.exe"
+          $exe = "$env:USERPROFILE\scoop\apps\sunlit-earth\current\sunlit-earth.exe"
           $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError tray-stderr.txt -RedirectStandardOutput tray-stdout.txt
           Start-Sleep -Seconds 20
           "tray process exited: $($p.HasExited) code: $($p.ExitCode)"
@@ -550,12 +550,12 @@ jobs:
           $m | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 manifests\sunlit-earth.json
           "--- scoop update"
           scoop update sunlit-earth 2>&1 | Out-String
-          (Get-ChildItem "$env:USERPROFILE\scooppps\sunlit-earth").Name -join ", "
+          (Get-ChildItem "$env:USERPROFILE\scoop\apps\sunlit-earth").Name -join ", "
           Stop-Process -Name sunlit-earth -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           "--- scoop update after the app quit"
           scoop update sunlit-earth 2>&1 | Out-String
-          (Get-ChildItem "$env:USERPROFILE\scooppps\sunlit-earth").Name -join ", "
+          (Get-ChildItem "$env:USERPROFILE\scoop\apps\sunlit-earth").Name -join ", "
         shell: pwsh
 
       - name: Uninstall

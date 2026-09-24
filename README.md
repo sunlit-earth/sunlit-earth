@@ -64,9 +64,9 @@ You can install and update Sunlit Earth with one of these package managers:
 
 Or you can download the [latest release](https://github.com/sunlit-earth/sunlit-earth/releases/latest) directly (portable binaries only; there is no installer yet):
 
-- **Windows**: [sunlit-earth-0.2.0-beta.1-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-windows-x86_64.zip)
-- **macOS**: [sunlit-earth-0.2.0-beta.1-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.2.0-beta.1-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-macos-x86_64-app.zip) (Intel)
-- **Linux**: [sunlit-earth-0.2.0-beta.1-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.2.0-beta.1-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-linux-aarch64.tar.gz) (ARM64)
+- **Windows**: [sunlit-earth-0.2.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0/sunlit-earth-0.2.0-windows-x86_64.zip)
+- **macOS**: [sunlit-earth-0.2.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0/sunlit-earth-0.2.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.2.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0/sunlit-earth-0.2.0-macos-x86_64-app.zip) (Intel)
+- **Linux**: [sunlit-earth-0.2.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0/sunlit-earth-0.2.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.2.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0/sunlit-earth-0.2.0-linux-aarch64.tar.gz) (ARM64)
 
 What you should know about each platform:
 

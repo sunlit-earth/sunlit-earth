@@ -1284,12 +1284,6 @@ fn verify_here(
         println!("  codesign --verify --strict passed on the unpacked bundle");
     }
 
-    // The empty directory is what makes the grid render a grid: the loader takes
-    // the variable's directory when it is one and finds no files in it.
-    let empty = work.join(dist::EMPTY_TEXTURES);
-    std::fs::create_dir_all(&empty)
-        .map_err(|e| format!("cannot create {}: {e}", empty.display()))?;
-
     let exe = match package {
         Package::Plain => root.join(exe_name(run.platform)),
         Package::App => root
@@ -1298,11 +1292,32 @@ fn verify_here(
             .join("MacOS")
             .join(PACKAGE),
     };
-    let at = |cmd: Cmd| -> Result<(), String> { tool(run.runner, &cmd).map(|_| ()) };
+    let delta = render_comparison(run.runner, &exe, &work)?;
+    // The render the bundle made travels with it, the way `dist` publishes one,
+    // and the unpacked copy does not: a runner uploads this directory whole.
+    std::fs::copy(work.join(SMOKE_FILE), run.out.join(SMOKE_FILE))
+        .map_err(|e| format!("cannot keep the bundle's own render: {e}"))?;
+    let _ = std::fs::remove_dir_all(&work);
+    println!("  verified here: the two renders differ by {delta:.2} of a channel step");
+    Ok(Some(delta))
+}
 
-    // The working directory is outside the bundle on purpose:
-    // `resolve_textures_dir` tries a `textures` beside it before walking up
-    // from the executable, and it is the walk-up this has to test.
+/// Render from `exe` twice with `work` as the working directory, once against
+/// an empty textures directory, and return how far apart the two are.
+///
+/// The working directory is outside the install on purpose:
+/// `resolve_textures_dir` tries a `textures` beside it before walking up from
+/// the executable, and it is the walk-up this has to test. A difference under
+/// [`TEXTURE_LOOKUP_FLOOR`] is refused, and both renders stay in `work` for
+/// whoever reads the refusal.
+fn render_comparison(runner: &dyn Runner, exe: &Path, work: &Path) -> Result<f64, String> {
+    // The empty directory is what makes the grid render a grid: the loader takes
+    // the variable's directory when it is one and finds no files in it.
+    let empty = work.join(dist::EMPTY_TEXTURES);
+    std::fs::create_dir_all(&empty)
+        .map_err(|e| format!("cannot create {}: {e}", empty.display()))?;
+
+    let at = |cmd: Cmd| -> Result<(), String> { tool(runner, &cmd).map(|_| ()) };
     let render = |output: &Path| {
         vec![
             "render".to_owned(),
@@ -1314,7 +1329,7 @@ fn verify_here(
             SMOKE_HEIGHT.to_string(),
         ]
     };
-    let base = || Cmd::new(exe.to_string_lossy().into_owned()).cwd(&work);
+    let base = || Cmd::new(exe.to_string_lossy().into_owned()).cwd(work);
     at(base().arg("--version"))?;
 
     let grid = work.join(GRID_FILE);
@@ -1339,17 +1354,9 @@ fn verify_here(
     };
     let delta = dist::render_difference(&read(&grid)?, &read(&smoke)?)?;
     if delta < TEXTURE_LOOKUP_FLOOR {
-        // Left on disk, because the refusal names it: both renders are what a
-        // reader needs to see to know which of the two went wrong.
-        return Err(dist::grid_refusal(delta, &work));
+        return Err(dist::grid_refusal(delta, work));
     }
-    // The render the bundle made travels with it, the way `dist` publishes one,
-    // and the unpacked copy does not: a runner uploads this directory whole.
-    std::fs::copy(&smoke, run.out.join(SMOKE_FILE))
-        .map_err(|e| format!("cannot keep the bundle's own render: {e}"))?;
-    let _ = std::fs::remove_dir_all(&work);
-    println!("  verified here: the two renders differ by {delta:.2} of a channel step");
-    Ok(Some(delta))
+    Ok(delta)
 }
 
 /// The record written beside the archives.

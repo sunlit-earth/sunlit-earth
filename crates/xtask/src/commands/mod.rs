@@ -15,6 +15,7 @@ pub mod bundle;
 pub mod dist;
 pub mod doctor;
 pub mod e2e;
+pub mod manifests;
 pub mod setup;
 pub mod status;
 pub mod sweep;

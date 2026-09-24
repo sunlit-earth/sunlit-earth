@@ -84,6 +84,12 @@ cargo xtask bundle --platform <windows|linux|macos> --exe <path> [--out <dir>] [
 
 `bundle` is the second half of that on its own: it wraps a binary somebody else already built in the archive its platform's users open, writes `build-info.json` beside it, and with `--verify` unpacks the archive and renders from it twice to prove the textures are found. No VM and no hypervisor, which is what lets the GitHub release runners call it; `dist` calls the same functions. `--verify` runs the binary, so it needs a host of the platform being bundled. macOS is a platform here and not a `dist` target, because there is no macOS guest to build one in.
 
+```bash
+cargo xtask manifests --version <version> --assets <dir> --out <dir>
+```
+
+`manifests` hashes a published release's five archives (as `gh release download` leaves them) and writes the Scoop manifest, the Homebrew cask and the Homebrew formula under `--out`, laid out as `sunlit-earth/scoop-bucket` and `sunlit-earth/homebrew-tap`. `package-managers.yml` runs it when a release is published and is the only writer of those two repositories; `docs/testing.md` describes it.
+
 ### Rare
 
 `cargo xtask bake icon`, `cargo xtask bake stars` and `cargo xtask bake licenses` regenerate committed assets from their sources (`assets/icon/*.svg`, HYG v4.4, and the dependency tree read against the license corpus in `assets/licenses/`); a test compares each committed output against a fresh bake, so they are only ever run after changing a source. `bake licenses` writes `assets/third-party.md` and `assets/THIRD-PARTY-LICENSES.md` and is the one to rerun after a dependency changes; the second lands at the top level of a release archive rather than under `assets/`, and it fetches nothing, so a license the corpus has no `assets/licenses/<identifier>.txt` for fails the bake with the URL to fetch it from. `cargo llvm-cov --html` writes a coverage report under `target/llvm-cov/html/`.

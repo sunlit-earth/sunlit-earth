@@ -2,6 +2,41 @@
 
 The [README](../README.md#using-the-app) covers everyday use. This reference contains additional launch options, display diagnostics, and file locations.
 
+## Installing with a package manager
+
+Stable releases are published to a Scoop bucket and a Homebrew tap of this project's own, [sunlit-earth/scoop-bucket](https://github.com/sunlit-earth/scoop-bucket) and [sunlit-earth/homebrew-tap](https://github.com/sunlit-earth/homebrew-tap). Both are written by `package-managers.yml` when a release is published, and only after the new manifest has been installed and run on every platform it serves ([testing.md](testing.md#cicd)). Prereleases are not published there. The two repositories get their first manifests with the stable 0.2.0 release, so until then they are empty.
+
+**Windows, with Scoop.**
+
+```powershell
+scoop bucket add sunlit-earth https://github.com/sunlit-earth/scoop-bucket
+scoop install sunlit-earth/sunlit-earth
+```
+
+This gives a Sunlit Earth entry in the Start Menu and a `sunlit-earth` command in the terminal. Scoop downloads without marking the file as coming from the internet, so SmartScreen does not ask about it. `scoop update sunlit-earth` skips the app while it is running, so quit it from its tray icon first; Scoop says so after the install too.
+
+**macOS, with Homebrew.**
+
+```bash
+brew install --cask sunlit-earth/tap/sunlit-earth
+```
+
+This puts `Sunlit Earth.app` in `/Applications` and a `sunlit-earth` command on `PATH`. The cask removes the quarantine attribute Homebrew sets on the download, so the app should open without the System Settings step described below; a hosted runner shows the attribute gone and the app starting, and whether a real Mac shows no dialog is still a tester question ([platforms.md](platforms.md)). That is a choice with a cost you should know about: the app is ad-hoc signed and not notarized, and without the attribute Gatekeeper never assesses it. Homebrew deprecated its own `--no-quarantine` flag in 5.0.0, alongside requiring casks in its official repository to pass Gatekeeper. Installing through this tap means trusting this project's release pipeline in place of that check. `brew uninstall --cask sunlit-earth` quits and removes the app, and `brew uninstall --zap --cask sunlit-earth` also deletes `~/Library/Application Support/SunlitEarth`. Leaving out `--cask` on a Mac gives `Linux is required for this software.`, because the tap's formula of the same name is the Linux one.
+
+**Linux, with Homebrew.**
+
+```bash
+brew install sunlit-earth/tap/sunlit-earth
+```
+
+This installs the binary and its textures under Homebrew's prefix and a `sunlit-earth` command on `PATH`. A formula cannot write into your home directory, so the desktop entry and icons are one more command, which the install prints as a caveat:
+
+```bash
+$(brew --prefix)/opt/sunlit-earth/libexec/assets/linux/install-user.sh --exec $(brew --prefix)/opt/sunlit-earth/bin/sunlit-earth
+```
+
+`--exec` matters because a desktop session's launcher usually does not have Homebrew's `bin` on its `PATH`, and the `opt` path stays the same across upgrades. Before `brew uninstall sunlit-earth`, remove the entry again with `$(brew --prefix)/opt/sunlit-earth/libexec/assets/linux/install-user.sh --uninstall`. The render needs a Vulkan driver, as it does for the tarball.
+
 ## Installing on macOS
 
 The macOS build has never been run on a Mac. Nobody working on this project owns Apple hardware, so it is written against Apple's documentation, compiled and unit-tested on a hosted macOS runner, and that is the whole of the evidence behind it. [macos-testing.md](macos-testing.md) says what a tester with a Mac could report back.

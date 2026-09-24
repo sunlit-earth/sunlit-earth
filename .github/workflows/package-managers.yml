@@ -1,0 +1,250 @@
+name: Package managers
+
+# Publishing a stable release writes the Scoop manifest and the Homebrew cask
+# and formula from its archives, installs each where it serves, and only then
+# commits them to scoop-bucket and homebrew-tap. A dispatch is a dry run unless
+# push is on. Design: docs/plans/2026-09-24-package-managers-amendment-simplify.md.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The published release, for example v0.2.0."
+        required: true
+        type: string
+      push:
+        description: "Commit the manifests to scoop-bucket and homebrew-tap. Off means a dry run."
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  PUSH: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.push) }}
+
+jobs:
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # A run that would push needs a stable release that GitHub calls latest,
+      # which refuses an older tag; the push job asks that again before it commits.
+      - name: Refuse what cannot be published
+        run: |
+          set -euo pipefail
+          if ! info=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease); then
+            echo "::error::there is no release $TAG"
+            exit 1
+          fi
+          if [ "$(jq -r .isDraft <<< "$info")" = true ]; then
+            echo "::error::$TAG is still a draft, whose assets cannot be downloaded; publish it first"
+            exit 1
+          fi
+          echo "release $TAG: $info, push $PUSH"
+          if [ "$PUSH" = true ]; then
+            if [ "$(jq -r .isPrerelease <<< "$info")" = true ] || [[ "$TAG" == *-* ]]; then
+              echo "::error::$TAG is a prerelease, and only stable releases update scoop-bucket and homebrew-tap; a dispatch with push off verifies it"
+              exit 1
+            fi
+            latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+            if [ "$latest" != "$TAG" ]; then
+              echo "::error::$TAG is not the latest release, $latest is; pushing it would move users backwards"
+              exit 1
+            fi
+          fi
+
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: package-managers
+
+      - name: Download the release's archives
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --dir assets \
+            --pattern '*-windows-x86_64.zip' --pattern '*-linux-*.tar.gz' --pattern '*-macos-*-app.zip'
+
+      - name: Write the manifests
+        run: |
+          rustup toolchain install --no-self-update
+          cargo xtask manifests --version "${TAG#v}" --assets assets --out manifests
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: manifests
+          path: manifests/
+          if-no-files-found: error
+
+  verify:
+    name: Verify ${{ matrix.name }}
+    needs: manifests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows x86_64, os: windows-latest, kind: scoop }
+          - { name: Linux x86_64, os: ubuntu-24.04, kind: formula }
+          - { name: Linux aarch64, os: ubuntu-24.04-arm, kind: formula }
+          - { name: macOS aarch64, os: macos-latest, kind: cask }
+          - { name: macOS x86_64, os: macos-26-intel, kind: cask }
+    env:
+      APP: /Applications/Sunlit Earth.app
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: manifests
+          path: manifests
+
+      - name: Install Scoop
+        if: matrix.kind == 'scoop'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile install-scoop.ps1
+          .\install-scoop.ps1 -RunAsAdmin
+          "$env:USERPROFILE\scoop\shims" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+        shell: pwsh
+
+      - name: Install with Scoop
+        if: matrix.kind == 'scoop'
+        run: |
+          scoop install "$env:GITHUB_WORKSPACE\manifests\bucket\sunlit-earth.json"
+          if ($LASTEXITCODE -ne 0) { throw "scoop install failed" }
+        shell: pwsh
+
+      # mesa-vulkan-drivers is lavapipe, the adapter the render needs; every
+      # library the binary links is on the runner already.
+      - name: Put Homebrew and a Vulkan adapter on the Linux runner
+        if: matrix.kind == 'formula'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+          echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+
+      - name: Install with Homebrew
+        if: matrix.kind != 'scoop'
+        run: |
+          set -euo pipefail
+          brew update --quiet
+          brew tap-new --no-git sunlit-earth/verify
+          tap="$(brew --repository)/Library/Taps/sunlit-earth/homebrew-verify"
+          if [ "${{ matrix.kind }}" = formula ]; then dir=Formula; else dir=Casks; fi
+          mkdir -p "$tap/$dir"
+          cp "manifests/$dir/sunlit-earth.rb" "$tap/$dir/"
+          brew install "--${{ matrix.kind }}" sunlit-earth/verify/sunlit-earth
+
+      - name: The command on PATH reports the version
+        run: |
+          set -euo pipefail
+          out=$(sunlit-earth --version)
+          echo "$(command -v sunlit-earth): $out"
+          [ "$out" = "sunlit-earth ${TAG#v}" ] || { echo "::error::expected sunlit-earth ${TAG#v}"; exit 1; }
+
+      # Two renders from an empty directory, where the lookup's ./textures
+      # cannot answer, one against an empty textures directory: a command that
+      # found its textures draws a globe that differs from the grid by far more
+      # than 8 channel steps, TEXTURE_LOOKUP_FLOOR in dist.rs (departure 1 of
+      # the amendment).
+      - name: The installed command finds its textures
+        env:
+          SUNLIT_EARTH_NO_CLOUDS: "1"
+        run: |
+          set -euo pipefail
+          exe=$(command -v sunlit-earth)
+          if [ "${{ matrix.kind }}" = cask ] && [ "$TAG" = v0.2.0-beta.1 ]; then
+            echo "::notice::v0.2.0-beta.1 predates the texture lookup through a symlink, so the app's own binary is checked instead of $exe (departure 3 of the plan)"
+            exe="$APP/Contents/MacOS/sunlit-earth"
+          fi
+          work="$RUNNER_TEMP/verify"
+          mkdir -p "$work/empty"
+          cd "$work"
+          export SUNLIT_EARTH_CONFIG="$work/config.toml" SUNLIT_EARTH_CACHE_DIR="$work/cache" SUNLIT_EARTH_METRICS_DIR="$work/metrics"
+          SUNLIT_EARTH_TEXTURES="$work/empty" "$exe" render --output grid.png --width 640 --height 360
+          "$exe" render --output smoke.png --width 640 --height 360
+          if [ "$RUNNER_OS" = Windows ]; then py=python; else py=python3; fi
+          "$py" "$GITHUB_WORKSPACE/.github/scripts/render-difference.py" grid.png smoke.png 8 ||
+            { echo "::error::$exe did not find its textures"; exit 1; }
+
+      - name: No quarantine on the installed app
+        if: matrix.kind == 'cask'
+        run: |
+          [ -d "$APP" ] || { echo "::error::$APP is not installed"; exit 1; }
+          if xattr -p com.apple.quarantine "$APP"; then echo "::error::$APP is quarantined"; exit 1; fi
+
+  push:
+    name: Push
+    needs: [manifests, verify]
+    if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.push) }}
+    runs-on: ubuntu-latest
+    environment: package-managers
+    # Pushes for two releases never run at the same time. A group holds one
+    # running and one pending job, and a newer pending job cancels the older
+    # pending one even with cancel-in-progress off; rerun one only if still latest.
+    concurrency:
+      group: package-managers-push
+      cancel-in-progress: false
+    steps:
+      # Asked again inside the group: a newer release may have been pushed since
+      # the first job ran, and a rerun of this job does not rerun that one.
+      - name: Refuse a tag that is no longer the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          [ "$latest" = "$TAG" ] || { echo "::error::$TAG is not the latest release, $latest is; pushing it would move users backwards"; exit 1; }
+
+      - uses: actions/create-github-app-token@v3
+        id: token
+        with:
+          client-id: ${{ vars.PACKAGING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PACKAGING_APP_PRIVATE_KEY }}
+          owner: sunlit-earth
+          repositories: scoop-bucket,homebrew-tap
+          permission-contents: write
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: manifests
+          path: manifests
+
+      - name: Commit what changed
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          bot="sunlit-earth-packaging[bot]"
+          email="$(gh api "/users/$bot" --jq .id)+$bot@users.noreply.github.com"
+          commit() {
+            local repo=$1
+            shift
+            git clone --quiet "https://x-access-token:$GH_TOKEN@github.com/sunlit-earth/$repo" "$repo"
+            for file in "$@"; do
+              mkdir -p "$repo/$(dirname "$file")"
+              cp "manifests/$file" "$repo/$file"
+            done
+            git -C "$repo" add "$@"
+            if git -C "$repo" diff --cached --quiet; then
+              echo "$repo: already at ${TAG#v}, nothing to commit"
+              return
+            fi
+            git -C "$repo" -c user.name="$bot" -c user.email="$email" commit -m "sunlit-earth ${TAG#v}"
+            git -C "$repo" push origin HEAD
+          }
+          commit scoop-bucket bucket/sunlit-earth.json
+          commit homebrew-tap Casks/sunlit-earth.rb Formula/sunlit-earth.rb

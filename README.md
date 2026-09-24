@@ -4,13 +4,13 @@
 
 [![Status: beta](https://img.shields.io/badge/status-beta-orange)](#downloads)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/sunlit-earth/sunlit-earth?include_prereleases&label=release)](https://github.com/sunlit-earth/sunlit-earth/releases)
+[![Latest release](https://img.shields.io/github/v/release/sunlit-earth/sunlit-earth?label=release)](https://github.com/sunlit-earth/sunlit-earth/releases)
 
 Sunlit Earth is a free and open source desktop application that renders a beautiful view of Earth as seen from space and sets it as your wallpaper. The rendered image updates in the background, reflecting the current time of day, cloud cover, the positions of the Sun, Moon, and stars, and other real-world conditions.
 
 I built this application as an alternative to [DesktopEarth](https://web.archive.org/web/20221006113849/http://www.anka.me/desktopearth.aspx) and [Xplanet](https://xplanet.sourceforge.net/), both of which I used for years, but they seem to be abandoned now. Sunlit Earth is an attempt to rebuild the ideas of these projects with modern technologies and package them in an application that is easy to use.
 
-[Download](https://github.com/sunlit-earth/sunlit-earth/releases) · [Getting started](#getting-started) · [Using the app](#using-the-app) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
+[Download](#downloads) · [Getting started](#getting-started) · [Using the app](#using-the-app) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
 
 ## Screenshots
 
@@ -37,28 +37,46 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 Planned features:
 
-- 🍎 Support for macOS (Apple makes it really hard to test stuff if you don't own Apple hardware...)
 - 🔧 More setup options and autostart.
 - ❄️ Seasonal surface textures for Earth.
 - 🌑 Eclipse rendering (see the moon's shadow moving over the surface of Earth).
+- 💾 Save and load your own profiles.
 
 ## Downloads
 
 > ⚠️ Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and I'm confident it won't do something bad on your system, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
 
-At the moment we only have portable binary releases for Linux and Windows on x86-64:
+You can install and update Sunlit Earth with one of these package managers:
 
-- Linux: [sunlit-earth-0.1.0-linux.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.1.0/sunlit-earth-0.1.0-linux.tar.gz)
-- Windows: [sunlit-earth-0.1.0-windows.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.1.0/sunlit-earth-0.1.0-windows.zip)
-- macOS: coming soon
+- **Windows** ([Scoop](https://scoop.sh)):
+  ```
+  scoop bucket add sunlit-earth https://github.com/sunlit-earth/scoop-bucket
+  scoop install sunlit-earth/sunlit-earth
+  ```
+- **macOS** ([Homebrew](https://brew.sh)):
+  ```
+  brew install --cask sunlit-earth/tap/sunlit-earth
+  ```
+- **Linux** ([Homebrew](https://brew.sh)):
+  ```
+  brew install sunlit-earth/tap/sunlit-earth
+  ```
 
-A macOS release, ARM64 support, and more installation options are all on the roadmap.
+Or you can download the [latest release](https://github.com/sunlit-earth/sunlit-earth/releases/latest) directly (portable binaries only; there is no installer yet):
 
-The Linux version was tested on KDE, GNOME, Xfce, Cinnamon, and should work on many other desktop environments. The Windows version was tested on a recent version of Windows 11; it'll probably run on older Windows versions, but no guarantees.
+- **Windows**: [sunlit-earth-0.2.0-beta.1-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-windows-x86_64.zip)
+- **macOS**: [sunlit-earth-0.2.0-beta.1-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.2.0-beta.1-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-macos-x86_64-app.zip) (Intel)
+- **Linux**: [sunlit-earth-0.2.0-beta.1-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.2.0-beta.1-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.2.0-beta.1/sunlit-earth-0.2.0-beta.1-linux-aarch64.tar.gz) (ARM64)
 
-On Windows, unpack the zip file and launch `sunlit-earth.exe`. You might get a scary blue warning popup from Microsoft SmartScreen where you have to allow starting the app; sorry, nothing I can do about that at the moment. On Linux, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`.
+What you should know about each platform:
 
-If you know your way around the Rust toolchain, you can [build Sunlit Earth from source](#build-from-source) instead.
+On **Windows**, unpack the zip file and launch `sunlit-earth.exe`. On the first start, Windows will probably show a blue "Windows protected your PC" dialog with only a "Don't run" button. Click "More info", and a "Run anyway" button appears.
+
+On **macOS**, unzip the download and move `Sunlit Earth.app` to Applications. When you launch it, macOS says it could not verify that the app is free of malware, because the app is not notarized by Apple. To allow it, open System Settings, go to Privacy & Security, scroll down, click "Open Anyway" next to Sunlit Earth, and confirm with your password if asked. If you want to avoid all this hassle, install with Homebrew instead.
+
+On **Linux**, unpack the archive and launch `sunlit-earth` directly (if your desktop environment can do that) or open a terminal in the extracted folder and run `./sunlit-earth`. The Linux version was tested on KDE, GNOME, Xfce, and Cinnamon, and should work on many other desktop environments.
+
+If you know your way around the Rust toolchain, you also have the option to [build Sunlit Earth from source](#build-from-source).
 
 ## Getting started
 

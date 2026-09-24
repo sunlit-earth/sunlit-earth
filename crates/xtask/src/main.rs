@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    bake_icon, bake_licenses, bake_stars, build_image, bundle, dist, doctor, e2e, setup, sweep,
-    teardown, vm,
+    bake_icon, bake_licenses, bake_stars, build_image, bundle, dist, doctor, e2e, manifests, setup,
+    sweep, teardown, vm,
 };
 use crate::host::facts;
 use crate::provider::desktop::{Desktop, SessionType};
@@ -92,6 +92,9 @@ enum Command {
     /// Assemble a release bundle around a binary that is already built, and
     /// write the archive its platform's users open without a tool.
     Bundle(bundle::Options),
+    /// Write the Scoop manifest, the Homebrew cask and the Homebrew formula for
+    /// one release, from its archives.
+    Manifests(manifests::Options),
     /// Regenerate a committed asset from its source.
     Bake {
         #[command(subcommand)]
@@ -273,6 +276,10 @@ impl From<TeardownImage> for teardown::Selection {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per subcommand, and splitting the dispatch would only move it"
+)]
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let runner = RealRunner;
@@ -310,6 +317,7 @@ fn main() -> ExitCode {
             },
         ),
         Command::Bundle(options) => bundle::run(&runner, &options),
+        Command::Manifests(options) => manifests::run(&options),
         Command::Bake { command } => match command {
             BakeCommand::Icon { review } => bake_icon::run(review),
             BakeCommand::Stars { input, output } => bake_stars::run(&input, &output),

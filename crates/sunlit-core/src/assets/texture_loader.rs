@@ -131,7 +131,7 @@ pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
 /// 1. `--textures-dir` CLI flag
 /// 2. `SUNLIT_EARTH_TEXTURES` environment variable
 /// 3. `textures/` relative to the current working directory
-/// 4. [`textures_near`], walking up from the executable
+/// 4. [`textures_for_exe`], walking up from the executable
 pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
     let explicit: [Option<PathBuf>; 3] = [
         cli_override.map(Path::to_path_buf),
@@ -142,7 +142,18 @@ pub fn resolve_textures_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
         return Some(dir);
     }
 
-    textures_near(&std::env::current_exe().ok()?)
+    textures_for_exe(&std::env::current_exe().ok()?)
+}
+
+/// [`textures_near`] the executable as it was started, then its resolved path.
+///
+/// A package manager puts a symlink on `PATH`, and `current_exe()` can report
+/// the link rather than its target, from where the walk up never reaches the
+/// install directory. The resolved path comes second because on Windows it
+/// turns Scoop's `current` junction into a versioned `\\?\` path, while the
+/// path as started already works there.
+pub fn textures_for_exe(exe: &Path) -> Option<PathBuf> {
+    textures_near(exe).or_else(|| textures_near(&std::fs::canonicalize(exe).ok()?))
 }
 
 /// The textures directory an executable at this path can reach, or `None`.
@@ -374,6 +385,29 @@ mod tests {
         assert_eq!(
             textures_near(&both.join("sunlit-earth")),
             Some(both.join("textures"))
+        );
+    }
+
+    /// A symlink in another directory, as Homebrew's `bin/` holds, leads to the
+    /// textures beside its target.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_the_executable_finds_the_textures_beside_its_target() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_symlink");
+
+        let install = scratch.join("libexec");
+        std::fs::create_dir_all(install.join("textures")).expect("the textures");
+        std::fs::write(install.join("sunlit-earth"), b"").expect("the executable");
+        let bin = scratch.join("bin");
+        std::fs::create_dir_all(&bin).expect("the bin directory");
+        std::os::unix::fs::symlink(install.join("sunlit-earth"), bin.join("sunlit-earth"))
+            .expect("the symlink");
+
+        assert_eq!(textures_near(&bin.join("sunlit-earth")), None);
+        let found = textures_for_exe(&bin.join("sunlit-earth")).expect("the textures");
+        assert_eq!(
+            std::fs::canonicalize(found).expect("the found directory"),
+            std::fs::canonicalize(install.join("textures")).expect("the textures directory")
         );
     }
 }

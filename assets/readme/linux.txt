@@ -1,0 +1,49 @@
+Sunlit Earth for Linux
+======================
+
+Sunlit Earth is a free and open source desktop application that renders a
+beautiful view of Earth as seen from space and sets it as your wallpaper.
+The rendered image updates in the background, reflecting the current time of
+day, cloud cover, the positions of the Sun, Moon, and stars, and other
+real-world conditions.
+
+Running it
+----------
+
+Extract the archive and start the app from the extracted folder:
+
+    tar xzf sunlit-earth-*-linux-*.tar.gz
+    cd sunlit-earth-*-linux-*/
+    ./sunlit-earth
+
+Keep the files together: sunlit-earth finds its Earth images in the
+textures folder next to it.
+
+Choose a view, click "Set as Wallpaper", and enable "Auto-refresh wallpaper"
+to keep the wallpaper up to date. Closing the window keeps the app running
+in the tray; choose Exit in the tray icon's menu to quit. If your desktop
+has no tray, start it with "./sunlit-earth --mode window".
+
+To add Sunlit Earth to your application menu, run this from the same folder:
+
+    assets/linux/install-user.sh --exec "$PWD/sunlit-earth"
+
+It installs a desktop entry and icons into ~/.local/share and needs no root.
+To remove them again:
+
+    assets/linux/install-user.sh --uninstall
+
+Sunlit Earth has been tested on KDE Plasma, GNOME, Xfce and Cinnamon.
+Settings, caches and log files are stored in ~/.local/share/SunlitEarth.
+Run "./sunlit-earth --help" for command line options.
+
+Help and source code
+--------------------
+
+Project page:  https://github.com/sunlit-earth/sunlit-earth
+Bug reports:   https://github.com/sunlit-earth/sunlit-earth/issues
+New releases:  https://github.com/sunlit-earth/sunlit-earth/releases
+
+Sunlit Earth is free software under the GNU General Public License,
+version 3 or later; see LICENSE. THIRD-PARTY-LICENSES.md lists the licenses
+of the components and images it includes.

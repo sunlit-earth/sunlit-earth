@@ -214,8 +214,17 @@ pub const LICENSE: &str = "LICENSE";
 pub const RECORD: &str = "build-info.json";
 
 /// The macOS bundle's own directory name, which is what a user sees in Finder
-/// and double-clicks, and the one top-level entry its zip holds.
+/// and double-clicks.
 pub const APP_DIR: &str = "Sunlit Earth.app";
+
+/// The readme at the top of every bundle, beside the executable or the `.app`.
+pub const README: &str = "README.txt";
+
+/// Where a platform's readme is in the repository. macOS has one for both of
+/// its packages, since it is what explains the choice between them.
+pub fn readme_source(platform: Platform) -> String {
+    format!("assets/readme/{}.txt", platform.slug())
+}
 
 /// The `Info.plist` the bundle is assembled from, relative to the repository
 /// root. Every value in it is fixed but the version.
@@ -378,12 +387,36 @@ pub fn archive_format(platform: Platform, package: Package) -> Format {
 /// Named for the release rather than for the `.app` inside it: a download
 /// called `Sunlit Earth.app.zip` says nothing about which version it is.
 pub fn app_archive_name(version: &str, arch: Arch) -> String {
+    format!("{}.zip", app_bundle_name(version, arch))
+}
+
+/// The directory the `.app` zip unpacks to, which holds the `.app` and the
+/// readme.
+pub fn app_bundle_name(version: &str, arch: Arch) -> String {
     format!(
-        "{PACKAGE}-{version}-{}-{}{}.zip",
+        "{PACKAGE}-{version}-{}-{}{}",
         Platform::MacOs.slug(),
         arch.slug(),
         Package::App.suffix(Platform::MacOs)
     )
+}
+
+/// What the `.app` zip's directory holds: the `.app` from [`app_layout`] and
+/// the readme beside it, where Finder shows it.
+pub fn app_package_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String> {
+    let mut items: Vec<Item> = app_layout(sources, version)?
+        .into_iter()
+        .map(|item| Item {
+            path: format!("{APP_DIR}/{}", item.path),
+            ..item
+        })
+        .collect();
+    items.push(readme(Platform::MacOs, sources));
+    Ok(items)
+}
+
+fn readme(platform: Platform, sources: &Sources) -> Item {
+    Item::file(README, sources.repo.join(readme_source(platform)), false)
 }
 
 /// What the `.app` holds, in the order it is assembled.
@@ -493,6 +526,7 @@ pub fn layout(platform: Platform, sources: &Sources) -> Vec<Item> {
         sources.exe.to_path_buf(),
         true,
     )];
+    items.push(readme(platform, sources));
 
     for name in TEXTURE_FILES {
         items.push(Item::file(
@@ -865,7 +899,8 @@ pub fn summary(archive: &Path, verified: bool) -> String {
 }
 
 /// What every archive holds, wherever it is said.
-const HOLDS: &str = "the binary with its textures beside it, the record and the licence";
+const HOLDS: &str =
+    "the binary with its textures beside it, the readme, the record and the licence";
 
 /// What a run that skipped the verification has to say about the bundle it
 /// therefore never ran.
@@ -1046,11 +1081,14 @@ fn one_package(run: &Run, package: Package) -> Result<BundleInfo, String> {
             bundle_name(run.version, run.platform, run.arch),
             archive_name(run.version, run.platform, run.arch),
         ),
-        Package::App => (APP_DIR.to_owned(), app_archive_name(run.version, run.arch)),
+        Package::App => (
+            app_bundle_name(run.version, run.arch),
+            app_archive_name(run.version, run.arch),
+        ),
     };
     let items = match package {
         Package::Plain => layout(run.platform, &run.sources()),
-        Package::App => app_layout(&run.sources(), run.version)?,
+        Package::App => app_package_layout(&run.sources(), run.version)?,
     };
     let stage = run.out.join(STAGE_DIR);
     let root = assemble(&stage, &name, &items)?;
@@ -1070,7 +1108,7 @@ fn one_package(run: &Run, package: Package) -> Result<BundleInfo, String> {
             // bundle around it reports itself damaged until the bundle too is
             // sealed. No `--deep`: it is deprecated, and there is no nested
             // code here for it to reach.
-            sign(run.runner, &root)?;
+            sign(run.runner, &root.join(APP_DIR))?;
             ditto_pack(run.runner, &root, &archive)?
         }
     };
@@ -1123,17 +1161,18 @@ fn sign(runner: &dyn Runner, app: &Path) -> Result<(), String> {
     tool(runner, &cmd).map(|_| ())
 }
 
-/// Zip the bundle with Apple's own archiver, which is what preserves the
-/// signature, the permissions and the symlinks a `.app` may hold.
-fn ditto_pack(runner: &dyn Runner, app: &Path, archive: &Path) -> Result<u64, String> {
+/// Zip the directory holding the `.app` with Apple's own archiver, which is
+/// what preserves the signature, the permissions and the symlinks a `.app` may
+/// hold.
+fn ditto_pack(runner: &dyn Runner, dir: &Path, archive: &Path) -> Result<u64, String> {
     let _ = std::fs::remove_file(archive);
     let cmd = Cmd::new("ditto").args([
         "-c".to_owned(),
         "-k".to_owned(),
-        // The bundle itself is the one top-level entry an unpack produces,
+        // The directory itself is the one top-level entry an unpack produces,
         // rather than its contents scattered into the download folder.
         "--keepParent".to_owned(),
-        app.to_string_lossy().into_owned(),
+        dir.to_string_lossy().into_owned(),
         archive.to_string_lossy().into_owned(),
     ]);
     tool(runner, &cmd)?;
@@ -1239,7 +1278,7 @@ fn verify_here(
             &Cmd::new("codesign").args([
                 "--verify".to_owned(),
                 "--strict".to_owned(),
-                root.to_string_lossy().into_owned(),
+                root.join(APP_DIR).to_string_lossy().into_owned(),
             ]),
         )?;
         println!("  codesign --verify --strict passed on the unpacked bundle");
@@ -1253,7 +1292,11 @@ fn verify_here(
 
     let exe = match package {
         Package::Plain => root.join(exe_name(run.platform)),
-        Package::App => root.join("Contents").join("MacOS").join(PACKAGE),
+        Package::App => root
+            .join(APP_DIR)
+            .join("Contents")
+            .join("MacOS")
+            .join(PACKAGE),
     };
     let at = |cmd: Cmd| -> Result<(), String> { tool(run.runner, &cmd).map(|_| ()) };
 
@@ -1410,6 +1453,9 @@ mod tests {
             std::fs::write(&path, body).expect("write");
         };
         write(LICENSE, b"GNU GENERAL PUBLIC LICENSE\n");
+        for platform in Platform::ALL {
+            write(&readme_source(platform), b"Sunlit Earth\n");
+        }
         write(bake_licenses::NOTICES_PATH, b"# Third-party licenses\n");
         write("assets/linux/install-user.sh", b"#!/usr/bin/env bash\n");
         write("assets/linux/sunlit-earth.desktop", b"[Desktop Entry]\n");
@@ -1544,6 +1590,15 @@ mod tests {
                 );
             }
             assert!(paths.contains(&LICENSE), "{platform}: {paths:?}");
+            let readme = items
+                .iter()
+                .find(|i| i.path == README)
+                .unwrap_or_else(|| panic!("{platform} has no readme: {paths:?}"));
+            assert_eq!(
+                readme.source,
+                Source::File(repo.join(readme_source(platform))),
+                "{platform}"
+            );
             assert!(
                 paths.contains(&bake_licenses::NOTICES_NAME),
                 "{platform}: {paths:?}"
@@ -2008,6 +2063,7 @@ mod tests {
         let app = app_archive_name("0.1.0", Arch::X86_64);
         assert_eq!(tarball, "sunlit-earth-0.1.0-macos-x86_64-terminal.tar.gz");
         assert_eq!(app, "sunlit-earth-0.1.0-macos-x86_64-app.zip");
+        assert!(app.starts_with(&app_bundle_name("0.1.0", Arch::X86_64)));
         assert_ne!(tarball, app);
         // The `.app` is a zip whatever the platform's plain format is, because
         // `ditto` writes one.
@@ -2016,6 +2072,64 @@ mod tests {
             archive_format(Platform::MacOs, Package::Plain),
             Format::TarGz
         );
+    }
+
+    /// The `.app` zip unpacks to a directory with the `.app` and the readme in
+    /// it, and everything the `.app` holds stays inside the `.app`.
+    #[test]
+    fn the_app_zip_holds_the_app_with_the_readme_beside_it() {
+        let dir = scratch("app_package");
+        let repo = fabricate(&dir);
+        let exe = repo.join("bin").join("sunlit-earth");
+        let textures = repo.join("textures");
+        let sources = sources(&repo, &exe, &textures);
+        let app = app_layout(&sources, "0.1.0").expect("the app layout");
+        let package = app_package_layout(&sources, "0.1.0").expect("the package layout");
+
+        assert_eq!(package.len(), app.len() + 1);
+        for item in &app {
+            assert!(
+                package
+                    .iter()
+                    .any(|p| p.path == format!("{APP_DIR}/{}", item.path)
+                        && p.executable == item.executable),
+                "{}",
+                item.path
+            );
+        }
+        assert!(package.iter().any(|p| p.path == README
+            && p.source == Source::File(repo.join(readme_source(Platform::MacOs)))));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every platform has a readme in the repository, and the macOS one names
+    /// both of the archives it explains the choice between.
+    #[test]
+    fn every_platform_has_a_committed_readme() {
+        let repo = crate::store::repo_root();
+        for platform in Platform::ALL {
+            let path = repo.join(readme_source(platform));
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert!(
+                text.contains("https://github.com/sunlit-earth/sunlit-earth"),
+                "{platform}"
+            );
+        }
+        let macos = std::fs::read_to_string(repo.join(readme_source(Platform::MacOs)))
+            .expect("the macOS readme");
+        for package in Platform::MacOs.packages() {
+            let ending = format!(
+                "{}.{}",
+                package.suffix(Platform::MacOs),
+                archive_format(Platform::MacOs, *package).extension()
+            );
+            assert!(
+                macos.contains(&ending),
+                "the macOS readme never names {ending}"
+            );
+        }
     }
 
     fn pe_header(machine: u16) -> Vec<u8> {

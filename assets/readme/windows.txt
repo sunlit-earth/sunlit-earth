@@ -1,0 +1,48 @@
+Sunlit Earth for Windows
+========================
+
+Sunlit Earth is a free and open source desktop application that renders a
+beautiful view of Earth as seen from space and sets it as your wallpaper.
+The rendered image updates in the background, reflecting the current time of
+day, cloud cover, the positions of the Sun, Moon, and stars, and other
+real-world conditions.
+
+Running it
+----------
+
+1. Extract the whole zip file somewhere you like. Keep the files together:
+   sunlit-earth.exe finds its Earth images in the textures folder next to it.
+2. Double-click sunlit-earth.exe.
+3. On the first start, Windows will probably show a blue "Windows protected
+   your PC" dialog with only a "Don't run" button. See below.
+
+Choose a view, click "Set as Wallpaper", and enable "Auto-refresh wallpaper"
+to keep the wallpaper up to date. Closing the window keeps the app running
+in the system tray; right-click the tray icon and choose Exit to quit.
+
+Settings, caches and log files are stored in %LOCALAPPDATA%\SunlitEarth.
+Run "sunlit-earth.exe --help" in a terminal for command line options.
+
+About "Windows protected your PC"
+---------------------------------
+
+Microsoft Defender SmartScreen shows this warning for programs downloaded
+from the internet that have not built up a reputation with Microsoft yet.
+Sunlit Earth is new and is not signed with a code signing certificate, so
+it gets the warning. It does not mean that anything harmful was found.
+
+The button to start the app is hidden: click "More info", and a "Run
+anyway" button appears. Windows remembers that choice for this copy of the
+app, so the warning does not come back on later starts. A new version you
+download may show it once more.
+
+Help and source code
+--------------------
+
+Project page:  https://github.com/sunlit-earth/sunlit-earth
+Bug reports:   https://github.com/sunlit-earth/sunlit-earth/issues
+New releases:  https://github.com/sunlit-earth/sunlit-earth/releases
+
+Sunlit Earth is free software under the GNU General Public License,
+version 3 or later; see LICENSE. THIRD-PARTY-LICENSES.md lists the licenses
+of the components and images it includes.

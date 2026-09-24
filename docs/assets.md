@@ -62,6 +62,7 @@ The application uses [GPL-3.0-or-later](../LICENSE), as declared in the workspac
 - [assets/ATTRIBUTION.md](../assets/ATTRIBUTION.md) contains the credits displayed in the About window's attributions tab.
 - [assets/third-party.md](../assets/third-party.md) contains the generated dependency list displayed in the About window.
 - [assets/THIRD-PARTY-LICENSES.md](../assets/THIRD-PARTY-LICENSES.md) contains dependency licenses and their full texts from the committed SPDX texts in `assets/licenses/`. This file ships beside the executable in a complete release bundle.
+- [assets/readme/](../assets/readme/) holds one `README.txt` per platform, which ships at the top of every release bundle and says how to start the app and where the project is.
 - [textures/PROVENANCE.md](../textures/PROVENANCE.md) records image sources, file hashes, and download dates.
 - The [star catalog notice](../crates/sunlit-core/src/assets/stars/ATTRIBUTION.md) lives beside the committed catalog blob.
 

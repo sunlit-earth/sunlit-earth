@@ -6,16 +6,16 @@ The [README](../README.md#using-the-app) covers everyday use. This reference con
 
 The macOS build has never been run on a Mac. Nobody working on this project owns Apple hardware, so it is written against Apple's documentation, compiled and unit-tested on a hosted macOS runner, and that is the whole of the evidence behind it. [macos-testing.md](macos-testing.md) says what a tester with a Mac could report back.
 
-Two archives are published for each Mac architecture, `<arch>` being `aarch64` for Apple Silicon and `x86_64` for Intel: `sunlit-earth-<version>-macos-<arch>.zip` holds `Sunlit Earth.app`, and `sunlit-earth-<version>-macos-<arch>.tar.gz` holds the same binary with its textures and no bundle. Both are signed ad-hoc, because notarization needs an Apple Developer Program membership this project does not have, and Gatekeeper treats an ad-hoc signed download as unverified. Since macOS 15.1 there is no Control-click "Open" shortcut around that.
+Two archives are published for each Mac architecture, `<arch>` being `aarch64` for Apple Silicon and `x86_64` for Intel: `sunlit-earth-<version>-macos-<arch>-app.zip` holds `Sunlit Earth.app`, and `sunlit-earth-<version>-macos-<arch>-terminal.tar.gz` holds the same binary with its textures and no bundle. Both are signed ad-hoc, because notarization needs an Apple Developer Program membership this project does not have, and Gatekeeper treats an ad-hoc signed download as unverified. Since macOS 15.1 there is no Control-click "Open" shortcut around that.
 
 **The app bundle.** Unzip the archive and move `Sunlit Earth.app` to Applications. Double-clicking it the first time gives a dialog saying macOS could not verify that the app is free of malware. Open System Settings, go to Privacy & Security, scroll to the bottom, and choose Open Anyway for Sunlit Earth; on macOS 26 that step asks for an administrator password. `xattr -dr com.apple.quarantine "/Applications/Sunlit Earth.app"` does the same thing in one line, by removing the quarantine attribute the browser set.
 
 **The plain binary.** Downloading the tarball with `curl` and unpacking it with `tar` in Terminal avoids Gatekeeper entirely, because quarantine is an extended attribute that browsers and Archive Utility set and `tar` does not:
 
 ```bash
-curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/sunlit-earth-0.1.0-macos-aarch64.tar.gz
-tar xzf sunlit-earth-0.1.0-macos-aarch64.tar.gz
-cd sunlit-earth-0.1.0-macos-aarch64
+curl -L -O https://github.com/sunlit-earth/sunlit-earth/releases/latest/download/sunlit-earth-0.1.0-macos-aarch64-terminal.tar.gz
+tar xzf sunlit-earth-0.1.0-macos-aarch64-terminal.tar.gz
+cd sunlit-earth-0.1.0-macos-aarch64-terminal
 ./sunlit-earth
 ```
 

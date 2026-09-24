@@ -239,6 +239,19 @@ pub enum Package {
     App,
 }
 
+impl Package {
+    /// What tells this package's archive apart from the other one its platform
+    /// ships, which on the release page is the only hint of which to download.
+    /// Empty on a platform that ships one.
+    pub fn suffix(self, platform: Platform) -> &'static str {
+        match (self, platform) {
+            (Self::App, _) => "-app",
+            (Self::Plain, Platform::MacOs) => "-terminal",
+            (Self::Plain, Platform::Windows | Platform::Linux) => "",
+        }
+    }
+}
+
 /// The two archive formats, one per target.
 ///
 /// Each target gets what its own users expect rather than one format for both:
@@ -342,7 +355,12 @@ pub struct Sources<'a> {
 /// in the record. The architecture is in the name because one release carries
 /// more than one per platform.
 pub fn bundle_name(version: &str, platform: Platform, arch: Arch) -> String {
-    format!("{PACKAGE}-{version}-{}-{}", platform.slug(), arch.slug())
+    format!(
+        "{PACKAGE}-{version}-{}-{}{}",
+        platform.slug(),
+        arch.slug(),
+        Package::Plain.suffix(platform)
+    )
 }
 
 /// Which writer and reader one package of one platform uses.
@@ -360,7 +378,12 @@ pub fn archive_format(platform: Platform, package: Package) -> Format {
 /// Named for the release rather than for the `.app` inside it: a download
 /// called `Sunlit Earth.app.zip` says nothing about which version it is.
 pub fn app_archive_name(version: &str, arch: Arch) -> String {
-    format!("{}.zip", bundle_name(version, Platform::MacOs, arch))
+    format!(
+        "{PACKAGE}-{version}-{}-{}{}.zip",
+        Platform::MacOs.slug(),
+        arch.slug(),
+        Package::App.suffix(Platform::MacOs)
+    )
 }
 
 /// What the `.app` holds, in the order it is assembled.
@@ -1805,13 +1828,18 @@ mod tests {
     }
 
     /// The macOS archive a tester unpacks in Terminal is a tarball, because
-    /// `tar` sets no quarantine attribute where a browser does.
+    /// `tar` sets no quarantine attribute where a browser does, and its name
+    /// says that Terminal is what it is for.
     #[test]
-    fn the_macos_bundle_is_a_tarball_named_like_the_others() {
+    fn the_macos_bundle_is_a_tarball_named_for_the_terminal() {
         assert_eq!(Format::of(Platform::MacOs), Format::TarGz);
         assert_eq!(
+            bundle_name("0.1.0-beta.4", Platform::MacOs, Arch::X86_64),
+            "sunlit-earth-0.1.0-beta.4-macos-x86_64-terminal"
+        );
+        assert_eq!(
             archive_name("0.1.0-beta.4", Platform::MacOs, Arch::X86_64),
-            "sunlit-earth-0.1.0-beta.4-macos-x86_64.tar.gz"
+            "sunlit-earth-0.1.0-beta.4-macos-x86_64-terminal.tar.gz"
         );
         assert_eq!(exe_name(Platform::MacOs), "sunlit-earth");
     }
@@ -1978,8 +2006,8 @@ mod tests {
 
         let tarball = archive_name("0.1.0", Platform::MacOs, Arch::X86_64);
         let app = app_archive_name("0.1.0", Arch::X86_64);
-        assert_eq!(tarball, "sunlit-earth-0.1.0-macos-x86_64.tar.gz");
-        assert_eq!(app, "sunlit-earth-0.1.0-macos-x86_64.zip");
+        assert_eq!(tarball, "sunlit-earth-0.1.0-macos-x86_64-terminal.tar.gz");
+        assert_eq!(app, "sunlit-earth-0.1.0-macos-x86_64-app.zip");
         assert_ne!(tarball, app);
         // The `.app` is a zip whatever the platform's plain format is, because
         // `ditto` writes one.

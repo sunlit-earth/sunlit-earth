@@ -382,8 +382,11 @@ jobs:
 
   push:
     name: Push
-    # One push at a time across every release, so two runs for different tags
-    # cannot race each other to the same two branches.
+    # Pushes for different releases never run at the same time. A group holds
+    # one running and one pending job, and a newer pending job cancels the
+    # older pending one even with cancel-in-progress off, so a cancelled push
+    # is rerun by hand; the downgrade check keeps any order from moving users
+    # backwards.
     concurrency:
       group: package-managers-push
       cancel-in-progress: false
@@ -429,40 +432,51 @@ jobs:
           path: homebrew-tap
 
       # The pipeline writes only stable versions, so what the repositories hold
-      # is X.Y.Z; a prerelease suffix there would count as older than its core.
+      # is X.Y.Z; a prerelease suffix there counts as older than its core. A
+      # file that exists and holds no version this can read is refused rather
+      # than taken as permission.
       - name: Refuse a downgrade
         run: |
           set -euo pipefail
-          core() { local v=${1%%-*}; IFS=. read -r a b c <<< "$v"; printf '%d %d %d' "$a" "$b" "$c"; }
+          semver='^([0-9]+)\.([0-9]+)\.([0-9]+)(-.*)?$'
           older() {
-            local x y
-            read -r -a x <<< "$(core "$1")"
-            read -r -a y <<< "$(core "$2")"
+            [[ "$1" =~ $semver ]] || return 2
+            local x=("${BASH_REMATCH[@]:1:4}")
+            [[ "$2" =~ $semver ]] || return 2
+            local y=("${BASH_REMATCH[@]:1:4}")
             for i in 0 1 2; do
-              if (( x[i] < y[i] )); then return 0; fi
-              if (( x[i] > y[i] )); then return 1; fi
+              if (( 10#${x[i]} < 10#${y[i]} )); then return 0; fi
+              if (( 10#${x[i]} > 10#${y[i]} )); then return 1; fi
             done
-            [[ "$1" != *-* ]] && return 1
-            [[ "$2" == *-* ]] && return 1
-            return 0
+            if [ -n "${x[3]}" ] && [ -z "${y[3]}" ]; then return 0; fi
+            return 1
           }
           held() {
             case "$2" in
-              *.json) jq -r .version "$1/$2" ;;
+              *.json) jq -r '.version // empty' "$1/$2" ;;
               *.rb) sed -n 's/^  version "\(.*\)"$/\1/p' "$1/$2" | head -1 ;;
             esac
           }
           for pair in scoop-bucket:bucket/sunlit-earth.json homebrew-tap:Casks/sunlit-earth.rb homebrew-tap:Formula/sunlit-earth.rb; do
             repo=${pair%%:*}
             file=${pair#*:}
-            if [ ! -f "$repo/$file" ]; then
+            if [ ! -e "$repo/$file" ]; then
               echo "$repo/$file does not exist yet"
               continue
             fi
-            current=$(held "$repo" "$file")
+            current=$(held "$repo" "$file" || true)
+            if ! [[ "$current" =~ $semver ]]; then
+              echo "::error::$repo/$file exists and holds no version of the form X.Y.Z (read: '${current}'), so whether $VERSION would be a downgrade cannot be told. Fix the file by hand first."
+              exit 1
+            fi
             echo "$repo/$file holds $current"
-            if older "$VERSION" "$current"; then
+            status=0
+            older "$VERSION" "$current" || status=$?
+            if [ "$status" -eq 0 ]; then
               echo "::error::$repo/$file holds $current, which is newer than $VERSION. Refusing to downgrade; publish $VERSION's manifests by hand if that is really meant."
+              exit 1
+            elif [ "$status" -ne 1 ]; then
+              echo "::error::$VERSION is not a version of the form X.Y.Z"
               exit 1
             fi
           done

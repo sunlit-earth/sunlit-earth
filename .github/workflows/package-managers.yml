@@ -1,11 +1,9 @@
 name: Package managers
 
-# Publishing a stable release writes the Scoop manifest, the Homebrew cask and
-# the Homebrew formula from its archives, installs each on every platform and
-# architecture it serves, and only then commits them to sunlit-earth/scoop-bucket
-# and sunlit-earth/homebrew-tap. A dispatch does the same for any published
-# release and is a dry run unless push is on. The design is in
-# docs/plans/2026-09-24-package-managers-amendment-simplify.md.
+# Publishing a stable release writes the Scoop manifest and the Homebrew cask
+# and formula from its archives, installs each where it serves, and only then
+# commits them to scoop-bucket and homebrew-tap. A dispatch is a dry run unless
+# push is on. Design: docs/plans/2026-09-24-package-managers-amendment-simplify.md.
 on:
   release:
     types: [published]
@@ -38,8 +36,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      # The one gate: a run that would push needs the tag to be a stable
-      # release and the one GitHub calls latest, which also refuses an older tag.
+      # A run that would push needs a stable release that GitHub calls latest,
+      # which refuses an older tag; the push job asks that again before it commits.
       - name: Refuse what cannot be published
         run: |
           set -euo pipefail
@@ -51,13 +49,13 @@ jobs:
             echo "::error::$TAG is still a draft, whose assets cannot be downloaded; publish it first"
             exit 1
           fi
-          latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
-          echo "release $TAG: $info, latest $latest, push $PUSH"
+          echo "release $TAG: $info, push $PUSH"
           if [ "$PUSH" = true ]; then
             if [ "$(jq -r .isPrerelease <<< "$info")" = true ] || [[ "$TAG" == *-* ]]; then
               echo "::error::$TAG is a prerelease, and only stable releases update scoop-bucket and homebrew-tap; a dispatch with push off verifies it"
               exit 1
             fi
+            latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
             if [ "$latest" != "$TAG" ]; then
               echo "::error::$TAG is not the latest release, $latest is; pushing it would move users backwards"
               exit 1
@@ -185,7 +183,9 @@ jobs:
 
       - name: No quarantine on the installed app
         if: matrix.kind == 'cask'
-        run: if xattr -p com.apple.quarantine "$APP"; then echo "::error::$APP is quarantined"; exit 1; fi
+        run: |
+          [ -d "$APP" ] || { echo "::error::$APP is not installed"; exit 1; }
+          if xattr -p com.apple.quarantine "$APP"; then echo "::error::$APP is quarantined"; exit 1; fi
 
   push:
     name: Push
@@ -200,6 +200,15 @@ jobs:
       group: package-managers-push
       cancel-in-progress: false
     steps:
+      # Asked again inside the group: a newer release may have been pushed since
+      # the first job ran, and a rerun of this job does not rerun that one.
+      - name: Refuse a tag that is no longer the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          [ "$latest" = "$TAG" ] || { echo "::error::$TAG is not the latest release, $latest is; pushing it would move users backwards"; exit 1; }
+
       - uses: actions/create-github-app-token@v3
         id: token
         with:

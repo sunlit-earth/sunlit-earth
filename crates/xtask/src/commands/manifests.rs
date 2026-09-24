@@ -246,7 +246,7 @@ pub fn cask(release: &Release) -> Result<String, String> {
     strategy :github_latest
   end
 
-  depends_on macos: :big_sur
+  depends_on :macos
 
   app "{directory}/{APP_DIR}"
   binary "#{{appdir}}/{APP_DIR}/Contents/MacOS/{PACKAGE}"

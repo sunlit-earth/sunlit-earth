@@ -5,6 +5,7 @@
 [![Status: beta](https://img.shields.io/badge/status-beta-orange)](#downloads)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/sunlit-earth/sunlit-earth?label=release)](https://github.com/sunlit-earth/sunlit-earth/releases)
+[![Platforms: Windows, Linux, macOS](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#downloads)
 
 Sunlit Earth is a free and open source desktop application that renders a beautiful view of Earth as seen from space and sets it as your wallpaper. The rendered image updates in the background, reflecting the current time of day, cloud cover, the positions of the Sun, Moon, and stars, and other real-world conditions.
 

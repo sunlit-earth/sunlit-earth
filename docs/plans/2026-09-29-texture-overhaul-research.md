@@ -559,3 +559,19 @@ What this changes for Step 1:
 - The mask is reprojected from a source-resolution raster; T1a should produce it once per bake, not once per month, and the twelve day files of a run share the same six mask faces byte for byte.
 - The night faces come from the 8192 map, so the night level is source limited at 2048 exactly as the research said; the sources are unchanged from the tree.
 - The scripts and outputs are in the run directory under `spike-bake/` (`bake_one_month.py`, `check_orientation.py`, `out/`); they are throwaway and not in the tree.
+
+## 20. Step 1: the full bake
+
+Measured on 2026-09-29 by the pipeline's `cube` command on the twelve 21600 x 10800 months, the 13500 x 6750 Black Marble and the Natural Earth ocean layer, on the machine of section 19.3 [M]. The bake took 572.8 s with four workers at a peak working set of 3.04 GiB, set by the shapefile raster; the resampling runs in bands of 256 rows and stays below it. The 84 files come to 18,464,893 bytes, against the 18.7 MB section 17 estimated. `textures/PROVENANCE.md` has the stages, the sizes per set and the sources.
+
+Deduplication, measured on the decoded faces rather than on the source [M]. The 84 files were decoded by libjxl through Pillow, a 1024 level made from each 2048 face by a 2 x 2 box, and both levels cut into 128 px tiles, once bare and once with an 8 px gutter: inside a face the gutter is the neighboring texels, at a face edge the edge texels repeated, so the edge tiles are approximate. A tile whose window of the mask at its level is all 255 counts as constant ocean and is not stored; the rest are hashed with SHA-256 over their pixels. Identical pixels make identical BC7 blocks, since the encoder is a pure function, so this is the share a content hash in the pack index can remove.
+
+| A year of day tiles, both levels | Bare 128 px | With the 8 px gutter |
+|---|---|---|
+| All tiles | 23,040 | 23,040 |
+| Constant ocean, not stored | 9,300 | 8,724 |
+| Stored before deduplication | 13,740 | 14,316 |
+| Distinct | 13,307 | 14,000 |
+| Saving | 3.2% | 2.2% |
+
+That is far under the 16% to 20% of section 17, and the reason is the lossy encode. Section 17 counted tiles identical in the source, which south of 60 S is the same in every month, and the bake is deterministic, so the months' faces are identical there before they are encoded [R]. Each month is encoded on its own, though, and decoded the identity is gone: in the central 800 x 800 texels of `ny`, which lie wholly south of 65 S, January and July differ in 5.7% of the texels, by a mean of 0.03 of 255 and at most 6, and one differing texel is enough to make a 128 px tile unique. On `ny` 1,452 tiles are stored and 1,356 of them are distinct. The saving is under the 5% below which the plan drops the dedup pass (decision 3 and the last of its risks); the real gutters cross face edges, which touches only the edge tiles. Getting the identity back would mean encoding the unchanging region once for all months, which one file per face and month does not allow.

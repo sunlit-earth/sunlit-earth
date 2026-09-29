@@ -7,8 +7,24 @@ import geopandas as gpd
 import numpy as np
 import OpenEXR
 import pytest
+import typer.rich_utils
 from PIL import Image
 from shapely.geometry import box
+
+
+@pytest.fixture(autouse=True)
+def plain_wide_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make Typer write help and errors as plain text on a wide console.
+
+    Typer decides at import to force a color terminal when ``GITHUB_ACTIONS``,
+    ``FORCE_COLOR`` or ``PY_COLORS`` is set, and the escapes it then writes
+    split option names in the captured output; a narrow ``COLUMNS`` would
+    wrap them. Rich reads ``COLUMNS`` each time Typer builds a console.
+
+    :param monkeypatch: Undoes both changes after each test.
+    """
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", False)
+    monkeypatch.setenv("COLUMNS", "200")
 
 
 @pytest.fixture

@@ -181,7 +181,7 @@ Run tests:
 uv run pytest
 ```
 
-`tests/test_cube.py` bakes a tiny set of generated sources through the `cube` command, losslessly so the comparison can be exact, and compares every decoded face with the committed bake in `tests/fixtures/cube/`. A change to the bake that is meant fails it once; regenerate the fixture with `TEXTURE_PIPELINE_UPDATE_FIXTURES=1 uv run pytest tests/test_cube.py` and commit the result. CI does not run this suite, so it is on whoever changes the pipeline.
+`tests/test_cube.py` bakes a tiny set of generated sources through the `cube` command, losslessly so the comparison can be exact, and compares every decoded face with the committed bake in `tests/fixtures/cube/`. A change to the bake that is meant fails it once; regenerate the fixture with `TEXTURE_PIPELINE_UPDATE_FIXTURES=1 uv run pytest tests/test_cube.py` and commit the result. CI runs this suite in the `pipeline` job of `.github/workflows/ci.yml`, on Ubuntu, whenever that workflow is dispatched for all runners or for `ubuntu-latest`.
 
 Lint and format:
 

@@ -85,6 +85,8 @@ failing on another. The ordering in those numbers is not the expected one: the t
 disagree most, and Metal, which is both a different shader translation target and an actual GPU, lands about five times
 closer to WARP than lavapipe does.
 
+**BC7 sampling against its original, `tests/bc7.rs`.** Measured on WARP, lavapipe (Mesa 23.2.1 in WSL) and the paravirtual Metal device on 2026-09-29; the target prints its figures, so a CI log carries them. The flat framing reproduces the level 0 texels exactly on all three, which the teeth case asserts, so its BC7 difference is the encoder's own: a mean of 0.727 with 0.002% of the pixels over 24, against the golden tolerance of 2.0 and 1%. Through the globe's sampler the receding framing reads 0.42 to 0.48. The adapter's decode matches `dds`'s own to the bit at texel centers on all three and to one step through the receding framing on WARP, which is what `DECODE_TOLERANCE` of 2 leaves room for. One lost mip level of the fixture reads 6.1, the teeth. The flat framing samples at anisotropy 1 because lavapipe's 16x filter is not an identity on a one-texel footprint: through it, that framing sat a mean of 4.7 steps from its own texels and the teeth read 2.05. Section 19.1 of the texture overhaul research has the table and the method.
+
 **The memory budget's cold-start figure.** `MEASURED_COLD_START_PEAK` in `memory.rs`'s test module is 2488 MiB, the one
 cold-cache startup peak anyone has measured: private bytes, at 8192, in a release build. Every resolution is held to
 that one figure rather than to a smaller one derived from it, and that is the point. The peak is dominated by the two 8K

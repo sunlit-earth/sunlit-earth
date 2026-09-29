@@ -504,6 +504,77 @@ Streaming and prior art: https://cesium.com/blog/2013/04/25/horizon-culling/, ht
 
 ## 19. Step 0 spikes
 
+### 19.1 Spike (a): BC7 on the software adapters and on the Metal device
+
+Measured on 2026-09-29 by a new shader test target, `crates/sunlit-core/tests/bc7.rs`, which stays in the tree as the permanent test of BC7 sampling that Step 3 needs [M]. The fixture is generated rather than committed: 256 px of five-octave value noise as terrain over a smooth ocean ramp, a per-texel grain of 36 levels peak to peak on the land, hard coastlines, and 0.3% saturated points. Its mip chain is the renderer's own box filter (`texture_loader::downsample_2x`, now public for the test) down to 4 x 4, the smallest level that holds a whole block; each level is encoded with `dds` 0.2.0 at `CompressionQuality::Fast` and uploaded as `Bc7RgbaUnorm`, the unorm variant because the surfaces are `Rgba8Unorm` today. One render pipeline samples three textures: the BC7 one, the RGBA8 original, and `dds`'s own CPU decode of the same blocks uploaded as RGBA8. Two framings: flat, one texel per pixel at texel centers through an isotropic linear sampler, and receding, a plane from four times magnified at the bottom to eight texels per pixel at the top, over three mip levels, through the globe's sampler (trilinear, 16x anisotropy, repeat in u, clamp in v). The device is the golden suite's (the software adapter where there is one, the default adapter on macOS) with `TEXTURE_COMPRESSION_BC` requested where it is offered and the app's own limits, and the comparison is the golden suite's, moved into `tests/support` so the two targets share it.
+
+| Adapter | BC reported | BC7 against the original, flat: mean, share over 24, worst | Receding | BC7 against `dds`'s decode, worst channel, flat and receding | One mip level lost, flat |
+|---|---|---|---|---|---|
+| warp (Microsoft Basic Render Driver, DX12, this machine) | yes | 0.727, 0.002%, 32 | 0.431, 0%, 11 | 0 and 1 | 6.11 |
+| lavapipe (llvmpipe, Mesa 23.2.1, LLVM 15.0.7, Ubuntu 22.04 in WSL) | yes | 0.727, 0.002%, 32 | 0.475, 0%, 8 | 0 and 0 | 6.16 |
+| metal (Apple Paravirtual device, `macos-latest`, CI run 36630793491) | yes | 0.727, 0.002%, 32 | 0.415, 0%, 11 | 0 and 0 | 6.12 |
+
+What the table says:
+
+- Every adapter reports `TEXTURE_COMPRESSION_BC`, as section 6 expected, the paravirtual Metal device included.
+- Every adapter decodes BC7 as `dds` does: at texel centers the adapter's sample and the CPU decode agree to the bit on all three, and through the receding framing to one step on warp, which is filtering precision. The paravirtual device's BC7 decode, which section 6 left unverified, is correct.
+- The flat framing reproduces the texels exactly on all three (the case asserts it), so its 0.727 is the encoder's own error, the same figure the CPU gives for the level 0 blocks. That is about a third of the golden mean budget, with 0.002% of the pixels over 24 against the 1% allowed; through the globe's sampler it drops to 0.42 to 0.48. One lost mip level of the same fixture reads 6.1 on every adapter, so the tolerance does see a loss the size a wrong decode would cause.
+- The fixture is harder on the encoder than the real maps. `dds` Fast on 72 crops of 256 px spread over each shipped map, made opaque as the day tiles will be, gives a mean channel error of 0.22 on the day map (worst crop 0.87, worst channel 23, no pixel over 24) and 0.15 on the night map (worst crop 1.60, worst channel 34, at most 0.006% of a crop over 24); on the crops with any texture in them (a green standard deviation over 8) that is 49.5 dB and 51.9 dB PSNR.
+
+One finding on the side, and the reason the flat framing has its own sampler: lavapipe's anisotropic filter is not an identity on a one-texel footprint. Through the globe's 16x sampler, lavapipe's flat render of the original sat a mean of 4.69 channel steps from its own texels (worst 161, at a saturated point), and one lost mip level then read 2.05 against the 2.0 tolerance; with anisotropy 1 the frame is exact and the figures are warp's. Warp and the Metal device are exact at 16x. The blur is in every lavapipe golden reference already.
+
+Outcome: BC7 sampling is inside the golden tolerance of its original on all three adapters and correct on all three, so as far as correctness goes the references could be generated from BC7 everywhere. Section 19.2 is why they should not be on the two software adapters.
+
+### 19.2 Spike (b): what the equi-angular path costs on the software adapters
+
+Measured on 2026-09-29 and 2026-09-30 on this machine (AMD Ryzen 7 5800X, 8 cores and 16 threads, Windows 11; warp through DX12, lavapipe through Vulkan in WSL 2 on the same CPU) with a throwaway harness in the run directory (`spike-eac/`, wgpu 28.0.0, pinned by a copy of the tree's lockfile) [M]. It draws the globe the app draws: the app's 64 x 64 UV sphere with back faces culled, a depth buffer, 4x MSAA resolved into `Rgba8Unorm`, and `fs_main`'s shading tail after the samples, with `blend.wgsl` copied from the tree and the default config's shading values in a uniform buffer so that nothing folds away. The lens is the default 20 degrees at a distance of 2.5, so the globe covers every pixel of the frame: the worst case, and the Milky Way's 133 ms is a full-frame cost too. The textures are the shipped maps. Today's path samples the 8192 x 4096 day map (the mask in alpha) and the night map, oriented by the loader's `orient` and mipped by the same box filter; the cube paths sample six 2048 faces reprojected from those oriented maps at the direction the mesh's UVs give each texel, so every variant draws the same picture, which was checked by eye on the saved frames. Two views: mid-latitude, where the frame crosses cube face edges and a corner, and the north pole, where the frame lies inside the +Y face. A frame is timed by the wall clock from encoding to `poll(wait)`; each figure is the mean of 8 to 12 frames after one or two warm-up frames, with the variants interleaved round by round, and of 2 to 6 frames on lavapipe where a frame takes seconds. On warp the standard deviations are 1% to 7% of the mean. On lavapipe the frames of a few tens of milliseconds vary by 10% to 30%, which is a few milliseconds, and the frames of seconds by 5% to 15% except where the table says otherwise.
+
+The variants: today's path (`textureSample` of the two equirectangular maps at the mesh UVs); the equi-angular cube like for like (`w = atan(n / max(|n|)) * 4 / pi`, `dpdx(w)` and `dpdy(w)`, and `textureSampleGrad` of a day cube carrying the mask in alpha and of a night cube), in RGBA8 and in BC7; the plan's floor (opaque BC7 day and night cubes and the BC4 mask cube at 1024, three samples); and a prototype of the plan's tile path (the face and its face coordinates from `w`, one `textureLoad` of an `Rg32Uint` page table of 6 x 16 x 16 cells, the 144 px layers with their 8 px gutters in two `texture_2d_array`s of 1,536 layers and two mips, sampled with `textureSampleGrad` and the gradients carried into layer space, and the BC4 mask cube). Each figure below is the difference from today's path in the same rounds, in milliseconds.
+
+Warp, with the plan's samplers (16x on the globe's sampler, 8x on a second one for the tiles):
+
+| Variant | 1080p, mid-latitude | 1080p, pole | 4K, mid-latitude | 4K, pole |
+|---|---|---|---|---|
+| today's path, the whole frame | 200 ms | 220 ms | 785 ms | 819 ms |
+| cube, RGBA8 | +1.4 | -2.5 | +2.5 | +10.9 |
+| cube, RGBA8, implicit derivatives | +1.1 | -4.7 | +0.8 | +1.8 |
+| cube, BC7 | +41 | +65 | +110 | +177 |
+| floor: BC7 cubes and the BC4 mask | +60 | +87 | +201 | +243 |
+| tiles in BC7, and the BC4 mask | +206 | +225 | +792 | +839 |
+| tiles in RGBA8, and the BC4 mask | +193 | +198 | +748 | +801 |
+
+The same run with anisotropy 1 on both samplers moves nothing beyond the noise (cube RGBA8 +2.5, +2.1, +12.2 and +4.8; floor +72, +98, +195 and +206; tiles in BC7 +210, +228, +788 and +819), and neither does rendering without MSAA (at 1080p, cube RGBA8 -1.0 and -2.1, floor +63 and +79, tiles in BC7 +208 and +207).
+
+Lavapipe:
+
+| Variant | 1080p, mid-latitude | 1080p, pole | 4K, mid-latitude | 4K, pole |
+|---|---|---|---|---|
+| today's path, the whole frame, plan's samplers | 42 ms | 55 ms | 163 ms | not measured |
+| cube, RGBA8, plan's samplers | +7,274 | -3.2 | +8,703 (sd 14%) | not measured |
+| cube, RGBA8, implicit derivatives, plan's samplers | +2,326 | -0.4 | +5,039 (sd 39%) | not measured |
+| cube, BC7, plan's samplers | about +116,000 (one frame) | not measured | not measured | not measured |
+| tiles in BC7, plan's samplers | +2,000 | +2,482 | +4,468 (sd 22%) | not measured |
+| tiles in RGBA8, plan's samplers | +652 | +74 | +1,162 | not measured |
+| today's path, the whole frame, anisotropy 1 | 33 ms | 31 ms | 107 ms | 113 ms |
+| cube, RGBA8, anisotropy 1 | +3.6 | -0.8 | +2.6 | +2.5 |
+| cube, BC7, anisotropy 1 | +263 | +240 | +774 | +843 |
+| floor, anisotropy 1 | +268 | +247 | +784 | +895 |
+| tiles in BC7, anisotropy 1 | +250 | +255 | +843 | +898 |
+| tiles in RGBA8, anisotropy 1 | +4.9 | +5.8 | +7.2 | +22.4 |
+
+Anisotropy 2 and 4 on lavapipe cost what 16 does (cube RGBA8 +6,083 and +6,188 ms at 1080p mid-latitude, the BC7 cube 120 s a frame at 4), so lavapipe's slow path is switched on by any anisotropy at all on a cube map, and it is taken where the frame crosses a face edge: the pole view, inside one face, costs nothing at 16x.
+
+On this machine's GPU (RX 6800 XT, Vulkan) every variant is within 0.2 ms of today's path at 4K, the tile prototype included, so the question is only the software adapters.
+
+What it comes to, against the yardstick of 133 ms at 1080p and 555 ms at 4K on warp (section 14 item 4):
+
+1. The equi-angular mapping costs nothing measurable on either software adapter. Its warp, its derivatives and a `textureSampleGrad` of a cube stay within 7 ms of today's path at 1080p and 12 ms at 4K, 5% and 2% of the yardstick, so decision 1 stands and the banded equirectangular fallback is not reopened. Explicit gradients cost nothing either: the cube with implicit derivatives reads the same as with explicit ones, and so does today's path with explicit ones (+2.9 ms at 16x and -0.9 ms at 1x, warp, 1080p mid-latitude).
+2. BC7 sampling is what costs on a software adapter. On warp the floor in BC7 and BC4 is +60 to +98 ms at 1080p and +195 to +243 ms at 4K: under the yardstick, but 45% to 74% of it at 1080p, for a saving a CPU adapter does not need, since its textures are system memory anyway. On lavapipe BC7 costs +240 to +268 ms at 1080p and +774 to +898 ms at 4K even at anisotropy 1, over the yardstick at both sizes, and with any anisotropy it is 116 s to 120 s a frame. The same paths in RGBA8 at anisotropy 1 cost at most +22 ms. This is the plan's departure 4.
+3. Any anisotropy on a cube map is pathological on lavapipe where the frame crosses a face edge: +6.1 s to +8.7 s a frame in RGBA8, against +4 ms at anisotropy 1. Warp does not care. Departure 4 covers this too.
+4. On warp the tile prototype costs +190 to +230 ms at 1080p and +750 to +850 ms at 4K, over the yardstick, and none of that is the tile path. At 1080p it stays between +190 and +225 ms with the page-table load removed, with the layer made uniform, with the face selection and the cell arithmetic removed, with a 2D atlas in place of the array, and at anisotropy 1. With the tiles sampled through the globe's own sampler instead of a second one, the stripped variant is -1.4 ms (pole view; -4.7 without the mask), a second sampler whose state is identical to the first costs the same +198 ms as the tiles' own, and the whole prototype in BC7 costs what the BC7 floor costs in the same rounds: +56 and +59 ms at 1080p and +137 and +159 ms at 4K, against the floor's +52 and +62 and +134 and +149. Warp charges about 200 ms per 1080p frame for a second sampler binding in the fragment shader, whatever its state. This is the plan's departure 5. Lavapipe charges nothing for it (tiles in RGBA8 at anisotropy 1, two samplers, +5 ms).
+
+Not measured: CI's `ubuntu-latest` carries a newer Mesa than the 23.2.1 of Ubuntu 22.04 in WSL, and its anisotropic and BC7 paths may differ; the harness would have to be in the tree to run there. The Metal device's cost was not asked for and not measured.
+
 ### 19.3 Spike (c): the full bake of one month
 
 Measured on 2026-09-29 on Windows 11, 16 logical cores, 64 GB, through a throwaway script run with `uv run` in the pipeline's own environment (CPython 3.14.5, numpy, Pillow with pillow-jxl-plugin, the pipeline's `get_or_create_mask`, `detect_ice_regions`, `reduce_mask_for_ice`, `apply_ocean_mask` and `encode_jxl` imported unchanged) [M]. Input: May 2004 topography at 21600 x 10800 (22.7 MB JPEG), the Natural Earth 10m ocean shapefile, and the in-tree Black Marble map, which is 8192 x 4096.

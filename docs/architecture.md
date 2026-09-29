@@ -187,6 +187,8 @@ All `SUNLIT_EARTH_*` variables that carry a value go through `sunlit_core::env_o
 | `SUNLIT_EARTH_CONTACT_SHEET` | Overrides where the contact sheet is written. |
 | `SUNLIT_EARTH_WALLPAPER_SETTER` | Linux: forces the wallpaper setter by name (`kde`, `xfce`, `cinnamon`, `mate`, `lxqt`, `budgie`, `gnome`, `unity`, `sway`, `hyprland`, `lxde`, `deepin`, `trinity`, `awww`, `wpaperd`, `swaybg`, `root-pixmap`, `portal`), skipping detection but not that setter's own presence check. An unknown name is a refusal that lists these. `cargo xtask e2e --target linux` passes it on to the guest's suite when it is set on the host. See [platforms.md](platforms.md#setting-a-wallpaper-on-linux). |
 
+wgpu reads its own variables for the instance flags (`wgpu::InstanceFlags::with_env`): `WGPU_VALIDATION`, `WGPU_DEBUG`, `WGPU_GPU_BASED_VALIDATION` and the rest, where `0` clears a flag and any other value sets it. A debug build turns validation on, except in the windowed app, which calls `wgpu_init::without_validation()` before the engine starts: on Windows validation loads the D3D12 debug layer, and with a device created beside it the OpenGL driver refuses a context, so Slint's renderer fails with `Error creating OpenGL display ... with glutin: not found`. Seen on an AMD Radeon RX 6800 XT with its monitor attached and not while the machine's KVM switch had it on another computer. `WGPU_VALIDATION=1` puts validation back into the app, and the error with it. `WGPU_ADAPTER_NAME` picks the adapter by a case-insensitive substring of its name.
+
 The e2e harness and the xtask read six more. They do not go through `env_override` (the xtask does not depend on `sunlit-core`), but they follow the same blank-is-unset rule.
 
 | Variable | Effect |

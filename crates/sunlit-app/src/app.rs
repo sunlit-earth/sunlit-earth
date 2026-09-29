@@ -319,6 +319,7 @@ fn run_app(
 ) -> ExitCode {
     texture_loader::register_jxl_hook();
     debug!("registered JXL decoding hook");
+    sunlit_core::wgpu_init::without_validation();
 
     // Ahead of the window and the engine: a name the platform refuses, or one
     // another instance is already holding, is an answer worth having before the

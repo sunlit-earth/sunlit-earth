@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{info, warn};
 
@@ -19,6 +20,31 @@ use tracing::{info, warn};
 /// was forgiving.
 static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
 
+static WITHOUT_VALIDATION: AtomicBool = AtomicBool::new(false);
+
+/// Create the instance without the backend validation a debug build turns on.
+///
+/// For a process that shows a Slint window. On Windows validation loads the
+/// D3D12 debug layer, and once a device exists beside it the OpenGL driver
+/// (seen with AMD's) refuses to create a context, so Slint's renderer cannot
+/// open the window. `WGPU_VALIDATION=1` turns it back on. Only a call before
+/// the first `instance()` has any effect.
+pub fn without_validation() {
+    debug_assert!(
+        INSTANCE.get().is_none(),
+        "the wgpu instance already exists, so its flags are settled"
+    );
+    WITHOUT_VALIDATION.store(true, Ordering::Relaxed);
+}
+
+fn instance_flags(base: wgpu::InstanceFlags, without_validation: bool) -> wgpu::InstanceFlags {
+    if without_validation {
+        base - (wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::GPU_BASED_VALIDATION)
+    } else {
+        base
+    }
+}
+
 /// The process's wgpu instance, created on first use.
 ///
 /// Public so the integration-test harnesses go through the same one; every
@@ -33,7 +59,14 @@ pub fn instance() -> &'static wgpu::Instance {
             clippy::disallowed_methods,
             reason = "the one call site the rule exists to protect"
         )]
-        wgpu::Instance::new(&wgpu::InstanceDescriptor::default())
+        wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            flags: instance_flags(
+                wgpu::InstanceFlags::default(),
+                WITHOUT_VALIDATION.load(Ordering::Relaxed),
+            )
+            .with_env(),
+            ..Default::default()
+        })
     })
 }
 
@@ -202,6 +235,21 @@ fn select_adapter(adapters: &[wgpu::Adapter], force_software: bool) -> Option<&w
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_validation_drops_only_the_validation_flags() {
+        let base = wgpu::InstanceFlags::debugging();
+        let flags = instance_flags(base, true);
+
+        assert!(!flags.intersects(
+            wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::GPU_BASED_VALIDATION
+        ));
+        assert_eq!(
+            flags | wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::GPU_BASED_VALIDATION,
+            base | wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::GPU_BASED_VALIDATION
+        );
+        assert_eq!(instance_flags(base, false), base);
+    }
 
     #[test]
     fn no_adapter_is_an_answer_rather_than_a_panic() {

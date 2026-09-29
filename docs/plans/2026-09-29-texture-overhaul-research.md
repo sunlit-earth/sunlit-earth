@@ -501,3 +501,61 @@ Encoders (section 15): https://github.com/image-rs/image-dds, https://crates.io/
 Crates: https://docs.rs/jxl-oxide/latest/jxl_oxide/, https://github.com/tirr-c/jxl-oxide/blob/main/CHANGELOG.md, https://github.com/tirr-c/jxl-oxide/pull/505, https://github.com/tirr-c/jxl-oxide/issues/411, https://github.com/libjxl/jxl-rs, https://github.com/libjxl/jxl-rs/issues/933, https://github.com/Traverse-Research/intel-tex-rs-2/pull/50, https://crates.io/crates/ctt, https://crates.io/crates/block_compression, https://crates.io/crates/texpresso, https://crates.io/crates/ktx2, https://crates.io/crates/bcdec_rs, https://crates.io/crates/ruzstd, https://github.com/Cykooz/fast_image_resize, http://cbloomrants.blogspot.com/2020/07/performance-of-various-compressors-on.html, https://aras-p.info/blog/2020/12/08/Texture-Compression-in-2020/, https://doc.rust-lang.org/std/os/unix/fs/trait.FileExt.html, https://doc.rust-lang.org/std/os/windows/fs/trait.FileExt.html, https://docs.rs/memmap2/latest/memmap2/struct.Mmap.html, https://db.cs.cmu.edu/mmap-cidr2022/, https://github.com/kurtkuehnert/bevy_terrain, https://github.com/carloskiki/wgpu-virtual-texturing.
 
 Streaming and prior art: https://cesium.com/blog/2013/04/25/horizon-culling/, https://cesium.com/learn/cesium-native/ref-doc/structCesium3DTilesSelection_1_1TilesetOptions.html, https://github.com/CesiumGS/cesium/blob/main/packages/engine/Source/Scene/TimeDynamicImagery.js, https://github.com/OpenSpace/OpenSpace/blob/master/modules/globebrowsing/src/tileprovider/temporaltileprovider.cpp, https://github.com/NASAWorldWind/WebWorldWind/blob/develop/src/layer/BMNGRestLayer.js, https://github.com/CelestiaProject/Celestia/blob/master/src/celengine/virtualtex.cpp, https://dev.epicgames.com/documentation/en-us/unreal-engine/runtime-virtual-texturing-in-unreal-engine, https://docs.unity3d.com/ScriptReference/QualitySettings-streamingMipmapsMaxFileIORequests.html, https://xplanet.sourceforge.net/README.config, https://github.com/Stellarium/stellarium/discussions/4153.
+
+## 19. Step 0 spikes
+
+### 19.3 Spike (c): the full bake of one month
+
+Measured on 2026-09-29 on Windows 11, 16 logical cores, 64 GB, through a throwaway script run with `uv run` in the pipeline's own environment (CPython 3.14.5, numpy, Pillow with pillow-jxl-plugin, the pipeline's `get_or_create_mask`, `detect_ice_regions`, `reduce_mask_for_ice`, `apply_ocean_mask` and `encode_jxl` imported unchanged) [M]. Input: May 2004 topography at 21600 x 10800 (22.7 MB JPEG), the Natural Earth 10m ocean shapefile, and the in-tree Black Marble map, which is 8192 x 4096.
+
+Method, in order:
+
+1. Decode the JPEG and rasterize the shapefile at the source size with the `earth` command's settings (supersample 2, Lanczos down), then the ice detection and reduction at their defaults (60 degrees, luminance 200).
+2. Reproject the picture and the mask to six equi-angular faces at 5400 px, the density of the 21600 source at the equator: inverse mapping from each face texel center (tangent warp of pi/4, the cube map table of decision 1, longitude `atan2(x, z)`), bilinear with wrap in longitude and clamp at the poles, uint8 out.
+3. Flatten the ocean at 5400 with `apply_ocean_mask` and the pipeline's default fill (10, 30, 60), using the face mask.
+4. Area-average 5400 to 2048 with Pillow's `BOX` resize (exact area weights at the non-integer ratio 2.64), for the picture and the mask alike.
+5. Encode the six day faces with `encode_jxl` at quality 85, effort 7; the six mask faces lossless (quality 100 through the same function) as 8-bit single channel, 255 for ocean and 0 for land, ice already subtracted; the night faces are bilinear at 2048 straight from the 8192 map (no working size, since a 2048 face never magnifies an 8192 source) and quality 85.
+
+Timings, six worker threads over the faces:
+
+| Stage | Seconds |
+|---|---|
+| Decode the 21600 JPEG | 1.4 |
+| Rasterize the ocean shapefile at 21600 x 10800 | 40.3 |
+| Ice detection and reduction | 12.2 |
+| Reproject the day map to 6 x 5400 | 18.0 |
+| Reproject the mask to 6 x 5400 | 10.6 |
+| Flatten the ocean at 5400 | 1.9 |
+| Area-average to 2048 (picture and mask) | 0.4 |
+| Encode six day faces | 4.8 |
+| Night: decode, reproject, encode | 6.2 |
+| Encode six lossless mask faces | 6.8 |
+| Total, wall clock | 102.5 |
+
+The same run with two worker threads: 115 s in total (reproject 26.5 s and 13.9 s), so the reprojection is memory bound rather than core bound and the parallelism buys about 12%.
+
+Peak working set: 19.8 GiB with six threads, 8.4 GiB with two. The floor is the decoded source (about 0.7 GB) plus the ocean raster at supersample 2 (0.9 GB) and the ice band buffers, 3.6 GiB at the end of the ice stage; the excess is the per-face float and int64 intermediates of the reprojection (5400^2 texels, coordinates in float64 and int64, four gathered neighbours), which are at their worst with six faces in flight [M].
+
+Output sizes (bytes), one month:
+
+| Face | Day, q85 | Night, q85 | Mask, lossless |
+|---|---|---|---|
+| +X | 270,721 | 257,790 | 86,024 |
+| -X | 196,733 | 218,821 | 48,039 |
+| +Y | 519,679 | 294,521 | 147,241 |
+| -Y | 103,580 | 30,142 | 40,946 |
+| +Z | 251,780 | 197,737 | 46,171 |
+| -Z | 57,721 | 34,584 | 33,024 |
+| Total | 1,400,214 | 1,033,595 | 401,445 |
+
+The day total agrees with the 1.43 MB measured in section 17 for the same month at the same setting (1.40 MB here, the small difference being the area average against the 2x2 box). The +Y face is the largest of the six because the Arctic snow and the northern land are on it. Twelve months at this size extrapolate to about 17 MB of day faces with the section 17 winter factor, plus 1.0 MB of night and 0.4 MB of mask, in line with the 18.7 MB of that section's table [R].
+
+Orientation, checked two ways. Forward: an independent function takes a longitude and latitude, forms the direction, selects the face by the major axis and computes the texel with the OpenGL and Direct3D cube map selection formulas (`sc`, `tc`, `ma`, then the pi/4 warp), the inverse direction of what the bake does. It was run against 13 places: the Gulf of Guinea at longitude 0 (face +Z, texel 1024, 1024, ocean), Cairo, the Sahara, the Congo and Cape Town on +Z (land), the Amazon on -X, Australia on +X, the Pacific on -Z, Tokyo on -Z, Greenland and the pole itself on +Y (the pole is ocean, texel 1026, 1024), Antarctica on -Y, and a mid-Atlantic point on +Z; each read the expected mask value (land below 60, ocean above 200) and a plausible color, all 13 passed. Visual: a cube cross contact sheet (`out/check/cross.png`) shows Africa upright on +Z with the Sahara above the Congo, the Americas on -X to its left, Asia and Australia on +X to its right, the Arctic Ocean centered on +Y with Europe's edge toward +Z, and Antarctica centered on -Y [M].
+
+What this changes for Step 1:
+
+- The bake is about 100 s a month on this machine and 12 months is about 20 minutes, but 52 s of each month (the shapefile raster and the ice pass) do not depend on the month except through the ice detection, which reads the month's picture. The raster of the ocean at 21600 can be computed once and shared across months, saving 40 s a month, or 8 of the 20 minutes; the ice pass has to stay per month unless the source's sea ice is judged absent (section 3 says the set carries none, so the ice pass may be a no-op on this data and worth measuring on all twelve months before deciding to drop it).
+- Memory needs a cap, not a thread count: run the reprojection one or two faces at a time (peak 8.4 GiB at two workers, and less at one), or reproject in row bands, so the bake also runs on a 16 GB CI or contributor machine.
+- The mask is reprojected from a source-resolution raster; T1a should produce it once per bake, not once per month, and the twelve day files of a run share the same six mask faces byte for byte.
+- The night faces come from the 8192 map, so the night level is source limited at 2048 exactly as the research said; the sources are unchanged from the tree.
+- The scripts and outputs are in the run directory under `spike-bake/` (`bake_one_month.py`, `check_orientation.py`, `out/`); they are throwaway and not in the tree.

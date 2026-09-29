@@ -2,6 +2,10 @@
 
 Notable changes to Sunlit Earth, for people who use it. The GitHub release pages list every merged pull request.
 
+## [0.2.2] - 2026-09-29
+
+- Bugfix for an issue in Slint 1.18 that prevents users from scrolling to the end of the page in the About window. ([#67](https://github.com/sunlit-earth/sunlit-earth/pull/67))
+
 ## [0.2.1] - 2026-09-29
 
 - macOS: the settings window has an opaque title bar and a frame again. ([#64](https://github.com/sunlit-earth/sunlit-earth/issues/64), [#65](https://github.com/sunlit-earth/sunlit-earth/pull/65))
@@ -19,6 +23,7 @@ Notable changes to Sunlit Earth, for people who use it. The GitHub release pages
 
 - First public release, for Windows and Linux.
 
+[0.2.2]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.1.0

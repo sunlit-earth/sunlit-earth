@@ -10,6 +10,7 @@ use tracing::info;
 
 use sunlit_core::assets::cloud_fetcher;
 use sunlit_core::assets::cloud_source::HttpCloudSource;
+use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::texture_loader;
 use sunlit_core::config::{AppConfig, QualityTier};
 use sunlit_core::engine::EngineConfig;
@@ -49,12 +50,16 @@ pub(crate) fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Op
         pick("lroc_color_poles_1k.jxl"),
         pick("milkyway_2020_4k.jxl"),
     ];
+    let cube_files = dir
+        .as_deref()
+        .map_or(0, |d| CubeTextures::resolve(d).found());
     info!(
         textures_dir = ?dir,
         day = ?paths[0],
         night = ?paths[1],
         moon = ?paths[2],
         milky_way = ?paths[3],
+        cube_files,
         "resolved texture paths"
     );
     paths

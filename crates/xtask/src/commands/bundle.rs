@@ -31,7 +31,7 @@ use crate::commands::dist::{
     SMOKE_HEIGHT, SMOKE_WIDTH, TEXTURE_LOOKUP_FLOOR,
 };
 use crate::commands::{bake_icon, bake_licenses};
-use crate::guest::artifacts::{self, TEXTURE_FILES};
+use crate::guest::artifacts;
 use crate::guest::toolchain;
 use crate::provider::target::Target;
 use crate::runner::{Cmd, Runner};
@@ -456,10 +456,10 @@ pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String>
             false,
         ),
     ];
-    for name in TEXTURE_FILES {
+    for name in artifacts::bundle_texture_files() {
         items.push(Item::file(
             format!("{resources}/textures/{name}"),
-            sources.textures.join(name),
+            sources.textures.join(&name),
             false,
         ));
     }
@@ -528,10 +528,10 @@ pub fn layout(platform: Platform, sources: &Sources) -> Vec<Item> {
     )];
     items.push(readme(platform, sources));
 
-    for name in TEXTURE_FILES {
+    for name in artifacts::bundle_texture_files() {
         items.push(Item::file(
             format!("textures/{name}"),
-            sources.textures.join(name),
+            sources.textures.join(&name),
             false,
         ));
     }
@@ -1010,7 +1010,7 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     println!("binary: {platform} {arch}");
     // Not the skip `dist` falls back to: that run has a loose binary to publish
     // instead, and this command has nothing else to produce.
-    let textures = artifacts::textures_present(&repo).map_err(|why| {
+    let textures = artifacts::release_textures_present(&repo).map_err(|why| {
         format!(
             "{why}\n`git lfs pull` fetches the texture assets; without them a bundle \
              would render the procedural grid under a name that promises a release."
@@ -1486,7 +1486,7 @@ mod tests {
             &format!("{}/{}", bake_icon::BAKED_DIR, bake_icon::ICNS_FILE),
             b"icns",
         );
-        for name in TEXTURE_FILES {
+        for name in artifacts::bundle_texture_files() {
             // Deliberately compressible bytes, so a writer that deflated a JXL
             // rather than storing it would be visible in the size.
             write(&format!("textures/{name}"), &vec![b'j'; 4096]);
@@ -1590,7 +1590,7 @@ mod tests {
             let items = layout(platform, &sources(&repo, &exe, &textures));
             let paths: Vec<&str> = items.iter().map(|i| i.path.as_str()).collect();
             assert!(paths.contains(&exe_name(platform)), "{platform}: {paths:?}");
-            for name in TEXTURE_FILES {
+            for name in artifacts::bundle_texture_files() {
                 assert!(
                     paths.contains(&format!("textures/{name}").as_str()),
                     "{platform}: {paths:?}"
@@ -1975,7 +1975,7 @@ mod tests {
             paths.contains(&"Contents/Resources/sunlit-earth.icns"),
             "{paths:?}"
         );
-        for name in TEXTURE_FILES {
+        for name in artifacts::bundle_texture_files() {
             assert!(
                 paths.contains(&format!("Contents/Resources/textures/{name}").as_str()),
                 "{paths:?}"

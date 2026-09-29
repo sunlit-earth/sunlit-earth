@@ -81,6 +81,73 @@ pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(),
     Ok(())
 }
 
+/// The cube faces in layer order, and the year of the day set's month
+/// directories, as `sunlit_core::assets::cube_layout` spells them.
+///
+/// The two crates share nothing, so
+/// `the_cube_files_are_the_ones_the_core_resolves` reads that module and asserts
+/// the spelling still matches.
+const CUBE_FACES: [&str; 6] = ["px", "nx", "py", "ny", "pz", "nz"];
+const CUBE_YEAR: u32 = 2004;
+const CUBE_MONTHS: u32 = 12;
+
+/// The cube files relative to the textures directory: `day/2004MM/<face>.jxl`
+/// for the twelve months, then `night/` and `mask/`.
+pub fn cube_texture_files() -> Vec<String> {
+    let sets = (1..=CUBE_MONTHS)
+        .map(|month| format!("day/{CUBE_YEAR}{month:02}"))
+        .chain(["night".to_owned(), "mask".to_owned()]);
+    sets.flat_map(|set| CUBE_FACES.map(|face| format!("{set}/{face}.jxl")))
+        .collect()
+}
+
+/// Everything a bundle carries under `textures/`: the flat maps and the cube.
+pub fn bundle_texture_files() -> Vec<String> {
+    TEXTURE_FILES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(cube_texture_files())
+        .collect()
+}
+
+/// Whether a file is a Git LFS pointer, which no cube face is small enough to
+/// be mistaken for by size alone.
+fn is_lfs_pointer(path: &Path) -> bool {
+    use std::io::Read;
+    const PREFIX: &[u8] = b"version https://git-lfs.github.com/spec/v1";
+    let mut head = Vec::with_capacity(PREFIX.len());
+    std::fs::File::open(path)
+        .and_then(|file| file.take(PREFIX.len() as u64).read_to_end(&mut head))
+        .is_ok_and(|_| head == PREFIX)
+}
+
+/// What is wrong with the cube files in a textures directory, if anything.
+pub fn cube_verdict(dir: &Path) -> Result<(), String> {
+    for name in cube_texture_files() {
+        let path = dir.join(&name);
+        match std::fs::metadata(&path) {
+            Err(_) => return Err(format!("there is no {name} in it")),
+            Ok(meta) if meta.len() == 0 || is_lfs_pointer(&path) => {
+                return Err(format!(
+                    "{name} is a Git LFS pointer rather than the asset; `git lfs pull` fetches it"
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The textures directory for a release bundle, which carries the cube files as
+/// well as the flat maps.
+///
+/// Staging for the e2e suite keeps asking [`textures_present`], since the
+/// renderer does not read the cube yet.
+pub fn release_textures_present(repo: &Path) -> Result<PathBuf, String> {
+    let dir = textures_present(repo)?;
+    cube_verdict(&dir).map(|()| dir)
+}
+
 /// The repository's textures directory, if it is worth copying in.
 ///
 /// Reports what it decided either way, because the render case samples the
@@ -1218,5 +1285,90 @@ mod tests {
         }
         // Every slot, and no further one the guest would be missing.
         assert_eq!(body.matches(".jxl").count(), TEXTURE_FILES.len());
+    }
+
+    /// The cube layout is spelled once in the core and once here.
+    #[test]
+    fn the_cube_files_are_the_ones_the_core_resolves() {
+        let source = std::fs::read_to_string(
+            store::repo_root()
+                .join("crates")
+                .join("sunlit-core")
+                .join("src")
+                .join("assets")
+                .join("cube_layout.rs"),
+        )
+        .expect("the core's cube_layout.rs");
+        let faces = CUBE_FACES.map(|face| format!("\"{face}\"")).join(", ");
+        assert!(source.contains(&format!("[&str; 6] = [{faces}]")), "faces");
+        assert!(
+            source.contains(&format!("YEAR: u32 = {CUBE_YEAR};")),
+            "year"
+        );
+        assert!(
+            source.contains(&format!("MONTHS: usize = {CUBE_MONTHS};")),
+            "months"
+        );
+        for set in ["\"night\"", "\"mask\"", "day/{YEAR}"] {
+            assert!(source.contains(set), "{set}");
+        }
+    }
+
+    #[test]
+    fn the_cube_is_eighty_four_distinct_files() {
+        let files = cube_texture_files();
+        assert_eq!(files.len(), 84);
+        let mut sorted = files.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 84);
+        assert_eq!(files[0], "day/200401/px.jxl");
+        assert_eq!(files[83], "mask/nz.jxl");
+        assert_eq!(bundle_texture_files().len(), 88);
+    }
+
+    fn cube_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sunlit_xtask_cube_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        for file in cube_texture_files() {
+            let path = dir.join(&file);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(path, b"jxl stand-in").expect("write");
+        }
+        dir
+    }
+
+    #[test]
+    fn a_complete_cube_is_accepted() {
+        let dir = cube_dir("complete");
+        assert_eq!(cube_verdict(&dir), Ok(()));
+    }
+
+    #[test]
+    fn a_missing_cube_face_is_named() {
+        let dir = cube_dir("missing");
+        std::fs::remove_file(dir.join("night/pz.jxl")).expect("remove");
+        let err = cube_verdict(&dir).unwrap_err();
+        assert!(err.contains("night/pz.jxl"), "{err}");
+    }
+
+    /// The faces are smaller than the flat maps' threshold, so a pointer has to
+    /// be told from a face by what it says.
+    #[test]
+    fn a_cube_face_pointer_is_not_a_face() {
+        let dir = cube_dir("pointer");
+        std::fs::write(
+            dir.join("day/200406/ny.jxl"),
+            b"version https://git-lfs.github.com/spec/v1
+oid sha256:0
+size 9
+",
+        )
+        .expect("write");
+        let err = cube_verdict(&dir).unwrap_err();
+        assert!(
+            err.contains("day/200406/ny.jxl") && err.contains("git lfs pull"),
+            "{err}"
+        );
     }
 }

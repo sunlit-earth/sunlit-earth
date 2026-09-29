@@ -29,7 +29,7 @@ The report is written under `target/llvm-cov/html/`. GPU and desktop requirement
 | Engine integration | `sunlit-core/tests/engine/` | real engine, real GPU, headless | all three |
 | Soak | `sunlit-core/tests/soak.rs` | mock clock, fixture cloud, 14 simulated days | all three |
 | Golden images | `sunlit-core/tests/golden.rs` | fixed scenes, software adapter, perceptual tolerance | all three, per-adapter references |
-| GPU shader | `sunlit-core/tests/{shading,render_pipeline}.rs` | real WGSL on the GPU | all three |
+| GPU shader | `sunlit-core/tests/{shading,render_pipeline,bc7}.rs` | real WGSL on the GPU; BC7 sampling against its RGBA8 original | all three |
 | UI logic | `sunlit-app/tests/slint_ui.rs` | `i-slint-backend-testing` | all three |
 | Desktop e2e | `sunlit-app/tests/e2e.rs`, harness in `tests/common/` | the real binary over IPC, `#[ignore]`d | built everywhere; `cargo e2e` on the desktop, `cargo xtask e2e --target <windows\|linux> [--desktop <d>] [--session-type <x11\|wayland>] [--screens <n>]` in a VM |
 | VM orchestration | `crates/xtask/src/**` | pure decision logic against fabricated hosts, no VM | all three |

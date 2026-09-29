@@ -43,6 +43,8 @@ use sunlit_core::scene::camera::{CameraParams, PRESETS};
 
 mod support;
 
+use support::{MEAN_TOLERANCE, OUTLIER_FRACTION, OUTLIER_THRESHOLD, compare};
+
 /// The texture mode that blends the day and night maps, as `texture_index`
 /// spells it.
 const BLEND_MODE: i32 = 3;
@@ -50,14 +52,6 @@ const BLEND_MODE: i32 = 3;
 /// Golden images are small on purpose: they live in git.
 const WIDTH: u32 = 512;
 const HEIGHT: u32 = 256;
-
-/// Mean absolute per-channel difference, in 0-255 units, that still counts as
-/// a match.
-const MEAN_TOLERANCE: f64 = 2.0;
-/// Fraction of pixels allowed to differ by more than `OUTLIER_THRESHOLD`.
-const OUTLIER_FRACTION: f64 = 0.01;
-/// Per-channel difference that makes a pixel an outlier.
-const OUTLIER_THRESHOLD: u8 = 24;
 
 /// Adapter keys this repository ships reference sets for.
 ///
@@ -354,28 +348,6 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
         outliers * 100.0,
         OUTLIER_FRACTION * 100.0
     );
-}
-
-/// Mean absolute channel difference and the fraction of outlier pixels.
-#[allow(clippy::cast_precision_loss)]
-fn compare(reference: &[u8], actual: &[u8]) -> (f64, f64) {
-    assert_eq!(reference.len(), actual.len(), "image sizes differ");
-    let mut total = 0u64;
-    let mut outliers = 0u64;
-    for (r, a) in reference.chunks_exact(4).zip(actual.chunks_exact(4)) {
-        let mut worst = 0u8;
-        for c in 0..3 {
-            let diff = r[c].abs_diff(a[c]);
-            total += u64::from(diff);
-            worst = worst.max(diff);
-        }
-        if worst > OUTLIER_THRESHOLD {
-            outliers += 1;
-        }
-    }
-    let channels = (reference.len() / 4 * 3) as f64;
-    let pixels = (reference.len() / 4) as f64;
-    (total as f64 / channels, outliers as f64 / pixels)
 }
 
 #[test]

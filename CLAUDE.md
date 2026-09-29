@@ -31,7 +31,7 @@ Public beta, with breaking changes still expected. Every release ships Windows (
 cargo build                        # debug; --release for LTO and stripped
 cargo test                         # everything in the workspace
 cargo unit                         # unit tests only (~1 s): no integration targets, no doc tests
-cargo test -p sunlit-core --test engine    # one integration target; also soak, golden, shading, render_pipeline
+cargo test -p sunlit-core --test engine    # one integration target; also soak, golden, shading, render_pipeline, bc7
 cargo test -p sunlit-earth --test slint_ui
 cargo clippy --all-targets         # pedantic on; not run in CI, so it is on you
 cargo fmt --check                  # CI gate

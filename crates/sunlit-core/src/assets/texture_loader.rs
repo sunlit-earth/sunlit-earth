@@ -101,7 +101,7 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
     clippy::cast_possible_truncation,
     reason = "the mean of four bytes is a byte, and a pixel count indexes a buffer that already holds those pixels"
 )]
-pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
+pub fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
     let dst_w = (src_w / 2).max(1) as usize;
     let dst_h = (src_h / 2).max(1) as usize;
     let sw = src_w as usize;

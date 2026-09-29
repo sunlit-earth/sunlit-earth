@@ -4,6 +4,37 @@
 
 use std::path::{Path, PathBuf};
 
+/// Mean absolute per-channel difference, in 0-255 units, that still counts as
+/// a match against a golden reference.
+pub const MEAN_TOLERANCE: f64 = 2.0;
+/// Fraction of pixels allowed to differ by more than `OUTLIER_THRESHOLD`.
+pub const OUTLIER_FRACTION: f64 = 0.01;
+/// Per-channel difference that makes a pixel an outlier.
+pub const OUTLIER_THRESHOLD: u8 = 24;
+
+/// Mean absolute channel difference and the fraction of outlier pixels between
+/// two RGBA8 frames, over the color channels.
+#[allow(clippy::cast_precision_loss)]
+pub fn compare(reference: &[u8], actual: &[u8]) -> (f64, f64) {
+    assert_eq!(reference.len(), actual.len(), "image sizes differ");
+    let mut total = 0u64;
+    let mut outliers = 0u64;
+    for (r, a) in reference.chunks_exact(4).zip(actual.chunks_exact(4)) {
+        let mut worst = 0u8;
+        for c in 0..3 {
+            let diff = r[c].abs_diff(a[c]);
+            total += u64::from(diff);
+            worst = worst.max(diff);
+        }
+        if worst > OUTLIER_THRESHOLD {
+            outliers += 1;
+        }
+    }
+    let channels = (reference.len() / 4 * 3) as f64;
+    let pixels = (reference.len() / 4) as f64;
+    (total as f64 / channels, outliers as f64 / pixels)
+}
+
 /// Width of the moon fixture. Small enough to decode instantly, wide enough
 /// that its landmarks survive the mip chain the uploader builds.
 pub const MOON_FIXTURE_WIDTH: u32 = 256;

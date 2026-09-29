@@ -54,6 +54,7 @@ dispatch2.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+dds.workspace = true
 proptest.workspace = true
 
 [lints]

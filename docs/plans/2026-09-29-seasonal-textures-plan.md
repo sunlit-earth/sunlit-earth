@@ -114,6 +114,10 @@ A feature branch. Steps 1 and 2 add files and a module nothing reads, so they re
 
 Recorded during implementation.
 
+1. T1a: the night faces are baked from NASA's `BlackMarble_2016_3km.jpg` at 13500 x 6750, not from the 8192 map in the tree. Decision 11 took the in-tree file as the night source because nothing finer was thought to be in hand, but the 3 km file is that map's parent: a Lanczos downscale of it to 8192 differs from the decoded in-tree map by a mean of 0.87 of 255 with a signed mean of -0.07, which is the lossy encode's noise and nothing else. Its URL answers at NASA's re-hosted address, so it gets the same verified provenance as the day months, and baking from it removes one lossy generation and sends the night through the same path as the day, a resample at the source's equator density (3375 per face) and an area average down to 2048, instead of a bilinear resample at one source pixel per texel. The night is still source limited in the sense decision 2 meant: 3375 per face is below what a 4096 level would need.
+
+2. T1a: the water mask is rasterized once per bake at the day maps' 21600 x 10800 and resampled to the six working faces at 5400, rather than rasterized at 2048 per face. The flattening happens at the working size, as spike (c) did it, and needs the mask there; the 2048 mask faces that ship are the area average of those same working faces, so the coverage a mask texel records is exactly the share of its footprint that was flattened. The mask is also where the ice pass lands, and the ice pass reads the source pictures in their own projection. It changes the mask on Blue Marble (it keeps 3.1 M to 4.0 M source pixels per month as land, 0.53% to 0.62% of the ocean's area: 2.71 M of Antarctic ice shelves identical in every month, and 0.35 M in August to 1.27 M in February of snow along Arctic coasts), so it stays, and since one mask serves every month, what it finds in any month is kept as land in all of them.
+
 ## Validation Record
 
 Recorded per round.

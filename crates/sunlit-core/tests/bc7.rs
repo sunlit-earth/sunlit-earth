@@ -65,11 +65,14 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 
 #[derive(Clone, Copy, Debug)]
 enum Framing {
-    /// One texel per pixel at texel centers, so the frame is the level 0 texels
-    /// themselves.
+    /// One texel per pixel at texel centers through an isotropic sampler, so the
+    /// frame is the level 0 texels themselves. The globe's sampler would not
+    /// give that everywhere: lavapipe's anisotropic filter blurs even a
+    /// footprint of one texel.
     Flat,
-    /// From four times magnified at the bottom to eight texels per pixel at the
-    /// top, over three mip levels and up to the sampler's full anisotropy.
+    /// Through the globe's sampler, from four times magnified at the bottom to
+    /// eight texels per pixel at the top, over three mip levels and up to its
+    /// full anisotropy.
     Receding,
 }
 
@@ -89,7 +92,8 @@ struct Bc7Gpu {
     queue: wgpu::Queue,
     adapter: String,
     layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
+    texel_sampler: wgpu::Sampler,
+    globe_sampler: wgpu::Sampler,
     flat: wgpu::RenderPipeline,
     receding: wgpu::RenderPipeline,
     original: wgpu::Texture,
@@ -207,17 +211,21 @@ impl Bc7Gpu {
                 },
             ],
         });
-        // The globe's sampler, from `renderer::gpu_setup`.
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("bc7"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            anisotropy_clamp: 16,
-            ..Default::default()
-        });
+        // The globe's sampler is the one in `renderer::gpu_setup`.
+        let sampler = |anisotropy_clamp| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("bc7"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                anisotropy_clamp,
+                ..Default::default()
+            })
+        };
+        let texel_sampler = sampler(1);
+        let globe_sampler = sampler(16);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bc7"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -267,7 +275,8 @@ impl Bc7Gpu {
             queue,
             adapter,
             layout,
-            sampler,
+            texel_sampler,
+            globe_sampler,
             flat,
             receding,
             original,
@@ -305,7 +314,10 @@ impl Bc7Gpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(match framing {
+                        Framing::Flat => &self.texel_sampler,
+                        Framing::Receding => &self.globe_sampler,
+                    }),
                 },
             ],
         });
@@ -561,6 +573,14 @@ fn the_adapter_decodes_bc7_as_the_encoder_does() {
 fn the_tolerance_sees_one_mip_level_of_lost_detail() {
     let gpu = gpu();
     let full = gpu.render(&gpu.original, 0, Framing::Flat);
+    let texels = &mip_chain(fixture())[0].1;
+    let worst = worst_channel(texels, &full);
+    assert!(
+        worst <= 1,
+        "the flat framing should reproduce the level 0 texels, and {} is up to {worst} \
+         away from them",
+        gpu.adapter
+    );
     let halved = gpu.render(&gpu.original, 1, Framing::Flat);
     let (mean, outliers) = compare(&full, &halved);
     println!(

@@ -4,7 +4,7 @@ Guidance for Claude Code in this repository. This file is the map and the rules;
 
 ## Project status
 
-Early stage with frequent breaking changes. Windows is the platform that ships; Linux builds, tests, renders and sets a wallpaper per desktop; macOS has the same platform code and has never run on a Mac, so `docs/platforms.md` gives every macOS row the tier of evidence it is at and nothing there claims more. Keep the docs current as the code changes, `docs/roadmap.md` included.
+Public beta, with breaking changes still expected. Every release ships Windows (x86_64), Linux (x86_64, aarch64) and macOS (x86_64, aarch64) archives on GitHub, and a stable release also updates the Scoop bucket and the Homebrew tap. Windows and Linux are tested in the VMs. Nobody working on the project owns a Mac: macOS is built and exercised only on GitHub's runners. Keep the docs current as the code changes.
 
 ## Where to read
 
@@ -89,6 +89,14 @@ cargo xtask manifests --version <version> --assets <dir> --out <dir>
 ```
 
 `manifests` hashes a published release's five archives (as `gh release download` leaves them) and writes the Scoop manifest, the Homebrew cask and the Homebrew formula under `--out`, laid out as `sunlit-earth/scoop-bucket` and `sunlit-earth/homebrew-tap`. `package-managers.yml` runs it when a release is published and is the only writer of those two repositories; `docs/testing.md` describes it.
+
+### Making a release
+
+1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace` so `Cargo.lock` follows, and commit the two files on `main` as `Release X.Y.Z`.
+2. Push `main`, then tag that commit `vX.Y.Z` and push the tag. `release.yml` refuses a tag that does not name the workspace version, and a tag with a suffix such as `v0.3.0-beta.1` becomes a prerelease.
+3. The tag push builds the five targets on native runners, bundles and verifies each with `cargo xtask bundle --verify`, and creates a draft GitHub release with generated notes, the archives and one `build-info.json`. A `workflow_dispatch` of `release.yml` on a branch runs the same builds as a dry run and publishes nothing.
+4. Publishing the draft is done by hand on GitHub. Publishing a stable release runs `package-managers.yml`, which updates `scoop-bucket` and `homebrew-tap`; prereleases leave both alone.
+5. The download links in README name the version, so they need updating after publishing, with the user's permission like any README edit.
 
 ### Rare
 

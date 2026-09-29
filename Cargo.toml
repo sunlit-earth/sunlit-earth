@@ -9,9 +9,9 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/sunlit-earth/sunlit-earth"
 
 [workspace.dependencies]
-slint = "~1.17"
+slint = "~1.18"
 raw-window-handle = "0.6"
-slint-build = "~1.17"
+slint-build = "~1.18"
 wgpu = { version = "28", features = ["counters"] }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
@@ -74,7 +74,7 @@ wayland-client = "0.31"
 approx = "0.5"
 proptest = "1"
 serial_test = "3"
-i-slint-backend-testing = "=1.17.1"
+i-slint-backend-testing = "=1.18.1"
 regex-lite = "0.1"
 
 [workspace.lints.clippy]

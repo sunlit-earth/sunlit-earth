@@ -237,7 +237,7 @@ The e2e harness and the xtask read six more. They do not go through `env_overrid
   with `/MT` for the Astronomy Engine's C. A clean Windows 10 then needs no Visual C++
   redistributable, which is what `dist --target windows` proves on the artifact.
 - `unsafe_code = "deny"` in `[workspace.lints.rust]`. It is `deny` and not `forbid` because Slint macros need unsafe internally. `scene/sun.rs`, `scene/sky.rs`, `wallpaper/windows.rs`, `wallpaper/windows/shell.rs`, `config/window_geometry.rs`, `memory/windows.rs`, `memory/macos.rs`, `display/macos.rs`, `display/watch.rs`, `wallpaper/macos.rs`, `about.rs`, `session_end.rs` and `main.rs` have scoped `#[allow(unsafe_code)]` on individual FFI call sites with `// SAFETY:` comments. New FFI, on any platform, follows that pattern; the macOS `task_info` call in `memory.rs` is the most recent example.
-- Slint is pinned to `~1.17` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
+- Slint is pinned to `~1.18` with no wgpu feature. The app does not share a device with Slint, so the wgpu version is independent of the Slint version.
 - Render texture size is quantized to 64px boundaries to reduce GPU texture churn during resize, and then capped by the quality tier.
 - Zoom is normalized (0.0 to 1.0) with exponential mapping: `distance = 1.5 * (80.0 / 1.5)^t`. Use `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
 - The grid texture uses 16x anisotropic filtering with trilinear mipmaps.

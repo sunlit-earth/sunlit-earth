@@ -112,7 +112,8 @@ crates/sunlit-core/   headless: engine thread, wgpu renderer, WGSL shaders, scen
 crates/sunlit-app/    Slint shell: window, tray, IPC, CLI. Package name sunlit-earth.
 crates/xtask/         VM orchestration, release builds, the icon and star bakes
 assets/               icon sources and bake, the Linux desktop entry
-textures/             the four JXL assets, Git LFS; a checkout without the objects holds pointer files
+textures/             the four flat JXL maps and the 84 cube-map faces (day by month, night, mask), Git LFS;
+                      a checkout without the objects holds pointer files
 vm/                   templates and guest scripts, one directory per image slug
 docs/                 see the table above
 ```

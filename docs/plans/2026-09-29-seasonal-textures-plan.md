@@ -1,0 +1,119 @@
+# Plan: Seasonal Textures on a Tiled Cube
+
+## Summary
+
+The globe stops wrapping one 8192 x 4096 map around a sphere and samples an equi-angular cube instead: six square faces, twelve monthly versions of the day surface from NASA's Blue Marble Next Generation, one night surface, one water mask. The archive ships each face as its own JPEG XL file at 2048 px, 84 files in all, and the app converts them once on the user's machine into a cache of 128 px BC7 tiles for the whole year, deduplicated by content. At runtime a small cube per month stays resident as a floor that guarantees there is never a hole, and above it only the tiles the camera can see are loaded, from the cache, through a page table the fragment shader reads once per pixel. The month is a hard cut at mid-month, chosen from the live clock or the custom date, and the custom-date slider can move through the year against a cache that already holds every month. The payoff is the roadmap's seasonal item, GPU memory for the surfaces down from 342 MiB to under 60 MiB at today's detail, no polar pinch, and a path to the finer detail the NASA sources carry that costs nothing in residency.
+
+The research is in [2026-09-29-texture-overhaul-research.md](2026-09-29-texture-overhaul-research.md); sections 15 to 17 there record the decisions this plan builds on and the measurements behind each number below.
+
+## Stakes Classification
+
+Medium. The change replaces the surface texture path end to end: the assets, the loader, the renderer's bindings, the shader's sampling, the readiness contract the wallpaper publish depends on, the memory budget and every golden image of the globe. Nothing outside the app's own data directory is touched, a mistake shows as a wrong picture, a stale frame or a slow first run, and the old path is one branch away. What makes it medium rather than low is the number of places that change at once and the fact that CI cannot decode a real texture, so the real assets are exercised only on developer machines and in the VMs.
+
+## Key Design Decisions
+
+1. **An equi-angular cube at 2048 px per face, sampled from the surface normal.** The tangent warp with theta = pi/4 (research section 5): near-uniform texel size, a one-line branchless inverse whose major axis is the face, and both poles at face centers where a texel is exactly equator-sized and square. The globe's fragment shader computes the warped direction `w` from the normal and its screen derivatives once, and every surface sample goes through `w`; the mesh's equirectangular UVs stay for the cloud shell and nothing else. The cube's frame is the app's world frame with no rotation about the pole: +Y north, +Z longitude 0, faces by the OpenGL and Direct3D table, which is what the bake and the golden that pins it both use. A rotation to put corners over ocean is a later tweak with a small gain and is not part of this plan.
+
+2. **The archive carries one JPEG XL file per face, 84 files.** Twelve months of day faces at 2048 px at quality 85, six night faces, six lossless mask faces, under `textures/day/2004MM/<face>.jxl`, `textures/night/<face>.jxl` and `textures/mask/<face>.jxl`, all Git LFS. Whole faces are the smallest download at this quality and decode fastest (research section 17), the coarser levels are halved on the client with the mip chain's own box filter, and a finer level is a later per-month download, not part of this plan. The two 8192 maps and the `.original` file leave `textures/` once the app no longer reads them, and `PROVENANCE.md` gains one section per source with the URL pattern the research verified. The archive grows from 17.8 MB to about 33 MB.
+
+3. **A BC7 tile cache for the whole year, built on the user's machine with `dds`.** A transcoder worker decodes a month's six faces with jxl-oxide, halves them for the 1024 and 512 levels, cuts 128 px tiles with an 8 px gutter and one mip below each, encodes them with the `dds` crate at its Fast preset through its rayon feature, and writes one pack per month plus one for the night, one for the mask and one for the floors. The current month is built first and the rest of the year afterwards while the engine is idle, about 35 s on four cores, and the pack index deduplicates tiles by a 256-bit content hash of the encoded bytes, since 16% to 20% of a year's tiles are identical. A pack is keyed by the source files' stamps, the `dds` crate version, the preset and a format version, and a mismatch on any of them rebuilds that pack. Where the adapter lacks `TEXTURE_COMPRESSION_BC` the transcoder writes RGBA8 tiles into the same format and the renderer creates the array in that format; the probe found no target adapter without BC, so that path exists to keep the program correct rather than fast.
+
+4. **A resident floor per month, and only visible tiles above it.** Twelve day floor cubes of 512 px per face and one night floor stay resident in BC7 with their mips, 26 MiB in all, so any month is drawable the instant the date names it and no cell ever lacks an ancestor. Above the floor, tiles at the 1024 and 2048 levels live in one `texture_2d_array` cache of 144 px layers with two mips, budgeted at twice the peak visible count, with `max_texture_array_layers` taken from the adapter. The page table is an `R32Uint` indirection texture, six layers of 16 x 16 cells at the finest grid, rewritten whole on the CPU and uploaded once per tick that changed it; each cell names the layer and level of the best resident ancestor, or that the cell is the floor, or that it is constant ocean. Cells the floor serves sample the floor cube with 16x anisotropy and hardware seamless filtering; tiles sample with 8x and their gutters; both through the same `w` and the same gradients, which is what keeps the level switch continuous.
+
+5. **The wanted set is computed on the CPU from the camera, never from a GPU feedback pass.** Per output in the display plan and per tick where the camera, the outputs, the date or the resolution changed: descend each face's quadtree, drop tiles beyond the horizon (angle to the camera direction against acos(1/d) plus the tile's angular radius), drop tiles outside the frustum widened by a margin, refine while the projected texel size exceeds one pixel, and order the survivors by level deficit, then center outward, then margin. The margin is one ring of tiles plus a lead along the drag velocity. Tiles are keyed by month, level, face, row and column. While a drag is in progress the threshold is 2 px; when it stops it returns to 1 px and the missing tiles drain within a few ticks. The set for a pending wallpaper export joins at top priority.
+
+6. **A loader that fits the project's queue rules and never decodes at runtime.** The engine publishes the wanted set with a generation into a latest-value slot; a fixed number of worker threads (min(4, parallelism minus 2)) claim keys from it under its mutex and park on a condvar when nothing is left; a claimed key is a positional read of one tile's bytes from its pack, about 26 KB, with no decode; results return through a bounded channel of twice the worker count, which blocks a worker when full; the engine drains it under a byte budget per tick, uploads with `write_texture` into free or evicted layers, rewrites the page table and renders, all in one submit, so a reused layer is never sampled with a stale mapping. A result whose key left the set or whose device epoch is old is dropped. Cancellation is implicit: a key missing from the new set is never claimed. Eviction takes only tiles outside the wanted set, the one wanted longest ago first, and never the floors.
+
+7. **Months are a hard cut at mid-month, from the same date the sun uses.** Each image stands for its month; the month in force is the one whose center is nearest the date, so the cut falls at mid-month, the convention Web WorldWind uses. The month index is derived on the engine thread from `datetime` exactly as the sun direction is, compared outside the digest, and it is part of every tile key; a change re-publishes the wanted set and the page table swaps to the new month's tiles as they land, with the new month's floor drawing in the meantime. Within a day of a boundary the next month's visible tiles join the set at low priority so the cut lands with them resident. There is no blend and no cross-fade (research section 15, decision 2).
+
+8. **The resolution setting keeps its three labels and becomes a cap on the finest level.** 8192 means tiles up to the 2048 level, 4096 up to the 1024 level, 2048 the floors alone with no tile cache at all. The halving cache under `texture_cache` retires, since the levels come out of the transcoder. The cloud variant keeps following the setting as it does now. `SetTextureResolution` stays the command; what it purges is the tile cache and the page table, not the floors.
+
+9. **The water mask is its own texture.** A BC4 cube of 1024 px per face with mips, 5.3 MiB, encoded once from the lossless mask faces. The mask is the same in every month, BC7 misplaces coastline alpha when it shares a block with color, and opaque day tiles encode twice as fast. The shader reads the mask through `w` for the Fresnel and specular terms exactly as it read the day alpha. The mask at 2048 is also what the bake uses to flatten the ocean and what the transcoder uses to flag constant-ocean tiles, which are not stored at all.
+
+10. **Readiness is completeness of the wanted set.** `textures_ready` becomes "every tile wanted for the current outputs at the 1 px threshold is resident, and the month's floor is resident"; `textures_pending` becomes "something wanted is on its way". `publish_wallpaper` keeps holding a request back on `textures_pending` and making it at the end of the tick the set completes on, with a timeout of 5 s after which it proceeds with the fallbacks, logs it, and schedules a re-export on completion. `run_render` waits the same way. A tile that fails to read or decode is marked failed for its pack, drawn from its ancestor and counted as satisfied, so the predicate cannot wait forever, which also closes the roadmap's `textures_ready` defect for the tiled path.
+
+11. **The bake is a `cube` command in the existing Python pipeline.** Input: the twelve 21600 x 10800 topography JPEGs, the Black Marble source and the ocean shapefile the `earth` command already takes. Output: the 84 files of decision 2. The ocean is flattened through the same mask stage, the mask is rasterized once at 2048 per face, the reprojection is an inverse mapping with bilinear sampling from the 21600 source into face texel centers, and area-averaging brings 5400-equivalent faces down to 2048. The night's source in the tree is 8192 wide and is reprojected from that. The command is run by hand, its parameters and the measurements go into `PROVENANCE.md`, and a repository test compares a tiny committed fixture bake against a fresh one the way the icon and star bakes are checked.
+
+12. **Tests decode fixtures, not the real assets, except where a case is about the real assets.** A fixture writer in `test_support` produces a complete tiny set (six faces of 64 px per month for as many months as a case needs, night, mask) as JPEG XL through the same encoder path the engine reads, so every engine, loader and shader case runs in CI without LFS. The cases that measure memory or the transcode time on the real files keep the existing skip-with-a-reason pattern. Every golden of the globe is regenerated per adapter, and a new golden pins the cube's orientation.
+
+## Success Criteria
+
+1. The globe renders from the cube on all three OSes and both software adapters; a golden shows Africa on the +Z face with north up, and a shader test proves `w` is continuous across every face edge and that the pole is an ordinary point (no discontinuity in the sampled color across the +Y face center).
+2. The month follows the date: the live clock and the custom date each select the nearest month, the cut lands at mid-month, and moving the custom-date slider across the year never shows a hole or the procedural grid, only the floor for at most a few ticks before the tiles arrive.
+3. GPU memory for the surfaces at the 8192 setting on a 4K output is under 60 MiB (floors, mask, tile cache) against 342 MiB today, measured through the memory report's allocator section, and private bytes at the 8192 setting drop by at least 400 MiB in the engine test that measures them on the real assets.
+4. On this machine the cache for the current month is ready within 10 s of a first launch and the whole year within 90 s, in the background, while the app renders from the floor; a second launch reads the packs and builds nothing.
+5. A drag of 5 degrees per tick at the near end of the zoom converges to the 1 px threshold within 500 ms of the drag stopping, measured by an engine test with the mock clock; no frame ever draws a cell without a resident ancestor, asserted by a debug check in the page-table rewrite.
+6. The wallpaper publish waits for the wanted set and never writes a frame drawn from the floor alone while tiles are pending, and proceeds after the timeout with a logged reason.
+7. The release archive is under 36 MB on every platform, `cargo xtask bundle --verify` renders from the new file set, and `cargo xtask dist` proves both VMs run it.
+8. `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check` green on Windows and in WSL; the e2e suite green in both VMs; the golden workflow green on the three adapters.
+9. `docs/architecture.md`, `docs/rendering.md`, `docs/testing.md`, `textures/PROVENANCE.md`, CLAUDE.md's recipe lines and `docs/roadmap.md` describe the new path; the README's texture paragraphs are updated with the user's permission.
+
+## Implementation Steps
+
+### Step 0: Three spikes before the code moves
+
+Each is an afternoon and each can stop the plan or change a decision, so they go first. (a) BC7 on the software adapters and on GitHub's paravirtual Metal device: a shader test encodes one 256 px fixture with `dds` Fast, samples it, and compares with the RGBA8 original under the golden tolerance; this decides whether the golden references can be generated from BC7. (b) The equi-angular sampling on `warp` and lavapipe: the current `textureSample` against `w` plus `textureSampleGrad` at 1080p and 4K, with the Milky Way's 133 ms on `warp` as the yardstick; a cost above that reopens decision 1 in favor of the banded equirectangular fallback the research names. (c) The full bake of one month from a 21600 source through a throwaway script, timed, to size Step 1.
+
+### Step 1: The assets
+
+The `cube` command in `tools/texture-pipeline` (decision 11), the twelve topography downloads, the 84 files under `textures/`, `PROVENANCE.md`, the bake fixture test. The old maps stay until Step 4 reads the new ones, so the tree keeps building at every commit. `resolve_texture_paths` and the bundle's texture check learn the new layout here, and a checkout with LFS pointers must behave as it does today: a quiet grid.
+
+### Step 2: The pack format and the transcoder
+
+A new `assets::tiles` module in core: the pack format (header, index sorted by level, face, row and column with offset, length, crc32, the ocean flag and the content hash; blobs coarse levels first), safe positional reads behind a 15-line `read_exact_at` wrapper for Windows and Unix, the cache key of decision 3, the tile cutter with gutters and mips, the `dds` encode with the RGBA8 alternative, the dedup by hash, atomic temp-then-rename writes with the sweep of unfinished files the halving cache already has, and the transcoder worker that builds packs in priority order and reports progress as a status. Unit tests: a round trip through a fixture set, key invalidation on each component, dedup on a set with identical faces, a corrupt blob detected by its crc, the RGBA8 variant. No renderer change yet; the transcoder can run headless from a test.
+
+### Step 3: The renderer and the shader
+
+The equi-angular mapping, the floor cubes, the mask cube, the tile array, the indirection texture and the page-table rewrite, the bind group layout that carries them, `write_uniforms` for the new fields, and `sphere.wgsl`'s `fs_main` sampling through `w` with the one-lookup resolution of decision 4. `SlotLayout` keeps the grid, the Moon, the Milky Way and the clouds where they are and gains the surface set as one unit. The shading and render-pipeline test targets get the fixture set from decision 12, the orientation golden is added, and every globe golden is regenerated per adapter. The `uniforms.rs` block list and the WGSL struct check cover the new uniforms as they cover the old.
+
+### Step 4: Residency and the loader
+
+`renderer::residency`: the per-tile precomputed center and radius, the wanted-set descent of decision 5 with unit tests against known cameras (a face-on view, the pole, the limb, the near zoom), the level rule against the projected texel size, the drag threshold. `engine::tile_loader`: the wanted-set slot, the workers, the bounded result channel, the byte-budgeted drain, eviction with hysteresis, the device epoch, the failed-tile table, the readiness predicates of decision 10 and the `publish_wallpaper` hold-back with its timeout. Engine tests with the mock clock and the fixture packs: a camera move brings the new tiles in and evicts the old ones, a stale result is dropped, a full result channel blocks and recovers, a failed tile is drawn from its ancestor and counts as satisfied, a publish waits and then proceeds. The old per-slot decode path, the mailbox's generation ordering for surfaces and the halving cache retire here, with their tests rewritten against the new contract.
+
+### Step 5: Months and the date
+
+The month index from `datetime`, the mid-month rule with a unit test at every boundary and across the year wrap, the month in every tile key, the floors for all twelve months, the boundary prefetch, and the custom-date slider driving it. The resolution setting's new meaning (decision 8) and `SetTextureResolution` purging the cache rather than the floors. Engine tests: the month changes with the clock and with the custom date, a slider sweep across the year never leaves the page table without an ancestor, and a resolution switch in both directions.
+
+### Step 6: The app, the status line and the memory report
+
+The loading text reports the transcoder's progress ("Preparing March, 4 of 12") and the tile loader's state the way it reports a decode today; the memory report's expected table lists the floors, the mask and the tile cache by label; `memory::resident_texture_bytes` and `private_bytes_budget` follow decision 4's numbers; the e2e memory cases and the soak test get their new limits from a measurement, not a guess.
+
+### Step 7: Release plumbing
+
+`cargo xtask bundle` and `dist` verify against the new file set; `release.yml`'s LFS checkout carries the 84 files; the Scoop and Homebrew manifests need nothing; a fresh install in both VMs is watched through its first transcode by an e2e case that asserts the packs appear and the second start builds nothing.
+
+### Step 8: Documentation
+
+`docs/architecture.md` (the surface set, the cache, the loader, the readiness contract, the resolution setting), `docs/rendering.md` (the cube, the shader path, the floor and the tiles, the poles), `docs/testing.md` (the fixture set, the goldens, the real-asset cases), `textures/PROVENANCE.md`, CLAUDE.md's texture slot line and the environment table if a knob is added, `docs/roadmap.md` (the seasonal item closed, the `textures_ready` defect closed for the tiled path, the 4096 download and the cube rotation as new items), and the README's texture paragraphs with the user's permission.
+
+## Out of Scope
+
+- The 4096-per-face level (16384-equivalent) and its per-month download. The pack format and the page table are built to take a third level, and nothing else here depends on it.
+- Blending or cross-fading between months, in any form.
+- Tiling the cloud overlay, the Moon or the Milky Way; the clouds keep their equirectangular shell and UVs.
+- Seasonal night lights; the annual Black Marble stays.
+- Rotating the cube about the pole to put its corners over ocean.
+- A GPU or FFI encoder; `dds` is the encoder and the RGBA8 path is the only fallback.
+- Cross-month deduplication of the download, measured at 5% to 7% and not worth a tiled archive.
+
+## Risks and Mitigations
+
+- BC7 sampling on a software adapter or the paravirtual Metal device differs from the RGBA8 original by more than the golden tolerance. Spike (a) finds it first; the fallback is generating the goldens from the RGBA8 path on that adapter, since the format is per adapter anyway.
+- The equi-angular mapping costs more than a frame can afford on the software adapters. Spike (b) measures it; the fallback is the banded equirectangular layout the research costs, which keeps the sampling path and loses the pole and gutter benefits.
+- A machine whose only backend is desktop GL would show seams at the floor cube's face edges. The adapter selection already prefers Vulkan, DX12 and Metal; if GL is ever selected the log says so, and the case is recorded in the roadmap rather than handled here.
+- The first-run transcode competes with the first render for CPU on a slow machine. The transcoder runs its workers at below-normal priority where the OS offers it, builds the current month first, and the floor draws in the meantime.
+- The full-year cache is 265 MiB on disk before deduplication. It is documented with the cache directory, cleared by the same sweep the cloud cache uses when the key changes, and the setting that caps the level caps the cache with it.
+- The wanted-set margin is wrong in one direction and the preview shows the floor during a fast drag. The drag threshold of 2 px halves demand while the drag runs; the margin and the lead are constants with a test that measures convergence, so they are tuned by measurement rather than argued about.
+- The dedup saving comes out under 5% once gutters are part of the tile. The hash stays in the index either way, since it costs 32 bytes per entry; the plan drops the dedup pass if the first full bake measures under 5%, as decided.
+
+## Rollback Strategy
+
+A feature branch. Steps 1 and 2 add files and a module nothing reads, so they revert by commit. Step 3 is the first that changes the picture and it lands together with its regenerated goldens; reverting it restores the old goldens. Nothing migrates persisted state: the packs are a cache under the app's data directory that any older binary ignores and any user can delete, and a config written by this branch reads unchanged in an older binary, since the resolution setting keeps its values.
+
+## Departures
+
+Recorded during implementation.
+
+## Validation Record
+
+Recorded per round.

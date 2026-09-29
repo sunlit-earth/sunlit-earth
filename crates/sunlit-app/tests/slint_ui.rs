@@ -1248,6 +1248,59 @@ fn test_a_wrapped_list_item_does_not_spill_over_the_block_below() {
     approx::assert_relative_eq!(wrapped.absolute_position().x, short.absolute_position().x);
 }
 
+/// Scrolled as far as it goes, a tab shows the end of its document: the scroll
+/// area is as tall as what the tab draws, wrapped blocks included.
+#[test]
+fn test_the_attributions_tab_scrolls_to_the_end_of_its_document() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(&wrapping_document()));
+    materialize_about(&window);
+
+    assert_the_last_block_is_reachable(&window, "AboutWindow::attributions-heading");
+}
+
+#[test]
+fn test_the_third_party_tab_scrolls_to_the_end_of_its_document() {
+    let window = about_window();
+    window.set_third_party(sunlit_earth::about::document_model(&wrapping_document()));
+    open_tab(&window, 2);
+
+    assert_the_last_block_is_reachable(&window, "AboutWindow::third-party-heading");
+}
+
+/// Paragraphs and list items that each wrap over several lines, then one
+/// heading, which is the only one and so marks the end.
+fn wrapping_document() -> String {
+    let long = "a block that runs on far enough to wrap over more than one line in a \
+                five hundred and sixty pixel window, and then keeps going for a while";
+    let mut document = format!("{long}\n\n- {long}\n  - {long}\n\n").repeat(20);
+    document.push_str("# The end\n");
+    document
+}
+
+fn assert_the_last_block_is_reachable(window: &sunlit_earth::AboutWindow, heading_id: &str) {
+    for _ in 0..50 {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(280.0, 350.0),
+                delta_x: 0.0,
+                delta_y: -1000.0,
+            });
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    }
+
+    let Some(heading) = all_elements(window, heading_id).pop() else {
+        panic!("scrolled to the end, the last block is still out of reach");
+    };
+    let bottom = heading.absolute_position().y + heading.size().height;
+    // The window is 480 tall and its layout keeps 16 below the tab.
+    assert!(
+        bottom <= 464.0,
+        "scrolled to the end, the last block ends at {bottom}, below the tab"
+    );
+}
+
 /// One link per markdown tab, each naming the document it is in.
 const ATTRIBUTIONS_LINK: &str = "https://example.invalid/attributions";
 const THIRD_PARTY_LINK: &str = "https://example.invalid/third-party";

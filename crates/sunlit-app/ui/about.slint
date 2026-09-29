@@ -40,6 +40,12 @@ export component AboutWindow inherits Window {
     // list item by, and the column its bullet hangs in.
     property <length> nesting-step: 14px;
     property <length> bullet-column: 11px;
+    // The width a block's text is drawn at, which every block states as its
+    // preferred width: Slint 1.18 measures the height of a `for` or `if`
+    // element at its preferred width, which for wrapped text is one unwrapped
+    // line, and the scroll area then ends before the document does.
+    property <length> attributions-column: attributions-scroll.visible-width - 24px - root.scrollbar-width;
+    property <length> third-party-column: third-party-scroll.visible-width - 24px - root.scrollbar-width;
 
     VerticalLayout {
         padding: 16px;
@@ -107,7 +113,7 @@ export component AboutWindow inherits Window {
                 // blocks and each block's inline markdown is parsed on its
                 // own, which is also why no block can hold a construct Slint's
                 // subset rejects.
-                ScrollView {
+                attributions-scroll := ScrollView {
                     VerticalLayout {
                         width: 100%;
                         padding: 12px;
@@ -116,14 +122,17 @@ export component AboutWindow inherits Window {
                         spacing: 8px;
 
                         for block in root.attributions : VerticalLayout {
+                            // The item's text keeps the whole column, so every
+                            // wrapped line of it starts under the first.
+                            property <length> indent: block.kind == 2
+                                ? block.depth * root.nesting-step + root.bullet-column
+                                : 0px;
+
+                            preferred-width: root.attributions-column;
                             // A section break reads heavier than the gap
                             // between two lines of the same section.
                             padding-top: block.kind == 1 ? 8px : 0px;
-                            // The item's text keeps the whole column, so every
-                            // wrapped line of it starts under the first.
-                            padding-left: block.kind == 2
-                                ? block.depth * root.nesting-step + root.bullet-column
-                                : 0px;
+                            padding-left: self.indent;
 
                             if block.kind == 1 : attributions-heading := Text {
                                 text: block.heading;
@@ -133,6 +142,7 @@ export component AboutWindow inherits Window {
 
                             if block.kind == 0 : attributions-paragraph := StyledText {
                                 text: block.body;
+                                preferred-width: root.attributions-column - parent.indent;
 
                                 link-clicked(link) => {
                                     root.open-url(link);
@@ -141,6 +151,7 @@ export component AboutWindow inherits Window {
 
                             if block.kind == 2 : attributions-item := StyledText {
                                 text: block.body;
+                                preferred-width: root.attributions-column - parent.indent;
 
                                 link-clicked(link) => {
                                     root.open-url(link);
@@ -198,7 +209,7 @@ export component AboutWindow inherits Window {
                 // again rather than shared: element ids are static, so one
                 // component used by both tabs would leave a test unable to
                 // say which tab's rows it found.
-                ScrollView {
+                third-party-scroll := ScrollView {
                     VerticalLayout {
                         width: 100%;
                         padding: 12px;
@@ -207,10 +218,13 @@ export component AboutWindow inherits Window {
                         spacing: 8px;
 
                         for block in root.third-party : VerticalLayout {
-                            padding-top: block.kind == 1 ? 8px : 0px;
-                            padding-left: block.kind == 2
+                            property <length> indent: block.kind == 2
                                 ? block.depth * root.nesting-step + root.bullet-column
                                 : 0px;
+
+                            preferred-width: root.third-party-column;
+                            padding-top: block.kind == 1 ? 8px : 0px;
+                            padding-left: self.indent;
 
                             if block.kind == 1 : third-party-heading := Text {
                                 text: block.heading;
@@ -220,6 +234,7 @@ export component AboutWindow inherits Window {
 
                             if block.kind == 0 : third-party-paragraph := StyledText {
                                 text: block.body;
+                                preferred-width: root.third-party-column - parent.indent;
 
                                 link-clicked(link) => {
                                     root.open-url(link);
@@ -228,6 +243,7 @@ export component AboutWindow inherits Window {
 
                             if block.kind == 2 : third-party-body := StyledText {
                                 text: block.body;
+                                preferred-width: root.third-party-column - parent.indent;
 
                                 link-clicked(link) => {
                                     root.open-url(link);

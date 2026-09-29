@@ -1,11 +1,12 @@
 # texture-pipeline
 
-A CLI tool that turns source imagery into the JPEG XL textures the app ships. It has two commands, because the two kinds of texture have nothing in common but their output format:
+A CLI tool that turns source imagery into the JPEG XL textures the app ships. It has three commands:
 
 - `earth` converts NASA Blue Marble and Black Marble style surface maps to JPEG XL at one or more widths.
+- `cube` bakes the twelve monthly Blue Marble maps, the Black Marble night map and an ocean shapefile into the equi-angular cube faces the globe samples.
 - `milky-way` turns a NASA SVS Deep Star Maps 2020 EXR into the denoised sky panorama.
 
-Both take equirectangular sources with an exact 2:1 aspect ratio and refuse to upscale.
+All three take equirectangular sources with an exact 2:1 aspect ratio and refuse to upscale.
 
 ## Requirements
 
@@ -70,6 +71,56 @@ output/
     land/earth.jxl
     ocean/water.jxl
 ```
+
+## `cube`
+
+```bash
+uv run texture-pipeline cube \
+    --input /path/to/bmng-topography \
+    --night /path/to/BlackMarble_2016_3km.jpg \
+    --ocean-mask /path/to/ne_10m_ocean.shp \
+    --output ../../textures
+```
+
+### Options
+
+`--input`, `-i`: Directory of monthly day maps, one per month, each named with a `.YYYYMM.` stamp the way NASA names them (`world.topo.200405.3x21600x10800.jpg`). Not searched recursively. All of them must be the same size, since one water mask is rasterized for all of them.
+
+`--night`: The equirectangular night map.
+
+`--ocean-mask`: The ocean shapefile (`.shp`), as for `earth`. Required, because the water mask is part of the output.
+
+`--output`, `-o`: Directory that receives `day/YYYYMM/<face>.jxl`, `night/<face>.jxl` and `mask/<face>.jxl`. For the app's own assets that is the repository's `textures/`.
+
+`--face-size`: Edge length of every face in pixels (default: 2048). Each source must be at least four times as wide.
+
+`--quality`, `-q`: JPEG XL quality of the day and night faces, 1 to 100 (default: 85). The mask faces are always lossless.
+
+`--effort`, `-e`: JPEG XL encoding effort, 1 to 9 (default: 7).
+
+`--workers`: Threads that resample the bands of a face (default: the CPU count, at most 4).
+
+The `--ocean-*` options are those of `earth`. The one difference is that ice the detector finds in any month is kept as land in every month, because a single mask serves the whole year.
+
+### Output
+
+Six faces per set, named `px`, `nx`, `py`, `ny`, `pz` and `nz` for +X, -X, +Y, -Y, +Z and -Z, which is also the layer order of a cube texture. The frame is the app's world frame: +Y is north, +Z is longitude 0 and +X is longitude 90 E, and the faces are laid out by the OpenGL and Direct3D cube map table, so Africa sits upright on `pz` and the Arctic Ocean is centered on `py`. The texel grid is equi-angular: a face texel at row `r` and column `c` of `n` lies at the warped coordinates `t = (r + 0.5) / n * 2 - 1` and `s = (c + 0.5) / n * 2 - 1`, and `tan(s * pi / 4)` and `tan(t * pi / 4)` are the coordinates on the plain cube face that the table combines into a direction. `src/texture_pipeline/cube.py` holds the table.
+
+The day faces are 8-bit RGB with no alpha, the night faces 8-bit RGB, and the mask faces single-channel 8-bit and lossless.
+
+### The water mask
+
+A mask texel is the fraction of its footprint that is open water: 255 is open ocean, 0 is land, and values in between are coastline. Ice that the detector finds on the ocean side of the shapefile's coastline, which on Blue Marble is the Antarctic ice shelves and snow along Arctic coasts, counts as land and is 0. The day faces are flattened toward the ocean fill color (default 10, 30, 60) in proportion to the same mask, so wherever a mask texel is 255 the day texel is the fill to within one level before the lossy encode moves it; a consumer that wants a flat ocean should write the fill itself where the mask is 255 rather than trust the decoded color.
+
+### What the command does
+
+1. Rasterizes the shapefile once at the day maps' size, with the `earth` command's supersampling and coast offset.
+2. Runs the ice detection on every month and subtracts the union of what it finds from the mask.
+3. Resamples the mask to six faces at the working size, a quarter of the source's width (5400 for the 21600 maps), which is the source's own density at the equator. These working faces flatten every month, and their area average down to the face size is what `mask/` holds.
+4. For each month, resamples the picture to six faces at the working size, flattens the ocean through the working mask, averages each face down to the face size over every texel's footprint (Pillow's box filter, which weighs partial pixels exactly at a non-integer ratio), and encodes it.
+5. Resamples the night map the same way at a quarter of its own width, without flattening.
+
+The resampling maps every texel center back into the source and samples it bilinearly, wrapping in longitude and clamping at the poles, one band of 256 rows at a time, so the memory a face needs does not grow with its size.
 
 ## `milky-way`
 
@@ -147,4 +198,4 @@ The OpenEXR wheel is a bare extension module carrying no type information, so `s
 
 ### Memory note
 
-The full-resolution NASA Blue Marble (21600 x 10800) requires roughly 1.75 GB of RAM when loaded into Pillow. The 16k star map is 16384 x 8192 half floats, which is 1.6 GB once it is float32 RGB, and the pipeline holds a second copy of it while it clips and scales. Both are expected for an offline tool.
+The full-resolution NASA Blue Marble (21600 x 10800) requires roughly 1.75 GB of RAM when loaded into Pillow. The 16k star map is 16384 x 8192 half floats, which is 1.6 GB once it is float32 RGB, and the pipeline holds a second copy of it while it clips and scales. Both are expected for an offline tool. The `cube` command reads the twelve 21600 maps one at a time and resamples in bands of 256 rows, so its peak is the ocean raster at twice the source size: 3.0 GiB working set for the full bake of the app's textures, which took about ten minutes on 16 logical cores (`textures/PROVENANCE.md` has the stages).

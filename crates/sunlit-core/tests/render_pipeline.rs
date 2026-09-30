@@ -3880,4 +3880,19 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
         levels_apart > 4 * off_finest.max(1),
         "the two levels are too alike here for a match to the finest to mean anything"
     );
+
+    // Capped at the floor, the same resident set draws the floor alone.
+    let floor_level = Geometry::level_of(geometry.floor);
+    let capped = CellLevels::uniform(&geometry, floor_level);
+    assert!(surface_tiles.set_cap(&ctx.queue, capped.clone()));
+    assert!(
+        !surface_tiles.set_cap(&ctx.queue, capped),
+        "the same cap again"
+    );
+    let array = surface_tiles.array_view().expect("still there");
+    let capped = draw(&floor, [array, surface_tiles.page_view()]);
+    assert!(
+        capped == from_floor,
+        "a cap at the floor draws the floor wherever tiles are resident"
+    );
 }

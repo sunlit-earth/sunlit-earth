@@ -730,17 +730,19 @@ impl SurfaceTiles {
     }
 
     /// Hold every cell to the level `cap` names there from now on, and
-    /// rewrite the table if that changes it.
+    /// rewrite the table if that changes it. Returns whether it did.
     ///
     /// # Panics
     ///
     /// If `cap` is cut for another geometry.
-    pub fn set_cap(&mut self, queue: &wgpu::Queue, cap: CellLevels) {
+    pub fn set_cap(&mut self, queue: &wgpu::Queue, cap: CellLevels) -> bool {
         assert_eq!(cap.cells(), self.table.cells(), "a cap for another table");
-        if cap != self.cap {
-            self.cap = cap;
-            self.publish(queue);
+        if cap == self.cap {
+            return false;
         }
+        self.cap = cap;
+        self.publish(queue);
+        true
     }
 
     /// The texels or blocks of each level of a tile's layer, in the array's

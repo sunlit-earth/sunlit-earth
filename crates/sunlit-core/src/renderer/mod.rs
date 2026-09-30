@@ -509,6 +509,18 @@ impl Renderer {
         }
     }
 
+    /// Hold each cell of the page table to the finest level `cap` names there,
+    /// the wanted set's (`residency::Wanted::cap`), and redraw on the next
+    /// frame if that changes the table.
+    #[expect(dead_code, reason = "the tile loader's cap, like `upload_tiles`")]
+    pub(crate) fn set_tile_cap(&mut self, cap: tiles::CellLevels) {
+        if let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut())
+            && surface_tiles.set_cap(&self.queue, cap)
+        {
+            self.texture_dirty = true;
+        }
+    }
+
     /// What the frame's uniforms need of the tiles: the ocean colors of the
     /// packs the page table draws from, and a tile's sizes.
     fn tile_uniforms(&self) -> render_pass::TileUniforms {

@@ -985,8 +985,16 @@ mod tests {
         };
 
         let (_setup, transcoder) = paused("gate_stop");
-        transcoder.stop();
-        let status = settled(&transcoder);
+        let (done, stopped) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            transcoder.stop();
+            let status = settled(&transcoder);
+            drop(transcoder);
+            let _ = done.send(status);
+        });
+        let status = stopped
+            .recv_timeout(WAIT)
+            .expect("a stop settles a worker waiting at the gate, and the drop joins it");
         assert_eq!(status.phase, Phase::Stopped);
         assert_eq!(status.ready, [Mask, Day(3), Night]);
 

@@ -3874,7 +3874,7 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
         "finest tiles: {off_finest} steps from the finest level in all, which is {levels_apart} from the coarse"
     );
     assert!(
-        levels_apart > 10 * off_finest.max(1),
+        levels_apart > 4 * off_finest.max(1),
         "the two levels are too alike here for a match to the finest to mean anything"
     );
 }

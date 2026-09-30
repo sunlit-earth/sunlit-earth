@@ -12,6 +12,7 @@ mod slots;
 mod surface;
 mod texture_routing;
 mod textures;
+pub mod tiles;
 pub mod uniforms;
 
 pub use render_pass::read_texture_rgba8;
@@ -28,7 +29,7 @@ use tracing::debug;
 
 use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
-use crate::assets::tiles::Pack;
+use crate::assets::tiles::{Geometry, Pack};
 use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
 use crate::scene::sky::{PlanetKind, SkyState};
@@ -44,6 +45,7 @@ use texture_routing::ResolvedTexture;
 use textures::{
     Bindings, TextureSlot, create_bind_group, maybe_spawn_texture_load, process_decoded_textures,
 };
+use tiles::{TileId, TileUpload};
 
 /// What a call to [`Renderer::render`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +80,9 @@ pub(crate) struct RendererConfig {
     /// Whether the adapter is a CPU, which gets the surfaces decoded and
     /// sampled without anisotropy.
     pub cpu_adapter: bool,
+    /// What the packs the cube surface comes from are cut to, which sizes the
+    /// page table and the tile array's layers.
+    pub tile_geometry: Geometry,
 }
 
 /// The GPU pipeline and every resource it owns.
@@ -149,6 +154,10 @@ pub(crate) struct Renderer {
     dummy_texture_view: wgpu::TextureView,
     /// 1x1 black cube standing in wherever a bind group has no cube to put.
     dummy_cube_view: wgpu::TextureView,
+    /// The tile array and the page table of every bind group but the cube
+    /// surface's: one black layer, and one cell per face that draws the floor.
+    dummy_tile_view: wgpu::TextureView,
+    dummy_page_view: wgpu::TextureView,
     /// Bind group containing both day and night textures, used in blend mode.
     /// Created once both day and night texture slots have loaded.
     composite_bind_group: Option<wgpu::BindGroup>,
@@ -273,13 +282,18 @@ impl Renderer {
             );
         }
 
-        for (label, layers) in [("dummy_1x1", 1), ("dummy_cube", 6)] {
+        for (label, layers, format) in [
+            ("dummy_1x1", 1, COLOR_FORMAT),
+            ("dummy_cube", 6, COLOR_FORMAT),
+            ("dummy_tile_array", 1, wgpu::TextureFormat::Rgba8Unorm),
+            ("dummy_page_table", 6, wgpu::TextureFormat::R32Uint),
+        ] {
             expected.push(ExpectedTexture {
                 label: label.to_owned(),
                 width: 1,
                 height: 1,
                 layers,
-                format: COLOR_FORMAT,
+                format,
                 mip_levels: 1,
                 sample_count: 1,
             });
@@ -427,6 +441,10 @@ impl Renderer {
         if surface.state(layer) == surface::LayerState::Resident {
             return Ok(());
         }
+        let tiled = layer != SurfaceLayer::Mask;
+        if tiled && let Some(tiles) = &surface.tiles {
+            tiles.accepts(pack)?;
+        }
         let texture =
             surface::cube_from_pack(&self.device, &self.queue, layer, pack, surface.formats)?;
         let cube = ResidentCube::new(texture);
@@ -434,6 +452,9 @@ impl Renderer {
             SurfaceLayer::Day(month) => surface.day = Some((month, cube)),
             SurfaceLayer::Night => surface.night = Some(cube),
             SurfaceLayer::Mask => surface.mask = Some(cube),
+        }
+        if tiled && let Some(tiles) = &mut surface.tiles {
+            tiles.add_pack(&self.queue, pack)?;
         }
         let _ = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
@@ -451,23 +472,84 @@ impl Renderer {
         }
     }
 
+    /// Make `tiles` resident in the tile array and rewrite the page table over
+    /// them, the two staged for the next submit together, and redraw on the
+    /// next frame.
+    ///
+    /// Each tile goes into the layer it names, else the one it holds, else a
+    /// free one; a tile that cannot be placed, or whose blob does not have a
+    /// layer's layout, is returned with the reason and the others are made
+    /// resident. The array is created with the first tile.
+    #[expect(
+        dead_code,
+        reason = "the tile loader's entry point, and nothing decides which tiles are wanted yet"
+    )]
+    pub(crate) fn upload_tiles(&mut self, tiles: Vec<TileUpload>) -> Vec<(TileId, String)> {
+        let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut()) else {
+            let why = "the globe is not drawn from the cube surface";
+            return tiles.into_iter().map(|t| (t.id, why.to_owned())).collect();
+        };
+        let had_array = surface_tiles.array_view().is_some();
+        let failed = surface_tiles.upload(&self.device, &self.queue, tiles);
+        if !had_array && surface_tiles.array_view().is_some() {
+            self.rebuild_surface_groups();
+        }
+        self.texture_dirty = true;
+        failed
+    }
+
+    /// Free the layers `tiles` hold and rewrite the page table without them,
+    /// and redraw on the next frame.
+    #[expect(dead_code, reason = "the tile loader's eviction, like `upload_tiles`")]
+    pub(crate) fn evict_tiles(&mut self, tiles: &[TileId]) {
+        if let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut()) {
+            surface_tiles.evict(&self.queue, tiles);
+            self.texture_dirty = true;
+        }
+    }
+
+    /// What the frame's uniforms need of the tiles: the ocean colors of the
+    /// packs the page table draws from, and a tile's sizes.
+    fn tile_uniforms(&self) -> render_pass::TileUniforms {
+        self.surface
+            .as_ref()
+            .and_then(|surface| surface.tiles.as_ref())
+            .map_or_else(render_pass::TileUniforms::default, |tiles| {
+                render_pass::TileUniforms {
+                    ocean: tiles.ocean_colors(),
+                    tile: tiles.geometry().tile,
+                    gutter: tiles.geometry().gutter,
+                }
+            })
+    }
+
     /// Build the surface's bind groups from what is resident: the day floor and
     /// the night floor each alone, and the two with the mask for blend mode,
-    /// with the dummy cube for a mask that is not there.
+    /// with the dummy cube for a mask that is not there, each with the page
+    /// table and the tile array, or the array's dummy until the first tile.
     fn rebuild_surface_groups(&mut self) {
         let Some(surface) = &self.surface else {
             return;
         };
         let dummy = &self.dummy_cube_view;
+        let tiles = surface.tiles.as_ref().map_or(
+            [&self.dummy_tile_view, &self.dummy_page_view],
+            |tiles| {
+                [
+                    tiles.array_view().unwrap_or(&self.dummy_tile_view),
+                    tiles.page_view(),
+                ]
+            },
+        );
         let day = surface.day.as_ref().map(|(_, cube)| &cube.view);
         let night = surface.night.as_ref().map(|cube| &cube.view);
         let mask = surface.mask.as_ref().map_or(dummy, |cube| &cube.view);
-        let day_group = day.map(|day| self.cube_bind_group([day, dummy, dummy], "surface_day"));
-        let night_group =
-            night.map(|night| self.cube_bind_group([night, dummy, dummy], "surface_night"));
+        let group = |cubes, label| self.cube_bind_group(cubes, tiles, label);
+        let day_group = day.map(|day| group([day, dummy, dummy], "surface_day"));
+        let night_group = night.map(|night| group([night, dummy, dummy], "surface_night"));
         let blend_group = day
             .zip(night)
-            .map(|(day, night)| self.cube_bind_group([day, night, mask], "surface_blend"));
+            .map(|(day, night)| group([day, night, mask], "surface_blend"));
         let surface = self.surface.as_mut().expect("checked above");
         surface.day_group = day_group;
         surface.night_group = night_group;
@@ -491,13 +573,20 @@ impl Renderer {
                 sampler: &self.sampler,
                 night,
                 cubes: [dummy, dummy, dummy],
+                tiles: [&self.dummy_tile_view, &self.dummy_page_view],
             },
             label,
         )
     }
 
-    /// A bind group that draws the globe from `cubes`.
-    fn cube_bind_group(&self, cubes: [&wgpu::TextureView; 3], label: &str) -> wgpu::BindGroup {
+    /// A bind group that draws the globe from `cubes`, refined through `tiles`,
+    /// the tile array and the page table.
+    fn cube_bind_group(
+        &self,
+        cubes: [&wgpu::TextureView; 3],
+        tiles: [&wgpu::TextureView; 2],
+        label: &str,
+    ) -> wgpu::BindGroup {
         create_bind_group(
             &self.device,
             &self.bind_group_layout,
@@ -507,6 +596,7 @@ impl Renderer {
                 sampler: &self.surface_sampler,
                 night: &self.dummy_texture_view,
                 cubes,
+                tiles,
             },
             label,
         )
@@ -573,6 +663,8 @@ impl Renderer {
             sky: sky.clone(),
             use_blend,
             cube: resolved.draws_from_a_cube(),
+            night_alone: resolved.draws_the_night_alone(),
+            tiles: self.tile_uniforms(),
         });
         self.last_resolved = Some(resolved);
         self.last_params = Some(*params);

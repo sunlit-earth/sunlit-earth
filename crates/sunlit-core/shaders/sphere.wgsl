@@ -66,8 +66,12 @@ struct Uniforms {
     atmo_sunrise_glow: f32,           // 4 bytes, offset 524
     atmo_sunrise_g: f32,              // 4 bytes, offset 528
     sun_flux: f32,                    // 4 bytes, offset 532
-    _pad7: f32,                       // 4 bytes, offset 536
-    _pad8: f32,                       // 4 bytes, offset 540
+    day_ocean: u32,                   // 4 bytes, offset 536
+    night_ocean: u32,                 // 4 bytes, offset 540
+    tile_texels: f32,                 // 4 bytes, offset 544
+    tile_gutter: f32,                 // 4 bytes, offset 548
+    _pad9: f32,                       // 4 bytes, offset 552
+    _pad10: f32,                      // 4 bytes, offset 556
 };
 
 @group(0) @binding(0)
@@ -94,6 +98,16 @@ var night_cube: texture_cube<f32>;
 
 @group(0) @binding(6)
 var water_cube: texture_cube<f32>;
+
+// The tiles above the floor, the day's and the night's in one array of layers
+// with their gutters, and the page table that says what refines the floor at
+// each cell of each face: one layer per face, one texel per tile of the finest
+// level, the day in the low 16 bits and the night in the high 16.
+@group(0) @binding(7)
+var tile_array: texture_2d_array<f32>;
+
+@group(0) @binding(8)
+var page_table: texture_2d_array<u32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -378,22 +392,119 @@ struct Surface {
     water: f32,
 }
 
+/// Bit 2 of `uniforms.flags`: the cube at binding 4 is the night floor drawn
+/// alone, so what refines it is the night half of the page table.
+const FLAG_NIGHT_ALONE: u32 = 4u;
+
+/// The kinds of one half of a page table entry, in its bits 14 and 15; zero is
+/// the floor. Bits 12 and 13 of a tile say how many levels coarser than the
+/// finest it is, and bits 0 to 11 its layer.
+const PAGE_OCEAN: u32 = 1u;
+const PAGE_TILE: u32 = 2u;
+
+/// Where a warped direction falls on its face: the face in cube layer order,
+/// its coordinates 0 to 1 across the face, along a row and then down a column,
+/// and their screen derivatives.
+struct FacePoint {
+    face: u32,
+    uv: vec2<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+}
+
+/// The face and the face coordinates the hardware's cube table gives `w`, and
+/// their derivatives from those of `w` by the quotient rule, as the hardware
+/// takes a cube's own: which is what keeps a tile's footprint the floor's.
+fn face_point(w: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> FacePoint {
+    let a = abs(w);
+    var face: u32;
+    var along: vec3<f32>;
+    var down: vec3<f32>;
+    var major: vec3<f32>;
+    if a.x >= a.y && a.x >= a.z {
+        face = select(1u, 0u, w.x > 0.0);
+        along = vec3<f32>(0.0, 0.0, select(1.0, -1.0, w.x > 0.0));
+        down = vec3<f32>(0.0, -1.0, 0.0);
+        major = vec3<f32>(sign(w.x), 0.0, 0.0);
+    } else if a.y >= a.z {
+        face = select(3u, 2u, w.y > 0.0);
+        along = vec3<f32>(1.0, 0.0, 0.0);
+        down = vec3<f32>(0.0, 0.0, sign(w.y));
+        major = vec3<f32>(0.0, sign(w.y), 0.0);
+    } else {
+        face = select(5u, 4u, w.z > 0.0);
+        along = vec3<f32>(sign(w.z), 0.0, 0.0);
+        down = vec3<f32>(0.0, -1.0, 0.0);
+        major = vec3<f32>(0.0, 0.0, sign(w.z));
+    }
+    let m = dot(major, w);
+    let st = vec2<f32>(dot(along, w), dot(down, w)) / m;
+    let st_dx = (vec2<f32>(dot(along, dx), dot(down, dx)) - st * dot(major, dx)) / m;
+    let st_dy = (vec2<f32>(dot(along, dy), dot(down, dy)) - st * dot(major, dy)) / m;
+    return FacePoint(face, st * 0.5 + 0.5, st_dx * 0.5, st_dy * 0.5);
+}
+
+/// What one half of a page table entry draws at `at`: `base`, the floor's
+/// sample, the constant ocean color `ocean`, or the tile the entry names.
+///
+/// A tile is read through its gutter at the place `at` falls within it, with
+/// the face coordinates' own derivatives scaled into the layer, so it samples
+/// the footprint the floor's sample covers.
+fn refined(entry: u32, base: vec3<f32>, ocean: u32, at: FacePoint) -> vec3<f32> {
+    let kind = entry >> 14u;
+    if kind == PAGE_OCEAN {
+        return unpack4x8unorm(ocean).rgb;
+    }
+    if kind != PAGE_TILE {
+        return base;
+    }
+    let across = f32(textureDimensions(page_table).x >> ((entry >> 12u) & 3u));
+    let place = at.uv * across;
+    let tile = min(floor(place), vec2<f32>(across - 1.0));
+    let layer_texels = uniforms.tile_texels + 2.0 * uniforms.tile_gutter;
+    let coords = (uniforms.tile_gutter + (place - tile) * uniforms.tile_texels) / layer_texels;
+    let scale = across * uniforms.tile_texels / layer_texels;
+    return textureSampleGrad(
+        tile_array, sphere_sampler, coords, entry & 0xFFFu, at.ddx * scale, at.ddy * scale
+    ).rgb;
+}
+
 /// The cubes are read with `textureSample`, whose implicit derivatives are the
 /// screen derivatives of `w`, and never with `textureSampleGrad`: naga's MSL
 /// writer passes every explicit gradient as `metal::gradient2d`, which Metal
 /// refuses from a cube. Both branches are taken on uniforms alone, so the
-/// samples stay in the uniform control flow `textureSample` needs.
+/// samples and the derivatives stay in the uniform control flow they need;
+/// the page table's choice between the floor and a tile is made per fragment
+/// after them, and a tile is read with explicit gradients from a 2D array.
 fn globe_surface(in: VertexOutput) -> Surface {
     let single = uniforms.terminator_width < 0.0;
     if (uniforms.flags & FLAG_CUBE_SURFACE) != 0u {
         let w = equi_angular(normalize(in.world_normal));
-        let day = textureSample(day_cube, sphere_sampler, w).rgb;
-        if single {
-            return Surface(day, vec3<f32>(0.0), 0.0);
+        let w_dx = dpdx(w);
+        let w_dy = dpdy(w);
+        let day_floor = textureSample(day_cube, sphere_sampler, w).rgb;
+        var night_floor = vec3<f32>(0.0);
+        var water = 0.0;
+        if !single {
+            night_floor = textureSample(night_cube, sphere_sampler, w).rgb;
+            water = textureSample(water_cube, sphere_sampler, w).r;
         }
-        let night = textureSample(night_cube, sphere_sampler, w).rgb;
-        let water = textureSample(water_cube, sphere_sampler, w).r;
-        return Surface(day, night, water);
+
+        let at = face_point(w, w_dx, w_dy);
+        let cells = textureDimensions(page_table).x;
+        let cell = min(vec2<u32>(at.uv * f32(cells)), vec2<u32>(cells - 1u));
+        let entry = textureLoad(page_table, cell, at.face, 0).x;
+        if single {
+            let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
+            let half = select(entry & 0xFFFFu, entry >> 16u, night_alone);
+            let ocean = select(uniforms.day_ocean, uniforms.night_ocean, night_alone);
+            return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), 0.0);
+        }
+        return Surface(
+            refined(entry & 0xFFFFu, day_floor, uniforms.day_ocean, at),
+            refined(entry >> 16u, night_floor, uniforms.night_ocean, at),
+            water
+        );
     }
 
     let day = textureSample(sphere_texture, sphere_sampler, in.uv);

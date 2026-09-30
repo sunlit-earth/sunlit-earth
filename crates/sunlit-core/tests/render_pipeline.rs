@@ -59,6 +59,9 @@ struct RenderContext {
     surface_sampler: wgpu::Sampler,
     /// A 1x1 black cube for every cube place a case leaves empty.
     dummy_cube: wgpu::TextureView,
+    /// A one-layer black tile array and a page table of one cell per face that
+    /// draws the floor, for every case that draws no tile.
+    dummy_tiles: [wgpu::TextureView; 2],
 }
 
 #[allow(clippy::too_many_lines)]
@@ -140,9 +143,30 @@ fn create_render_context() -> RenderContext {
             cube_entry(4),
             cube_entry(5),
             cube_entry(6),
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let dummy_cube = create_solid_cube(&device, &queue, [[0, 0, 0, 255]; 6]);
+    let dummy_tiles = create_dummy_tiles(&device, &queue);
     let surface_sampler = device.create_sampler(
         &sunlit_core::renderer::surface_sampler_descriptor(ctx.cpu_adapter),
     );
@@ -215,7 +239,52 @@ fn create_render_context() -> RenderContext {
         sampler,
         surface_sampler,
         dummy_cube,
+        dummy_tiles,
     }
+}
+
+/// A one-layer black tile array and a page table of one floor cell per face.
+fn create_dummy_tiles(device: &wgpu::Device, queue: &wgpu::Queue) -> [wgpu::TextureView; 2] {
+    let texture = |label, format, layers, data: &[u8]| {
+        device
+            .create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: layers,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                data,
+            )
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
+    };
+    [
+        texture(
+            "dummy_tile_array",
+            wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            &[0, 0, 0, 255],
+        ),
+        texture(
+            "dummy_page_table",
+            wgpu::TextureFormat::R32Uint,
+            6,
+            &[0; 24],
+        ),
+    ]
 }
 
 static RENDER_CTX: LazyLock<Mutex<RenderContext>> =
@@ -351,12 +420,25 @@ fn create_solid_cube(
     create_cube(device, queue, 1, |face| faces[face].to_vec())
 }
 
-/// A bind group of the production layout.
+/// A bind group of the production layout, with no tiles.
 fn test_bind_group(
     ctx: &RenderContext,
     flat: [&wgpu::TextureView; 2],
     sampler: &wgpu::Sampler,
     cubes: [&wgpu::TextureView; 3],
+) -> wgpu::BindGroup {
+    let [tiles, pages] = &ctx.dummy_tiles;
+    bind_group_with(ctx, flat, sampler, cubes, [tiles, pages])
+}
+
+/// A bind group of the production layout, with the tile array and the page
+/// table `tiles`.
+fn bind_group_with(
+    ctx: &RenderContext,
+    flat: [&wgpu::TextureView; 2],
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+    tiles: [&wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
     let view = wgpu::BindingResource::TextureView;
     ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -390,6 +472,14 @@ fn test_bind_group(
             wgpu::BindGroupEntry {
                 binding: 6,
                 resource: view(cubes[2]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: view(tiles[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: view(tiles[1]),
             },
         ],
     })
@@ -643,8 +733,12 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         atmo_sunrise_glow: 0.0,
         atmo_sunrise_g: 0.5,
         sun_flux: 1.0,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: 0,
+        night_ocean: 0,
+        tile_texels: 0.0,
+        tile_gutter: 0.0,
+        _pad9: 0.0,
+        _pad10: 0.0,
     }
 }
 
@@ -843,6 +937,11 @@ fn uniform_readback() {
     output[72] = uniforms.atmo_sunrise_glow;
     output[73] = uniforms.atmo_sunrise_g;
     output[74] = uniforms.sun_flux;
+    // the tiles
+    output[75] = f32(uniforms.day_ocean);
+    output[76] = f32(uniforms.night_ocean);
+    output[77] = uniforms.tile_texels;
+    output[78] = uniforms.tile_gutter;
 }
 ";
 
@@ -851,7 +950,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 75] = [
+const PROBED_FIELDS: [(f32, &str); 79] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -927,6 +1026,10 @@ const PROBED_FIELDS: [(f32, &str); 75] = [
     (1.85, "atmo_sunrise_glow"),
     (0.62, "atmo_sunrise_g"),
     (0.72, "sun_flux"),
+    (3_939_850.0, "day_ocean"),
+    (984_325.0, "night_ocean"),
+    (128.0, "tile_texels"),
+    (8.0, "tile_gutter"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1034,8 +1137,12 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         atmo_sunrise_glow: 1.85,
         atmo_sunrise_g: 0.62,
         sun_flux: 0.72,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: 0x003C_1E0A,
+        night_ocean: 0x000F_0505,
+        tile_texels: 128.0,
+        tile_gutter: 8.0,
+        _pad9: 0.0,
+        _pad10: 0.0,
     };
 
     let uniform_buf = ctx

@@ -12,6 +12,7 @@ use crate::assets::texture_loader;
 use crate::assets::tiles::{BlockFormat, Entry, Pack, PackKind, decode_bc4, decode_bc7};
 
 use super::slots::TextureMode;
+use super::tiles::SurfaceTiles;
 
 /// Anisotropy of the surface sampler on an adapter that is not a CPU.
 ///
@@ -189,8 +190,8 @@ pub(super) enum SurfaceGroup {
     Blend,
 }
 
-/// The surface set: what is resident, what failed, and the bind groups built
-/// from what is resident.
+/// The surface set: what is resident, what failed, the tiles above the floors,
+/// and the bind groups built from what is resident.
 pub(super) struct SurfaceSet {
     pub formats: SurfaceFormats,
     /// The month in force, January 0.
@@ -202,6 +203,9 @@ pub(super) struct SurfaceSet {
     pub night: Option<ResidentCube>,
     pub mask: Option<ResidentCube>,
     failed: Vec<SurfaceLayer>,
+    /// The tile array and the page table, which the renderer creates beside
+    /// the set on its device.
+    pub tiles: Option<SurfaceTiles>,
     pub day_group: Option<wgpu::BindGroup>,
     pub night_group: Option<wgpu::BindGroup>,
     pub blend_group: Option<wgpu::BindGroup>,
@@ -216,6 +220,7 @@ impl SurfaceSet {
             night: None,
             mask: None,
             failed: Vec::new(),
+            tiles: None,
             day_group: None,
             night_group: None,
             blend_group: None,
@@ -276,7 +281,8 @@ impl SurfaceSet {
         }
     }
 
-    /// Every cube held, with the label it carries.
+    /// Every texture held, the cubes, the page table and the tile array, with
+    /// the label it carries.
     pub(super) fn resident(&self) -> impl Iterator<Item = (&'static str, &wgpu::Texture)> {
         let day = self
             .day
@@ -288,6 +294,7 @@ impl SurfaceSet {
             .into_iter()
             .flatten()
             .map(|(layer, cube)| (layer.label(), &cube.texture))
+            .chain(self.tiles.iter().flat_map(SurfaceTiles::textures))
     }
 }
 

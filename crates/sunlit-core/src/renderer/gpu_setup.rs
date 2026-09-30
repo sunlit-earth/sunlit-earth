@@ -8,6 +8,7 @@ use crate::geometry::sphere::{self, Vertex};
 use super::slots::{SLOT_LABELS, SlotLayout};
 use super::surface::{self, SurfaceFormats, SurfaceSet};
 use super::textures::{Bindings, TextureSlot, create_bind_group};
+use super::tiles::{SurfaceTiles, TILE_LAYER_BUDGET};
 use super::uniforms::Uniforms;
 use super::{Renderer, RendererConfig};
 
@@ -51,6 +52,56 @@ const fn texture_entry(
     }
 }
 
+/// The tile array and the page table every group but the surface's binds: one
+/// black RGBA8 layer, and a page table of one cell per face that draws the
+/// floor.
+fn dummy_tiles(device: &wgpu::Device, queue: &wgpu::Queue) -> [wgpu::TextureView; 2] {
+    let tiles = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("dummy_tile_array"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[0, 0, 0, 255],
+    );
+    let pages = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("dummy_page_table"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[0; 6 * 4],
+    );
+    [tiles, pages].map(|texture| {
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
+    })
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one linear setup sequence; the pipelines it builds are a table in Pipelines::build"
@@ -72,6 +123,7 @@ pub(super) fn create_renderer(
         notify,
         cube_month,
         cpu_adapter,
+        tile_geometry,
     } = config;
     let mesh = sphere::generate_uv_sphere(64, 64);
 
@@ -144,6 +196,17 @@ pub(super) fn create_renderer(
             texture_entry(4, wgpu::TextureViewDimension::Cube),
             texture_entry(5, wgpu::TextureViewDimension::Cube),
             texture_entry(6, wgpu::TextureViewDimension::Cube),
+            texture_entry(7, wgpu::TextureViewDimension::D2Array),
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -190,6 +253,7 @@ pub(super) fn create_renderer(
         },
     );
     let dummy_texture_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let [dummy_tile_view, dummy_page_view] = dummy_tiles(&device, &queue);
 
     // The grid, always loaded at slot 0, is a cube the globe reads through the
     // same direction and sampler as the surface.
@@ -214,6 +278,7 @@ pub(super) fn create_renderer(
             sampler: &surface_sampler,
             night: &dummy_texture_view,
             cubes: [&grid_tex_view, &dummy_cube_view, &dummy_cube_view],
+            tiles: [&dummy_tile_view, &dummy_page_view],
         },
         "grid_bind_group",
     );
@@ -242,11 +307,19 @@ pub(super) fn create_renderer(
             .features()
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let formats = SurfaceFormats::for_adapter(block_compression, cpu_adapter);
+        let layers = TILE_LAYER_BUDGET.min(device.limits().max_texture_array_layers);
         debug!(
             ?formats,
-            cpu_adapter, "the globe is drawn from the cube surface"
+            cpu_adapter, layers, "the globe is drawn from the cube surface"
         );
-        SurfaceSet::new(formats, month)
+        let mut set = SurfaceSet::new(formats, month);
+        set.tiles = Some(SurfaceTiles::new(
+            &device,
+            tile_geometry,
+            formats.color,
+            layers,
+        ));
+        set
     });
     // The cloud overlay, always last because it comes from the fetcher rather
     // than from a file. `SlotLayout::clouds` names its index.
@@ -316,6 +389,8 @@ pub(super) fn create_renderer(
         notify,
         dummy_texture_view,
         dummy_cube_view,
+        dummy_tile_view,
+        dummy_page_view,
         composite_bind_group: None,
         day_texture_view: None,
         night_texture_view: None,

@@ -121,11 +121,16 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
         | wgpu::Features::TEXTURE_COMPRESSION_BC;
     let features = adapter.features() & desired_features;
 
+    // The resolution limits, and as many layers as the adapter has for the
+    // surface's tile array.
+    let required_limits = wgpu::Limits {
+        max_texture_array_layers: adapter.limits().max_texture_array_layers,
+        ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
+    };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("sunlit-earth"),
         required_features: features,
-        required_limits:
-            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+        required_limits,
         ..Default::default()
     }))
     .map_err(|e| format!("the graphics adapter \"{adapter_info}\" refused a device: {e}"))?;

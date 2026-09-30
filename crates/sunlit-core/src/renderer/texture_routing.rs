@@ -20,6 +20,11 @@ impl ResolvedTexture {
     pub(super) fn draws_from_a_cube(&self) -> bool {
         matches!(self, Self::Surface(_) | Self::Slot(0))
     }
+
+    /// Whether the cube this bind group draws alone is the night floor.
+    pub(super) fn draws_the_night_alone(&self) -> bool {
+        matches!(self, Self::Surface(SurfaceGroup::Night))
+    }
 }
 
 /// Determine the bind group and blend mode for the current frame.

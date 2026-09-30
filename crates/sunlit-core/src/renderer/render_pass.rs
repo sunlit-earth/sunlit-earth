@@ -14,12 +14,26 @@ use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: astronomy derived
 /// from the clock, whether the resolved bind group carries both a day and a
-/// night texture, and whether the globe reads it through the cube.
+/// night texture, whether the globe reads it through the cube, and what the
+/// cube's tiles need beyond their bindings.
 #[derive(Clone)]
 pub(super) struct FrameInputs {
     pub sky: SkyState,
     pub use_blend: bool,
     pub cube: bool,
+    /// The cube drawn alone is the night floor, so the night half of the page
+    /// table refines it.
+    pub night_alone: bool,
+    pub tiles: TileUniforms,
+}
+
+/// The constant ocean colors of the day and the night, RGBA8, and a tile's
+/// width and gutter in texels. Zero where the globe has no tiles.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TileUniforms {
+    pub ocean: [[u8; 4]; 2],
+    pub tile: u32,
+    pub gutter: u32,
 }
 
 /// Bit 0 of `Uniforms::flags`: diffuse shading.
@@ -28,6 +42,8 @@ const FLAG_DIFFUSE: u32 = 1;
 /// bindings 4 to 6 through the warped direction, not from the flat maps at 1
 /// and 3 through the mesh's coordinates.
 const FLAG_CUBE: u32 = 2;
+/// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
+const FLAG_NIGHT_ALONE: u32 = 4;
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
@@ -152,7 +168,12 @@ pub(super) fn write_uniforms<'a>(
             FLAG_DIFFUSE
         } else {
             0
-        } | if inputs.cube { FLAG_CUBE } else { 0 },
+        } | if inputs.cube { FLAG_CUBE } else { 0 }
+            | if inputs.night_alone {
+                FLAG_NIGHT_ALONE
+            } else {
+                0
+            },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,
@@ -220,8 +241,12 @@ pub(super) fn write_uniforms<'a>(
         atmo_sunrise_glow: params.atmo_sunrise_glow,
         atmo_sunrise_g: sun_occlusion::henyey_greenstein_asymmetry(params.atmo_sunrise_width),
         sun_flux: sun.flux,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: u32::from_le_bytes(inputs.tiles.ocean[0]),
+        night_ocean: u32::from_le_bytes(inputs.tiles.ocean[1]),
+        tile_texels: inputs.tiles.tile as f32,
+        tile_gutter: inputs.tiles.gutter as f32,
+        _pad9: 0.0,
+        _pad10: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

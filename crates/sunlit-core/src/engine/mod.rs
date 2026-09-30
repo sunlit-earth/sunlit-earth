@@ -232,6 +232,7 @@ impl Engine {
                 notify: Arc::clone(&notify),
                 cube_month: surface.as_ref().map(|_| month),
                 cpu_adapter: gpu.device_type == wgpu::DeviceType::Cpu,
+                tile_geometry,
             },
         );
 

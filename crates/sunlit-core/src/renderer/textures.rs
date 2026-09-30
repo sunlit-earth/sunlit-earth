@@ -296,6 +296,8 @@ pub(super) fn create_mipmapped_texture(
 /// cube in all three cube places; blend mode over the flat maps has the real
 /// night map. A group that draws the globe from a cube, the grid's or the
 /// surface's, has the dummies in both flat places and the surface sampler.
+/// Every group but the surface's has the dummy tile array and the dummy page
+/// table, which draws the floor everywhere.
 pub(super) struct Bindings<'a> {
     /// Binding 1.
     pub texture: &'a wgpu::TextureView,
@@ -305,6 +307,8 @@ pub(super) struct Bindings<'a> {
     pub night: &'a wgpu::TextureView,
     /// Bindings 4 to 6: the day or grid cube, the night cube and the mask.
     pub cubes: [&'a wgpu::TextureView; 3],
+    /// Bindings 7 and 8: the tile array and the page table.
+    pub tiles: [&'a wgpu::TextureView; 2],
 }
 
 /// Create a bind group of the shared layout.
@@ -317,6 +321,7 @@ pub(super) fn create_bind_group(
 ) -> wgpu::BindGroup {
     let view = wgpu::BindingResource::TextureView;
     let [day_cube, night_cube, mask_cube] = bindings.cubes;
+    let [tile_array, page_table] = bindings.tiles;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
@@ -348,6 +353,14 @@ pub(super) fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 6,
                 resource: view(mask_cube),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: view(tile_array),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: view(page_table),
             },
         ],
     })

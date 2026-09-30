@@ -20,7 +20,7 @@ macro_rules! uniform_block {
     ) => {
         /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
         ///
-        /// Total: 544 bytes (must be a multiple of 16 for uniform alignment).
+        /// Total: 560 bytes (must be a multiple of 16 for uniform alignment).
         #[repr(C)]
         #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
         #[expect(
@@ -149,11 +149,19 @@ uniform_block! {
     /// Visible area times what the band transmits, which is what the glare's
     /// amplitude is a compressive function of.
     sun_flux: f32 as f32,
-    _pad7: f32 as f32,
-    _pad8: f32 as f32,
+    /// The constant ocean colors of the day and the night packs, RGBA8, which
+    /// a page table cell of constant ocean draws.
+    day_ocean: u32 as u32,
+    night_ocean: u32 as u32,
+    /// A tile's width without its gutter, and the gutter on each side, in
+    /// texels of the tile's finest level.
+    tile_texels: f32 as f32,
+    tile_gutter: f32 as f32,
+    _pad9: f32 as f32,
+    _pad10: f32 as f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 544);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 560);
 
 #[cfg(test)]
 mod tests {

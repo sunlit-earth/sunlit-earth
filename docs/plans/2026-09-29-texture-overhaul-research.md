@@ -678,3 +678,21 @@ The first version encoded one tile at a time and let `dds` split each layer acro
 The night over open water. Of the 453 tiles at 2048 whose layer lies inside one face and whose mask there is all open water, the worst texel sits within 1 level of the tile's mean in 40.6%, within 2 in 98.0% and within 4 in 98.5%; the other 1.5% carry lights at sea, up to 250 above the mean, 92 texels over 40 in all. The night's open water averages (5.0, 5.0, 15.2). May's flattened ocean, for comparison, is within 1 of its mean in 98.7% of the same tiles and within 3 in all of them, at a mean of exactly the pipeline's fill (10, 30, 60). So a night tile is flagged constant ocean where the mask says open water across its footprint, as a day tile is, and every texel of its layer also lies within 4 of the night pack's ocean color, the rounded mean of its open water, (5, 5, 15); 716 of the 725 water tiles qualify and the rest keep their lights. That takes the night pack from 51,971,928 bytes with every tile stored to 33,413,376. The day packs record (10, 30, 60) as their ocean color in every month.
 
 Not measured: the build under Linux, on a machine with fewer cores, or with the engine rendering beside it, which is the transcoder worker's (T2b) to measure.
+
+## 22. Step 2: the transcoder worker
+
+Measured on 2026-09-30 on the machine of section 21 with `assets::tiles::Transcoder` as of the commit that added this section, through a throwaway harness in the run directory (`transcoder-bench/`, a release build) that starts the transcoder on the 84 shipped faces with May in force and records every status it publishes [M]. The pool size is the harness's argument; the default on this machine is four, the cores less two capped at four. Every thread of the worker runs below normal priority.
+
+A first run, with the time each pack took and when the first frame's three packs (the mask, May and the night) were all ready:
+
+| Pool threads | Mask | May | Night | A later month | First frame ready | Year |
+|---|---|---|---|---|---|---|
+| 4 (default here) | 0.44 s | 4.07 s | 4.97 s | 4.6 to 4.9 s | 9.48 s | 60.7 s |
+| 2 | 0.66 s | 7.13 s | 8.32 s | 7.6 to 8.8 s | 16.1 s | 102.5 s |
+| 1 | 1.31 s | 14.6 s | 13.2 s | 9.9 to 12.2 s | 29.1 s | 142.2 s |
+
+The month in force is ready 4.5 s into a first run on four threads, which is criterion 4's 10 s with room, and the year in 60.7 s against 58.5 s for the same builds in a row without the worker (section 21). The pool size stands in for a machine with fewer cores only roughly, since the rest of this machine stayed free. On one thread most months take 10 s, as section 21 found, and three took 12.2 to 14.6 s, which this run does not explain; a below-normal thread gives way to whatever else the machine runs, and nothing else of this project ran beside it. A second start over the whole cache, which checks the fourteen keys and builds nothing, is Done in 5 to 6 ms, and 59 ms the first time after the year was built.
+
+How fast the worker gives way. Starting June, the first pack past the first frame, and then either making October the month in force or closing the pause gate at a set time into the build, the status leaves June after 17 to 204 ms over sixteen trials at 0.1 to 4 s into it, 78 ms at the median, with October building or the worker paused and June not ready. That is the granularity of the cancel flag, which `ensure_pack` looks at between face decodes and between batches of 64 tiles.
+
+What the lowered priority buys. A foreground load of sixteen threads of integer work, 2.8 to 2.9 s alone, takes 2.8 to 2.9 s beside the transcoder building the year on a pool of sixteen, and 3.1 to 3.5 s beside the same year built through `ensure_pack` on a rayon pool of sixteen at normal priority, which itself went from 30.8 s alone to 34.9 s. The lowered transcoder pays for it instead: its year takes 37.1 s with the load beside it against 30.9 s alone, where the load ran for about 6 s of it. So on Windows the worker's threads take only the time the foreground leaves; how that holds against the engine's own render is for the engine wiring to measure.

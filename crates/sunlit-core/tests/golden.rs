@@ -57,9 +57,11 @@ const DAY_MODE: i32 = 1;
 /// The texture mode that blends the day and night surfaces.
 const BLEND_MODE: i32 = 3;
 
-/// What the engine cuts the Earth fixture's 256 texel faces to: the shipped
-/// geometry at an eighth of its size, with a gutter of 4 because a layer has
-/// to be whole blocks at both of its levels.
+/// What the engine cuts the Earth fixture's 256 texel faces to. The face, the
+/// floor and the mask are an eighth of the shipped ones and the levels the
+/// same, the tile a quarter, so a face has 8 cells a side rather than 16, and
+/// the gutter half, 4, the smallest that keeps a layer whole blocks at both of
+/// its levels.
 const EARTH_GEOMETRY: Geometry = Geometry {
     face: 256,
     levels: 2,

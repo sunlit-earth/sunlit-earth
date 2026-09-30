@@ -3465,7 +3465,8 @@ fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
 }
 
 /// What the Earth fixture's packs are cut to here, as the golden suite cuts
-/// them: the shipped geometry at an eighth of its size.
+/// them: `EARTH_GEOMETRY` in `tests/golden.rs` says how it relates to the
+/// shipped one.
 const EARTH_TILES: Geometry = Geometry {
     face: 256,
     levels: 2,

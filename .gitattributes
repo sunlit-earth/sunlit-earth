@@ -30,5 +30,7 @@ crates/sunlit-core/tests/fixtures/*.bin binary
 assets/licenses/*.txt text eol=lf
 
 # The cube bake's fixture faces are JPEG XL a tool wrote, and a file of a few
-# dozen bytes may hold no NUL for Git's binary guess to find.
+# dozen bytes may hold no NUL for Git's binary guess to find. The golden
+# suite's Earth fixture is the same kind of file.
 tools/texture-pipeline/tests/fixtures/** binary
+crates/sunlit-core/tests/fixtures/earth/** binary

@@ -35,7 +35,7 @@ pub const TILE_LAYER_BUDGET: u32 = 900;
 /// Layers the tile array is created with on a CPU adapter, whose layers are
 /// RGBA8 in system memory, four times a BC7 layer, and whose sampler without
 /// anisotropy wants fewer tiles (plan departure 22).
-pub const CPU_TILE_LAYER_BUDGET: u32 = 600;
+pub const CPU_TILE_LAYER_BUDGET: u32 = 640;
 
 const LAYER_BITS: u32 = 12;
 const STEPS_SHIFT: u32 = 12;

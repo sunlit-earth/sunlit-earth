@@ -778,3 +778,34 @@ Cost of one computation on a GPU, 500 runs each, median, 95th percentile and wor
 | Blend at the defaults, 9.4 | 0.123 ms | 0.155 ms | 0.194 ms | 560 |
 
 `Residency::new` for the shipped geometry takes 1.2 ms and is done once. Not measured: the loader's convergence after a drag, which the engine test of criterion 5 measures once T4b wires the set to the loader and tunes `MARGIN_TILES`, `DRAG_LEAD_SECONDS` and `DRAG_LEAD_STEPS` against it.
+
+## 24. Step 4: the tile loader
+
+Measured on 2026-09-30 on the machine of section 19.3 with `engine::tile_loader` as of the commit that added this section, through a throwaway harness in the run directory (`loader-bench/`, a release build) [M]. The packs are the shipped faces' (section 21), May's day pack and the night pack; the wanted sets are computed as in section 23, over the same eight places, the three lenses and 201 steps of the zoom.
+
+What one tile costs at each of the loader's three steps, on one thread, with the pack warm in the OS cache: a positional read with its CRC check, 0.012 to 0.033 ms for the 25,920 bytes of a BC7 layer and its mip; the decode to RGBA8 a CPU adapter's tile array takes (`renderer::tiles::decode_tile`, through `dds`), 0.072 ms for the 103,680 bytes it makes; and the upload through `SurfaceTiles::upload`, staged and then through a submit and a wait for the device, median of five batches:
+
+| Tiles | RX 6800 XT (Vulkan), BC7: MiB, staged, through the device | WARP, RGBA8 decoded | WARP, BC7 |
+|---|---|---|---|
+| 1 | 0.02, 0.03 ms, 0.15 ms | 0.10, 0.05 ms, 2.7 ms | 0.02, 0.05 ms, 0.43 ms |
+| 8 | 0.20, 0.06 ms, 0.20 ms | 0.79, 0.28 ms, 19.6 ms | 0.20, 0.20 ms, 1.7 ms |
+| 40 | 0.99, 0.25 ms, 0.55 ms | 3.96, 0.78 ms, 96 ms | 0.99, 0.62 ms, 7.2 ms |
+| 160 | 3.96, 0.93 ms, 1.7 ms | 15.8, 4.3 ms, 385 ms | 3.96, 1.9 ms, 27 ms |
+| 400 | 9.89, 2.8 ms, 4.7 ms | 39.6, 10.4 ms, 963 ms | 9.89, 4.7 ms, 68 ms |
+
+On the GPU a tile costs about 11 us through the device, 0.43 ms a MiB. On WARP the cost is in the submit, WARP's copy into its own texture layout, and it is 2.4 ms a tile in RGBA8, 24 ms a MiB, where the same layers in BC7 take 0.17 ms, 6.9 ms a MiB: the copy costs WARP more a byte in RGBA8 as well as four times the bytes. Reads and decodes are never what limits the loader: four workers read well over 100,000 tiles a second or decode about 55,000, against a peak set of 539.
+
+So `UPLOAD_BUDGET` is 4 MiB a tick, which is one constant for both adapters: on the GPU 160 tiles in about 1.7 ms, so the largest day set arrives in four ticks, and on WARP 40 RGBA8 tiles in about 96 ms, half of what a 1080p frame costs WARP on its own (section 19.2), so the frames go on between the uploads while a set streams in. Criterion 5's convergence test is where the budget is tuned further.
+
+The worst wanted set over the zoom, the lenses and the places, in view and with the margin, for one 4K output and for the same camera also drawn into a 1920 x 1088 preview, which is the app's case when a wallpaper is exported with the settings window open (T4d adds the export's own output):
+
+| Surfaces | Outputs | GPU, in view | GPU, with margin | CPU adapter, in view | CPU adapter, with margin |
+|---|---|---|---|---|---|
+| Day | 4K | 539 | 539 | 389 | 408 |
+| Day | 4K and preview | 679 | 679 | 458 | 466 |
+| Blend, default shading | 4K | 665 | 665 | 496 | 517 |
+| Blend, default shading | 4K and preview | 842 | 842 | 589 | 597 |
+| Blend, terminator 0.3, floor 0, ramp 1 | 4K | 1,071 | 1,071 | 753 | 785 |
+| Blend, terminator 0.3, floor 0, ramp 1 | 4K and preview | 1,352 | 1,352 | 889 | 901 |
+
+A CPU adapter's sampler has no anisotropy, so its rule wants 67% to 75% of the tiles a GPU's does. On a GPU the largest sets with the margin are the sets in view, since the whole disk is in the frame at the zoom where they peak; on a CPU adapter they peak at 8 to 10 radii through the narrowest lens, and the largest set with the margin is up to 32 tiles more than the largest in view. The two budgets keep the same ratio to those peaks: `TILE_LAYER_BUDGET`, 900 BC7 layers on a GPU, 22.2 MiB, holds the day at 1.7 times its peak, blend at the default shading at 1.35 times, and blend with a preview at 1.07 times; `CPU_TILE_LAYER_BUDGET`, 640 RGBA8 layers on a CPU adapter, 63.3 MiB of system memory, holds the same at 1.57, 1.24 and 1.07 times. Only the shading sliders at their extremes pass either, by 19% on a GPU and 23% on a CPU adapter for one output and by 50% and 41% with a preview beside it; there the array takes the set in its order until its layers are spoken for, and the rest, the margin and then the coarser level farthest from the middle of the frame, draws from what is resident above it or from the floor (plan departure 22).

@@ -42,10 +42,10 @@ use crate::renderer::residency::{Output, Request, Residency, Surfaces, Wanted};
 use crate::renderer::tiles::{CellLevels, TileId, TileLayers, TileTexels, TileUpload, decode_tile};
 use crate::thread_priority;
 
-/// Bytes of tiles the engine hands the queue per tick, at least one tile's.
-///
-/// About 160 BC7 tiles or 40 RGBA8 ones a tick.
-pub(super) const UPLOAD_BUDGET: usize = 4 << 20;
+/// Bytes of tiles the engine hands the queue per tick, and at least one tile:
+/// about 160 BC7 tiles, 1.7 ms through this machine's GPU, or 40 RGBA8 ones,
+/// about 96 ms through WARP (research section 24).
+const UPLOAD_BUDGET: usize = 4 << 20;
 
 /// Results in flight per worker: one being handed over while the next is read.
 const RESULTS_PER_WORKER: usize = 2;
@@ -595,8 +595,9 @@ impl TileLoader {
             return false;
         };
         let free = layers.free() as usize;
+        let mut victims: Vec<(u64, u32, TileId)> = Vec::new();
         if uploads.len() > free {
-            let mut victims: Vec<(u64, u32, TileId)> = layers
+            victims = layers
                 .resident()
                 .filter(|(id, _)| !self.taken_set.contains(id))
                 .map(|(id, layer)| (self.last_wanted.get(&id).copied().unwrap_or(0), layer, id))
@@ -607,13 +608,13 @@ impl TileLoader {
                 uploads.truncate(free + victims.len());
                 self.republish = true;
             }
-            let victims: Vec<TileId> = victims.into_iter().map(|(_, _, id)| id).collect();
+        }
+        let victims: Vec<TileId> = victims.into_iter().map(|(_, _, id)| id).collect();
+        if !victims.is_empty() {
             for id in &victims {
                 self.last_wanted.remove(id);
             }
-            if !victims.is_empty() {
-                target.evict(&victims);
-            }
+            target.evict(&victims);
         }
         let ids: Vec<TileId> = uploads.iter().map(|upload| upload.id).collect();
         let failed = target.upload(uploads);
@@ -621,9 +622,14 @@ impl TileLoader {
             warn!(tile = ?id, %reason, "a tile could not be uploaded; it is drawn from its ancestor");
             self.failed.insert(*id);
         }
-        for id in &ids {
+        for id in ids.iter().filter(|id| !self.failed.contains(id)) {
             self.last_wanted.insert(*id, self.computations);
         }
+        debug!(
+            uploaded = ids.len() - failed.len(),
+            evicted = victims.len(),
+            "tiles made resident"
+        );
         ids.len() > failed.len()
     }
 

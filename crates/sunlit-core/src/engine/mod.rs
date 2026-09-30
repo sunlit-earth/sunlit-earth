@@ -582,16 +582,27 @@ impl Engine {
         }
     }
 
+    /// Draw the scene as it stands, for the preview or for an export, and hand
+    /// back the sky it was drawn under.
+    ///
+    /// Every path that draws comes through here first, the preview's and each
+    /// export's, so that the pause gate closes before any of them draws: a
+    /// build of the rest of the year gives way at its next check rather than
+    /// running through the frame.
+    fn draw(&mut self) -> (RenderOutcome, SkyState) {
+        self.sync_month();
+        self.mark_busy();
+        let sky = self.sky_state();
+        (self.renderer.render(&self.params, &sky), sky)
+    }
+
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
     /// a tick asks the preview target for its pixels once however it got here.
     fn render_if_dirty(&mut self) -> bool {
         if !self.dirty {
             return false;
         }
-        self.sync_month();
-        self.mark_busy();
-        let sky = self.sky_state();
-        let outcome = self.renderer.render(&self.params, &sky);
+        let (outcome, _) = self.draw();
         self.dirty = false;
         if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
             info!("first frame rendered");
@@ -669,13 +680,8 @@ impl Engine {
         if let Some(surface) = &mut self.surface {
             surface.drain(&mut self.renderer);
         }
-        self.sync_month();
-        self.mark_busy();
-        let sky = self.sky_state();
-        if matches!(
-            self.renderer.render(&self.params, &sky),
-            RenderOutcome::Skipped
-        ) {
+        let (outcome, sky) = self.draw();
+        if matches!(outcome, RenderOutcome::Skipped) {
             // A skipped frame kept the sky the last render was drawn with, and
             // for a hidden window that can be hours old. A rendered one is
             // already holding this one.

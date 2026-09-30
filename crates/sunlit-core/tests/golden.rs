@@ -142,11 +142,9 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
         config.takes_cube(),
         "the golden engine draws its surface from the Earth fixture's cube"
     );
-    // No tile array: the tiles arrive in the background, so a case would draw
-    // whichever of them the cases before it left resident, and nothing yet
-    // lets it wait for the ones its own view wants. The floors, the mask and
-    // the page table's constant ocean are what the references hold.
-    config.tile_layers = Some(0);
+    // The tiles arrive in the background, and a case's export waits for every
+    // tile its own view wants and draws under its own cap, so what the cases
+    // before it left resident does not reach its picture.
     config.texture_paths = vec![
         None,
         None,

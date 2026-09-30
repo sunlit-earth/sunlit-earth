@@ -647,3 +647,34 @@ Deduplication, measured on the decoded faces rather than on the source [M]. The 
 | Saving | 3.2% | 2.2% |
 
 That is far under the 16% to 20% of section 17, and the reason is the lossy encode. Section 17 counted tiles identical in the source, which south of 60 S is the same in every month, and the bake is deterministic, so the months' faces are identical there before they are encoded [R]. Each month is encoded on its own, though, and decoded the identity is gone: in the central 800 x 800 texels of `ny`, which lie wholly south of 65 S, January and July differ in 5.7% of the texels, by a mean of 0.03 of 255 and at most 6, and one differing texel is enough to make a 128 px tile unique. On `ny` 1,452 tiles are stored and 1,356 of them are distinct. The saving is under the 5% below which the plan drops the dedup pass (decision 3 and the last of its risks); the real gutters cross face edges, which touches only the edge tiles. Getting the identity back would mean encoding the unchanging region once for all months, which one file per face and month does not allow.
+
+## 21. Step 2: the tile packs
+
+Measured on 2026-09-30 on the machine of section 19.3 (AMD Ryzen 7 5800X, 8 cores and 16 threads, Windows 11) with `assets::tiles` as of the commit that added this section, through a throwaway harness in the run directory (`tiles-bench/`, a release build pinned by a copy of the tree's lockfile) that builds all fourteen packs from the 84 shipped faces with `ensure_pack`, checks them again, and reads them back [M]. `RAYON_NUM_THREADS` sets the thread count, and it bounds the JPEG XL decode and the encode alike, since both run on rayon's global pool. The geometry is the plan's: 128 px tiles with an 8 px gutter and one mip at the 1024 and 2048 levels, a 512 px floor cube with its full chain in every surface pack, and the mask as a BC4 cube of 1024 px with its chain.
+
+What the packs hold:
+
+| Pack | Tiles | Constant ocean | Stored | Bytes |
+|---|---|---|---|---|
+| One month of day, each of the twelve | 1,920 | 725: 89 of 384 at 1024, 636 of 1,536 at 2048 | 1,195 | 33,180,104 |
+| Night | 1,920 | 716: 87 at 1024, 629 at 2048 | 1,204 | 33,413,376 |
+| Mask | none, six BC4 faces | | | 4,195,072 |
+| All fourteen | | | | 435,769,696 (415.6 MiB) |
+
+A stored tile is 25,920 bytes, 144 px and 72 px of BC7; the six floor faces are 2,097,312 bytes together; an index entry is 56 bytes and the key about 480, so the header and index of a surface pack come to 108 KB. The day's constant-ocean count is the same in every month, since one mask serves them all, and with the gutter the 2048 level's constant-ocean share is 41.4% against the 46% section 16 counted without one.
+
+Building one month (May), in seconds:
+
+| Threads | Decode the twelve faces | Cut, encode, hash and write | Total |
+|---|---|---|---|
+| 1 | 2.10 | 7.84 | 9.94 |
+| 4 | 1.06 | 2.59 | 3.65 |
+| 16 | 0.98 | 1.32 | 2.30 |
+
+The whole year, all fourteen packs in a row: 58.5 s on four threads (4.4 to 4.5 s a month once the machine is warm, the night 4.8 s, the mask 0.6 s) and 30.6 s on sixteen, at a peak working set of 205 MiB. The second pass, which opens each pack and compares its key and builds nothing, takes 54 ms for the fourteen. Reading every stored tile of May back takes 0.014 ms a tile with the file in the page cache, and decoding a tile's two levels from BC7 to RGBA8 with `dds`, which is what a CPU adapter's upload adds (plan departure 4), 0.042 ms on one thread.
+
+The first version encoded one tile at a time and let `dds` split each layer across the pool, in the four-row fragments its BC7 encoder asks for: 5.1 s a month and 66 s the year on four threads, an encode speedup over one thread of 2.0. Encoding 64 tiles side by side, each on one thread, and splitting only the whole faces, makes that 3.0 and gives the figures above, with byte-identical packs. Against section 15's estimate of 2.5 s a month and 35 s the year on four cores: the encode alone, 2.6 s, is what that section estimated, and the rest is the decode of the month's twelve faces, 2.1 s on one thread, which halves on four and gains little beyond, and the night pack and the floors, which the year's figure carries and the estimate did not.
+
+The night over open water. Of the 453 tiles at 2048 whose layer lies inside one face and whose mask there is all open water, the worst texel sits within 1 level of the tile's mean in 40.6%, within 2 in 98.0% and within 4 in 98.5%; the other 1.5% carry lights at sea, up to 250 above the mean, 92 texels over 40 in all. The night's open water averages (5.0, 5.0, 15.2). May's flattened ocean, for comparison, is within 1 of its mean in 98.7% of the same tiles and within 3 in all of them, at a mean of exactly the pipeline's fill (10, 30, 60). So a night tile is flagged constant ocean where the mask says open water across its footprint, as a day tile is, and every texel of its layer also lies within 4 of the night pack's ocean color, the rounded mean of its open water, (5, 5, 15); 716 of the 725 water tiles qualify and the rest keep their lights. That takes the night pack from 51,971,928 bytes with every tile stored to 33,413,376. The day packs record (10, 30, 60) as their ocean color in every month.
+
+Not measured: the build under Linux, on a machine with fewer cores, or with the engine rendering beside it, which is the transcoder worker's (T2b) to measure.

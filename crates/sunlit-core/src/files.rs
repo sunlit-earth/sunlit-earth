@@ -2,7 +2,7 @@
 //!
 //! The file a reader can come back to is written under a temporary name and
 //! then put in place: the config, the cloud cache sidecar, a cached texture
-//! downscale and a wallpaper frame. What differs between them is the format and
+//! downscale, a tile pack and a wallpaper frame. What differs between them is the format and
 //! the temporary suffix. The rest is here, so a process killed mid-write leaves
 //! the previous file rather than a truncated one, and so there is one answer to
 //! what a temporary name looks like.

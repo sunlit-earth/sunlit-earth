@@ -9,10 +9,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::tiles::{self, PackKind};
+use sunlit_core::display::Monitor;
 use sunlit_core::engine::clock::MockClock;
+use sunlit_core::engine::wallpaper_sink::{WallpaperJob, WallpaperSink};
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent};
 use sunlit_core::params::SceneParams;
 
@@ -291,6 +294,83 @@ fn a_publish_after_the_month_turned_waits_for_the_new_floor() {
         }
     }
     panic!("no publish within {TIMEOUT:?}");
+}
+
+/// A sink whose monitor query moves the clock on, so that the time a publish
+/// draws at is later than the time the tick that began it read.
+struct ClockMovingSink {
+    clock: Arc<MockClock>,
+    by: Duration,
+}
+
+impl WallpaperSink for ClockMovingSink {
+    fn check_supported(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn monitors(&self) -> Result<Vec<Monitor>, String> {
+        self.clock.advance(self.by);
+        Ok(vec![screen("only", 0, 64, 32, true)])
+    }
+
+    fn publish(&self, _job: &WallpaperJob) -> Result<String, String> {
+        Ok(String::new())
+    }
+}
+
+/// An export closes the pause gate however long the engine was idle before
+/// it, so the rest of the year does not build through a wallpaper.
+///
+/// The clock moves a minute, far past the busy span of the first frames,
+/// inside the publish: after the tick that began it read the time and before
+/// the export draws. Only the export's own closing of the gate is left to keep
+/// April unbuilt on the ticks that follow, and once the clock moves past the
+/// span the export began, the gate opens and April is built.
+#[test]
+fn an_export_closes_the_pause_gate_however_long_the_engine_was_idle() {
+    let _gpu = gpu();
+    let fixture = CubeFixture::new("engine_cube_export_gate");
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let clock_for_config = Arc::clone(&clock);
+    let sink = Arc::new(ClockMovingSink {
+        clock: Arc::clone(&clock),
+        by: Duration::from_mins(1),
+    });
+    let harness = Harness::start(|config| {
+        fixture.configure(config);
+        config.wallpaper = sink;
+        config.clock = clock_for_config;
+        config.params = blend_on(MARCH_10);
+    });
+    harness.wait_for_textures("March");
+    harness.settle();
+    let april = PackKind::Day(3);
+    assert!(
+        !fixture.pack_exists(april),
+        "the pause gate should have kept April unbuilt while the engine was busy"
+    );
+
+    assert!(harness.publish().is_ok(), "the publish should have succeeded");
+    harness.settle();
+    // A build of the fixture's April takes milliseconds once the gate opens.
+    let window = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < window {
+        assert!(
+            !fixture.pack_exists(april),
+            "April was built after an export, so the export left the gate open"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    harness.advance(&clock, Duration::from_mins(1));
+    let deadline = Instant::now() + TIMEOUT;
+    while !fixture.pack_exists(april) {
+        assert!(
+            Instant::now() < deadline,
+            "April was not built within {TIMEOUT:?} of the gate opening"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// A pack that cannot be built is not waited for: the textures never become

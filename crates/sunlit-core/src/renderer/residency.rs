@@ -1767,4 +1767,61 @@ mod tests {
         }
         assert!(dropped > 0, "no tile here had a cap past its edges");
     }
+
+    /// A large tile at the edge of a wide lens is stretched by the
+    /// perspective more than its center suggests, so the footprint bound
+    /// holds at every point of the tile and not only at its middle.
+    #[test]
+    fn a_large_tile_at_the_edge_of_a_wide_lens_is_bounded_at_every_point() {
+        const STEPS: i32 = 16;
+        let texel = 1.0 / 512.0;
+        let mut checked = 0;
+        for (longitude, latitude, distance, fov) in [
+            (0.0, 0.0, 3.0, 100.0),
+            (30.0, 20.0, 1.5, 140.0),
+            (-70.0, -35.0, 6.0, 170.0),
+            (120.0, 60.0, 2.0, 120.0),
+        ] {
+            let mut wide = camera(longitude, latitude, distance);
+            wide.fov_deg = fov;
+            let lens = Lens::new(&wide, UHD.0, UHD.1, MARGIN_TILES, 1000).expect("a lens");
+            for face in 0..FACES {
+                for (s, t) in [
+                    ([-1.0, 1.0], [-1.0, 1.0]),
+                    ([-1.0, 0.0], [-1.0, 0.0]),
+                    ([0.0, 1.0], [-1.0, 0.0]),
+                    ([-1.0, 0.0], [0.0, 1.0]),
+                    ([0.0, 1.0], [0.0, 1.0]),
+                ] {
+                    let shape = Shape::new(face, s, t);
+                    if lens.classify(&shape).is_none() {
+                        continue;
+                    }
+                    let bound = lens.texel_px(&shape, texel);
+                    for i in 0..=STEPS {
+                        for j in 0..=STEPS {
+                            let along = |r: [f64; 2], k: i32| {
+                                r[0] + (r[1] - r[0]) * f64::from(k) / f64::from(STEPS)
+                            };
+                            let dir = cube::direction(face, along(s, i), along(t, j)).normalize();
+                            let seen = lens.view.transform_point3(dir);
+                            let depth = -seen.z;
+                            if depth <= 0.0 || dir.dot(lens.eye_dir) < 1.0 / lens.distance {
+                                continue;
+                            }
+                            let off_axis = seen.x.hypot(seen.y) / depth;
+                            let footprint =
+                                lens.focal * off_axis.hypot(1.0) / depth * shape.stretch * texel;
+                            assert!(
+                                bound >= footprint * (1.0 - 1e-9),
+                                "camera {longitude} {latitude} {distance} {fov}, face {face} {s:?} {t:?}: bound {bound} under {footprint}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000, "only {checked} points were in view");
+    }
 }

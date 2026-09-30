@@ -2315,3 +2315,648 @@ fn a_packs_floor_faces_land_where_their_axes_point() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The warped direction across the face edges and through the poles
+// ---------------------------------------------------------------------------
+
+/// Texels along a face of the direction-coded cube.
+const CODED_FACE: u32 = 32;
+
+/// The color the direction-coded cube stands for at a direction: each
+/// component of the unit direction taken from -1 to 1 onto 0 to 1.
+fn coded_color(direction: glam::DVec3) -> glam::DVec3 {
+    direction.normalize() * 0.5 + 0.5
+}
+
+/// The direction a coded color stands for, not normalized.
+fn coded_direction(color: glam::DVec3) -> glam::DVec3 {
+    color * 2.0 - 1.0
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a coded color is inside 0 to 1"
+)]
+fn to_byte(value: f64) -> u8 {
+    (value * 255.0).round() as u8
+}
+
+/// One face of the direction-coded cube: every texel holds the coded color of
+/// the direction through its center, placed by the geometry the bake and the
+/// tile cutter place texels with.
+fn coded_face(face: usize, size: u32) -> Vec<u8> {
+    use sunlit_core::geometry::cube;
+    let mut texels = Vec::with_capacity((size * size * 4) as usize);
+    for row in 0..i64::from(size) {
+        for col in 0..i64::from(size) {
+            let direction = cube::direction(
+                face,
+                cube::texel_center(col, size),
+                cube::texel_center(row, size),
+            );
+            let color = coded_color(direction);
+            texels.extend([to_byte(color.x), to_byte(color.y), to_byte(color.z), 255]);
+        }
+    }
+    texels
+}
+
+/// The face a warped direction selects, in cube layer order: its largest
+/// component, and that component's sign.
+fn face_of(w: glam::DVec3) -> usize {
+    let a = w.abs();
+    let (axis, value) = if a.x >= a.y && a.x >= a.z {
+        (0, w.x)
+    } else if a.y >= a.z {
+        (1, w.y)
+    } else {
+        (2, w.z)
+    };
+    2 * axis + usize::from(value < 0.0)
+}
+
+/// The face whose center is `axis` scaled by `sign`.
+fn face_along(axis: usize, sign: f64) -> usize {
+    2 * axis + usize::from(sign < 0.0)
+}
+
+/// How much a component of the warped direction may change per radian the
+/// normal turns. `atan(n / m) * 4 / pi` with `m` the largest component, which
+/// is at least `1 / sqrt(3)`, changes by at most `8 sqrt(3) / pi`, about 4.4.
+const WARP_LIPSCHITZ: f64 = 4.5;
+
+/// A compute entry point appended to the production shaders: the warped
+/// direction `equi_angular` gives each normal, and what the day cube holds
+/// there through the globe's sampler at the finest level.
+const CUBE_PROBE: &str = "
+@group(1) @binding(0) var<storage, read> probe_normals: array<vec4<f32>>;
+@group(1) @binding(1) var<storage, read_write> probe_results: array<vec4<f32>>;
+
+@compute @workgroup_size(64)
+fn cube_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    if index >= arrayLength(&probe_normals) {
+        return;
+    }
+    let w = equi_angular(normalize(probe_normals[index].xyz));
+    probe_results[2u * index] = vec4<f32>(w, 0.0);
+    probe_results[2u * index + 1u] = textureSampleLevel(day_cube, sphere_sampler, w, 0.0);
+}
+";
+
+/// What the probe found at one normal.
+#[derive(Clone, Copy)]
+struct Probed {
+    normal: glam::DVec3,
+    warped: glam::DVec3,
+    color: glam::DVec3,
+}
+
+/// Run the probe over `normals`, reading `cube` through the surface sampler.
+fn probe_cube(
+    ctx: &RenderContext,
+    cube: &wgpu::TextureView,
+    normals: &[glam::DVec3],
+) -> Vec<Probed> {
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cube_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(production_shaders(CUBE_PROBE).into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("cube_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("cube_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a direction handed to the GPU in single precision"
+    )]
+    let input: Vec<[f32; 4]> = normals
+        .iter()
+        .map(|n| [n.x as f32, n.y as f32, n.z as f32, 0.0])
+        .collect();
+    let output_size = 2 * std::mem::size_of_val(input.as_slice()) as u64;
+    let input_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cube_probe_input"),
+            contents: bytemuck::cast_slice(&input),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+    let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cube_probe_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let surface_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&ctx.surface_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(cube),
+            },
+        ],
+    });
+    let storage_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &surface_group, &[]);
+        pass.set_bind_group(1, &storage_group, &[]);
+        let count = u32::try_from(input.len()).expect("a probe of a few thousand normals");
+        pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+    }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+    let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
+    let results = bytemuck::cast_slice::<u8, [f32; 4]>(&data);
+    let vector = |v: [f32; 4]| glam::Vec3::from_slice(&v[..3]).as_dvec3();
+    normals
+        .iter()
+        .zip(results.chunks_exact(2))
+        .map(|(&normal, pair)| Probed {
+            normal: normal.normalize(),
+            warped: vector(pair[0]),
+            color: vector(pair[1]),
+        })
+        .collect()
+}
+
+/// The largest per-channel difference between two colors, in steps of 255.
+fn color_steps(a: glam::DVec3, b: glam::DVec3) -> f64 {
+    (a - b).abs().max_element() * 255.0
+}
+
+/// The worst of what the probe measured, printed so a CI log carries it.
+#[derive(Default)]
+struct ProbeWorst {
+    /// The largest change of a warped component per radian of the normal.
+    warp_rate: f64,
+    /// The largest color jump between two neighboring normals, in steps.
+    jump: f64,
+    /// The largest distance from the coded color of the normal, in steps.
+    placement: f64,
+}
+
+/// The largest color jump two neighboring probe normals may show, in steps of
+/// 255: the coded color turns by half the angle between them, a fraction of a
+/// step at the spacings used here, and the filter adds its rounding. A face
+/// sampled without its neighbor's texels across an edge jumps by a whole texel,
+/// six steps at this cube's size; a mirrored or rotated face by far more.
+const PROBE_JUMP: f64 = 1.5;
+
+/// How far a sample may sit from the coded color of its normal, in steps of
+/// 255. Inside a face that is the texels' rounding, half a step; where the
+/// filter's footprint straddles an edge the adapters read up to a step and a
+/// third (`docs/testing.md`). A face read through the plain cube coordinates
+/// instead of the warp is several steps off away from its center and edges.
+const PROBE_PLACEMENT: f64 = 2.0;
+
+impl ProbeWorst {
+    /// Check two samples a small turn apart: both where the geometry says they
+    /// are, and nothing between them that the turn does not explain.
+    fn neighbors(&mut self, a: &Probed, b: &Probed, context: &str) {
+        let angle = a.normal.angle_between(b.normal);
+        let warp = (a.warped - b.warped).abs().max_element();
+        self.warp_rate = self.warp_rate.max(warp / angle);
+        assert!(
+            warp <= WARP_LIPSCHITZ * angle + 1.0e-5,
+            "{context}: the warped direction moves {warp:.3e} over a turn of {angle:.3e} rad, \
+             from {:?} to {:?}",
+            a.warped,
+            b.warped
+        );
+        let jump = color_steps(a.color, b.color);
+        self.jump = self.jump.max(jump);
+        assert!(
+            jump <= PROBE_JUMP,
+            "{context}: the sampled color jumps {jump:.2} steps over a turn of {angle:.3e} rad, \
+             from {:?} to {:?}",
+            a.color * 255.0,
+            b.color * 255.0
+        );
+        self.placed(a, context);
+        self.placed(b, context);
+    }
+
+    fn placed(&mut self, sample: &Probed, context: &str) {
+        let off = color_steps(sample.color, coded_color(sample.normal));
+        self.placement = self.placement.max(off);
+        assert!(
+            off <= PROBE_PLACEMENT,
+            "{context}: the cube holds {:?} at {:?}, {off:.2} steps from its coded color {:?}",
+            sample.color * 255.0,
+            sample.normal,
+            coded_color(sample.normal) * 255.0
+        );
+    }
+
+    fn report(&self, what: &str) {
+        println!(
+            "{what}: warp rate up to {:.3} per rad, jumps up to {:.3} steps, placement within {:.3} steps",
+            self.warp_rate, self.jump, self.placement
+        );
+    }
+}
+
+/// The unit vector along axis `index`, X 0, Y 1, Z 2.
+fn unit(index: usize) -> glam::DVec3 {
+    glam::DVec3::AXES[index]
+}
+
+/// How far apart the two normals of a probe pair are, as a fraction of the
+/// edge point's distance from the center.
+const STRADDLE: f64 = 5.0e-4;
+
+/// Points along each edge the probe crosses it at.
+const EDGE_STEPS: u32 = 64;
+
+/// The warped direction, and the cube read through it, are continuous across
+/// every one of the twelve face edges and the eight corners.
+///
+/// Each edge is crossed at 65 points from one corner to the other by a pair of
+/// normals a milliradian apart, one on either face, and each corner by three,
+/// one on each face that meets there. Every sample selects the face the
+/// geometry says it lies on, the warped direction moves no more than its turn
+/// explains, and the direction-coded cube, read at its finest level, shows the
+/// color of the normal itself, on both sides of every edge. A face mirrored or
+/// turned, a face in another's layer, or an edge sampled without the texels
+/// across it breaks one of those at some edge.
+#[test]
+fn the_warped_direction_is_continuous_across_every_face_edge() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let cube = create_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+
+    let mut normals = Vec::new();
+    let mut faces = Vec::new();
+    let mut edges = 0;
+    for (a, b, c) in [(0, 1, 2), (0, 2, 1), (1, 2, 0)] {
+        for sa in [1.0, -1.0] {
+            for sb in [1.0, -1.0] {
+                edges += 1;
+                let (on_a, on_b) = (unit(a) * sa, unit(b) * sb);
+                let across = (on_a - on_b) * STRADDLE;
+                for step in 0..=EDGE_STEPS {
+                    let along = -0.98 + 1.96 * f64::from(step) / f64::from(EDGE_STEPS);
+                    let point = on_a + on_b + unit(c) * along;
+                    normals.extend([point + across, point - across]);
+                    faces.extend([face_along(a, sa), face_along(b, sb)]);
+                }
+            }
+        }
+    }
+    let edge_samples = normals.len();
+    for corner in 0..8_u32 {
+        let signs = [0, 1, 2].map(|bit| if corner >> bit & 1 == 0 { 1.0 } else { -1.0 });
+        let point = glam::DVec3::from_array(signs);
+        for (axis, sign) in signs.into_iter().enumerate() {
+            normals.push(point + unit(axis) * sign * STRADDLE);
+            faces.push(face_along(axis, sign));
+        }
+    }
+    assert_eq!(edges, 12, "a cube has twelve edges");
+
+    let probed = probe_cube(&ctx, &cube, &normals);
+    for (sample, &face) in probed.iter().zip(&faces) {
+        assert_eq!(
+            face_of(sample.warped),
+            face,
+            "{:?} warps to {:?}, which is not on face {face}",
+            sample.normal,
+            sample.warped
+        );
+    }
+    let mut worst = ProbeWorst::default();
+    for pair in probed[..edge_samples].chunks_exact(2) {
+        worst.neighbors(&pair[0], &pair[1], "across an edge");
+    }
+    for corner in probed[edge_samples..].chunks_exact(3) {
+        for (i, j) in [(0, 1), (1, 2), (0, 2)] {
+            worst.neighbors(&corner[i], &corner[j], "around a corner");
+        }
+    }
+    worst.report("face edges and corners");
+}
+
+/// Samples along each arc through a pole, either side of it.
+const POLE_STEPS: i32 = 150;
+
+/// The turn between two neighboring samples on an arc through a pole.
+const POLE_STEP_DEGREES: f64 = 0.1;
+
+/// The poles are ordinary points of the surface: the centers of the +Y and -Y
+/// faces, with nothing there that is not everywhere else.
+///
+/// The probe crosses each pole along four great circles, 15 degrees either
+/// side of it in steps of a tenth of a degree, and every neighboring pair is
+/// held to what `the_warped_direction_is_continuous_across_every_face_edge`
+/// holds an edge crossing to. The globe is then drawn looking down on each
+/// pole through the production shader, which is where a singularity would
+/// show: in the screen derivatives of the warped direction, which choose the
+/// level the sampler reads.
+#[test]
+fn the_poles_are_ordinary_points_of_the_cube() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let cube = create_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+
+    let mut normals = Vec::new();
+    for pole in [glam::DVec3::Y, glam::DVec3::NEG_Y] {
+        for longitude in [0.0_f64, 45.0, 90.0, 135.0] {
+            let meridian = glam::DVec3::new(
+                longitude.to_radians().sin(),
+                0.0,
+                longitude.to_radians().cos(),
+            );
+            for step in -POLE_STEPS..=POLE_STEPS {
+                let turn = (f64::from(step) * POLE_STEP_DEGREES).to_radians();
+                normals.push(pole * turn.cos() + meridian * turn.sin());
+            }
+        }
+    }
+    let probed = probe_cube(&ctx, &cube, &normals);
+    let arc = usize::try_from(2 * POLE_STEPS + 1).expect("a short arc");
+    let mut worst = ProbeWorst::default();
+    for (index, samples) in probed.chunks_exact(arc).enumerate() {
+        let face = if index < 4 { 2 } else { 3 };
+        for sample in samples {
+            assert_eq!(
+                face_of(sample.warped),
+                face,
+                "{:?} is on the pole's face",
+                sample.normal
+            );
+        }
+        for pair in samples.windows(2) {
+            worst.neighbors(&pair[0], &pair[1], "through a pole");
+        }
+    }
+    worst.report("through the poles");
+
+    let marked = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+    for axis in [glam::Vec3::Y, glam::Vec3::NEG_Y] {
+        assert_no_seam_looking_along(&ctx, &marked, axis, 1);
+    }
+}
+
+/// The color every level of the marked cube below the finest holds: mid grey,
+/// which codes no direction at all, so a sample that reads any of it comes
+/// out shorter than a unit direction by the share it read.
+const MIP_MARKER: [u8; 4] = [128, 128, 128, 255];
+
+/// The direction-coded cube with a full mip chain whose every level below the
+/// finest is `MIP_MARKER`.
+fn create_marked_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texels: impl Fn(usize) -> Vec<u8>,
+) -> wgpu::TextureView {
+    let levels = size.ilog2() + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("marked_cube"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for face in 0..6_u32 {
+        for level in 0..levels {
+            let width = size >> level;
+            let data = if level == 0 {
+                texels(face as usize)
+            } else {
+                MIP_MARKER.repeat((width * width) as usize)
+            };
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: face,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(width),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: width,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+/// The width of a frame the seam cases draw. The globe overfills it, and a
+/// texel of the coded cube is several pixels across everywhere in it, so the
+/// sampler reads the finest level wherever the screen derivatives are sound.
+const SEAM_FRAME: u32 = 128;
+
+/// How far a pixel's color may code a direction longer or shorter than a unit
+/// one: the rounding of the texels and of the frame, a hundredth or so. A
+/// pixel that read two percent of `MIP_MARKER` fails it.
+const UNIT_TOLERANCE: f64 = 0.02;
+
+/// The largest step between two neighboring pixels, in steps of 255: twice
+/// what a sound frame shows at this framing (`docs/testing.md`), and a fraction
+/// of what the colors either side of a mirrored or turned face's edge differ by.
+const NEIGHBOR_STEPS: u8 = 4;
+
+/// How far the direction a pixel's color codes may point from the surface
+/// point under the pixel, in degrees: room for the rounding of the texels and
+/// of the frame, and for the mesh's flat facets, across which the rasterizer
+/// interpolates the normal the shader reads while the ray cast meets the
+/// sphere itself. A face sampled through the plain cube coordinates instead of
+/// the warp is four degrees off at 22 degrees from its center.
+const PLACEMENT_DEGREES: f64 = 1.5;
+
+/// The unit normal of the sphere where the ray through the middle of pixel
+/// `(x, y)` of a square frame `size` wide first meets it, for a frame drawn
+/// with the inverse of `inverse`.
+fn normal_under_pixel(inverse: glam::DMat4, size: u32, x: u32, y: u32) -> Option<glam::DVec3> {
+    let ndc_x = (f64::from(x) + 0.5) / f64::from(size) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (f64::from(y) + 0.5) / f64::from(size) * 2.0;
+    let near = inverse.project_point3(glam::DVec3::new(ndc_x, ndc_y, 0.0));
+    let far = inverse.project_point3(glam::DVec3::new(ndc_x, ndc_y, 1.0));
+    let ray = (far - near).normalize();
+    let half_b = near.dot(ray);
+    let discriminant = half_b * half_b - (near.length_squared() - 1.0);
+    (discriminant >= 0.0).then(|| (near + ray * (-half_b - discriminant.sqrt())).normalize())
+}
+
+/// Draw the globe from the marked cube looking along `axis` through the
+/// production shader, and hold the frame to what a sound warp draws: every
+/// pixel a unit direction's color read from the finest level and the
+/// direction of the surface under it, no two neighbors apart by more than the
+/// surface turns between them, and at least `faces` faces in the frame.
+fn assert_no_seam_looking_along(
+    ctx: &RenderContext,
+    cube: &wgpu::TextureView,
+    axis: glam::Vec3,
+    faces: usize,
+) {
+    let size = SEAM_FRAME;
+    let dummy = &ctx.dummy_cube;
+    let uniforms = looking_along(size, axis);
+    let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+        .as_dmat4()
+        .inverse();
+    let pixels = render_cube_frame(ctx, &uniforms, [cube, dummy, dummy], size, size);
+    let color_at = |x: u32, y: u32| {
+        let at = ((y * size + x) * 4) as usize;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    };
+    let direction_at = |x: u32, y: u32| {
+        coded_direction(glam::DVec3::from_array(
+            color_at(x, y).map(|c| f64::from(c) / 255.0),
+        ))
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut worst_unit = 0.0_f64;
+    let mut worst_placement = 0.0_f64;
+    for y in 0..size {
+        for x in 0..size {
+            let direction = direction_at(x, y);
+            let off = (direction.length() - 1.0).abs();
+            worst_unit = worst_unit.max(off);
+            assert!(
+                off <= UNIT_TOLERANCE,
+                "looking along {axis:?}, pixel ({x}, {y}) is {:?}, a direction {:.3} long: \
+                 it read a coarser level than the finest",
+                color_at(x, y),
+                direction.length()
+            );
+            let surface = normal_under_pixel(inverse, size, x, y)
+                .unwrap_or_else(|| panic!("the globe overfills the frame, but misses ({x}, {y})"));
+            let apart = direction.angle_between(surface).to_degrees();
+            worst_placement = worst_placement.max(apart);
+            assert!(
+                apart <= PLACEMENT_DEGREES,
+                "looking along {axis:?}, pixel ({x}, {y}) shows {direction:?}, {apart:.2} degrees \
+                 from the surface under it, {surface:?}"
+            );
+            seen.insert(face_of(direction));
+        }
+    }
+    let mut worst_step = 0;
+    for y in 0..size {
+        for x in 0..size {
+            let here = color_at(x, y);
+            for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                if nx >= size || ny >= size {
+                    continue;
+                }
+                let there = color_at(nx, ny);
+                let step = here
+                    .iter()
+                    .zip(there)
+                    .map(|(a, b)| a.abs_diff(b))
+                    .max()
+                    .expect("three channels");
+                worst_step = worst_step.max(step);
+                assert!(
+                    step <= NEIGHBOR_STEPS,
+                    "looking along {axis:?}, pixels ({x}, {y}) {here:?} and ({nx}, {ny}) {there:?} \
+                     are {step} steps apart: a seam"
+                );
+            }
+        }
+    }
+    assert!(
+        seen.len() >= faces,
+        "looking along {axis:?}, the frame holds faces {seen:?}, fewer than {faces}"
+    );
+    println!(
+        "looking along {axis:?}: faces {seen:?}, unit within {worst_unit:.4}, \
+         placed within {worst_placement:.3} degrees, neighbors within {worst_step} steps"
+    );
+}
+
+/// The globe drawn through the production shader shows no seam where two
+/// faces meet or where three do.
+///
+/// A frame looks straight at the middle of each of the twelve edges and at
+/// each of the eight corners, so the edges run through it. A discontinuity in
+/// the warped direction shows twice here: as a jump between neighboring
+/// pixels, and as a spike in its screen derivatives that sends the sampler to
+/// a coarse level, which the marked cube paints grey.
+#[test]
+fn the_globe_draws_no_seam_where_faces_meet() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let cube = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+    let axes = |signs: &[f32]| glam::Vec3::from_slice(signs).normalize();
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        for sa in [1.0, -1.0] {
+            for sb in [1.0, -1.0] {
+                let mut signs = [0.0_f32; 3];
+                signs[a] = sa;
+                signs[b] = sb;
+                assert_no_seam_looking_along(&ctx, &cube, axes(&signs), 2);
+            }
+        }
+    }
+    for corner in 0..8_u32 {
+        let signs = [0, 1, 2].map(|bit| if corner >> bit & 1 == 0 { 1.0 } else { -1.0 });
+        assert_no_seam_looking_along(&ctx, &cube, axes(&signs), 3);
+    }
+}

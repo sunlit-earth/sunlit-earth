@@ -350,7 +350,10 @@ fn an_export_closes_the_pause_gate_however_long_the_engine_was_idle() {
         "the pause gate should have kept April unbuilt while the engine was busy"
     );
 
-    assert!(harness.publish().is_ok(), "the publish should have succeeded");
+    assert!(
+        harness.publish().is_ok(),
+        "the publish should have succeeded"
+    );
     harness.settle();
     // A build of the fixture's April takes milliseconds once the gate opens.
     let window = Instant::now() + Duration::from_secs(2);

@@ -1,6 +1,9 @@
 //! Where each texture sits, and which slot a texture mode draws the globe from.
 //!
-//! [`SlotLayout`] is where that order is decided.
+//! [`SlotLayout`] is where that order is decided. The cube surface is not in
+//! it: the floors and the mask are one unit beside the slots
+//! (`renderer::surface`), and while they are in use the day and night slots
+//! keep their places with no file behind them.
 
 /// Texture slot index for the day texture (JXL).
 pub(super) const DAY_SLOT: usize = 1;

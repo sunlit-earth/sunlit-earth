@@ -3513,6 +3513,12 @@ const FACING: f64 = 0.7;
 /// faces span, in steps of 255 in the blue that codes the second level.
 const EDGE_LEVEL_STEPS: f64 = 32.0;
 
+/// The most those quads may lie outside their neighbors' range on average:
+/// 0.36 to 0.62 steps on the Radeon, WARP and lavapipe, and 4.9 to 23 with
+/// the quotient rule's term for the major axis left out, which on lavapipe
+/// moves no single quad past `EDGE_LEVEL_STEPS`.
+const EDGE_MEAN_STEPS: f64 = 2.0;
+
 /// A tile read at minification is read at the level of detail the floor's
 /// cube is read at, and its level of detail runs on across a face edge.
 ///
@@ -3605,6 +3611,7 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
     let mut inner_worst = (0_u8, String::new());
     let mut grazing_worst = 0_u8;
     let mut edge_worst = (0.0_f64, String::new());
+    let mut edge_total = 0.0_f64;
     for (axis, _) in seam_frames() {
         let uniforms = with_tiles(
             &looking_along_from(size, axis, MINIFIED_DISTANCE),
@@ -3700,6 +3707,7 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
                 let high = beside.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 let outside = (low - blue).max(blue - high).max(0.0);
                 edges += 1;
+                edge_total += outside;
                 if outside > edge_worst.0 {
                     edge_worst = (
                         outside,
@@ -3715,18 +3723,23 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
             }
         }
     }
+    let edge_mean = edge_total / f64::from(u32::try_from(edges).expect("a few thousand quads"));
     println!(
         "minified tiles from {MINIFIED_DISTANCE} radii: {compared} pixels inside the faces \
          compared, {mixed} of them between the two levels, within {} steps of the floor, and \
          {grazing_worst} where the surface turns further away; {edges} quads across an edge, within \
-         {:.1} steps of their neighbors' range",
-        inner_worst.0, edge_worst.0
+         {:.1} steps of their neighbors' range and {:.2} on average",
+        inner_worst.0, edge_worst.0, edge_mean
     );
     assert!(
         inner_worst.0 <= LEVEL_STEPS,
         "{}: another level of detail, {} steps away",
         inner_worst.1,
         inner_worst.0
+    );
+    assert!(
+        edge_mean <= EDGE_MEAN_STEPS,
+        "the quads across an edge lie {edge_mean:.2} steps outside their range on average"
     );
     assert!(
         edge_worst.0 <= EDGE_LEVEL_STEPS,

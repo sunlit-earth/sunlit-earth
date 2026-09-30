@@ -24,36 +24,51 @@ const GRID_WHITE: [u8; 3] = [204, 204, 204];
 const MAJOR_YELLOW: [u8; 3] = [255, 230, 77];
 
 /// The grid's color at mesh longitude `lon_deg` (0 to 360) and colatitude
-/// `lat_deg` (0 at the north pole, 180 at the south).
-fn color_at(lon_deg: f32, lat_deg: f32) -> [u8; 3] {
+/// `lat_deg` (0 at the north pole, 180 at the south), for a texel `texel_deg`
+/// degrees of arc wide.
+///
+/// A line covers a texel in proportion to how far into it the line reaches,
+/// over a ramp one texel wide. The lines cross the cube's texel grid at every
+/// angle, so a texel that is either on a line or off it would draw them as
+/// staircases where the flat grid's lines ran along its rows and columns.
+fn color_at(lon_deg: f32, lat_deg: f32, texel_deg: f32) -> [u8; 3] {
+    // A degree of longitude is sin(colatitude) degrees of arc.
+    let lon_texel = (texel_deg / lat_deg.to_radians().sin().max(1e-3)).min(360.0);
+    let covered = |distance: f32, half_width: f32, texel: f32| {
+        ((half_width - distance) / texel + 0.5).clamp(0.0, 1.0)
+    };
+
     let lon_dist = lon_deg % GRID_SPACING;
     let lon_line = lon_dist.min(GRID_SPACING - lon_dist);
     let lat_dist = lat_deg % GRID_SPACING;
     let lat_line = lat_dist.min(GRID_SPACING - lat_dist);
-    let is_grid = lon_line < LINE_WIDTH || lat_line < LINE_WIDTH;
+    let minor =
+        covered(lon_line, LINE_WIDTH, lon_texel).max(covered(lat_line, LINE_WIDTH, texel_deg));
 
     let equator_dist = (lat_deg - 90.0).abs();
     let pm_dist = lon_deg.min((lon_deg - 360.0).abs());
-    let is_major = equator_dist < MAJOR_LINE_WIDTH || pm_dist < MAJOR_LINE_WIDTH;
+    let major = covered(equator_dist, MAJOR_LINE_WIDTH, texel_deg).max(covered(
+        pm_dist,
+        MAJOR_LINE_WIDTH,
+        lon_texel,
+    ));
 
-    if is_major {
-        MAJOR_YELLOW
-    } else if is_grid {
-        GRID_WHITE
-    } else {
-        // Blend between ocean and land by latitude, greener to the north.
-        let t = (1.0 - lat_deg / 180.0) * 0.5 + 0.25;
-        lerp_color(OCEAN_BLUE, LAND_GREEN, t)
-    }
+    // Between the lines, a blend of ocean and land by latitude, greener to
+    // the north.
+    let base = lerp_color(OCEAN_BLUE, LAND_GREEN, (1.0 - lat_deg / 180.0) * 0.5 + 0.25);
+    lerp_color(lerp_color(base, GRID_WHITE, minor), MAJOR_YELLOW, major)
 }
 
 /// Face `face` of the grid, `size` texels wide, row 0 first, in cube layer
 /// order and at the texel centers the surface faces use.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "angles in degrees are far inside the f32 range"
+    clippy::cast_precision_loss,
+    reason = "angles in degrees are far inside the f32 range, and a face width inside its mantissa"
 )]
 pub(crate) fn generate_cube_face(face: usize, size: u32) -> Vec<u8> {
+    // An equi-angular face spans 90 degrees along each axis in even steps.
+    let texel_deg = 90.0 / size as f32;
     let mut pixels = Vec::with_capacity(size as usize * size as usize * 4);
     for row in 0..i64::from(size) {
         let t = cube::texel_center(row, size);
@@ -63,7 +78,7 @@ pub(crate) fn generate_cube_face(face: usize, size: u32) -> Vec<u8> {
             // `v` runs from the north pole down.
             let lon = dir.z.atan2(dir.x).rem_euclid(TAU) / TAU * 360.0;
             let lat = dir.y.clamp(-1.0, 1.0).acos() / PI * 180.0;
-            let [r, g, b] = color_at(lon as f32, lat as f32);
+            let [r, g, b] = color_at(lon as f32, lat as f32, texel_deg);
             pixels.extend_from_slice(&[r, g, b, 255]);
         }
     }
@@ -91,6 +106,9 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 mod tests {
     use super::*;
 
+    /// A texel far narrower than a line.
+    const FINE: f32 = 0.01;
+
     /// The color of the texel at `(row, col)` of a face.
     fn texel(pixels: &[u8], size: u32, row: u32, col: u32) -> [u8; 4] {
         let at = ((row * size + col) * 4) as usize;
@@ -107,10 +125,11 @@ mod tests {
     }
 
     /// The mesh's longitude 0 runs through +X, so the major meridian crosses
-    /// the middle of +X and the equator crosses it too.
+    /// the middle of +X and the equator crosses it too, at the width a face of
+    /// the shipped size draws them.
     #[test]
     fn the_major_lines_cross_at_the_middle_of_the_x_face() {
-        let size = 64;
+        let size = 512;
         let pixels = generate_cube_face(0, size);
         let rgb = |row, col| texel(&pixels, size, row, col)[..3].to_vec();
         assert_eq!(rgb(size / 2, size / 2), MAJOR_YELLOW, "the crossing");
@@ -120,16 +139,38 @@ mod tests {
 
     #[test]
     fn the_major_lines_are_yellow_and_the_minor_ones_white() {
-        assert_eq!(color_at(0.0, 45.0), MAJOR_YELLOW, "the meridian");
-        assert_eq!(color_at(180.0, 90.0), MAJOR_YELLOW, "the equator");
+        assert_eq!(color_at(0.0, 45.0, FINE), MAJOR_YELLOW, "the meridian");
+        assert_eq!(color_at(180.0, 90.0, FINE), MAJOR_YELLOW, "the equator");
         assert_eq!(
-            color_at(15.0, 60.0),
+            color_at(15.0, 60.0, FINE),
             GRID_WHITE,
             "a crossing of minor lines"
         );
-        let between = color_at(100.0, 50.0);
+        let between = color_at(100.0, 50.0, FINE);
         assert_ne!(between, MAJOR_YELLOW);
         assert_ne!(between, GRID_WHITE);
+    }
+
+    /// A texel astride a line's edge takes part of the line's color, which is
+    /// what keeps an edge that crosses the texel grid at an angle smooth.
+    #[test]
+    fn a_texel_on_a_lines_edge_is_partly_the_line() {
+        let texel = 0.2;
+        let edge = color_at(100.0, 60.0 + LINE_WIDTH, texel);
+        let inside = color_at(100.0, 60.0, texel);
+        let outside = color_at(100.0, 60.0 + LINE_WIDTH + texel, texel);
+        assert_eq!(inside, GRID_WHITE);
+        assert_ne!(outside, GRID_WHITE);
+        for channel in 0..3 {
+            let (low, high) = (
+                inside[channel].min(outside[channel]),
+                inside[channel].max(outside[channel]),
+            );
+            assert!(
+                edge[channel] > low && edge[channel] < high,
+                "channel {channel}: the edge {edge:?} is not between {inside:?} and {outside:?}"
+            );
+        }
     }
 
     /// Between the lines the grid is greener to the north, which is what tells

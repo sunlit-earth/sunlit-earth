@@ -107,12 +107,14 @@ pub fn blob_bytes(format: BlockFormat, size: u32, count: u32) -> usize {
 /// Compress one square level `size` texels wide, appending its blocks to `out`.
 ///
 /// `texels` is RGBA8 for [`BlockFormat::Bc7`] and R8 for [`BlockFormat::Bc4`].
-/// The encode runs on the current rayon pool, so a caller that wants it on a
-/// pool of its own installs that pool around the call.
+/// With `parallel` the level is split across the current rayon pool, so a
+/// caller that wants it on a pool of its own installs that pool around the
+/// call. The blocks are the same either way.
 pub(crate) fn encode(
     format: BlockFormat,
     texels: &[u8],
     size: u32,
+    parallel: bool,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
     let (target, color) = format.dds();
@@ -120,7 +122,7 @@ pub(crate) fn encode(
         .ok_or_else(|| format!("{} bytes are not a {size} px level", texels.len()))?;
     let mut options = dds::EncodeOptions::default();
     options.quality = PRESET.0;
-    options.parallel = true;
+    options.parallel = parallel;
     dds::encode(out, image, target, None, &options).map_err(|e| format!("dds: {e}"))
 }
 
@@ -159,7 +161,7 @@ mod tests {
 
     fn encoded(format: BlockFormat, texels: &[u8], size: u32) -> Vec<u8> {
         let mut out = Vec::new();
-        encode(format, texels, size, &mut out).expect("encode");
+        encode(format, texels, size, true, &mut out).expect("encode");
         out
     }
 

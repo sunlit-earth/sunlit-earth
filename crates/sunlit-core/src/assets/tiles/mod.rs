@@ -9,7 +9,9 @@
 //!   month's floor, a 512 px cube with its full mip chain, in BC7. A tile whose
 //!   whole footprint on the 2048 mask is open water is flagged constant ocean
 //!   and stores nothing.
-//! - The night pack holds the same for the night, every tile stored.
+//! - The night pack holds the same for the night. A night tile over open water
+//!   is flagged only where its texels also lie within a few levels of the
+//!   night's ocean color, so the lights at sea keep their tiles.
 //! - The mask pack holds the water mask as a BC4 cube of 1024 px with its mip
 //!   chain.
 //!

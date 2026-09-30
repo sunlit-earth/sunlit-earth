@@ -5471,6 +5471,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pollster",
  "proptest",
+ "rayon",
  "rustix 1.1.4",
  "serde",
  "sha2",

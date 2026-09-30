@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
@@ -21,6 +22,12 @@ const UNFINISHED_SUFFIX: &str = "~";
 
 /// The mask value of open water.
 const OPEN_WATER: u8 = 255;
+
+/// How far a night texel over open water may lie from the night's ocean color
+/// in a tile drawn as that color. The night's open water is the source's dark
+/// noise, within 2 of its tile's mean in 98% of the tiles, and a light at sea
+/// stands tens to hundreds above it, which keeps its tile stored.
+const NIGHT_OCEAN_TOLERANCE: u8 = 4;
 
 /// Why a pack was not built.
 #[derive(Debug)]
@@ -135,7 +142,7 @@ fn sources(kind: PackKind, textures: &CubeTextures) -> Result<Sources<'_>, Build
         },
         PackKind::Night => Sources {
             color: Some(whole("night", &textures.night)?),
-            mask: None,
+            mask: Some(whole("mask", &textures.mask)?),
         },
         PackKind::Mask => Sources {
             color: None,
@@ -384,7 +391,8 @@ fn build(
     let (format, ocean, levels, jobs) = match (color, mask) {
         (Some(color), mask) => {
             let ocean = mask.as_ref().map_or([0; 4], |m| ocean_color(&color, m));
-            let (levels, jobs) = surface_jobs(color, mask.as_ref(), geometry);
+            let flat = matches!(kind, PackKind::Night).then_some((ocean, NIGHT_OCEAN_TOLERANCE));
+            let (levels, jobs) = surface_jobs(color, mask.as_ref(), flat, geometry);
             (BlockFormat::Bc7, ocean, levels, jobs)
         }
         (None, Some(mask)) => {
@@ -456,7 +464,12 @@ fn face_key(size: u32, face: usize) -> TileKey {
 
 /// The tiled levels, coarse first, and the jobs of a surface pack in index
 /// order: the floor faces, then every tile of every level.
-fn surface_jobs(color: Cube, mask: Option<&Cube>, geometry: &Geometry) -> (Vec<Cube>, Vec<Job>) {
+fn surface_jobs(
+    color: Cube,
+    mask: Option<&Cube>,
+    flat: Option<([u8; 4], u8)>,
+    geometry: &Geometry,
+) -> (Vec<Cube>, Vec<Job>) {
     let mut levels = vec![color];
     for _ in 1..geometry.levels {
         let next = levels.last().expect("a level").halved();
@@ -486,6 +499,15 @@ fn surface_jobs(color: Cube, mask: Option<&Cube>, geometry: &Geometry) -> (Vec<C
                             geometry.layer() * u32::try_from(scale).expect("a small scale"),
                         );
                         window.iter().all(|&m| m == OPEN_WATER)
+                    }) && flat.is_none_or(|(ocean, tolerance)| {
+                        let (r, c) = tile_origin(geometry, row, col);
+                        let window = levels[level].window(face, r, c, geometry.layer());
+                        window.chunks_exact(4).all(|texel| {
+                            texel[..3]
+                                .iter()
+                                .zip(ocean)
+                                .all(|(&t, o)| t.abs_diff(o) <= tolerance)
+                        })
                     });
                     jobs.push(Job::Tile {
                         key: TileKey {
@@ -510,6 +532,65 @@ fn tile_origin(geometry: &Geometry, row: u32, col: u32) -> (i64, i64) {
     (at(row), at(col))
 }
 
+/// Jobs encoded side by side on the rayon pool before their blobs are written:
+/// enough to keep every thread busy, few enough that the blobs waiting to be
+/// written, about 26 KB a tile, stay near a megabyte and a half.
+const BATCH: usize = 64;
+
+/// One encoded blob and its checksums.
+struct Blob {
+    bytes: Vec<u8>,
+    crc32: u32,
+    hash: [u8; 32],
+}
+
+/// Encode one job. A tile is small enough that splitting it across threads
+/// costs more than it gains, so the tiles of a batch run side by side instead;
+/// a whole face is split.
+fn blob_of(
+    job: &Job,
+    format: BlockFormat,
+    levels: &[Cube],
+    geometry: &Geometry,
+) -> Result<Blob, BuildError> {
+    let mut bytes = Vec::new();
+    match job {
+        Job::Face { chain, .. } => {
+            for plane in chain {
+                codec::encode(format, &plane.texels, plane.size, true, &mut bytes)
+                    .map_err(BuildError::Failed)?;
+            }
+        }
+        Job::Tile { ocean: true, .. } => {
+            return Ok(Blob {
+                bytes,
+                crc32: 0,
+                hash: [0; 32],
+            });
+        }
+        Job::Tile { key, level, .. } => {
+            let (row, col) = tile_origin(geometry, u32::from(key.row), u32::from(key.col));
+            let mut plane = Plane {
+                size: geometry.layer(),
+                channels: 4,
+                texels: levels[*level].window(usize::from(key.face), row, col, geometry.layer()),
+            };
+            for mip in 0..TILE_LEVELS {
+                if mip > 0 {
+                    plane = plane.halved();
+                }
+                codec::encode(format, &plane.texels, plane.size, false, &mut bytes)
+                    .map_err(BuildError::Failed)?;
+            }
+        }
+    }
+    Ok(Blob {
+        crc32: crc32fast::hash(&bytes),
+        hash: Sha256::digest(&bytes).into(),
+        bytes,
+    })
+}
+
 /// Write the pack to `tmp` and return its size: the blobs streamed in index
 /// order behind room for the header, then the header and index over it.
 fn write_pack(
@@ -525,57 +606,27 @@ fn write_pack(
     out.seek(SeekFrom::Start(start))?;
     let mut offset = start;
     let mut entries = Vec::with_capacity(jobs.len());
-    let mut blob = Vec::new();
-    for job in jobs {
+    for batch in jobs.chunks(BATCH) {
         check(cancel)?;
-        blob.clear();
-        let ocean = match job {
-            Job::Face { chain, .. } => {
-                for plane in chain {
-                    codec::encode(header.format, &plane.texels, plane.size, &mut blob)
-                        .map_err(BuildError::Failed)?;
-                }
-                false
-            }
-            Job::Tile { ocean: true, .. } => true,
-            Job::Tile { key, level, .. } => {
-                let (row, col) = tile_origin(geometry, u32::from(key.row), u32::from(key.col));
-                let mut plane = Plane {
-                    size: geometry.layer(),
-                    channels: 4,
-                    texels: levels[*level].window(
-                        usize::from(key.face),
-                        row,
-                        col,
-                        geometry.layer(),
-                    ),
-                };
-                for mip in 0..TILE_LEVELS {
-                    if mip > 0 {
-                        plane = plane.halved();
-                    }
-                    codec::encode(header.format, &plane.texels, plane.size, &mut blob)
-                        .map_err(BuildError::Failed)?;
-                }
-                false
-            }
-        };
-        let length = u32::try_from(blob.len()).expect("a blob fits in 4 GiB");
-        entries.push(Entry {
-            key: job.key(),
-            ocean,
-            whole_face: matches!(job, Job::Face { .. }),
-            offset: if ocean { 0 } else { offset },
-            length,
-            crc32: if ocean { 0 } else { crc32fast::hash(&blob) },
-            hash: if ocean {
-                [0; 32]
-            } else {
-                Sha256::digest(&blob).into()
-            },
-        });
-        out.write_all(&blob)?;
-        offset += u64::from(length);
+        let blobs = batch
+            .par_iter()
+            .map(|job| blob_of(job, header.format, levels, geometry))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (job, blob) in batch.iter().zip(blobs) {
+            let ocean = matches!(job, Job::Tile { ocean: true, .. });
+            let length = u32::try_from(blob.bytes.len()).expect("a blob fits in 4 GiB");
+            entries.push(Entry {
+                key: job.key(),
+                ocean,
+                whole_face: matches!(job, Job::Face { .. }),
+                offset: if ocean { 0 } else { offset },
+                length,
+                crc32: blob.crc32,
+                hash: blob.hash,
+            });
+            out.write_all(&blob.bytes)?;
+            offset += u64::from(length);
+        }
     }
     let mut file = out
         .into_inner()
@@ -760,7 +811,7 @@ mod tests {
         let night = setup.open(PackKind::Night);
         assert!(
             night.entries().iter().all(|e| !e.ocean),
-            "every night tile is stored"
+            "the fixture's night is a gradient over the water too, so nothing there is flat"
         );
         let mask = setup.open(PackKind::Mask);
         assert_eq!(mask.format(), BlockFormat::Bc4);
@@ -848,10 +899,13 @@ mod tests {
         }
         assert!(built(&setup.ensure(kind)), "back to the current key");
 
+        assert!(built(&setup.ensure(PackKind::Night)));
+        assert!(built(&setup.ensure(PackKind::Mask)));
         fs::copy(setup.face(6, 1), setup.face(0, 1)).expect("replace a day face");
         assert!(built(&setup.ensure(kind)), "a day face");
+        assert_eq!(setup.ensure(PackKind::Night), Ensured::Current);
+        assert_eq!(setup.ensure(PackKind::Mask), Ensured::Current);
 
-        assert!(built(&setup.ensure(PackKind::Night)));
         let mask = setup.textures.mask[3].clone().expect("a face");
         let file = fs::OpenOptions::new()
             .write(true)
@@ -864,11 +918,12 @@ mod tests {
             built(&setup.ensure(kind)),
             "a mask face flags the day's ocean"
         );
-        assert_eq!(
-            setup.ensure(PackKind::Night),
-            Ensured::Current,
-            "the night does not read the mask"
+        assert!(
+            built(&setup.ensure(PackKind::Night)),
+            "a mask face flags the night's ocean too"
         );
+        assert!(built(&setup.ensure(PackKind::Mask)));
+        assert_eq!(setup.ensure(kind), Ensured::Current);
     }
 
     #[test]
@@ -1059,7 +1114,7 @@ mod tests {
         // first column of +X, which the gutter of +Z tile (1, 3) reaches
         // across the edge. +Z tile (1, 2) starts two texels past the first.
         let mask = water_cube(32, &[(4, 10, 10), (0, 12, 0)]);
-        let (_, jobs) = surface_jobs(smooth_cube(32), Some(&mask), &geometry);
+        let (_, jobs) = surface_jobs(smooth_cube(32), Some(&mask), None, &geometry);
         let (mut ocean, mut stored) = (Vec::new(), Vec::new());
         for job in &jobs {
             match job {
@@ -1094,6 +1149,80 @@ mod tests {
         }
         assert!(ocean.contains(&key(4, 5, 1, 1)), "-Z has no land");
         assert_eq!(ocean.len() + stored.len(), 6 * (16 + 4));
+    }
+
+    /// Over open water the night is flat only where it has no lights: a tile
+    /// is drawn as the night's ocean color when every texel of its layer lies
+    /// within the tolerance of it, and a light at sea keeps its tile, and the
+    /// tiles whose gutters reach it, stored.
+    #[test]
+    fn a_night_tile_over_water_is_ocean_only_without_lights() {
+        let geometry = Geometry {
+            face: 32,
+            levels: 2,
+            tile: 8,
+            gutter: 4,
+            floor: 8,
+            mask: 16,
+        };
+        let dark = [5_u8, 5, 15, 255];
+        let faces = (0..6)
+            .map(|face| {
+                let mut texels: Vec<u8> = (0..32 * 32)
+                    .flat_map(|i: usize| {
+                        let wobble = u8::try_from(i % 7).expect("a byte");
+                        [dark[0] + wobble % 3, dark[1], dark[2] - wobble % 4, 255]
+                    })
+                    .collect();
+                if face == 4 {
+                    let at = (26 * 32 + 3) * 4;
+                    texels[at..at + 3].copy_from_slice(&[250, 240, 200]);
+                }
+                Plane {
+                    size: 32,
+                    channels: 4,
+                    texels,
+                }
+            })
+            .collect();
+        let night = Cube::new(faces).expect("a cube");
+        let mask = water_cube(32, &[]);
+        let (_, jobs) = surface_jobs(
+            night,
+            Some(&mask),
+            Some((dark, NIGHT_OCEAN_TOLERANCE)),
+            &geometry,
+        );
+        let stored: Vec<TileKey> = jobs
+            .iter()
+            .filter_map(|job| match job {
+                Job::Tile {
+                    key, ocean: false, ..
+                } => Some(*key),
+                _ => None,
+            })
+            .collect();
+        let key = |level, face, row, col| TileKey {
+            level,
+            face,
+            row,
+            col,
+        };
+        // The light sits at row 26 and column 3 of +Z: in +Z tile (3, 0) at 32
+        // px and (1, 0) at 16, in the gutter of +Z tile (2, 0) above it, of -X
+        // tile (3, 3) across the left edge, and at 16 px, where a gutter reaches
+        // twice as far, of -X tile (1, 1) and -Y tile (0, 0) across the bottom.
+        assert_eq!(
+            stored,
+            [
+                key(4, 1, 1, 1),
+                key(4, 3, 0, 0),
+                key(4, 4, 1, 0),
+                key(5, 1, 3, 3),
+                key(5, 4, 2, 0),
+                key(5, 4, 3, 0),
+            ]
+        );
     }
 
     #[test]

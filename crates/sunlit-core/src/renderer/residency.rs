@@ -212,11 +212,10 @@ impl Shape {
             .map(|corner| center.dot(*corner))
             .fold(1.0, f64::min)
             .clamp(-1.0, 1.0);
+        let along = |range: [f64; 2], k: i32| range[0] + (range[1] - range[0]) * f64::from(k) / 2.0;
         let mut stretch: f64 = 0.0;
         for i in 0..3 {
             for j in 0..3 {
-                let along =
-                    |range: [f64; 2], k: i32| range[0] + (range[1] - range[0]) * f64::from(k) / 2.0;
                 stretch = stretch.max(warp_stretch(face, along(s, i), along(t, j)));
             }
         }

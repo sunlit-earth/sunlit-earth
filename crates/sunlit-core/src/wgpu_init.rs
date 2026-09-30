@@ -88,6 +88,10 @@ pub(crate) struct WgpuContext {
     /// Every requested count is resolved against this list before it can reach
     /// a render target; see `renderer::resolve_sample_count`.
     pub supported_sample_counts: Vec<u32>,
+    /// What kind of adapter it is. A CPU adapter gets its surfaces decoded to
+    /// plain texels and sampled without anisotropy; `docs/rendering.md` says
+    /// why.
+    pub device_type: wgpu::DeviceType,
 }
 
 /// Initialize wgpu manually: create instance, select adapter, request device.
@@ -111,14 +115,11 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
     let adapter_key = adapter_key(&info.name, info.backend);
     info!(adapter = %adapter_info, key = %adapter_key, "selected GPU adapter");
 
-    // Try to request adapter-specific format features for broader MSAA support.
-    // Fall back to no extra features if unsupported.
-    let desired_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
-    let features = if adapter.features().contains(desired_features) {
-        desired_features
-    } else {
-        wgpu::Features::empty()
-    };
+    // Adapter-specific format features for broader MSAA support, and block
+    // compression for the surfaces, each where the adapter has it.
+    let desired_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        | wgpu::Features::TEXTURE_COMPRESSION_BC;
+    let features = adapter.features() & desired_features;
 
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("sunlit-earth"),
@@ -140,6 +141,7 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
         adapter_info,
         adapter_key,
         supported_sample_counts,
+        device_type: info.device_type,
     })
 }
 

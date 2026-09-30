@@ -117,7 +117,9 @@ pub(crate) fn run_render(
         }
     });
 
-    let have_globe = have_globe_texture(&engine_config.texture_paths);
+    // The cube surface is a globe texture too, and on a first run the wait
+    // below is what holds the render back until its first packs are built.
+    let have_globe = engine_config.takes_cube() || have_globe_texture(&engine_config.texture_paths);
 
     let engine = match engine::start(engine_config) {
         Ok(engine) => engine,

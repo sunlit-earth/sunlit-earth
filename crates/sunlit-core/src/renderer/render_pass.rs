@@ -13,13 +13,21 @@ use super::Renderer;
 use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: astronomy derived
-/// from the clock, and whether the resolved bind group carries both a day and
-/// a night texture.
+/// from the clock, whether the resolved bind group carries both a day and a
+/// night texture, and whether the globe reads it through the cube.
 #[derive(Clone)]
 pub(super) struct FrameInputs {
     pub sky: SkyState,
     pub use_blend: bool,
+    pub cube: bool,
 }
+
+/// Bit 0 of `Uniforms::flags`: diffuse shading.
+const FLAG_DIFFUSE: u32 = 1;
+/// Bit 1 of `Uniforms::flags`: the globe's surface is read from the cubes at
+/// bindings 4 to 6 through the warped direction, not from the flat maps at 1
+/// and 3 through the mesh's coordinates.
+const FLAG_CUBE: u32 = 2;
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
@@ -140,7 +148,11 @@ pub(super) fn write_uniforms<'a>(
         } else {
             -1.0
         },
-        flags: u32::from(inputs.use_blend && params.diffuse_shading),
+        flags: if inputs.use_blend && params.diffuse_shading {
+            FLAG_DIFFUSE
+        } else {
+            0
+        } | if inputs.cube { FLAG_CUBE } else { 0 },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,

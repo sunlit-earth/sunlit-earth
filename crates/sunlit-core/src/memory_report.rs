@@ -78,13 +78,15 @@ pub struct ExpectedTexture {
     pub label: String,
     pub width: u32,
     pub height: u32,
+    /// Array layers: six for a cube, one for everything else.
+    pub layers: u32,
     pub format: wgpu::TextureFormat,
     pub mip_levels: u32,
     pub sample_count: u32,
 }
 
 impl ExpectedTexture {
-    /// Bytes this texture occupies: every mip level, every sample.
+    /// Bytes this texture occupies: every layer, every mip level, every sample.
     pub fn bytes(&self) -> u64 {
         texture_bytes(
             self.width,
@@ -92,14 +94,16 @@ impl ExpectedTexture {
             self.format,
             self.mip_levels,
             self.sample_count,
-        )
+        ) * u64::from(self.layers.max(1))
     }
 }
 
-/// Bytes a texture of this shape occupies, mip chain and samples included.
+/// Bytes one layer of a texture of this shape occupies, mip chain and samples
+/// included.
 ///
-/// A format with no fixed texel size contributes nothing rather than a guess;
-/// the two this renderer uses (`Rgba8Unorm` and `Depth32Float`) both have one.
+/// A block-compressed format costs its whole blocks, so a level narrower than
+/// a block still takes one. A format with no fixed block size contributes
+/// nothing rather than a guess; every one this renderer uses has one.
 fn texture_bytes(
     width: u32,
     height: u32,
@@ -107,14 +111,15 @@ fn texture_bytes(
     mip_levels: u32,
     sample_count: u32,
 ) -> u64 {
-    let Some(bytes_per_texel) = format.block_copy_size(None).map(u64::from) else {
+    let Some(bytes_per_block) = format.block_copy_size(None).map(u64::from) else {
         return 0;
     };
+    let (block_width, block_height) = format.block_dimensions();
     let mut total = 0u64;
     for level in 0..mip_levels {
-        let w = u64::from(width >> level).max(1);
-        let h = u64::from(height >> level).max(1);
-        total += w * h * bytes_per_texel;
+        let w = (width >> level).max(1).div_ceil(block_width);
+        let h = (height >> level).max(1).div_ceil(block_height);
+        total += u64::from(w) * u64::from(h) * bytes_per_block;
     }
     total * u64::from(sample_count.max(1))
 }
@@ -480,6 +485,31 @@ mod tests {
         );
     }
 
+    /// A 512 px BC7 cube with its chain is a byte a texel and four thirds of
+    /// its base, the last levels taking a whole block each.
+    #[test]
+    fn a_block_compressed_cube_costs_its_blocks_on_every_face() {
+        let cube = ExpectedTexture {
+            label: "day_floor".to_owned(),
+            width: 512,
+            height: 512,
+            layers: 6,
+            format: wgpu::TextureFormat::Bc7RgbaUnorm,
+            mip_levels: 10,
+            sample_count: 1,
+        };
+        let face: u64 = [512_u64, 256, 128, 64, 32, 16, 8, 4]
+            .iter()
+            .map(|size| size * size)
+            .sum::<u64>()
+            + 2 * 16;
+        assert_eq!(cube.bytes(), 6 * face);
+        assert_eq!(
+            texture_bytes(1024, 1024, wgpu::TextureFormat::Bc4RUnorm, 1, 1),
+            1024 * 1024 / 2
+        );
+    }
+
     #[test]
     fn mip_levels_past_a_dimension_clamp_to_one() {
         // 4x1 with three levels: 4x1, 2x1, 1x1.
@@ -498,6 +528,7 @@ mod tests {
             label: label.to_owned(),
             width,
             height,
+            layers: 1,
             format: wgpu::TextureFormat::Rgba8Unorm,
             mip_levels: 1,
             sample_count: 1,

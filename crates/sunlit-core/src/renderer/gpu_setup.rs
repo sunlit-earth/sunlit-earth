@@ -5,8 +5,9 @@ use crate::assets::stars;
 use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 
-use super::slots::SLOT_LABELS;
-use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
+use super::slots::{SLOT_LABELS, SlotLayout};
+use super::surface::{self, SurfaceFormats, SurfaceSet};
+use super::textures::{Bindings, TextureSlot, create_bind_group};
 use super::uniforms::Uniforms;
 use super::{Renderer, RendererConfig};
 
@@ -29,8 +30,26 @@ pub(super) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 /// asked what they are.
 pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const GRID_TEX_WIDTH: u32 = 2048;
-const GRID_TEX_HEIGHT: u32 = 1024;
+/// The width of a face of the grid's cube: as many texels per degree at a face
+/// center as the equator of the 2048 px equirectangular grid it replaced had.
+const GRID_FACE: u32 = 512;
+
+/// A filterable float texture of `dimension`, visible to the fragment stage.
+const fn texture_entry(
+    binding: u32,
+    dimension: wgpu::TextureViewDimension,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: dimension,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
 
 #[expect(
     clippy::too_many_lines,
@@ -51,6 +70,8 @@ pub(super) fn create_renderer(
         texture_cache_dir,
         mailbox: texture_mailbox,
         notify,
+        cube_month,
+        cpu_adapter,
     } = config;
     let mesh = sphere::generate_uv_sphere(64, 64);
 
@@ -97,6 +118,8 @@ pub(super) fn create_renderer(
         ..Default::default()
     });
 
+    let surface_sampler = device.create_sampler(&surface::surface_sampler_descriptor(cpu_adapter));
+
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("bind_group_layout"),
         entries: &[
@@ -110,37 +133,29 @@ pub(super) fn create_renderer(
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
+            texture_entry(1, wgpu::TextureViewDimension::D2),
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
+            texture_entry(3, wgpu::TextureViewDimension::D2),
+            texture_entry(4, wgpu::TextureViewDimension::Cube),
+            texture_entry(5, wgpu::TextureViewDimension::Cube),
+            texture_entry(6, wgpu::TextureViewDimension::Cube),
         ],
     });
 
-    // 1x1 black placeholder at binding 3 for every bind group that reads one
-    // texture.
+    // 1x1 black placeholders: the flat one at binding 3 for every bind group
+    // that reads one flat texture and at 1 and 3 for every group that draws
+    // from a cube, the cube one wherever a group has no cube to put.
+    let dummy_cube =
+        surface::mipmapped_cube(&device, &queue, "dummy_cube", 1, |_| vec![0, 0, 0, 255]);
+    let dummy_cube_view = dummy_cube.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    });
     let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dummy_1x1"),
         size: wgpu::Extent3d {
@@ -176,46 +191,63 @@ pub(super) fn create_renderer(
     );
     let dummy_texture_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Grid texture (always loaded at slot 0)
-    let grid_tex = create_mipmapped_texture(
-        &device,
-        &queue,
-        SLOT_LABELS[0],
-        GRID_TEX_WIDTH,
-        GRID_TEX_HEIGHT,
-        grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
-    );
+    // The grid, always loaded at slot 0, is a cube the globe reads through the
+    // same direction and sampler as the surface.
+    let grid_tex = surface::mipmapped_cube(&device, &queue, SLOT_LABELS[0], GRID_FACE, |face| {
+        grid_texture::generate_cube_face(face, GRID_FACE)
+    });
     let _ = device.poll(wgpu::PollType::Wait {
         submission_index: None,
         timeout: None,
     });
-    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    });
 
     let grid_bind_group = create_bind_group(
         &device,
         &bind_group_layout,
         &uniform_buffer,
-        &grid_tex_view,
-        &sampler,
-        &dummy_texture_view,
+        &Bindings {
+            texture: &dummy_texture_view,
+            sampler: &surface_sampler,
+            night: &dummy_texture_view,
+            cubes: [&grid_tex_view, &dummy_cube_view, &dummy_cube_view],
+        },
         "grid_bind_group",
     );
 
-    // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from paths
+    // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from
+    // paths, except that the day and night slots stay empty while the cube
+    // surface stands in for them.
+    let layout = SlotLayout::new(texture_paths.len());
     let mut texture_slots = vec![TextureSlot {
         bind_group: Some(grid_bind_group),
         texture: Some(grid_tex),
         source_path: None,
         loading: false,
     }];
-    for path in &texture_paths {
+    for (index, path) in texture_paths.iter().enumerate() {
+        let replaced = cube_month.is_some() && layout.is_globe(index + 1);
         texture_slots.push(TextureSlot {
             bind_group: None,
             texture: None,
-            source_path: path.clone(),
+            source_path: path.clone().filter(|_| !replaced),
             loading: false,
         });
     }
+    let surface = cube_month.map(|month| {
+        let block_compression = device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        let formats = SurfaceFormats::for_adapter(block_compression, cpu_adapter);
+        debug!(
+            ?formats,
+            cpu_adapter, "the globe is drawn from the cube surface"
+        );
+        SurfaceSet::new(formats, month)
+    });
     // The cloud overlay, always last because it comes from the fetcher rather
     // than from a file. `SlotLayout::clouds` names its index.
     texture_slots.push(TextureSlot {
@@ -262,7 +294,9 @@ pub(super) fn create_renderer(
         uniform_buffer,
         bind_group_layout,
         sampler,
+        surface_sampler,
         texture_slots,
+        surface,
         texture_resolution,
         texture_generation: 0,
         texture_cache_dir,
@@ -286,6 +320,7 @@ pub(super) fn create_renderer(
         texture_dirty: false,
         notify,
         dummy_texture_view,
+        dummy_cube_view,
         composite_bind_group: None,
         day_texture_view: None,
         night_texture_view: None,

@@ -9,6 +9,7 @@ mod gpu_setup;
 mod render_pass;
 mod sizing;
 mod slots;
+mod surface;
 mod texture_routing;
 mod textures;
 pub mod uniforms;
@@ -16,8 +17,10 @@ pub mod uniforms;
 pub use render_pass::read_texture_rgba8;
 pub use sizing::build_aa_options;
 pub use slots::{SlotLayout, TEXTURE_LABELS};
+pub use surface::surface_sampler_descriptor;
 
 pub(crate) use sizing::{quantize_to_granularity, resolve_sample_count};
+pub(crate) use surface::SurfaceLayer;
 
 use std::path::PathBuf;
 
@@ -25,6 +28,7 @@ use tracing::debug;
 
 use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
+use crate::assets::tiles::Pack;
 use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
 use crate::scene::sky::{PlanetKind, SkyState};
@@ -35,7 +39,11 @@ use gpu_setup::{
     rebuild_render_textures,
 };
 use slots::{SLOT_LABELS, TextureMode};
-use textures::{TextureSlot, maybe_spawn_texture_load, process_decoded_textures};
+use surface::{ResidentCube, SurfaceSet};
+use texture_routing::ResolvedTexture;
+use textures::{
+    Bindings, TextureSlot, create_bind_group, maybe_spawn_texture_load, process_decoded_textures,
+};
 
 /// What a call to [`Renderer::render`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +71,13 @@ pub(crate) struct RendererConfig {
     pub mailbox: TextureMailbox,
     /// Invoked from decode threads once a result has been parked.
     pub notify: NotifyFn,
+    /// The month in force, January 0, when the globe is drawn from the cube
+    /// surface the engine hands over pack by pack; `None` draws it from the
+    /// flat maps in the day and night slots.
+    pub cube_month: Option<usize>,
+    /// Whether the adapter is a CPU, which gets the surfaces decoded and
+    /// sampled without anisotropy.
+    pub cpu_adapter: bool,
 }
 
 /// The GPU pipeline and every resource it owns.
@@ -75,8 +90,14 @@ pub(crate) struct Renderer {
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
+    /// What the flat textures are read through: the day and night maps, the
+    /// Moon, the Milky Way and the clouds.
     sampler: wgpu::Sampler,
+    /// What every cube the globe draws from is read through.
+    surface_sampler: wgpu::Sampler,
     texture_slots: Vec<TextureSlot>,
+    /// The cube surface, when the globe is drawn from it.
+    surface: Option<SurfaceSet>,
     /// Width the file-backed slots load at, as a cap.
     texture_resolution: u32,
     /// Bumped on every resolution change, and stamped on each load it spawns,
@@ -106,7 +127,7 @@ pub(crate) struct Renderer {
     last_inputs: Option<render_pass::FrameInputs>,
     /// Bind group resolution from the last rendered frame, used by the
     /// export path to reuse the same texture binding without re-resolving.
-    last_resolved: Option<texture_routing::ResolvedTexture>,
+    last_resolved: Option<ResolvedTexture>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     device: wgpu::Device,
@@ -123,8 +144,11 @@ pub(crate) struct Renderer {
     /// that only renders on demand knows there is work waiting.
     notify: NotifyFn,
     /// 1x1 black texture standing in at binding 3 for every bind group that
-    /// reads one texture: the Grid, Day and Night modes, and the cloud overlay.
+    /// reads one flat texture, and at 1 and 3 for every group that draws the
+    /// globe from a cube.
     dummy_texture_view: wgpu::TextureView,
+    /// 1x1 black cube standing in wherever a bind group has no cube to put.
+    dummy_cube_view: wgpu::TextureView,
     /// Bind group containing both day and night textures, used in blend mode.
     /// Created once both day and night texture slots have loaded.
     composite_bind_group: Option<wgpu::BindGroup>,
@@ -208,9 +232,10 @@ impl Renderer {
 
     /// Every texture this renderer owns, and the shape each one should be.
     ///
-    /// Slot textures report their own shape, because the renderer holds them.
-    /// The depth and MSAA targets and the 1x1 placeholder are kept only as
-    /// views, so their rows are computed from the size, format, and sample
+    /// Slot textures and the surface's cubes report their own shape, because
+    /// the renderer holds them. The depth and MSAA targets and the 1x1
+    /// placeholders are kept only as views, so their rows are computed from
+    /// the size, format, and sample
     /// count they were created with; `create_render_textures` is the other side
     /// of that agreement, and the two formats are shared constants so the rows
     /// cannot drift from the descriptors.
@@ -219,36 +244,46 @@ impl Renderer {
             label: label.to_owned(),
             width: self.render_width,
             height: self.render_height,
+            layers: 1,
             format,
             mip_levels: 1,
             sample_count,
+        };
+        let held = |label: String, texture: &wgpu::Texture| ExpectedTexture {
+            label,
+            width: texture.width(),
+            height: texture.height(),
+            layers: texture.depth_or_array_layers(),
+            format: texture.format(),
+            mip_levels: texture.mip_level_count(),
+            sample_count: texture.sample_count(),
         };
 
         let mut expected: Vec<ExpectedTexture> = self
             .texture_slots
             .iter()
             .enumerate()
-            .filter_map(|(index, slot)| {
-                let texture = slot.texture.as_ref()?;
-                Some(ExpectedTexture {
-                    label: self.slot_label(index),
-                    width: texture.width(),
-                    height: texture.height(),
-                    format: texture.format(),
-                    mip_levels: texture.mip_level_count(),
-                    sample_count: texture.sample_count(),
-                })
-            })
+            .filter_map(|(index, slot)| Some(held(self.slot_label(index), slot.texture.as_ref()?)))
             .collect();
+        if let Some(surface) = &self.surface {
+            expected.extend(
+                surface
+                    .resident()
+                    .map(|(label, texture)| held(label.to_owned(), texture)),
+            );
+        }
 
-        expected.push(ExpectedTexture {
-            label: "dummy_1x1".to_owned(),
-            width: 1,
-            height: 1,
-            format: COLOR_FORMAT,
-            mip_levels: 1,
-            sample_count: 1,
-        });
+        for (label, layers) in [("dummy_1x1", 1), ("dummy_cube", 6)] {
+            expected.push(ExpectedTexture {
+                label: label.to_owned(),
+                width: 1,
+                height: 1,
+                layers,
+                format: COLOR_FORMAT,
+                mip_levels: 1,
+                sample_count: 1,
+            });
+        }
         expected.push(target("render_texture", COLOR_FORMAT, 1));
         expected.push(target("depth_texture", DEPTH_FORMAT, 1));
         if self.msaa_texture_view.is_some() {
@@ -313,10 +348,14 @@ impl Renderer {
 
     /// Whether every texture the current mode needs has finished loading.
     /// The clouds, the Moon and the Milky Way are excluded: they are overlays,
-    /// not requirements.
+    /// not requirements. With the cube surface in use, what a mode needs is
+    /// its cubes: the floor of the month in force, the night floor, the mask.
     pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
+        if let Some(surface) = &self.surface {
+            return surface.readiness(mode).0;
+        }
         if mode == TextureMode::Blend {
             self.slot_loaded(layout.globe(TextureMode::Day))
                 && self.slot_loaded(layout.globe(TextureMode::Night))
@@ -337,10 +376,14 @@ impl Renderer {
     /// lands, and from startup until the first load does. Deliberately not the
     /// negation of `textures_ready`: a slot with no file behind it, and one
     /// whose decode failed and had its path cleared, are both terminal states
-    /// where nothing further is coming, so there is nothing to wait for.
+    /// where nothing further is coming, so there is nothing to wait for. A cube
+    /// whose pack failed is the same.
     pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
         let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
+        if let Some(surface) = &self.surface {
+            return surface.readiness(mode).1;
+        }
         if mode == TextureMode::Blend {
             self.slot_pending(layout.globe(TextureMode::Day))
                 || self.slot_pending(layout.globe(TextureMode::Night))
@@ -352,6 +395,130 @@ impl Renderer {
     fn slot_pending(&self, slot: usize) -> bool {
         let slot = &self.texture_slots[slot];
         slot.source_path.is_some() && slot.bind_group.is_none()
+    }
+
+    /// Make `month`, January 0, the one the surface is ready for. Its floor
+    /// is what readiness asks for from now on, and the floor already resident
+    /// is drawn until that one is handed over.
+    pub(crate) fn set_surface_month(&mut self, month: usize) {
+        if let Some(surface) = &mut self.surface {
+            surface.month = month;
+        }
+    }
+
+    /// Whether `layer` is resident.
+    pub(crate) fn surface_resident(&self, layer: SurfaceLayer) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| surface.state(layer) == surface::LayerState::Resident)
+    }
+
+    /// Make `layer` resident from its pack, replacing the day floor of another
+    /// month, and redraw on the next frame. A layer already resident is left
+    /// as it is.
+    pub(crate) fn install_surface(
+        &mut self,
+        layer: SurfaceLayer,
+        pack: &Pack,
+    ) -> Result<(), String> {
+        let Some(surface) = self.surface.as_mut() else {
+            return Err("the globe is not drawn from the cube surface".to_owned());
+        };
+        if surface.state(layer) == surface::LayerState::Resident {
+            return Ok(());
+        }
+        let texture =
+            surface::cube_from_pack(&self.device, &self.queue, layer, pack, surface.formats)?;
+        let cube = ResidentCube::new(texture);
+        match layer {
+            SurfaceLayer::Day(month) => surface.day = Some((month, cube)),
+            SurfaceLayer::Night => surface.night = Some(cube),
+            SurfaceLayer::Mask => surface.mask = Some(cube),
+        }
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        self.rebuild_surface_groups();
+        self.texture_dirty = true;
+        Ok(())
+    }
+
+    /// Record that `layer`'s pack failed, so nothing waits for it.
+    pub(crate) fn mark_surface_failed(&mut self, layer: SurfaceLayer) {
+        if let Some(surface) = &mut self.surface {
+            surface.mark_failed(layer);
+        }
+    }
+
+    /// Build the surface's bind groups from what is resident: the day floor and
+    /// the night floor each alone, and the two with the mask for blend mode,
+    /// with the dummy cube for a mask that is not there.
+    fn rebuild_surface_groups(&mut self) {
+        let Some(surface) = &self.surface else {
+            return;
+        };
+        let dummy = &self.dummy_cube_view;
+        let day = surface.day.as_ref().map(|(_, cube)| &cube.view);
+        let night = surface.night.as_ref().map(|cube| &cube.view);
+        let mask = surface.mask.as_ref().map_or(dummy, |cube| &cube.view);
+        let day_group = day.map(|day| self.cube_bind_group([day, dummy, dummy], "surface_day"));
+        let night_group =
+            night.map(|night| self.cube_bind_group([night, dummy, dummy], "surface_night"));
+        let blend_group = day
+            .zip(night)
+            .map(|(day, night)| self.cube_bind_group([day, night, mask], "surface_blend"));
+        let surface = self.surface.as_mut().expect("checked above");
+        surface.day_group = day_group;
+        surface.night_group = night_group;
+        surface.blend_group = blend_group;
+    }
+
+    /// A bind group of one flat texture, or of the day and night maps.
+    fn flat_bind_group(
+        &self,
+        texture: &wgpu::TextureView,
+        night: &wgpu::TextureView,
+        label: &str,
+    ) -> wgpu::BindGroup {
+        let dummy = &self.dummy_cube_view;
+        create_bind_group(
+            &self.device,
+            &self.bind_group_layout,
+            &self.uniform_buffer,
+            &Bindings {
+                texture,
+                sampler: &self.sampler,
+                night,
+                cubes: [dummy, dummy, dummy],
+            },
+            label,
+        )
+    }
+
+    /// A bind group that draws the globe from `cubes`.
+    fn cube_bind_group(&self, cubes: [&wgpu::TextureView; 3], label: &str) -> wgpu::BindGroup {
+        create_bind_group(
+            &self.device,
+            &self.bind_group_layout,
+            &self.uniform_buffer,
+            &Bindings {
+                texture: &self.dummy_texture_view,
+                sampler: &self.surface_sampler,
+                night: &self.dummy_texture_view,
+                cubes,
+            },
+            label,
+        )
+    }
+
+    /// The bind group a resolution names, if it still exists.
+    fn bind_group_for(&self, resolved: &ResolvedTexture) -> Option<&wgpu::BindGroup> {
+        match resolved {
+            ResolvedTexture::Composite => self.composite_bind_group.as_ref(),
+            ResolvedTexture::Slot(idx) => self.texture_slots[*idx].bind_group.as_ref(),
+            ResolvedTexture::Surface(group) => self.surface.as_ref()?.group(*group),
+        }
     }
 
     /// Overwrite the astronomy state the export path will use.
@@ -402,25 +569,19 @@ impl Renderer {
             return RenderOutcome::Skipped;
         }
 
-        let bind_group_ref = match &resolved {
-            texture_routing::ResolvedTexture::Composite => self
-                .composite_bind_group
-                .as_ref()
-                .expect("composite bind group must exist when Composite is returned"),
-            texture_routing::ResolvedTexture::Slot(idx) => self.texture_slots[*idx]
-                .bind_group
-                .as_ref()
-                .expect("render_index must always point to a loaded slot"),
-        };
-        self.last_resolved = Some(resolved);
-        self.last_params = Some(*params);
         self.last_inputs = Some(render_pass::FrameInputs {
             sky: sky.clone(),
             use_blend,
+            cube: resolved.draws_from_a_cube(),
         });
+        self.last_resolved = Some(resolved);
+        self.last_params = Some(*params);
         self.update_planets(sky);
 
         let first_frame = self.last_state.is_none();
+        let bind_group_ref = self
+            .bind_group_for(self.last_resolved.as_ref().expect("just assigned"))
+            .expect("the routing names only bind groups that exist");
         render_pass::execute_render_pass(
             self,
             params,
@@ -503,16 +664,9 @@ impl Renderer {
     ) -> Result<Vec<u8>, String> {
         let inputs = self.last_inputs.as_ref().ok_or("No frame rendered yet")?;
 
-        let bind_group = match self.last_resolved.as_ref().ok_or("No frame rendered yet")? {
-            texture_routing::ResolvedTexture::Composite => self
-                .composite_bind_group
-                .as_ref()
-                .ok_or("No bind group available")?,
-            texture_routing::ResolvedTexture::Slot(idx) => self.texture_slots[*idx]
-                .bind_group
-                .as_ref()
-                .ok_or("No bind group available")?,
-        };
+        let bind_group = self
+            .bind_group_for(self.last_resolved.as_ref().ok_or("No frame rendered yet")?)
+            .ok_or("No bind group available")?;
 
         let (export_texture, export_depth, msaa_color_view, msaa_depth_view) =
             create_render_textures(

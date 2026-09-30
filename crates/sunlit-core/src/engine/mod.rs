@@ -12,6 +12,7 @@ mod handle;
 mod protocol;
 mod publish;
 mod schedule;
+mod surface;
 pub mod wallpaper_sink;
 
 use std::sync::Arc;
@@ -35,6 +36,7 @@ use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
 pub use protocol::{EngineCommand, EngineEvent};
 use schedule::Schedule;
+use surface::SurfaceFeed;
 use wallpaper_sink::WallpaperSink;
 
 /// How long the loop blocks on the command channel before re-checking the
@@ -52,6 +54,16 @@ const SKY_INTERVAL: Duration = Duration::from_mins(2);
 
 /// How often a memory sample is appended to the metrics CSV.
 const METRICS_INTERVAL: Duration = Duration::from_mins(10);
+
+/// How long after its last frame the engine counts as busy, which is how long
+/// the transcoder's pause gate stays closed after one.
+///
+/// A drag or a slider sends a frame every tick, so the gate stays closed
+/// through it and opens this long after it stops; a lone frame every two
+/// minutes of live time closes it for this long and no more. Closing the gate
+/// cancels a build of the rest of the year, which costs up to one month's
+/// build each time, so the span is seconds rather than one tick.
+const BUSY_AFTER_A_FRAME: Duration = Duration::from_secs(2);
 
 /// How long a burst of display-change hints is allowed to settle before the
 /// monitors are asked for.
@@ -129,6 +141,11 @@ struct Engine {
     metrics: Option<Schedule>,
     auto_refresh: Option<Schedule>,
     cloud: Option<CloudWorker>,
+    /// The transcoder and the month in force, when the globe is drawn from the
+    /// cube surface.
+    surface: Option<SurfaceFeed>,
+    /// Until when the engine counts as busy, on the injected clock.
+    busy_until: Duration,
 }
 
 /// Whether preview frames are wanted, and whether one is owed right now.
@@ -146,6 +163,10 @@ struct PreviewState {
 }
 
 impl Engine {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear setup sequence, most of it the state's fields one per line"
+    )]
     fn new(
         config: EngineConfig,
         rx: Receiver<EngineCommand>,
@@ -171,6 +192,8 @@ impl Engine {
             on_event,
             record_metrics,
             mailbox,
+            cube_textures,
+            tile_geometry,
         } = config;
 
         let slots = SlotLayout::new(texture_paths.len());
@@ -179,11 +202,23 @@ impl Engine {
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
-        // do about new work.
+        // do about new work. The channel is unbounded, so the send never
+        // blocks, which the transcoder's notify callback relies on: it runs on
+        // a thread that dropping the transcoder joins.
         let poke_tx = command_tx.clone();
         let notify: crate::assets::cloud_fetcher::NotifyFn = Arc::new(move || {
             let _ = poke_tx.send(EngineCommand::Poke);
         });
+
+        let now = clock.elapsed();
+        let month = crate::scene::month::month_in_force(&params.datetime, clock.now_utc());
+        let surface = start_surface(
+            cube_textures,
+            tile_geometry,
+            cache_dir.as_ref(),
+            month,
+            &notify,
+        );
 
         let requested_sample_count = params.sample_count;
         params.sample_count = resolve_and_warn(
@@ -206,10 +241,11 @@ impl Engine {
                 texture_cache_dir: cache_dir.clone(),
                 mailbox: mailbox.clone(),
                 notify: Arc::clone(&notify),
+                cube_month: surface.as_ref().map(|_| month),
+                cpu_adapter: gpu.device_type == wgpu::DeviceType::Cpu,
             },
         );
 
-        let now = clock.elapsed();
         let cloud = cloud.map(|source| {
             spawn_cloud_worker(
                 source,
@@ -255,6 +291,8 @@ impl Engine {
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
+            surface,
+            busy_until: Duration::ZERO,
         })
     }
 
@@ -430,6 +468,15 @@ impl Engine {
             self.dirty = true;
         }
 
+        // Every tick rather than on the drain's schedule: a pack that landed is
+        // one cheap check away, and the first frame of a first run waits on it.
+        if let Some(surface) = &mut self.surface {
+            if surface.drain(&mut self.renderer) {
+                self.dirty = true;
+            }
+            surface.set_busy(now < self.busy_until);
+        }
+
         if let Some(cloud) = &mut self.cloud {
             if cloud.schedule.due(now) {
                 cloud.owed = true;
@@ -513,17 +560,47 @@ impl Engine {
         sky::compute_sky_state_at(&self.params.datetime, self.clock.now_utc())
     }
 
+    /// Derive the month in force from the date, as the sky state is, and move
+    /// the surface to it when it changed.
+    ///
+    /// Outside the digest like the sun direction: the month is not a
+    /// parameter anyone sets but a consequence of the date. A floor that
+    /// becomes resident here redraws through the renderer's own flag, and one
+    /// that is not there yet reopens the readiness latch, so clients hear
+    /// `TexturesReady` again when it lands.
+    fn sync_month(&mut self) {
+        let Some(surface) = &mut self.surface else {
+            return;
+        };
+        let month =
+            crate::scene::month::month_in_force(&self.params.datetime, self.clock.now_utc());
+        surface.set_month(month, &mut self.renderer);
+        if !self.renderer.textures_ready(self.params.texture_index) {
+            self.textures_ready = false;
+        }
+    }
+
+    /// The engine has just drawn, so the transcoder's pause gate stays closed
+    /// for a while.
+    fn mark_busy(&mut self) {
+        self.busy_until = self.clock.elapsed() + BUSY_AFTER_A_FRAME;
+    }
+
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
     /// a tick asks the preview target for its pixels once however it got here.
     fn render_if_dirty(&mut self) -> bool {
         if !self.dirty {
             return false;
         }
+        self.sync_month();
         let sky = self.sky_state();
         let outcome = self.renderer.render(&self.params, &sky);
         self.dirty = false;
         if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
             info!("first frame rendered");
+        }
+        if matches!(outcome, RenderOutcome::Rendered { .. }) {
+            self.mark_busy();
         }
 
         let status = self.renderer.loading_text(self.params.texture_index);
@@ -592,6 +669,11 @@ impl Engine {
     /// window can be hours.
     fn prepare_export(&mut self) {
         self.renderer.drain_texture_updates();
+        if let Some(surface) = &mut self.surface {
+            surface.drain(&mut self.renderer);
+        }
+        self.sync_month();
+        self.mark_busy();
         let sky = self.sky_state();
         if matches!(
             self.renderer.render(&self.params, &sky),
@@ -644,6 +726,33 @@ fn checked_mailbox(
         );
     }
     mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))
+}
+
+/// Start feeding the cube surface, when every face is there and there is a
+/// cache directory to build its packs in.
+fn start_surface(
+    textures: crate::assets::cube_layout::CubeTextures,
+    geometry: crate::assets::tiles::Geometry,
+    cache_dir: Option<&std::path::PathBuf>,
+    month: usize,
+    wake: &crate::assets::cloud_fetcher::NotifyFn,
+) -> Option<SurfaceFeed> {
+    if !textures.is_complete() {
+        return None;
+    }
+    let Some(dir) = cache_dir else {
+        warn!(
+            "the cube faces are there but no cache directory is, so the tile packs cannot be built"
+        );
+        return None;
+    };
+    Some(SurfaceFeed::start(
+        dir.clone(),
+        textures,
+        geometry,
+        month,
+        Arc::clone(wake),
+    ))
 }
 
 /// Open the GPU and tell `start` what was opened, or why nothing was.

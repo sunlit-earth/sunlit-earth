@@ -55,6 +55,10 @@ struct RenderContext {
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    /// The renderer's own surface sampler, which the cube path reads through.
+    surface_sampler: wgpu::Sampler,
+    /// A 1x1 black cube for every cube place a case leaves empty.
+    dummy_cube: wgpu::TextureView,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -133,8 +137,15 @@ fn create_render_context() -> RenderContext {
                 },
                 count: None,
             },
+            cube_entry(4),
+            cube_entry(5),
+            cube_entry(6),
         ],
     });
+    let dummy_cube = create_solid_cube(&device, &queue, [[0, 0, 0, 255]; 6]);
+    let surface_sampler = device.create_sampler(
+        &sunlit_core::renderer::surface_sampler_descriptor(ctx.cpu_adapter),
+    );
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("test_pipeline_layout"),
@@ -202,6 +213,8 @@ fn create_render_context() -> RenderContext {
         index_count,
         uniform_buffer,
         sampler,
+        surface_sampler,
+        dummy_cube,
     }
 }
 
@@ -262,19 +275,91 @@ fn create_solid_texture(
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Render a frame and return the RGBA8 pixel data.
-fn render_frame(
-    ctx: &RenderContext,
-    uniforms: &Uniforms,
-    day_texture: &wgpu::TextureView,
-    night_texture: &wgpu::TextureView,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    ctx.queue
-        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
+/// A cube texture binding of the production layout.
+fn cube_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::Cube,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
 
-    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+/// An RGBA8 cube `size` texels wide with one level, face `f` from
+/// `texels(f)`, in cube layer order.
+fn create_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texels: impl Fn(usize) -> Vec<u8>,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_cube"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for face in 0..6_u32 {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &texels(face as usize),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * size),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+/// A 1x1 cube with one solid color per face.
+fn create_solid_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    faces: [[u8; 4]; 6],
+) -> wgpu::TextureView {
+    create_cube(device, queue, 1, |face| faces[face].to_vec())
+}
+
+/// A bind group of the production layout.
+fn test_bind_group(
+    ctx: &RenderContext,
+    flat: [&wgpu::TextureView; 2],
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+) -> wgpu::BindGroup {
+    let view = wgpu::BindingResource::TextureView;
+    ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_bind_group"),
         layout: &ctx.bind_group_layout,
         entries: &[
@@ -284,18 +369,82 @@ fn render_frame(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(day_texture),
+                resource: view(flat[0]),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Sampler(&ctx.sampler),
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: wgpu::BindingResource::TextureView(night_texture),
+                resource: view(flat[1]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: view(cubes[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: view(cubes[1]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: view(cubes[2]),
             },
         ],
-    });
+    })
+}
+
+/// Render a frame from the flat maps and return the RGBA8 pixel data.
+fn render_frame(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    day_texture: &wgpu::TextureView,
+    night_texture: &wgpu::TextureView,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let dummy = &ctx.dummy_cube;
+    let bind_group = test_bind_group(
+        ctx,
+        [day_texture, night_texture],
+        &ctx.sampler,
+        [dummy, dummy, dummy],
+    );
+    render_with(ctx, uniforms, &bind_group, width, height)
+}
+
+/// Render a frame from the day, night and water cubes through the surface
+/// sampler, with the cube bit set, and return the RGBA8 pixel data.
+fn render_cube_frame(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    cubes: [&wgpu::TextureView; 3],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let bind_group = test_bind_group(ctx, [&flat, &flat], &ctx.surface_sampler, cubes);
+    let uniforms = Uniforms {
+        flags: uniforms.flags | FLAG_CUBE,
+        ..*uniforms
+    };
+    render_with(ctx, &uniforms, &bind_group, width, height)
+}
+
+/// Bit 1 of `Uniforms::flags`: the surface comes from the cubes.
+const FLAG_CUBE: u32 = 2;
+
+/// Render the globe with `bind_group` and return the RGBA8 pixel data.
+fn render_with(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    bind_group: &wgpu::BindGroup,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    ctx.queue
+        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_render_target"),
@@ -358,7 +507,7 @@ fn render_frame(
         });
 
         pass.set_pipeline(&ctx.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
         pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..ctx.index_count, 0, 0..1);
@@ -1674,28 +1823,13 @@ fn cloud_pipeline_renders_with_alpha() {
     ctx.queue
         .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
-    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("test_cloud_bind_group"),
-        layout: &ctx.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: ctx.uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&cloud_tex),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&ctx.sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&dummy),
-            },
-        ],
-    });
+    let dummy_cube = &ctx.dummy_cube;
+    let bind_group = test_bind_group(
+        &ctx,
+        [&cloud_tex, &dummy],
+        &ctx.sampler,
+        [dummy_cube, dummy_cube, dummy_cube],
+    );
 
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_cloud_render_target"),
@@ -1983,4 +2117,201 @@ fn day_and_night_corrections_independent() {
         pixels_day_bright, pixels_night_bright,
         "Day and night corrections should produce different output when targeting different textures"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The cube surface
+// ---------------------------------------------------------------------------
+
+/// The six axes in cube layer order, +X, -X, +Y, -Y, +Z, -Z.
+const AXES: [glam::Vec3; 6] = [
+    glam::Vec3::X,
+    glam::Vec3::NEG_X,
+    glam::Vec3::Y,
+    glam::Vec3::NEG_Y,
+    glam::Vec3::Z,
+    glam::Vec3::NEG_Z,
+];
+
+/// Uniforms for a square frame looking at the globe's center from along
+/// `axis`, the day surface alone.
+fn looking_along(size: u32, axis: glam::Vec3) -> Uniforms {
+    let eye = axis * 3.5;
+    let up = if axis.y.abs() > 0.5 {
+        glam::Vec3::Z
+    } else {
+        glam::Vec3::Y
+    };
+    let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, up);
+    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
+    Uniforms {
+        mvp: (proj * view).to_cols_array(),
+        eye_pos: eye.into(),
+        ..default_test_uniforms(size)
+    }
+}
+
+/// The RGB of the pixel at the middle of a square frame.
+fn middle_pixel(pixels: &[u8], size: u32) -> [u8; 3] {
+    let at = (((size / 2) * size + size / 2) * 4) as usize;
+    [pixels[at], pixels[at + 1], pixels[at + 2]]
+}
+
+/// Whether two colors agree within `tolerance` on every channel.
+fn close(a: [u8; 3], b: [u8; 3], tolerance: u8) -> bool {
+    a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= tolerance)
+}
+
+/// The globe read through the warped direction shows each face where the
+/// camera looks along that face's axis, which is what the shader and the
+/// hardware's cube table agree on.
+#[test]
+fn the_cube_path_shows_each_face_where_its_axis_points() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 64;
+    let colors: [[u8; 4]; 6] = [
+        [220, 40, 40, 255],
+        [40, 220, 40, 255],
+        [40, 40, 220, 255],
+        [220, 220, 40, 255],
+        [220, 40, 220, 255],
+        [40, 220, 220, 255],
+    ];
+    let day = create_solid_cube(&ctx.device, &ctx.queue, colors);
+    let dummy = &ctx.dummy_cube;
+    for (face, axis) in AXES.into_iter().enumerate() {
+        let pixels = render_cube_frame(
+            &ctx,
+            &looking_along(size, axis),
+            [&day, dummy, dummy],
+            size,
+            size,
+        );
+        let [r, g, b, _] = colors[face];
+        let seen = middle_pixel(&pixels, size);
+        assert!(
+            close(seen, [r, g, b], 2),
+            "looking along {axis:?}: {seen:?}, the face holds {:?}",
+            colors[face]
+        );
+    }
+}
+
+/// The water cube, not the day surface's alpha, is what the water effects
+/// read on the cube path: the same day and night with open water everywhere
+/// are brighter at the grazing edge than with land everywhere.
+#[test]
+fn the_water_cube_drives_the_water_effects() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 128;
+    let day = create_solid_cube(&ctx.device, &ctx.queue, [[10, 30, 60, 255]; 6]);
+    let night = create_solid_cube(&ctx.device, &ctx.queue, [[5, 5, 10, 255]; 6]);
+    let open_water = create_solid_cube(&ctx.device, &ctx.queue, [[255, 255, 255, 255]; 6]);
+    let land = create_solid_cube(&ctx.device, &ctx.queue, [[0, 0, 0, 255]; 6]);
+    let uniforms = Uniforms {
+        terminator_width: 0.15,
+        flags: 1,
+        fresnel_mix: 0.5,
+        ..default_test_uniforms(size)
+    };
+
+    let over_water = avg_luminance_non_clear(&render_cube_frame(
+        &ctx,
+        &uniforms,
+        [&day, &night, &open_water],
+        size,
+        size,
+    ));
+    let over_land = avg_luminance_non_clear(&render_cube_frame(
+        &ctx,
+        &uniforms,
+        [&day, &night, &land],
+        size,
+        size,
+    ));
+    assert!(
+        over_water > over_land + 1.0,
+        "open water {over_water:.1} should read brighter than land {over_land:.1}"
+    );
+}
+
+/// A day pack's floor, uploaded face by face in the pack's order, shows each
+/// face's own texels where that face's axis points: the order the pack keeps
+/// its faces in is the cube's layer order.
+#[test]
+fn a_packs_floor_faces_land_where_their_axes_point() {
+    use std::sync::atomic::AtomicBool;
+
+    use sunlit_core::assets::cube_layout::CubeTextures;
+    use sunlit_core::assets::tiles::{self, PackKind};
+
+    let scratch = common::test_support::ScratchDir::new("render_pipeline_floor");
+    common::test_support::write_cube_fixture(&scratch.join("textures"));
+    let textures = CubeTextures::resolve(&scratch.join("textures"));
+    let cache = scratch.join("cache");
+    tiles::ensure_pack(
+        &cache,
+        PackKind::Day(0),
+        &textures,
+        &tiles::FIXTURE,
+        &AtomicBool::new(false),
+    )
+    .expect("build the fixture's January pack");
+    let pack = tiles::Pack::open(&tiles::pack_path(&cache, PackKind::Day(0))).expect("open it");
+
+    let faces: Vec<_> = pack.entries().iter().filter(|e| e.whole_face).collect();
+    assert_eq!(faces.len(), 6, "a floor has six faces");
+    let floor = 1_u32 << faces[0].key.level;
+    let decoded: Vec<Vec<u8>> = faces
+        .iter()
+        .map(|entry| {
+            let blob = pack.read(entry).expect("read a floor face");
+            let finest = pack.mips(entry)[0];
+            tiles::decode_bc7(
+                &blob[finest.offset..finest.offset + finest.len],
+                floor,
+                floor,
+            )
+            .expect("decode a floor face")
+        })
+        .collect();
+    for (face, entry) in faces.iter().enumerate() {
+        assert_eq!(
+            usize::from(entry.key.face),
+            face,
+            "the pack keeps its faces in order"
+        );
+    }
+
+    let ctx = RENDER_CTX.lock().unwrap();
+    let size = 64;
+    let cube = create_cube(&ctx.device, &ctx.queue, floor, |face| decoded[face].clone());
+    let dummy = &ctx.dummy_cube;
+    for (face, axis) in AXES.into_iter().enumerate() {
+        let pixels = render_cube_frame(
+            &ctx,
+            &looking_along(size, axis),
+            [&cube, dummy, dummy],
+            size,
+            size,
+        );
+        // The middle of a face is the corner its four middle texels share, so
+        // a bilinear read there is their mean.
+        let texel = |row: u32, col: u32, channel: usize| {
+            u32::from(decoded[face][((row * floor + col) * 4) as usize + channel])
+        };
+        let (lo, hi) = (floor / 2 - 1, floor / 2);
+        let expected: [u8; 3] = std::array::from_fn(|channel| {
+            let sum = texel(lo, lo, channel)
+                + texel(lo, hi, channel)
+                + texel(hi, lo, channel)
+                + texel(hi, hi, channel);
+            u8::try_from((sum + 2) / 4).expect("a mean of bytes")
+        });
+        let seen = middle_pixel(&pixels, size);
+        assert!(
+            close(seen, expected, 3),
+            "face {face}: {seen:?} where the floor's middle is {expected:?}"
+        );
+    }
 }

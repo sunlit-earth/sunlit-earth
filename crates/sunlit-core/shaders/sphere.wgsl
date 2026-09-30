@@ -2,7 +2,7 @@ struct Uniforms {
     mvp: mat4x4<f32>,              // 64 bytes, offset 0
     sun_dir: vec3<f32>,            // 12 bytes, offset 64
     terminator_width: f32,         // 4 bytes, offset 76
-    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading)
+    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 1: cube surface)
     diffuse_floor: f32,            // 4 bytes, offset 84
     diffuse_ramp: f32,             // 4 bytes, offset 88
     _pad: f32,                     // 4 bytes, offset 92
@@ -81,6 +81,19 @@ var sphere_sampler: sampler;
 
 @group(0) @binding(3)
 var night_texture: texture_2d<f32>;
+
+// The globe's surface on the equi-angular cube: the day floor or the grid, the
+// night floor, and the water mask, 255 over open water. Read through
+// `sphere_sampler` like everything else, which in a group that binds them is
+// the surface sampler.
+@group(0) @binding(4)
+var day_cube: texture_cube<f32>;
+
+@group(0) @binding(5)
+var night_cube: texture_cube<f32>;
+
+@group(0) @binding(6)
+var water_cube: texture_cube<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -336,11 +349,65 @@ fn schlick_fresnel(n_dot_v: f32, exponent: f32) -> f32 {
     return f0 + (1.0 - f0) * pow(1.0 - n_dot_v, exponent);
 }
 
+/// Bit 1 of `uniforms.flags`: the surface is read from the cubes at bindings 4
+/// to 6 through the warped direction rather than from the flat maps at 1 and 3
+/// through the mesh's coordinates.
+const FLAG_CUBE_SURFACE: u32 = 2u;
+
+const FOUR_OVER_PI: f32 = 1.2732395447351628;
+
+/// The warped direction of the equi-angular cube for a unit normal: the
+/// tangent warp with theta = pi / 4, `atan(n / m) * 4 / pi` with `m` the largest
+/// component's magnitude.
+///
+/// Its largest component is exactly +-1 and the other two are the equi-angular
+/// coordinates on that face, so the hardware's face selection and its face
+/// coordinates are the ones the bake used, with the cube in the world frame.
+/// It is continuous everywhere, face edges included, which is what lets its
+/// screen derivatives stand in for the implicit ones.
+fn equi_angular(n: vec3<f32>) -> vec3<f32> {
+    let a = abs(n);
+    return atan(n / max(a.x, max(a.y, a.z))) * FOUR_OVER_PI;
+}
+
+/// What the globe's surface holds at a fragment: the day color, and in blend
+/// mode the night color and how much of it is open water, 0 to 1.
+struct Surface {
+    day: vec3<f32>,
+    night: vec3<f32>,
+    water: f32,
+}
+
+fn globe_surface(in: VertexOutput) -> Surface {
+    let single = uniforms.terminator_width < 0.0;
+    if (uniforms.flags & FLAG_CUBE_SURFACE) != 0u {
+        let w = equi_angular(normalize(in.world_normal));
+        let dx = dpdx(w);
+        let dy = dpdy(w);
+        let day = textureSampleGrad(day_cube, sphere_sampler, w, dx, dy).rgb;
+        if single {
+            return Surface(day, vec3<f32>(0.0), 0.0);
+        }
+        let night = textureSampleGrad(night_cube, sphere_sampler, w, dx, dy).rgb;
+        let water = textureSampleGrad(water_cube, sphere_sampler, w, dx, dy).r;
+        return Surface(day, night, water);
+    }
+
+    let day = textureSample(sphere_texture, sphere_sampler, in.uv);
+    if single {
+        return Surface(day.rgb, vec3<f32>(0.0), 0.0);
+    }
+    let night = textureSample(night_texture, sphere_sampler, in.uv).rgb;
+    // The flat day map carries the water mask in its alpha: land 255, open
+    // water 128.
+    return Surface(day.rgb, night, saturate((1.0 - day.a) * 2.0));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let day = textureSample(sphere_texture, sphere_sampler, in.uv);
+    let surface = globe_surface(in);
 
-    var day_rgb = apply_gamma(day.rgb, uniforms.day_gamma);
+    var day_rgb = apply_gamma(surface.day, uniforms.day_gamma);
     day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
 
     // If terminator_width is negative, we're in single-texture mode
@@ -349,9 +416,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(day_rgb, 1.0);
     }
 
-    let night_color = textureSample(night_texture, sphere_sampler, in.uv).rgb;
-
-    var night_rgb = apply_gamma(night_color, uniforms.night_gamma);
+    var night_rgb = apply_gamma(surface.night, uniforms.night_gamma);
     night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
 
     let n = normalize(in.world_normal);
@@ -367,9 +432,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    // Water mask encoded in upper alpha range: land=255, ocean=128.
-    // Remap to [0, 1]: water = saturate((1 - alpha) * 2).
-    let water = saturate((1.0 - day.a) * 2.0);
+    let water = surface.water;
     if water > 0.0 {
         let v = normalize(uniforms.eye_pos - in.world_normal);
         let n_dot_v = max(dot(n, v), 0.0);

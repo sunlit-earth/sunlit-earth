@@ -1,12 +1,12 @@
 //! Which month's surface the globe is drawn with.
 //!
 //! Each of the twelve day surfaces stands for its whole month. The month in
-//! force is the one whose first day is nearest the date, the convention Web
-//! WorldWind's Blue Marble layer uses, so the surface changes at the middle of
-//! a month rather than at its start: from the 16th of a 31 day month at noon,
-//! the 16th of a 30 day month at midnight, and the 15th of February, at noon in
-//! a leap year. The date is the one the Sun is computed for, the custom date or
-//! the live clock, through [`CivilTime`].
+//! force is the one whose first day is nearest the date, the convention of the
+//! Blue Marble layer in NASA's Web World Wind, so the surface changes at the
+//! middle of a month rather than at its start: from the 16th of a 31 day month
+//! at noon, the 16th of a 30 day month at midnight, and the 15th of February, at
+//! noon in a leap year. The date is the one the Sun is computed for, the custom
+//! date or the live clock, through [`CivilTime`].
 
 use super::datetime::{self, hour_float_to_hms};
 use super::sun::DateTimeInput;

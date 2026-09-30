@@ -67,12 +67,8 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 info!(slot = msg.slot_index, "GPU texture created");
                 crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group = create_bind_group(
-                    &res.device,
-                    &res.bind_group_layout,
-                    &res.uniform_buffer,
+                let bind_group = res.flat_bind_group(
                     &tex_view,
-                    &res.sampler,
                     &res.dummy_texture_view,
                     &format!("bind_group_slot_{}", msg.slot_index),
                 );
@@ -167,15 +163,8 @@ pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
 /// Create the composite bind group if both day and night texture views are available.
 pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
     if let (Some(day_view), Some(night_view)) = (&res.day_texture_view, &res.night_texture_view) {
-        res.composite_bind_group = Some(create_bind_group(
-            &res.device,
-            &res.bind_group_layout,
-            &res.uniform_buffer,
-            day_view,
-            &res.sampler,
-            night_view,
-            "composite_bind_group",
-        ));
+        res.composite_bind_group =
+            Some(res.flat_bind_group(day_view, night_view, "composite_bind_group"));
     }
 }
 
@@ -185,15 +174,8 @@ pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
 /// dummy and the group depends on the cloud slot alone.
 pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
     if let Some(cloud_view) = &res.cloud_texture_view {
-        res.cloud_bind_group = Some(create_bind_group(
-            &res.device,
-            &res.bind_group_layout,
-            &res.uniform_buffer,
-            cloud_view,
-            &res.sampler,
-            &res.dummy_texture_view,
-            "cloud_bind_group",
-        ));
+        res.cloud_bind_group =
+            Some(res.flat_bind_group(cloud_view, &res.dummy_texture_view, "cloud_bind_group"));
     }
 }
 
@@ -307,20 +289,34 @@ pub(super) fn create_mipmapped_texture(
     texture
 }
 
-/// Create a bind group with a uniform buffer, day texture, sampler, and night texture.
+/// What one bind group of the shared layout holds besides the uniforms.
 ///
-/// For every group that reads one texture, the Grid, Day and Night modes and
-/// the cloud overlay alike, pass the dummy 1x1 texture as `night_texture_view`.
-/// For blend mode, pass the actual night texture.
+/// A group that reads one flat texture, the day or night map, the Moon, the
+/// Milky Way or the clouds, has the dummy 1x1 texture as `night` and the dummy
+/// cube in all three cube places; blend mode over the flat maps has the real
+/// night map. A group that draws the globe from a cube, the grid's or the
+/// surface's, has the dummies in both flat places and the surface sampler.
+pub(super) struct Bindings<'a> {
+    /// Binding 1.
+    pub texture: &'a wgpu::TextureView,
+    /// Binding 2.
+    pub sampler: &'a wgpu::Sampler,
+    /// Binding 3.
+    pub night: &'a wgpu::TextureView,
+    /// Bindings 4 to 6: the day or grid cube, the night cube and the mask.
+    pub cubes: [&'a wgpu::TextureView; 3],
+}
+
+/// Create a bind group of the shared layout.
 pub(super) fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,
-    texture_view: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
-    night_texture_view: &wgpu::TextureView,
+    bindings: &Bindings<'_>,
     label: &str,
 ) -> wgpu::BindGroup {
+    let view = wgpu::BindingResource::TextureView;
+    let [day_cube, night_cube, mask_cube] = bindings.cubes;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
@@ -331,15 +327,27 @@ pub(super) fn create_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(texture_view),
+                resource: view(bindings.texture),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Sampler(sampler),
+                resource: wgpu::BindingResource::Sampler(bindings.sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: wgpu::BindingResource::TextureView(night_texture_view),
+                resource: view(bindings.night),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: view(day_cube),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: view(night_cube),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: view(mask_cube),
             },
         ],
     })

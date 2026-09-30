@@ -17,7 +17,9 @@ use super::clock::{Clock, SystemClock};
 use super::wallpaper_sink::{self, WallpaperSink};
 use super::{Engine, EngineCommand, EngineEvent};
 use crate::assets::cloud_source::CloudSource;
+use crate::assets::cube_layout::CubeTextures;
 use crate::assets::mailbox::TextureMailbox;
+use crate::assets::tiles::{GEOMETRY, Geometry};
 use crate::config::QualityTier;
 use crate::memory_report::MemoryReport;
 use crate::params::SceneParams;
@@ -46,8 +48,9 @@ pub struct EngineConfig {
     /// case, and the default for tests that do not care about clouds).
     pub cloud: Option<Arc<dyn CloudSource>>,
     pub cloud_poll_interval: Duration,
-    /// The app's data directory, holding both the cloud image cache and the
-    /// downscaled copies of the surface textures. `None` disables both caches.
+    /// The app's data directory, holding the cloud image cache, the
+    /// downscaled copies of the surface textures and the tile packs. `None`
+    /// disables all three, and with them the cube surface.
     pub cache_dir: Option<PathBuf>,
     /// Unattended wallpaper refresh interval; `None` disables it.
     pub auto_refresh: Option<Duration>,
@@ -68,6 +71,14 @@ pub struct EngineConfig {
     /// caller holding the same mailbox the engine drains can produce an arrival
     /// order that no amount of waiting makes reliable.
     pub mailbox: Option<TextureMailbox>,
+    /// The cube faces the textures directory holds. With every one of them
+    /// there and a cache directory to build the tile packs in, the globe is
+    /// drawn from the cube surface, and the day and night paths above are not
+    /// read; otherwise from those paths, and without them the grid.
+    pub cube_textures: CubeTextures,
+    /// The sizes the tile packs are cut to: `tiles::GEOMETRY` for the shipped
+    /// faces, `tiles::FIXTURE` for the test bake's.
+    pub tile_geometry: Geometry,
 }
 
 impl EngineConfig {
@@ -100,7 +111,14 @@ impl EngineConfig {
             on_event: Arc::new(|_| {}),
             record_metrics: false,
             mailbox: None,
+            cube_textures: CubeTextures::default(),
+            tile_geometry: GEOMETRY,
         }
+    }
+
+    /// Whether the engine will draw the globe from the cube surface.
+    pub fn takes_cube(&self) -> bool {
+        self.cube_textures.is_complete() && self.cache_dir.is_some()
     }
 }
 

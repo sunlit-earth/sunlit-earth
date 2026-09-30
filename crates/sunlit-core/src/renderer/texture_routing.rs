@@ -1,5 +1,6 @@
 use super::Renderer;
 use super::slots::TextureMode;
+use super::surface::{LayerState, SurfaceGroup, SurfaceLayer};
 use super::textures::{maybe_spawn_texture_load, resolve_render_index};
 
 /// Result of texture resolution: identifies which bind group to use.
@@ -8,6 +9,17 @@ pub(super) enum ResolvedTexture {
     Composite,
     /// Use a single-texture slot bind group. The `usize` is the slot index.
     Slot(usize),
+    /// Use one of the cube surface's bind groups.
+    Surface(SurfaceGroup),
+}
+
+impl ResolvedTexture {
+    /// Whether the globe reads this bind group through the cube rather than
+    /// through the mesh's coordinates: the surface and the grid do, the flat
+    /// maps do not.
+    pub(super) fn draws_from_a_cube(&self) -> bool {
+        matches!(self, Self::Surface(_) | Self::Slot(0))
+    }
 }
 
 /// Determine the bind group and blend mode for the current frame.
@@ -16,6 +28,14 @@ pub(super) enum ResolvedTexture {
 /// and returns a `ResolvedTexture` indicating the bind group along with whether
 /// blend uniforms should be active.
 pub(super) fn resolve_textures(res: &mut Renderer, mode: TextureMode) -> (ResolvedTexture, bool) {
+    // With nothing of the surface to draw yet, the fallback below, whose slots
+    // have no file behind them while the surface is in use.
+    if let Some(surface) = &res.surface
+        && let Some((group, use_blend)) = surface.route(mode)
+    {
+        return (ResolvedTexture::Surface(group), use_blend);
+    }
+
     let layout = res.layout();
     let day_slot = layout.globe(TextureMode::Day);
     let night_slot = layout.globe(TextureMode::Night);
@@ -46,20 +66,39 @@ pub(super) fn resolve_textures(res: &mut Renderer, mode: TextureMode) -> (Resolv
 }
 
 /// The loading indicator text for the current texture selection.
+///
+/// With the cube surface in use, the day side counts the mask too in blend
+/// mode, the one mode that reads it.
 pub(super) fn loading_text(res: &Renderer, mode: TextureMode) -> String {
-    let layout = res.layout();
-    let slot_index = layout.globe(mode);
+    let (day_loading, night_loading) = if let Some(surface) = &res.surface {
+        let waiting = |layer| surface.state(layer) == LayerState::Waiting;
+        (
+            waiting(SurfaceLayer::Day(surface.month))
+                || (mode == TextureMode::Blend && waiting(SurfaceLayer::Mask)),
+            waiting(SurfaceLayer::Night),
+        )
+    } else {
+        let layout = res.layout();
+        (
+            res.texture_slots[layout.globe(TextureMode::Day)].loading,
+            res.texture_slots[layout.globe(TextureMode::Night)].loading,
+        )
+    };
 
-    if mode == TextureMode::Blend {
-        let day_loading = res.texture_slots[layout.globe(TextureMode::Day)].loading;
-        let night_loading = res.texture_slots[layout.globe(TextureMode::Night)].loading;
-        match (day_loading, night_loading) {
-            (true, true) => "Loading Day and Night...".to_owned(),
-            (true, false) => "Loading Day...".to_owned(),
-            (false, true) => "Loading Night...".to_owned(),
-            (false, false) => String::new(),
+    let loading = match mode {
+        TextureMode::Grid => false,
+        TextureMode::Day => day_loading,
+        TextureMode::Night => night_loading,
+        TextureMode::Blend => {
+            return match (day_loading, night_loading) {
+                (true, true) => "Loading Day and Night...".to_owned(),
+                (true, false) => "Loading Day...".to_owned(),
+                (false, true) => "Loading Night...".to_owned(),
+                (false, false) => String::new(),
+            };
         }
-    } else if res.texture_slots[slot_index].loading {
+    };
+    if loading {
         format!("Loading {}...", mode.label())
     } else {
         String::new()

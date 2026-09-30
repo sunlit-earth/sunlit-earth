@@ -11,7 +11,7 @@ use tracing::info;
 use sunlit_core::assets::cloud_fetcher;
 use sunlit_core::assets::cloud_source::HttpCloudSource;
 use sunlit_core::assets::cube_layout::CubeTextures;
-use sunlit_core::assets::texture_loader;
+use sunlit_core::assets::{texture_loader, tiles};
 use sunlit_core::config::{AppConfig, QualityTier};
 use sunlit_core::engine::EngineConfig;
 use sunlit_core::engine::clock::SystemClock;
@@ -31,13 +31,21 @@ use crate::cli::Cli;
 /// the guest staging in `xtask` and the engine tests use.
 const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 
-/// Resolve the day, night, moon and Milky Way texture paths from the textures
-/// directory.
+/// What the textures directory holds for the engine.
+pub(crate) struct ResolvedTextures {
+    /// The day, night, moon and Milky Way paths, in slot order after the grid.
+    pub(crate) paths: Vec<Option<PathBuf>>,
+    /// The cube faces, which the globe is drawn from when every one is there.
+    pub(crate) cube: CubeTextures,
+}
+
+/// Resolve the day, night, moon and Milky Way texture paths and the cube faces
+/// from the textures directory.
 ///
-/// In slot order after the grid, which is what the renderer's `SlotLayout`
-/// expects: a path missing from disk is `None` and its slot stays empty rather
-/// than moving the ones after it.
-pub(crate) fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Option<PathBuf>> {
+/// The paths are in slot order after the grid, which is what the renderer's
+/// `SlotLayout` expects: a path missing from disk is `None` and its slot stays
+/// empty rather than moving the ones after it.
+pub(crate) fn resolve_textures(cli_dir: Option<&std::path::Path>) -> ResolvedTextures {
     let dir = texture_loader::resolve_textures_dir(cli_dir);
     let pick = |name: &str| {
         dir.as_ref()
@@ -50,19 +58,21 @@ pub(crate) fn resolve_texture_paths(cli_dir: Option<&std::path::Path>) -> Vec<Op
         pick("lroc_color_poles_1k.jxl"),
         pick("milkyway_2020_4k.jxl"),
     ];
-    let cube_files = dir
+    let cube = dir
         .as_deref()
-        .map_or(0, |d| CubeTextures::resolve(d).found());
+        .map(CubeTextures::resolve)
+        .unwrap_or_default();
     info!(
         textures_dir = ?dir,
         day = ?paths[0],
         night = ?paths[1],
         moon = ?paths[2],
         milky_way = ?paths[3],
-        cube_files,
+        cube_files = cube.found(),
+        cube_complete = cube.is_complete(),
         "resolved texture paths"
     );
-    paths
+    ResolvedTextures { paths, cube }
 }
 
 /// Whether any of the resolved paths is one of the globe's own maps.
@@ -114,9 +124,12 @@ pub(crate) fn engine_config(
         Some(Arc::new(HttpCloudSource::new(url)) as Arc<_>)
     };
 
+    let textures = resolve_textures(cli.textures_dir.as_deref());
     EngineConfig {
         force_software: cli.software_rendering,
-        texture_paths: resolve_texture_paths(cli.textures_dir.as_deref()),
+        texture_paths: textures.paths,
+        cube_textures: textures.cube,
+        tile_geometry: tiles::GEOMETRY,
         preview_size,
         preview_enabled,
         params: SceneParams::from_config(config),
@@ -158,7 +171,7 @@ mod tests {
         )
         .expect("write the pointer stand-in");
 
-        let paths = resolve_texture_paths(Some(dir.path()));
+        let paths = resolve_textures(Some(dir.path())).paths;
         assert!(paths[0].is_some(), "the day map is the asset here");
         assert_eq!(paths[1], None, "the night map is not in the directory");
         assert_eq!(paths[2], None, "the moon map is a pointer");

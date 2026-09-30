@@ -51,6 +51,14 @@ pub const TEXTURE_FILES: [&str; 4] = [
     "milkyway_2020_4k.jxl",
 ];
 
+/// What an empty texture file is: not a pointer, which has a few hundred bytes
+/// to say what it stands for, but a copy that stopped before it wrote anything.
+fn empty(name: &str) -> String {
+    format!(
+        "{name} is empty, which neither an asset nor a Git LFS pointer is; an interrupted copy leaves one"
+    )
+}
+
 /// Smaller than any real asset here and far larger than a Git LFS pointer.
 const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 
@@ -69,6 +77,7 @@ pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(),
     for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
         match size {
             None => return Err(format!("there is no {name} in it")),
+            Some(0) => return Err(empty(name)),
             Some(bytes) if bytes < TEXTURE_MIN_BYTES => {
                 return Err(format!(
                     "{name} is {bytes} bytes, which is a Git LFS pointer rather than \
@@ -81,24 +90,15 @@ pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(),
     Ok(())
 }
 
-/// The cube faces in layer order, and the year of the day set's month
-/// directories, as `sunlit_core::assets::cube_layout` spells them.
-///
-/// The two crates share nothing, so
-/// `the_cube_files_are_the_ones_the_core_resolves` reads that module and asserts
-/// the spelling still matches.
-const CUBE_FACES: [&str; 6] = ["px", "nx", "py", "ny", "pz", "nz"];
-const CUBE_YEAR: u32 = 2004;
-const CUBE_MONTHS: u32 = 12;
+/// The core's spelling of the cube files, compiled into this crate from the
+/// core's own source, since the two crates share no dependency.
+#[path = "../../../sunlit-core/src/assets/cube_names.rs"]
+mod cube_names;
 
 /// The cube files relative to the textures directory: `day/2004MM/<face>.jxl`
 /// for the twelve months, then `night/` and `mask/`.
 pub fn cube_texture_files() -> Vec<String> {
-    let sets = (1..=CUBE_MONTHS)
-        .map(|month| format!("day/{CUBE_YEAR}{month:02}"))
-        .chain(["night".to_owned(), "mask".to_owned()]);
-    sets.flat_map(|set| CUBE_FACES.map(|face| format!("{set}/{face}.jxl")))
-        .collect()
+    cube_names::all_files()
 }
 
 /// Everything a bundle carries under `textures/`: the flat maps and the cube.
@@ -127,7 +127,8 @@ pub fn cube_verdict(dir: &Path) -> Result<(), String> {
         let path = dir.join(&name);
         match std::fs::metadata(&path) {
             Err(_) => return Err(format!("there is no {name} in it")),
-            Ok(meta) if meta.len() == 0 || is_lfs_pointer(&path) => {
+            Ok(meta) if meta.len() == 0 => return Err(empty(&name)),
+            Ok(_) if is_lfs_pointer(&path) => {
                 return Err(format!(
                     "{name} is a Git LFS pointer rather than the asset; `git lfs pull` fetches it"
                 ));
@@ -1241,6 +1242,14 @@ mod tests {
         assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
         assert!(!err.contains("pointer"), "{err}");
 
+        // And empty as empty: no pointer is, and fetching from LFS would not
+        // repair a copy that stopped short.
+        let mut empty = real;
+        empty[1] = Some(0);
+        let err = textures_verdict(empty).unwrap_err();
+        assert!(err.contains("BlackMarble_2016.jxl is empty"), "{err}");
+        assert!(!err.contains("git lfs pull"), "{err}");
+
         // The Moon is held to the same floor as the rest, which its 285 KB
         // clears by a wide margin.
         let mut moon = real;
@@ -1287,33 +1296,9 @@ mod tests {
         assert_eq!(body.matches(".jxl").count(), TEXTURE_FILES.len());
     }
 
-    /// The cube layout is spelled once in the core and once here.
-    #[test]
-    fn the_cube_files_are_the_ones_the_core_resolves() {
-        let source = std::fs::read_to_string(
-            store::repo_root()
-                .join("crates")
-                .join("sunlit-core")
-                .join("src")
-                .join("assets")
-                .join("cube_layout.rs"),
-        )
-        .expect("the core's cube_layout.rs");
-        let faces = CUBE_FACES.map(|face| format!("\"{face}\"")).join(", ");
-        assert!(source.contains(&format!("[&str; 6] = [{faces}]")), "faces");
-        assert!(
-            source.contains(&format!("YEAR: u32 = {CUBE_YEAR};")),
-            "year"
-        );
-        assert!(
-            source.contains(&format!("MONTHS: usize = {CUBE_MONTHS};")),
-            "months"
-        );
-        for set in ["\"night\"", "\"mask\"", "day/{YEAR}"] {
-            assert!(source.contains(set), "{set}");
-        }
-    }
-
+    /// The list is the core's own, compiled from its source, and the core's
+    /// tests hold its resolve to the same list; these are the spellings a
+    /// release archive and a user's checkout have to agree on.
     #[test]
     fn the_cube_is_eighty_four_distinct_files() {
         let files = cube_texture_files();
@@ -1323,6 +1308,9 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted.len(), 84);
         assert_eq!(files[0], "day/200401/px.jxl");
+        assert_eq!(files[6 * 9 + 3], "day/200410/ny.jxl");
+        assert_eq!(files[6 * 11 + 5], "day/200412/nz.jxl");
+        assert_eq!(files[6 * 12 + 2], "night/py.jxl");
         assert_eq!(files[83], "mask/nz.jxl");
         assert_eq!(bundle_texture_files().len(), 88);
     }
@@ -1370,5 +1358,15 @@ size 9
             err.contains("day/200406/ny.jxl") && err.contains("git lfs pull"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn an_empty_cube_face_is_empty_rather_than_a_pointer() {
+        let dir = cube_dir("empty");
+        std::fs::write(dir.join("mask/px.jxl"), b"").expect("write");
+        let err = cube_verdict(&dir).unwrap_err();
+        assert!(err.contains("mask/px.jxl is empty"), "{err}");
+        assert!(!err.contains("pointer rather"), "{err}");
+        assert!(!err.contains("git lfs pull"), "{err}");
     }
 }

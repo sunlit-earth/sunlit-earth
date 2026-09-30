@@ -8,16 +8,8 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// The faces in cube layer order: +X, -X, +Y, -Y, +Z, -Z.
-pub const FACES: [&str; 6] = ["px", "nx", "py", "ny", "pz", "nz"];
-
-/// The day faces are shipped for the twelve months of 2004.
-pub const MONTHS: usize = 12;
-
-/// The year of the month directories, `day/2004MM`.
-pub const YEAR: u32 = 2004;
-
-const FACE_EXTENSION: &str = "jxl";
+use super::cube_names;
+pub use super::cube_names::{FACES, MONTHS, YEAR};
 
 const LFS_POINTER_PREFIX: &[u8] = b"version https://git-lfs.github.com/spec/v1";
 
@@ -38,12 +30,9 @@ impl CubeTextures {
     #[must_use]
     pub fn resolve(dir: &Path) -> Self {
         Self {
-            day: std::array::from_fn(|month| {
-                let sub = format!("day/{YEAR}{:02}", month + 1);
-                resolve_set(&dir.join(sub))
-            }),
-            night: resolve_set(&dir.join("night")),
-            mask: resolve_set(&dir.join("mask")),
+            day: std::array::from_fn(|month| resolve_set(&dir.join(cube_names::day_set(month)))),
+            night: resolve_set(&dir.join(cube_names::NIGHT_SET)),
+            mask: resolve_set(&dir.join(cube_names::MASK_SET)),
         }
     }
 
@@ -72,7 +61,7 @@ impl CubeTextures {
 
 fn resolve_set(dir: &Path) -> FaceSet {
     FACES.map(|face| {
-        let path = dir.join(format!("{face}.{FACE_EXTENSION}"));
+        let path = dir.join(cube_names::face_file(face));
         is_asset(&path).then_some(path)
     })
 }
@@ -100,24 +89,7 @@ fn is_asset(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("sunlit-cube-layout-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("create the scratch directory");
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_support::ScratchDir;
 
     fn write(dir: &Path, relative: &str, bytes: &[u8]) {
         let path = dir.join(relative);
@@ -126,47 +98,47 @@ mod tests {
     }
 
     fn write_all(dir: &Path) {
-        for face in FACES {
-            for month in 1..=MONTHS {
-                write(
-                    dir,
-                    &format!("day/{YEAR}{month:02}/{face}.jxl"),
-                    b"\xff\x0a",
-                );
-            }
-            write(dir, &format!("night/{face}.jxl"), b"\xff\x0a");
-            write(dir, &format!("mask/{face}.jxl"), b"\xff\x0a");
+        for file in cube_names::all_files() {
+            write(dir, &file, b"\xff\x0a");
         }
     }
 
     #[test]
     fn a_complete_layout_resolves_every_file_in_order() {
-        let scratch = Scratch::new("complete");
-        write_all(&scratch.0);
+        let scratch = ScratchDir::new("cube_layout_complete");
+        write_all(scratch.path());
 
-        let cube = CubeTextures::resolve(&scratch.0);
+        let cube = CubeTextures::resolve(scratch.path());
         assert!(cube.is_complete());
         assert_eq!(cube.found(), 84);
         let march = &cube.day[2];
         for (face, path) in FACES.iter().zip(march) {
             assert_eq!(
                 path.as_deref(),
-                Some(scratch.0.join(format!("day/200403/{face}.jxl")).as_path())
+                Some(scratch.join(&format!("day/200403/{face}.jxl")).as_path())
             );
         }
         assert_eq!(
             cube.mask[5].as_deref(),
-            Some(scratch.0.join("mask/nz.jxl").as_path())
+            Some(scratch.join("mask/nz.jxl").as_path())
         );
+
+        // The list the xtask bundles, in its order, is what resolve reads.
+        let resolved: Vec<_> = cube.sets().flatten().flatten().cloned().collect();
+        let listed: Vec<_> = cube_names::all_files()
+            .iter()
+            .map(|file| scratch.join(file))
+            .collect();
+        assert_eq!(resolved, listed);
     }
 
     #[test]
     fn a_missing_face_leaves_its_place_empty() {
-        let scratch = Scratch::new("missing");
-        write_all(&scratch.0);
-        std::fs::remove_file(scratch.0.join("day/200407/py.jxl")).expect("remove a face");
+        let scratch = ScratchDir::new("cube_layout_missing");
+        write_all(scratch.path());
+        std::fs::remove_file(scratch.join("day/200407/py.jxl")).expect("remove a face");
 
-        let cube = CubeTextures::resolve(&scratch.0);
+        let cube = CubeTextures::resolve(scratch.path());
         assert!(!cube.is_complete());
         assert_eq!(cube.found(), 83);
         assert_eq!(cube.day[6][2], None);
@@ -175,16 +147,16 @@ mod tests {
 
     #[test]
     fn a_git_lfs_pointer_is_not_a_face() {
-        let scratch = Scratch::new("pointer");
-        write_all(&scratch.0);
+        let scratch = ScratchDir::new("cube_layout_pointer");
+        write_all(scratch.path());
         write(
-            &scratch.0,
+            scratch.path(),
             "night/nx.jxl",
             b"version https://git-lfs.github.com/spec/v1\noid sha256:0\nsize 180067\n",
         );
-        write(&scratch.0, "mask/ny.jxl", b"");
+        write(scratch.path(), "mask/ny.jxl", b"");
 
-        let cube = CubeTextures::resolve(&scratch.0);
+        let cube = CubeTextures::resolve(scratch.path());
         assert_eq!(cube.night[1], None, "a pointer");
         assert_eq!(cube.mask[3], None, "an empty file");
         assert_eq!(cube.found(), 82);
@@ -192,8 +164,8 @@ mod tests {
 
     #[test]
     fn a_directory_without_the_layout_resolves_nothing() {
-        let scratch = Scratch::new("empty");
-        let cube = CubeTextures::resolve(&scratch.0);
+        let scratch = ScratchDir::new("cube_layout_empty");
+        let cube = CubeTextures::resolve(scratch.path());
         assert_eq!(cube, CubeTextures::default());
         assert_eq!(cube.found(), 0);
     }

@@ -908,16 +908,15 @@ const UNVERIFIED: &str = "  nothing has run this bundle: --no-verify skipped the
                           renders from it, so nothing has shown that its textures are found \
                           where it puts them, and its record says so with a null verified_in";
 
-/// Why there is no bundle, when the host holds Git LFS pointers rather than the
-/// assets.
+/// Why there is no bundle, said after the verdict on the textures, which names
+/// what is wrong and, where it is a Git LFS pointer, how to fetch the asset.
 ///
 /// A bundle without the textures would be a bundle that renders a grid under a
 /// name promising a release, which is worse than not writing one.
 pub fn skipped_note() -> String {
-    "no bundle: this checkout holds Git LFS pointers rather than the texture \
-     assets, and a bundle without them would render the procedural grid under a \
-     name that promises a release. `git lfs pull` fetches them; the loose binary \
-     and its record are in the dist directory either way."
+    "a bundle without its textures would render the procedural grid under a \
+     name that promises a release, so there is none; the loose binary and its \
+     record are in the dist directory either way."
         .to_owned()
 }
 
@@ -1012,8 +1011,8 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     // instead, and this command has nothing else to produce.
     let textures = artifacts::release_textures_present(&repo).map_err(|why| {
         format!(
-            "{why}\n`git lfs pull` fetches the texture assets; without them a bundle \
-             would render the procedural grid under a name that promises a release."
+            "{why}\nwithout its textures a bundle would render the procedural grid \
+             under a name that promises a release."
         )
     })?;
 
@@ -1849,11 +1848,13 @@ mod tests {
         assert!(unverified.contains("verified_in"), "{unverified}");
     }
 
-    /// The one line a run without the assets prints instead of a bundle.
+    /// The line a run without the assets prints after the verdict, instead of
+    /// a bundle. The verdict carries the advice where there is any, so an empty
+    /// file is not told to fetch from Git LFS.
     #[test]
     fn the_skip_says_what_is_missing_and_what_was_produced_anyway() {
         let text = skipped_note();
-        assert!(text.contains("git lfs pull"), "{text}");
+        assert!(!text.contains("git lfs"), "{text}");
         assert!(text.contains("grid"), "{text}");
         assert!(text.contains("loose binary"), "{text}");
     }

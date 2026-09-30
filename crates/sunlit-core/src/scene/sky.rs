@@ -211,28 +211,15 @@ fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
 }
 
 fn time_for_input(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> astro_time_t {
-    if dt.use_custom {
-        let doy = dt.custom_day_of_year.max(1);
-        let (month, day) = super::datetime::day_of_year_to_month_day(doy, dt.custom_year);
-        let (hour, minute, second) = super::datetime::hour_float_to_hms(dt.custom_hour);
-        make_time(
-            dt.custom_year,
-            i32::from(month),
-            i32::from(day),
-            hour,
-            minute,
-            second,
-        )
-    } else {
-        make_time(
-            now_utc.year(),
-            i32::from(u8::from(now_utc.month())),
-            i32::from(now_utc.day()),
-            i32::from(now_utc.hour()),
-            i32::from(now_utc.minute()),
-            f64::from(now_utc.second()),
-        )
-    }
+    let at = super::month::CivilTime::of(dt, now_utc);
+    make_time(
+        at.year,
+        i32::from(at.month),
+        i32::from(at.day),
+        at.hour,
+        at.minute,
+        at.second,
+    )
 }
 
 #[cfg(test)]

@@ -183,6 +183,26 @@ fn le_u64(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
 }
 
+/// The deepest level a tile key can name, which makes 2^15 the widest face.
+const MAX_LEVEL: u8 = 15;
+
+/// Whether a tile's sizes fit the format: a tile and gutter no wider than the
+/// widest face, and no more levels in the blob than the layer has mips.
+fn check_tile_layout(tile: u32, gutter: u32, tile_levels: u32) -> Result<(), String> {
+    let widest = 1_u32 << MAX_LEVEL;
+    if !(1..=widest).contains(&tile) || gutter > widest {
+        return Err(format!("a tile of {tile} px with a gutter of {gutter} px"));
+    }
+    let layer = tile + 2 * gutter;
+    let mips = codec::full_chain(layer);
+    if !(1..=mips).contains(&tile_levels) {
+        return Err(format!(
+            "{tile_levels} levels in a layer of {layer} px, which has {mips}"
+        ));
+    }
+    Ok(())
+}
+
 /// Parse and check a header and index read from a file of `file_len` bytes.
 fn decode_header(bytes: &[u8], file_len: u64) -> Result<(Header, Vec<Entry>), PackError> {
     let invalid = |why: String| PackError::Invalid(why);
@@ -195,6 +215,7 @@ fn decode_header(bytes: &[u8], file_len: u64) -> Result<(Header, Vec<Entry>), Pa
     let format = BlockFormat::from_code(bytes[22])
         .ok_or_else(|| invalid(format!("block format {}", bytes[22])))?;
     let (tile, gutter, tile_levels) = (le_u32(bytes, 24), le_u32(bytes, 28), le_u32(bytes, 32));
+    check_tile_layout(tile, gutter, tile_levels).map_err(invalid)?;
     let ocean = bytes[36..40].try_into().expect("four bytes");
     let count = le_u32(bytes, 40) as usize;
     let key_len = le_u32(bytes, 44) as usize;
@@ -226,7 +247,7 @@ fn decode_header(bytes: &[u8], file_len: u64) -> Result<(Header, Vec<Entry>), Pa
             hash: raw[24..56].try_into().expect("32 bytes"),
         };
         let key = entry.key;
-        if raw[2] & !(FLAG_OCEAN | FLAG_FACE) != 0 || usize::from(key.face) >= 6 || key.level > 15 {
+        if raw[2] & !(FLAG_OCEAN | FLAG_FACE) != 0 || usize::from(key.face) >= 6 || key.level > MAX_LEVEL {
             return Err(invalid(format!("entry {key:?} is malformed")));
         }
         if entries.last().is_some_and(|last| last.key >= key) {
@@ -596,6 +617,41 @@ mod tests {
             };
             assert!(found.contains(why), "{found}");
         }
+    }
+
+    #[test]
+    fn a_header_with_sizes_the_format_cannot_hold_is_refused() {
+        let dir = ScratchDir::new("tiles_pack_sizes");
+        let path = dir.join("p.pack");
+        for (tile, gutter, tile_levels) in [
+            (0xFFFF_FFF0, 4, 2),
+            (0, 4, 2),
+            (65_536, 4, 2),
+            (8, 0xFFFF_FFF0, 2),
+            (8, 65_536, 2),
+            (8, 4, 0),
+            (8, 4, 6),
+            (8, 4, 1_000_000),
+            (8, 4, u32::MAX),
+        ] {
+            let head = Header {
+                tile,
+                gutter,
+                tile_levels,
+                ..header("k")
+            };
+            std::fs::write(&path, encode_header(&head, &[])).unwrap();
+            assert!(
+                matches!(Pack::open(&path), Err(PackError::Invalid(_))),
+                "{tile} {gutter} {tile_levels}"
+            );
+        }
+        let whole = Header {
+            tile_levels: 5,
+            ..header("k")
+        };
+        std::fs::write(&path, encode_header(&whole, &[])).unwrap();
+        assert!(Pack::open(&path).is_ok(), "every mip of a layer is allowed");
     }
 
     #[test]

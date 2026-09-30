@@ -322,8 +322,9 @@ impl TileLoader {
     /// Start the workers over `geometry`'s tiles, with no pack open yet.
     ///
     /// `wake` is called on a worker thread when a result is waiting, at most
-    /// once until the engine next drains, so it must return at once; the
-    /// engine's sends on its own unbounded command channel.
+    /// once until the engine next drains, and by a drain that leaves results
+    /// behind, so it must return at once; the engine's sends on its own
+    /// unbounded command channel.
     ///
     /// # Panics
     ///

@@ -26,6 +26,7 @@ mod test_support;
 
 mod clouds;
 mod clouds_variant;
+mod cube;
 mod display_change;
 mod display_plan;
 mod groups;

@@ -54,11 +54,15 @@ impl SurfaceFeed {
             month = month + 1,
             "starting the transcoder for the cube surface"
         );
+        // Closed from the start: the engine is busy until its first frames are
+        // out, and the first-frame packs go through it anyway.
+        let transcoder = Transcoder::start(config);
+        transcoder.set_paused(true);
         Self {
-            transcoder: Transcoder::start(config),
+            transcoder,
             cache_dir,
             month,
-            paused: false,
+            paused: true,
             failures_seen: 0,
             settled: false,
         }

@@ -144,7 +144,8 @@ struct Engine {
     /// The transcoder and the month in force, when the globe is drawn from the
     /// cube surface.
     surface: Option<SurfaceFeed>,
-    /// Until when the engine counts as busy, on the injected clock.
+    /// Until when the engine counts as busy, on the injected clock. It starts
+    /// busy, since its first frames are on their way.
     busy_until: Duration,
 }
 
@@ -292,7 +293,7 @@ impl Engine {
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
             surface,
-            busy_until: Duration::ZERO,
+            busy_until: now + BUSY_AFTER_A_FRAME,
         })
     }
 

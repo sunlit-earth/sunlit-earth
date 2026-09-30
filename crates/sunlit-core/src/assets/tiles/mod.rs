@@ -115,9 +115,9 @@ impl Geometry {
         if self.levels == 0 || sizes.iter().any(|s| !s.is_power_of_two()) {
             return Err(format!("{self:?}: the sizes must be powers of two"));
         }
-        if coarsest < self.tile || self.floor >= coarsest || self.mask > self.face {
+        if coarsest < self.tile || self.floor >= coarsest || self.mask >= self.face {
             return Err(format!(
-                "{self:?}: every tiled level must hold a tile, and the floor lie below them"
+                "{self:?}: every tiled level must hold a tile, the floor lie below them and the mask below the face"
             ));
         }
         if !self.layer().is_multiple_of(4 << (TILE_LEVELS - 1)) || self.gutter * 2 > coarsest {
@@ -192,6 +192,10 @@ mod tests {
             },
             Geometry {
                 mask: 4096,
+                ..GEOMETRY
+            },
+            Geometry {
+                mask: GEOMETRY.face,
                 ..GEOMETRY
             },
             Geometry {

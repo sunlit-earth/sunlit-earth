@@ -31,7 +31,9 @@ mod transcoder;
 use std::path::{Path, PathBuf};
 
 pub use build::{BuildError, BuildReport, Ensured, ensure_pack, expected_key};
-pub use codec::{BlockFormat, MipLevel, blob_bytes, decode_bc7, full_chain, mip_levels};
+pub use codec::{
+    BlockFormat, MipLevel, blob_bytes, decode_bc4, decode_bc7, full_chain, mip_levels,
+};
 pub use pack::{Entry, Pack, PackError, TileKey};
 pub use transcoder::{
     PACKS, PackFailure, Phase, TranscodeNotify, TranscodeStatus, Transcoder, TranscoderConfig,
@@ -75,9 +77,8 @@ pub const GEOMETRY: Geometry = Geometry {
 
 /// What the tests cut the texture pipeline's fixture bake to: its faces are 16
 /// texels, so two levels of 8 px tiles with a 4 px gutter, a floor of 4 and a
-/// mask of 8.
-#[cfg(test)]
-pub(crate) const FIXTURE: Geometry = Geometry {
+/// mask of 8. Public for the integration targets, which hand it to the engine.
+pub const FIXTURE: Geometry = Geometry {
     face: 16,
     levels: 2,
     tile: 8,

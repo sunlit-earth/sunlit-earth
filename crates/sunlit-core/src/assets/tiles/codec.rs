@@ -131,24 +131,31 @@ pub(crate) fn encode(
 /// This is what an adapter that should not sample BC7 itself uploads instead:
 /// a CPU adapter, or one without `TEXTURE_COMPRESSION_BC`.
 pub fn decode_bc7(blocks: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let expected = width.div_ceil(4) as usize * height.div_ceil(4) as usize * 16;
+    decode(BlockFormat::Bc7, blocks, width, height)
+}
+
+/// Decompress one level of BC4 blocks `width` by `height` texels to R8, which
+/// is what an adapter without `TEXTURE_COMPRESSION_BC` uploads for the mask.
+pub fn decode_bc4(blocks: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    decode(BlockFormat::Bc4, blocks, width, height)
+}
+
+fn decode(format: BlockFormat, blocks: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let expected = width.div_ceil(4) as usize * height.div_ceil(4) as usize * format.block_bytes();
     if blocks.len() != expected {
         return Err(format!(
-            "{} bytes of BC7 for {width} x {height} texels, expected {expected}",
+            "{} bytes of {format:?} for {width} x {height} texels, expected {expected}",
             blocks.len()
         ));
     }
-    let mut pixels = vec![0_u8; width as usize * height as usize * 4];
-    let image = dds::ImageViewMut::new(
-        &mut pixels,
-        dds::Size::new(width, height),
-        dds::ColorFormat::RGBA_U8,
-    )
-    .ok_or_else(|| format!("no RGBA8 view of {width} x {height}"))?;
+    let (source, color) = format.dds();
+    let mut pixels = vec![0_u8; width as usize * height as usize * format.channels()];
+    let image = dds::ImageViewMut::new(&mut pixels, dds::Size::new(width, height), color)
+        .ok_or_else(|| format!("no {color:?} view of {width} x {height}"))?;
     dds::decode(
         &mut &blocks[..],
         image,
-        dds::Format::BC7_UNORM,
+        source,
         &dds::DecodeOptions::default(),
     )
     .map_err(|e| format!("dds: {e}"))?;
@@ -304,5 +311,40 @@ mod tests {
     fn a_decode_refuses_a_length_that_is_not_the_level() {
         let err = decode_bc7(&[0; 16], 8, 8).expect_err("four blocks are needed");
         assert!(err.contains("expected 64"), "{err}");
+        let err = decode_bc4(&[0; 16], 8, 8).expect_err("four blocks are needed");
+        assert!(err.contains("expected 32"), "{err}");
+    }
+
+    #[test]
+    fn a_mask_decode_comes_back_within_bc4s_error() {
+        let size = 16;
+        let gray: Vec<u8> = gradient(size).chunks(4).map(|t| t[0]).collect();
+        let decoded =
+            decode_bc4(&encoded(BlockFormat::Bc4, &gray, size), size, size).expect("decode");
+        assert_eq!(decoded.len(), gray.len());
+        let worst = gray
+            .iter()
+            .zip(&decoded)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .expect("texels");
+        assert!(worst <= 4, "worst error {worst}");
+    }
+
+    /// A level narrower than a block decodes from its one block to exactly its
+    /// own texels, which is how the bottom of a mip chain reaches the GPU when
+    /// the adapter cannot sample the blocks.
+    #[test]
+    fn a_level_narrower_than_a_block_decodes_to_its_own_size() {
+        for size in [1, 2] {
+            let texels = gradient(size);
+            let decoded =
+                decode_bc7(&encoded(BlockFormat::Bc7, &texels, size), size, size).expect("decode");
+            assert_eq!(decoded.len(), texels.len(), "{size} px");
+            let gray: Vec<u8> = texels.chunks(4).map(|t| t[0]).collect();
+            let decoded =
+                decode_bc4(&encoded(BlockFormat::Bc4, &gray, size), size, size).expect("decode");
+            assert_eq!(decoded.len(), gray.len(), "{size} px");
+        }
     }
 }

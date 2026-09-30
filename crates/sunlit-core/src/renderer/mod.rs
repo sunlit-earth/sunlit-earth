@@ -7,6 +7,7 @@
 mod frame;
 mod gpu_setup;
 mod render_pass;
+pub mod residency;
 mod sizing;
 mod slots;
 mod surface;

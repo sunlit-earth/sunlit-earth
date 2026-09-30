@@ -2247,7 +2247,12 @@ const AXES: [glam::Vec3; 6] = [
 /// Uniforms for a square frame looking at the globe's center from along
 /// `axis`, the day surface alone.
 fn looking_along(size: u32, axis: glam::Vec3) -> Uniforms {
-    let eye = axis * 3.5;
+    looking_along_from(size, axis, 3.5)
+}
+
+/// [`looking_along`] from `distance` radii away.
+fn looking_along_from(size: u32, axis: glam::Vec3, distance: f32) -> Uniforms {
+    let eye = axis * distance;
     let up = if axis.y.abs() > 0.5 {
         glam::Vec3::Z
     } else {
@@ -2864,6 +2869,23 @@ fn create_marked_cube(
     size: u32,
     texels: impl Fn(usize) -> Vec<u8>,
 ) -> wgpu::TextureView {
+    create_cube_by_level(device, queue, size, |face, level, width| {
+        if level == 0 {
+            texels(face)
+        } else {
+            MIP_MARKER.repeat((width * width) as usize)
+        }
+    })
+}
+
+/// A cube `size` texels wide with a full mip chain, each level of each face
+/// given as its texels by `texels(face, level, width)`.
+fn create_cube_by_level(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texels: impl Fn(usize, u32, u32) -> Vec<u8>,
+) -> wgpu::TextureView {
     let levels = size.ilog2() + 1;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("marked_cube"),
@@ -2882,11 +2904,7 @@ fn create_marked_cube(
     for face in 0..6_u32 {
         for level in 0..levels {
             let width = size >> level;
-            let data = if level == 0 {
-                texels(face as usize)
-            } else {
-                MIP_MARKER.repeat((width * width) as usize)
-            };
+            let data = texels(face as usize, level, width);
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -3461,6 +3479,229 @@ fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
     assert!(
         close(night, [r, g, b], 1),
         "the night half is all ocean: {night:?}"
+    );
+}
+
+/// The finest level of a surface coded by level, the next one, and every
+/// level below those two.
+const FINEST_LEVEL: [u8; 4] = [255, 0, 0, 255];
+const SECOND_LEVEL: [u8; 4] = [0, 0, 255, 255];
+const LOWER_LEVELS: [u8; 4] = [0, 255, 0, 255];
+
+/// How far away the minified case looks from, in radii: far enough that a
+/// texel of the coded tiles' 64 px faces covers about a pixel of the seam
+/// case's frame at the middle of the disc, so the sampler reads between the
+/// finest level and the next over most of it.
+const MINIFIED_DISTANCE: f32 = 8.0;
+
+/// How far a tile's pixel may lie from the floor's inside a face, in steps of
+/// 255 in the channels that code the level: the floor and the tile are read
+/// at the same level of detail there, and a tile read one level off is a
+/// hundred steps or more away.
+const LEVEL_STEPS: u8 = 16;
+
+/// How far a tile's level of detail, averaged over a pixel quad that straddles
+/// a face edge, may lie outside the range its neighboring quads inside the
+/// faces span, in steps of 255 in the blue that codes the second level.
+const EDGE_LEVEL_STEPS: f64 = 32.0;
+
+/// A tile read at minification is read at the level of detail the floor's
+/// cube is read at, and its level of detail runs on across a face edge.
+///
+/// The floor is a cube of the tiles' face size coded by level, and every
+/// finest tile is resident with its two levels coded the same way, so wherever
+/// the floor's sample mixes only its first two levels, the red and the blue of
+/// a pixel say which level of detail it was read at. Inside a face the tile's
+/// pixel has to say what the floor's does. A pixel quad that straddles a face
+/// edge takes its derivatives across the edge, which is the one place the
+/// quotient rule's term for the major axis is not zero, since the warp keeps
+/// the major component of `w` at one across a face; what the hardware makes
+/// of a cube's derivatives there differs between adapters, so there the tile
+/// is held to itself: its level of detail must lie within the range of the
+/// quads beside it inside the faces.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one case, its surfaces, and its two comparisons"
+)]
+fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
+    use sunlit_core::geometry::cube;
+
+    let ctx = RENDER_CTX.lock().unwrap();
+    let geometry = CODED_TILES;
+    let solid = |color: [u8; 4], width: u32| color.repeat((width * width) as usize);
+    let floor = create_cube_by_level(&ctx.device, &ctx.queue, geometry.face, |_, level, width| {
+        let color = match level {
+            0 => FINEST_LEVEL,
+            1 => SECOND_LEVEL,
+            _ => LOWER_LEVELS,
+        };
+        solid(color, width)
+    });
+
+    let finest = Geometry::level_of(geometry.face);
+    let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let mut layers = TileLayers::new(6 * u32::from(cells).pow(2));
+    let mut texels = Vec::new();
+    for face in 0..6_u8 {
+        for row in 0..cells {
+            for col in 0..cells {
+                let id = TileId {
+                    pack: PackKind::Day(0),
+                    key: TileKey {
+                        level: finest,
+                        face,
+                        row,
+                        col,
+                    },
+                };
+                let (layer, _) = layers.claim(id, None).expect("room for every tile");
+                assert_eq!(layer as usize, texels.len(), "layers are taken in order");
+                texels.push([
+                    solid(FINEST_LEVEL, geometry.layer()),
+                    solid(SECOND_LEVEL, geometry.layer() / 2),
+                ]);
+            }
+        }
+    }
+    let ocean = std::collections::HashSet::new();
+    let day = PageSurface {
+        pack: PackKind::Day(0),
+        ocean: &ocean,
+    };
+    let mut every_tile = PageTable::new(geometry);
+    every_tile.rewrite([Some(day), None], &layers, &CellLevels::finest(&geometry));
+    let tiles = create_tile_array(&ctx.device, &ctx.queue, &geometry, &texels);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let dummy = &ctx.dummy_cube;
+    // Without anisotropy the level of detail is the gradients' own on every
+    // adapter, rather than what each one's anisotropic filter makes of them.
+    let isotropic = ctx
+        .device
+        .create_sampler(&sunlit_core::renderer::surface_sampler_descriptor(true));
+    let group = |table: &PageTable| {
+        bind_group_with(
+            &ctx,
+            [&flat, &flat],
+            &isotropic,
+            [&floor, dummy, dummy],
+            [&tiles, &create_page_table(&ctx.device, &ctx.queue, table)],
+        )
+    };
+    let (from_tiles, from_floor) = (group(&every_tile), group(&PageTable::new(geometry)));
+
+    let size = SEAM_FRAME;
+    let quads = size / 2;
+    let (mut compared, mut mixed, mut inner_worst) = (0_usize, 0_usize, 0_u8);
+    let (mut edges, mut edge_worst) = (0_usize, 0.0_f64);
+    for (axis, _) in seam_frames() {
+        let uniforms = with_tiles(
+            &looking_along_from(size, axis, MINIFIED_DISTANCE),
+            &geometry,
+        );
+        let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+            .as_dmat4()
+            .inverse();
+        let floor_frame = render_with(&ctx, &uniforms, &from_floor, size, size);
+        let tile_frame = render_with(&ctx, &uniforms, &from_tiles, size, size);
+        let at = |x: u32, y: u32| ((y * size + x) * 4) as usize;
+        let face_at = |x, y| normal_under_pixel(inverse, size, x, y).map(|n| cube::locate(n).0);
+
+        // Each quad's faces, and the red and blue of its tile pixels averaged.
+        let mut quad = Vec::with_capacity((quads * quads) as usize);
+        for qy in 0..quads {
+            for qx in 0..quads {
+                let pixels =
+                    [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(dx, dy)| (2 * qx + dx, 2 * qy + dy));
+                let faces = pixels.map(|(x, y)| face_at(x, y));
+                let mean = |channel: usize| {
+                    pixels
+                        .iter()
+                        .map(|&(x, y)| f64::from(tile_frame[at(x, y) + channel]))
+                        .sum::<f64>()
+                        / 4.0
+                };
+                quad.push((faces, mean(0), mean(2)));
+            }
+        }
+
+        for y in 0..size {
+            for x in 0..size {
+                let (faces, _, _) = quad[((y / 2) * quads + x / 2) as usize];
+                let (f, t) = (
+                    &floor_frame[at(x, y)..at(x, y) + 3],
+                    &tile_frame[at(x, y)..at(x, y) + 3],
+                );
+                // Off the globe, in a quad across an edge, or where the floor
+                // reads a level a tile does not have.
+                if faces[0].is_none() || faces.iter().any(|&face| face != faces[0]) || f[1] > 2 {
+                    continue;
+                }
+                compared += 1;
+                if f[0] > 32 && f[2] > 32 {
+                    mixed += 1;
+                }
+                let step = f[0].abs_diff(t[0]).max(f[2].abs_diff(t[2]));
+                inner_worst = inner_worst.max(step);
+                assert!(
+                    step <= LEVEL_STEPS,
+                    "looking along {axis:?} from {MINIFIED_DISTANCE} radii, pixel ({x}, {y}) \
+                     reads {t:?} from its tile where the floor reads {f:?}: another level of detail"
+                );
+            }
+        }
+
+        let inside = |(faces, red, blue): ([Option<usize>; 4], f64, f64)| {
+            faces[0].is_some()
+                && faces.iter().all(|&face| face == faces[0])
+                && red > 3.0
+                && blue > 3.0
+        };
+        for qy in 1..quads - 1 {
+            for qx in 1..quads - 1 {
+                let (faces, _, blue) = quad[(qy * quads + qx) as usize];
+                let mut distinct: Vec<_> = faces.iter().flatten().collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                // An edge between two faces, the whole quad on the globe.
+                if faces.iter().any(Option::is_none) || distinct.len() != 2 {
+                    continue;
+                }
+                let beside: Vec<f64> = (qy - 1..=qy + 1)
+                    .flat_map(|ny| (qx - 1..=qx + 1).map(move |nx| (ny * quads + nx) as usize))
+                    .map(|index| quad[index])
+                    .filter(|&neighbor| inside(neighbor))
+                    .map(|(_, _, blue)| blue)
+                    .collect();
+                if beside.len() < 2 {
+                    continue;
+                }
+                let low = beside.iter().copied().fold(f64::INFINITY, f64::min);
+                let high = beside.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let outside = (low - blue).max(blue - high).max(0.0);
+                edges += 1;
+                edge_worst = edge_worst.max(outside);
+                assert!(
+                    outside <= EDGE_LEVEL_STEPS,
+                    "looking along {axis:?} from {MINIFIED_DISTANCE} radii, the quad at ({}, {}) \
+                     across a face edge reads a blue of {blue:.1} from its tiles, {outside:.1} \
+                     outside the {low:.1} to {high:.1} of the quads beside it: its level of detail \
+                     jumps at the edge",
+                    2 * qx,
+                    2 * qy
+                );
+            }
+        }
+    }
+    println!(
+        "minified tiles: {compared} pixels inside the faces compared, {mixed} of them between the \
+         two levels, within {inner_worst} steps of the floor; {edges} quads across an edge, \
+         within {edge_worst:.1} steps of their neighbors' range"
+    );
+    assert!(
+        mixed > compared / 4 && edges > 500,
+        "only {mixed} of {compared} pixels read between the two levels and {edges} quads lie \
+         across an edge, too few for the case to mean anything"
     );
 }
 

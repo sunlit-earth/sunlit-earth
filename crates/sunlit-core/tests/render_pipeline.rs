@@ -3500,6 +3500,13 @@ const MINIFIED_DISTANCE: f32 = 8.0;
 /// and a tile read a whole level off lies up to 255 away.
 const LEVEL_STEPS: u8 = 24;
 
+/// How squarely the surface has to face the camera for a pixel inside a face
+/// to be held to the floor, as the cosine between its normal and the view:
+/// within about 45 degrees, where a pixel's footprint is nearly round. Past
+/// it an adapter's level of detail is its own rounding of a long footprint,
+/// and Metal's cube and array part by 31 steps near the limb.
+const FACING: f64 = 0.7;
+
 /// How far a tile's level of detail, averaged over a pixel quad that straddles
 /// a face edge, may lie outside the range its neighboring quads inside the
 /// faces span, in steps of 255 in the blue that codes the second level.
@@ -3511,8 +3518,9 @@ const EDGE_LEVEL_STEPS: f64 = 32.0;
 /// The floor is a cube of the tiles' face size coded by level, and every
 /// finest tile is resident with its two levels coded the same way, so wherever
 /// the floor's sample mixes only its first two levels, the red and the blue of
-/// a pixel say which level of detail it was read at. Inside a face the tile's
-/// pixel has to say what the floor's does. A pixel quad that straddles a face
+/// a pixel say which level of detail it was read at. Inside a face, where the
+/// surface faces the camera, the tile's pixel has to say what the floor's
+/// does. A pixel quad that straddles a face
 /// edge takes its derivatives across the edge, which is the one place the
 /// quotient rule's term for the major axis is not zero, since the warp keeps
 /// the major component of `w` at one across a face; what the hardware makes
@@ -3592,8 +3600,10 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
 
     let size = SEAM_FRAME;
     let quads = size / 2;
-    let (mut compared, mut mixed, mut inner_worst) = (0_usize, 0_usize, 0_u8);
-    let (mut edges, mut edge_worst) = (0_usize, 0.0_f64);
+    let (mut compared, mut mixed, mut edges) = (0_usize, 0_usize, 0_usize);
+    let mut inner_worst = (0_u8, String::new());
+    let mut grazing_worst = 0_u8;
+    let mut edge_worst = (0.0_f64, String::new());
     for (axis, _) in seam_frames() {
         let uniforms = with_tiles(
             &looking_along_from(size, axis, MINIFIED_DISTANCE),
@@ -3637,17 +3647,26 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
                 if faces[0].is_none() || faces.iter().any(|&face| face != faces[0]) || f[1] > 2 {
                     continue;
                 }
+                let step = f[0].abs_diff(t[0]).max(f[2].abs_diff(t[2]));
+                let facing = normal_under_pixel(inverse, size, x, y)
+                    .map_or(0.0, |normal| normal.dot(axis.as_dvec3()));
+                if facing < FACING {
+                    grazing_worst = grazing_worst.max(step);
+                    continue;
+                }
                 compared += 1;
                 if f[0] > 32 && f[2] > 32 {
                     mixed += 1;
                 }
-                let step = f[0].abs_diff(t[0]).max(f[2].abs_diff(t[2]));
-                inner_worst = inner_worst.max(step);
-                assert!(
-                    step <= LEVEL_STEPS,
-                    "looking along {axis:?} from {MINIFIED_DISTANCE} radii, pixel ({x}, {y}) \
-                     reads {t:?} from its tile where the floor reads {f:?}: another level of detail"
-                );
+                if step > inner_worst.0 {
+                    inner_worst = (
+                        step,
+                        format!(
+                            "looking along {axis:?}, pixel ({x}, {y}) reads {t:?} from its tile \
+                             where the floor reads {f:?}"
+                        ),
+                    );
+                }
             }
         }
 
@@ -3680,23 +3699,39 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
                 let high = beside.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 let outside = (low - blue).max(blue - high).max(0.0);
                 edges += 1;
-                edge_worst = edge_worst.max(outside);
-                assert!(
-                    outside <= EDGE_LEVEL_STEPS,
-                    "looking along {axis:?} from {MINIFIED_DISTANCE} radii, the quad at ({}, {}) \
-                     across a face edge reads a blue of {blue:.1} from its tiles, {outside:.1} \
-                     outside the {low:.1} to {high:.1} of the quads beside it: its level of detail \
-                     jumps at the edge",
-                    2 * qx,
-                    2 * qy
-                );
+                if outside > edge_worst.0 {
+                    edge_worst = (
+                        outside,
+                        format!(
+                            "looking along {axis:?}, the quad at ({}, {}) across a face edge reads \
+                             a blue of {blue:.1} from its tiles, outside the {low:.1} to {high:.1} \
+                             of the quads beside it",
+                            2 * qx,
+                            2 * qy
+                        ),
+                    );
+                }
             }
         }
     }
     println!(
-        "minified tiles: {compared} pixels inside the faces compared, {mixed} of them between the \
-         two levels, within {inner_worst} steps of the floor; {edges} quads across an edge, \
-         within {edge_worst:.1} steps of their neighbors' range"
+        "minified tiles from {MINIFIED_DISTANCE} radii: {compared} pixels inside the faces \
+         compared, {mixed} of them between the two levels, within {} steps of the floor, and \
+         {grazing_worst} where the surface turns further away; {edges} quads across an edge, within \
+         {:.1} steps of their neighbors' range",
+        inner_worst.0, edge_worst.0
+    );
+    assert!(
+        inner_worst.0 <= LEVEL_STEPS,
+        "{}: another level of detail, {} steps away",
+        inner_worst.1,
+        inner_worst.0
+    );
+    assert!(
+        edge_worst.0 <= EDGE_LEVEL_STEPS,
+        "{}: its level of detail jumps at the edge, {:.1} steps",
+        edge_worst.1,
+        edge_worst.0
     );
     assert!(
         mixed > compared / 4 && edges > 500,

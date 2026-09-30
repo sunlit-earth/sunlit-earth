@@ -16,12 +16,12 @@
 //! the new month's pack still waits to be built; the mask, the night and the
 //! month in force always finish.
 //!
-//! The pause gate is for the engine: while it is closed, nothing past the
-//! first-frame packs starts, and a build of one of them in progress is
-//! cancelled at the next point [`ensure_pack`] looks at its flag (between two
-//! face decodes or two batches of 64 tiles) and starts over when the gate
-//! opens, since a paused build would hold its decoded faces for as long as the
-//! gate stays shut. Closing it costs that pack's progress, so it is meant for
+//! The pause gate is for the engine: while it is closed only the first-frame
+//! packs start, and a build of any other pack in progress is cancelled at the
+//! next point [`ensure_pack`] looks at its flag (between two face decodes or
+//! two batches of 64 tiles) and starts over when the gate opens, since a
+//! paused build would hold its decoded faces for as long as the gate stays
+//! shut. Closing it costs that pack's progress, so it is meant for
 //! spans of busy time rather than single frames.
 //!
 //! A pack that fails is reported with its reason and the others go on; it is
@@ -540,7 +540,15 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use PackKind::{Day, Mask, Night};
+    use crossbeam_channel::{Receiver, Sender};
+
     use super::*;
+    use crate::assets::tiles::build::UNFINISHED_SUFFIX;
+    use crate::assets::tiles::{CACHE_SUBDIR, FIXTURE, pack_path};
+    use crate::test_support::{ScratchDir, write_cube_fixture};
 
     #[test]
     fn the_order_is_a_ranking_of_every_pack_for_every_month() {
@@ -560,7 +568,6 @@ mod tests {
 
     #[test]
     fn the_first_frame_comes_first_and_then_the_nearest_months_next_first() {
-        use PackKind::{Day, Mask, Night};
         assert_eq!(
             order(4),
             [
@@ -592,10 +599,7 @@ mod tests {
     fn only_the_rest_of_the_year_waits_at_the_gate() {
         for month in 0..MONTHS {
             let open: Vec<_> = PackKind::all().filter(|&k| !gated(k, month)).collect();
-            assert_eq!(
-                open,
-                [PackKind::Day(month), PackKind::Night, PackKind::Mask]
-            );
+            assert_eq!(open, [Day(month), Night, Mask]);
         }
     }
 
@@ -605,14 +609,11 @@ mod tests {
         assert!((1..=4).contains(&threads), "{threads}");
     }
 
-    use std::fs;
-
-    use PackKind::{Day, Mask, Night};
-    use crossbeam_channel::{Receiver, Sender};
-
-    use crate::assets::tiles::build::UNFINISHED_SUFFIX;
-    use crate::assets::tiles::{CACHE_SUBDIR, FIXTURE, pack_path};
-    use crate::test_support::{ScratchDir, write_cube_fixture};
+    #[test]
+    fn the_handle_can_move_to_and_be_shared_with_another_thread() {
+        fn send_and_sync<T: Send + Sync>() {}
+        send_and_sync::<Transcoder>();
+    }
 
     /// Long enough for any fixture run, and only ever reached by a failure.
     const WAIT: Duration = Duration::from_secs(120);

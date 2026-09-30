@@ -130,6 +130,8 @@ Recorded during implementation.
 
 8. T2a: the tiles of a pack are encoded on the rayon pool 64 at a time, each tile on one thread, and `dds` splits only the whole faces, rather than every block going through the rayon feature of `dds`. That feature splits each 144 px layer into four-row fragments, and on four threads that gave an encode speedup of 2.0 over one thread where encoding tiles side by side gives 3.0, for the same bytes (research section 21). `rayon` becomes a direct dependency of the core, which it already shipped with through `jxl-oxide`, and the transcoder worker installs its own pool around a build to bound it.
 
+9. T2b: the transcoder builds the mask pack first, then the month in force, then the night, and after them the other months nearest the month in force, the next month before the previous one; decision 3 has the current month first. The mask takes 0.6 s against 4.5 s for a month on four threads (research section 21), every first frame needs it whatever the month, and a month that changes while the worker runs then never waits behind it. "While the engine is idle" became a pause gate the engine closes while it is busy, and closing it cancels a build of the rest of the year at the next check of the cancel flag instead of letting it finish or holding it: a held build would keep its decoded faces, over 100 MiB, for as long as the gate stayed closed, which is what the rule against parking decoded pixels is there to prevent, and one left to finish would hold the CPU for up to a month's build after the engine asked for it. The mask, the night and the month in force ignore the gate, so a date moved while it is closed still gets its month built.
+
 ## Validation Record
 
 Recorded per round.

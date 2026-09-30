@@ -18,6 +18,7 @@ use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::wallpaper_sink::{WallpaperJob, WallpaperSink};
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent};
 use sunlit_core::params::SceneParams;
+use sunlit_core::scene::camera::CameraParams;
 
 use crate::groups::FRAME;
 use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
@@ -374,6 +375,91 @@ fn an_export_closes_the_pause_gate_however_long_the_engine_was_idle() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// The Earth fixture cut as the golden suite cuts it (`EARTH_GEOMETRY` in
+/// `tests/golden.rs`), into packs that flag its open water constant ocean.
+const EARTH: tiles::Geometry = tiles::Geometry {
+    face: 256,
+    levels: 2,
+    tile: 32,
+    gutter: 4,
+    floor: 64,
+    mask: 128,
+};
+
+/// The night drawn alone reads the night half of the page table: a cell the
+/// night pack flags constant ocean draws the night's ocean color.
+///
+/// The day and the night drawn alone go through the same path of the shader,
+/// and with the atmosphere and the stars off nothing else is drawn over the
+/// globe, so a cell that read the day half at night would come out exactly as
+/// the day frame has it. The flat ocean is the day frame's commonest color over
+/// the Pacific, and the night frame must not show it.
+#[test]
+fn night_mode_reads_the_night_half_of_the_page_table() {
+    let _gpu = gpu();
+    let dir = ScratchDir::new("engine_cube_night_alone");
+    test_support::write_earth_fixture(&dir.join("textures"));
+    let base = SceneParams {
+        texture_index: 3,
+        camera: CameraParams {
+            longitude: -150.0,
+            latitude: 0.0,
+            ..test_params().camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        ..test_params()
+    };
+    let harness = Harness::start(|config| {
+        config.cube_textures = CubeTextures::resolve(&dir.join("textures"));
+        config.tile_geometry = EARTH;
+        config.cache_dir = Some(dir.join("cache"));
+        config.params = base;
+    });
+    harness.wait_for_textures("the day, the night and the mask");
+
+    let day = harness.picture(
+        &SceneParams {
+            texture_index: 1,
+            ..base
+        },
+        FRAME,
+    );
+    let night = harness.picture(
+        &SceneParams {
+            texture_index: 2,
+            ..base
+        },
+        FRAME,
+    );
+    let pixels = |frame: &[u8]| -> Vec<[u8; 4]> {
+        frame
+            .chunks_exact(4)
+            .map(|px| px.try_into().expect("four bytes"))
+            .collect()
+    };
+    let (day, night) = (pixels(&day), pixels(&night));
+    let background = day[0];
+    let mut counts = std::collections::HashMap::new();
+    for px in day.iter().filter(|&&px| px != background) {
+        *counts.entry(*px).or_insert(0_usize) += 1;
+    }
+    let (ocean, in_day) = counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .expect("the globe is in the frame");
+    let in_night = night.iter().filter(|&&px| px == ocean).count();
+    assert!(
+        in_day > day.len() / 20,
+        "the day's flat ocean {ocean:?} covers only {in_day} pixels"
+    );
+    assert!(
+        in_night * 100 < in_day,
+        "the night frame shows the day's ocean {ocean:?} at {in_night} pixels \
+         of the day frame's {in_day}, so the night read the day half"
+    );
 }
 
 /// A pack that cannot be built is not waited for: the textures never become

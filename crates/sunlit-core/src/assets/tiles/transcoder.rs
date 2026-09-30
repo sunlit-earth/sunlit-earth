@@ -12,9 +12,10 @@
 //!    previous one.
 //!
 //! The month in force can change while it works. The queue follows it, and the
-//! pack in progress is cancelled and put back only when it is a day pack and
-//! the new month's pack still waits to be built; the mask, the night and the
-//! month in force always finish.
+//! pack in progress is cancelled and put back only when it is a day pack other
+//! than the new month in force and the new month's pack still waits to be
+//! built. The mask, the night and the month in force are never cancelled for a
+//! change of month.
 //!
 //! The pause gate is for the engine: while it is closed only the first-frame
 //! packs start, and a build of any other pack in progress is cancelled at the
@@ -76,7 +77,8 @@ pub enum Phase {
     Paused,
     /// Every pack is ready or has failed, and the worker has finished.
     Done,
-    /// The handle was dropped before every pack was ready or had failed.
+    /// The handle was stopped or dropped before every pack was ready or had
+    /// failed.
     Stopped,
     /// The textures directory does not hold every cube face, so there is no
     /// cube to build from and nothing is built.
@@ -205,7 +207,8 @@ struct Shared {
     /// Signalled on every change of the state, by either side.
     changed: Condvar,
     /// Handed to [`ensure_pack`]; raised to cancel the build in progress, and
-    /// lowered under the lock when the next one starts.
+    /// lowered under the lock when the next one starts, or when the reason to
+    /// cancel has gone before the build saw it.
     cancel: AtomicBool,
 }
 
@@ -223,6 +226,8 @@ impl Shared {
         change(&mut state);
         if state.should_cancel() {
             self.cancel.store(true, Ordering::Relaxed);
+        } else if !state.stopping {
+            self.cancel.store(false, Ordering::Relaxed);
         }
         self.changed.notify_all();
     }
@@ -932,6 +937,68 @@ mod tests {
             2,
             "May started over when the gate opened"
         );
+    }
+
+    #[test]
+    fn a_month_that_comes_back_in_force_is_not_cancelled() {
+        let setup = Setup::new("month_returns");
+        let probe = Probe::holding(Phase::Building(Day(1)));
+        let transcoder = setup.start(0, &probe);
+        probe.reached();
+        transcoder.set_month(6);
+        transcoder.set_month(1);
+        probe.release();
+        let status = settled(&transcoder);
+
+        assert_eq!(status.ready, then(&[Mask, Day(0), Night, Day(1)], 1));
+        assert_eq!(probe.builds(Day(1)), 1, "February finished as it was");
+    }
+
+    #[test]
+    fn a_gate_that_opens_again_at_once_cancels_nothing() {
+        let setup = Setup::new("gate_flicker");
+        let probe = Probe::holding(Phase::Building(Day(4)));
+        let transcoder = setup.start(3, &probe);
+        probe.reached();
+        transcoder.set_paused(true);
+        transcoder.set_paused(false);
+        probe.release();
+        let status = settled(&transcoder);
+
+        assert_eq!(status.ready, order(3));
+        assert_eq!(probe.builds(Day(4)), 1, "May was not started over");
+    }
+
+    #[test]
+    fn a_stop_or_a_drop_at_the_closed_gate_ends_the_worker() {
+        let paused = |name: &str| {
+            let setup = Setup::new(name);
+            let probe = Probe::holding(Phase::Building(Mask));
+            let transcoder = setup.start(3, &probe);
+            probe.reached();
+            transcoder.set_paused(true);
+            probe.release();
+            transcoder
+                .wait_until(WAIT, |s| s.phase == Phase::Paused)
+                .expect("the worker stops at the gate");
+            (setup, transcoder)
+        };
+
+        let (_setup, transcoder) = paused("gate_stop");
+        transcoder.stop();
+        let status = settled(&transcoder);
+        assert_eq!(status.phase, Phase::Stopped);
+        assert_eq!(status.ready, [Mask, Day(3), Night]);
+
+        let (_setup, transcoder) = paused("gate_drop");
+        let (done, dropped) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            drop(transcoder);
+            let _ = done.send(());
+        });
+        dropped
+            .recv_timeout(WAIT)
+            .expect("dropping the handle joins a worker waiting at the gate");
     }
 
     #[test]

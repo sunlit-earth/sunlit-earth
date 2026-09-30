@@ -634,6 +634,8 @@ fn write_pack(
     let start = pack::header_len(&header.key, jobs.len()) as u64;
     let mut out = BufWriter::new(File::create(tmp)?);
     out.seek(SeekFrom::Start(start))?;
+    #[cfg(test)]
+    tests::after_create(tmp);
     let mut offset = start;
     let mut entries = Vec::with_capacity(jobs.len());
     for batch in jobs.chunks(BATCH) {
@@ -673,6 +675,18 @@ mod tests {
     use crate::assets::tiles::cut::tests::smooth_cube;
     use crate::assets::tiles::{CACHE_SUBDIR, FIXTURE, decode_bc7};
     use crate::test_support::{ScratchDir, write_cube_fixture};
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    thread_local! {
+        static AFTER_CREATE: RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn after_create(tmp: &Path) {
+        if let Some(hook) = AFTER_CREATE.with_borrow_mut(Option::take) {
+            hook(tmp);
+        }
+    }
 
     struct Setup {
         dir: ScratchDir,
@@ -1099,6 +1113,27 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["day-200401.pack"]);
+    }
+
+    #[test]
+    fn a_cancel_while_the_pack_is_being_written_removes_the_unfinished_file() {
+        let setup = Setup::new("cancel_writing");
+        let kind = PackKind::Day(0);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let raised = Arc::clone(&cancel);
+        AFTER_CREATE.set(Some(Box::new(move |tmp: &Path| {
+            assert!(tmp.exists(), "the unfinished file is there");
+            raised.store(true, Ordering::Relaxed);
+        })));
+
+        let result = ensure_pack(&setup.cache(), kind, &setup.textures, &FIXTURE, &cancel);
+        assert!(matches!(result, Err(BuildError::Cancelled)), "{result:?}");
+        assert!(AFTER_CREATE.with_borrow(Option::is_none), "the hook ran");
+        let names: Vec<_> = fs::read_dir(setup.cache().join(CACHE_SUBDIR))
+            .expect("list")
+            .flatten()
+            .collect();
+        assert!(names.is_empty(), "{names:?}");
     }
 
     #[test]

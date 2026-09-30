@@ -113,37 +113,53 @@ pub(super) struct View<'a> {
 pub(super) const DRAG_PAUSE: Duration = Duration::from_millis(100);
 
 /// Whether the camera is being dragged, and how fast, from the moves of its
-/// longitude and latitude on the injected clock.
+/// longitude and latitude that the engine's draws see, on the injected clock.
 ///
-/// A move is a drag when the camera moved, or was first seen, within
-/// [`DRAG_PAUSE`] before it, so a camera set once after a rest, by a click or
-/// a preset, is not one. Its rate is the move's over the time since the one
-/// before; moves that arrive at the same instant are measured together at
-/// the next that does not.
+/// A move is part of a drag when it comes within [`DRAG_PAUSE`] of the end of
+/// the tick that drew the move before it, or of the first sight of the
+/// camera, so a camera set once after a rest, by a click or a preset, is not
+/// one. The pause runs from the end of that tick, its readback included,
+/// rather than from the move itself because a frame shows at most one move:
+/// on an adapter that takes longer to draw and read back a frame than the
+/// pause, a drag's moves queue behind it, and the next one drawn follows it
+/// at once. The rate is the move's over the time since
+/// the one before; moves seen at the same instant are measured together at
+/// the next that is not.
 #[derive(Debug, Default)]
 pub(super) struct DragWatch {
-    /// Where the camera was after its last measured move, and when.
+    /// Where the camera was at its last measured move, and when it was seen.
     last: Option<(f32, f32, Duration)>,
+    /// When the tick that drew the last move ended.
+    drawn: Duration,
+    /// The last observation saw a move that no draw has ended on yet.
+    undrawn: bool,
     drag: Option<Drag>,
 }
 
 impl DragWatch {
-    /// The drag in progress with the camera at `camera` at `now`.
+    /// The drag in progress with the camera at `camera` at `now`, when a draw
+    /// is about to start.
     pub(super) fn observe(&mut self, camera: &CameraParams, now: Duration) -> Option<Drag> {
         let (longitude, latitude) = (camera.longitude, camera.latitude);
         let Some((last_longitude, last_latitude, at)) = self.last else {
             self.last = Some((longitude, latitude, now));
+            self.drawn = now;
             return None;
         };
         if (longitude, latitude) == (last_longitude, last_latitude) {
-            self.settle(now);
+            self.settle(camera, now);
             return self.drag;
         }
         let since = now.saturating_sub(at);
         if since.is_zero() {
             return self.drag;
         }
-        self.drag = (since <= DRAG_PAUSE).then(|| {
+        let rest = if self.undrawn {
+            Duration::ZERO
+        } else {
+            now.saturating_sub(self.drawn)
+        };
+        self.drag = (rest <= DRAG_PAUSE).then(|| {
             let seconds = since.as_secs_f32();
             let turned = (longitude - last_longitude + 180.0).rem_euclid(360.0) - 180.0;
             Drag {
@@ -152,15 +168,26 @@ impl DragWatch {
             }
         });
         self.last = Some((longitude, latitude, now));
+        self.undrawn = true;
         self.drag
     }
 
-    /// End the drag in progress if the camera has rested [`DRAG_PAUSE`] by
-    /// `now`. Returns whether one ended.
-    pub(super) fn settle(&mut self, now: Duration) -> bool {
-        let rested = self
-            .last
-            .is_some_and(|(_, _, at)| now.saturating_sub(at) >= DRAG_PAUSE);
+    /// A tick's work ended at `now`.
+    pub(super) fn drawn(&mut self, now: Duration) {
+        if std::mem::take(&mut self.undrawn) {
+            self.drawn = now;
+        }
+    }
+
+    /// End the drag in progress if the camera, at `camera` now, has not
+    /// moved since the tick that drew its last move ended [`DRAG_PAUSE`]
+    /// before `now`. Returns whether one ended.
+    pub(super) fn settle(&mut self, camera: &CameraParams, now: Duration) -> bool {
+        let rested = !self.undrawn
+            && self.last.is_some_and(|(longitude, latitude, _)| {
+                (camera.longitude, camera.latitude) == (longitude, latitude)
+            })
+            && now.saturating_sub(self.drawn) >= DRAG_PAUSE;
         rested && self.drag.take().is_some()
     }
 }
@@ -1411,66 +1438,84 @@ mod tests {
 
     const MS: Duration = Duration::from_millis(1);
 
+    /// Observe `camera` at `now` and end the draw there.
+    fn draw(watch: &mut DragWatch, camera: &CameraParams, now: Duration) -> Option<Drag> {
+        let drag = watch.observe(camera, now);
+        watch.drawn(now);
+        drag
+    }
+
     #[test]
     fn a_camera_set_once_after_a_rest_is_not_a_drag() {
         let mut watch = DragWatch::default();
-        assert_eq!(watch.observe(&at(0.0, 0.0), Duration::ZERO), None);
+        assert_eq!(draw(&mut watch, &at(0.0, 0.0), Duration::ZERO), None);
         let rest = DRAG_PAUSE + MS;
-        assert_eq!(watch.observe(&at(40.0, 10.0), rest), None);
-        assert_eq!(watch.observe(&at(40.0, 10.0), rest + DRAG_PAUSE), None);
+        assert_eq!(draw(&mut watch, &at(40.0, 10.0), rest), None);
+        assert_eq!(draw(&mut watch, &at(40.0, 10.0), rest + DRAG_PAUSE), None);
     }
 
     #[test]
     fn moves_within_the_pause_are_a_drag_at_the_rate_of_the_last() {
         let mut watch = DragWatch::default();
-        watch.observe(&at(0.0, 0.0), Duration::ZERO);
+        draw(&mut watch, &at(0.0, 0.0), Duration::ZERO);
         let rest = DRAG_PAUSE * 10;
-        watch.observe(&at(1.0, 0.0), rest);
-        let drag = watch
-            .observe(&at(6.0, -1.0), rest + 50 * MS)
+        draw(&mut watch, &at(1.0, 0.0), rest);
+        let drag = draw(&mut watch, &at(6.0, -1.0), rest + 50 * MS)
             .expect("a second move within the pause");
         approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
         approx::assert_relative_eq!(drag.latitude_rate, -20.0, max_relative = 1e-4);
     }
 
     #[test]
+    fn the_pause_runs_from_the_end_of_the_draw_that_saw_the_last_move() {
+        let mut watch = DragWatch::default();
+        draw(&mut watch, &at(0.0, 0.0), Duration::ZERO);
+        let (rest, slow) = (DRAG_PAUSE * 10, DRAG_PAUSE * 3);
+        assert_eq!(watch.observe(&at(5.0, 0.0), rest), None);
+        watch.drawn(rest + slow);
+        let drag = watch
+            .observe(&at(20.0, 0.0), rest + slow)
+            .expect("the move queued behind a slow draw");
+        approx::assert_relative_eq!(
+            drag.longitude_rate,
+            15.0 / slow.as_secs_f32(),
+            max_relative = 1e-4
+        );
+    }
+
+    #[test]
     fn a_drag_across_the_antimeridian_turns_the_short_way() {
         let mut watch = DragWatch::default();
-        watch.observe(&at(178.0, 0.0), Duration::ZERO);
-        let drag = watch
-            .observe(&at(-178.0, 0.0), 40 * MS)
-            .expect("a move within the pause");
+        draw(&mut watch, &at(178.0, 0.0), Duration::ZERO);
+        let drag = draw(&mut watch, &at(-178.0, 0.0), 40 * MS).expect("a move within the pause");
         approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
     }
 
     #[test]
     fn moves_at_one_instant_are_measured_together_at_the_next() {
         let mut watch = DragWatch::default();
-        watch.observe(&at(0.0, 0.0), Duration::ZERO);
-        assert_eq!(watch.observe(&at(2.0, 0.0), Duration::ZERO), None);
-        let drag = watch
-            .observe(&at(5.0, 0.0), 50 * MS)
-            .expect("a move within the pause");
+        draw(&mut watch, &at(0.0, 0.0), Duration::ZERO);
+        assert_eq!(draw(&mut watch, &at(2.0, 0.0), Duration::ZERO), None);
+        let drag = draw(&mut watch, &at(5.0, 0.0), 50 * MS).expect("a move within the pause");
         approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
     }
 
     #[test]
     fn a_drag_ends_when_the_camera_has_rested_the_pause() {
         let mut watch = DragWatch::default();
-        watch.observe(&at(0.0, 0.0), Duration::ZERO);
-        assert!(watch.observe(&at(5.0, 0.0), 50 * MS).is_some());
+        let camera = at(5.0, 0.0);
+        draw(&mut watch, &at(0.0, 0.0), Duration::ZERO);
+        assert!(draw(&mut watch, &camera, 50 * MS).is_some());
         let last = 50 * MS;
+        let almost = (last + DRAG_PAUSE).saturating_sub(MS);
+        assert!(!watch.settle(&camera, almost), "rested less than the pause");
         assert!(
-            !watch.settle((last + DRAG_PAUSE).saturating_sub(MS)),
-            "rested less than the pause"
+            !watch.settle(&at(9.0, 0.0), last + DRAG_PAUSE),
+            "a move is waiting to be drawn"
         );
-        assert!(
-            watch
-                .observe(&at(5.0, 0.0), (last + DRAG_PAUSE).saturating_sub(MS))
-                .is_some()
-        );
-        assert!(watch.settle(last + DRAG_PAUSE));
-        assert!(!watch.settle(last + DRAG_PAUSE * 2), "ended once");
-        assert_eq!(watch.observe(&at(5.0, 0.0), last + DRAG_PAUSE * 2), None);
+        assert!(draw(&mut watch, &camera, almost).is_some());
+        assert!(watch.settle(&camera, last + DRAG_PAUSE));
+        assert!(!watch.settle(&camera, last + DRAG_PAUSE * 2), "ended once");
+        assert_eq!(draw(&mut watch, &camera, last + DRAG_PAUSE * 2), None);
     }
 }

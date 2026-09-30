@@ -183,10 +183,17 @@ impl SurfaceFeed {
         self.drag.observe(camera, now)
     }
 
-    /// End a drag the camera has rested from by `now`. Returns whether one
-    /// ended, which is when the tiles of the 1 px threshold are wanted again.
-    pub(super) fn settle_drag(&mut self, now: Duration) -> bool {
-        self.drag.settle(now)
+    /// A tick's work ended at `now`, the frame it drew and read back
+    /// included, which is what a drag's pause counts from.
+    pub(super) fn drawn(&mut self, now: Duration) {
+        self.drag.drawn(now);
+    }
+
+    /// End a drag the camera, at `camera`, has rested from by `now`. Returns
+    /// whether one ended, which is when the tiles of the 1 px threshold are
+    /// wanted again.
+    pub(super) fn settle_drag(&mut self, camera: &CameraParams, now: Duration) -> bool {
+        self.drag.settle(camera, now)
     }
 
     /// The cap the page table takes to draw `output`.

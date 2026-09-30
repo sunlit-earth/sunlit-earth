@@ -547,7 +547,7 @@ impl Engine {
         }
 
         if let Some(surface) = &mut self.surface
-            && surface.settle_drag(now)
+            && surface.settle_drag(&self.params.camera, now)
         {
             self.dirty = true;
         }
@@ -595,9 +595,12 @@ impl Engine {
         }
         self.settle_exports();
 
-        // Last, so that the gate opens only when nothing in this tick drew.
+        // Last, so that the gate opens only when nothing in this tick drew,
+        // and so that a drag's pause counts from the end of the frame's work,
+        // its readback included, which on a software adapter is most of it.
         if let Some(surface) = &mut self.surface {
             surface.relax(now);
+            surface.drawn(self.clock.elapsed());
         }
     }
 

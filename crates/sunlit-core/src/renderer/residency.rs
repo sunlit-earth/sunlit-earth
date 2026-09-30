@@ -3,20 +3,22 @@
 //!
 //! Each face's quadtree is descended from the coarsest tiled level, once per
 //! output of the display plan. A tile is dropped where it lies wholly beyond
-//! the horizon or outside the frame and its margin, and it is wanted where
+//! the horizon the globe's mesh reaches or outside the frame and its margin,
+//! and it is wanted where
 //! the level below it, the floor below the coarsest, projects a texel to more
 //! than the threshold. A wanted tile whose children in view are all wanted
 //! gives way to them, so the set holds the level the rule asks for at each
 //! point and not the ancestors above it.
 //!
-//! The projected texel is measured where the tile is nearest the camera and
-//! along the texel's longest side, which is the one the anisotropic sampler's
-//! level of detail follows: foreshortening near the limb shortens only the
-//! other side, so the rule never counts it, and errs toward the finer level
-//! wherever the sampler's anisotropy runs out, at the very limb. Every bound
-//! it takes (the tile's nearest depth, its widest angle off the lens axis, the
-//! warp's largest stretch over the tile) errs the same way, so the rule wants
-//! at least what each pixel needs and sometimes a level more.
+//! The projected texel is counted as the sampler's level of detail counts it:
+//! along the texel's longest side, or where foreshortening makes the texel
+//! more elongated than the sampler's anisotropy covers, along its shortest
+//! times the anisotropy. Every bound the count takes (the tile's nearest
+//! depth, its widest angle off the lens axis, the warp's largest stretch over
+//! the tile, the least oblique view of it) errs toward the finer level, so the
+//! rule wants at least what each pixel needs and sometimes a level more. A
+//! tile is judged by its worst point, so parts of it farther or more oblique
+//! read its coarser level past what it holds.
 //!
 //! Pure and deterministic: the same request gives the same set, in the same
 //! order, whatever computed it before.
@@ -27,6 +29,7 @@ use glam::{DMat4, DVec3, DVec4, Vec3};
 
 use crate::assets::tiles::{Geometry, PackKind, TileKey};
 use crate::geometry::cube::{self, FACES};
+use crate::geometry::sphere::{GLOBE_SECTORS, GLOBE_STACKS, facet_radius};
 use crate::scene::camera::{CameraParams, OrbitalCamera};
 
 use super::tiles::{CellLevels, TileId};
@@ -66,13 +69,24 @@ pub struct Output {
 pub enum Surfaces {
     Day,
     Night,
-    /// Both, weighed across the terminator as `blend_fragment` weighs them:
-    /// the day where the sun's elevation term `n . l` exceeds
-    /// `-terminator_width`, the night where it is below `terminator_width`.
+    /// Both, as `blend_fragment` combines them: the day where the sun's term
+    /// `n . l` exceeds `-terminator_width`, the night where it is below
+    /// `terminator_width`, and with diffuse shading also where it is below
+    /// the ramp, since the shaded day is held at or above `min(night, day)`
+    /// wherever the shading darkens it.
     Blend {
         sun: Vec3,
         terminator_width: f32,
+        /// `None` with diffuse shading off.
+        diffuse: Option<Diffuse>,
     },
+}
+
+/// Blend mode's diffuse shading, as `blend_fragment` takes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Diffuse {
+    pub floor: f32,
+    pub ramp: f32,
 }
 
 /// A drag in progress: how fast it turns the camera.
@@ -94,6 +108,11 @@ pub struct Request<'a> {
     /// at or below the floor's wants no tiles at all.
     pub finest: u8,
     pub drag: Option<Drag>,
+    /// The surface sampler's anisotropy, 8 on a GPU and 1 on a CPU adapter
+    /// (`surface_sampler_descriptor`). Where a texel's projection is more
+    /// elongated than it covers, the sampler's level of detail follows the
+    /// texel's shorter side, and so does the rule.
+    pub anisotropy: u16,
     /// Whether a tile has a blob in its pack. A tile flagged constant ocean
     /// has none and is never wanted, since the page table draws it from the
     /// pack's index.
@@ -104,8 +123,10 @@ pub struct Request<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WantedTile {
     pub id: TileId,
-    /// Levels between the floor and the tile's own: how much finer than what
-    /// is drawn there before it arrives the tile makes its footprint.
+    /// Levels between the floor and the tile's own, which is what the tile
+    /// adds to its footprint where only the floors are resident; the set is
+    /// ordered by it without knowing what else is, so a loader that knows
+    /// may rank by the levels actually missing instead.
     pub deficit: u8,
     /// Wanted for the margin or a drag's lead rather than for what is in view.
     pub margin: bool,
@@ -280,6 +301,8 @@ enum Class {
 /// One camera, set up for the tests the descent makes.
 struct Lens {
     eye_dir: DVec3,
+    distance: f64,
+    /// The horizon the drawn mesh reaches, a little past the sphere's.
     cos_horizon: f64,
     sin_horizon: f64,
     /// Left, right, bottom, top, pointing inward, normalized.
@@ -295,10 +318,18 @@ struct Lens {
     min_depth: f64,
     /// How far past the frame the margin reaches, in tile widths.
     margin: f64,
+    /// The sampler's anisotropy.
+    anisotropy: f64,
 }
 
 impl Lens {
-    fn new(camera: &CameraParams, width: u32, height: u32, margin: f64) -> Option<Self> {
+    fn new(
+        camera: &CameraParams,
+        width: u32,
+        height: u32,
+        margin: f64,
+        anisotropy: u16,
+    ) -> Option<Self> {
         if width == 0 || height == 0 {
             return None;
         }
@@ -317,11 +348,12 @@ impl Lens {
             .hypot((1.0 + f64::from(camera.offset_y).abs()) * tan_v);
         let plane = |p: DVec4| p / p.truncate().length();
         let (x, y, w) = (mvp.row(0), mvp.row(1), mvp.row(3));
-        let cos_horizon = 1.0 / distance;
+        let horizon = mesh_horizon(distance);
         Some(Self {
             eye_dir: eye / distance,
-            cos_horizon,
-            sin_horizon: (1.0 - cos_horizon * cos_horizon).sqrt(),
+            distance,
+            cos_horizon: horizon.cos(),
+            sin_horizon: horizon.sin(),
             planes: [plane(w + x), plane(w - x), plane(w + y), plane(w - y)],
             view,
             mvp,
@@ -330,6 +362,7 @@ impl Lens {
             frame_tan,
             min_depth: (distance - 1.0) / frame_tan.hypot(1.0),
             margin,
+            anisotropy: f64::from(anisotropy.max(1)),
         })
     }
 
@@ -358,13 +391,27 @@ impl Lens {
         Some(class)
     }
 
-    /// The most pixels a texel `texel` wide in warped coordinates covers
-    /// anywhere on `shape` that the frame can show.
+    /// The most pixels a texel `texel` wide in warped coordinates covers, as
+    /// the sampler's level of detail counts them, anywhere on `shape` that
+    /// the frame can show.
+    ///
+    /// That is the texel's longer side, bounded by its length where the tile
+    /// is nearest, at the warp's largest stretch and at the widest angle off
+    /// the lens axis; except where the texel is more elongated than the
+    /// anisotropy covers, where it is the shorter side times the anisotropy.
+    /// The shorter side is at most the longer times the cosine of the angle
+    /// between the view ray and the surface, which is largest where the tile
+    /// is nearest the point under the eye.
     fn texel_px(&self, shape: &Shape, texel: f64) -> f64 {
         let ball = self.view.transform_point3(shape.center * shape.cos_radius);
         let depth = (-ball.z - shape.sin_radius).max(self.min_depth);
         let off_axis = ((ball.x.hypot(ball.y) + shape.sin_radius) / depth).min(self.frame_tan);
-        self.focal * off_axis.hypot(1.0) / depth * shape.stretch * texel
+        let longest = self.focal * off_axis.hypot(1.0) / depth * shape.stretch * texel;
+        let nearest = shape.center.dot(self.eye_dir).clamp(-1.0, 1.0).acos()
+            - shape.cos_radius.clamp(-1.0, 1.0).acos();
+        let (d, cos) = (self.distance, nearest.max(0.0).cos());
+        let incidence = (d.mul_add(cos, -1.0) / (d * d + 1.0 - 2.0 * d * cos).sqrt()).max(0.0);
+        longest * (self.anisotropy * incidence).min(1.0)
     }
 
     /// How far from the middle of the frame `dir` on the sphere projects, in
@@ -376,6 +423,19 @@ impl Lens {
         }
         (clip.x / clip.w * self.aspect).hypot(clip.y / clip.w)
     }
+}
+
+/// The widest angle from the point under an eye `distance` radii out at which
+/// the globe's mesh can show a point.
+///
+/// The mesh's facets are chords, so a facet whose plane faces the eye can have
+/// corners past the sphere's own horizon, and a fragment on it an interpolated
+/// normal up to there. A facet of circumradius `r` faces the eye while its
+/// middle is within `acos(cos r / d)` of the point under it, and its corners
+/// lie `r` beyond that.
+fn mesh_horizon(distance: f64) -> f64 {
+    let facet = facet_radius(GLOBE_STACKS, GLOBE_SECTORS);
+    (facet.cos() / distance).acos() + facet
 }
 
 /// The aspect ratio `write_uniforms` gives the projection for this size.
@@ -521,8 +581,14 @@ impl Residency {
             .outputs
             .iter()
             .filter_map(|output| {
-                Lens::new(&output.camera, output.width, output.height, MARGIN_TILES)
-                    .map(|lens| (lens, output.export))
+                Lens::new(
+                    &output.camera,
+                    output.width,
+                    output.height,
+                    MARGIN_TILES,
+                    request.anisotropy,
+                )
+                .map(|lens| (lens, output.export))
             })
             .collect();
         if levels.is_empty() || lenses.is_empty() {
@@ -557,6 +623,7 @@ impl Residency {
                 let shape = &level.shapes[index];
                 let distance = lenses
                     .iter()
+                    .filter(|(lens, _)| lens.classify(shape).is_some())
                     .map(|(lens, _)| lens.distance_from_middle(shape.center))
                     .fold(f64::INFINITY, f64::min);
                 for pack in drawn(request, shape) {
@@ -595,22 +662,29 @@ fn mark(levels: &[Tiling], lenses: &[(Lens, bool)], request: &Request<'_>) -> Ve
         .iter()
         .map(|level| vec![0; level.shapes.len()])
         .collect();
-    let (threshold, capped) = match request.drag {
-        Some(_) => (DRAG_THRESHOLD_PX, 0),
-        None => (THRESHOLD_PX, CAPPED),
+    let threshold = match request.drag {
+        Some(_) => DRAG_THRESHOLD_PX,
+        None => THRESHOLD_PX,
     };
     for (lens, export) in lenses {
-        let export = if *export { FOR_EXPORT } else { 0 };
+        // A pending export is published once the set at 1 px is resident, so
+        // its own view asks for that set whatever a drag does to the rest.
+        let (threshold, marks_view) = if *export {
+            (THRESHOLD_PX, IN_VIEW | FOR_EXPORT)
+        } else {
+            (threshold, IN_VIEW)
+        };
+        let capped = if threshold > THRESHOLD_PX { 0 } else { CAPPED };
         Walk {
             levels,
             lens,
             threshold,
-            view_marks: IN_VIEW | export | capped,
+            view_marks: marks_view | capped,
             margin_marks: IN_MARGIN,
             marks: &mut marks,
         }
         .run();
-        if request.drag.is_some() {
+        if capped == 0 {
             Walk {
                 levels,
                 lens,
@@ -632,7 +706,13 @@ fn mark(levels: &[Tiling], lenses: &[(Lens, bool)], request: &Request<'_>) -> Ve
             let mut camera = output.camera;
             camera.longitude += drag.longitude_rate * ahead;
             camera.latitude += drag.latitude_rate * ahead;
-            let Some(lens) = Lens::new(&camera, output.width, output.height, 0.0) else {
+            let Some(lens) = Lens::new(
+                &camera,
+                output.width,
+                output.height,
+                0.0,
+                request.anisotropy,
+            ) else {
                 continue;
             };
             Walk {
@@ -658,6 +738,7 @@ fn drawn(request: &Request<'_>, shape: &Shape) -> impl Iterator<Item = PackKind>
         Surfaces::Blend {
             sun,
             terminator_width,
+            diffuse,
         } => {
             let sun = sun.as_dvec3().normalize_or_zero();
             let width = f64::from(terminator_width);
@@ -666,7 +747,10 @@ fn drawn(request: &Request<'_>, shape: &Shape) -> impl Iterator<Item = PackKind>
             let (c, s) = (shape.cos_radius, shape.sin_radius);
             let highest = if cos >= c { 1.0 } else { cos * c + sin * s };
             let lowest = if cos <= -c { -1.0 } else { cos * c - sin * s };
-            (highest > -width, lowest < width)
+            let shaded = diffuse
+                .filter(|diffuse| diffuse.floor < 1.0)
+                .is_some_and(|diffuse| lowest < f64::from(diffuse.ramp));
+            (highest > -width, lowest < width || shaded)
         }
     };
     [
@@ -742,6 +826,11 @@ mod tests {
         true
     }
 
+    /// The surface sampler's anisotropy on a GPU and on a CPU adapter.
+    fn anisotropy(cpu_adapter: bool) -> u16 {
+        crate::renderer::surface_sampler_descriptor(cpu_adapter).anisotropy_clamp
+    }
+
     fn request<'a>(outputs: &'a [Output], stored: &'a dyn Fn(TileId) -> bool) -> Request<'a> {
         Request {
             outputs,
@@ -749,6 +838,7 @@ mod tests {
             surfaces: Surfaces::Day,
             finest: finest(),
             drag: None,
+            anisotropy: anisotropy(false),
             stored,
         }
     }
@@ -851,17 +941,19 @@ mod tests {
             (clip.w > 0.0).then(|| DVec2::new(clip.x / clip.w, clip.y / clip.w))
         }
 
-        /// The angle from the point under the eye to the horizon.
+        /// The angle from the point under the eye to the sphere's horizon.
         fn horizon(&self) -> f64 {
             (1.0 / self.eye.length()).acos()
         }
 
         /// The level the rule asks for at pixel `(x, y)`, measured from the
         /// pixel's own footprint on the face: the coarsest level, the floor
-        /// included, whose texel covers at most `threshold` pixels along its
-        /// longest side. `None` off the globe and where a neighbor pixel lands
-        /// on another face.
-        fn needed(&self, x: f64, y: f64, threshold: f64) -> Option<(DVec3, u8)> {
+        /// included, whose texel covers at most `threshold` pixels as the
+        /// sampler's level of detail counts them, along its longest side or,
+        /// where the texel is more elongated than `anisotropy` covers, along
+        /// its shortest times the anisotropy. `None` off the globe and where
+        /// a neighbor pixel lands on another face.
+        fn needed(&self, x: f64, y: f64, threshold: f64, anisotropy: u16) -> Option<(DVec3, u8)> {
             let point = self.hit(x, y)?;
             let warped = |p: DVec3| {
                 let (face, s, t) = cube::locate(p);
@@ -881,10 +973,12 @@ mod tests {
             );
             let root = (0.25 * (xx - yy) * (xx - yy) + xy * xy).sqrt();
             let shortest = (f64::midpoint(xx, yy) - root).max(0.0).sqrt();
+            let longest = (f64::midpoint(xx, yy) + root).sqrt();
+            let counted = (1.0 / shortest).min(f64::from(anisotropy) / longest);
             let mut level = floor();
             let mut size = GEOMETRY.floor;
             for finer in GEOMETRY.level_sizes() {
-                if 2.0 / (f64::from(size) * shortest) <= threshold {
+                if 2.0 / f64::from(size) * counted <= threshold {
                     break;
                 }
                 level = Geometry::level_of(finer);
@@ -896,7 +990,9 @@ mod tests {
 
     /// Cameras over a face center, the pole, a cube corner and elsewhere, a
     /// panned, tilted and turned one, at both ends of the zoom and between,
-    /// through three lenses, and one along the limb.
+    /// through three lenses, one along the limb, and wide lenses turned far
+    /// off the globe's center, where the perspective's stretch off the lens
+    /// axis and the depth across a tile matter most.
     fn cameras() -> Vec<CameraParams> {
         let mut cameras = Vec::new();
         for distance in [1.5, 2.2, 3.5, 5.76, 8.0, 11.5, 20.0, 80.0] {
@@ -921,6 +1017,22 @@ mod tests {
         let mut limb = camera(0.0, 0.0, 1.5);
         limb.yaw_deg = 90.0;
         cameras.push(limb);
+        for (longitude, latitude, yaw_deg, pitch_deg, fov_deg, distance) in [
+            (0.0, 0.0, 0.0, 90.0, 120.0, 1.9),
+            (0.0, 0.0, 90.0, 90.0, 120.0, 2.2),
+            (45.0, 35.26, 90.0, 90.0, 120.0, 3.0),
+            (-20.0, 15.0, 90.0, 90.0, 120.0, 1.5),
+            (-20.0, 15.0, 90.0, 0.0, 20.0, 19.0),
+            (-20.0, 15.0, 60.0, 45.0, 90.0, 1.7),
+            (-20.0, 15.0, -45.0, 70.0, 60.0, 3.5),
+        ] {
+            cameras.push(CameraParams {
+                yaw_deg,
+                pitch_deg,
+                fov_deg,
+                ..camera(longitude, latitude, distance)
+            });
+        }
         cameras
     }
 
@@ -931,9 +1043,15 @@ mod tests {
     /// way.
     #[test]
     fn every_pixel_gets_the_level_its_footprint_asks_for() {
-        for camera in cameras() {
+        for (camera, cpu_adapter) in cameras()
+            .into_iter()
+            .flat_map(|camera| [(camera, false), (camera, true)])
+        {
             let output = uhd(camera);
-            let wanted = want(&[output]);
+            let wanted = SHIPPED.wanted(&Request {
+                anisotropy: anisotropy(cpu_adapter),
+                ..request(&[output], &everything)
+            });
             let tiles = in_view(&wanted);
             let frame = Frame::new(&output);
             let stride = 24.0;
@@ -941,12 +1059,13 @@ mod tests {
             while y < frame.height {
                 let mut x = 0.5;
                 while x < frame.width {
-                    if let Some((p, needed)) = frame.needed(x, y, THRESHOLD_PX) {
+                    let needed = frame.needed(x, y, THRESHOLD_PX, anisotropy(cpu_adapter));
+                    if let Some((p, needed)) = needed {
                         let (face, row, col) = cell(p);
                         let capped = wanted.cap.at(face, row, col);
                         assert!(
                             capped >= needed,
-                            "{camera:?}: pixel ({x}, {y}) needs level {needed}, \
+                            "{camera:?} on a CPU adapter {cpu_adapter}: pixel ({x}, {y}) needs level {needed}, \
                              its cell is capped at {capped}"
                         );
                         if capped > floor() {
@@ -981,7 +1100,7 @@ mod tests {
                 let near_side: Vec<DVec3> = points
                     .iter()
                     .copied()
-                    .filter(|p| p.angle_between(eye) <= frame.horizon() + spacing)
+                    .filter(|p| p.angle_between(eye) <= mesh_horizon(frame.eye.length()) + spacing)
                     .collect();
                 assert!(
                     !near_side.is_empty(),
@@ -1258,10 +1377,18 @@ mod tests {
                 continue;
             }
             assert!(
-                wanted.tiles.iter().all(|tile| tile.id.key.level == finest),
-                "level {finest}: every point of this view wants the finest allowed"
+                wanted.tiles.iter().all(|tile| tile.id.key.level <= finest),
+                "level {finest}"
             );
-            assert!(!wanted.tiles.is_empty());
+            let at_finest = wanted
+                .tiles
+                .iter()
+                .filter(|tile| tile.id.key.level == finest)
+                .count();
+            assert!(
+                at_finest * 2 > wanted.tiles.len(),
+                "level {finest}: most of this view wants the finest allowed"
+            );
         }
     }
 
@@ -1291,12 +1418,13 @@ mod tests {
     #[test]
     fn the_blend_wants_each_surface_where_it_shows() {
         let width = 0.1;
-        let blend = |longitude: f32| {
-            let outputs = [uhd(camera(longitude, 0.0, 3.0))];
+        let blend = |longitude: f32, distance: f32| {
+            let outputs = [uhd(camera(longitude, 0.0, distance))];
             SHIPPED.wanted(&Request {
                 surfaces: Surfaces::Blend {
                     sun: Vec3::X,
                     terminator_width: width,
+                    diffuse: None,
                 },
                 ..request(&outputs, &everything)
             })
@@ -1308,13 +1436,13 @@ mod tests {
                 .filter(|tile| tile.id.pack == pack)
                 .count()
         };
-        let noon = blend(90.0);
+        let noon = blend(90.0, 2.0);
         assert!(count(&noon, PackKind::Day(4)) > 0);
         assert_eq!(count(&noon, PackKind::Night), 0);
-        let midnight = blend(-90.0);
+        let midnight = blend(-90.0, 2.0);
         assert_eq!(count(&midnight, PackKind::Day(4)), 0);
         assert!(count(&midnight, PackKind::Night) > 0);
-        let dusk = blend(0.0);
+        let dusk = blend(0.0, 3.0);
         assert!(count(&dusk, PackKind::Day(4)) > 0 && count(&dusk, PackKind::Night) > 0);
         let width = f64::from(width);
         for tile in &dusk.tiles {
@@ -1364,5 +1492,257 @@ mod tests {
             [Geometry::level_of(FIXTURE.face)]
         );
         assert_eq!(wanted.cap.cells(), FIXTURE.face / FIXTURE.tile);
+    }
+    /// With diffuse shading the shaded day is held at or above
+    /// `min(night, day)` wherever the shading darkens it, so the night decides
+    /// pixels on the day side up the ramp and has to be there.
+    #[test]
+    fn with_diffuse_shading_the_night_is_wanted_up_the_ramp() {
+        let outputs = [uhd(camera(30.0, 0.0, 2.0))];
+        let (width, ramp) = (0.1, 0.9);
+        let blend = |diffuse: Option<Diffuse>| {
+            SHIPPED.wanted(&Request {
+                surfaces: Surfaces::Blend {
+                    sun: Vec3::X,
+                    terminator_width: width,
+                    diffuse,
+                },
+                ..request(&outputs, &everything)
+            })
+        };
+        let nights = |wanted: &Wanted| -> HashSet<TileKey> {
+            wanted
+                .tiles
+                .iter()
+                .filter(|tile| tile.id.pack == PackKind::Night)
+                .map(|tile| tile.id.key)
+                .collect()
+        };
+        let shaded = blend(Some(Diffuse { floor: 0.7, ramp }));
+        let night = nights(&shaded);
+        let mut darkened = 0;
+        for tile in shaded.tiles.iter().filter(|tile| !tile.margin) {
+            let lowest = samples(tile.id.key, 8).map(|p| p.x).fold(1.0_f64, f64::min);
+            if tile.id.pack != PackKind::Night && lowest < f64::from(ramp) {
+                darkened += 1;
+                assert!(
+                    night.contains(&tile.id.key),
+                    "{:?} is darkened by the shading, so its night shows",
+                    tile.id
+                );
+            }
+        }
+        assert!(darkened > 0);
+        let unshaded = nights(&blend(None));
+        assert!(unshaded.len() < night.len());
+        let flat = nights(&blend(Some(Diffuse { floor: 1.0, ramp })));
+        assert_eq!(flat, unshaded, "a floor of 1 darkens nothing");
+    }
+
+    /// Where the view mixes the two levels, the tiles in view come largest
+    /// deficit first, whatever their distance from the middle.
+    #[test]
+    fn the_largest_deficit_comes_first() {
+        let wanted = want(&[uhd(camera(0.0, 0.0, 7.0))]);
+        let deficits: Vec<u8> = wanted
+            .tiles
+            .iter()
+            .filter(|tile| !tile.margin)
+            .map(|tile| tile.deficit)
+            .collect();
+        assert!(
+            deficits.contains(&1) && deficits.contains(&2),
+            "{deficits:?}"
+        );
+        assert!(
+            deficits.windows(2).all(|pair| pair[0] >= pair[1]),
+            "{deficits:?}"
+        );
+        for tile in &wanted.tiles {
+            assert_eq!(tile.deficit, tile.id.key.level - floor());
+        }
+    }
+
+    /// The globe's mesh shows fragments up to the mesh's own horizon, a little
+    /// past the sphere's, and the descent keeps every tile a front-facing facet
+    /// in the frame reaches into.
+    #[test]
+    fn the_mesh_horizon_holds_every_facet_the_eye_sees() {
+        let mesh = crate::geometry::sphere::generate_uv_sphere(GLOBE_STACKS, GLOBE_SECTORS);
+        let vertex = |i: u32| DVec3::from(mesh.vertices[i as usize].position.map(f64::from));
+        for (longitude, latitude, distance) in
+            [(0.0, 0.0, 1.5), (37.0, 61.0, 3.0), (-120.0, -5.0, 9.0)]
+        {
+            let output = uhd(camera(longitude, latitude, distance));
+            let frame = Frame::new(&output);
+            let eye = frame.eye;
+            let lens = Lens::new(
+                &output.camera,
+                output.width,
+                output.height,
+                0.0,
+                anisotropy(false),
+            )
+            .expect("outside the globe");
+            let horizon = frame.horizon();
+            let reach = mesh_horizon(eye.length());
+            let root = &SHIPPED.levels[0];
+            let mut farthest: f64 = 0.0;
+            for triangle in mesh.indices.chunks(3) {
+                let [a, b, c] = [triangle[0], triangle[1], triangle[2]].map(vertex);
+                let facing = (b - a).cross(c - a);
+                if facing.length() < 1e-9 || facing.dot(eye - a) <= 0.0 {
+                    continue;
+                }
+                for corner in [a, b, c] {
+                    let angle = corner.normalize().angle_between(eye.normalize());
+                    farthest = farthest.max(angle);
+                    assert!(
+                        angle <= reach + 1e-6,
+                        "a facet reaches {angle} past {reach}"
+                    );
+                    let in_frame = frame
+                        .ndc(corner)
+                        .is_some_and(|ndc| ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0);
+                    if angle > horizon && in_frame {
+                        let key = covering(corner.normalize(), root.level);
+                        let shape = &root.shapes[root.index(
+                            usize::from(key.face),
+                            u32::from(key.row),
+                            u32::from(key.col),
+                        )];
+                        assert!(
+                            lens.classify(shape).is_some(),
+                            "{key:?} holds a facet in view past the sphere's horizon"
+                        );
+                    }
+                }
+            }
+            assert!(
+                farthest - horizon > 0.5 * (reach - horizon),
+                "the facets reach {} past the sphere's horizon, the allowance is {}",
+                farthest - horizon,
+                reach - horizon
+            );
+        }
+    }
+
+    /// A pending export is published once its set at 1 px is resident, so a
+    /// drag elsewhere does not coarsen what its own view asks for.
+    #[test]
+    fn an_export_keeps_the_one_pixel_threshold_during_a_drag() {
+        let preview = uhd(camera(180.0, 0.0, 7.0));
+        let export = Output {
+            export: true,
+            ..uhd(camera(0.0, 0.0, 7.0))
+        };
+        let near_side = |wanted: &Wanted| -> HashSet<TileId> {
+            wanted
+                .in_view()
+                .filter(|id| center_of(id.key).z > 0.0)
+                .collect()
+        };
+        let alone = near_side(&want(&[Output {
+            export: false,
+            ..export
+        }]));
+        let dragged = SHIPPED.wanted(&Request {
+            drag: Some(Drag {
+                longitude_rate: 40.0,
+                latitude_rate: 0.0,
+            }),
+            ..request(&[preview, export], &everything)
+        });
+        assert_eq!(near_side(&dragged), alone);
+        let far_side = |wanted: &Wanted| {
+            wanted
+                .in_view()
+                .filter(|id| center_of(id.key).z < 0.0)
+                .count()
+        };
+        assert!(
+            far_side(&dragged) < far_side(&want(&[preview])),
+            "the preview itself drags at the coarser threshold"
+        );
+    }
+
+    /// The order from the middle out counts only the outputs that see a tile:
+    /// an output on the far side, which projects the tile through the globe
+    /// near its own middle, changes nothing.
+    #[test]
+    fn an_output_that_cannot_see_a_tile_does_not_rank_it() {
+        let near = uhd(camera(0.0, 0.0, 3.0));
+        let far = uhd(camera(180.0, 0.0, 3.0));
+        let alone: Vec<TileId> = want(&[near]).in_view().collect();
+        let seen: HashSet<TileId> = alone.iter().copied().collect();
+        let both: Vec<TileId> = want(&[near, far])
+            .in_view()
+            .filter(|id| seen.contains(id))
+            .collect();
+        assert_eq!(both, alone);
+    }
+
+    /// Where a texel's projection is more elongated than the sampler's
+    /// anisotropy covers, the level follows its shorter side, so a CPU
+    /// adapter's sampler, which has none, asks for fewer fine tiles.
+    #[test]
+    fn a_sampler_without_anisotropy_asks_for_coarser_tiles() {
+        let outputs = [uhd(camera(20.0, 30.0, 8.0))];
+        let count = |cpu_adapter: bool| {
+            SHIPPED
+                .wanted(&Request {
+                    anisotropy: anisotropy(cpu_adapter),
+                    ..request(&outputs, &everything)
+                })
+                .tiles
+                .iter()
+                .filter(|tile| tile.id.key.level == finest())
+                .count()
+        };
+        let (gpu, cpu) = (count(false), count(true));
+        assert!(
+            cpu * 2 < gpu,
+            "{cpu} finest tiles on a CPU adapter against {gpu}"
+        );
+    }
+    /// A tile whose cap reaches over the mesh's horizon while the tile itself
+    /// does not is dropped: the cap is a circle round the tile's corners, and
+    /// the tile's edges, great circle arcs, stay inside it.
+    #[test]
+    fn the_horizon_drops_a_tile_only_its_cap_reaches_over() {
+        let output = uhd(camera(10.0, 20.0, 2.0));
+        let lens = Lens::new(
+            &output.camera,
+            output.width,
+            output.height,
+            MARGIN_TILES,
+            anisotropy(false),
+        )
+        .expect("outside the globe");
+        let eye = lens.eye_dir;
+        let reach = mesh_horizon(lens.distance);
+        let mut dropped = 0;
+        for level in &SHIPPED.levels {
+            for (index, shape) in level.shapes.iter().enumerate() {
+                let points: Vec<DVec3> = samples(level.key(index), 32).collect();
+                let spacing = points[0].angle_between(points[1]);
+                let nearest = points
+                    .iter()
+                    .map(|p| p.angle_between(eye))
+                    .fold(f64::INFINITY, f64::min);
+                let exact = shape.nearest_cos(eye).clamp(-1.0, 1.0).acos();
+                let cap = shape.center.angle_between(eye) - shape.cos_radius.acos();
+                assert!(
+                    exact <= nearest + 1e-9 && nearest - exact <= spacing,
+                    "{:?}: nearest {exact} against {nearest} sampled",
+                    level.key(index)
+                );
+                if cap < reach && nearest > reach + 1e-3 {
+                    assert!(lens.classify(shape).is_none(), "{:?}", level.key(index));
+                    dropped += 1;
+                }
+            }
+        }
+        assert!(dropped > 0, "no tile here had a cap past its edges");
     }
 }

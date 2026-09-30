@@ -125,7 +125,7 @@ pub(super) fn create_renderer(
         cpu_adapter,
         tile_geometry,
     } = config;
-    let mesh = sphere::generate_uv_sphere(64, 64);
+    let mesh = sphere::generate_uv_sphere(sphere::GLOBE_STACKS, sphere::GLOBE_SECTORS);
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("sphere_vertices"),

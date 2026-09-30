@@ -216,8 +216,9 @@ pub fn expected_key(
 /// otherwise.
 ///
 /// Runs on the calling thread, with the block encode spread over the current
-/// rayon pool. `cancel` is looked at between tiles; raising it abandons the
-/// build and leaves whatever pack was there before.
+/// rayon pool. `cancel` is looked at between face decodes and between batches of
+/// 64 tiles, each about a quarter of a second on one thread; raising it
+/// abandons the build and leaves whatever pack was there before.
 pub fn ensure_pack(
     cache_dir: &Path,
     kind: PackKind,
@@ -242,7 +243,11 @@ fn ensure_as(
     let key = key_text(kind, geometry, versions, &before);
     let path = pack_path(cache_dir, kind);
     match Pack::open(&path) {
-        Ok(pack) if pack.key() == key => return Ok(Ensured::Current),
+        Ok(pack) if pack.key() == key => {
+            drop(pack);
+            crate::files::sweep_unfinished(&path, UNFINISHED_SUFFIX);
+            return Ok(Ensured::Current);
+        }
         Ok(_) => info!(path = %path.display(), "the tile pack's key is stale, rebuilding"),
         Err(pack::PackError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => warn!(path = %path.display(), error = %e, "rebuilding an unusable tile pack"),
@@ -363,6 +368,34 @@ fn ocean_color(color: &Cube, mask: &Cube) -> [u8; 4] {
     sum.map(|s| u8::try_from((s + count / 2) / count).expect("a mean of bytes"))
 }
 
+/// What a pack of `kind` stores, before any of it is encoded: its block
+/// format, its ocean color, the tiled levels and the jobs in index order.
+fn prepare(
+    kind: PackKind,
+    color: Option<Cube>,
+    mask: Option<Cube>,
+    geometry: &Geometry,
+) -> (BlockFormat, [u8; 4], Vec<Cube>, Vec<Job>) {
+    match (color, mask) {
+        (Some(color), mask) => {
+            let ocean = mask.as_ref().map_or([0; 4], |m| ocean_color(&color, m));
+            let flat = matches!(kind, PackKind::Night).then_some((ocean, NIGHT_OCEAN_TOLERANCE));
+            let (levels, jobs) = surface_jobs(color, mask.as_ref(), flat, geometry);
+            (BlockFormat::Bc7, ocean, levels, jobs)
+        }
+        (None, Some(mask)) => {
+            let jobs = (0..6)
+                .map(|face| Job::Face {
+                    key: face_key(geometry.mask, face),
+                    chain: chain(mask.face(face), geometry.mask),
+                })
+                .collect();
+            (BlockFormat::Bc4, [0; 4], Vec::new(), jobs)
+        }
+        (None, None) => unreachable!("every pack has a surface or is the mask"),
+    }
+}
+
 fn build(
     path: &Path,
     kind: PackKind,
@@ -384,24 +417,7 @@ fn build(
     };
     let decode = started.elapsed();
 
-    let (format, ocean, levels, jobs) = match (color, mask) {
-        (Some(color), mask) => {
-            let ocean = mask.as_ref().map_or([0; 4], |m| ocean_color(&color, m));
-            let flat = matches!(kind, PackKind::Night).then_some((ocean, NIGHT_OCEAN_TOLERANCE));
-            let (levels, jobs) = surface_jobs(color, mask.as_ref(), flat, geometry);
-            (BlockFormat::Bc7, ocean, levels, jobs)
-        }
-        (None, Some(mask)) => {
-            let jobs = (0..6)
-                .map(|face| Job::Face {
-                    key: face_key(geometry.mask, face),
-                    chain: chain(mask.face(face), geometry.mask),
-                })
-                .collect();
-            (BlockFormat::Bc4, [0; 4], Vec::new(), jobs)
-        }
-        (None, None) => unreachable!("every pack has a surface or is the mask"),
-    };
+    let (format, ocean, levels, jobs) = prepare(kind, color, mask, geometry);
 
     let header = Header {
         kind,
@@ -550,6 +566,23 @@ struct Blob {
     hash: [u8; 32],
 }
 
+/// The layer of the tile at `key` cut from its level, and the mips below it.
+fn tile_planes(key: TileKey, level: &Cube, geometry: &Geometry) -> Vec<Plane> {
+    let (row, col) = tile_origin(geometry, u32::from(key.row), u32::from(key.col));
+    let mut plane = Plane {
+        size: geometry.layer(),
+        channels: 4,
+        texels: level.window(usize::from(key.face), row, col, geometry.layer()),
+    };
+    let mut planes = Vec::new();
+    for _ in 1..TILE_LEVELS {
+        let next = plane.halved();
+        planes.push(std::mem::replace(&mut plane, next));
+    }
+    planes.push(plane);
+    planes
+}
+
 /// Encode one job. A tile is small enough that splitting it across threads
 /// costs more than it gains, so the tiles of a batch run side by side instead;
 /// a whole face is split.
@@ -575,16 +608,7 @@ fn blob_of(
             });
         }
         Job::Tile { key, level, .. } => {
-            let (row, col) = tile_origin(geometry, u32::from(key.row), u32::from(key.col));
-            let mut plane = Plane {
-                size: geometry.layer(),
-                channels: 4,
-                texels: levels[*level].window(usize::from(key.face), row, col, geometry.layer()),
-            };
-            for mip in 0..TILE_LEVELS {
-                if mip > 0 {
-                    plane = plane.halved();
-                }
+            for plane in tile_planes(*key, &levels[*level], geometry) {
                 codec::encode(format, &plane.texels, plane.size, false, &mut bytes)
                     .map_err(BuildError::Failed)?;
             }
@@ -968,6 +992,19 @@ mod tests {
     }
 
     #[test]
+    fn a_current_pack_still_gets_its_leftovers_swept() {
+        let setup = Setup::new("sweep_current");
+        let kind = PackKind::Day(1);
+        assert!(built(&setup.ensure(kind)));
+        let target = pack_path(&setup.cache(), kind);
+        let orphan = crate::files::unfinished(&target, UNFINISHED_SUFFIX);
+        fs::write(&orphan, b"half a sweep").expect("write");
+
+        assert_eq!(setup.ensure(kind), Ensured::Current);
+        assert!(!orphan.exists(), "swept although nothing was rebuilt");
+    }
+
+    #[test]
     fn a_build_sweeps_what_an_earlier_one_left_unfinished() {
         let setup = Setup::new("sweep");
         let kind = PackKind::Day(1);
@@ -1272,6 +1309,98 @@ mod tests {
             ocean_color(&color, &water_cube(4, &everywhere)),
             [0; 4],
             "no water, no color"
+        );
+    }
+
+    /// A digest of everything the cutter hands the encoder for the fixture's
+    /// kinds of pack and for a noisy night over open water: the ocean rules,
+    /// the gutters, the halving, the floor chains, the mask chain and the
+    /// ocean colors.
+    fn cutter_digest() -> String {
+        texture_loader::register_jxl_hook();
+        let setup = Setup::new("cutter_digest");
+        let cancel = AtomicBool::new(false);
+        let mut cases = Vec::new();
+        for kind in [
+            PackKind::Day(0),
+            PackKind::Day(6),
+            PackKind::Night,
+            PackKind::Mask,
+        ] {
+            let sources = sources(kind, &setup.textures).expect("sources");
+            let cube = |paths: Option<[&Path; 6]>, channels| {
+                paths.map(|paths| {
+                    decode_cube(&paths, channels, FIXTURE.face, &cancel).expect("decode")
+                })
+            };
+            cases.push((kind, cube(sources.color, 4), cube(sources.mask, 1)));
+        }
+        let noisy = (0..6)
+            .map(|face| Plane {
+                size: FIXTURE.face,
+                channels: 4,
+                texels: (0..FIXTURE.face as usize * FIXTURE.face as usize)
+                    .flat_map(|i| {
+                        [
+                            20 + u8::try_from(i * 7 % (face + 4)).expect("a byte"),
+                            30,
+                            60,
+                            255,
+                        ]
+                    })
+                    .collect(),
+            })
+            .collect();
+        cases.push((
+            PackKind::Night,
+            Some(Cube::new(noisy).expect("a cube")),
+            Some(water_cube(FIXTURE.face, &[])),
+        ));
+
+        let mut digest = Sha256::new();
+        for (kind, color, mask) in cases {
+            let (format, ocean, levels, jobs) = prepare(kind, color, mask, &FIXTURE);
+            digest.update([format.code()]);
+            digest.update(ocean);
+            for job in &jobs {
+                let key = job.key();
+                digest.update([key.level, key.face]);
+                digest.update(key.row.to_le_bytes());
+                digest.update(key.col.to_le_bytes());
+                match job {
+                    Job::Face { chain, .. } => {
+                        for plane in chain {
+                            digest.update(&plane.texels);
+                        }
+                    }
+                    Job::Tile { ocean: true, .. } => digest.update([1]),
+                    Job::Tile { level, .. } => {
+                        for plane in tile_planes(key, &levels[*level], &FIXTURE) {
+                            digest.update(&plane.texels);
+                        }
+                    }
+                }
+            }
+        }
+        digest.finalize().iter().fold(String::new(), |mut hex, b| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{b:02x}");
+            hex
+        })
+    }
+
+    #[test]
+    fn a_change_to_what_the_cutter_makes_comes_with_a_format_version_bump() {
+        const PINNED: (u32, &str) = (
+            1,
+            "64ab0d3dcb4b2dffbf705a3157bc5449024f89c6568eb167e8a5923598249461",
+        );
+        let found = cutter_digest();
+        assert_eq!(
+            (pack::FORMAT_VERSION, found.as_str()),
+            PINNED,
+            "what the cutter hands the encoder changed, so packs built by the old cutter must be rebuilt: bump FORMAT_VERSION in pack.rs and set PINNED to ({}, \"{found}\") in this test",
+            pack::FORMAT_VERSION + 1,
         );
     }
 

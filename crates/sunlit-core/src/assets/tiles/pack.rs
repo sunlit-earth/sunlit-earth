@@ -33,7 +33,7 @@
 //! | 8 | 8 | blob offset from the start of the file |
 //! | 16 | 4 | blob length |
 //! | 20 | 4 | CRC-32 of the blob |
-//! | 24 | 32 | SHA-256 of the blob |
+//! | 24 | 32 | SHA-256 of the blob, zeros for a constant ocean entry, whose CRC-32 is 0 too |
 //!
 //! A tile's blob is its layer, the tile and its gutter, and the one mip below
 //! it, each a level of blocks with rows first. A whole face's blob is the face
@@ -48,6 +48,11 @@ use super::PackKind;
 use super::codec::{self, BlockFormat};
 
 const MAGIC: [u8; 8] = *b"SUNLTILE";
+/// Part of every pack's key. Bump it whenever the bytes a build writes for the
+/// same sources change: the layout above, or anything the cutter hands the
+/// encoder, such as gutter sampling, the halving filter, the ocean rules or the
+/// night's ocean tolerance. A test pins a digest of the cutter's output and
+/// fails until this and the pin agree.
 pub(crate) const FORMAT_VERSION: u32 = 1;
 const FIXED_HEADER: usize = 48;
 const ENTRY_BYTES: usize = 56;
@@ -247,7 +252,10 @@ fn decode_header(bytes: &[u8], file_len: u64) -> Result<(Header, Vec<Entry>), Pa
             hash: raw[24..56].try_into().expect("32 bytes"),
         };
         let key = entry.key;
-        if raw[2] & !(FLAG_OCEAN | FLAG_FACE) != 0 || usize::from(key.face) >= 6 || key.level > MAX_LEVEL {
+        if raw[2] & !(FLAG_OCEAN | FLAG_FACE) != 0
+            || usize::from(key.face) >= 6
+            || key.level > MAX_LEVEL
+        {
             return Err(invalid(format!("entry {key:?} is malformed")));
         }
         if entries.last().is_some_and(|last| last.key >= key) {

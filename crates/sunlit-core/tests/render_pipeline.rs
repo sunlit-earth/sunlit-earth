@@ -3496,9 +3496,10 @@ const MINIFIED_DISTANCE: f32 = 8.0;
 
 /// How far a tile's pixel may lie from the floor's inside a face, in steps of
 /// 255 in the channels that code the level: the floor and the tile are read
-/// at the same level of detail there, to 2 steps on WARP and 11 on lavapipe,
-/// and a tile read a whole level off lies up to 255 away.
-const LEVEL_STEPS: u8 = 24;
+/// at the same level of detail there, to 2 steps on the Radeon and WARP and 11
+/// on lavapipe, and gradients left unscaled into the layer read 220 or more
+/// away.
+const LEVEL_STEPS: u8 = 48;
 
 /// How squarely the surface has to face the camera for a pixel inside a face
 /// to be held to the floor, as the cosine between its normal and the view:
@@ -3734,7 +3735,7 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
         edge_worst.0
     );
     assert!(
-        mixed > compared / 4 && edges > 500,
+        mixed * 8 > compared && edges > 500,
         "only {mixed} of {compared} pixels read between the two levels and {edges} quads lie \
          across an edge, too few for the case to mean anything"
     );

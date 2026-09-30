@@ -141,9 +141,9 @@ pub struct Wanted {
     /// once, whichever outputs want it.
     pub tiles: Vec<WantedTile>,
     /// The finest level wanted at each cell for what is in view, at the
-    /// 1 px threshold even while a drag is in progress: a tile of that level
-    /// is sampled within its two levels, so a resident one serves the frame
-    /// however little of the set the drag asks for.
+    /// 1 px threshold even while a drag is in progress, so a resident tile of
+    /// that level keeps serving the frame however little of the set the drag
+    /// asks for. A tile finer than it would be read past its coarser level.
     pub cap: CellLevels,
 }
 

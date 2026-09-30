@@ -4,7 +4,7 @@ use crate::params::{
     CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
     RAYLEIGH_RADIUS, SceneParams,
 };
-use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
+use crate::scene::camera::OrbitalCamera;
 use crate::scene::moon;
 use crate::scene::sky::SkyState;
 use crate::scene::sun_occlusion;
@@ -104,13 +104,7 @@ pub(super) fn write_uniforms<'a>(
 ) -> Option<Moon<'a>> {
     let aspect = viewport_width as f32 / viewport_height as f32;
     let cam = &params.camera;
-    let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
-    camera.offset_x = cam.offset_x;
-    camera.offset_y = cam.offset_y;
-    camera.tilt_deg = cam.tilt_deg;
-    camera.yaw_deg = cam.yaw_deg;
-    camera.pitch_deg = cam.pitch_deg;
-    camera.fov_deg = cam.fov_deg;
+    let camera = OrbitalCamera::from_params(cam);
     let mvp = camera.mvp_matrix(aspect);
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();

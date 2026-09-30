@@ -201,6 +201,79 @@ impl TileLayers {
     }
 }
 
+/// The finest level the page table may name at each cell, in the table's
+/// layout: the level the wanted set asks for there.
+///
+/// A tile is sampled at its own two levels only, so one finer than the frame
+/// asks for is read at its coarser level clamped and aliases. A cell whose
+/// resident tile is finer than its level falls back on a coarser resident
+/// ancestor, or on the floor, instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellLevels {
+    finest: u8,
+    cells: u32,
+    levels: Vec<u8>,
+}
+
+impl CellLevels {
+    /// `level` at every cell of a table cut by `geometry`.
+    #[must_use]
+    pub fn uniform(geometry: &Geometry, level: u8) -> Self {
+        let cells = geometry.face / geometry.tile;
+        Self {
+            finest: Geometry::level_of(geometry.face),
+            cells,
+            levels: vec![level; 6 * (cells * cells) as usize],
+        }
+    }
+
+    /// No cap: the finest tiled level at every cell.
+    #[must_use]
+    pub fn finest(geometry: &Geometry) -> Self {
+        Self::uniform(geometry, Geometry::level_of(geometry.face))
+    }
+
+    /// Cells along each side of a face.
+    #[must_use]
+    pub fn cells(&self) -> u32 {
+        self.cells
+    }
+
+    #[must_use]
+    pub fn at(&self, face: u8, row: u32, col: u32) -> u8 {
+        self.levels[self.index(face, row, col)]
+    }
+
+    /// Raise every cell `key` covers to at least `key`'s level.
+    ///
+    /// # Panics
+    ///
+    /// If `key` is finer than the finest level or lies outside its face.
+    pub fn raise(&mut self, key: TileKey) {
+        let shift = self
+            .finest
+            .checked_sub(key.level)
+            .unwrap_or_else(|| panic!("{key:?} is finer than level {}", self.finest));
+        let span = 1_u32 << shift;
+        let (row, col) = (u32::from(key.row) * span, u32::from(key.col) * span);
+        assert!(
+            row + span <= self.cells && col + span <= self.cells,
+            "{key:?} lies outside its face"
+        );
+        for r in row..row + span {
+            for c in col..col + span {
+                let at = self.index(key.face, r, c);
+                self.levels[at] = self.levels[at].max(key.level);
+            }
+        }
+    }
+
+    fn index(&self, face: u8, row: u32, col: u32) -> usize {
+        let cells = self.cells as usize;
+        (usize::from(face) * cells + row as usize) * cells + col as usize
+    }
+}
+
 /// One surface as the page table sees it: the pack its tiles come from, and
 /// the tiles that pack flags constant ocean.
 #[derive(Clone, Copy, Debug)]
@@ -254,20 +327,31 @@ impl PageTable {
             .map(|half| PageEntry::decode(u16::try_from(half).expect("sixteen bits")))
     }
 
-    /// Point every cell of both halves at the best that is resident for it:
-    /// its own tile, else the nearest ancestor that is resident, a layer or
-    /// constant ocean alike, else the floor. A half with no surface draws the
-    /// floor.
+    /// Point every cell of both halves at the best that is resident for it no
+    /// finer than `cap` allows there: its tile at the cap's level, else the
+    /// nearest ancestor that is resident, a layer or constant ocean alike,
+    /// else the floor. A half with no surface draws the floor.
     ///
     /// Checked in a debug build: every cell has to name what it resolves to.
-    pub fn rewrite(&mut self, surfaces: [Option<PageSurface<'_>>; 2], layers: &TileLayers) {
+    ///
+    /// # Panics
+    ///
+    /// If `cap` is not cut to this table's cells.
+    pub fn rewrite(
+        &mut self,
+        surfaces: [Option<PageSurface<'_>>; 2],
+        layers: &TileLayers,
+        cap: &CellLevels,
+    ) {
+        assert_eq!(cap.cells(), self.cells(), "a cap for another table");
         let cells = self.cells();
         for face in 0..6_u8 {
             for row in 0..cells {
                 for col in 0..cells {
+                    let finest = self.finest_steps(cap, face, row, col);
                     let [day, night] = surfaces.map(|surface| {
                         surface.map_or(PageEntry::Floor, |surface| {
-                            self.resolve(surface, layers, face, row, col)
+                            self.resolve(surface, layers, face, row, col, finest)
                         })
                     });
                     let at = self.index(face, row, col);
@@ -275,7 +359,13 @@ impl PageTable {
                 }
             }
         }
-        debug_assert_eq!(self.check(surfaces, layers), Ok(()));
+        debug_assert_eq!(self.check(surfaces, layers, cap), Ok(()));
+    }
+
+    /// The fewest levels coarser than the finest a cell may draw from.
+    fn finest_steps(&self, cap: &CellLevels, face: u8, row: u32, col: u32) -> u32 {
+        let finest = Geometry::level_of(self.geometry.face);
+        u32::from(finest.saturating_sub(cap.at(face, row, col)))
     }
 
     /// The tile a cell of the finest level lies in, `steps` levels coarser.
@@ -297,8 +387,9 @@ impl PageTable {
         face: u8,
         row: u32,
         col: u32,
+        finest: u32,
     ) -> PageEntry {
-        for steps in 0..self.geometry.levels {
+        for steps in finest..self.geometry.levels {
             let key = self.ancestor(face, row, col, steps);
             let id = TileId {
                 pack: surface.pack,
@@ -314,10 +405,11 @@ impl PageTable {
         PageEntry::Floor
     }
 
-    /// Whether every cell names something that is there: a layer that holds
-    /// the cell's own ancestor at the level the entry says, of the surface's
-    /// pack, or an ancestor the pack flags constant ocean, or the floor, which
-    /// is resident whenever a surface is drawn at all.
+    /// Whether every cell names something that is there and no finer than
+    /// `cap` allows: a layer that holds the cell's own ancestor at the level
+    /// the entry says, of the surface's pack, or an ancestor the pack flags
+    /// constant ocean, or the floor, which is resident whenever a surface is
+    /// drawn at all.
     ///
     /// It reads the layers from the side the rewrite does not, which layer
     /// holds what rather than where a tile is, so a layer freed or given to
@@ -326,11 +418,20 @@ impl PageTable {
         &self,
         surfaces: [Option<PageSurface<'_>>; 2],
         layers: &TileLayers,
+        cap: &CellLevels,
     ) -> Result<(), String> {
+        if cap.cells() != self.cells() {
+            return Err(format!(
+                "a cap of {} cells a side for a table of {}",
+                cap.cells(),
+                self.cells()
+            ));
+        }
         let cells = self.cells();
         for face in 0..6_u8 {
             for row in 0..cells {
                 for col in 0..cells {
+                    let finest = self.finest_steps(cap, face, row, col);
                     for (half, (entry, surface)) in self
                         .at(face, row, col)
                         .into_iter()
@@ -345,18 +446,25 @@ impl PageTable {
                                 return Err(format!("{} names a tile of no surface", cell()));
                             }
                             (Some(PageEntry::Ocean), Some(surface)) => {
-                                let flagged = (0..self.geometry.levels).any(|steps| {
+                                let flagged = (finest..self.geometry.levels).any(|steps| {
                                     surface
                                         .ocean
                                         .contains(&self.ancestor(face, row, col, steps))
                                 });
                                 if !flagged {
                                     return Err(format!(
-                                        "{} is ocean where {:?} flags none of its tiles",
+                                        "{} is ocean where {:?} flags none of its tiles \
+                                         at or below its cap",
                                         cell(),
                                         surface.pack
                                     ));
                                 }
+                            }
+                            (Some(PageEntry::Tile { steps, .. }), Some(_)) if steps < finest => {
+                                return Err(format!(
+                                    "{} names a tile {steps} levels up, finer than its cap of {finest}",
+                                    cell()
+                                ));
                             }
                             (Some(PageEntry::Tile { layer, steps }), Some(surface)) => {
                                 let wanted = TileId {
@@ -405,6 +513,9 @@ pub struct SurfaceTiles {
     /// The day pack whose tiles the day half names: the month whose floor is
     /// drawn.
     day: Option<PackKind>,
+    /// The finest level each cell may draw, the wanted set's; the finest
+    /// tiled level everywhere until one is set.
+    cap: CellLevels,
     table: PageTable,
     page: wgpu::Texture,
     page_view: wgpu::TextureView,
@@ -454,6 +565,7 @@ impl SurfaceTiles {
             array: None,
             ocean: HashMap::new(),
             day: None,
+            cap: CellLevels::finest(&geometry),
             table,
             page,
             page_view,
@@ -617,6 +729,20 @@ impl SurfaceTiles {
         self.publish(queue);
     }
 
+    /// Hold every cell to the level `cap` names there from now on, and
+    /// rewrite the table if that changes it.
+    ///
+    /// # Panics
+    ///
+    /// If `cap` is cut for another geometry.
+    pub fn set_cap(&mut self, queue: &wgpu::Queue, cap: CellLevels) {
+        assert_eq!(cap.cells(), self.table.cells(), "a cap for another table");
+        if cap != self.cap {
+            self.cap = cap;
+            self.publish(queue);
+        }
+    }
+
     /// The texels or blocks of each level of a tile's layer, in the array's
     /// format, with the level's width.
     fn levels_of(&self, blob: &[u8]) -> Result<Vec<(u32, Vec<u8>)>, String> {
@@ -651,7 +777,7 @@ impl SurfaceTiles {
             })
         };
         let surfaces = [self.day.and_then(surface), surface(PackKind::Night)];
-        self.table.rewrite(surfaces, &self.layers);
+        self.table.rewrite(surfaces, &self.layers, &self.cap);
         let cells = self.table.cells();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -708,6 +834,10 @@ mod tests {
     use crate::assets::tiles::FIXTURE;
 
     const DAY: PackKind = PackKind::Day(3);
+
+    fn uncapped() -> CellLevels {
+        CellLevels::finest(&FIXTURE)
+    }
 
     fn id(level: u8, face: u8, row: u16, col: u16) -> TileId {
         TileId {
@@ -811,7 +941,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        table.rewrite([Some(day), None], &layers);
+        table.rewrite([Some(day), None], &layers, &uncapped());
 
         assert_eq!(
             resolved(&table, 4, 1, 0),
@@ -860,7 +990,7 @@ mod tests {
         };
         layers.claim(fine, None).unwrap();
         let mut table = PageTable::new(FIXTURE);
-        table.rewrite([None, Some(night)], &layers);
+        table.rewrite([None, Some(night)], &layers, &uncapped());
 
         let night_at = |face, row, col| table.at(face, row, col)[1].expect("an entry");
         assert_eq!(night_at(5, 0, 0), PageEntry::Ocean);
@@ -882,26 +1012,28 @@ mod tests {
         let mut layers = TileLayers::new(2);
         layers.claim(id(COARSE, 3, 0, 0), None).unwrap();
         let mut table = PageTable::new(FIXTURE);
-        table.rewrite([Some(day), None], &layers);
-        assert_eq!(table.check([Some(day), None], &layers), Ok(()));
+        table.rewrite([Some(day), None], &layers, &uncapped());
+        assert_eq!(table.check([Some(day), None], &layers, &uncapped()), Ok(()));
 
         layers.claim(id(FINE, 0, 0, 0), Some(0)).unwrap();
         let why = table
-            .check([Some(day), None], &layers)
+            .check([Some(day), None], &layers, &uncapped())
             .expect_err("layer 0 now holds another tile");
         assert!(why.contains("layer 0"), "{why}");
 
         layers.release(id(FINE, 0, 0, 0));
         assert!(
-            table.check([Some(day), None], &layers).is_err(),
+            table
+                .check([Some(day), None], &layers, &uncapped())
+                .is_err(),
             "a freed layer"
         );
         assert!(
-            table.check([None, None], &layers).is_err(),
+            table.check([None, None], &layers, &uncapped()).is_err(),
             "a tile of no surface"
         );
-        table.rewrite([Some(day), None], &layers);
-        assert_eq!(table.check([Some(day), None], &layers), Ok(()));
+        table.rewrite([Some(day), None], &layers, &uncapped());
+        assert_eq!(table.check([Some(day), None], &layers, &uncapped()), Ok(()));
     }
 
     /// The rewrite asserts its own result in a debug build, so a table whose
@@ -921,7 +1053,7 @@ mod tests {
         // leaves behind: the tile says layer 1, layer 1 says nothing.
         layers.resident.insert(id(FINE, 0, 0, 0), 1);
         let mut table = PageTable::new(FIXTURE);
-        table.rewrite([Some(day), None], &layers);
+        table.rewrite([Some(day), None], &layers, &uncapped());
     }
 
     #[test]
@@ -939,6 +1071,7 @@ mod tests {
                 None,
             ],
             &layers,
+            &uncapped(),
         );
         let why = table
             .check(
@@ -950,8 +1083,94 @@ mod tests {
                     None,
                 ],
                 &layers,
+                &uncapped(),
             )
             .expect_err("the flag is gone");
         assert!(why.contains("ocean"), "{why}");
+    }
+
+    /// A cell draws nothing finer than its cap: a resident tile past it gives
+    /// way to its resident parent, and a cap at the floor draws the floor even
+    /// over a tile the pack flags constant ocean.
+    #[test]
+    fn a_cell_draws_nothing_finer_than_its_cap() {
+        let ocean: HashSet<TileKey> = [id(FINE, 1, 0, 0).key].into();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(4);
+        layers.claim(id(FINE, 4, 1, 1), None).unwrap();
+        layers.claim(id(COARSE, 4, 0, 0), None).unwrap();
+        let floor = Geometry::level_of(FIXTURE.floor);
+        let mut cap = CellLevels::uniform(&FIXTURE, floor);
+        cap.raise(id(COARSE, 4, 0, 0).key);
+        cap.raise(id(FINE, 4, 0, 0).key);
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([Some(day), None], &layers, &cap);
+
+        assert_eq!(
+            resolved(&table, 4, 1, 1),
+            PageEntry::Tile { layer: 1, steps: 1 },
+            "the fine tile is past the cap, its parent is not"
+        );
+        assert_eq!(
+            resolved(&table, 4, 0, 0),
+            PageEntry::Tile { layer: 1, steps: 1 },
+            "a cell capped at the finest level without its tile"
+        );
+        assert_eq!(
+            resolved(&table, 1, 0, 0),
+            PageEntry::Floor,
+            "ocean at a level the cap does not reach"
+        );
+        assert_eq!(table.check([Some(day), None], &layers, &cap), Ok(()));
+
+        cap.raise(id(FINE, 4, 1, 1).key);
+        cap.raise(id(FINE, 1, 0, 0).key);
+        table.rewrite([Some(day), None], &layers, &cap);
+        assert_eq!(
+            resolved(&table, 4, 1, 1),
+            PageEntry::Tile { layer: 0, steps: 0 }
+        );
+        assert_eq!(resolved(&table, 1, 0, 0), PageEntry::Ocean);
+    }
+
+    #[test]
+    fn the_check_catches_a_tile_finer_than_its_cap() {
+        let ocean = HashSet::new();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(1);
+        layers.claim(id(FINE, 2, 1, 0), None).unwrap();
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([Some(day), None], &layers, &uncapped());
+
+        let coarse = CellLevels::uniform(&FIXTURE, COARSE);
+        let why = table
+            .check([Some(day), None], &layers, &coarse)
+            .expect_err("the fine tile is past the cap");
+        assert!(why.contains("finer than its cap"), "{why}");
+        table.rewrite([Some(day), None], &layers, &coarse);
+        assert_eq!(resolved(&table, 2, 1, 0), PageEntry::Floor);
+    }
+
+    /// A key raises the cells it covers at the finest level, and only raises.
+    #[test]
+    fn a_key_raises_the_cells_it_covers() {
+        let floor = Geometry::level_of(FIXTURE.floor);
+        let mut cap = CellLevels::uniform(&FIXTURE, floor);
+        cap.raise(id(FINE, 3, 1, 0).key);
+        cap.raise(id(COARSE, 3, 0, 0).key);
+        cap.raise(id(COARSE, 5, 0, 0).key);
+        for (row, col) in [(0, 0), (0, 1), (1, 1)] {
+            assert_eq!(cap.at(3, row, col), COARSE);
+        }
+        assert_eq!(cap.at(3, 1, 0), FINE, "a coarser key lowers nothing");
+        assert_eq!(cap.at(5, 1, 1), COARSE);
+        assert_eq!(cap.at(0, 0, 0), floor);
+        assert_eq!(CellLevels::finest(&FIXTURE).at(0, 1, 1), FINE);
     }
 }

@@ -11,7 +11,9 @@ use wgpu::util::DeviceExt;
 
 use sunlit_core::assets::tiles::{Geometry, PackKind, TileKey};
 use sunlit_core::geometry::sphere::{Vertex, generate_uv_sphere};
-use sunlit_core::renderer::tiles::{PageEntry, PageSurface, PageTable, TileId, TileLayers};
+use sunlit_core::renderer::tiles::{
+    CellLevels, PageEntry, PageSurface, PageTable, TileId, TileLayers,
+};
 use sunlit_core::renderer::uniforms::Uniforms;
 
 /// Build a perspective MVP matrix looking at the origin from distance 3.5.
@@ -3345,7 +3347,7 @@ fn the_floor_and_the_two_tile_levels_meet_without_a_seam() {
         ocean: &ocean,
     };
     let mut table = PageTable::new(geometry);
-    table.rewrite([Some(day), None], &layers);
+    table.rewrite([Some(day), None], &layers, &CellLevels::finest(&geometry));
 
     let tiles = create_tile_array(&ctx.device, &ctx.queue, &geometry, &texels);
     let pages = create_page_table(&ctx.device, &ctx.queue, &table);
@@ -3421,6 +3423,7 @@ fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
             }),
         ],
         &TileLayers::new(1),
+        &CellLevels::finest(&geometry),
     );
     let pages = create_page_table(&ctx.device, &ctx.queue, &table);
     let floor = create_solid_cube(&ctx.device, &ctx.queue, [[200, 40, 40, 255]; 6]);

@@ -2177,7 +2177,10 @@ fn the_cube_path_shows_each_face_where_its_axis_points() {
         [220, 40, 220, 255],
         [40, 220, 220, 255],
     ];
-    let day = create_solid_cube(&ctx.device, &ctx.queue, colors);
+    // Four texels a face rather than one: the middle pixel sits half a pixel
+    // off the face's center, where a one-texel face's filter already reaches
+    // across the edges into its neighbors, three steps' worth on WARP.
+    let day = create_cube(&ctx.device, &ctx.queue, 4, |face| colors[face].repeat(16));
     let dummy = &ctx.dummy_cube;
     for (face, axis) in AXES.into_iter().enumerate() {
         let pixels = render_cube_frame(

@@ -3482,78 +3482,74 @@ fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
     );
 }
 
-/// The finest level of a surface coded by level, the next one, and every
-/// level below those two.
+/// The two levels of a tile coded by level.
 const FINEST_LEVEL: [u8; 4] = [255, 0, 0, 255];
 const SECOND_LEVEL: [u8; 4] = [0, 0, 255, 255];
-const LOWER_LEVELS: [u8; 4] = [0, 255, 0, 255];
 
-/// How far away the minified case looks from, in radii: far enough that a
-/// texel of the coded tiles' 64 px faces covers about a pixel of the seam
-/// case's frame at the middle of the disc, so the sampler reads between the
-/// finest level and the next over most of it.
-const MINIFIED_DISTANCE: f32 = 8.0;
+/// How far away the face-on frames of the minified case look from, in radii:
+/// where the surface faces the camera a texel of the coded tiles' 64 px faces
+/// covers about half a pixel of the seam case's frame, so the footprint asks
+/// for 0.93 to 1 of the way to the second level.
+const FOOTPRINT_DISTANCE: f32 = 18.0;
 
-/// How far a tile's pixel may lie from the floor's inside a face, in steps of
-/// 255 in the channels that code the level: the floor and the tile are read
-/// at the same level of detail there, to 2 steps on the Radeon and WARP and 11
-/// on lavapipe, and gradients left unscaled into the layer read 220 or more
-/// away.
-const LEVEL_STEPS: u8 = 48;
+/// How squarely the surface has to face the camera for a pixel to be held to
+/// its footprint, as the cosine between its normal and the view: within about
+/// 25 degrees, where the footprint is nearly round and runs along the face's
+/// own axes.
+const FACING: f64 = 0.9;
 
-/// How squarely the surface has to face the camera for a pixel inside a face
-/// to be held to the floor, as the cosine between its normal and the view:
-/// within about 45 degrees, where a pixel's footprint is nearly round. Past
-/// it an adapter's level of detail is its own rounding of a long footprint,
-/// and Metal's cube and array part by 31 steps near the limb.
-const FACING: f64 = 0.7;
+/// How far the level of detail a tile's pixel was read at may lie from the one
+/// its footprint on the face asks for, in steps of 255 in the blue that codes
+/// the second level: half a level. The tiles read within 12.6 steps of it on
+/// the Radeon, and Metal's cube and array part by up to 0.38 of a level, which
+/// the ray cast cannot say which of the two to blame for; gradients left
+/// unscaled into the layer read the finest level, 238 steps or more away.
+const FOOTPRINT_STEPS: f64 = 128.0;
 
-/// How far a tile's level of detail, averaged over a pixel quad that straddles
-/// a face edge, may lie outside the range its neighboring quads inside the
-/// faces span, in steps of 255 in the blue that codes the second level.
-const EDGE_LEVEL_STEPS: f64 = 32.0;
+/// How far away the seam case's frames look from when the minified case holds
+/// the face edges: far enough that the sampler reads both levels over most of
+/// the disc.
+const EDGE_DISTANCE: f32 = 8.0;
+
+/// How far one pixel quad across a face edge may read a level of detail
+/// outside the range of the quads beside it inside the faces, in steps of 255
+/// in the blue: 20 at most on the Radeon, WARP and lavapipe and 48.5 on Metal,
+/// and 132 to 177 on the first two with the quotient rule's term for the major
+/// axis left out.
+const EDGE_LEVEL_STEPS: f64 = 96.0;
 
 /// The most those quads may lie outside their neighbors' range on average:
 /// 0.36 to 0.62 steps on the Radeon, WARP and lavapipe, and 4.9 to 23 with
-/// the quotient rule's term for the major axis left out, which on lavapipe
-/// moves no single quad past `EDGE_LEVEL_STEPS`.
-const EDGE_MEAN_STEPS: f64 = 2.0;
+/// the quotient rule's term left out, which on lavapipe moves no single quad
+/// past 25.
+const EDGE_MEAN_STEPS: f64 = 2.5;
 
-/// A tile read at minification is read at the level of detail the floor's
-/// cube is read at, and its level of detail runs on across a face edge.
+/// A tile read at minification is read at the level of detail its footprint
+/// on the face asks for, and that level runs on across a face edge.
 ///
-/// The floor is a cube of the tiles' face size coded by level, and every
-/// finest tile is resident with its two levels coded the same way, so wherever
-/// the floor's sample mixes only its first two levels, the red and the blue of
-/// a pixel say which level of detail it was read at. Inside a face, where the
-/// surface faces the camera, the tile's pixel has to say what the floor's
-/// does. A pixel quad that straddles a face
-/// edge takes its derivatives across the edge, which is the one place the
-/// quotient rule's term for the major axis is not zero, since the warp keeps
-/// the major component of `w` at one across a face; what the hardware makes
-/// of a cube's derivatives there differs between adapters, so there the tile
-/// is held to itself: its level of detail must lie within the range of the
+/// Every finest tile is resident, its first level red and its second blue, so
+/// a pixel's blue says which level of detail it was read at. The level of
+/// detail comes from the gradients alone through the surface sampler's
+/// isotropic form. Where the surface faces the camera in the face-on frames
+/// it is held to the footprint a ray cast of the pixel and its neighbors puts
+/// on the face; a floor cube is no reference, since Metal's cube reads 97
+/// steps from its own array near a face's corner. A pixel quad that straddles
+/// a face edge takes its derivatives across the edge, which is the one place
+/// the quotient rule's term for the major axis is not zero, since the warp
+/// keeps the major component of `w` at one across a face; there the tiles are
+/// held to themselves, the level of detail of such a quad to the range of the
 /// quads beside it inside the faces.
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one case, its surfaces, and its two comparisons"
+    reason = "one case, its tiles, and its two comparisons"
 )]
-fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
+fn a_minified_tile_is_read_at_the_level_of_detail_its_footprint_asks_for() {
     use sunlit_core::geometry::cube;
 
     let ctx = RENDER_CTX.lock().unwrap();
     let geometry = CODED_TILES;
     let solid = |color: [u8; 4], width: u32| color.repeat((width * width) as usize);
-    let floor = create_cube_by_level(&ctx.device, &ctx.queue, geometry.face, |_, level, width| {
-        let color = match level {
-            0 => FINEST_LEVEL,
-            1 => SECOND_LEVEL,
-            _ => LOWER_LEVELS,
-        };
-        solid(color, width)
-    });
-
     let finest = Geometry::level_of(geometry.face);
     let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
     let mut layers = TileLayers::new(6 * u32::from(cells).pow(2));
@@ -3584,48 +3580,79 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
         pack: PackKind::Day(0),
         ocean: &ocean,
     };
-    let mut every_tile = PageTable::new(geometry);
-    every_tile.rewrite([Some(day), None], &layers, &CellLevels::finest(&geometry));
+    let mut table = PageTable::new(geometry);
+    table.rewrite([Some(day), None], &layers, &CellLevels::finest(&geometry));
     let tiles = create_tile_array(&ctx.device, &ctx.queue, &geometry, &texels);
+    let pages = create_page_table(&ctx.device, &ctx.queue, &table);
     let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
     let dummy = &ctx.dummy_cube;
-    // Without anisotropy the level of detail is the gradients' own on every
-    // adapter, rather than what each one's anisotropic filter makes of them.
     let isotropic = ctx
         .device
         .create_sampler(&sunlit_core::renderer::surface_sampler_descriptor(true));
-    let group = |table: &PageTable| {
-        bind_group_with(
-            &ctx,
-            [&flat, &flat],
-            &isotropic,
-            [&floor, dummy, dummy],
-            [&tiles, &create_page_table(&ctx.device, &ctx.queue, table)],
-        )
-    };
-    let (from_tiles, from_floor) = (group(&every_tile), group(&PageTable::new(geometry)));
-
+    let bind_group = bind_group_with(
+        &ctx,
+        [&flat, &flat],
+        &isotropic,
+        [dummy, dummy, dummy],
+        [&tiles, &pages],
+    );
     let size = SEAM_FRAME;
-    let quads = size / 2;
-    let (mut compared, mut mixed, mut edges) = (0_usize, 0_usize, 0_usize);
-    let mut inner_worst = (0_u8, String::new());
-    let mut grazing_worst = 0_u8;
-    let mut edge_worst = (0.0_f64, String::new());
-    let mut edge_total = 0.0_f64;
-    for (axis, _) in seam_frames() {
-        let uniforms = with_tiles(
-            &looking_along_from(size, axis, MINIFIED_DISTANCE),
-            &geometry,
-        );
+    let at = |x: u32, y: u32| ((y * size + x) * 4) as usize;
+    let draw = |axis: glam::Vec3, distance: f32| {
+        let uniforms = with_tiles(&looking_along_from(size, axis, distance), &geometry);
         let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
             .as_dmat4()
             .inverse();
-        let floor_frame = render_with(&ctx, &uniforms, &from_floor, size, size);
-        let tile_frame = render_with(&ctx, &uniforms, &from_tiles, size, size);
-        let at = |x: u32, y: u32| ((y * size + x) * 4) as usize;
-        let face_at = |x, y| normal_under_pixel(inverse, size, x, y).map(|n| cube::locate(n).0);
+        (
+            render_with(&ctx, &uniforms, &bind_group, size, size),
+            inverse,
+        )
+    };
 
-        // Each quad's faces, and the red and blue of its tile pixels averaged.
+    let texels_per_unit = f64::from(geometry.face) / 2.0;
+    let (mut held, mut footprint_worst) = (0_usize, (0.0_f64, String::new()));
+    for axis in AXES {
+        let (frame, inverse) = draw(axis, FOOTPRINT_DISTANCE);
+        for y in 0..size - 1 {
+            for x in 0..size - 1 {
+                let normals = [(x, y), (x + 1, y), (x, y + 1)]
+                    .map(|(px, py)| normal_under_pixel(inverse, size, px, py));
+                let [Some(here), Some(right), Some(below)] = normals else {
+                    continue;
+                };
+                if here.dot(axis.as_dvec3()) < FACING {
+                    continue;
+                }
+                let [(face, s, t), (face_x, s_x, t_x), (face_y, s_y, t_y)] =
+                    [here, right, below].map(cube::locate);
+                if face_x != face || face_y != face {
+                    continue;
+                }
+                let rho = (s_x - s).hypot(t_x - t).max((s_y - s).hypot(t_y - t)) * texels_per_unit;
+                let wanted = rho.log2().clamp(0.0, 1.0) * 255.0;
+                let blue = f64::from(frame[at(x, y) + 2]);
+                let off = (blue - wanted).abs();
+                held += 1;
+                if off > footprint_worst.0 {
+                    footprint_worst = (
+                        off,
+                        format!(
+                            "looking along {axis:?}, pixel ({x}, {y}) reads a blue of {blue} from \
+                             its tile where its footprint of {rho:.3} texels asks for {wanted:.1}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    let quads = size / 2;
+    let (mut edges, mut edge_total) = (0_usize, 0.0_f64);
+    let mut edge_worst = (0.0_f64, String::new());
+    for (axis, _) in seam_frames() {
+        let (frame, inverse) = draw(axis, EDGE_DISTANCE);
+        let face_at = |x, y| normal_under_pixel(inverse, size, x, y).map(|n| cube::locate(n).0);
+        // Each quad's faces, and the red and blue of its pixels averaged.
         let mut quad = Vec::with_capacity((quads * quads) as usize);
         for qy in 0..quads {
             for qx in 0..quads {
@@ -3635,49 +3662,13 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
                 let mean = |channel: usize| {
                     pixels
                         .iter()
-                        .map(|&(x, y)| f64::from(tile_frame[at(x, y) + channel]))
+                        .map(|&(x, y)| f64::from(frame[at(x, y) + channel]))
                         .sum::<f64>()
                         / 4.0
                 };
                 quad.push((faces, mean(0), mean(2)));
             }
         }
-
-        for y in 0..size {
-            for x in 0..size {
-                let (faces, _, _) = quad[((y / 2) * quads + x / 2) as usize];
-                let (f, t) = (
-                    &floor_frame[at(x, y)..at(x, y) + 3],
-                    &tile_frame[at(x, y)..at(x, y) + 3],
-                );
-                // Off the globe, in a quad across an edge, or where the floor
-                // reads a level a tile does not have.
-                if faces[0].is_none() || faces.iter().any(|&face| face != faces[0]) || f[1] > 2 {
-                    continue;
-                }
-                let step = f[0].abs_diff(t[0]).max(f[2].abs_diff(t[2]));
-                let facing = normal_under_pixel(inverse, size, x, y)
-                    .map_or(0.0, |normal| normal.dot(axis.as_dvec3()));
-                if facing < FACING {
-                    grazing_worst = grazing_worst.max(step);
-                    continue;
-                }
-                compared += 1;
-                if f[0] > 32 && f[2] > 32 {
-                    mixed += 1;
-                }
-                if step > inner_worst.0 {
-                    inner_worst = (
-                        step,
-                        format!(
-                            "looking along {axis:?}, pixel ({x}, {y}) reads {t:?} from its tile \
-                             where the floor reads {f:?}"
-                        ),
-                    );
-                }
-            }
-        }
-
         let inside = |(faces, red, blue): ([Option<usize>; 4], f64, f64)| {
             faces[0].is_some()
                 && faces.iter().all(|&face| face == faces[0])
@@ -3725,17 +3716,21 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
     }
     let edge_mean = edge_total / f64::from(u32::try_from(edges).expect("a few thousand quads"));
     println!(
-        "minified tiles from {MINIFIED_DISTANCE} radii: {compared} pixels inside the faces \
-         compared, {mixed} of them between the two levels, within {} steps of the floor, and \
-         {grazing_worst} where the surface turns further away; {edges} quads across an edge, within \
-         {:.1} steps of their neighbors' range and {:.2} on average",
-        inner_worst.0, edge_worst.0, edge_mean
+        "minified tiles: {held} pixels facing the camera from {FOOTPRINT_DISTANCE} radii, within \
+         {:.1} steps of their footprints; {edges} quads across an edge from {EDGE_DISTANCE} radii, \
+         within {:.1} steps of their neighbors' range and {edge_mean:.2} on average",
+        footprint_worst.0, edge_worst.0
     );
     assert!(
-        inner_worst.0 <= LEVEL_STEPS,
-        "{}: another level of detail, {} steps away",
-        inner_worst.1,
-        inner_worst.0
+        held > 1000 && edges > 500,
+        "only {held} pixels face the camera and {edges} quads lie across an edge, too few for \
+         the case to mean anything"
+    );
+    assert!(
+        footprint_worst.0 <= FOOTPRINT_STEPS,
+        "{}: another level of detail, {:.1} steps away",
+        footprint_worst.1,
+        footprint_worst.0
     );
     assert!(
         edge_mean <= EDGE_MEAN_STEPS,
@@ -3746,11 +3741,6 @@ fn a_minified_tile_is_read_at_the_level_of_detail_the_floor_is() {
         "{}: its level of detail jumps at the edge, {:.1} steps",
         edge_worst.1,
         edge_worst.0
-    );
-    assert!(
-        mixed * 8 > compared && edges > 500,
-        "only {mixed} of {compared} pixels read between the two levels and {edges} quads lie \
-         across an edge, too few for the case to mean anything"
     );
 }
 

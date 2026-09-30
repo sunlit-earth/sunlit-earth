@@ -3496,9 +3496,9 @@ const MINIFIED_DISTANCE: f32 = 8.0;
 
 /// How far a tile's pixel may lie from the floor's inside a face, in steps of
 /// 255 in the channels that code the level: the floor and the tile are read
-/// at the same level of detail there, and a tile read one level off is a
-/// hundred steps or more away.
-const LEVEL_STEPS: u8 = 16;
+/// at the same level of detail there, to 2 steps on WARP and 11 on lavapipe,
+/// and a tile read a whole level off lies up to 255 away.
+const LEVEL_STEPS: u8 = 24;
 
 /// How far a tile's level of detail, averaged over a pixel quad that straddles
 /// a face edge, may lie outside the range its neighboring quads inside the

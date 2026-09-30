@@ -39,3 +39,4 @@ mod sinks;
 mod stars;
 mod sun;
 mod textures;
+mod tiles;

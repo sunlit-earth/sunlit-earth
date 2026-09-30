@@ -22,7 +22,7 @@ pub use slots::{SlotLayout, TEXTURE_LABELS};
 pub use surface::surface_sampler_descriptor;
 
 pub(crate) use sizing::{quantize_to_granularity, resolve_sample_count};
-pub(crate) use surface::SurfaceLayer;
+pub(crate) use surface::{SurfaceFormats, SurfaceLayer};
 
 use std::path::PathBuf;
 
@@ -46,7 +46,7 @@ use texture_routing::ResolvedTexture;
 use textures::{
     Bindings, TextureSlot, create_bind_group, maybe_spawn_texture_load, process_decoded_textures,
 };
-use tiles::{TileId, TileUpload};
+use tiles::{CellLevels, SurfaceTiles, TileId, TileLayers, TileUpload};
 
 /// What a call to [`Renderer::render`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +84,9 @@ pub(crate) struct RendererConfig {
     /// What the packs the cube surface comes from are cut to, which sizes the
     /// page table and the tile array's layers.
     pub tile_geometry: Geometry,
+    /// Layers of the tile array; `None` takes the budget for the adapter,
+    /// `tiles::TILE_LAYER_BUDGET` or `tiles::CPU_TILE_LAYER_BUDGET`.
+    pub tile_layers: Option<u32>,
 }
 
 /// The GPU pipeline and every resource it owns.
@@ -481,10 +484,6 @@ impl Renderer {
     /// free one; a tile that cannot be placed, or whose blob does not have a
     /// layer's layout, is returned with the reason and the others are made
     /// resident. The array is created with the first tile.
-    #[expect(
-        dead_code,
-        reason = "the tile loader's entry point, and nothing decides which tiles are wanted yet"
-    )]
     pub(crate) fn upload_tiles(&mut self, tiles: Vec<TileUpload>) -> Vec<(TileId, String)> {
         let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut()) else {
             let why = "the globe is not drawn from the cube surface";
@@ -501,7 +500,6 @@ impl Renderer {
 
     /// Free the layers `tiles` hold and rewrite the page table without them,
     /// and redraw on the next frame.
-    #[expect(dead_code, reason = "the tile loader's eviction, like `upload_tiles`")]
     pub(crate) fn evict_tiles(&mut self, tiles: &[TileId]) {
         if let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut()) {
             surface_tiles.evict(&self.queue, tiles);
@@ -512,13 +510,32 @@ impl Renderer {
     /// Hold each cell of the page table to the finest level `cap` names there,
     /// the wanted set's (`residency::Wanted::cap`), and redraw on the next
     /// frame if that changes the table.
-    #[expect(dead_code, reason = "the tile loader's cap, like `upload_tiles`")]
-    pub(crate) fn set_tile_cap(&mut self, cap: tiles::CellLevels) {
+    pub(crate) fn set_tile_cap(&mut self, cap: CellLevels) {
         if let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut())
             && surface_tiles.set_cap(&self.queue, cap)
         {
             self.texture_dirty = true;
         }
+    }
+
+    /// Let go of every tile and of the tile array, and rewrite the page table
+    /// without them, leaving the floors and the mask; the bind groups go back
+    /// to the array's dummy until the next tile creates it again.
+    pub(crate) fn purge_tiles(&mut self) {
+        if let Some(surface_tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut()) {
+            surface_tiles.purge(&self.queue);
+            self.rebuild_surface_groups();
+            self.texture_dirty = true;
+        }
+    }
+
+    /// The tile array's layers and the tile each holds, while the globe is
+    /// drawn from the cube surface.
+    pub(crate) fn tile_layers(&self) -> Option<&TileLayers> {
+        self.surface
+            .as_ref()
+            .and_then(|surface| surface.tiles.as_ref())
+            .map(SurfaceTiles::layers)
     }
 
     /// What the frame's uniforms need of the tiles: the ocean colors of the

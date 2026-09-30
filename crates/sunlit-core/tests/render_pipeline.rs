@@ -4065,7 +4065,7 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
 
     use sunlit_core::assets::cube_layout::CubeTextures;
     use sunlit_core::assets::tiles::{self, Pack};
-    use sunlit_core::renderer::tiles::{SurfaceTiles, TileUpload};
+    use sunlit_core::renderer::tiles::{SurfaceTiles, TileTexels, TileUpload};
 
     let scratch = common::test_support::ScratchDir::new("render_pipeline_tiles");
     common::test_support::write_earth_fixture(&scratch.join("textures"));
@@ -4115,7 +4115,7 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
             let entry = pack.find(key).expect("the pack indexes every tile");
             (!entry.ocean).then(|| TileUpload {
                 id: TileId { pack: day, key },
-                blob: pack.read(entry).expect("read a tile"),
+                texels: TileTexels::Blocks(pack.read(entry).expect("read a tile")),
                 layer: None,
             })
         })

@@ -1,12 +1,13 @@
 //! Feeding the cube surface to the renderer: the transcoder that builds the
-//! packs, the month in force, and the pause gate the engine holds while it is
-//! busy.
+//! packs, the month in force, the pause gate the engine holds while it is
+//! busy, and the tile loader that refines the floors.
 //!
 //! The transcoder is the producer and this is its consumer, on the engine
 //! thread: every tick drains the packs that landed and hands the ones the
 //! month in force needs to the renderer, which reads the floors and the mask
-//! out of them and uploads them there and then. The rest of the year stays on
-//! disk until a month needs it.
+//! out of them and uploads them there and then, and to the tile loader, which
+//! reads the tiles out of them as the frame wants them. The rest of the year
+//! stays on disk until a month needs it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ use crate::assets::tiles::{
     Geometry, Pack, PackKind, Phase, TranscodeNotify, Transcoder, TranscoderConfig, pack_path,
 };
 use crate::renderer::{Renderer, SurfaceLayer};
+
+use super::tile_loader::{LoaderConfig, TileLoader, TileReport, View};
 
 /// How long after its last frame the engine counts as busy, which is how long
 /// the transcoder's pause gate stays closed after one.
@@ -33,6 +36,7 @@ const BUSY_AFTER_A_FRAME: Duration = Duration::from_secs(2);
 /// The transcoder and what the engine has done with its output.
 pub(super) struct SurfaceFeed {
     transcoder: Transcoder,
+    tiles: TileLoader,
     cache_dir: PathBuf,
     /// The month in force, January 0.
     month: usize,
@@ -53,8 +57,9 @@ impl SurfaceFeed {
     /// first frames are on their way.
     ///
     /// `wake` is called on the transcoder's thread after every change of its
-    /// status, so it must return at once and never panic; the engine's is a
-    /// send on its own unbounded command channel.
+    /// status, and on a tile loader thread when a tile is waiting, so it must
+    /// return at once and never panic; the engine's is a send on its own
+    /// unbounded command channel.
     pub(super) fn start(
         cache_dir: PathBuf,
         textures: CubeTextures,
@@ -62,7 +67,9 @@ impl SurfaceFeed {
         month: usize,
         now: Duration,
         wake: Arc<dyn Fn() + Send + Sync>,
+        tiles: &LoaderConfig,
     ) -> Self {
+        let tiles = TileLoader::start(geometry, tiles, Arc::clone(&wake));
         let mut config = TranscoderConfig::new(cache_dir.clone(), textures, month);
         config.geometry = geometry;
         let notify: TranscodeNotify = Arc::new(move |_| wake());
@@ -77,6 +84,7 @@ impl SurfaceFeed {
         transcoder.set_paused(true);
         Self {
             transcoder,
+            tiles,
             cache_dir,
             month,
             paused: true,
@@ -86,14 +94,16 @@ impl SurfaceFeed {
         }
     }
 
-    /// Hand every pack that landed since the last call to the renderer, and
-    /// every failure the transcoder reported. Returns whether a cube became
-    /// resident.
+    /// Hand every pack that landed since the last call to the renderer and
+    /// the tile loader, every failure the transcoder reported to the
+    /// renderer, and the tiles that were read since to the tile array.
+    /// Returns whether a cube or a tile became resident.
     pub(super) fn drain(&mut self, renderer: &mut Renderer) -> bool {
         let mut installed = false;
         for kind in self.transcoder.landed() {
             installed |= self.install(kind, renderer);
         }
+        installed |= self.tiles.drain(renderer);
         if !self.settled {
             let status = self.transcoder.status();
             for failure in &status.failed[self.failures_seen..] {
@@ -110,6 +120,11 @@ impl SurfaceFeed {
             self.settled = status.is_settled();
         }
         installed
+    }
+
+    /// The month in force, January 0.
+    pub(super) fn month(&self) -> usize {
+        self.month
     }
 
     /// Make `month` the month in force, when it is not already. The
@@ -152,20 +167,50 @@ impl SurfaceFeed {
         }
     }
 
-    /// Make the cube of pack `kind` resident, if the month in force needs it.
-    fn install(&self, kind: PackKind, renderer: &mut Renderer) -> bool {
+    /// Compute the tiles the frame wants for `view`, if anything it depends
+    /// on changed, and send the loader after the ones that are missing.
+    pub(super) fn want_tiles(&mut self, view: &View<'_>, renderer: &mut Renderer) {
+        self.tiles.want(view, renderer);
+    }
+
+    /// Let go of every tile, for a change of the resolution setting.
+    pub(super) fn purge_tiles(&mut self, renderer: &mut Renderer) {
+        self.tiles.purge(renderer);
+    }
+
+    pub(super) fn tile_report(&self, renderer: &Renderer) -> TileReport {
+        self.tiles.report(renderer)
+    }
+
+    /// Make the cube of pack `kind` resident, if the month in force needs it,
+    /// and have the tile loader read its tiles. A floor that is resident
+    /// already, the month's again after a date that went away from it and
+    /// back, only has its pack opened for the tiles if they are not read
+    /// already.
+    fn install(&mut self, kind: PackKind, renderer: &mut Renderer) -> bool {
         if matches!(kind, PackKind::Day(month) if month != self.month) {
             return false;
         }
         let layer = layer_of(kind);
-        if renderer.surface_resident(layer) {
+        let tiled = kind != PackKind::Mask;
+        let resident = renderer.surface_resident(layer);
+        if resident && (!tiled || self.tiles.holds(kind)) {
             return false;
         }
         let path = pack_path(&self.cache_dir, kind);
         let result = Pack::open(&path)
             .map_err(|e| e.to_string())
-            .and_then(|pack| renderer.install_surface(layer, &pack));
+            .and_then(|pack| {
+                if !resident {
+                    renderer.install_surface(layer, &pack)?;
+                }
+                if tiled {
+                    self.tiles.open(Arc::new(pack));
+                }
+                Ok(())
+            });
         match result {
+            Ok(()) if resident => false,
             Ok(()) => {
                 info!(?layer, "a surface cube is resident");
                 true
@@ -207,6 +252,11 @@ mod tests {
             0,
             Duration::ZERO,
             Arc::new(|| {}),
+            &LoaderConfig {
+                decode: false,
+                anisotropy: 8,
+                workers: 1,
+            },
         );
         (dir, feed)
     }

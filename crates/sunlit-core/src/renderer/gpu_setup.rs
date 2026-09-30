@@ -8,7 +8,7 @@ use crate::geometry::sphere::{self, Vertex};
 use super::slots::{SLOT_LABELS, SlotLayout};
 use super::surface::{self, SurfaceFormats, SurfaceSet};
 use super::textures::{Bindings, TextureSlot, create_bind_group};
-use super::tiles::{SurfaceTiles, TILE_LAYER_BUDGET};
+use super::tiles::{CPU_TILE_LAYER_BUDGET, SurfaceTiles, TILE_LAYER_BUDGET};
 use super::uniforms::Uniforms;
 use super::{Renderer, RendererConfig};
 
@@ -124,6 +124,7 @@ pub(super) fn create_renderer(
         cube_month,
         cpu_adapter,
         tile_geometry,
+        tile_layers,
     } = config;
     let mesh = sphere::generate_uv_sphere(sphere::GLOBE_STACKS, sphere::GLOBE_SECTORS);
 
@@ -307,7 +308,12 @@ pub(super) fn create_renderer(
             .features()
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let formats = SurfaceFormats::for_adapter(block_compression, cpu_adapter);
-        let layers = TILE_LAYER_BUDGET.min(device.limits().max_texture_array_layers);
+        let budget = tile_layers.unwrap_or(if cpu_adapter {
+            CPU_TILE_LAYER_BUDGET
+        } else {
+            TILE_LAYER_BUDGET
+        });
+        let layers = budget.min(device.limits().max_texture_array_layers);
         debug!(
             ?formats,
             cpu_adapter, layers, "the globe is drawn from the cube surface"

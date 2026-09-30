@@ -50,6 +50,11 @@ pub enum EngineCommand {
     /// Answered on the engine thread because the device is owned there, in the
     /// same reply-channel shape as `ExportPixels`.
     ReportMemory { reply: Sender<Box<MemoryReport>> },
+    /// Say what the tile loader holds and wants, `None` where the globe is
+    /// not drawn from the cube surface.
+    ReportTiles {
+        reply: Sender<Option<Box<super::TileReport>>>,
+    },
     /// Turn the unattended wallpaper refresh on or off.
     SetAutoRefresh { enabled: bool, interval: Duration },
     /// Replace the mode and the anchor a wallpaper is planned with.

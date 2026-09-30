@@ -25,6 +25,7 @@ use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
 use crate::sinks::{RecordingSink, screen};
 use crate::support;
 use crate::test_support::{self, ScratchDir};
+use crate::tiles::settled;
 
 /// A textures directory holding the fixture bake, and a cache directory for
 /// the packs cut from it.
@@ -94,7 +95,8 @@ fn rows<'a>(
 /// The packs the first frame needs are built, their cubes made resident, and
 /// the engine says the textures are ready, with flat maps named beside the
 /// cube faces and never decoded. The page table is resident beside the cubes,
-/// and the tile array is not, since no tile has been uploaded.
+/// and the tile array is not: the resolution setting is the flat fixture's
+/// width, which allows no tile.
 #[test]
 fn the_first_frame_packs_make_the_textures_ready() {
     let _gpu = gpu();
@@ -134,9 +136,11 @@ fn the_first_frame_packs_make_the_textures_ready() {
         (cells, cells, 6),
         "a cell per finest tile of each face"
     );
+    let tiles = settled(&harness, "the loader", |_| true);
     assert!(
-        rows(&report, "tile_array").is_empty(),
-        "no tile was uploaded, so the array was never created:\n{report}"
+        tiles.wanted.is_empty() && rows(&report, "tile_array").is_empty(),
+        "the flat fixture's width as the resolution setting allows no tile, so the \
+         array is never created:\n{report}"
     );
     assert!(has_lit_pixels(&harness.export(FRAME.0, FRAME.1)));
 }

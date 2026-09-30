@@ -13,6 +13,7 @@ mod protocol;
 mod publish;
 mod schedule;
 mod surface;
+mod tile_loader;
 pub mod wallpaper_sink;
 
 use std::sync::Arc;
@@ -24,9 +25,10 @@ use tracing::{debug, info, warn};
 use crate::assets::mailbox::TextureMailbox;
 use crate::config::QualityTier;
 use crate::params::SceneParams;
+use crate::renderer::residency::{Output, surfaces_for};
 use crate::renderer::{
-    RenderOutcome, Renderer, RendererConfig, SlotLayout, quantize_to_granularity,
-    resolve_sample_count,
+    RenderOutcome, Renderer, RendererConfig, SlotLayout, SurfaceFormats, quantize_to_granularity,
+    resolve_sample_count, surface_sampler_descriptor,
 };
 use crate::scene::sky::{self, SkyState};
 
@@ -37,6 +39,8 @@ pub use handle::{EngineConfig, EngineHandle, start};
 pub use protocol::{EngineCommand, EngineEvent};
 use schedule::Schedule;
 use surface::SurfaceFeed;
+pub use tile_loader::TileReport;
+use tile_loader::{LoaderConfig, View};
 use wallpaper_sink::WallpaperSink;
 
 /// How long the loop blocks on the command channel before re-checking the
@@ -182,6 +186,7 @@ impl Engine {
             mailbox,
             cube_textures,
             tile_geometry,
+            tile_layers,
         } = config;
 
         let slots = SlotLayout::new(texture_paths.len());
@@ -200,6 +205,13 @@ impl Engine {
 
         let now = clock.elapsed();
         let month = crate::scene::month::month_in_force(&params.datetime, clock.now_utc());
+        let cpu_adapter = gpu.device_type == wgpu::DeviceType::Cpu;
+        let formats = SurfaceFormats::for_adapter(
+            gpu.device
+                .features()
+                .contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
+            cpu_adapter,
+        );
         let surface = start_surface(
             cube_textures,
             tile_geometry,
@@ -207,6 +219,11 @@ impl Engine {
             month,
             now,
             &notify,
+            &LoaderConfig {
+                decode: formats.color == wgpu::TextureFormat::Rgba8Unorm,
+                anisotropy: surface_sampler_descriptor(cpu_adapter).anisotropy_clamp,
+                workers: crate::assets::tiles::default_threads(),
+            },
         );
 
         let requested_sample_count = params.sample_count;
@@ -231,8 +248,9 @@ impl Engine {
                 mailbox: mailbox.clone(),
                 notify: Arc::clone(&notify),
                 cube_month: surface.as_ref().map(|_| month),
-                cpu_adapter: gpu.device_type == wgpu::DeviceType::Cpu,
+                cpu_adapter,
                 tile_geometry,
+                tile_layers,
             },
         );
 
@@ -376,6 +394,13 @@ impl Engine {
             EngineCommand::ReportMemory { reply } => {
                 let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
             }
+            EngineCommand::ReportTiles { reply } => {
+                let report = self
+                    .surface
+                    .as_ref()
+                    .map(|surface| surface.tile_report(&self.renderer));
+                let _ = reply.send(report.map(Box::new));
+            }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
                 self.set_auto_refresh(enabled, interval);
             }
@@ -411,6 +436,11 @@ impl Engine {
     fn set_texture_resolution(&mut self, width: u32) {
         if self.renderer.set_texture_resolution(width) {
             info!(texture_resolution = width, "surface texture resolution");
+            // The tiles of the old cap go, the floors stay, and the next draw
+            // asks for the tiles the new one allows.
+            if let Some(surface) = &mut self.surface {
+                surface.purge_tiles(&mut self.renderer);
+            }
             // The textures the current mode needs are gone until the
             // reload lands, so the readiness latch has to reopen or
             // clients would never hear about the new ones.
@@ -593,7 +623,26 @@ impl Engine {
         self.sync_month();
         self.mark_busy();
         let sky = self.sky_state();
+        self.want_tiles(&sky);
         (self.renderer.render(&self.params, &sky), sky)
+    }
+
+    /// Ask the tile loader for the tiles the preview wants under `sky`, before
+    /// the frame is drawn, so the page table it draws with is held to their
+    /// cap.
+    fn want_tiles(&mut self, sky: &SkyState) {
+        let Some(surface) = &mut self.surface else {
+            return;
+        };
+        let (width, height) = self.renderer.size();
+        let outputs = [tile_output(&self.params, width, height, false)];
+        let view = View {
+            outputs: &outputs,
+            month: surface.month(),
+            surfaces: surfaces_for(&self.params, sky.sun_direction),
+            texture_resolution: self.renderer.texture_resolution(),
+        };
+        surface.want_tiles(&view, &mut self.renderer);
     }
 
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
@@ -731,6 +780,18 @@ fn checked_mailbox(
     mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))
 }
 
+/// One output of the wanted set: `framed` is the scene with the output's
+/// framing applied, as the render takes it (`Framing::applied_to`), so the
+/// tiles and the picture cannot disagree on what is in the frame.
+fn tile_output(framed: &SceneParams, width: u32, height: u32, export: bool) -> Output {
+    Output {
+        camera: framed.camera,
+        width,
+        height,
+        export,
+    }
+}
+
 /// Start feeding the cube surface, when every face is there and there is a
 /// cache directory to build its packs in.
 fn start_surface(
@@ -740,6 +801,7 @@ fn start_surface(
     month: usize,
     now: Duration,
     wake: &crate::assets::cloud_fetcher::NotifyFn,
+    tiles: &LoaderConfig,
 ) -> Option<SurfaceFeed> {
     if !textures.is_complete() {
         return None;
@@ -757,6 +819,7 @@ fn start_surface(
         month,
         now,
         Arc::clone(wake),
+        tiles,
     ))
 }
 

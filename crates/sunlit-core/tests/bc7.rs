@@ -732,7 +732,7 @@ impl Bc7Gpu {
 #[test]
 fn a_tile_uploaded_to_a_bc7_array_holds_its_blocks() {
     use sunlit_core::assets::tiles::{FIXTURE, PackKind, TileKey};
-    use sunlit_core::renderer::tiles::{SurfaceTiles, TileId, TileUpload};
+    use sunlit_core::renderer::tiles::{SurfaceTiles, TileId, TileTexels, TileUpload};
 
     let gpu = gpu();
     if gpu.compressed.is_none() {
@@ -765,7 +765,7 @@ fn a_tile_uploaded_to_a_bc7_array_holds_its_blocks() {
         &gpu.queue,
         vec![TileUpload {
             id,
-            blob: blocks.concat(),
+            texels: TileTexels::Blocks(blocks.concat()),
             layer: None,
         }],
     );

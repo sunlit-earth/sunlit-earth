@@ -130,6 +130,7 @@ pub(crate) fn engine_config(
         texture_paths: textures.paths,
         cube_textures: textures.cube,
         tile_geometry: tiles::GEOMETRY,
+        tile_layers: None,
         preview_size,
         preview_enabled,
         params: SceneParams::from_config(config),

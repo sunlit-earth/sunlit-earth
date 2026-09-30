@@ -79,6 +79,11 @@ pub struct EngineConfig {
     /// The sizes the tile packs are cut to: `tiles::GEOMETRY` for the shipped
     /// faces, `tiles::FIXTURE` for the test bake's.
     pub tile_geometry: Geometry,
+    /// Layers of the tile array. `None` takes the budget for the adapter
+    /// (`renderer::tiles::TILE_LAYER_BUDGET`, or `CPU_TILE_LAYER_BUDGET` on a
+    /// CPU adapter), as the app does; a test sets fewer to make the loader
+    /// evict, or none to draw the floors alone.
+    pub tile_layers: Option<u32>,
 }
 
 impl EngineConfig {
@@ -113,6 +118,7 @@ impl EngineConfig {
             mailbox: None,
             cube_textures: CubeTextures::default(),
             tile_geometry: GEOMETRY,
+            tile_layers: None,
         }
     }
 
@@ -193,6 +199,19 @@ impl EngineHandle {
         let (reply, replies) = bounded(1);
         self.tx
             .send(EngineCommand::ReportMemory { reply })
+            .map_err(|_| "engine has stopped".to_owned())?;
+        replies
+            .recv()
+            .map_err(|_| "engine stopped before answering".to_owned())
+    }
+
+    /// Ask the engine thread what its tile loader holds and wants, and block
+    /// until it answers; `None` where the globe is not drawn from the cube
+    /// surface.
+    pub fn tile_report(&self) -> Result<Option<Box<super::TileReport>>, String> {
+        let (reply, replies) = bounded(1);
+        self.tx
+            .send(EngineCommand::ReportTiles { reply })
             .map_err(|_| "engine has stopped".to_owned())?;
         replies
             .recv()

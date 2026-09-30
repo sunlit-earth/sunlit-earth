@@ -229,11 +229,7 @@ impl Engine {
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, String> {
-        let mut params = self.params;
-        params.camera.fov_deg = framing.camera_fov;
-        params.sky_fov = framing.sky_fov;
-        params.camera.offset_x = framing.offset_x;
-        params.camera.offset_y = framing.offset_y;
-        self.renderer.export_image_with(&params, width, height)
+        self.renderer
+            .export_image_with(&framing.applied_to(&self.params), width, height)
     }
 }

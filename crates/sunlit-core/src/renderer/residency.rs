@@ -30,8 +30,10 @@ use glam::{DMat4, DVec3, DVec4, Vec3};
 use crate::assets::tiles::{Geometry, PackKind, TileKey};
 use crate::geometry::cube::{self, FACES};
 use crate::geometry::sphere::{GLOBE_SECTORS, GLOBE_STACKS, facet_radius};
+use crate::params::SceneParams;
 use crate::scene::camera::{CameraParams, OrbitalCamera};
 
+use super::slots::TextureMode;
 use super::tiles::{CellLevels, TileId};
 
 /// A texel of the level a cell draws may cover this many pixels before the
@@ -155,6 +157,26 @@ impl Wanted {
             .iter()
             .filter(|tile| !tile.margin)
             .map(|tile| tile.id)
+    }
+}
+
+/// The surfaces the globe draws for `params`, the sun at `sun` in the world
+/// frame, as `write_uniforms` hands them to the shader in blend mode; `None`
+/// for the grid, which draws no tile.
+#[must_use]
+pub fn surfaces_for(params: &SceneParams, sun: Vec3) -> Option<Surfaces> {
+    match TextureMode::from_index(params.texture_index) {
+        TextureMode::Grid => None,
+        TextureMode::Day => Some(Surfaces::Day),
+        TextureMode::Night => Some(Surfaces::Night),
+        TextureMode::Blend => Some(Surfaces::Blend {
+            sun,
+            terminator_width: params.terminator_width,
+            diffuse: params.diffuse_shading.then_some(Diffuse {
+                floor: params.diffuse_floor,
+                ramp: params.diffuse_ramp,
+            }),
+        }),
     }
 }
 

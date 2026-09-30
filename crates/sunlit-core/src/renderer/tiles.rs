@@ -26,10 +26,16 @@ use crate::assets::tiles::{
 
 use super::surface::{CubeLevel, write_cube_level};
 
-/// Layers the tile array is created with where the device allows as many:
-/// twice the tiles the largest frame needs at once, which research section 16
-/// puts at about 435 for a 4K output.
+/// Layers the tile array is created with on a GPU where the device allows as
+/// many: 1.7 times the tiles the worst 4K frame wants in view for the day and
+/// 1.3 times the worst in blend mode at the default shading (plan departures
+/// 18 and 22).
 pub const TILE_LAYER_BUDGET: u32 = 900;
+
+/// Layers the tile array is created with on a CPU adapter, whose layers are
+/// RGBA8 in system memory, four times a BC7 layer, and whose sampler without
+/// anisotropy wants fewer tiles (plan departure 22).
+pub const CPU_TILE_LAYER_BUDGET: u32 = 600;
 
 const LAYER_BITS: u32 = 12;
 const STEPS_SHIFT: u32 = 12;
@@ -102,15 +108,63 @@ pub struct TileId {
     pub key: TileKey,
 }
 
-/// A tile to make resident: its blob as [`Pack::read`] returns it, and the
-/// layer to put it in when the caller has chosen one.
+/// A tile to make resident: its texels, and the layer to put it in when the
+/// caller has chosen one.
 #[derive(Debug)]
 pub struct TileUpload {
     pub id: TileId,
-    pub blob: Vec<u8>,
+    pub texels: TileTexels,
     /// A layer another tile holds is taken from that tile. `None` keeps the
     /// layer the tile already has, or takes the lowest free one.
     pub layer: Option<u32>,
+}
+
+/// The levels of a tile's layer, finest first, in one of the two forms an
+/// upload takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileTexels {
+    /// BC7 blocks, the blob as [`Pack::read`] returns it. An array in RGBA8
+    /// decodes them at upload, on the thread that uploads.
+    Blocks(Vec<u8>),
+    /// RGBA8 texels as [`decode_tile`] makes them, for an array in RGBA8, so
+    /// that the decode can happen on another thread.
+    Decoded(Vec<u8>),
+}
+
+impl TileTexels {
+    /// The bytes an upload hands the queue.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Blocks(bytes) | Self::Decoded(bytes) => bytes.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Decode a tile's BC7 blob, a layer of `layer` texels and its mips, to the
+/// RGBA8 levels an array in RGBA8 takes, finest first.
+pub fn decode_tile(blob: &[u8], layer: u32) -> Result<Vec<u8>, String> {
+    let expected = blob_bytes(BlockFormat::Bc7, layer, TILE_LEVELS);
+    if blob.len() != expected {
+        return Err(format!(
+            "a blob of {} bytes, where a layer of {layer} px is {expected}",
+            blob.len()
+        ));
+    }
+    let mut texels = Vec::with_capacity(4 * expected);
+    for mip in mip_levels(BlockFormat::Bc7, layer, TILE_LEVELS) {
+        texels.extend(decode_bc7(
+            &blob[mip.offset..mip.offset + mip.len],
+            mip.size,
+            mip.size,
+        )?);
+    }
+    Ok(texels)
 }
 
 /// The layers of the tile array and the tile each one holds.
@@ -670,10 +724,11 @@ impl SurfaceTiles {
 
     /// Make `tiles` resident and rewrite the table over them.
     ///
-    /// A tile whose blob does not have the layout of the geometry's layers, or
-    /// that cannot be placed, is left out and returned with the reason; the
-    /// others are uploaded. On a device that does not sample BC7 the blocks
-    /// are decoded to RGBA8 here.
+    /// A tile whose texels do not have the layout of the geometry's layers in
+    /// a form the array takes, or that cannot be placed, is left out and
+    /// returned with the reason; the others are uploaded. On a device that
+    /// does not sample BC7, blocks that were not decoded already are decoded
+    /// here.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -697,7 +752,7 @@ impl SurfaceTiles {
         queue: &wgpu::Queue,
         tile: &TileUpload,
     ) -> Result<(), String> {
-        let levels = self.levels_of(&tile.blob)?;
+        let levels = self.levels_of(&tile.texels)?;
         let (layer, _) = self.layers.claim(tile.id, tile.layer)?;
         if self.array.is_none() {
             self.array = Some(create_array(
@@ -731,6 +786,17 @@ impl SurfaceTiles {
         self.publish(queue);
     }
 
+    /// Let go of every tile and of the array itself, whose memory goes with
+    /// it, and rewrite the table without them. The next tile uploaded creates
+    /// the array again.
+    pub fn purge(&mut self, queue: &wgpu::Queue) {
+        self.layers = TileLayers::new(self.layers.capacity());
+        if let Some((texture, _)) = self.array.take() {
+            texture.destroy();
+        }
+        self.publish(queue);
+    }
+
     /// Hold every cell to the level `cap` names there from now on, and
     /// rewrite the table if that changes it. Returns whether it did.
     ///
@@ -749,27 +815,29 @@ impl SurfaceTiles {
 
     /// The texels or blocks of each level of a tile's layer, in the array's
     /// format, with the level's width.
-    fn levels_of(&self, blob: &[u8]) -> Result<Vec<(u32, Vec<u8>)>, String> {
+    fn levels_of(&self, texels: &TileTexels) -> Result<Vec<(u32, Vec<u8>)>, String> {
         let layer = self.geometry.layer();
-        let expected = blob_bytes(BlockFormat::Bc7, layer, TILE_LEVELS);
-        if blob.len() != expected {
-            return Err(format!(
-                "a blob of {} bytes, where a layer of {layer} px is {expected}",
-                blob.len()
-            ));
+        let rgba = self.format == wgpu::TextureFormat::Rgba8Unorm;
+        match texels {
+            TileTexels::Blocks(blob) if rgba => rgba_levels(&decode_tile(blob, layer)?, layer),
+            TileTexels::Blocks(blob) => {
+                let expected = blob_bytes(BlockFormat::Bc7, layer, TILE_LEVELS);
+                if blob.len() != expected {
+                    return Err(format!(
+                        "a blob of {} bytes, where a layer of {layer} px is {expected}",
+                        blob.len()
+                    ));
+                }
+                Ok(mip_levels(BlockFormat::Bc7, layer, TILE_LEVELS)
+                    .into_iter()
+                    .map(|mip| (mip.size, blob[mip.offset..mip.offset + mip.len].to_vec()))
+                    .collect())
+            }
+            TileTexels::Decoded(texels) if rgba => rgba_levels(texels, layer),
+            TileTexels::Decoded(_) => {
+                Err(format!("decoded texels for an array in {:?}", self.format))
+            }
         }
-        mip_levels(BlockFormat::Bc7, layer, TILE_LEVELS)
-            .into_iter()
-            .map(|mip| {
-                let blocks = &blob[mip.offset..mip.offset + mip.len];
-                let texels = if self.format == wgpu::TextureFormat::Rgba8Unorm {
-                    decode_bc7(blocks, mip.size, mip.size)?
-                } else {
-                    blocks.to_vec()
-                };
-                Ok((mip.size, texels))
-            })
-            .collect()
     }
 
     /// Rewrite the table from what is resident and stage its upload.
@@ -803,6 +871,28 @@ impl SurfaceTiles {
             },
         );
     }
+}
+
+/// The levels of a layer of `layer` RGBA8 texels, finest first, with each
+/// level's width.
+fn rgba_levels(texels: &[u8], layer: u32) -> Result<Vec<(u32, Vec<u8>)>, String> {
+    let sizes = (0..TILE_LEVELS).map(|level| layer >> level);
+    let bytes = |size: u32| 4 * (size * size) as usize;
+    let expected: usize = sizes.clone().map(bytes).sum();
+    if texels.len() != expected {
+        return Err(format!(
+            "{} decoded bytes, where a layer of {layer} px is {expected}",
+            texels.len()
+        ));
+    }
+    let mut rest = texels;
+    Ok(sizes
+        .map(|size| {
+            let (level, tail) = rest.split_at(bytes(size));
+            rest = tail;
+            (size, level.to_vec())
+        })
+        .collect())
 }
 
 fn create_array(

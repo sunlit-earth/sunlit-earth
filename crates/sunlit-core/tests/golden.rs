@@ -1,10 +1,11 @@
 //! Golden-image tests and the contact sheet.
 //!
-//! Each case renders a fixed `SceneParams` at a fixed size with the procedural
-//! grid texture, so nothing depends on external assets, the clock, or the
-//! network. The references are compared with a perceptual tolerance rather
-//! than exactly: the existing behavioral-invariant convention exists because
-//! float and filtering differences across adapters are real.
+//! Each case renders a fixed `SceneParams` at a fixed size, most of them with
+//! the procedural grid texture and the rest with a committed cube of the real
+//! Earth, so nothing depends on the Git LFS assets, the clock, or the network.
+//! The references are compared with a perceptual tolerance rather than
+//! exactly: the existing behavioral-invariant convention exists because float
+//! and filtering differences across adapters are real.
 //!
 //! All of these force the software adapter where the platform has one, so a
 //! developer machine with a discrete GPU and a CI runner with WARP compare
@@ -37,17 +38,36 @@
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
+use sunlit_core::assets::cube_layout::CubeTextures;
+use sunlit_core::assets::tiles::Geometry;
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineHandle};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
 
 mod support;
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use support::{MEAN_TOLERANCE, OUTLIER_FRACTION, OUTLIER_THRESHOLD, compare};
 
-/// The texture mode that blends the day and night maps, as `texture_index`
+/// The texture mode that draws the day surface alone, as `texture_index`
 /// spells it.
+const DAY_MODE: i32 = 1;
+
+/// The texture mode that blends the day and night surfaces.
 const BLEND_MODE: i32 = 3;
+
+/// What the engine cuts the Earth fixture's 256 texel faces to: the shipped
+/// geometry at an eighth of its size, with a gutter of 4 because a layer has
+/// to be whole blocks at both of its levels.
+const EARTH_GEOMETRY: Geometry = Geometry {
+    face: 256,
+    levels: 2,
+    tile: 32,
+    gutter: 4,
+    floor: 64,
+    mask: 128,
+};
 
 /// Golden images are small on purpose: they live in git.
 const WIDTH: u32 = 512;
@@ -103,20 +123,28 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     // which is what makes the default-on Moon visible to this suite at all
     // instead of quietly absent from it.
     //
-    // The day and night maps are fixtures too, and they are here for the cloud
-    // cases: the layer is shaded against the sun, so pinning it wants a mode
-    // that is, and blend mode is the only one. Every other case renders the
-    // grid, which reads neither slot.
-    let surface = support::write_surface_fixtures(Path::new(env!("CARGO_TARGET_TMPDIR")));
+    //
+    // The surface is the Earth fixture's cube, cut into packs in a cache of
+    // this target's own. It is there for the orientation case, which is about
+    // it, and for the cloud cases: the layer is shaded against the sun, so
+    // pinning it wants a mode that is, and blend mode is the only one. Every
+    // other case renders the grid, which reads none of it, so the day and
+    // night slots stay empty.
+    let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let textures = tmp.join("golden-earth");
+    test_support::write_earth_fixture(&textures);
+    config.cube_textures = CubeTextures::resolve(&textures);
+    config.tile_geometry = EARTH_GEOMETRY;
+    config.cache_dir = Some(tmp.join("golden-cache"));
+    assert!(
+        config.takes_cube(),
+        "the golden engine draws its surface from the Earth fixture's cube"
+    );
     config.texture_paths = vec![
-        Some(surface.day),
-        Some(surface.night),
-        Some(support::write_moon_fixture(Path::new(env!(
-            "CARGO_TARGET_TMPDIR"
-        )))),
-        Some(support::write_panorama_bands_fixture(Path::new(env!(
-            "CARGO_TARGET_TMPDIR"
-        )))),
+        None,
+        None,
+        Some(support::write_moon_fixture(tmp)),
+        Some(support::write_panorama_bands_fixture(tmp)),
     ];
     // The cloud slot comes from the fetcher rather than from a path, so without
     // a source no case here could draw a cloud pixel at all; `base_params`
@@ -222,15 +250,15 @@ fn updating() -> bool {
     std::env::var("SUNLIT_EARTH_UPDATE_GOLDEN").is_ok()
 }
 
-/// Block until an overlay's fixture texture has reached the GPU, by its GPU
-/// label.
+/// Block until a fixture texture has reached the GPU, by its GPU label.
 ///
 /// The Moon and the Milky Way are overlays, so nothing in the engine waits for
-/// them and `TexturesReady` excludes both. A case would otherwise race a decode
-/// that takes a few tens of milliseconds: the first case would render without
-/// the texture and the rest with it, which is a reference that depends on test
-/// order. The memory report is what says whether the renderer owns it.
-fn wait_for_slot_texture(engine: &EngineHandle, label: &str) {
+/// them and `TexturesReady` excludes both, and the surface cubes arrive from
+/// packs the transcoder builds after the engine starts. A case would otherwise
+/// race a decode or a pack: the first case would render without the texture
+/// and the rest with it, which is a reference that depends on test order. The
+/// memory report is what says whether the renderer owns it.
+fn wait_for_texture(engine: &EngineHandle, label: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         let report = engine
@@ -255,21 +283,21 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     let adapter_key = engine.adapter_key().to_owned();
     engine.send(EngineCommand::UpdateParams(Box::new(*params)));
     if params.moon_brightness > 0.0 {
-        wait_for_slot_texture(&engine, "moon_texture");
+        wait_for_texture(&engine, "moon_texture");
     }
     if params.milky_way_intensity > 0.0 {
-        wait_for_slot_texture(&engine, "milky_way_texture");
+        wait_for_texture(&engine, "milky_way_texture");
     }
     if params.draws_clouds() {
-        wait_for_slot_texture(&engine, "cloud_texture");
+        wait_for_texture(&engine, "cloud_texture");
     }
-    // Blend mode is the one that reads the two surface slots, and nothing
-    // spawns their decodes until a case asks for the mode: the first blend case
-    // to run would otherwise export the frame the fallback draws, which is the
-    // grid.
-    if params.texture_index == BLEND_MODE {
-        wait_for_slot_texture(&engine, "day_texture");
-        wait_for_slot_texture(&engine, "night_texture");
+    let surface: &[&str] = match params.texture_index {
+        DAY_MODE => &["day_floor"],
+        BLEND_MODE => &["day_floor", "night_floor", "water_mask"],
+        _ => &[],
+    };
+    for label in surface {
+        wait_for_texture(&engine, label);
     }
     let pixels = crop(
         &engine
@@ -794,6 +822,31 @@ fn golden_panorama_at_a_wide_sky() {
     check_golden("panorama_at_a_wide_sky", &params);
 }
 
+/// The cube's orientation: Africa on the +Z face with north up, from a camera
+/// over longitude 0 and latitude 0.
+///
+/// The day surface alone, which the shader draws unshaded, with nothing in
+/// front of it or behind it, so the reference is the face and its four
+/// neighbors' edges as the cube holds them. A face mirrored, turned or put in
+/// another face's layer moves whole continents; the measured differences are
+/// in `docs/testing.md`.
+#[test]
+fn golden_africa_on_the_z_face() {
+    let base = base_params();
+    let params = SceneParams {
+        texture_index: DAY_MODE,
+        camera: CameraParams {
+            longitude: 0.0,
+            latitude: 0.0,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        ..base
+    };
+    check_golden("africa_on_the_z_face", &params);
+}
+
 /// The framing the two cloud cases share: the terminator down the middle of the
 /// frame, at the instant every case here renders.
 ///
@@ -941,6 +994,7 @@ fn every_golden_case_is_distinguishable() {
         "panorama_behind_the_stars",
         "panorama_at_a_narrow_sky",
         "panorama_at_a_wide_sky",
+        "africa_on_the_z_face",
         "clouds_across_the_terminator",
         "cloud_terminator_close_up",
     ];

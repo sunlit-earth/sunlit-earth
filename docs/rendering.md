@@ -19,7 +19,9 @@ Every cube is read through one sampler, `renderer::surface_sampler_descriptor`: 
 
 The formats follow the adapter (`SurfaceFormats`). On a GPU with `TEXTURE_COMPRESSION_BC` the floors are `Bc7RgbaUnorm` and the mask `Bc4RUnorm`, the pack's blocks uploaded as they are; on a CPU adapter the floors are decoded to `Rgba8Unorm` at upload with `tiles::decode_bc7` and the mask stays BC4; on an adapter without block compression the floors are decoded to RGBA8 and the mask to `R8Unorm` with `tiles::decode_bc4`. None of them is sRGB, as none of the flat maps was: the shader works on the stored values. `wgpu_init` requests `TEXTURE_COMPRESSION_BC` wherever the adapter offers it, and warp, lavapipe and GitHub's paravirtual Metal device all do (research section 19.1).
 
-A render of the shipped faces on this machine's Radeon (Vulkan) and on warp, from a cache the first run built, draws the October floor on 30 September, past the middle of the month, and the July floor on 21 June, with no seam at the face edges or at the pole. The golden target runs its twenty cases in 2.6 to 2.8 s on warp in a debug build with the grid on the cube.
+A render of the shipped faces on this machine's Radeon (Vulkan) and on warp, from a cache the first run built, draws the October floor on 30 September, past the middle of the month, and the July floor on 21 June, with no seam at the face edges or at the pole. The golden target runs its twenty-one cases in 2.4 to 3.0 s on warp in a debug build, with the grid and the Earth fixture on the cube.
+
+Three cases in `tests/render_pipeline.rs` hold the warp to that. `the_warped_direction_is_continuous_across_every_face_edge` and `the_poles_are_ordinary_points_of_the_cube` read a cube that codes its own directions through production's `equi_angular` along every edge, around every corner and through both poles, and `the_globe_draws_no_seam_where_faces_meet` draws it through `fs_main` at every edge and corner, where a discontinuity in `w` or in its screen derivatives would show as a jump between pixels or as a coarse level read in the middle of the face. The golden case `africa_on_the_z_face` draws the golden suite's 256 px cube of the real Earth from over longitude 0 and latitude 0 and pins the orientation: Africa on +Z with north up. Their thresholds, and the mutations each was shown to fail, are in [testing.md](testing.md).
 
 ## Celestial sky
 
@@ -154,10 +156,10 @@ Two references pin it, and not interchangeably: `clouds_across_the_terminator` h
 and `cloud_terminator_close_up` holds the shift and the width. Neither holds the night opacity:
 their cloud fixture is 255 or nothing, so every cloud pixel in it has a density of one and any
 nonzero night opacity covers the ground completely. `FixtureClouds::uniform` is the map at one
-mid value that the opacity case uses instead. They are the suite's first blend-mode goldens,
-which is why `check_golden_in` waits for `day_texture` and `night_texture`: nothing spawns
-those decodes until a case asks for the mode, and the first one to do so exported the frame
-the fallback draws.
+mid value that the opacity case uses instead. They are the suite's blend-mode goldens, drawn
+over the golden engine's cube of the real Earth, which is why `check_golden_in` waits for
+`day_floor`, `night_floor` and `water_mask`: the transcoder builds their packs after the
+engine starts, and a case that did not wait would export the frame the grid draws.
 
 ## One view across several screens
 

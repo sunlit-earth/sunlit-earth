@@ -248,12 +248,7 @@ fn ensure_as(
         Err(e) => warn!(path = %path.display(), error = %e, "rebuilding an unusable tile pack"),
     }
 
-    let report = build(&path, kind, &sources, geometry, key, cancel)?;
-    if stamps(&sources)? != before {
-        return Err(BuildError::Failed(
-            "a source changed while its pack was built".to_owned(),
-        ));
-    }
+    let report = build(&path, kind, &sources, &before, geometry, key, cancel)?;
     info!(
         path = %path.display(),
         tiles = report.tiles,
@@ -372,6 +367,7 @@ fn build(
     path: &Path,
     kind: PackKind,
     sources: &Sources<'_>,
+    before: &[(&str, &str, Stamp)],
     geometry: &Geometry,
     key: String,
     cancel: &AtomicBool,
@@ -420,7 +416,17 @@ fn build(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let written = write_pack(&tmp, &header, &jobs, &levels, geometry, cancel);
+    // Checked before the rename, so a pack whose sources moved under the
+    // decode is never put where a reader would open it.
+    let written = write_pack(&tmp, &header, &jobs, &levels, geometry, cancel).and_then(|bytes| {
+        if stamps(sources)? == before {
+            Ok(bytes)
+        } else {
+            Err(BuildError::Failed(
+                "a source changed while its pack was built".to_owned(),
+            ))
+        }
+    });
     let bytes = match written {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -1011,6 +1017,37 @@ mod tests {
             })
             .count();
         assert_eq!(leftovers, 0, "the build's own temporary file is gone");
+    }
+
+    /// A build is handed the stamps its key was made from; sources that no
+    /// longer look that way when the pack is written mean the pack may hold
+    /// pixels of either, and it is not put in place.
+    #[test]
+    fn a_pack_whose_sources_changed_during_the_build_is_not_put_in_place() {
+        let setup = Setup::new("changed_mid_build");
+        let kind = PackKind::Day(5);
+        let sources = sources(kind, &setup.textures).expect("sources");
+        let mut stale = stamps(&sources).expect("stamps");
+        stale[2].2.bytes += 1;
+        let path = pack_path(&setup.cache(), kind);
+        let result = build(
+            &path,
+            kind,
+            &sources,
+            &stale,
+            &FIXTURE,
+            "key".to_owned(),
+            &AtomicBool::new(false),
+        );
+        assert!(
+            matches!(&result, Err(BuildError::Failed(why)) if why.contains("changed")),
+            "{result:?}"
+        );
+        assert!(!path.exists());
+        let left = fs::read_dir(path.parent().expect("a parent"))
+            .expect("list")
+            .count();
+        assert_eq!(left, 0, "the unfinished pack is removed");
     }
 
     #[test]

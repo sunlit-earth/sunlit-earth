@@ -18,7 +18,7 @@ use crate::harness::{Harness, TIMEOUT, gpu, test_params};
 use crate::test_support::{self, ScratchDir};
 
 /// The Earth fixture cut as `tests/golden.rs` cuts it.
-const EARTH: tiles::Geometry = tiles::Geometry {
+pub(crate) const EARTH: tiles::Geometry = tiles::Geometry {
     face: 256,
     levels: 2,
     tile: 32,
@@ -29,7 +29,7 @@ const EARTH: tiles::Geometry = tiles::Geometry {
 
 /// The day surface alone, at `zoom` over `longitude` and
 /// `latitude`.
-fn day_over(longitude: f32, latitude: f32, zoom: f32) -> SceneParams {
+pub(crate) fn day_over(longitude: f32, latitude: f32, zoom: f32) -> SceneParams {
     SceneParams {
         texture_index: 1,
         camera: CameraParams {
@@ -44,7 +44,7 @@ fn day_over(longitude: f32, latitude: f32, zoom: f32) -> SceneParams {
 
 /// An engine over the Earth fixture `test_support::write_earth_fixture` wrote
 /// into `dir`.
-fn start(
+pub(crate) fn start(
     dir: &ScratchDir,
     configure: impl FnOnce(&mut sunlit_core::engine::EngineConfig),
 ) -> Harness {
@@ -57,7 +57,7 @@ fn start(
     })
 }
 
-fn tile_report(harness: &Harness) -> TileReport {
+pub(crate) fn tile_report(harness: &Harness) -> TileReport {
     *harness
         .engine
         .tile_report()
@@ -89,7 +89,7 @@ pub(crate) fn settled(
 
 /// Every tile blob of every day pack in `cache` fails its checksum, while the
 /// headers, the indexes and the floors stay whole.
-fn damage_the_day_tiles(cache: &std::path::Path) {
+pub(crate) fn damage_the_day_tiles(cache: &std::path::Path) {
     for month in 0..12 {
         let path = tiles::pack_path(cache, PackKind::Day(month));
         let pack = tiles::Pack::open(&path).expect("a built pack");
@@ -106,7 +106,7 @@ fn damage_the_day_tiles(cache: &std::path::Path) {
 
 /// The mean absolute difference of the color channels of two frames, and how
 /// many pixels differ by more than `by` in some channel.
-fn difference(a: &[u8], b: &[u8], by: u8) -> (f64, usize) {
+pub(crate) fn difference(a: &[u8], b: &[u8], by: u8) -> (f64, usize) {
     assert_eq!(a.len(), b.len());
     let (mut sum, mut over) = (0_u64, 0);
     for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
@@ -122,7 +122,7 @@ fn difference(a: &[u8], b: &[u8], by: u8) -> (f64, usize) {
 }
 
 /// The last preview frame among the events queued so far.
-fn last_frame(harness: &Harness) -> Option<Vec<u8>> {
+pub(crate) fn last_frame(harness: &Harness) -> Option<Vec<u8>> {
     let mut last = None;
     while let Ok(event) = harness.events.try_recv() {
         if let sunlit_core::engine::EngineEvent::PreviewFrame { rgba, .. } = event {

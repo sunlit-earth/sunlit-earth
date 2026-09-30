@@ -39,8 +39,8 @@ pub use handle::{EngineConfig, EngineHandle, start};
 pub use protocol::{EngineCommand, EngineEvent};
 use schedule::Schedule;
 use surface::SurfaceFeed;
-pub use tile_loader::TileReport;
 use tile_loader::{LoaderConfig, View};
+pub use tile_loader::{TileGate, TileReport};
 use wallpaper_sink::WallpaperSink;
 
 /// How long the loop blocks on the command channel before re-checking the
@@ -75,6 +75,14 @@ const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 /// stepping over anything.
 pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 
+/// How long an export waits for the tiles its frame wants, on the injected
+/// clock, before it is made with what is resident in their place: their
+/// resident ancestors, or the floor. A wallpaper made that way is made again
+/// once the tiles are resident.
+///
+/// Public because the integration tests step over it.
+pub const TILE_WAIT: Duration = Duration::from_secs(5);
+
 /// The engine's own state, private to its thread.
 ///
 /// The bools are independent latches on a private struct rather than
@@ -103,6 +111,17 @@ struct Engine {
     /// A wallpaper update was asked for while a texture was still on its way,
     /// and happens as soon as it arrives.
     wallpaper_owed: bool,
+    /// The renders the wallpaper owed, or to be made again, is made of, whose
+    /// tiles join the wanted set until it is made from them.
+    wallpaper_shots: Vec<publish::Shot>,
+    /// When the wallpaper owed began to wait for its tiles alone, the floors
+    /// being resident, which is what [`TILE_WAIT`] counts from.
+    tiles_awaited_since: Option<Duration>,
+    /// A wallpaper went out after [`TILE_WAIT`] with tiles missing, and is
+    /// made again when they are resident.
+    reexport: bool,
+    /// `RenderToFile` and `ExportPixels` requests waiting for their tiles.
+    exports: Vec<publish::WaitingExport>,
     /// A client asked for a wallpaper update. The publish happens in `tick`, so
     /// several requests drained together cost one native-resolution render
     /// rather than one each.
@@ -187,6 +206,7 @@ impl Engine {
             cube_textures,
             tile_geometry,
             tile_layers,
+            tile_gate,
         } = config;
 
         let slots = SlotLayout::new(texture_paths.len());
@@ -223,6 +243,7 @@ impl Engine {
                 decode: formats.color == wgpu::TextureFormat::Rgba8Unorm,
                 anisotropy: surface_sampler_descriptor(cpu_adapter).anisotropy_clamp,
                 workers: crate::assets::tiles::default_threads(),
+                gate: tile_gate,
             },
         );
 
@@ -284,6 +305,10 @@ impl Engine {
                 readback_failed: false,
             },
             wallpaper_owed: false,
+            wallpaper_shots: Vec::new(),
+            tiles_awaited_since: None,
+            reexport: false,
+            exports: Vec::new(),
             publish_asked: false,
             display_mode,
             anchor_monitor,
@@ -378,18 +403,12 @@ impl Engine {
                 width,
                 height,
                 reply,
-            } => {
-                let result = self.render_to_file(&path, width, height);
-                let _ = reply.send(result);
-            }
+            } => self.export(width, height, publish::ExportReply::File { path, reply }),
             EngineCommand::ExportPixels {
                 width,
                 height,
                 reply,
-            } => {
-                self.prepare_export();
-                let _ = reply.send(self.renderer.export_image(width, height));
-            }
+            } => self.export(width, height, publish::ExportReply::Pixels(reply)),
             EngineCommand::SetTextureResolution(width) => self.set_texture_resolution(width),
             EngineCommand::ReportMemory { reply } => {
                 let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
@@ -425,6 +444,14 @@ impl Engine {
                 // it in.
                 if std::mem::take(&mut self.publish_asked) {
                     self.publish_wallpaper();
+                }
+                // A caller waiting on an export is answered with what is
+                // resident rather than with a closed channel.
+                if !self.exports.is_empty() {
+                    self.prepare_export();
+                    for export in std::mem::take(&mut self.exports) {
+                        self.answer(export);
+                    }
                 }
                 return false;
             }
@@ -519,6 +546,12 @@ impl Engine {
             crate::memory::record_metrics_sample(self.renderer.texture_resolution());
         }
 
+        if let Some(surface) = &mut self.surface
+            && surface.settle_drag(now)
+        {
+            self.dirty = true;
+        }
+
         if let Some(schedule) = &mut self.auto_refresh
             && schedule.due(now)
         {
@@ -556,7 +589,11 @@ impl Engine {
         // Wallpaper", or the tray and IPC arriving together, are one wallpaper.
         if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
             self.publish_wallpaper();
+        } else if self.reexport && !self.textures_pending() {
+            info!("the tiles a wallpaper went out without are resident; making it again");
+            self.publish_wallpaper();
         }
+        self.settle_exports();
 
         // Last, so that the gate opens only when nothing in this tick drew.
         if let Some(surface) = &mut self.surface {
@@ -603,6 +640,29 @@ impl Engine {
         }
     }
 
+    /// Whether everything the frame needs is resident: the cubes the mode
+    /// needs, and every tile it wants in view at the 1 px threshold, a failed
+    /// one counting as there (plan decision 10).
+    fn textures_ready(&self) -> bool {
+        self.renderer.textures_ready(self.params.texture_index)
+            && self
+                .surface
+                .as_ref()
+                .is_none_or(|surface| surface.tiles_complete(&self.renderer))
+    }
+
+    /// Whether something the frame wants is on its way: a cube the mode
+    /// needs, or a tile it wants in view.
+    fn textures_pending(&self) -> bool {
+        self.renderer.textures_pending(self.params.texture_index) || self.tiles_pending()
+    }
+
+    fn tiles_pending(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| surface.tiles_pending(&self.renderer))
+    }
+
     /// The engine is about to draw, or has just drawn: the transcoder's pause
     /// gate closes now and stays closed for a while.
     fn mark_busy(&mut self) {
@@ -624,23 +684,62 @@ impl Engine {
         self.mark_busy();
         let sky = self.sky_state();
         self.want_tiles(&sky);
-        (self.renderer.render(&self.params, &sky), sky)
+        let outcome = self.renderer.render(&self.params, &sky);
+        self.note_readiness();
+        (outcome, sky)
     }
 
-    /// Ask the tile loader for the tiles the preview wants under `sky`, before
-    /// the frame is drawn, so the page table it draws with is held to their
-    /// cap.
+    /// Tell clients what is loading, and when everything the frame needs has
+    /// become resident.
+    ///
+    /// After every draw, the preview's and an export's alike, so that
+    /// `TexturesReady` goes out before a wallpaper drawn from what it
+    /// announces. The latch follows readiness both ways, so new tiles wanted,
+    /// a drag, a month or a resolution switch each reopen it, and clients hear
+    /// it again when what they want is there.
+    fn note_readiness(&mut self) {
+        let status = self.renderer.loading_text(self.params.texture_index);
+        if status != self.last_status {
+            self.last_status.clone_from(&status);
+            self.emit(EngineEvent::Status(status));
+        }
+        let ready = self.textures_ready();
+        if ready && !self.textures_ready {
+            debug!("textures ready");
+            self.dump_memory_report();
+            self.emit(EngineEvent::TexturesReady);
+        }
+        self.textures_ready = ready;
+    }
+
+    /// Ask the tile loader for the tiles the preview wants under `sky`, and
+    /// every export waiting for its tiles, before the frame is drawn, so the
+    /// page table it draws with is held to the preview's cap.
     fn want_tiles(&mut self, sky: &SkyState) {
         let Some(surface) = &mut self.surface else {
             return;
         };
         let (width, height) = self.renderer.size();
-        let outputs = [tile_output(&self.params, width, height, false)];
+        let mut outputs = vec![tile_output(&self.params, width, height, false)];
+        outputs.extend(self.wallpaper_shots.iter().map(|shot| {
+            tile_output(
+                &shot.framing.applied_to(&self.params),
+                shot.width,
+                shot.height,
+                true,
+            )
+        }));
+        outputs.extend(
+            self.exports
+                .iter()
+                .map(|export| tile_output(&self.params, export.width, export.height, true)),
+        );
         let view = View {
             outputs: &outputs,
             month: surface.month(),
             surfaces: surfaces_for(&self.params, sky.sun_direction),
             texture_resolution: self.renderer.texture_resolution(),
+            drag: surface.drag(&self.params.camera, self.clock.elapsed()),
         };
         surface.want_tiles(&view, &mut self.renderer);
     }
@@ -659,20 +758,6 @@ impl Engine {
         if matches!(outcome, RenderOutcome::Rendered { .. }) {
             self.mark_busy();
         }
-
-        let status = self.renderer.loading_text(self.params.texture_index);
-        if status != self.last_status {
-            self.last_status.clone_from(&status);
-            self.emit(EngineEvent::Status(status));
-        }
-
-        if !self.textures_ready && self.renderer.textures_ready(self.params.texture_index) {
-            self.textures_ready = true;
-            debug!("textures ready");
-            self.dump_memory_report();
-            self.emit(EngineEvent::TexturesReady);
-        }
-
         matches!(outcome, RenderOutcome::Rendered { .. })
     }
 
@@ -736,17 +821,6 @@ impl Engine {
             // already holding this one.
             self.renderer.set_sky_state(sky);
         }
-    }
-
-    fn render_to_file(
-        &mut self,
-        path: &std::path::Path,
-        width: u32,
-        height: u32,
-    ) -> Result<(), String> {
-        self.prepare_export();
-        let pixels = self.renderer.export_image(width, height)?;
-        save_png(path, width, height, &pixels)
     }
 
     fn emit(&self, event: EngineEvent) {

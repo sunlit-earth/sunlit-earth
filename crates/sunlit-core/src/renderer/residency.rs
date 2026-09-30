@@ -623,6 +623,47 @@ impl Residency {
         self.rank(levels, &marks, &lenses, request)
     }
 
+    /// The cap for `output` alone: the finest level its own view wants at
+    /// each cell at the 1 px threshold, no finer than `finest`. `Wanted::cap`
+    /// is the finest over every output of the request, which an output
+    /// smaller than another with the same camera reads past its tiles'
+    /// coarser level; each draw takes its own output's cap instead.
+    #[must_use]
+    pub fn cap(&self, output: &Output, finest: u8, anisotropy: u16) -> CellLevels {
+        let mut cap = CellLevels::uniform(&self.geometry, self.floor);
+        let depth = self
+            .levels
+            .iter()
+            .take_while(|level| level.level <= finest)
+            .count();
+        let levels = &self.levels[..depth];
+        let lens = Lens::new(&output.camera, output.width, output.height, 0.0, anisotropy);
+        let Some(lens) = lens.filter(|_| !levels.is_empty()) else {
+            return cap;
+        };
+        let mut marks: Vec<Vec<u8>> = levels
+            .iter()
+            .map(|level| vec![0; level.shapes.len()])
+            .collect();
+        Walk {
+            levels,
+            lens: &lens,
+            threshold: THRESHOLD_PX,
+            view_marks: CAPPED,
+            margin_marks: 0,
+            marks: &mut marks,
+        }
+        .run();
+        for (level, marks) in levels.iter().zip(&marks) {
+            for (index, &mark) in marks.iter().enumerate() {
+                if mark & CAPPED != 0 {
+                    cap.raise(level.key(index));
+                }
+            }
+        }
+        cap
+    }
+
     /// The set in its order, and the cap, from what the descents marked.
     fn rank(
         &self,
@@ -1309,6 +1350,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An output's own cap is the one a request of it alone gives, and the
+    /// set's joint cap is the finest of them; a smaller output with the same
+    /// camera is capped coarser than the joint cap where it needs less.
+    #[test]
+    fn each_output_has_a_cap_of_its_own() {
+        let export = Output {
+            export: true,
+            ..uhd(camera(20.0, 10.0, 5.0))
+        };
+        let preview = Output {
+            width: 1280,
+            height: 720,
+            export: false,
+            ..export
+        };
+        let both = want(&[preview, export]);
+        let caps =
+            [preview, export].map(|output| SHIPPED.cap(&output, finest(), anisotropy(false)));
+        assert_eq!(caps[0], want(&[preview]).cap);
+        assert_eq!(caps[1], want(&[export]).cap);
+        let mut coarser = 0;
+        for face in 0..6 {
+            for row in 0..both.cap.cells() {
+                for col in 0..both.cap.cells() {
+                    let (small, large) = (caps[0].at(face, row, col), caps[1].at(face, row, col));
+                    assert_eq!(both.cap.at(face, row, col), small.max(large));
+                    coarser += usize::from(small < large);
+                }
+            }
+        }
+        assert!(
+            coarser > 0,
+            "the smaller output is capped as the larger one is"
+        );
+        assert_eq!(
+            SHIPPED.cap(&export, floor(), anisotropy(false)),
+            CellLevels::uniform(&GEOMETRY, floor()),
+            "a setting that allows no tile caps every cell at the floor"
+        );
     }
 
     /// A pending export's tiles in view come before every other output's.

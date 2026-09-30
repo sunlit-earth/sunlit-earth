@@ -39,8 +39,9 @@ use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::tiles::{Geometry, Pack, PackKind};
 use crate::config::TEXTURE_RESOLUTIONS;
 use crate::renderer::Renderer;
-use crate::renderer::residency::{Output, Request, Residency, Surfaces, Wanted};
+use crate::renderer::residency::{Drag, Output, Request, Residency, Surfaces, Wanted};
 use crate::renderer::tiles::{CellLevels, TileId, TileLayers, TileTexels, TileUpload, decode_tile};
+use crate::scene::camera::CameraParams;
 use crate::thread_priority;
 
 /// Bytes of tiles the engine hands the queue per tick, and at least one tile:
@@ -92,7 +93,9 @@ impl TileTarget for Renderer {
 
 /// What a frame is drawn as, for the wanted set.
 pub(super) struct View<'a> {
-    /// Each output with its framing applied, as the render takes it.
+    /// Each output with its framing applied, as the render takes it: the
+    /// preview first, whose cap the page table is held to between exports,
+    /// then every export that waits for its tiles.
     pub outputs: &'a [Output],
     /// The month in force, January 0.
     pub month: usize,
@@ -100,6 +103,66 @@ pub(super) struct View<'a> {
     pub surfaces: Option<Surfaces>,
     /// The resolution setting, which caps the finest level.
     pub texture_resolution: u32,
+    pub drag: Option<Drag>,
+}
+
+/// How long the camera may rest between two moves of one drag. A drag ends
+/// when it has rested this long, and the wanted set goes back to the 1 px
+/// threshold. The app sends a move per pointer event while a hand moves the
+/// globe, a few to a few tens of milliseconds apart.
+pub(super) const DRAG_PAUSE: Duration = Duration::from_millis(100);
+
+/// Whether the camera is being dragged, and how fast, from the moves of its
+/// longitude and latitude on the injected clock.
+///
+/// A move is a drag when the camera moved, or was first seen, within
+/// [`DRAG_PAUSE`] before it, so a camera set once after a rest, by a click or
+/// a preset, is not one. Its rate is the move's over the time since the one
+/// before; moves that arrive at the same instant are measured together at
+/// the next that does not.
+#[derive(Debug, Default)]
+pub(super) struct DragWatch {
+    /// Where the camera was after its last measured move, and when.
+    last: Option<(f32, f32, Duration)>,
+    drag: Option<Drag>,
+}
+
+impl DragWatch {
+    /// The drag in progress with the camera at `camera` at `now`.
+    pub(super) fn observe(&mut self, camera: &CameraParams, now: Duration) -> Option<Drag> {
+        let (longitude, latitude) = (camera.longitude, camera.latitude);
+        let Some((last_longitude, last_latitude, at)) = self.last else {
+            self.last = Some((longitude, latitude, now));
+            return None;
+        };
+        if (longitude, latitude) == (last_longitude, last_latitude) {
+            self.settle(now);
+            return self.drag;
+        }
+        let since = now.saturating_sub(at);
+        if since.is_zero() {
+            return self.drag;
+        }
+        self.drag = (since <= DRAG_PAUSE).then(|| {
+            let seconds = since.as_secs_f32();
+            let turned = (longitude - last_longitude + 180.0).rem_euclid(360.0) - 180.0;
+            Drag {
+                longitude_rate: turned / seconds,
+                latitude_rate: (latitude - last_latitude) / seconds,
+            }
+        });
+        self.last = Some((longitude, latitude, now));
+        self.drag
+    }
+
+    /// End the drag in progress if the camera has rested [`DRAG_PAUSE`] by
+    /// `now`. Returns whether one ended.
+    pub(super) fn settle(&mut self, now: Duration) -> bool {
+        let rested = self
+            .last
+            .is_some_and(|(_, _, at)| now.saturating_sub(at) >= DRAG_PAUSE);
+        rested && self.drag.take().is_some()
+    }
 }
 
 /// What the tile loader holds, for a client that asks.
@@ -121,6 +184,9 @@ pub struct TileReport {
     pub reads: u64,
     /// How many times the tile array was purged.
     pub epoch: u64,
+    /// Whether the set was computed for a drag in progress, at the drag's
+    /// threshold rather than 1 px.
+    pub dragging: bool,
 }
 
 /// A pack tiles are read from, and when it was opened.
@@ -276,6 +342,54 @@ enum Admit {
     Drop(&'static str),
 }
 
+/// Holds the tile loader's reads while shut.
+///
+/// Open unless someone shuts it, and the app never does: an engine test shuts
+/// it to keep the tiles a frame wants on their way for as long as the case
+/// needs, which no amount of waiting on the workers could make reliable. A
+/// worker holds its claimed tile while it waits, so the tile counts as on its
+/// way.
+#[derive(Clone, Default)]
+pub struct TileGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl TileGate {
+    /// Hold every read that has not started.
+    pub fn shut(&self) {
+        *self.lock() = true;
+    }
+
+    /// Let the reads go on.
+    pub fn open(&self) {
+        *self.lock() = false;
+        self.0.1.notify_all();
+    }
+
+    fn lock(&self) -> MutexGuard<'_, bool> {
+        self.0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wait while the gate is shut. Returns `false` when `stopping` says the
+    /// loader is going first.
+    fn pass(&self, stopping: impl Fn() -> bool) -> bool {
+        let mut shut = self.lock();
+        while *shut {
+            if stopping() {
+                return false;
+            }
+            shut = self
+                .0
+                .1
+                .wait_timeout(shut, Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+}
+
 /// How the loader reads.
 pub(super) struct LoaderConfig {
     /// Whether the tile array is RGBA8, so the workers decode the blocks.
@@ -285,6 +399,7 @@ pub(super) struct LoaderConfig {
     pub anisotropy: u16,
     /// Worker threads; `tiles::default_threads()` in the engine.
     pub workers: usize,
+    pub gate: TileGate,
 }
 
 /// The engine's side of the loader, and the handle to its workers. Dropping it
@@ -332,6 +447,7 @@ struct Inputs {
     month: usize,
     surfaces: Option<Surfaces>,
     finest: u8,
+    drag: Option<Drag>,
 }
 
 impl TileLoader {
@@ -363,15 +479,16 @@ impl TileLoader {
         let poked = Arc::new(AtomicBool::new(false));
         let threads = (0..workers)
             .map(|index| {
-                let (shared, tx, wake, poked) = (
+                let (shared, tx, wake, poked, gate) = (
                     Arc::clone(&shared),
                     tx.clone(),
                     Arc::clone(&wake),
                     Arc::clone(&poked),
+                    config.gate.clone(),
                 );
                 std::thread::Builder::new()
                     .name(format!("sunlit-tiles-{index}"))
-                    .spawn(move || work(&shared, &tx, &wake, &poked))
+                    .spawn(move || work(&shared, &tx, &wake, &poked, &gate))
                     .expect("failed to spawn a tile loader thread")
             })
             .collect();
@@ -437,6 +554,7 @@ impl TileLoader {
             month: view.month,
             surfaces: view.surfaces,
             finest: finest_allowed(&geometry, view.texture_resolution),
+            drag: view.drag,
         };
         if self.inputs.as_ref() == Some(&inputs) {
             return;
@@ -454,20 +572,71 @@ impl TileLoader {
                     month: inputs.month,
                     surfaces,
                     finest: inputs.finest,
-                    drag: None,
+                    drag: inputs.drag,
                     anisotropy: self.anisotropy,
                     stored: &stored,
                 })
             }
         };
+        let drawn = inputs
+            .outputs
+            .first()
+            .map(|output| self.cap_of(&inputs, output));
         self.inputs = Some(inputs);
-        self.apply(wanted, target);
+        self.apply(&wanted, target);
+        if let Some(cap) = drawn {
+            target.set_cap(cap);
+        }
+    }
+
+    /// The cap the page table takes to draw `output` under the set in force:
+    /// its own, and every cell at the floor for the grid, or before a set was
+    /// computed.
+    pub(super) fn cap_for(&self, output: &Output) -> CellLevels {
+        if let Some(inputs) = &self.inputs {
+            self.cap_of(inputs, output)
+        } else {
+            let geometry = self.residency.geometry();
+            CellLevels::uniform(&geometry, Geometry::level_of(geometry.floor))
+        }
+    }
+
+    fn cap_of(&self, inputs: &Inputs, output: &Output) -> CellLevels {
+        let geometry = self.residency.geometry();
+        let finest = match inputs.surfaces {
+            Some(_) => inputs.finest,
+            None => Geometry::level_of(geometry.floor),
+        };
+        self.residency.cap(output, finest, self.anisotropy)
+    }
+
+    /// How many tiles of the set in force the frame needs in view that are
+    /// neither resident nor failed: tiles on their way, or about to be.
+    pub(super) fn missing(&self, target: &impl TileTarget) -> usize {
+        let layers = target.layers();
+        self.taken[..self.in_view]
+            .iter()
+            .filter(|id| {
+                !self.failed.contains(id)
+                    && layers.is_none_or(|layers| layers.layer_of(**id).is_none())
+            })
+            .count()
+    }
+
+    /// Whether the set in force is the one at the 1 px threshold and every
+    /// tile it needs in view is resident or failed. Tiles left for want of
+    /// layers do not count (plan departure 22).
+    pub(super) fn complete(&self, target: &impl TileTarget) -> bool {
+        self.inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.drag.is_none())
+            && self.missing(target) == 0
     }
 
     /// Make `wanted` the set in force: take it in order until the layers are
     /// spoken for, hold the page table to its cap, and publish what is
     /// missing.
-    fn apply(&mut self, wanted: Wanted, target: &mut impl TileTarget) {
+    fn apply(&mut self, wanted: &Wanted, target: &mut impl TileTarget) {
         self.computations += 1;
         let capacity = target.layers().map_or(0, TileLayers::capacity) as usize;
         let (mut taken, mut layers, mut in_view, mut beyond) = (Vec::new(), 0, 0, 0);
@@ -504,7 +673,6 @@ impl TileLoader {
                 }
             }
         }
-        target.set_cap(wanted.cap);
         self.publish(target);
     }
 
@@ -531,7 +699,8 @@ impl TileLoader {
     }
 
     /// Take results under the byte budget and upload them, evicting where a
-    /// layer is needed. Returns whether a tile was uploaded.
+    /// layer is needed. Returns whether a tile was uploaded or failed, either
+    /// of which can complete the set.
     ///
     /// What is queued is taken at once, and while a worker is still reading,
     /// the drain waits for it, [`DRAIN_WAIT`] at the most, until the budget
@@ -547,6 +716,7 @@ impl TileLoader {
         };
         self.poked.store(false, Ordering::Release);
         let deadline = Instant::now() + wait;
+        let failures = self.failed.len();
         let (mut spent, mut received, mut uploads) = (0, 0_u64, Vec::new());
         while spent < UPLOAD_BUDGET {
             let loaded = match results.try_recv() {
@@ -588,7 +758,7 @@ impl TileLoader {
         if more {
             (self.wake)();
         }
-        uploaded
+        uploaded || self.failed.len() > failures
     }
 
     /// Whether a result goes to the GPU, fails its tile, or is dropped.
@@ -695,6 +865,10 @@ impl TileLoader {
             failed,
             reads: self.reads,
             epoch: self.epoch,
+            dragging: self
+                .inputs
+                .as_ref()
+                .is_some_and(|inputs| inputs.drag.is_some()),
         }
     }
 }
@@ -715,9 +889,18 @@ impl Drop for TileLoader {
 }
 
 /// A worker: claim, read, hand back, until the loader stops.
-fn work(shared: &Shared, results: &Sender<Loaded>, wake: &NotifyFn, poked: &AtomicBool) {
+fn work(
+    shared: &Shared,
+    results: &Sender<Loaded>,
+    wake: &NotifyFn,
+    poked: &AtomicBool,
+    gate: &TileGate,
+) {
     thread_priority::lower_current_thread("tile loader");
     while let Some(claim) = shared.next() {
+        if !gate.pass(|| shared.lock().stopping) {
+            return;
+        }
         if results.send(claim.read()).is_err() {
             return;
         }
@@ -852,6 +1035,7 @@ mod tests {
                 decode: false,
                 anisotropy: 8,
                 workers,
+                gate: TileGate::default(),
             },
             Arc::new(|| {}),
         );
@@ -923,7 +1107,7 @@ mod tests {
         );
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
 
         wait_until_blocked(&loader);
         std::thread::sleep(Duration::from_millis(100));
@@ -949,7 +1133,7 @@ mod tests {
         assert!(tiles.len() > 2 * (RESULTS_PER_WORKER + 1));
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         wait_until_blocked(&loader);
 
         let started = Instant::now();
@@ -971,10 +1155,10 @@ mod tests {
         assert!(before.len() > RESULTS_PER_WORKER && !after.is_empty());
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(before), &mut stand);
+        loader.apply(&wanted(before), &mut stand);
         wait_until_blocked(&loader);
 
-        loader.apply(wanted(after), &mut stand);
+        loader.apply(&wanted(after), &mut stand);
         drain_until(&mut loader, &mut stand, "the new set resident", |stand| {
             after.iter().all(|&id| stand.holds(id))
         });
@@ -997,12 +1181,12 @@ mod tests {
         let tiles = stored(&pack);
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         wait_until_blocked(&loader);
 
         loader.purge(&mut stand);
         assert_eq!(stand.purges, 1);
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         drain_until(&mut loader, &mut stand, "every tile resident", |stand| {
             tiles.iter().all(|&id| stand.holds(id))
         });
@@ -1029,7 +1213,7 @@ mod tests {
         let tiles = stored(&pack);
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         wait_until_blocked(&loader);
 
         loader.open(Arc::new(
@@ -1058,7 +1242,7 @@ mod tests {
 
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         drain_until(&mut loader, &mut stand, "the rest resident", |stand| {
             tiles[1..].iter().all(|&id| stand.holds(id))
         });
@@ -1075,7 +1259,7 @@ mod tests {
         );
 
         let reads = loader.reads;
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         assert!(
             loader.shared.lock().jobs.is_empty(),
             "nothing is read again"
@@ -1088,7 +1272,7 @@ mod tests {
             loader.failed.is_empty(),
             "the pack's next opening tries it again"
         );
-        loader.apply(wanted(&tiles), &mut stand);
+        loader.apply(&wanted(&tiles), &mut stand);
         wait_for("the second failure", || {
             loader.drain(&mut stand);
             loader.failed.contains(&broken)
@@ -1107,11 +1291,11 @@ mod tests {
         let mut stand = Stand::new(4);
         let resident = |stand: &Stand, set: &[TileId]| set.iter().all(|&id| stand.holds(id));
 
-        loader.apply(wanted(a), &mut stand);
+        loader.apply(&wanted(a), &mut stand);
         drain_until(&mut loader, &mut stand, "the first four", |s| {
             resident(s, a)
         });
-        loader.apply(wanted(&a[2..]), &mut stand);
+        loader.apply(&wanted(&a[2..]), &mut stand);
         loader.drain(&mut stand);
         assert!(
             stand.evicted.is_empty(),
@@ -1119,7 +1303,7 @@ mod tests {
         );
 
         for (step, &tile) in b.iter().enumerate() {
-            loader.apply(wanted(&[tile]), &mut stand);
+            loader.apply(&wanted(&[tile]), &mut stand);
             drain_until(&mut loader, &mut stand, "the next tile", |s| s.holds(tile));
             assert_eq!(stand.evicted.len(), step + 1, "one layer for one tile");
         }
@@ -1140,7 +1324,7 @@ mod tests {
         loader.failed.insert(tiles[1]);
         let mut set = wanted(&tiles[..6]);
         set.tiles[5].margin = true;
-        loader.apply(set, &mut stand);
+        loader.apply(&set, &mut stand);
 
         let report = loader.report(&stand);
         assert_eq!(
@@ -1165,7 +1349,7 @@ mod tests {
         let pack = day_pack(&dir);
         let mut loader = loader(1, &pack);
         let mut stand = Stand::new(64);
-        loader.apply(wanted(&stored(&pack)), &mut stand);
+        loader.apply(&wanted(&stored(&pack)), &mut stand);
         wait_until_blocked(&loader);
 
         let (done, dropped) = crossbeam_channel::bounded(1);
@@ -1215,5 +1399,78 @@ mod tests {
                 decode_tile(&blob, pack.layer()).expect("decode")
             ))
         );
+    }
+
+    fn at(longitude: f32, latitude: f32) -> CameraParams {
+        CameraParams {
+            longitude,
+            latitude,
+            ..CameraParams::default()
+        }
+    }
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn a_camera_set_once_after_a_rest_is_not_a_drag() {
+        let mut watch = DragWatch::default();
+        assert_eq!(watch.observe(&at(0.0, 0.0), Duration::ZERO), None);
+        let rest = DRAG_PAUSE + MS;
+        assert_eq!(watch.observe(&at(40.0, 10.0), rest), None);
+        assert_eq!(watch.observe(&at(40.0, 10.0), rest + DRAG_PAUSE), None);
+    }
+
+    #[test]
+    fn moves_within_the_pause_are_a_drag_at_the_rate_of_the_last() {
+        let mut watch = DragWatch::default();
+        watch.observe(&at(0.0, 0.0), Duration::ZERO);
+        let rest = DRAG_PAUSE * 10;
+        watch.observe(&at(1.0, 0.0), rest);
+        let drag = watch
+            .observe(&at(6.0, -1.0), rest + 50 * MS)
+            .expect("a second move within the pause");
+        approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
+        approx::assert_relative_eq!(drag.latitude_rate, -20.0, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn a_drag_across_the_antimeridian_turns_the_short_way() {
+        let mut watch = DragWatch::default();
+        watch.observe(&at(178.0, 0.0), Duration::ZERO);
+        let drag = watch
+            .observe(&at(-178.0, 0.0), 40 * MS)
+            .expect("a move within the pause");
+        approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn moves_at_one_instant_are_measured_together_at_the_next() {
+        let mut watch = DragWatch::default();
+        watch.observe(&at(0.0, 0.0), Duration::ZERO);
+        assert_eq!(watch.observe(&at(2.0, 0.0), Duration::ZERO), None);
+        let drag = watch
+            .observe(&at(5.0, 0.0), 50 * MS)
+            .expect("a move within the pause");
+        approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
+    }
+
+    #[test]
+    fn a_drag_ends_when_the_camera_has_rested_the_pause() {
+        let mut watch = DragWatch::default();
+        watch.observe(&at(0.0, 0.0), Duration::ZERO);
+        assert!(watch.observe(&at(5.0, 0.0), 50 * MS).is_some());
+        let last = 50 * MS;
+        assert!(
+            !watch.settle((last + DRAG_PAUSE).saturating_sub(MS)),
+            "rested less than the pause"
+        );
+        assert!(
+            watch
+                .observe(&at(5.0, 0.0), (last + DRAG_PAUSE).saturating_sub(MS))
+                .is_some()
+        );
+        assert!(watch.settle(last + DRAG_PAUSE));
+        assert!(!watch.settle(last + DRAG_PAUSE * 2), "ended once");
+        assert_eq!(watch.observe(&at(5.0, 0.0), last + DRAG_PAUSE * 2), None);
     }
 }

@@ -19,9 +19,12 @@ use crate::assets::cube_layout::CubeTextures;
 use crate::assets::tiles::{
     Geometry, Pack, PackKind, Phase, TranscodeNotify, Transcoder, TranscoderConfig, pack_path,
 };
+use crate::renderer::residency::{Drag, Output};
+use crate::renderer::tiles::CellLevels;
 use crate::renderer::{Renderer, SurfaceLayer};
+use crate::scene::camera::CameraParams;
 
-use super::tile_loader::{LoaderConfig, TileLoader, TileReport, View};
+use super::tile_loader::{DragWatch, LoaderConfig, TileLoader, TileReport, View};
 
 /// How long after its last frame the engine counts as busy, which is how long
 /// the transcoder's pause gate stays closed after one.
@@ -37,6 +40,7 @@ const BUSY_AFTER_A_FRAME: Duration = Duration::from_secs(2);
 pub(super) struct SurfaceFeed {
     transcoder: Transcoder,
     tiles: TileLoader,
+    drag: DragWatch,
     cache_dir: PathBuf,
     /// The month in force, January 0.
     month: usize,
@@ -85,6 +89,7 @@ impl SurfaceFeed {
         Self {
             transcoder,
             tiles,
+            drag: DragWatch::default(),
             cache_dir,
             month,
             paused: true,
@@ -173,6 +178,33 @@ impl SurfaceFeed {
         self.tiles.want(view, renderer);
     }
 
+    /// The drag in progress with the camera at `camera` at `now`, if one is.
+    pub(super) fn drag(&mut self, camera: &CameraParams, now: Duration) -> Option<Drag> {
+        self.drag.observe(camera, now)
+    }
+
+    /// End a drag the camera has rested from by `now`. Returns whether one
+    /// ended, which is when the tiles of the 1 px threshold are wanted again.
+    pub(super) fn settle_drag(&mut self, now: Duration) -> bool {
+        self.drag.settle(now)
+    }
+
+    /// The cap the page table takes to draw `output`.
+    pub(super) fn cap_for(&self, output: &Output) -> CellLevels {
+        self.tiles.cap_for(output)
+    }
+
+    /// Whether a tile the frame needs in view is on its way.
+    pub(super) fn tiles_pending(&self, renderer: &Renderer) -> bool {
+        self.tiles.missing(renderer) > 0
+    }
+
+    /// Whether every tile the frame needs in view at the 1 px threshold is
+    /// resident or failed.
+    pub(super) fn tiles_complete(&self, renderer: &Renderer) -> bool {
+        self.tiles.complete(renderer)
+    }
+
     /// Let go of every tile, for a change of the resolution setting.
     pub(super) fn purge_tiles(&mut self, renderer: &mut Renderer) {
         self.tiles.purge(renderer);
@@ -256,6 +288,7 @@ mod tests {
                 decode: false,
                 anisotropy: 8,
                 workers: 1,
+                gate: super::super::tile_loader::TileGate::default(),
             },
         );
         (dir, feed)

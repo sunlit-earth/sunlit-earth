@@ -797,6 +797,12 @@ impl SurfaceTiles {
         self.publish(queue);
     }
 
+    /// The finest level each cell may draw from now.
+    #[must_use]
+    pub fn cap(&self) -> &CellLevels {
+        &self.cap
+    }
+
     /// Hold every cell to the level `cap` names there from now on, and
     /// rewrite the table if that changes it. Returns whether it did.
     ///

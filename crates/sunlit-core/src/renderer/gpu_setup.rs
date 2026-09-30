@@ -383,7 +383,6 @@ pub(super) fn create_renderer(
         render_width: width,
         render_height: height,
         last_state: None,
-        last_params: None,
         last_inputs: None,
         last_resolved: None,
         shader,

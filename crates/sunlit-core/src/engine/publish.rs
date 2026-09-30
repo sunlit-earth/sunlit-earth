@@ -1,28 +1,82 @@
 //! What the engine does with a finished frame once the destination is the
-//! desktop rather than the preview.
+//! desktop or a caller rather than the preview.
 //!
 //! The publish half of [`super::Engine`]: deciding when a wallpaper may go out,
 //! saying how it went, noticing that the screens moved, and framing the export
-//! the sink asked for.
+//! the sink asked for; and the exports a caller waits on a reply for, which
+//! wait for their tiles the way a wallpaper does.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crossbeam_channel::Sender;
 use tracing::{debug, error, info, warn};
 
 use super::wallpaper_sink::{Frame, JobImages, WallpaperJob};
-use super::{Engine, EngineEvent, join_notes};
+use super::{Engine, EngineEvent, TILE_WAIT, join_notes, save_png, tile_output};
+use crate::display::Monitor;
+use crate::display::layout::{self, Framing, Rect};
+use crate::params::SceneParams;
+
+/// One render a wallpaper is made of: the framing and the size of a group of
+/// screens, or of the canvas the screens span.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Shot {
+    pub framing: Framing,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A wallpaper as planned for the monitors this session has now.
+pub(super) struct WallpaperPlan {
+    monitors: Vec<Monitor>,
+    anchor: usize,
+    note: String,
+    shots: Vec<Shot>,
+    placement: Placement,
+}
+
+/// Where the shots of a plan go.
+enum Placement {
+    /// Each shot on the screens at these positions of the monitor list.
+    PerMonitor(Vec<Vec<usize>>),
+    /// The one shot across the canvas the screens span.
+    Spanned(Rect),
+}
+
+/// Who waits for an export made on request, and what they are handed.
+pub(super) enum ExportReply {
+    File {
+        path: PathBuf,
+        reply: Sender<Result<(), String>>,
+    },
+    Pixels(Sender<Result<Vec<u8>, String>>),
+}
+
+/// A `RenderToFile` or `ExportPixels` request waiting for its tiles.
+pub(super) struct WaitingExport {
+    pub width: u32,
+    pub height: u32,
+    /// When it was asked for, on the injected clock.
+    since: Duration,
+    reply: ExportReply,
+}
 
 impl Engine {
     /// Render at the sink's native resolution and hand the pixels over.
     ///
     /// Held back while a texture the current mode needs is on its way. The
-    /// renderer falls back to the procedural grid while a slot is empty, which
-    /// is fine for a preview and not fine for someone's desktop, and a
-    /// resolution switch empties one for as long as the reload takes. Every
-    /// caller that publishes arrives here, so this covers all of them.
-    /// `RenderToFile` and `ExportPixels` are deliberately not covered; they
-    /// answer a caller holding a reply channel, which decides for itself what it
-    /// will wait for.
+    /// renderer falls back to the procedural grid while a slot or a floor is
+    /// empty, which is fine for a preview and not fine for someone's desktop,
+    /// and a resolution switch empties one for as long as the reload takes.
+    /// Every caller that publishes arrives here, so this covers all of them.
+    ///
+    /// Held back too while a tile the wallpaper's renders want is on its way,
+    /// since those cells would draw the floor, but for [`TILE_WAIT`] at the
+    /// most: after that it goes out with what is resident, says so in the
+    /// log, and is made again once the tiles are resident. The renders join
+    /// the wanted set at its front from the moment they are planned.
     ///
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
@@ -36,7 +90,10 @@ impl Engine {
         // thing left that can change is whether the textures have landed. `tick`
         // comes back here every 50 ms until it is paid, and on Linux
         // `check_supported` walks `PATH` with a stat per directory.
-        if self.wallpaper_owed && self.renderer.textures_pending(self.params.texture_index) {
+        if self.wallpaper_owed
+            && (self.renderer.textures_pending(self.params.texture_index)
+                || (self.tiles_pending() && !self.tiles_waited_out()))
+        {
             return;
         }
 
@@ -58,15 +115,59 @@ impl Engine {
             return;
         }
 
+        let plan = match self.plan_wallpaper() {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.report_wallpaper(Err(e));
+                return;
+            }
+        };
+        self.wallpaper_shots.clone_from(&plan.shots);
+        // Draws, and with it computes the wanted set with the plan's renders.
+        self.prepare_export();
+        let missing = self.tiles_pending();
+        if missing {
+            let now = self.clock.elapsed();
+            let since = *self.tiles_awaited_since.get_or_insert(now);
+            if now.saturating_sub(since) < TILE_WAIT {
+                if !self.wallpaper_owed {
+                    info!("wallpaper update deferred until the tiles it shows are resident");
+                }
+                self.wallpaper_owed = true;
+                return;
+            }
+            warn!(
+                waited_secs = TILE_WAIT.as_secs(),
+                "the tiles the wallpaper shows did not all arrive in time; it goes out with \
+                 what is resident in their place, and is made again once they are"
+            );
+        }
+
+        let shots = plan.shots.clone();
         let result = self
-            .build_wallpaper_job()
+            .render_plan(plan)
             .and_then(|(job, note)| Ok(join_notes(note, self.wallpaper.publish(&job)?)));
+        let again = missing && result.is_ok();
         self.report_wallpaper(result);
+        if again {
+            self.reexport = true;
+            self.wallpaper_shots = shots;
+        }
     }
 
-    /// Report a finished publish attempt and settle the debt for it.
+    /// Whether the wallpaper owed has waited [`TILE_WAIT`] for its tiles.
+    fn tiles_waited_out(&self) -> bool {
+        self.tiles_awaited_since
+            .is_some_and(|since| self.clock.elapsed().saturating_sub(since) >= TILE_WAIT)
+    }
+
+    /// Report a finished publish attempt and settle the debt for it, and for
+    /// a wallpaper to be made again.
     pub(super) fn report_wallpaper(&mut self, result: Result<String, String>) {
         self.wallpaper_owed = false;
+        self.tiles_awaited_since = None;
+        self.reexport = false;
+        self.wallpaper_shots.clear();
         self.published |= result.is_ok();
         match &result {
             Err(e) => error!(error = %e, "wallpaper update failed"),
@@ -111,14 +212,12 @@ impl Engine {
         }
     }
 
-    /// Render everything this session's monitors need, and say what was odd.
+    /// Plan what this session's monitors need, and say what was odd.
     ///
     /// The monitor list is asked for on every publish rather than cached: the
     /// layout changes without telling anybody, and the auto-refresh means a
     /// stale one would be on the screen for as long as the interval.
-    pub(super) fn build_wallpaper_job(&mut self) -> Result<(WallpaperJob, String), String> {
-        use crate::display::layout;
-
+    fn plan_wallpaper(&mut self) -> Result<WallpaperPlan, String> {
         let monitors = self.wallpaper.monitors()?;
         // The list a publish planned with is the one a later hint is compared
         // against, so a layout that kept moving is published again only if it
@@ -135,7 +234,7 @@ impl Engine {
             warn!(note, "the stored anchor monitor is gone");
         }
 
-        let settings = layout::Framing::from(&self.params);
+        let settings = Framing::from(&self.params);
         let groups = layout::render_groups(&monitors, self.display_mode, anchor.index);
         if groups.is_empty() {
             return Err("this session has no screen with any pixels on it".to_owned());
@@ -143,7 +242,6 @@ impl Engine {
         for group in &groups {
             self.check_export_fits(group.width, group.height)?;
         }
-        self.prepare_export();
 
         if self.display_mode == layout::DisplayMode::AcrossScreens {
             let bounds = layout::bounds_of(&monitors)
@@ -155,41 +253,74 @@ impl Engine {
                 info!(clamped, "the derived sky lens hit the shader's limit");
                 note = join_notes(note, clamped.to_owned());
             }
-            let pixels = self.export_framed(&derived.framing, bounds.width, bounds.height)?;
-            return Ok((
-                WallpaperJob {
-                    mode: self.display_mode,
-                    monitors,
-                    anchor: anchor.index,
-                    images: JobImages::Spanned {
-                        canvas: Arc::new(Frame::new(pixels, bounds.width, bounds.height)),
-                        bounds,
-                    },
-                },
+            return Ok(WallpaperPlan {
+                monitors,
+                anchor: anchor.index,
                 note,
-            ));
+                shots: vec![Shot {
+                    framing: derived.framing,
+                    width: bounds.width,
+                    height: bounds.height,
+                }],
+                placement: Placement::Spanned(bounds),
+            });
         }
 
         // One render per distinct size, shared by every screen of that size.
         // A screen with no group is one this mode does not paint, and the sink
         // leaves it alone where the desktop lets it.
-        let mut images: Vec<Option<Arc<Frame>>> = vec![None; monitors.len()];
-        for group in &groups {
-            let framing = layout::screen_framing(settings, group.width, group.height);
-            let pixels = self.export_framed(&framing, group.width, group.height)?;
-            let frame = Arc::new(Frame::new(pixels, group.width, group.height));
-            for index in &group.monitors {
-                images[*index] = Some(Arc::clone(&frame));
-            }
+        let shots = groups
+            .iter()
+            .map(|group| Shot {
+                framing: layout::screen_framing(settings, group.width, group.height),
+                width: group.width,
+                height: group.height,
+            })
+            .collect();
+        Ok(WallpaperPlan {
+            monitors,
+            anchor: anchor.index,
+            note,
+            shots,
+            placement: Placement::PerMonitor(
+                groups.into_iter().map(|group| group.monitors).collect(),
+            ),
+        })
+    }
+
+    /// Render every shot of `plan` from the frame just drawn, and put the
+    /// job together.
+    fn render_plan(&mut self, plan: WallpaperPlan) -> Result<(WallpaperJob, String), String> {
+        let mut frames = Vec::with_capacity(plan.shots.len());
+        for shot in &plan.shots {
+            let pixels = self.export_framed(&shot.framing, shot.width, shot.height)?;
+            frames.push(Arc::new(Frame::new(pixels, shot.width, shot.height)));
         }
+        let images = match plan.placement {
+            Placement::Spanned(bounds) => JobImages::Spanned {
+                canvas: frames
+                    .pop()
+                    .ok_or_else(|| "a spanned plan with no render".to_owned())?,
+                bounds,
+            },
+            Placement::PerMonitor(groups) => {
+                let mut images: Vec<Option<Arc<Frame>>> = vec![None; plan.monitors.len()];
+                for (frame, group) in frames.iter().zip(&groups) {
+                    for index in group {
+                        images[*index] = Some(Arc::clone(frame));
+                    }
+                }
+                JobImages::PerMonitor(images)
+            }
+        };
         Ok((
             WallpaperJob {
                 mode: self.display_mode,
-                monitors,
-                anchor: anchor.index,
-                images: JobImages::PerMonitor(images),
+                monitors: plan.monitors,
+                anchor: plan.anchor,
+                images,
             },
-            note,
+            plan.note,
         ))
     }
 
@@ -225,11 +356,94 @@ impl Engine {
     /// Replay the current scene with one screen's framing.
     pub(super) fn export_framed(
         &mut self,
-        framing: &crate::display::layout::Framing,
+        framing: &Framing,
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, String> {
+        let framed = framing.applied_to(&self.params);
+        self.export_capped(&framed, width, height)
+    }
+
+    /// Replay `params` at `width` by `height`, the page table held for this
+    /// render alone to the cap of that output (plan departure 23): a render
+    /// smaller than another the set was computed for would otherwise read
+    /// that one's tiles past their coarser level.
+    fn export_capped(
+        &mut self,
+        params: &SceneParams,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, String> {
+        let cap = self
+            .surface
+            .as_ref()
+            .map(|surface| surface.cap_for(&tile_output(params, width, height, true)));
         self.renderer
-            .export_image_with(&framing.applied_to(&self.params), width, height)
+            .export_image_capped(params, width, height, cap)
+    }
+
+    /// Make an export a caller waits on: now where the globe has no tiles or
+    /// its tiles are resident, else once they are, or after [`TILE_WAIT`]
+    /// with what is resident in their place. The floors are the caller's to
+    /// wait for, through `TexturesReady`.
+    pub(super) fn export(&mut self, width: u32, height: u32, reply: ExportReply) {
+        let export = WaitingExport {
+            width,
+            height,
+            since: self.clock.elapsed(),
+            reply,
+        };
+        if self.surface.is_none() {
+            self.prepare_export();
+            self.answer(export);
+            return;
+        }
+        self.exports.push(export);
+        self.settle_exports();
+    }
+
+    /// Answer every waiting export whose tiles are resident, or that has
+    /// waited [`TILE_WAIT`] for them.
+    pub(super) fn settle_exports(&mut self) {
+        if self.exports.is_empty() {
+            return;
+        }
+        // Draws, and with it computes the wanted set with every waiting
+        // export's output.
+        self.prepare_export();
+        let pending = self.tiles_pending();
+        let now = self.clock.elapsed();
+        let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.exports)
+            .into_iter()
+            .partition(|export| !pending || now.saturating_sub(export.since) >= TILE_WAIT);
+        self.exports = waiting;
+        for export in due {
+            if pending {
+                warn!(
+                    width = export.width,
+                    height = export.height,
+                    waited_secs = TILE_WAIT.as_secs(),
+                    "the tiles an export shows did not all arrive in time; it is made with \
+                     what is resident in their place"
+                );
+            }
+            self.answer(export);
+        }
+    }
+
+    /// Render an export from the frame just drawn and hand it over.
+    pub(super) fn answer(&mut self, export: WaitingExport) {
+        let params = self.params;
+        let pixels = self.export_capped(&params, export.width, export.height);
+        match export.reply {
+            ExportReply::Pixels(reply) => {
+                let _ = reply.send(pixels);
+            }
+            ExportReply::File { path, reply } => {
+                let written =
+                    pixels.and_then(|pixels| save_png(&path, export.width, export.height, &pixels));
+                let _ = reply.send(written);
+            }
+        }
     }
 }

@@ -35,6 +35,7 @@ mod lifecycle;
 mod memory;
 mod moon;
 mod panorama;
+mod readiness;
 mod sinks;
 mod stars;
 mod sun;

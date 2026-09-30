@@ -84,6 +84,9 @@ pub struct EngineConfig {
     /// CPU adapter), as the app does; a test sets fewer to make the loader
     /// evict, or none to draw the floors alone.
     pub tile_layers: Option<u32>,
+    /// Holds the tile loader's reads while shut; open, and never shut, in the
+    /// app.
+    pub tile_gate: super::TileGate,
 }
 
 impl EngineConfig {
@@ -119,6 +122,7 @@ impl EngineConfig {
             cube_textures: CubeTextures::default(),
             tile_geometry: GEOMETRY,
             tile_layers: None,
+            tile_gate: super::TileGate::default(),
         }
     }
 

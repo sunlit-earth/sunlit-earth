@@ -127,9 +127,6 @@ pub(crate) struct Renderer {
     render_height: u32,
     /// Last rendered state for dirty-checking. `None` means first frame.
     last_state: Option<FrameState>,
-    /// Scene parameters from the last rendered frame, replayed by the export
-    /// path so the wallpaper matches what the preview shows.
-    last_params: Option<SceneParams>,
     /// Per-frame inputs (sky state, blend flag) from the last rendered frame.
     /// The scheduler overwrites the sky here so a hidden window still exports
     /// with current astronomy.
@@ -697,7 +694,6 @@ impl Renderer {
             tiles: self.tile_uniforms(),
         });
         self.last_resolved = Some(resolved);
-        self.last_params = Some(*params);
         self.update_planets(sky);
 
         let first_frame = self.last_state.is_none();
@@ -738,24 +734,6 @@ impl Renderer {
             self.render_width,
             self.render_height,
         )
-    }
-
-    /// Render the last frame's scene at a different resolution and return raw
-    /// RGBA8 pixels.
-    ///
-    /// Creates temporary GPU textures with `COPY_SRC` at the target resolution,
-    /// renders using the existing pipeline and bind groups (matching the last
-    /// displayed frame), reads back the pixels, and drops the temporaries.
-    ///
-    /// Returns `Err` when no frame has been rendered yet, since there is then
-    /// no resolved texture binding to replay.
-    pub(crate) fn export_image(
-        &self,
-        target_width: u32,
-        target_height: u32,
-    ) -> Result<Vec<u8>, String> {
-        let params = self.last_params.ok_or("No frame rendered yet")?;
-        self.export_image_with(&params, target_width, target_height)
     }
 
     /// The largest export this device will take, and the largest readback.
@@ -828,6 +806,35 @@ impl Renderer {
         )?;
         crate::memory::log_memory_usage("wallpaper: after pixel readback");
         Ok(pixels)
+    }
+
+    /// [`Self::export_image_with`] with the page table held to `cap`, the
+    /// export's own (`residency::Residency::cap`), for this frame alone.
+    ///
+    /// The cap the table held before is put back afterwards and the redraw
+    /// flag left as it was: the preview frame already drawn was drawn with
+    /// that cap, and the two rewrites are staged around the export's submit.
+    pub(crate) fn export_image_capped(
+        &mut self,
+        params: &SceneParams,
+        target_width: u32,
+        target_height: u32,
+        cap: Option<CellLevels>,
+    ) -> Result<Vec<u8>, String> {
+        let queue = &self.queue;
+        let held = cap.and_then(|cap| {
+            let tiles = self.surface.as_mut()?.tiles.as_mut()?;
+            let previous = tiles.cap().clone();
+            tiles.set_cap(queue, cap);
+            Some(previous)
+        });
+        let pixels = self.export_image_with(params, target_width, target_height);
+        if let Some(previous) = held
+            && let Some(tiles) = self.surface.as_mut().and_then(|s| s.tiles.as_mut())
+        {
+            tiles.set_cap(&self.queue, previous);
+        }
+        pixels
     }
 }
 

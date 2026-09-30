@@ -13,9 +13,9 @@ use sunlit_core::assets::cloud_source::HttpCloudSource;
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::{texture_loader, tiles};
 use sunlit_core::config::{AppConfig, QualityTier};
-use sunlit_core::engine::EngineConfig;
 use sunlit_core::engine::clock::SystemClock;
 use sunlit_core::engine::wallpaper_sink::SystemWallpaper;
+use sunlit_core::engine::{EngineConfig, TileGate};
 use sunlit_core::params::SceneParams;
 use sunlit_core::renderer;
 
@@ -131,6 +131,7 @@ pub(crate) fn engine_config(
         cube_textures: textures.cube,
         tile_geometry: tiles::GEOMETRY,
         tile_layers: None,
+        tile_gate: TileGate::default(),
         preview_size,
         preview_enabled,
         params: SceneParams::from_config(config),

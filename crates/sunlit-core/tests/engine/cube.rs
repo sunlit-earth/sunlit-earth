@@ -151,21 +151,23 @@ fn a_new_month_is_drawn_from_its_own_floor_and_a_publish_waits_for_it() {
 
     let deadline = std::time::Instant::now() + TIMEOUT;
     let mut ready_first = false;
-    loop {
-        match harness.events.recv_deadline(deadline) {
-            Ok(EngineEvent::TexturesReady) => ready_first = true,
-            Ok(EngineEvent::WallpaperSet(result)) => {
+    let mut published = false;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        match event {
+            EngineEvent::TexturesReady => ready_first = true,
+            EngineEvent::WallpaperSet(result) => {
                 assert!(result.is_ok(), "the publish should have succeeded");
                 assert!(
                     ready_first,
                     "the wallpaper went out before September's floor was resident"
                 );
+                published = true;
                 break;
             }
-            Ok(_) => {}
-            Err(_) => panic!("no publish within {TIMEOUT:?}"),
+            _ => {}
         }
     }
+    assert!(published, "no publish within {TIMEOUT:?}");
     assert!(fixture.pack_exists(PackKind::Day(8)));
     assert_eq!(sink.publications().len(), 1, "one publish");
     assert_ne!(

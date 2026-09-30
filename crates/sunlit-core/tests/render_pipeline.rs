@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use wgpu::util::DeviceExt;
 
@@ -293,6 +293,10 @@ fn create_dummy_tiles(device: &wgpu::Device, queue: &wgpu::Queue) -> [wgpu::Text
 
 static RENDER_CTX: LazyLock<Mutex<RenderContext>> =
     LazyLock::new(|| Mutex::new(create_render_context()));
+
+fn render_ctx() -> MutexGuard<'static, RenderContext> {
+    RENDER_CTX.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -759,7 +763,7 @@ const MOON_MODEL_IDENTITY: [f32; 16] = [
 
 #[test]
 fn sphere_renders_visible_pixels() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
@@ -778,7 +782,7 @@ fn sphere_renders_visible_pixels() {
 
 #[test]
 fn day_side_brighter_than_night_side() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
@@ -811,7 +815,7 @@ fn day_side_brighter_than_night_side() {
 
 #[test]
 fn single_texture_mode_ignores_the_night_side() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
@@ -1039,7 +1043,7 @@ const PROBED_FIELDS: [(f32, &str); 79] = [
 #[allow(clippy::too_many_lines)]
 #[test]
 fn uniform_buffer_field_offsets_match_wgsl() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
 
     let shader = ctx
         .device
@@ -1265,7 +1269,7 @@ const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
 #[test]
 #[allow(clippy::too_many_lines)]
 fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
 
     let shader = ctx
         .device
@@ -1442,7 +1446,7 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
     /// `docs/rendering.md`.
     const TOLERANCE: f32 = 1.0e-3;
 
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
 
     let shader = ctx
         .device
@@ -1656,7 +1660,7 @@ fn avg_luminance_non_clear(pixels: &[u8]) -> f64 {
 
 #[test]
 fn the_water_effects_are_inert_while_their_gates_are_zero() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     // All-water texture (alpha=128): RGB can be ocean-like
@@ -1699,7 +1703,7 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
 
 #[test]
 fn fresnel_specular_brighter_at_grazing() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
@@ -1758,7 +1762,7 @@ fn fresnel_specular_brighter_at_grazing() {
 
 #[test]
 fn fresnel_diffuse_shift_brightens_grazing_water() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
@@ -1791,7 +1795,7 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
 
 #[test]
 fn fresnel_diffuse_shift_absent_on_land() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     // All-land texture (alpha=255)
@@ -1822,7 +1826,7 @@ fn fresnel_diffuse_shift_absent_on_land() {
 
 #[test]
 fn fresnel_diffuse_shift_absent_at_night() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
@@ -1868,7 +1872,7 @@ fn fresnel_diffuse_shift_absent_at_night() {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn cloud_pipeline_renders_with_alpha() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 64;
 
     let pipeline_layout = ctx
@@ -2025,7 +2029,7 @@ fn cloud_pipeline_renders_with_alpha() {
 
 #[test]
 fn gamma_moves_midtones_in_both_directions() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
@@ -2061,7 +2065,7 @@ fn gamma_moves_midtones_in_both_directions() {
 
 #[test]
 fn consecutive_renders_are_identical() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
@@ -2085,7 +2089,7 @@ fn consecutive_renders_are_identical() {
 
 #[test]
 fn saturation_zero_produces_greyscale() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
@@ -2127,7 +2131,7 @@ fn saturation_zero_produces_greyscale() {
 
 #[test]
 fn saturation_above_one_increases_chroma() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
@@ -2187,7 +2191,7 @@ fn saturation_above_one_increases_chroma() {
 
 #[test]
 fn day_and_night_corrections_independent() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     // Use mid-tones so gamma correction produces a visible difference
@@ -2283,7 +2287,7 @@ fn close(a: [u8; 3], b: [u8; 3], tolerance: u8) -> bool {
 /// hardware's cube table agree on.
 #[test]
 fn the_cube_path_shows_each_face_where_its_axis_points() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 64;
     let colors: [[u8; 4]; 6] = [
         [220, 40, 40, 255],
@@ -2321,7 +2325,7 @@ fn the_cube_path_shows_each_face_where_its_axis_points() {
 /// are brighter at the grazing edge than with land everywhere.
 #[test]
 fn the_water_cube_drives_the_water_effects() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
     let day = create_solid_cube(&ctx.device, &ctx.queue, [[10, 30, 60, 255]; 6]);
     let night = create_solid_cube(&ctx.device, &ctx.queue, [[5, 5, 10, 255]; 6]);
@@ -2402,7 +2406,7 @@ fn a_packs_floor_faces_land_where_their_axes_point() {
         );
     }
 
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 64;
     let cube = create_cube(&ctx.device, &ctx.queue, floor, |face| decoded[face].clone());
     let dummy = &ctx.dummy_cube;
@@ -2736,7 +2740,7 @@ const EDGE_STEPS: u32 = 64;
 /// across it breaks one of those at some edge.
 #[test]
 fn the_warped_direction_is_continuous_across_every_face_edge() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let cube = create_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
         coded_face(face, CODED_FACE)
     });
@@ -2810,7 +2814,7 @@ const POLE_STEP_DEGREES: f64 = 0.1;
 /// level the sampler reads.
 #[test]
 fn the_poles_are_ordinary_points_of_the_cube() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let cube = create_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
         coded_face(face, CODED_FACE)
     });
@@ -3087,7 +3091,7 @@ fn assert_no_seam(
 /// a coarse level, which the marked cube paints grey.
 #[test]
 fn the_globe_draws_no_seam_where_faces_meet() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let cube = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
         coded_face(face, CODED_FACE)
     });
@@ -3344,7 +3348,7 @@ fn seam_frames() -> Vec<(glam::Vec3, usize)> {
 /// fail it, at a face edge as anywhere else.
 #[test]
 fn the_floor_and_the_two_tile_levels_meet_without_a_seam() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let geometry = CODED_TILES;
     let floor = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
         coded_face(face, CODED_FACE)
@@ -3415,7 +3419,7 @@ fn the_floor_and_the_two_tile_levels_meet_without_a_seam() {
 /// day half is.
 #[test]
 fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let geometry = CODED_TILES;
     let finest = Geometry::level_of(geometry.face);
     let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
@@ -3547,7 +3551,7 @@ const EDGE_MEAN_STEPS: f64 = 2.5;
 fn a_minified_tile_is_read_at_the_level_of_detail_its_footprint_asks_for() {
     use sunlit_core::geometry::cube;
 
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let geometry = CODED_TILES;
     let solid = |color: [u8; 4], width: u32| color.repeat((width * width) as usize);
     let finest = Geometry::level_of(geometry.face);
@@ -3750,7 +3754,7 @@ fn a_minified_tile_is_read_at_the_level_of_detail_its_footprint_asks_for() {
 /// side shows the day floor and the dark side the night's ocean.
 #[test]
 fn blend_mode_reads_each_half_of_the_page_table_for_its_own_surface() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let geometry = CODED_TILES;
     let finest = Geometry::level_of(geometry.face);
     let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
@@ -4122,7 +4126,7 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
         .collect();
     let first = uploads[0].id;
 
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let mut surface_tiles =
         SurfaceTiles::new(&ctx.device, geometry, wgpu::TextureFormat::Rgba8Unorm, 64);
     surface_tiles

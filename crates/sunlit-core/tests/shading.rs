@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::sync::{LazyLock, Mutex, mpsc};
+use std::sync::{LazyLock, Mutex, PoisonError, mpsc};
 
 use wgpu::util::DeviceExt;
 
@@ -151,7 +151,7 @@ static GPUS: LazyLock<Mutex<Gpus>> = LazyLock::new(|| {
 // ---------------------------------------------------------------------------
 
 fn run_on_gpu(cases: &[TestCase]) -> Vec<TestResult> {
-    let gpus = GPUS.lock().unwrap();
+    let gpus = GPUS.lock().unwrap_or_else(PoisonError::into_inner);
     dispatch(&gpus.primary, cases)
 }
 
@@ -509,7 +509,7 @@ fn software_adapter_produces_correct_results() {
     // reason to stop checking the platforms that do have one, so the absence is
     // only tolerated on macOS: on Windows (WARP) and Linux (lavapipe) a missing
     // software adapter means the environment is broken and this fails.
-    let gpus = GPUS.lock().unwrap();
+    let gpus = GPUS.lock().unwrap_or_else(PoisonError::into_inner);
     assert!(
         gpus.software.is_some() || cfg!(target_os = "macos"),
         "no software adapter: Windows has WARP and Linux has lavapipe, so this is a \

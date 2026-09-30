@@ -795,7 +795,17 @@ What one tile costs at each of the loader's three steps, on one thread, with the
 
 On the GPU a tile costs about 11 us through the device, 0.43 ms a MiB. On WARP the cost is in the submit, WARP's copy into its own texture layout, and it is 2.4 ms a tile in RGBA8, 24 ms a MiB, where the same layers in BC7 take 0.17 ms, 6.9 ms a MiB: the copy costs WARP more a byte in RGBA8 as well as four times the bytes. Reads and decodes are never what limits the loader: four workers read well over 100,000 tiles a second or decode about 55,000, against a peak set of 539.
 
-So `UPLOAD_BUDGET` is 4 MiB a tick, which is one constant for both adapters: on the GPU 160 tiles in about 1.7 ms, so the largest day set arrives in four ticks, and on WARP 40 RGBA8 tiles in about 96 ms, half of what a 1080p frame costs WARP on its own (section 19.2), so the frames go on between the uploads while a set streams in. Criterion 5's convergence test is where the budget is tuned further.
+So `UPLOAD_BUDGET` is 4 MiB a tick, which is one constant for both adapters: on the GPU 160 tiles in about 1.7 ms, so the largest day set arrives in four ticks, and on WARP 40 RGBA8 tiles in about 96 ms through the device, half of what a 1080p frame costs WARP on its own (section 19.2), so the frames go on between the uploads while a set streams in.
+
+The drain reaches that budget only because it waits for the workers. The result channel holds two tiles a worker, eight on four workers, and the first drain took only what was queued, 10 to 14 tiles, so the budget never bound and the largest day set took about 40 ticks (found in the loader's review). The drain as built takes what is queued and then, while a worker still holds a claimed tile or has one left to claim, waits for the next result, `DRAIN_WAIT` of 4 ms at the most in all, until the budget is spent; every result is uploaded before the drain returns, so no tile's texels are parked. Measured on 2026-09-30 end to end through an engine over the real May pack (`t4d/drain-bench` in the run directory, a release build with debug assertions so the loader's log is there, the preview drawn but not read back, timed from the switch of the resolution setting from 2048 to 8192 until the report holds every wanted tile resident) [M]:
+
+| Adapter, view | Tiles | Drains, tiles each | Complete after | The drain that took what was queued |
+|---|---|---|---|---|
+| RX 6800 XT, 4K, Asia (100, 30) at 8.3 radii, fov 20 | 506 BC7 | 4: 162, 162, 162, 20 | 15 ms | 50 drains, 37 ms |
+| WARP, 4K, cube corner at 5.1 radii, fov 20 | 357 RGBA8 | 9: eight of 41, 29 | 95 ms (427 ms on a cold file cache) | 47 drains, 400 to 440 ms |
+| WARP, 1920 x 1088, Asia at 8.3 radii | 50 RGBA8 | 2: 41, 9 | 54 ms | |
+
+On WARP these count the uploads handed to the queue; WARP's copy into its layout runs when the next readback waits for the device, which the preview's does every tick in the app. The byte budget binds on both, 162 BC7 tiles or 41 RGBA8 ones a drain, and the wait never came near its 4 ms: the workers read and decode faster than the engine takes the results.
 
 The worst wanted set over the zoom, the lenses and the places, in view and with the margin, for one 4K output and for the same camera also drawn into a 1920 x 1088 preview, which is the app's case when a wallpaper is exported with the settings window open (T4d adds the export's own output):
 

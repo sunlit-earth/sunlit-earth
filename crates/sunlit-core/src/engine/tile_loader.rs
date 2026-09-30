@@ -9,9 +9,9 @@
 //! left; a claim is one positional read of the tile's blob from its open pack,
 //! decoded to RGBA8 on the worker where the tile array is RGBA8, and the result
 //! goes back through a bounded channel. The engine drains the channel on every
-//! tick under a byte budget, evicts what it must and uploads the rest before
-//! the tick's render, so the tiles and the page table that names them reach the
-//! GPU in one submit.
+//! tick under a byte budget, waiting briefly for the workers while they still
+//! read, evicts what it must and uploads the rest before the tick's render, so
+//! the tiles and the page table that names them reach the GPU in one submit.
 //!
 //! Cancellation is implicit: a tile that leaves the set is never claimed, and
 //! one claimed before it left is dropped when its result arrives. So is a
@@ -30,6 +30,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use tracing::{debug, error, info, warn};
@@ -46,6 +47,12 @@ use crate::thread_priority;
 /// about 160 BC7 tiles, 1.7 ms through this machine's GPU, or 40 RGBA8 ones,
 /// about 96 ms through WARP (research section 24).
 const UPLOAD_BUDGET: usize = 4 << 20;
+
+/// How long a drain may wait for the workers to hand back more while its
+/// budget is not spent and a tile is still being read. The channel holds a
+/// few tiles, so a drain that took only what was queued would stop far short
+/// of the budget; the workers refill it within microseconds a tile.
+const DRAIN_WAIT: Duration = Duration::from_millis(4);
 
 /// Results in flight per worker: one being handed over while the next is read.
 const RESULTS_PER_WORKER: usize = 2;
@@ -159,6 +166,15 @@ struct Claim {
 }
 
 impl Slot {
+    /// Whether a worker holds a tile it has not handed back, or has one left
+    /// to claim.
+    fn reading(&self) -> bool {
+        !self.claimed.is_empty()
+            || self.jobs[self.next.min(self.jobs.len())..]
+                .iter()
+                .any(|id| self.packs.contains_key(&id.pack))
+    }
+
     fn claim(&mut self) -> Option<Claim> {
         while let Some(&id) = self.jobs.get(self.next) {
             self.next += 1;
@@ -514,19 +530,35 @@ impl TileLoader {
         self.republish = false;
     }
 
-    /// Take the results that arrived, under the byte budget, and upload them,
-    /// evicting where a layer is needed. Returns whether a tile was uploaded.
+    /// Take results under the byte budget and upload them, evicting where a
+    /// layer is needed. Returns whether a tile was uploaded.
+    ///
+    /// What is queued is taken at once, and while a worker is still reading,
+    /// the drain waits for it, [`DRAIN_WAIT`] at the most, until the budget
+    /// is spent. Every result is uploaded before the drain returns, so no
+    /// tile's texels outlive it.
     pub(super) fn drain(&mut self, target: &mut impl TileTarget) -> bool {
+        self.drain_within(target, DRAIN_WAIT)
+    }
+
+    fn drain_within(&mut self, target: &mut impl TileTarget, wait: Duration) -> bool {
         let Some(results) = self.results.clone() else {
             return false;
         };
         self.poked.store(false, Ordering::Release);
-        let (mut spent, mut received, mut uploads) = (0, Vec::new(), Vec::new());
+        let deadline = Instant::now() + wait;
+        let (mut spent, mut received, mut uploads) = (0, 0_u64, Vec::new());
         while spent < UPLOAD_BUDGET {
-            let Ok(loaded) = results.try_recv() else {
-                break;
+            let loaded = match results.try_recv() {
+                Ok(loaded) => loaded,
+                Err(_) if self.shared.lock().reading() => match results.recv_deadline(deadline) {
+                    Ok(loaded) => loaded,
+                    Err(_) => break,
+                },
+                Err(_) => break,
             };
-            received.push(loaded.id);
+            received += 1;
+            self.shared.lock().claimed.remove(&loaded.id);
             match self.admit(&loaded, target.layers()) {
                 Admit::Upload => {
                     let texels = loaded.texels.expect("admitted only when read");
@@ -548,13 +580,7 @@ impl TileLoader {
             }
         }
         let more = !results.is_empty();
-        self.reads += received.len() as u64;
-        if !received.is_empty() {
-            let mut slot = self.shared.lock();
-            for id in &received {
-                slot.claimed.remove(id);
-            }
-        }
+        self.reads += received;
         let uploaded = self.upload(uploads, target);
         if self.republish {
             self.publish(target);
@@ -912,6 +938,27 @@ mod tests {
         });
         assert_eq!(stand.uploaded, tiles, "each tile once, in the order wanted");
         assert_eq!(loader.reads, tiles.len() as u64);
+        assert_eq!(claimed(&loader), 0);
+    }
+
+    #[test]
+    fn a_drain_takes_what_the_workers_read_while_it_runs_and_not_only_what_was_queued() {
+        let dir = ScratchDir::new("tile_loader_drain_waits");
+        let pack = day_pack(&dir);
+        let tiles = stored(&pack);
+        assert!(tiles.len() > 2 * (RESULTS_PER_WORKER + 1));
+        let mut loader = loader(1, &pack);
+        let mut stand = Stand::new(64);
+        loader.apply(wanted(&tiles), &mut stand);
+        wait_until_blocked(&loader);
+
+        let started = Instant::now();
+        assert!(loader.drain_within(&mut stand, Duration::from_secs(20)));
+        assert_eq!(stand.uploaded, tiles, "the whole set in one drain");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the drain waited out its time with nothing left to read"
+        );
         assert_eq!(claimed(&loader), 0);
     }
 

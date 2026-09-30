@@ -678,8 +678,10 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::Arc;
 
+    type Hook = Box<dyn FnOnce(&Path)>;
+
     thread_local! {
-        static AFTER_CREATE: RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { RefCell::new(None) };
+        static AFTER_CREATE: RefCell<Option<Hook>> = const { RefCell::new(None) };
     }
 
     pub(super) fn after_create(tmp: &Path) {
